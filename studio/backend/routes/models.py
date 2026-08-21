@@ -4835,9 +4835,7 @@ def _repo_model_snapshots(repo_info) -> list:
     return candidates
 
 
-def _repo_is_reachable_by_id(
-    repo_path: Path, active_root: Path, loadable: Optional[Path]
-) -> bool:
+def _repo_is_reachable_by_id(repo_path: Path, active_root: Path, loadable: Optional[Path]) -> bool:
     """Whether loading this repo by its bare id lands somewhere that can serve it.
 
     Only the active cache makes the id a target at all. There, ``from_pretrained`` follows

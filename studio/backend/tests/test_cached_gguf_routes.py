@@ -5926,12 +5926,8 @@ def test_cached_model_rows_skips_a_weights_only_snapshot(monkeypatch, tmp_path):
         [],
         repo_dir,
         revisions = [
-            SimpleNamespace(
-                files = [_file("model.safetensors", 5_000)], snapshot_path = complete
-            ),
-            SimpleNamespace(
-                files = [_file("model.safetensors", 5_000)], snapshot_path = weights_only
-            ),
+            SimpleNamespace(files = [_file("model.safetensors", 5_000)], snapshot_path = complete),
+            SimpleNamespace(files = [_file("model.safetensors", 5_000)], snapshot_path = weights_only),
         ],
     )
 
@@ -5980,9 +5976,7 @@ def test_cached_model_rows_pins_when_the_active_ref_cannot_serve_a_load(monkeypa
         [],
         repo_dir,
         revisions = [
-            SimpleNamespace(
-                files = [_file("model.safetensors", 5_000)], snapshot_path = complete
-            ),
+            SimpleNamespace(files = [_file("model.safetensors", 5_000)], snapshot_path = complete),
             SimpleNamespace(files = [_file("config.json", 100)], snapshot_path = metadata_only),
         ],
     )
@@ -5994,9 +5988,7 @@ def test_cached_model_rows_pins_when_the_active_ref_cannot_serve_a_load(monkeypa
     monkeypatch.setattr(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
-    monkeypatch.setattr(
-        models_route, "_resolve_hf_cache_dir", lambda: active.resolve()
-    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active.resolve())
 
     rows = {row["repo_id"]: row for row in models_route.cached_model_rows()}
 
