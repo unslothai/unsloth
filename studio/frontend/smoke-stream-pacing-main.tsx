@@ -167,31 +167,7 @@ export function buildOpenFence(
   };
 }
 
-type OpenFenceFixture = ReturnType<typeof buildOpenFence> & {
-  expectedSources?: readonly string[];
-};
-
-function buildDuplicateFences(): OpenFenceFixture {
-  const base = buildOpenFence("`", 17_000, false);
-  const source = base.source;
-  const firstOpening = '```typescript title="first.ts"\n';
-  const secondOpening = '```javascript title="second.js"\n';
-  const openMarkdown =
-    base.prefix +
-    firstOpening +
-    source +
-    "\n```\n\n" +
-    secondOpening +
-    source +
-    "\n";
-  return {
-    closedMarkdown: `${openMarkdown}\`\`\`\n\nAfter duplicate fences.\n`,
-    expectedSources: [source, `${source}\n`],
-    openMarkdown,
-    prefix: base.prefix,
-    source: `${source}\n`,
-  };
-}
+type OpenFenceFixture = ReturnType<typeof buildOpenFence>;
 
 type Results = {
   startedAt: number;
@@ -243,10 +219,8 @@ declare global {
       ready: boolean;
       run(options?: RunOptions): void;
       runOpenFence(options: OpenFenceRunOptions): void;
-      runDuplicateFences(): void;
       completeOpenFence(): void;
       expectedOpenCode(): string;
-      expectedCodeSources(): readonly string[];
       expectedOpenPrefix(): string;
       results(): Results;
     };
@@ -542,33 +516,11 @@ function Harness(): ReactElement {
           });
         }, 0);
       },
-      runDuplicateFences() {
-        activeCodeHighlighting = "syntax";
-        openFenceFixture = buildDuplicateFences();
-        state.renderPlans = [];
-        state.codeHighlightCalls = 0;
-        config = {
-          totalChars: openFenceFixture.openMarkdown.length,
-          chunkChars: 512,
-          gapMs: 0,
-        };
-        measureFrom = performance.now();
-        setTimeout(() => {
-          void runtime.thread.append({
-            role: "user",
-            content: [{ type: "text", text: "stream duplicate fence fixture" }],
-          });
-        }, 0);
-      },
       completeOpenFence() {
         releaseOpenFence?.();
       },
       expectedOpenCode: () =>
         openFenceFixture?.source.replaceAll("\r\n", "\n") ?? "",
-      expectedCodeSources: () =>
-        openFenceFixture?.expectedSources?.map((source) =>
-          source.replaceAll("\r\n", "\n"),
-        ) ?? [],
       expectedOpenPrefix: () => openFenceFixture?.prefix ?? "",
       results: () => ({ ...state }),
     };

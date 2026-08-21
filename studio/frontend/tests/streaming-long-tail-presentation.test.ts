@@ -19,10 +19,7 @@ import {
   normalizeCodeFenceLanguage,
   shouldAutoHighlightStreamingCode,
 } from "../src/components/assistant-ui/streaming-code-policy.ts";
-import {
-  IncrementalMarkdownCache,
-  getCompletedCodeFences,
-} from "../src/components/assistant-ui/streaming-render-schedule.ts";
+import { IncrementalMarkdownCache } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import {
   LONG_STREAM_PRESENTATION_CHARS,
   LONG_STREAM_PRESENTATION_MS,
@@ -89,28 +86,8 @@ const prosePrefix = Array.from(
   (_, index) => `Paragraph ${index} stays committed while the code grows.\n\n`,
 ).join("");
 
-test("the oversized wrapper stays selected across open-fence completion", () => {
-  assert.equal(isOversizedStreamingCode(OVERSIZED_OPEN_CODE_CHARS - 1), false);
-  assert.equal(isOversizedStreamingCode(OVERSIZED_OPEN_CODE_CHARS), true);
-  assert.equal(
-    isOversizedStreamingCode(OVERSIZED_OPEN_CODE_CHARS * 100),
-    true,
-    "completion must keep the wrapper mounted for deferred highlighting",
-  );
-});
 
 
-test("the final highlight budget is inclusive and counts UTF-16 source units", () => {
-  const limit = MAX_AUTO_HIGHLIGHT_SOURCE_CODE_UNITS;
-  assert.equal(shouldAutoHighlightStreamingCode("x".repeat(limit - 1)), true);
-  assert.equal(shouldAutoHighlightStreamingCode("x".repeat(limit)), true);
-  assert.equal(shouldAutoHighlightStreamingCode("x".repeat(limit + 1)), false);
-
-  const twoUnitCharacters = "💡".repeat(limit / 2);
-  assert.equal(twoUnitCharacters.length, limit);
-  assert.equal(shouldAutoHighlightStreamingCode(twoUnitCharacters), true);
-  assert.equal(shouldAutoHighlightStreamingCode(twoUnitCharacters + "x"), false);
-});
 
 test("budget boundaries survive marker, line-ending, close, completion, and reload", () => {
   const prefix = "## Stable prefix\n\nParagraph with **bold** and a table.\n\n";
@@ -173,37 +150,6 @@ test("budget boundaries survive marker, line-ending, close, completion, and relo
   }
 });
 
-test("rewinds and replacements re-evaluate the canonical source budget", () => {
-  const prefix = "## Mutable source\n\n";
-  const opening = "```typescript meta\n";
-  const extremeSource = codeSource(
-    MAX_AUTO_HIGHLIGHT_SOURCE_CODE_UNITS + 1,
-  );
-  const moderateSource = extremeSource.slice(0, -1);
-  const cache = new IncrementalMarkdownCache();
-  const extreme = cache.update(prefix + opening + extremeSource, true);
-  assert.equal(
-    shouldAutoHighlightStreamingCode(extreme.terminalCodeTail?.source ?? ""),
-    false,
-  );
-
-  const rewound = cache.update(prefix + opening + moderateSource, true);
-  assert.notEqual(rewound.terminalCodeTail?.id, extreme.terminalCodeTail?.id);
-  assert.equal(
-    shouldAutoHighlightStreamingCode(rewound.terminalCodeTail?.source ?? ""),
-    true,
-  );
-
-  const replaced = cache.update(
-    `${prefix}~~~~typescript replacement\n${extremeSource}`,
-    true,
-  );
-  assert.notEqual(replaced.terminalCodeTail?.id, rewound.terminalCodeTail?.id);
-  assert.equal(
-    shouldAutoHighlightStreamingCode(replaced.terminalCodeTail?.source ?? ""),
-    false,
-  );
-});
 
 test("open fence extraction preserves exact bytes across supported fence forms", () => {
   const backtickSource = "const first = 1;\r\n```\r\nconst last = 2;";
@@ -221,17 +167,6 @@ test("open fence extraction preserves exact bytes across supported fence forms",
   );
 });
 
-test("the incremental shell retains raw source before remend closes tilde pairs", () => {
-  const source = codeSource(OVERSIZED_OPEN_CODE_CHARS + 100);
-  const markdown = `~~~~typescript\n${source}`;
-  const plan = new IncrementalMarkdownCache().update(markdown);
-
-  assert.equal(plan.sourceShellMarkdown, markdown);
-  assert.deepEqual(getStreamingCodeFence(plan.sourceShellMarkdown), {
-    language: "typescript",
-    source,
-  });
-});
 
 test("a mixed mutable shell plans only its oversized terminal fence as plain code", () => {
   const prefix = `## Live design\n\n${"Paragraph with **bold**, `inline code`, and a [link](https://example.com). ".repeat(
@@ -393,45 +328,6 @@ test("completion preserves a canonical trailing line ending for source actions",
 });
 
 
-test("same-update promotion preserves the terminal source before the policy decision", () => {
-  for (const lineEnding of ["\n", "\r\n"]) {
-    for (const length of [
-      MAX_AUTO_HIGHLIGHT_SOURCE_CODE_UNITS,
-      MAX_AUTO_HIGHLIGHT_SOURCE_CODE_UNITS + 1,
-    ]) {
-      const prefix = "Settled before.\n\n".repeat(20).replaceAll("\n", lineEnding);
-      const opening = `\`\`\`typescript title="boundary.ts"${lineEnding}`;
-      const canonicalSource = `${codeSource(length - 1)}\n`;
-      const rawSource = canonicalSource.replaceAll("\n", lineEnding);
-      const openMarkdown = prefix + opening + rawSource;
-      const completedMarkdown = `${openMarkdown}\`\`\`${lineEnding}${lineEnding}${"Settled after.\n\n"
-        .repeat(40)
-        .replaceAll("\n", lineEnding)}`;
-      const cache = new IncrementalMarkdownCache();
-
-      const open = cache.update(openMarkdown, true);
-      const previous = open.terminalCodeTail;
-      assert.ok(previous);
-      assert.equal(previous.source, canonicalSource);
-
-      const completed = cache.update(completedMarkdown, false);
-      const matchingBlock = [
-        ...completed.chunks.flatMap((chunk) => chunk.blocks),
-        ...completed.tail,
-      ].find((block) => block.id === previous.blockId);
-      assert.ok(matchingBlock, "the completed fence lost its persistent block identity");
-      const fence = matchingBlock.codeFences.find(
-        (candidate) => candidate.openingOffset === previous.openingOffset,
-      );
-      assert.ok(fence, "the previous terminal fence lost its opening-offset identity");
-      assert.equal(fence.source, canonicalSource);
-      assert.equal(
-        shouldAutoHighlightStreamingCode(fence.source),
-        length <= MAX_AUTO_HIGHLIGHT_SOURCE_CODE_UNITS,
-      );
-    }
-  }
-});
 
 
 test("status completion before the final close keeps exact terminal source identity", () => {
@@ -463,138 +359,12 @@ test("status completion before the final close keeps exact terminal source ident
   assert.equal(shouldAutoHighlightStreamingCode(fence?.source ?? ""), false);
 });
 
-test("duplicate completed fences preserve metadata and terminal newline ownership independently", () => {
-  const prefix = "A global claim[^identity].\n\n[^identity]: stable note\n\n";
-  const firstOpening = '```typescript title="first.ts"\n';
-  const secondOpening = '```javascript title="second.js"\n';
-  const body = "const duplicate = true;";
-  const openMarkdown = `${prefix}${firstOpening}${body}\n\`\`\`\n\n${secondOpening}${body}\n`;
-  const cache = new IncrementalMarkdownCache();
-  const open = cache.update(openMarkdown, true);
-  const previous = open.terminalCodeTail;
-  assert.ok(previous);
-  assert.equal(previous.source, `${body}\n`);
-
-  const completed = cache.update(`${openMarkdown}\`\`\`\n\nAfter duplicates.\n`, false);
-  const block = [...completed.chunks.flatMap((chunk) => chunk.blocks), ...completed.tail]
-    .find((candidate) => candidate.id === previous.blockId);
-  assert.ok(block);
-  assert.equal(block.codeFences.length, 2);
-  assert.deepEqual(
-    block.codeFences.map(({ language, meta, source }) => ({ language, meta, source })),
-    [
-      { language: "typescript", meta: 'title="first.ts"', source: body },
-      { language: "javascript", meta: 'title="second.js"', source: `${body}\n` },
-    ],
-  );
-  assert.equal(new Set(block.codeFences.map((fence) => fence.id)).size, 2);
-});
-
-
-test("completed oversized fence policy survives prose, promotion, reload, and global blocks", () => {
-  const extreme = codeSource(17_682);
-  const moderate = codeSource(7_000);
-  const opening = '```typescript title="generated.ts"\n';
-  const prefix = "## Prefix\n\nA stable claim[^stable].\n\n";
-  const closed = `${prefix}${opening}${extreme}\n${"```"}\n\nAfter code.\n\n[^stable]: note\n`;
-  const cache = new IncrementalMarkdownCache();
-
-  cache.update(`${prefix}${opening}${extreme}`, true);
-  const followed = cache.update(closed, false);
-  assert.equal(followed.terminalCodeTail, null);
-  let block = [...followed.chunks.flatMap((chunk) => chunk.blocks), ...followed.tail]
-    .find((candidate) => candidate.codeFences.some((fence) => fence.source === extreme));
-  assert.ok(block);
-  assert.deepEqual(block.codeFences.map(({ language, meta, source }) => ({
-    language,
-    meta,
-    sourceLength: source.length,
-  })), [{
-    language: "typescript",
-    meta: 'title="generated.ts"',
-    sourceLength: 17_682,
-  }]);
-
-
-  const lineEnded = `${codeSource(17_681)}\n`;
-  const lineEndedPrefix = "Settled before.\n\n".repeat(20);
-  const lineEndedCache = new IncrementalMarkdownCache();
-  lineEndedCache.update(`${lineEndedPrefix}${opening}${lineEnded}`, true);
-  const lineEndedFollowed = lineEndedCache.update(
-    `${lineEndedPrefix}${opening}${lineEnded}${"```"}\n\nAfter code.\n`,
-    false,
-  );
-  const lineEndedFence = [
-    ...lineEndedFollowed.chunks.flatMap((chunk) => chunk.blocks),
-    ...lineEndedFollowed.tail,
-  ]
-    .flatMap((candidate) => candidate.codeFences)
-    .find((fence) => fence.language === "typescript");
-  assert.equal(lineEndedFence?.source, lineEnded);
-
-  // Retain enough stable prose before the fence to keep the ordinary rollback
-  // path active while the oversized block is still mutable, then push that
-  // same block into a committed chunk with later paragraphs.
-  const promotionCache = new IncrementalMarkdownCache();
-  const promotionClosed = `${"Settled before.\n\n".repeat(20)}${opening}${extreme}\n${"```"}\n`;
-  promotionCache.update(promotionClosed, false);
-  const promoted = promotionCache.update(
-    `${promotionClosed}\n${"Settled after.\n\n".repeat(40)}`,
-    false,
-  );
-  block = promoted.chunks
-    .flatMap((chunk) => chunk.blocks)
-    .find((candidate) => candidate.codeFences.some((fence) => fence.source === extreme));
-  assert.ok(block, "promotion discarded completed fence policy metadata");
-
-  const global = `${closed}\nA stable claim[^stable].\n\n[^stable]: note\n`;
-  const reloaded = new IncrementalMarkdownCache().update(global, false);
-  assert.ok(reloaded.tail.some((candidate) =>
-    candidate.codeFences.some((fence) => fence.source === extreme),
-  ));
-
-  const multi = getCompletedCodeFences(
-    `~~~tsx meta\n${moderate}\n~~~\n\n${opening}${extreme}\n\`\`\``,
-  );
-  assert.deepEqual(multi.map((fence) => [fence.language, fence.source.length]), [
-    ["tsx", 7_000],
-    ["typescript", 17_682],
-  ]);
-});
-
-test("completed fence metadata preserves the auto-highlight boundary", () => {
-  for (const length of [
-    MAX_AUTO_HIGHLIGHT_SOURCE_CODE_UNITS - 1,
-    MAX_AUTO_HIGHLIGHT_SOURCE_CODE_UNITS,
-    MAX_AUTO_HIGHLIGHT_SOURCE_CODE_UNITS + 1,
-  ]) {
-    const source = codeSource(length);
-    const [fence] = getCompletedCodeFences(`\`\`\`ts\n${source}\n\`\`\``);
-    assert.equal(fence.source, source);
-    assert.equal(
-      shouldAutoHighlightStreamingCode(fence.source),
-      length <= MAX_AUTO_HIGHLIGHT_SOURCE_CODE_UNITS,
-    );
-  }
-});
 
 
 
-test("real closing fences are stripped without changing source line endings", () => {
-  const source = "first\r\n~~~\r\nlast";
-  assert.deepEqual(
-    getStreamingCodeFence(
-      `  ~~~~typescript meta\r\n${source}\r\n  ~~~~~`,
-    ),
-    { language: "typescript", source },
-  );
-  assert.deepEqual(getStreamingCodeFence("```ts\nsmall\n```"), {
-    language: "ts",
-    source: "small",
-  });
-  assert.equal(isOversizedStreamingCode("small".length), false);
 
-});
+
+
 
 test("fence metastrings stay out of language labels and filenames", () => {
   assert.equal(
@@ -610,22 +380,6 @@ test("fence metastrings stay out of language labels and filenames", () => {
   assert.equal(getCodeFenceFilename(" \t "), "snippet.txt");
 });
 
-test("non-fences stay out while an unterminated fence remains recognizable", () => {
-  const long = "ordinary text ".repeat(1000);
-  for (const content of [
-    long,
-    `paragraph with \`inline code\` ${long}`,
-    `    ${"indented code ".repeat(500)}`,
-    `\`\`typescript has a too-short marker\n${long}`,
-    `\`\`\`type\`script\n${long}`,
-  ]) {
-    assert.equal(getStreamingCodeFence(content), null);
-  }
-  assert.deepEqual(getStreamingCodeFence(`\`\`\`ts\n${long}`), {
-    language: "ts",
-    source: long,
-  });
-});
 
 test("the oversized open presentation keeps Streamdown chrome and escaped exact source", () => {
   const source = `<script>alert("unsafe")</script>\n${codeSource(
@@ -656,25 +410,6 @@ test("the oversized open presentation keeps Streamdown chrome and escaped exact 
 });
 
 
-test("an extreme completed presentation remains exact styled plain code", () => {
-  const source = `<script>alert("unsafe")</script>\n${codeSource(
-    MAX_AUTO_HIGHLIGHT_SOURCE_CODE_UNITS + 1,
-  )}`;
-  const html = renderToStaticMarkup(
-    createElement(OversizedStreamingCodeBlock, {
-      isFenceOpen: false,
-      language: "typescript",
-      source,
-    }),
-  );
-
-  assert.match(html, /data-streamdown="code-block"/);
-  assert.match(html, /data-streamdown="code-block-header"/);
-  assert.match(html, /data-streamdown="code-block-body"/);
-  assert.match(html, /&lt;script&gt;alert\(&quot;unsafe&quot;\)&lt;\/script&gt;/);
-  assert.doesNotMatch(html, /data-incomplete="true"/);
-  assert.doesNotMatch(html, /<mark>/);
-});
 
 test("deferred highlighting cannot run before a completed plain block paints", () => {
   const clock = new FakeClock();

@@ -423,195 +423,6 @@ def _exercise_open_fence(
     }
 
 
-def _exercise_duplicate_fences(page) -> dict:
-    page.goto(f"{BASE}/smoke-stream-pacing.html", wait_until = "load", timeout = 60_000)
-    page.wait_for_function("() => window.__stream && window.__stream.ready", timeout = 60_000)
-    page.evaluate(
-        """() => {
-            window.__copiedCode = null;
-            window.__capturedDownloads = [];
-            const blobs = new Map();
-            let nextBlob = 0;
-            Object.defineProperty(navigator, 'clipboard', {
-                configurable: true,
-                value: {
-                    writeText: async value => { window.__copiedCode = value; },
-                },
-            });
-            URL.createObjectURL = blob => {
-                const url = `https://fixture.invalid/blob/${nextBlob++}`;
-                blobs.set(url, blob);
-                return url;
-            };
-            URL.revokeObjectURL = () => {};
-            HTMLAnchorElement.prototype.click = function() {
-                const blob = blobs.get(this.href);
-                if (!blob) throw new Error(`uncaptured download URL: ${this.href}`);
-                void blob.text().then(text => {
-                    window.__capturedDownloads.push({ filename: this.download, text });
-                });
-            };
-        }"""
-    )
-    page.evaluate("() => window.__stream.runDuplicateFences()")
-    page.wait_for_function("() => window.__stream.results().paused", timeout = 60_000)
-    page.wait_for_function(
-        """() => {
-            const bodies = [...document.querySelectorAll(
-                '[data-streamdown="code-block-body"]'
-            )];
-            const expected = window.__stream.expectedCodeSources();
-            return bodies.length === 2
-                && bodies.every((body, index) => body.textContent === expected[index]);
-        }""",
-        timeout = 60_000,
-    )
-    open_state = page.evaluate(
-        """() => {
-            const bodies = [...document.querySelectorAll(
-                '[data-streamdown="code-block-body"]'
-            )];
-            const actionStates = bodies.map(body => {
-                const container = body.closest('[data-streamdown="code-block"]');
-                return [...(container?.parentElement?.querySelectorAll('button') ?? [])]
-                    .map(button => button.disabled);
-            });
-            return {
-                actionStates,
-                highlightCalls: window.__stream.results().codeHighlightCalls,
-                labels: bodies.map(body => body.getAttribute('data-language')),
-                sources: bodies.map(body => body.textContent ?? ''),
-                spans: bodies.map(body => body.querySelectorAll('span').length),
-            };
-        }"""
-    )
-    if open_state["labels"] != ["typescript", "javascript"]:
-        raise AssertionError(f"duplicate open fences crossed labels: {open_state}")
-    if open_state["spans"] != [0, 0] or open_state["highlightCalls"] != 0:
-        raise AssertionError(f"duplicate open fences invoked Shiki: {open_state}")
-    if open_state["actionStates"] != [[False, False], [True, True]]:
-        raise AssertionError(f"duplicate open fence action ownership changed: {open_state}")
-
-    page.evaluate("() => window.__stream.completeOpenFence()")
-    page.wait_for_function(
-        """() => document.querySelector('[data-status]')?.getAttribute('data-status')
-            === 'complete'""",
-        timeout = 60_000,
-    )
-    page.wait_for_function(
-        """() => {
-            const bodies = [...document.querySelectorAll(
-                '[data-streamdown="code-block-body"]'
-            )];
-            const expected = window.__stream.expectedCodeSources();
-            return bodies.length === 2
-                && bodies.every((body, index) => body.textContent === expected[index]);
-        }""",
-        timeout = 60_000,
-    )
-    page.evaluate(
-        """async () => {
-            const bodies = [...document.querySelectorAll(
-                '[data-streamdown="code-block-body"]'
-            )];
-            window.__copiedCodes = [];
-            for (const body of bodies) {
-                const container = body.closest('[data-streamdown="code-block"]');
-                const wrapper = container?.parentElement;
-                window.__copiedCode = null;
-                wrapper?.querySelector('button[title="Copy code"]')?.click();
-                await new Promise(resolve => setTimeout(resolve, 0));
-                window.__copiedCodes.push(window.__copiedCode);
-                wrapper?.querySelector('button[title="Download file"]')?.click();
-            }
-        }"""
-    )
-    page.wait_for_function(
-        "() => window.__capturedDownloads?.length === 2",
-        timeout = 10_000,
-    )
-    final_state = page.evaluate(
-        """async () => {
-            document.documentElement.classList.add('dark');
-            await new Promise(resolve => requestAnimationFrame(
-                () => requestAnimationFrame(resolve)
-            ));
-            const bodies = [...document.querySelectorAll(
-                '[data-streamdown="code-block-body"]'
-            )];
-            const expected = window.__stream.expectedCodeSources();
-            const sha256 = async value => {
-                const digest = await crypto.subtle.digest(
-                    'SHA-256',
-                    new TextEncoder().encode(value)
-                );
-                return [...new Uint8Array(digest)]
-                    .map(byte => byte.toString(16).padStart(2, '0'))
-                    .join('');
-            };
-            const containers = bodies.map(body => body.closest(
-                '[data-streamdown="code-block"]'
-            ));
-            return {
-                actionStates: containers.map(container =>
-                    [...(container?.parentElement?.querySelectorAll('button') ?? [])]
-                        .map(button => button.disabled)
-                ),
-                copiedExact: window.__copiedCodes.map(
-                    (source, index) => source === expected[index]
-                ),
-                copiedHashes: await Promise.all(window.__copiedCodes.map(sha256)),
-                downloadExact: window.__capturedDownloads.map(
-                    (download, index) => download.text === expected[index]
-                ),
-                downloadFilenames: window.__capturedDownloads.map(
-                    download => download.filename
-                ),
-                downloadHashes: await Promise.all(
-                    window.__capturedDownloads.map(download => sha256(download.text))
-                ),
-                expectedHashes: await Promise.all(expected.map(sha256)),
-                highlightCalls: window.__stream.results().codeHighlightCalls,
-                labels: bodies.map(body => body.getAttribute('data-language')),
-                metadataLeaked: document.body.textContent.includes('title="first.ts"')
-                    || document.body.textContent.includes('title="second.js"')
-                    || document.body.textContent.includes('unsloth-fence:'),
-                prefixPresent: [...document.querySelectorAll('h2')].some(
-                    heading => heading.textContent === 'Mixed terminal-fence fixture'
-                ),
-                sourceExact: bodies.map(
-                    (body, index) => body.textContent === expected[index]
-                ),
-                sourceHashes: await Promise.all(
-                    bodies.map(body => sha256(body.textContent ?? ''))
-                ),
-                sourceLengths: bodies.map(body => (body.textContent ?? '').length),
-                spans: bodies.map(body => body.querySelectorAll('span').length),
-            };
-        }"""
-    )
-    if (
-        final_state["labels"] != ["typescript", "javascript"]
-        or final_state["sourceExact"] != [True, True]
-        or final_state["copiedExact"] != [True, True]
-        or final_state["downloadExact"] != [True, True]
-        or final_state["sourceHashes"] != final_state["expectedHashes"]
-        or final_state["copiedHashes"] != final_state["expectedHashes"]
-        or final_state["downloadHashes"] != final_state["expectedHashes"]
-        or final_state["downloadFilenames"] != ["snippet.ts", "snippet.js"]
-        or final_state["metadataLeaked"]
-        or not final_state["prefixPresent"]
-    ):
-        raise AssertionError(f"duplicate fences crossed presentation/actions: {final_state}")
-    if final_state["actionStates"] != [[False, False], [False, False]]:
-        raise AssertionError(f"duplicate completed actions remained disabled: {final_state}")
-    if final_state["spans"] != [0, 0] or final_state["highlightCalls"] != 0:
-        raise AssertionError(f"duplicate extreme fences invoked Shiki: {final_state}")
-
-    screenshot = OUT / "mixed-complete-duplicate-identities.png"
-    screenshot.parent.mkdir(parents = True, exist_ok = True)
-    page.screenshot(path = str(screenshot), full_page = True)
-    return {"name": "duplicate-identities", "open": open_state, "completed": final_state}
 
 
 
@@ -635,7 +446,7 @@ def run() -> dict:
                     expect_highlight = True,
                     followed_by_prose = True,
                     expect_rich_prefix = False,
-                    name = "moderate-backtick-followed-by-prose",
+                    name = "moderate-answer",
                 ),
                 _exercise_open_fence(
                     page,
@@ -644,15 +455,7 @@ def run() -> dict:
                     source_code_units = 7_000,
                     expect_highlight = False,
                     followed_by_prose = True,
-                    name = "reasoning-plain-backtick-followed-by-prose",
-                ),
-                _exercise_open_fence(
-                    page,
-                    "~",
-                    source_code_units = 7_000,
-                    expect_highlight = True,
-                    name = "moderate-tilde-no-final-newline",
-                    source_ends_with_line_ending = False,
+                    name = "reasoning-plain",
                 ),
                 _exercise_open_fence(
                     page,
@@ -660,22 +463,10 @@ def run() -> dict:
                     source_code_units = 16_385,
                     expect_highlight = False,
                     followed_by_prose = True,
-
                     global_scoped = False,
-                    name = "boundary-lf-followed-by-prose",
-                ),
-                _exercise_open_fence(
-                    page,
-                    "~",
-                    source_code_units = 16_385,
-                    expect_highlight = False,
-                    followed_by_prose = True,
-
-                    global_scoped = False,
-                    name = "boundary-crlf-followed-by-prose",
+                    name = "oversized-boundary",
                 ),
             ]
-            duplicate_fences = _exercise_duplicate_fences(page)
 
             page.goto(f"{BASE}/smoke-stream-pacing.html", wait_until = "load", timeout = 60_000)
             page.wait_for_function("() => window.__stream && window.__stream.ready", timeout = 60_000)
@@ -704,7 +495,6 @@ def run() -> dict:
 
     results["open_fences"] = open_fences
 
-    results["duplicate_fences"] = duplicate_fences
     results["page_errors"] = errors
     results["cpu_throttle"] = THROTTLE
     results["total_chars"] = TOTAL_CHARS

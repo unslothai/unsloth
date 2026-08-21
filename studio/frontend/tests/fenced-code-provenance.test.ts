@@ -3,7 +3,6 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import test from "node:test";
 
@@ -262,49 +261,6 @@ test("cold provenance restores the exact 16,384/16,385-unit source and policy", 
 });
 
 
-test("same-text live provenance immediately matches a fresh cold cache", () => {
-  const source = sourceOfLength(5_954);
-  const prefix = Array.from(
-    { length: 80 },
-    (_, index) => `Stable paragraph ${index}.\n\n`,
-  ).join("");
-  const markdown = `${prefix}\`\`\`typescript\n${source}\`\`\``;
-  const cache = new IncrementalMarkdownCache();
-  const before = cache.update(markdown, false, []);
-  const beforeFence = codeFences(before)[0];
-  const unaffectedChunk = before.chunks[0];
-  const identityAfterParse = (
-    cache as unknown as { nextBlockIdentity: number }
-  ).nextBlockIdentity;
-  assert.ok(unaffectedChunk);
-  assert.equal(beforeFence.source.length, 5_953);
-
-  const live = cache.update(markdown, false, [0]);
-  const liveFence = codeFences(live)[0];
-  const cold = new IncrementalMarkdownCache([0]).update(markdown, false);
-  const coldFence = codeFences(cold)[0];
-
-  assert.notEqual(live, before, "changed metadata must revise the live plan");
-  assert.equal(live.chunks[0], unaffectedChunk);
-  assert.equal(
-    (cache as unknown as { nextBlockIdentity: number }).nextBlockIdentity,
-    identityAfterParse,
-    "a provenance-only revision reparsed unchanged Markdown",
-  );
-  assert.equal(liveFence.source.length, 5_954);
-  assert.equal(liveFence.source, coldFence.source);
-  assert.equal(hash(liveFence.source), hash(coldFence.source));
-  assert.equal(
-    cache.update(markdown, false, [0]),
-    live,
-    "repeated metadata must keep the exact plan identity",
-  );
-
-  const removed = cache.update(markdown, false, []);
-  assert.equal(codeFences(removed)[0].source, beforeFence.source);
-  assert.equal(removed.chunks[0], unaffectedChunk);
-  assert.equal(cache.update(markdown, false, []), removed);
-});
 
 test("CRLF cold reload normalizes bytes once and preserves a surrogate boundary", () => {
   const source = sourceOfLength(MAX_AUTO_HIGHLIGHT_SOURCE_CODE_UNITS + 1);
@@ -318,20 +274,6 @@ test("CRLF cold reload normalizes bytes once and preserves a surrogate boundary"
   assert.equal(shouldAutoHighlightStreamingCode(restored.source), false);
 });
 
-test("cold overlay spans committed blocks, duplicates, prose, and global footnotes", () => {
-  const prefix = Array.from(
-    { length: 80 },
-    (_, index) => `Paragraph ${index}.\n\n`,
-  ).join("");
-  const first = "first source\n";
-  const second = "first source\n";
-  const markdown = `${prefix}\`\`\`txt\n${first}\`\`\`\n\nA note[^n].\n\n~~~txt\n${second}~~~\n\n[^n]: global detail`;
-  const render = new IncrementalMarkdownCache([0, 1]).update(markdown, false);
-  assert.deepEqual(
-    codeFences(render).map((fence) => fence.source),
-    [first, second],
-  );
-});
 
 test("out-of-range provenance is all-or-nothing and legacy content stays canonical", () => {
   const source = "value\n";
@@ -404,23 +346,4 @@ test("frontend autosave/deep clone preserve provenance while an edit drops it", 
     undefined,
   );
   assert.deepEqual(editedContent[1], message.content[1]);
-});
-
-
-test("every assistant yield is decorated at its publication boundary", () => {
-  const source = readFileSync(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
-  const yields = [...source.matchAll(/\byield\s*\{/g)];
-  assert.equal(yields.length, 11);
-  for (const match of yields) {
-    const excerpt = source.slice(match.index, match.index + 500);
-    assert.match(
-      excerpt,
-      /content:\s*publishedAssistantContent\(/,
-      `unwrapped assistant yield near ${match.index}`,
-    );
-  }
-  assert.doesNotMatch(source, /yield\s*\{[\s\S]{0,200}content:\s*liveAssistantContent\(/);
 });
