@@ -4770,6 +4770,8 @@ export function createOpenAIStreamAdapter(
       let generationRunId: string | null = null;
       let generationSeq = 0;
       let generationStatus: ChatGenerationStatus | null = null;
+      let generationFirstChunkAt: number | undefined;
+      let generationChunkCount = 0;
       let generationStopRequested = false;
       const generationCustom = () =>
         generationRunId
@@ -4777,6 +4779,8 @@ export function createOpenAIStreamAdapter(
               generationRunId,
               generationSeq,
               generationStatus,
+              generationFirstChunkAt,
+              generationChunkCount,
               generationSettled: generationIsSettled(
                 generationStatus,
                 generationSeq,
@@ -5851,6 +5855,8 @@ export function createOpenAIStreamAdapter(
                 if (update.event) {
                   generationSeq = Math.max(generationSeq, update.event.seq);
                   if (update.event.type === "chunk") {
+                    generationChunkCount += 1;
+                    generationFirstChunkAt ??= update.event.createdAt;
                     yield update.event.payload as OpenAIChatChunk;
                   }
                 }

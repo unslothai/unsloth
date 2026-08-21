@@ -91,6 +91,7 @@ import {
   releasePreStreamRunReservation,
 } from "./utils/pre-stream-run-reservation";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
+import type { OpenAIChatChunk } from "./types/api";
 import {
   budgetImpliesTruncation,
   restoredAssistantStatus,
@@ -103,6 +104,7 @@ import {
   shouldPreserveGenerationMetadata,
   subscribeGenerationRecoveryTriggers,
 } from "./utils/chat-generation-recovery";
+import { mergeContextTruncation } from "./utils/context-truncation";
 import {
   extractDeltaText,
   parseAssistantContent,
@@ -788,7 +790,8 @@ function scheduleGenerationRecovery(
       Number.isFinite(metadata.generationFirstChunkAt)
         ? metadata.generationFirstChunkAt
         : undefined;
-    let totalChunks = 0;
+    let totalChunks = Number(metadata.generationChunkCount ?? 0);
+    if (!Number.isSafeInteger(totalChunks) || totalChunks < 0) totalChunks = 0;
     let currentMetadata = { ...metadata };
     const serverCancel = () => {
       void cancelChatGenerationRun(runId).catch(() => {});
@@ -820,6 +823,7 @@ function scheduleGenerationRecovery(
         lastEventSeq: run.lastEventSeq,
         lengthLimited,
         firstChunkAt,
+        totalChunks,
       });
       if (nextMetadata.generationSettled === true) {
         nextMetadata = recoveredGenerationFinalMetadata({
@@ -926,9 +930,19 @@ function scheduleGenerationRecovery(
                   reasoning_content?: unknown;
                 };
               }>;
+              context_truncated?: OpenAIChatChunk["context_truncated"];
             };
             totalChunks += 1;
             firstChunkAt ??= update.event.createdAt;
+            if (chunk.context_truncated) {
+              currentMetadata = {
+                ...currentMetadata,
+                contextTruncation: mergeContextTruncation(
+                  currentMetadata.contextTruncation as OpenAIChatChunk["context_truncated"],
+                  chunk.context_truncated,
+                ),
+              };
+            }
             if (chunk.usage) recoveryUsage = chunk.usage;
             if (chunk.timings) recoveryTimings = chunk.timings;
             if (typeof chunk.usage?.completion_tokens === "number") {

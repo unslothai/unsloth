@@ -158,8 +158,18 @@ export function generationRecoveryMetadata(options: {
   lastEventSeq: number;
   lengthLimited: boolean;
   firstChunkAt?: number;
+  totalChunks?: number;
 }): Record<string, unknown> {
-  const { current, runId, status, cursor, lastEventSeq, lengthLimited, firstChunkAt } = options;
+  const {
+    current,
+    runId,
+    status,
+    cursor,
+    lastEventSeq,
+    lengthLimited,
+    firstChunkAt,
+    totalChunks,
+  } = options;
   const settled = generationIsSettled(status, cursor, lastEventSeq);
   const next: Record<string, unknown> = {
     ...current,
@@ -182,6 +192,9 @@ export function generationRecoveryMetadata(options: {
   }
   if (firstChunkAt !== undefined) {
     next.generationFirstChunkAt = firstChunkAt;
+  }
+  if (totalChunks !== undefined) {
+    next.generationChunkCount = totalChunks;
   }
   return next;
 }

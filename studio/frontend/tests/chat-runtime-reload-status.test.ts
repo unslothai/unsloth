@@ -211,3 +211,21 @@ test("reload, wake, and stale-tab recovery stays monotonic and truthful", () => 
     [false, true, true, true, true],
   );
 });
+
+test("recovery persists the replay prefix statistics it has applied", () => {
+  const metadata = generationRecoveryMetadata({
+    current: {
+      generationRunId: "run-1",
+      generationChunkCount: 4,
+    },
+    runId: "run-1",
+    status: "running",
+    cursor: 7,
+    lastEventSeq: 9,
+    lengthLimited: false,
+    firstChunkAt: 220,
+    totalChunks: 6,
+  });
+  assert.equal(metadata.generationFirstChunkAt, 220);
+  assert.equal(metadata.generationChunkCount, 6);
+});

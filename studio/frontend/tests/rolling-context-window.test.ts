@@ -30,6 +30,17 @@ test("the transport preserves standard chunks with context metadata", () => {
   assert.match(adapter, /contextTruncation = mergeContextTruncation\(/);
 });
 
+test("durable replay persists context-truncation metadata", () => {
+  const runtimeProvider = readFileSync(
+    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(runtimeProvider, /contextTruncation: mergeContextTruncation\(/);
+  assert.match(runtimeProvider, /generationChunkCount/);
+  assert.match(adapter, /generationFirstChunkAt/);
+  assert.match(adapter, /generationChunkCount \+= 1/);
+});
+
 test("the compaction notice follows the boundary, not the accumulated drops", () => {
   // A tool-heavy turn reports 12 drops while the boundary moved to 4. Recording 12 as
   // the high-water mark means the next two real advances, to 8 and to 10, are silent.
