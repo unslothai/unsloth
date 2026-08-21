@@ -1015,7 +1015,13 @@ DENOISER_FILE = "flux1-dev-Q4_K_M.gguf"
 
 
 def _arch_header(architecture: str) -> bytes:
-    """A minimal GGUF prefix carrying just ``general.architecture``."""
+    """A minimal GGUF prefix carrying just ``general.architecture``.
+
+    Hand-rolled rather than written with ``GGUFWriter`` like the size-pairing fixtures above, and
+    deliberately: that probe reads the TENSOR TABLE, so writing one with the shipped writer is
+    what makes a format change break the test. This one reads a single KV pair, which is the
+    same thing ``tests/test_cached_gguf_routes.py`` writes by hand for the listing-side gate, so
+    both ends of this feature are pinned against the same bytes."""
     import struct
 
     def string(value: str) -> bytes:
@@ -1057,7 +1063,7 @@ def test_a_runnable_media_pick_in_the_same_repo_still_loads(monkeypatch):
     diffusion_compat.assert_pick_is_not_speech(CSM_REPO, DENOISER_FILE)
 
 
-def test_an_unreadable_header_fails_open(monkeypatch):
+def test_an_unreadable_speech_header_fails_open(monkeypatch):
     """Fail-open throughout, like the size pairing beside it: a false positive would refuse a
     pick that works, which is strictly worse than the download this saves."""
     _stub_range_reads(monkeypatch, {}, status = 200)
@@ -1132,3 +1138,64 @@ def test_a_checkpoint_that_lands_after_a_miss_is_probed_again(monkeypatch, tmp_p
     seen["path"] = str(landed)
 
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+
+
+def _cache_entry(tmp_path, revision, arch):
+    """A GGUF sitting in an HF cache snapshot dir, so ``_snapshot_revision`` can read its commit."""
+    snapshot = tmp_path / "models--someone--mixed-media-GGUF" / "snapshots" / revision
+    snapshot.mkdir(parents = True, exist_ok = True)
+    path = snapshot / CSM_FILE
+    path.write_bytes(_arch_header(arch))
+    return str(path)
+
+
+def test_a_republished_gguf_is_not_refused_from_the_stale_cached_copy(monkeypatch, tmp_path):
+    """``try_to_load_from_cache`` resolves the LOCAL refs/main, so a repo that republished this
+    filename as a runnable checkpoint would otherwise be refused off the csm bytes still on disk,
+    while the loader's own hf_hub_download refreshes to the new ones and loads them."""
+    cached = _cache_entry(tmp_path, "oldsha", "llama-csm")
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: cached)
+    monkeypatch.setattr(diffusion_compat, "_hub_revision", lambda *a, **k: "newsha")
+    # The Hub now serves a denoiser at the same name.
+    _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("flux")})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is None
+
+
+def test_a_cached_gguf_at_the_current_revision_is_still_refused(monkeypatch, tmp_path):
+    """The revalidation must not become an escape hatch: same commit, same verdict."""
+    cached = _cache_entry(tmp_path, "samesha", "llama-csm")
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: cached)
+    monkeypatch.setattr(diffusion_compat, "_hub_revision", lambda *a, **k: "samesha")
+    _stub_range_reads(monkeypatch, {})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+
+
+def test_a_revision_check_that_cannot_run_keeps_the_refusal(monkeypatch, tmp_path):
+    """An offline or erroring host must leave today's verdict alone rather than open the gate."""
+    cached = _cache_entry(tmp_path, "oldsha", "llama-csm")
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: cached)
+    monkeypatch.setattr(diffusion_compat, "_hub_revision", lambda *a, **k: None)
+    _stub_range_reads(monkeypatch, {})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+
+
+def test_an_on_device_speech_checkpoint_is_never_revalidated(monkeypatch, tmp_path):
+    """An On Device file is the one the loader opens, so there is no revision to be behind and
+    no reason to spend a Hub round trip on it."""
+    on_device = tmp_path / CSM_FILE
+    on_device.write_bytes(_arch_header("llama-csm"))
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: str(on_device))
+    asked: list = []
+
+    def _never(*a, **k):
+        asked.append(a)
+        return "newsha"
+
+    monkeypatch.setattr(diffusion_compat, "_hub_revision", _never)
+    _stub_range_reads(monkeypatch, {})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert asked == []

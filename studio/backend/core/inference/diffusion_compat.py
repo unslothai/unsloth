@@ -370,6 +370,46 @@ _SPEECH_ARCH_CACHE: dict[tuple[str, str, str, Optional[tuple]], Optional[str]] =
 _SPEECH_ARCH_CACHE_MAX = 256
 
 
+def _arch_from_prefix(prefix: bytes, gguf_filename: str) -> Optional[str]:
+    """``general.architecture`` out of a header prefix, or None when it says nothing."""
+    # Magic, version and the two counts: anything shorter is not a GGUF at all.
+    if len(prefix) < 24:
+        return None
+    try:
+        import tempfile
+
+        from utils.models.gguf_metadata import read_gguf_architecture
+        with tempfile.TemporaryDirectory(prefix = "unsloth-speech-probe-") as probe_dir:
+            # Named after the real file, as the chat-side probe is: a GGUF declaring no
+            # architecture is judged by its name, and a temp name would lose that.
+            probe_path = os.path.join(probe_dir, os.path.basename(gguf_filename))
+            with open(probe_path, "wb") as handle:
+                handle.write(prefix)
+            return (read_gguf_architecture(probe_path) or "").strip().lower() or None
+    except Exception:  # noqa: BLE001 -- a probe that failed is not a verdict
+        return None
+
+
+def _revalidated_speech_arch(
+    repo_id: str, gguf_filename: str, hf_token: Optional[str], arch: Optional[str]
+) -> Optional[str]:
+    """*arch* again, re-read off the Hub when it came from a cached copy the Hub has moved past.
+
+    ``try_to_load_from_cache`` resolves the LOCAL ``refs/main``, so a checkpoint republished at
+    the same filename would otherwise refuse a pick the loader's own ``hf_hub_download`` refreshes
+    into something runnable. Runs only on a would-be refusal, like the size pairing's
+    revalidation: an unknown revision keeps *arch*, and a live header we cannot read is no
+    opinion. A pick with no cached copy has no revision to be behind, so it is left alone."""
+    cached = _snapshot_revision(_local_gguf_path(repo_id, gguf_filename))
+    if cached is None:
+        return arch
+    token = (hf_token or "").strip() or None
+    live = _hub_revision(repo_id, gguf_filename, token)
+    if live is None or live == cached:
+        return arch
+    return _arch_from_prefix(_read_gguf_header(repo_id, gguf_filename, token), gguf_filename)
+
+
 def _speech_probe_architecture(
     repo_id: str, gguf_filename: str, hf_token: Optional[str]
 ) -> Optional[str]:
@@ -388,25 +428,10 @@ def _speech_probe_architecture(
     with _CACHE_LOCK:
         if key in _SPEECH_ARCH_CACHE:
             return _SPEECH_ARCH_CACHE[key]
-    arch: Optional[str] = None
-    try:
-        prefix = (
-            _read_local_header(local) if local else _read_gguf_header(repo_id, gguf_filename, token)
-        )
-        # Magic, version and the two counts: anything shorter is not a GGUF at all.
-        if len(prefix) >= 24:
-            import tempfile
-
-            from utils.models.gguf_metadata import read_gguf_architecture
-            with tempfile.TemporaryDirectory(prefix = "unsloth-speech-probe-") as probe_dir:
-                # Named after the real file, as the chat-side probe is: a GGUF declaring no
-                # architecture is judged by its name, and a temp name would lose that.
-                probe_path = os.path.join(probe_dir, os.path.basename(gguf_filename))
-                with open(probe_path, "wb") as handle:
-                    handle.write(prefix)
-                arch = (read_gguf_architecture(probe_path) or "").strip().lower() or None
-    except Exception:  # noqa: BLE001 -- a probe that failed is not a verdict
-        arch = None
+    prefix = (
+        _read_local_header(local) if local else _read_gguf_header(repo_id, gguf_filename, token)
+    )
+    arch = _arch_from_prefix(prefix, gguf_filename)
     with _CACHE_LOCK:
         if len(_SPEECH_ARCH_CACHE) >= _SPEECH_ARCH_CACHE_MAX:
             _SPEECH_ARCH_CACHE.clear()
@@ -437,6 +462,9 @@ def speech_pick_refusal(
     if not repo_id or not gguf_filename or not gguf_filename.lower().endswith(".gguf"):
         return None
     arch = _speech_probe_architecture(repo_id, gguf_filename, hf_token)
+    if arch is not None and arch in _SPEECH_GGUF_ARCHS:
+        # Only now, so the Hub is asked once per would-be refusal rather than once per pick.
+        arch = _revalidated_speech_arch(repo_id, gguf_filename, hf_token, arch)
     if arch is not None and arch in _SPEECH_GGUF_ARCHS:
         return (
             f"'{os.path.basename(gguf_filename)}' is a {arch} speech checkpoint, which no image "
