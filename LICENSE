@@ -193,8 +193,8 @@
    and studio/LICENSE.AGPL-3.0.
    The unsloth_cli and studio package trees are included in the base Python wheel;
    the full Studio server dependency set is provided by the optional studio extra.
-   File-specific notices and the nearest nested LICENSE file take precedence over
-   this path-level summary, including bundled third-party components.
+   Applicable file-specific and nested license or notice files govern their
+   covered components, including bundled third-party components.
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
