@@ -60,7 +60,11 @@ _REQUIREMENT = re.compile(
 # mlx-ci.yml:439 already uses. Matching the literal text `pip install` missed both.
 _PIP_INSTALL = re.compile(r"""(?:^|[\s"'/])pip[0-9.]*["']?\s+install(?:\s|$)""")
 
-_UPPER = re.compile(r"(?P<op><=|<)(?P<version>[0-9][0-9.]*)")
+# The whole version token, suffix included. Capturing only the numeric prefix silently
+# turned `<4.post1` into `<4`, and a post-release or local-version bound is LOOSER than
+# its numeric prefix: `<4.post1` admits 4.0.
+_UPPER = re.compile(r"(?P<op><=|<)(?P<version>[^,\s'\"]+)")
+_NUMERIC = re.compile(r"^[0-9][0-9.]*$")
 _EXACT = re.compile(r"===?(?P<version>[0-9][0-9.]*)")
 _COMPATIBLE = re.compile(r"~=(?P<version>[0-9][0-9.]*)")
 
@@ -145,13 +149,22 @@ def _specs_for(package: str) -> list[tuple[Path, int, str]]:
     return hits
 
 
+def _release(raw: str) -> tuple[int, ...]:
+    """Release segment as ints, every component kept.
+
+    `~=` semantics depend on how many components were written -- `~=3.0` implies <4
+    and `~=3.0.0` implies <3.1 -- so it needs this rather than the normalized form.
+    """
+    return tuple(int(part) for part in raw.strip(".").split(".") if part.isdigit())
+
+
 def _version(raw: str) -> tuple[int, ...]:
-    """Version as ints, trailing zeros dropped so 4.0 and 4 compare equal.
+    """Release with trailing zeros dropped, so 4.0 and 4 compare equal.
 
     Without this, `<4.0` was rejected against a boundary of `(4,)`: the tuples differ
     even though the two bounds are the same release.
     """
-    parts = [int(part) for part in raw.strip(".").split(".") if part.isdigit()]
+    parts = list(_release(raw))
     while len(parts) > 1 and parts[-1] == 0:
         parts.pop()
     return tuple(parts)
@@ -175,7 +188,7 @@ def _excludes(spec: str, major: tuple[int, ...]) -> bool:
         if pinned and pinned < major:
             return True
     for match in _COMPATIBLE.finditer(spec):
-        release = _version(match.group("version"))
+        release = _release(match.group("version"))
         # ~=X.Y means >=X.Y,<X+1; ~=X.Y.Z means >=X.Y.Z,<X.Y+1.
         if len(release) == 2:
             implied = (release[0] + 1,)
@@ -186,7 +199,12 @@ def _excludes(spec: str, major: tuple[int, ...]) -> bool:
         if implied <= major:
             return True
     for match in _UPPER.finditer(spec):
-        bound = _version(match.group("version"))
+        raw = match.group("version")
+        # Fail closed on anything that is not a plain release. A suffix can make the
+        # bound looser than its digits suggest, and guessing is how `<4.post1` passed.
+        if not _NUMERIC.match(raw):
+            continue
+        bound = _version(raw)
         if not bound:
             continue
         if bound <= major if match.group("op") == "<" else bound < major:
@@ -328,3 +346,26 @@ def test_equivalent_bounds_compare_equal() -> None:
     assert _excludes(">=1.50,<4.0.0", GUARDED["openai"])
     # <4.0.1 still admits 4.0, so it does not exclude the 4 series.
     assert not _excludes(">=1.50,<4.0.1", GUARDED["openai"])
+
+
+def test_a_bound_with_a_suffix_is_not_read_as_its_digits() -> None:
+    """`<4.post1` admits 4.0, so it must not be read as `<4`.
+
+    The regex used to capture only the numeric prefix, which quietly turned a looser
+    bound into a passing one. Anything that is not a plain release now fails closed.
+    """
+    assert not _excludes(">=1.50,<4.post1", GUARDED["openai"])
+    assert not _excludes(">=1.50,<4+local", GUARDED["openai"])
+    assert _excludes(">=1.50,<4", GUARDED["openai"])
+
+
+def test_a_compatible_pin_keeps_its_written_precision() -> None:
+    """`~=3.0` implies <4 and `~=3.0.0` implies <3.1, so the component count matters.
+
+    Normalizing trailing zeros before this branch collapsed both to `(3,)` and made the
+    guard reject two valid pins.
+    """
+    assert _excludes("~=3.0", GUARDED["openai"])
+    assert _excludes("~=3.0.0", GUARDED["openai"])
+    assert _release("3.0.0") == (3, 0, 0)
+    assert _version("3.0.0") == (3,)
