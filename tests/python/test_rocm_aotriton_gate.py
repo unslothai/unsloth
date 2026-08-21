@@ -306,9 +306,7 @@ def test_the_drop_in_directory_is_redirectable_end_to_end(tmp_path):
     write_tmp.mkdir()
     remove_tmp = tmp_path / "remove"
     remove_tmp.mkdir()
-    written, _ = _run_persist_helper(
-        write_tmp, "false", env = {"UNSLOTH_PROFILE_D": str(profile_d)}
-    )
+    written, _ = _run_persist_helper(write_tmp, "false", env = {"UNSLOTH_PROFILE_D": str(profile_d)})
     dropin = profile_d / "unsloth-rocm-aotriton.sh"
     assert written == "1"
     assert dropin.exists(), "install.sh must honour UNSLOTH_PROFILE_D"
