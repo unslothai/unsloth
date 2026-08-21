@@ -3739,6 +3739,55 @@ def test_tool_loop_refits_each_preflight_path_after_context_shrinking_respawn(mo
         assert len(payloads[1]["messages"]) == 1
 
 
+def test_tool_loop_compacts_text_history_around_latest_audio(monkeypatch):
+    """Unpriced media must not disable compaction that the text alone requires."""
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [[_sse({"content": "OK"}), _done()]], payloads)
+    backend._effective_context_length = 100
+    counted: list[list[dict]] = []
+
+    def count_tokens(candidate, *_args, **_kwargs):
+        counted.append(copy.deepcopy(candidate))
+        return sum(len(str(message.get("content", ""))) for message in candidate)
+
+    monkeypatch.setattr(backend, "count_chat_tokens", count_tokens)
+    audio_turn = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "latest"},
+            {
+                "type": "input_audio",
+                "input_audio": {"data": "AAAA", "format": "wav"},
+            },
+        ],
+    }
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": "u" * 40},
+                {"role": "assistant", "content": "a" * 40},
+                audio_turn,
+            ],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tokens = 20,
+            max_tool_iterations = 1,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    notices = [event for event in events if event.get("type") == "context_truncated"]
+    assert counted
+    assert all(
+        part.get("type") != "input_audio"
+        for candidate in counted
+        for message in candidate
+        for part in message.get("content", [])
+        if isinstance(part, dict)
+    )
+    assert [notice["dropped_messages"] for notice in notices] == [2]
+    assert payloads[0]["messages"] == [audio_turn]
+
+
 def test_tool_loop_retries_preflight_when_counting_failed_on_the_dead_server(monkeypatch):
     import httpx
 
