@@ -66,6 +66,21 @@ from tests.studio.studiobench.analysis import parity as P  # noqa: E402
 # audited rather than inherited.
 UNSTABLE_ACTIONS = frozenset(P.UNSTABLE_ACTIONS)
 
+#: THE RUN'S OWN DECLARATION that an arm mounts a window, as `__main__.py` records it: the gate row
+#: `windowed_readiness:{arm}` written when `--windowed-arm` names that side, and `readiness.mode` on
+#: every cell row. Matched as literal strings rather than imported from `runtime/readiness.py`
+#: because this script reads payloads written by other checkouts of the tool, where what has to be
+#: matched is the string in the file and not the constant in this working tree.
+WINDOWED_GATE = "windowed_readiness:"
+MODE_WINDOWED = "windowed"
+
+#: How one action pair is scored. PER PAIR, never per payload: the readiness gate deliberately
+#: permits a payload to hold fully mounted small rungs and windowed large ones, so a payload-wide
+#: decision lets one windowed 100K capture suppress the structural digest on every fully mounted 1K
+#: pair beside it, and an ordinary DOM regression at those rungs is then never looked for.
+WINDOWED = "windowed"
+STRUCTURAL = "structural"
+
 
 def rows(path: Path) -> list[dict]:
     return [
@@ -77,7 +92,20 @@ def arm_of(cell_id: str) -> str:
     return "treatment" if ".treatment." in cell_id else "base"
 
 
-def collect(paths: list[Path]) -> dict:
+def rep_of(cell_id: str) -> str:
+    """The cell WITHOUT its arm, which is what makes a base row and a treatment row a pair.
+
+    THE RUNG IS KEPT. `make_cell_id` writes `r{rung}.{arm}.rep{n}`, and taking only the last
+    segment made `r1K.base.rep0` and `r100K.base.rep0` the same key, so a payload carrying more than
+    one rung silently overwrote one rung's rows with the other's -- and could then pair a 1K base
+    against a 100K treatment. That is also the shape the per-pair mode decision has to see: mixed
+    rungs in one payload are exactly what the windowed readiness gate permits.
+    """
+    parts = cell_id.split(".")
+    return f"{parts[0]}.{parts[-1]}" if len(parts) >= 3 else parts[-1]
+
+
+def collect(paths: list[Path], select: Optional[set] = None) -> dict:
     """{(shard, rep, action): {arm: action row}} plus a tally of what was captured at all.
 
     A row whose parity is missing or failed is KEPT, as the failed capture it is. Dropping it here
@@ -86,6 +114,10 @@ def collect(paths: list[Path]) -> dict:
 
     The WHOLE ROW is carried, not just its digest, because `ran` is part of what the comparison
     means: a matching digest on an action that never ran is not coverage of that action.
+
+    `select`, when given, restricts the result to those pair keys. It is how one payload gets its
+    windowed pairs scored on the visible region and its fully mounted pairs scored structurally in
+    the same invocation, without either report seeing pairs the other one owns.
     """
     out: dict[tuple, dict] = collections.defaultdict(dict)
     attempted = missing = 0
@@ -94,34 +126,125 @@ def collect(paths: list[Path]) -> dict:
         for r in rows(path):
             if r.get("row_type") != "action":
                 continue
+            cid = r.get("cell_id") or ""
+            key = (shard, rep_of(cid), r.get("action"))
+            if select is not None and key not in select:
+                continue
             parity = r.get("parity")
             if isinstance(parity, dict) and parity.get("parity_attempted"):
                 attempted += 1
             else:
                 missing += 1
-            cid = r.get("cell_id") or ""
-            rep = cid.rsplit(".", 1)[-1]
-            out[(shard, rep, r.get("action"))][arm_of(cid)] = r
+            out[key][arm_of(cid)] = r
     return {"pairs": out, "attempted": attempted, "missing": missing}
+
+
+def declared_windowed(paths: list[Path]) -> tuple[dict[str, str], dict[str, str]]:
+    """What the RUN SAID about windowing, per cell and per arm: ({cell_id: why}, {arm: why}).
+
+    The declaration is the fallback for a pair the measurement cannot answer, and only that. It is
+    never allowed to override a capture that did succeed, because the arm named by `--windowed-arm`
+    still mounts its whole thread at the small rungs and those pairs are owed a structural digest.
+    """
+    cells: dict[str, str] = {}
+    arms: dict[str, str] = {}
+    for path in paths:
+        for r in rows(path):
+            kind = r.get("row_type")
+            if kind == "gate":
+                name = str(r.get("name") or "")
+                if name.startswith(WINDOWED_GATE):
+                    arm = name[len(WINDOWED_GATE) :] or "?"
+                    arms[arm] = f"the run declared the {arm} arm windowed (gate row {name})"
+            elif kind == "cell":
+                readiness = r.get("readiness")
+                mode = readiness.get("mode") if isinstance(readiness, dict) else None
+                if mode == MODE_WINDOWED:
+                    cid = str(r.get("cell_id") or "")
+                    cells[cid] = f"cell {cid} was admitted by the WINDOWED readiness gate"
+    return cells, arms
+
+
+def _mount_measured(parity: Optional[dict]) -> bool:
+    """Did this capture actually MEASURE how much of the thread was mounted?
+
+    `thread_total > 0` is part of it. A capture that reports 0 of 0 has not observed a thread at
+    all -- on the real 100K film, 20 of the treatment arm's rows read 0 of 0 after `model_change`
+    took the viewport to nothing -- and `windowed_mount` answers False for it, which would score a
+    declared-windowed arm structurally on the strength of a capture that saw no messages.
+    """
+    if not isinstance(parity, dict) or not parity.get("parity_attempted"):
+        return False
+    mounted, total = parity.get("mounted_messages"), parity.get("thread_total")
+    if not isinstance(mounted, int) or not isinstance(total, int):
+        return False
+    return total > 0
+
+
+def decide_modes(paths: list[Path]) -> dict[tuple, tuple[str, str]]:
+    """{(shard, rep, action): (mode, why)} -- how each action pair is to be scored, and why.
+
+    MEASURED FIRST, DECLARED ONLY AS A FALLBACK.
+
+      measured windowed    either arm's capture says it mounted fewer messages than the thread
+                           holds. This is the reading the tool has always used.
+      measured full        both arms measured their mount and neither is windowing, so the pair is
+                           owed the structural digest whatever the rest of the payload does.
+      neither              no usable mount measurement on this pair -- the slot was missed, or the
+                           parity probe failed, or the capture saw no thread at all -- so the run's
+                           own declaration decides it.
+
+    THE FALLBACK IS THE POINT. A declared windowed run in which every capture failed used to scan
+    clean, `--mode auto` picked the digest, every pair came out NOT_EXERCISED or NOT_COMPARABLE,
+    and `report()` returned 0 because its no-result guard only covered NOT_APPLICABLE. An entirely
+    unmeasured run reported a green structural result.
+    """
+    cells, arms = declared_windowed(paths)
+    decided: dict[tuple, tuple[str, str]] = {}
+    for key, sides in collect(paths)["pairs"].items():
+        for _label, row in sorted(sides.items()):
+            parity = row.get("parity")
+            if P.windowed_mount(parity):
+                decided[key] = (
+                    WINDOWED,
+                    f"{row.get('cell_id')} / {row.get('action')} mounted "
+                    f"{parity.get('mounted_messages')} of {parity.get('thread_total')} messages",
+                )
+                break
+        if key in decided:
+            continue
+        if len(sides) == 2 and all(_mount_measured(r.get("parity")) for r in sides.values()):
+            decided[key] = (STRUCTURAL, "")
+            continue
+        why = ""
+        for _label, row in sorted(sides.items()):
+            cid = str(row.get("cell_id") or "")
+            why = cells.get(cid) or arms.get(arm_of(cid)) or ""
+            if why:
+                break
+        decided[key] = (
+            (
+                WINDOWED,
+                f"DECLARED, not measured: {why}, and this pair carries no usable mount "
+                "measurement on at least one arm",
+            )
+            if why
+            else (STRUCTURAL, "")
+        )
+    return decided
 
 
 def any_windowed(paths: list[Path]) -> Optional[str]:
     """Did either arm of this payload mount a WINDOW of the thread rather than all of it?
 
-    DETECTED, not declared. The alternative is a flag the operator sets, and a flag that is
-    forgotten produces a full page of red that reads as eighteen UI regressions. The capture
-    carries `mounted_messages` and `thread_total`, so the payload answers for itself.
+    Measured from `mounted_messages` and `thread_total` where those exist, and falling back on the
+    run's own declaration for pairs where they do not. Detection alone was not enough: it answers
+    "no window here" identically for a payload that mounted everything and for one whose captures
+    all failed, and the second of those is an unmeasured run being scored as a fully mounted one.
     """
-    for path in paths:
-        for r in rows(path):
-            if r.get("row_type") != "action":
-                continue
-            parity = r.get("parity")
-            if P.windowed_mount(parity):
-                return (
-                    f"{r.get('cell_id')} / {r.get('action')} mounted "
-                    f"{parity.get('mounted_messages')} of {parity.get('thread_total')} messages"
-                )
+    for _key, (mode, why) in sorted(decide_modes(paths).items()):
+        if mode == WINDOWED:
+            return why
     return None
 
 
@@ -129,14 +252,18 @@ def behaviour_report(
     paths: list[Path],
     label: str,
     windowed: bool = True,
+    select: Optional[set] = None,
 ) -> int:
     """The windowed arm's report: behavioural invariants instead of a structural digest.
 
     Printed with the reason it is being printed, every time. The one way this could mislead is by
     quietly replacing a strict check with a looser one, so the banner says outright which question
     is no longer being asked.
+
+    `select` scores only those pair keys, which is how a payload's windowed pairs are reported here
+    while its fully mounted ones go to the structural digest they are owed.
     """
-    got = collect(paths)
+    got = collect(paths, select)
     results = []
     for (shard, rep, action), sides in sorted(got["pairs"].items()):
         if "base" not in sides or "treatment" not in sides:
@@ -274,16 +401,19 @@ def visible_report(
     paths: list[Path],
     label: str,
     unstable: frozenset[str] = frozenset(),
+    select: Optional[set] = None,
 ) -> int:
     """VISIBLE-REGION PARITY. The verdict the off-screen exemption asks for.
 
     Policy: all changes preserve UI and UX idempotency, except that a difference may be accepted
     deliberately when performance improves dramatically, and a difference that exists only OFF
-    SCREEN is fine by definition. The whole-document digest cannot express the second exemption --
-    it fails every deferred-off-screen technique by construction -- so this scores the claim the
-    policy actually cares about.
+    SCREEN is fine by definition. The structural digest cannot express the second exemption -- it
+    digests the thread on screen and off, so it fails every deferred-off-screen technique by
+    construction -- so this scores the claim the policy actually cares about.
+
+    `select` scores only those pair keys; see `decide_modes`.
     """
-    results, _got = compare_all_with(paths, P.compare_visible, "visible")
+    results, _got = compare_all_with(paths, P.compare_visible, "visible", select)
 
     print(f"\n{label}  (VISIBLE-REGION MODE)")
     print(f"  CLAIM: {P.CLAIM_VISIBLE}.")
@@ -298,7 +428,16 @@ def visible_report(
         return 2
 
     differing, unstable_bad, blind, idle, matched = [], [], [], [], 0
+    # THE RESIDUE, PRINTED. A message that was on screen during the action and had been unmounted
+    # again by the time the capture ran cannot be digested, and `compare_visible` refuses the pair
+    # for it. That refusal used to be invisible: the pair returned MATCH with the ordinals tucked
+    # into `not_digested` and nothing here read the key, so a rendering difference in the missing
+    # message left no trace anywhere in the output. It is collected across every verdict, because a
+    # DIFFER pair with a residue is also a pair whose report is incomplete.
+    residue = []
     for action, shard, rep, r in results:
+        if r.get("not_digested"):
+            residue.append((action, shard, rep, r))
         if not r.get("_ran"):
             idle.append((action, shard, rep, r))
         elif r["verdict"] == P.NOT_COMPARABLE:
@@ -321,6 +460,10 @@ def visible_report(
     )
     print(f"  NOT COMPARABLE:             {len(blind)}  (never observed; not a pass)")
     print(f"  NOT EXERCISED:              {len(idle)}  (the action did not run; not coverage)")
+    print(
+        f"  visible but NOT DIGESTED:   {len(residue)}  (unmounted before the capture; no verdict "
+        "covers them)"
+    )
 
     if differing:
         print(
@@ -334,12 +477,19 @@ def visible_report(
         print(
             "\n  Every message that reached the viewport was identical on both arms.\n"
             "  Differences outside the viewport are not reported here and are exempt by policy;\n"
-            "  run --mode digest if you want the whole-document comparison instead."
+            "  run --mode digest for the thread-structure comparison, on screen and off, instead."
         )
     if blind:
         print("\n  NOT COMPARABLE -- these carry no verdict in either direction:")
         for action, shard, rep, r in blind[:8]:
             print(f"    {action:<26} {shard} {rep}: {r['reason']}")
+    if residue:
+        print(
+            "\n  VISIBLE BUT NOT DIGESTED -- these messages were on screen during the action and "
+            "had\n  been unmounted again before the capture, so nothing below covers them:"
+        )
+        for action, shard, rep, r in residue[:8]:
+            print(f"    {action:<26} {shard} {rep}: ordinals {r.get('not_digested')[:8]}")
     if unstable_bad:
         names = sorted({a for a, _s, _r, _v in unstable_bad})
         print(
@@ -369,9 +519,14 @@ def visible_report(
     return 0
 
 
-def compare_all_with(paths: list[Path], compare, key: str) -> tuple[list[tuple], dict]:
+def compare_all_with(
+    paths: list[Path],
+    compare,
+    key: str,
+    select: Optional[set] = None,
+) -> tuple[list[tuple], dict]:
     """[(action, shard, rep, result)] using `compare` over payload sub-object `key`."""
-    got = collect(paths)
+    got = collect(paths, select)
     results = []
     for (shard, rep, action), sides in sorted(got["pairs"].items()):
         if "base" not in sides or "treatment" not in sides:
@@ -396,9 +551,9 @@ def compare_all_with(paths: list[Path], compare, key: str) -> tuple[list[tuple],
     return results, got
 
 
-def compare_all(paths: list[Path]) -> tuple[list[tuple], dict]:
+def compare_all(paths: list[Path], select: Optional[set] = None) -> tuple[list[tuple], dict]:
     """[(action, shard, rep, compare-result)] over every base/treatment pair found."""
-    got = collect(paths)
+    got = collect(paths, select)
     results = []
     for (shard, rep, action), sides in sorted(got["pairs"].items()):
         if "base" not in sides or "treatment" not in sides:
@@ -442,8 +597,14 @@ def unstable_set(paths: list[Path] | None) -> tuple[frozenset[str], dict, dict]:
     return measured | UNSTABLE_ACTIONS, derived, checks
 
 
-def report(paths: list[Path], label: str, unstable: frozenset[str]) -> int:
-    results, got = compare_all(paths)
+def report(
+    paths: list[Path],
+    label: str,
+    unstable: frozenset[str],
+    select: Optional[set] = None,
+) -> int:
+    """THREAD-STRUCTURE PARITY. `select` scores only those pair keys; see `decide_modes`."""
+    results, got = compare_all(paths, select)
     if not results:
         # An empty result is reported as an empty result. "No mismatches found" when nothing was
         # ever compared is the exact shape of a check that silently does nothing.
@@ -507,15 +668,24 @@ def report(paths: list[Path], label: str, unstable: frozenset[str]) -> int:
         print("\n  UI PARITY DIFFERENCES ON STABLE ACTIONS -- these need explaining:")
         for action, shard, rep, moved in stable_bad:
             print(f"    {action:<26} {shard} {rep}: {', '.join(moved[:4])}")
-    elif matched == 0 and inapplicable:
-        # NOT A PASS, and it must not print like one. Every pair was refused, so "no stable action
-        # rendered differently" would be true, reassuring and about nothing -- the exact shape of
-        # a check that silently does nothing, which is what the NOT COMPARABLE bucket exists to
-        # prevent elsewhere in this file.
+    elif matched == 0:
+        # NOT A PASS, and it must not print like one. Not one pair produced a digest verdict, so
+        # "no stable action rendered differently" would be true, reassuring and about nothing --
+        # the exact shape of a check that silently does nothing, which is what the NOT COMPARABLE
+        # bucket exists to prevent elsewhere in this file.
+        #
+        # THE GUARD USED TO REQUIRE `inapplicable`, so it only caught the windowed-mount route to
+        # an empty comparison. A run whose parity probes all failed, or whose slots were all
+        # missed, produced nothing but NOT COMPARABLE and NOT EXERCISED rows, no inapplicable ones,
+        # and exited 0 under a heading that reads as a clean structural pass.
         print(
-            "\n  NOTHING WAS COMPARED. Every pair in this payload is a windowed mount, which the "
-            "structural digest cannot answer. This is not a pass."
+            f"\n  NOTHING WAS COMPARED. Not one of the {len(results)} pair(s) here yielded a "
+            f"structural verdict ({len(inapplicable)} windowed, {len(blind)} not comparable, "
+            f"{len(idle)} never exercised, {len(unstable_bad)} differing on actions that differ "
+            "against themselves). This is not a pass."
         )
+        if inapplicable:
+            print("  Re-run with --mode behaviour to score the windowed pairs on invariants.")
     else:
         print(
             "\n  No stable action rendered a different THREAD STRUCTURE between the two arms.\n"
@@ -556,8 +726,9 @@ def report(paths: list[Path], label: str, unstable: frozenset[str]) -> int:
         return 1
     # 2, the same code the empty-payload path uses, and for the same reason: the tool was asked a
     # question it could not answer. Exiting 0 here would let CI go green on a run where the parity
-    # check was structurally incapable of firing.
-    if matched == 0 and inapplicable:
+    # check was structurally incapable of firing -- whether because every pair was a windowed mount
+    # or because every capture failed.
+    if matched == 0:
         return 2
     return 0
 
@@ -602,10 +773,11 @@ def main(argv: list[str] | None = None) -> int:
         choices = ("auto", "digest", "visible", "behaviour"),
         default = "auto",
         help = (
-            "auto (default) reads the payload: a fully mounted pair is scored structurally, a "
-            "windowed pair is scored on the VISIBLE REGION and then on behavioural invariants; "
-            "digest forces the whole-document structural comparison; visible forces the "
-            "visible-region one; behaviour forces the behavioural one"
+            "auto (default) decides per ACTION PAIR from the payload: a fully mounted pair is "
+            "scored structurally, a windowed pair is scored on the VISIBLE REGION and then on "
+            "behavioural invariants, and one payload can contain both; digest forces the "
+            "thread-structure comparison on every pair; visible forces the visible-region one; "
+            "behaviour forces the behavioural one"
         ),
     )
     args = ap.parse_args(argv)
@@ -613,69 +785,119 @@ def main(argv: list[str] | None = None) -> int:
     # THE MODE DECISION FIRST, before the unstable set is even derived. Deriving an unstable set
     # from a null control and then not using it because the payload is windowed would print a page
     # of scoring apparatus that has no bearing on the report underneath it.
-    if args.mode != "digest":
-        # PER PAYLOAD, not once for the whole invocation. Deciding `auto` from the first payload
-        # that happens to be windowed and then applying it to all of them means
-        # `ui_parity normal_run windowed_run` scores the NORMAL run behaviourally too, skipping
-        # its structural digest entirely -- so an ordinary DOM regression in a fully-mounted arm
-        # goes unreported because an unrelated payload on the same command line was windowed.
-        # `--mode behaviour` still forces every payload, because that is what forcing means.
-        decided = []
-        for pattern in args.payloads:
-            paths = shards_of(pattern)
-            if not paths:
-                continue
-            why = any_windowed(paths) if args.mode == "auto" else f"forced by --mode {args.mode}"
-            if why:
-                decided.append((pattern, paths, why))
-        if decided:
-            worst = 0
-            for pattern, paths, why in decided:
-                print(f"WINDOWED MOUNT DETECTED in {pattern}: {why}")
-                # BOTH, and in this order. Visible-region parity is the verdict the off-screen
-                # exemption asks for and it is the one that can FAIL a windowed arm for something
-                # a user would see. The behavioural invariants are the complement: they catch what
-                # a viewport comparison cannot, such as a clipboard that no longer carries the
-                # thread. Neither subsumes the other, so a windowed pair gets both and the run
-                # fails if either does.
-                if args.mode in ("auto", "visible"):
-                    # The floor, derived from the null control the caller passed. Without it an
-                    # identical pair of builds outscores the arm under test.
-                    vis_null: list[Path] = []
-                    for pat in args.null:
-                        vis_null.extend(shards_of(pat))
-                    worst = max(
-                        worst,
-                        visible_report(
-                            paths,
-                            f"UI PARITY: {pattern}",
-                            visible_unstable_set(vis_null),
-                        ),
-                    )
-                if args.mode in ("auto", "behaviour"):
-                    worst = max(
-                        worst,
-                        behaviour_report(
-                            paths,
-                            f"UI PARITY: {pattern}",
-                            windowed = any_windowed(paths) is not None,
-                        ),
-                    )
-            remaining = [p for p in args.payloads if p not in {d[0] for d in decided}]
-            if remaining:
-                # The rest still get the digest they were owed, in the same run.
-                print(
-                    f"\n  {len(remaining)} payload(s) mount their whole thread and are scored "
-                    "structurally below, not behaviourally."
-                )
-                args.payloads = remaining
-            else:
-                return worst
-            _digest_floor = worst
+    #
+    # PER ACTION PAIR, and per payload and per invocation were both too coarse:
+    #
+    #   per invocation  `ui_parity normal_run windowed_run` scored the NORMAL run behaviourally
+    #                   too, so an ordinary DOM regression in a fully mounted arm went unreported
+    #                   because an unrelated payload on the same command line was windowed.
+    #   per payload     one payload holds several rungs, and the readiness gate deliberately
+    #                   permits an arm to mount everything at 1K and a window at 100K. One windowed
+    #                   large-rung capture then suppressed the structural digest on every fully
+    #                   mounted pair beside it, at the rungs where that digest is exactly the right
+    #                   question.
+    #
+    # `--mode visible|behaviour|digest` still forces every pair, because that is what forcing means.
+    plan: list[dict] = []
+    for pattern in args.payloads:
+        paths = shards_of(pattern)
+        if not paths:
+            # Kept with no pairs: the structural loop below is what reports a pattern that matched
+            # no payload, and it exits 2 for it.
+            plan.append({"pattern": pattern, "paths": [], "windowed": set(), "structural": None})
+            continue
+        if args.mode == "digest":
+            plan.append({"pattern": pattern, "paths": paths, "windowed": set(), "structural": None})
+            continue
+        if args.mode in ("visible", "behaviour"):
+            plan.append(
+                {
+                    "pattern": pattern,
+                    "paths": paths,
+                    "windowed": set(collect(paths)["pairs"]),
+                    "structural": set(),
+                    "why": f"forced by --mode {args.mode}",
+                    "forced": True,
+                }
+            )
+            continue
+        decided = decide_modes(paths)
+        windowed = {key for key, (mode, _why) in decided.items() if mode == WINDOWED}
+        plan.append(
+            {
+                "pattern": pattern,
+                "paths": paths,
+                "windowed": windowed,
+                # None, not an empty set, when the payload holds no action pairs at all: `report`
+                # is what says NO PARITY DATA and exits 2, and it has to be reached to say it.
+                "structural": (set(decided) - windowed) if decided else None,
+                "why": next((w for _k, (m, w) in sorted(decided.items()) if m == WINDOWED), ""),
+            }
+        )
+
+    worst = 0
+    scored_windowed = 0
+    vis_unstable: Optional[frozenset[str]] = None
+    for entry in plan:
+        win, struct = entry["windowed"], entry["structural"] or set()
+        if not win and not entry.get("forced"):
+            continue
+        pattern, paths = entry["pattern"], entry["paths"]
+        print(f"\nWINDOWED PAIRS in {pattern}: {entry.get('why') or 'none measured or declared'}")
+        if entry.get("forced"):
+            print(
+                f"  FORCED: all {len(win)} pair(s) are scored by --mode {args.mode}, whatever the "
+                "payload says about itself."
+            )
         else:
-            _digest_floor = 0
-    else:
-        _digest_floor = 0
+            print(
+                f"  MODE DECIDED PER ACTION PAIR: {len(win)} of {len(win) + len(struct)} pair(s) "
+                f"are scored on the visible region and on behavioural invariants here; "
+                f"{len(struct)} fully mounted pair(s) are scored structurally further down."
+            )
+        for key in sorted(win)[:8]:
+            print(f"    windowed:   {key[0]} {key[1]} {key[2]}")
+        if len(win) > 8:
+            print(f"    ... and {len(win) - 8} more windowed pair(s)")
+        scored_windowed += len(win)
+        # BOTH, and in this order. Visible-region parity is the verdict the off-screen exemption
+        # asks for and it is the one that can FAIL a windowed arm for something a user would see.
+        # The behavioural invariants are the complement: they catch what a viewport comparison
+        # cannot, such as a clipboard that no longer carries the thread. Neither subsumes the other,
+        # so a windowed pair gets both and the run fails if either does.
+        if args.mode in ("auto", "visible"):
+            if vis_unstable is None:
+                # The floor, derived from the null control the caller passed. Without it an
+                # identical pair of builds outscores the arm under test. Derived once: it is a
+                # property of the null control, not of the payload being scored against it.
+                vis_null: list[Path] = []
+                for pat in args.null:
+                    vis_null.extend(shards_of(pat))
+                vis_unstable = visible_unstable_set(vis_null)
+            worst = max(
+                worst,
+                visible_report(paths, f"UI PARITY: {pattern}", vis_unstable, select = win),
+            )
+        if args.mode in ("auto", "behaviour"):
+            worst = max(
+                worst,
+                behaviour_report(
+                    paths,
+                    f"UI PARITY: {pattern}",
+                    windowed = args.mode == "auto" or any_windowed(paths) is not None,
+                    select = win,
+                ),
+            )
+
+    remaining = [e for e in plan if e["structural"] is None or e["structural"]]
+    if not remaining:
+        return worst
+    if scored_windowed:
+        # The rest still get the digest they were owed, in the same run.
+        print(
+            f"\n  {len(remaining)} payload(s) still hold fully mounted pairs, which are scored "
+            "structurally below and not behaviourally."
+        )
 
     null_paths: list[Path] = []
     for pattern in args.null:
@@ -694,9 +916,9 @@ def main(argv: list[str] | None = None) -> int:
         print("  pass --null OUTDIR of a base-vs-base run to derive it instead.")
 
     null_tiers = tier_of(null_paths)
-    worst = 0
-    for pattern in args.payloads:
-        paths = shards_of(pattern)
+    scored_structural = 0
+    for entry in remaining:
+        pattern, paths, select = entry["pattern"], entry["paths"], entry["structural"]
         if not paths:
             print(f"\nno payload found for {pattern}")
             worst = max(worst, 2)
@@ -708,9 +930,26 @@ def main(argv: list[str] | None = None) -> int:
                 f"this payload at {sorted(tiers)}. Which actions are unstable depends on the "
                 f"film's slot spacing, so this unstable set does not transfer."
             )
-        worst = max(worst, report(paths, f"UI PARITY: {pattern}", unstable))
-    # A behavioural failure on one payload is not cancelled by a structural pass on another.
-    return max(worst, _digest_floor)
+        label = f"UI PARITY: {pattern}"
+        if select is not None and entry["windowed"]:
+            # WHICH PAIRS THESE ARE, in the heading. A structural section that silently covered
+            # part of a payload would read as a verdict on all of it.
+            label += (
+                f"  ({len(select)} fully mounted pair(s) of "
+                f"{len(select) + len(entry['windowed'])})"
+            )
+        scored_structural += len(select) if select is not None else 0
+        worst = max(worst, report(paths, label, unstable, select))
+    # COMBINED, and the worst outcome wins. A behavioural failure on one payload is not cancelled
+    # by a structural pass on another, and a structural failure at the fully mounted rungs is not
+    # cancelled by the windowed rungs passing their own two modes.
+    if scored_windowed and scored_structural:
+        print(
+            f"\nCOMBINED EXIT STATUS {worst}: {scored_windowed} pair(s) scored on the visible "
+            f"region and behavioural invariants, {scored_structural} scored structurally. Any "
+            "mode's failure fails the run."
+        )
+    return worst
 
 
 if __name__ == "__main__":

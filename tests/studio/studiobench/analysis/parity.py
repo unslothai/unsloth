@@ -497,16 +497,29 @@ def summarise(results: Iterable[dict[str, Any]]) -> dict[str, int]:
 # only OFF SCREEN is fine by definition, because rendering only what is visible is an accepted
 # technique rather than a parity violation.
 #
-# `compare()` above cannot express the second exemption. It digests the whole document, so any
-# deferred off-screen work fails it by construction: virtualization, deferred fence highlighting,
-# content-visibility, lazy images. Returning NOT_APPLICABLE for those pairs withholds a verdict.
+# `compare()` above cannot express the second exemption. It digests the thread whether or not any
+# of it is on screen, so deferred off-screen work fails it by construction: virtualization,
+# deferred fence highlighting, content-visibility, lazy images. Returning NOT_APPLICABLE for those
+# pairs withholds a verdict.
 # This supplies one.
 
 #: The claim each verdict makes, so a reader knows which of the three was actually checked. A bare
 #: "PARITY OK" has meant three very different things in this file's history and the difference
 #: between them is the difference between a strong result and a weak one.
+#: NOT "whole-document structural parity: every element in the DOM is identical on both arms",
+#: which is what this string used to say and which the instrument cannot support. `scene/parity.js`
+#: digests the THREAD ROOT plus a list of overlay selectors; it never walks the sidebar, never reads
+#: geometry and never reads CSS custom properties. Printing the stronger claim turns a limited
+#: thread-structure reading into an experimental conclusion about the whole UI, which is how a
+#: sidebar-drag campaign came to be scored 0 of 34 differing pairs by a digest whose own null
+#: control also returned 0 of 34: the instrument was not discriminating in either direction, and
+#: the banner said the DOM was identical.
 CLAIM_STRUCTURAL = (
-    "whole-document structural parity: every element in the DOM is identical on both arms"
+    "thread-structure parity: the thread root and the declared overlay selectors serialise "
+    "identically on both arms, on screen and off. It does NOT cover the sidebar, computed layout "
+    "or geometry, or CSS custom properties, so it is not a statement that the UI is unchanged: "
+    "run against a real sidebar-drag change this digest reported 0 of 34 differing pairs, and so "
+    "did its own null control"
 )
 CLAIM_VISIBLE = (
     "visible-region parity: every message the viewport showed at any point during the action is "
@@ -616,20 +629,43 @@ def compare_visible(base: Optional[dict], treat: Optional[dict]) -> dict:
             "claim": CLAIM_VISIBLE,
             "not_digested": uncomparable,
         }
-    if uncomparable and len(uncomparable) == len(bev):
+    if uncomparable:
+        # ANY residue refuses the verdict, not only a total one. This branch used to be entered
+        # solely when EVERY visible ordinal was undigestable (`len(uncomparable) == len(bev)`), so a
+        # scrolling or windowed action that put six messages on screen and unmounted one of them
+        # before the capture returned MATCH on the strength of the other five. The claim printed
+        # above quantifies over EVERY message the viewport showed; one message missing makes it
+        # unsupported, and the rendering difference this mode exists to catch could be in exactly
+        # the message that is missing. `visible_report` never printed the `not_digested` residue
+        # either, so that pair exited 0 with nothing on screen to say a message went uncompared.
+        #
+        # WHY THE VERDICT AND NOT MERELY THE PASS COUNT. Demoting it inside `visible_report` alone
+        # would leave the row itself reading `match`, and every other consumer of that row counts a
+        # match as agreement: `visible_unstable_set` reads verdicts to derive the noise floor,
+        # `summarise` tallies them, and the payload keeps them verbatim for whoever reads it next.
+        # The honest outcome has to live in the verdict, which is the one thing they all share.
+        #
+        # THE COST, MEASURED on the two real 100K films rather than guessed. On the windowed arm 4
+        # of 39 matching pairs carry a residue, all of them `stop_generation`; on the base-vs-base
+        # null control 7 of 43 do. The mode keeps a discriminating majority on both, so this buys
+        # honesty at four pairs in sixty-four.
+        digested = len(bev) - len(uncomparable)
         return {
             "verdict": NOT_COMPARABLE,
             "reason": (
-                f"all {len(uncomparable)} message(s) that were visible during this action had been "
-                "unmounted again by the time the capture ran, so none of them could be digested"
+                f"{len(uncomparable)} of the {len(bev)} message(s) that were visible during this "
+                "action had been unmounted again by the time the capture ran, so they could not be "
+                f"digested (ordinals {uncomparable[:8]}). The {digested} that could be digested "
+                "agreed, which is not the claim this mode makes"
             ),
             "moved": [],
             "claim": CLAIM_VISIBLE,
+            "not_digested": uncomparable,
         }
     return {
         "verdict": MATCH,
         "reason": "",
         "moved": [],
         "claim": CLAIM_VISIBLE,
-        "not_digested": uncomparable,
+        "not_digested": [],
     }

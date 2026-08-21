@@ -7,8 +7,8 @@ The policy: all changes preserve UI and UX idempotency, with two exemptions. A d
 accepted deliberately when performance improves dramatically, and a difference that exists only OFF
 SCREEN is fine by definition, because rendering only what is visible is an accepted technique.
 
-The whole-document digest cannot express the second exemption -- it compares everything in the DOM,
-so every deferred-off-screen technique fails it by construction -- and answering NOT_APPLICABLE
+The structural digest cannot express the second exemption -- it digests the thread on screen and
+off, so every deferred-off-screen technique fails it by construction -- and answering NOT_APPLICABLE
 withholds a verdict rather than giving one. These tests hold the replacement to both halves of the
 claim: an off-screen-only difference must PASS, and an on-screen difference must FAIL, on the same
 pair of captures.
@@ -51,7 +51,7 @@ def _cap(visible: dict[int, str], ever: list[int] | None = None) -> dict:
 def test_a_difference_that_is_only_off_screen_passes():
     """THE POLICY, IN ONE ASSERTION. The treatment renders ordinals 1-3 differently -- they are
     genuinely not the same DOM -- but the viewport never showed them during this action, so the
-    difference is off screen and is exempt. The whole-document digest fails this pair; this must
+    difference is off screen and is exempt. The structural digest fails this pair; this must
     not."""
     base = _cap({14: "a", 15: "b", 16: "c"})
     treat = _cap({14: "a", 15: "b", 16: "c"})
@@ -122,14 +122,57 @@ def test_a_missing_capture_is_refused_rather_than_assumed_empty():
 
 
 def test_a_message_seen_mid_action_but_unmounted_by_capture_is_not_counted_as_agreement():
-    """The known limitation, kept visible. Ordinal 3 scrolled through the viewport during the
-    action and the windowed arm had unmounted it again before the capture ran, so it cannot be
-    digested. It must not be silently dropped into the matched pile."""
+    """THIS TEST USED TO ASSERT MATCH, and it contradicted its own name.
+
+    Ordinal 3 scrolled through the viewport during the action and had been unmounted again before
+    the capture ran, so it cannot be digested. The old behaviour returned MATCH as long as one
+    other message stayed mounted and left the residue in `not_digested`, which nothing printed:
+    the run exited 0 under a claim that quantifies over EVERY message the viewport showed, while
+    one of them had never been compared. A rendering difference in the missing message produced a
+    clean pass.
+
+    The residue is still reported, and the verdict is now the third outcome rather than the
+    strongest one.
+    """
     base = _cap({14: "a"}, ever = [3, 14])
     treat = _cap({14: "a"}, ever = [3, 14])
     got = P.compare_visible(base, treat)
-    assert got["verdict"] == P.MATCH
+    assert got["verdict"] == P.NOT_COMPARABLE, got
+    assert got["verdict"] != P.MATCH
     assert got["not_digested"] == [3], got
+    assert "ordinals [3]" in got["reason"], got["reason"]
+    assert got["claim"] == P.CLAIM_VISIBLE
+
+
+def test_the_messages_that_could_be_digested_agreeing_is_not_the_claim_this_mode_makes():
+    """The residue is one ordinal out of six, so five messages were compared and all five agreed.
+    That is a real observation and it is not the printed claim, which is about every message the
+    viewport showed. The reason says which ordinal went uncompared so the reader can decide."""
+    seen = {10: "a", 11: "b", 12: "c", 13: "d", 14: "e"}
+    got = P.compare_visible(_cap(seen, ever = [3, *seen]), _cap(seen, ever = [3, *seen]))
+    assert got["verdict"] == P.NOT_COMPARABLE, got
+    assert got["not_digested"] == [3]
+    assert "1 of the 6 message(s)" in got["reason"], got["reason"]
+    assert "The 5 that could be digested agreed" in got["reason"], got["reason"]
+
+
+def test_a_pair_with_nothing_left_undigested_still_matches_with_an_empty_residue():
+    """The refusal must not leak into the pairs it does not concern, or the mode stops being able
+    to pass anything and stops being able to fail anything either."""
+    got = P.compare_visible(_cap({14: "a", 15: "b"}), _cap({14: "a", 15: "b"}))
+    assert got["verdict"] == P.MATCH, got
+    assert got["not_digested"] == []
+
+
+def test_an_undigested_ordinal_never_downgrades_a_difference_that_was_found():
+    """A residue withholds a pass; it does not withdraw a finding. Ordinal 3 could not be digested
+    and ordinal 15 rendered differently, and the second of those is still the verdict."""
+    base = _cap({14: "a", 15: "b"}, ever = [3, 14, 15])
+    treat = _cap({14: "a", 15: "CHANGED"}, ever = [3, 14, 15])
+    got = P.compare_visible(base, treat)
+    assert got["verdict"] == P.DIFFER, got
+    assert got["not_digested"] == [3], got
+    assert any("ordinal 15" in m for m in got["moved"]), got["moved"]
 
 
 def test_a_pair_where_nothing_visible_could_be_digested_is_not_a_pass():
@@ -151,8 +194,28 @@ def test_every_verdict_names_the_claim_it_is_making():
     ):
         assert got["claim"] == P.CLAIM_VISIBLE
     assert "off screen" in P.CLAIM_VISIBLE
-    assert "whole-document" in P.CLAIM_STRUCTURAL
+    assert "thread-structure parity" in P.CLAIM_STRUCTURAL
     assert "NOTHING about how anything looks" in P.CLAIM_BEHAVIOURAL
+
+
+def test_the_structural_claim_does_not_promise_a_reading_the_digest_cannot_take():
+    """IT USED TO SAY "whole-document structural parity: every element in the DOM is identical on
+    both arms", and that is false in a way that changes conclusions rather than wording.
+
+    `scene/parity.js` digests the thread root plus a list of overlay selectors. It is sidebar-blind
+    and layout-blind by construction and it never reads geometry or CSS custom properties. Measured:
+    run against a real sidebar-drag change the thread digest returned 0 of 34 differing pairs, and
+    its own null control returned 0 of 34 as well, so the instrument was not discriminating in
+    either direction -- while the banner above the result said every element in the DOM was
+    identical. Three purpose-built captures found the same change 34 of 34.
+    """
+    assert "whole-document" not in P.CLAIM_STRUCTURAL
+    assert "every element in the DOM" not in P.CLAIM_STRUCTURAL
+    assert "thread-structure parity" in P.CLAIM_STRUCTURAL
+    # And it states what it does not cover, next to the claim rather than in a source comment.
+    for surface in ("sidebar", "geometry", "CSS custom properties"):
+        assert surface in P.CLAIM_STRUCTURAL, surface
+    assert "0 of 34" in P.CLAIM_STRUCTURAL
 
 
 def test_one_viewport_ending_empty_is_a_difference_not_a_refusal():

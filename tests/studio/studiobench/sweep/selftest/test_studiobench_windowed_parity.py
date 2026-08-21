@@ -622,3 +622,360 @@ def test_the_noise_floor_cannot_silence_an_arm_that_lost_the_thread(tmp_path, ca
     # ...and the arm that lost the thread on it is STILL a failure.
     assert U.visible_report([_shard("arm_mc", True)], "severe", unstable) == 1
     assert "one arm lost the thread" in capsys.readouterr().out
+
+
+# ── the residue of a windowed capture is printed, not swallowed ─────
+
+
+def _write(tmp_path, name, rows):
+    import json
+
+    shard = tmp_path / name
+    shard.mkdir()
+    (shard / "payload.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding = "utf-8")
+    return shard / "payload.jsonl"
+
+
+def _visible(
+    ever,
+    digested,
+    digest = "same",
+):
+    """A visible-region capture that SAW `ever` and could still digest `digested` at capture time."""
+    return {
+        "visible_attempted": True,
+        "ever_visible": sorted(ever),
+        "ever_visible_count": len(ever),
+        "mounted_ever_visible": len(digested),
+        "unmounted_at_capture": len(ever) - len(digested),
+        "messages": {
+            str(o): {"role": "assistant", "digest": digest, "chars": 10} for o in sorted(digested)
+        },
+    }
+
+
+def _action(
+    action,
+    cell_id,
+    *,
+    parity = None,
+    visible = None,
+    ran = True,
+    reason = None,
+    expect = None,
+):
+    row = {
+        "row_type": "action",
+        "action": action,
+        "ran": ran,
+        "cell_id": cell_id,
+        "parity": parity if parity is not None else _capture(mounted = 18, total = 18),
+        "census": {"viewport_scroll_height": 10_000},
+        "expect": dict(expect or {}),
+        "expect_ok": True,
+        "timings": {},
+    }
+    if visible is not None:
+        row["visible"] = visible
+    if reason is not None:
+        row["reason"] = reason
+    return row
+
+
+def test_a_visible_message_that_could_not_be_digested_is_printed_and_not_counted(tmp_path, capsys):
+    """THE FALSE GREEN. `windowed` put ordinals 1 and 2 on screen during the action and had
+    unmounted 2 again by the time the capture ran, so only ordinal 1 was ever compared. That pair
+    used to return MATCH -- one mounted message is enough to carry it -- and `visible_report`
+    never read `not_digested`, so a rendering difference in ordinal 2 exited 0 under a claim that
+    every visible message was identical on both arms.
+
+    It is now the third outcome, and the residue is on screen where a reader can see which message
+    went uncompared."""
+    from studiobench.sweep import ui_parity as U
+
+    rows = []
+    for side in ("base", "treatment"):
+        rows.append(_action("settings", f"r100K.{side}.rep0", visible = _visible([1], [1])))
+        rows.append(_action("scroll_after", f"r100K.{side}.rep0", visible = _visible([1, 2], [1])))
+    shard = _write(tmp_path, "residue", rows)
+
+    code = U.visible_report([shard], "residue")
+    out = capsys.readouterr().out
+    assert "VISIBLE BUT NOT DIGESTED" in out, out
+    assert "ordinals [2]" in out, out
+    # The fully digested pair still passes, so the refusal is scoped to the pair that earned it.
+    assert "visible region matched:     1" in out, out
+    assert "visible but NOT DIGESTED:   1" in out, out
+    assert code == 0, out
+
+
+def test_a_run_where_nothing_could_be_digested_carries_no_visible_verdict(tmp_path, capsys):
+    """Every pair carrying a residue means every pair was refused, and a mode that refused
+    everything has no verdict to report. 2, not 0."""
+    from studiobench.sweep import ui_parity as U
+
+    rows = [
+        _action("scroll_after", f"r100K.{side}.rep0", visible = _visible([1, 2], [1]))
+        for side in ("base", "treatment")
+    ]
+    code = U.visible_report([_write(tmp_path, "all_residue", rows)], "all residue")
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert "NOTHING WAS COMPARED" in out, out
+
+
+# ── an unmeasured windowed run cannot come out green ────────────────
+
+
+def _failed_parity(why = "the parity probe timed out"):
+    return {"parity_attempted": False, "reason": why}
+
+
+def _declared_windowed_shard(
+    tmp_path,
+    name,
+    *,
+    arm = "treatment",
+    parity = None,
+):
+    """A payload that DECLARES a windowed arm the way `__main__.py` records it, and measures nothing.
+
+    Both records are written because both are read: the gate row `windowed_readiness:{arm}` that
+    `--windowed-arm` produces, and `readiness.mode` on the cell row.
+    """
+    rows = [
+        {
+            "row_type": "gate",
+            "name": f"windowed_readiness:{arm}",
+            "passed": True,
+            "detail": {"arm": arm, "reason": "declared on the command line with --windowed-arm"},
+        }
+    ]
+    for side in ("base", "treatment"):
+        rows.append(
+            {
+                "row_type": "cell",
+                "cell_id": f"r100K.{side}.rep0",
+                "readiness": {
+                    "ready": True,
+                    "mode": "windowed" if side == arm else "full",
+                    "expected_messages": 18,
+                },
+            }
+        )
+        rows.append(
+            _action(
+                "select_all_copy",
+                f"r100K.{side}.rep0",
+                parity = parity if parity is not None else _failed_parity(),
+                ran = False,
+                reason = "the slot was missed",
+            )
+        )
+    return _write(tmp_path, name, rows)
+
+
+def test_a_declared_windowed_run_that_measured_nothing_is_still_windowed(tmp_path):
+    """THE DETECTION HOLE. `any_windowed` scanned successful captures for
+    `thread_total > mounted_messages`, so a run whose slots were all missed or whose parity probes
+    all failed scanned exactly like a run that mounted its whole thread: no window found, `--mode
+    auto` picks the digest, every pair comes out NOT_EXERCISED or NOT_COMPARABLE and the report
+    exits 0. An entirely unmeasured windowed run produced a green structural result.
+
+    The payload records the declaration independently of the measurement, so it decides when the
+    measurement cannot."""
+    from studiobench.sweep import ui_parity as U
+
+    shard = _declared_windowed_shard(tmp_path, "declared")
+    why = U.any_windowed([shard])
+    assert why is not None, "a declared windowed run with no capture read as fully mounted"
+    assert "DECLARED, not measured" in why, why
+    assert all(mode == U.WINDOWED for mode, _why in U.decide_modes([shard]).values())
+
+
+def test_an_unmeasured_windowed_run_does_not_exit_zero(tmp_path, capsys):
+    """The consequence, end to end through `main`. Nothing was measured, so no mode has a verdict
+    and the run must say so rather than report a structural pass."""
+    from studiobench.sweep import ui_parity as U
+
+    _declared_windowed_shard(tmp_path, "declared_main")
+    code = U.main([str(tmp_path / "declared_main")])
+    out = capsys.readouterr().out
+    assert code != 0, out
+    assert code == 2, out
+    assert "NOTHING WAS COMPARED" in out, out
+
+
+def test_a_payload_whose_captures_all_failed_is_not_a_structural_pass(tmp_path, capsys):
+    """The same hole with no declaration to fall back on, at the report that would print the pass.
+    Every pair is NOT COMPARABLE, so `stable_bad` is empty and `matched` is zero -- and the exit
+    guard only refused this when the pairs were NOT APPLICABLE windowed mounts, so a payload whose
+    parity probes all failed returned 0 under "No stable action rendered a different THREAD
+    STRUCTURE"."""
+    from studiobench.sweep import ui_parity as U
+
+    rows = [
+        _action("settings", f"r100K.{side}.rep0", parity = _failed_parity())
+        for side in ("base", "treatment")
+    ]
+    code = U.report([_write(tmp_path, "all_failed", rows)], "all failed", frozenset())
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert "NOTHING WAS COMPARED" in out, out
+    assert "No stable action rendered a different THREAD STRUCTURE" not in out, out
+
+
+# ── the mode is decided per action pair, not per payload ────────────
+
+
+def _copy_expect(*, clipboard, selected, mounted):
+    """The `select_all_copy` observations its behavioural invariant is scored on."""
+    return {
+        "selected_chars": selected,
+        "clipboard_chars": clipboard,
+        "clipboard_readable": True,
+        "clipboard_note": None,
+        "messages_total": 18,
+        "messages_mounted": mounted,
+        "mounted_fraction": round(mounted / 18, 3),
+    }
+
+
+def _mixed_rung_shard(tmp_path, name):
+    """One payload holding a fully mounted 1K rung and a windowed 100K rung, which is exactly what
+    the windowed readiness gate permits an arm to do, plus a DOM regression at the 1K rung.
+
+    The 100K rung is a CLEAN windowed pair: it holds its behavioural invariants (the clipboard
+    still carries the whole thread) and its visible region matches, so the only thing left that can
+    fail this payload is the digest at the rung where both arms mount everything.
+    """
+    rows = [
+        {
+            "row_type": "gate",
+            "name": "windowed_readiness:treatment",
+            "passed": True,
+            "detail": {"arm": "treatment"},
+        }
+    ]
+    for side in ("base", "treatment"):
+        digest = "regressed" if side == "treatment" else "shipped"
+        rows.append(
+            _action(
+                "select_all_copy",
+                f"r1K.{side}.rep0",
+                parity = _capture(mounted = 18, total = 18, digest = digest),
+                visible = _visible([1], [1], digest = digest),
+                expect = _copy_expect(clipboard = 200_000, selected = 200_000, mounted = 18),
+            )
+        )
+        windowed = side == "treatment"
+        rows.append(
+            _action(
+                "select_all_copy",
+                f"r100K.{side}.rep0",
+                parity = _capture(mounted = 9 if windowed else 18, total = 18, digest = "shipped"),
+                visible = _visible([1], [1]),
+                expect = _copy_expect(
+                    clipboard = 200_000,
+                    selected = 66_000 if windowed else 200_000,
+                    mounted = 9 if windowed else 18,
+                ),
+            )
+        )
+    return _write(tmp_path, name, rows)
+
+
+def test_two_rungs_of_one_payload_are_two_pairs_and_not_one(tmp_path):
+    """`make_cell_id` writes `r{rung}.{arm}.rep{n}` and the pair key took only the last segment, so
+    `r1K.base.rep0` and `r100K.base.rep0` were the same key: one rung's rows overwrote the other's
+    and half the payload disappeared before anything was compared. The per-pair mode decision needs
+    both rungs to exist before it can score them differently."""
+    from studiobench.sweep import ui_parity as U
+
+    shard = _mixed_rung_shard(tmp_path, "mixed_keys")
+    pairs = U.collect([shard])["pairs"]
+    assert len(pairs) == 2, sorted(pairs)
+    assert {rep for _shard, rep, _action in pairs} == {"r1K.rep0", "r100K.rep0"}
+    assert all(set(sides) == {"base", "treatment"} for sides in pairs.values())
+
+
+def test_the_windowed_large_rung_does_not_suppress_the_digest_on_the_mounted_small_one(
+    tmp_path, capsys
+):
+    """THE FINDING. Deciding the mode per PAYLOAD meant one windowed 100K capture put every pair in
+    that payload on the behavioural and visible-region scales -- including the 1K rung, where both
+    arms mount their whole thread and the structural digest is exactly the right question. An
+    ordinary DOM regression at that rung was then never looked for.
+
+    Here the treatment's 1K digest differs and its 100K rung is a genuine window. The regression has
+    to be found, by name, and the windowed rung has to stay out of the structural section."""
+    from studiobench.sweep import ui_parity as U
+
+    shard = _mixed_rung_shard(tmp_path, "mixed")
+    modes = {rep: mode for (_s, rep, _a), (mode, _why) in U.decide_modes([shard]).items()}
+    assert modes == {"r1K.rep0": U.STRUCTURAL, "r100K.rep0": U.WINDOWED}, modes
+
+    code = U.main([str(tmp_path / "mixed")])
+    out = capsys.readouterr().out
+    assert "MODE DECIDED PER ACTION PAIR: 1 of 2" in out, out
+    assert "UI PARITY DIFFERENCES ON STABLE ACTIONS" in out, out
+    assert "r1K.rep0" in out.split("UI PARITY DIFFERENCES ON STABLE ACTIONS")[1], out
+    # (1 fully mounted pair(s) of 2) in the heading: a structural section that silently covered
+    # part of a payload would read as a verdict on all of it.
+    assert "1 fully mounted pair(s) of 2" in out, out
+    assert code == 1, out
+
+
+def test_the_exit_status_combines_every_mode_that_ran(tmp_path, capsys):
+    """Any mode's failure fails the run. The windowed rung passes its own two modes here and the
+    fully mounted rung fails the digest, so the combined status is the failure."""
+    from studiobench.sweep import ui_parity as U
+
+    _mixed_rung_shard(tmp_path, "combined")
+    code = U.main([str(tmp_path / "combined")])
+    out = capsys.readouterr().out
+    assert "COMBINED EXIT STATUS 1" in out, out
+    assert code == 1
+
+
+def test_an_arm_declared_windowed_is_still_digested_where_it_mounted_everything(tmp_path):
+    """The declaration is a FALLBACK and never an override. `--windowed-arm treatment` is a
+    statement about the arm, not about every rung it ran: at 1K it mounts the whole thread, the
+    capture proves it, and that pair is owed a structural digest like any other."""
+    from studiobench.sweep import ui_parity as U
+
+    rows = [
+        {
+            "row_type": "gate",
+            "name": "windowed_readiness:treatment",
+            "passed": True,
+            "detail": {"arm": "treatment"},
+        }
+    ]
+    for side in ("base", "treatment"):
+        rows.append(_action("settings", f"r1K.{side}.rep0", parity = _capture(mounted = 18, total = 18)))
+    shard = _write(tmp_path, "declared_but_mounted", rows)
+    assert all(mode == U.STRUCTURAL for mode, _why in U.decide_modes([shard]).values())
+    assert U.any_windowed([shard]) is None
+
+
+def test_a_capture_that_saw_no_thread_at_all_falls_back_on_the_declaration(tmp_path):
+    """MEASURED on the real 100K film: after `model_change` the treatment arm's captures read 0 of
+    0 messages for the rest of the film. `windowed_mount` answers False for 0 of 0 -- nothing is
+    missing from a thread of nothing -- so that capture would score a declared windowed arm
+    structurally on the strength of a probe that observed no messages."""
+    from studiobench.sweep import ui_parity as U
+
+    lost = {
+        "parity_attempted": True,
+        "root_kind": "thread",
+        "digest": "d",
+        "chars": 0,
+        "messages": [],
+        "overlays": [],
+        "styles": {"elements": 0, "digest": "s", "capped": False},
+        "mounted_messages": 0,
+        "thread_total": 0,
+    }
+    shard = _declared_windowed_shard(tmp_path, "lost_thread", parity = lost)
+    assert all(mode == U.WINDOWED for mode, _why in U.decide_modes([shard]).values())
