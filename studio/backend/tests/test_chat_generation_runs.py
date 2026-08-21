@@ -13,6 +13,14 @@ from routes.chat_generation_runs import (
 )
 from storage import chat_generation_runs_db as runs_db
 from storage import studio_db
+from state.tool_policy import reset_tool_policy, set_tool_policy, set_tool_policy_default
+
+
+@pytest.fixture(autouse = True)
+def _clean_tool_policy():
+    reset_tool_policy()
+    yield
+    reset_tool_policy()
 
 
 def _seed_thread(
@@ -385,6 +393,18 @@ def test_request_sanitization_returns_json_safe_validation_errors(messages):
 )
 def test_request_sanitization_accepts_empty_optional_routing(overrides):
     assert _sanitize_request(_model(**overrides))["stream"] is True
+
+
+def test_request_sanitization_rejects_launcher_default_tools():
+    set_tool_policy_default(True)
+    with pytest.raises(Exception, match = "legacy streaming path"):
+        _sanitize_request(_model())
+
+
+def test_request_sanitization_rejects_cli_tools_override_even_when_request_disables_tools():
+    set_tool_policy(True)
+    with pytest.raises(Exception, match = "legacy streaming path"):
+        _sanitize_request(_model(enable_tools = False))
 
 
 def test_event_cursor_rejects_values_outside_sqlite_integer_range():

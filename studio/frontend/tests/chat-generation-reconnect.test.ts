@@ -20,6 +20,7 @@ const {
   createChatGenerationRun,
   createChatGenerationRunUntilAbort,
   explicitStopSignal,
+  isToolEnabledChatGenerationAdmissionError,
   followChatGenerationRun,
   supportsChatGenerationRuns,
 } = await import("../src/features/chat/api/chat-generation-api.ts");
@@ -151,6 +152,32 @@ test("a backend without chat runs selects the legacy path", async () => {
     new Response(null, { status: 404 })) as typeof fetch;
   try {
     assert.equal(await supportsChatGenerationRuns("thread-1"), false);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("tool-enabled durable admission errors select the legacy stream", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({ detail: "Tool-enabled chat runs use the legacy streaming path" }),
+      { status: 400, headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+  try {
+    await assert.rejects(
+      createChatGenerationRun({
+        runId: "run-1",
+        threadId: "thread-1",
+        userMessageId: "user-1",
+        assistantMessageId: "assistant-1",
+        requestPayload: run("queued", 1).requestPayload,
+      }),
+      (error: unknown) => {
+        assert.equal(isToolEnabledChatGenerationAdmissionError(error), true);
+        return true;
+      },
+    );
   } finally {
     globalThis.fetch = original;
   }

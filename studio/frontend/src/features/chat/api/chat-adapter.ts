@@ -231,6 +231,7 @@ import {
 import { cancelResearchRun, createResearchRun } from "./research-api";
 import {
   cancelChatGenerationRun,
+  isToolEnabledChatGenerationAdmissionError,
   type ChatGenerationRun,
   type ChatGenerationStatus,
   createChatGenerationRunUntilAbort,
@@ -5802,25 +5803,35 @@ export function createOpenAIStreamAdapter(
                   generationDecision = "legacy";
                 } else {
                   generationDecision = "durable";
-                  generationRun = await createChatGenerationRunUntilAbort(
-                    {
-                      runId: cancelId,
-                      threadId: resolvedThreadId!,
-                      userMessageId: generationUserMessage!.id,
-                      assistantMessageId: unstable_assistantMessageId!,
-                      requestPayload,
-                    },
-                    runSignal,
-                  );
-                  if (!generationRun) {
-                    return;
-                  }
-                  generationRunId = generationRun.id;
-                  generationStatus = generationRun.status;
-                  if (generationStopRequested) {
-                    void cancelChatGenerationRun(generationRun.id).catch(
-                      () => {},
+                  try {
+                    generationRun = await createChatGenerationRunUntilAbort(
+                      {
+                        runId: cancelId,
+                        threadId: resolvedThreadId!,
+                        userMessageId: generationUserMessage!.id,
+                        assistantMessageId: unstable_assistantMessageId!,
+                        requestPayload,
+                      },
+                      runSignal,
                     );
+                  } catch (error) {
+                    if (!isToolEnabledChatGenerationAdmissionError(error)) {
+                      throw error;
+                    }
+                    // Durable recovery does not yet replay server-side tool events.
+                    // Use the subscriber-owned stream for this policy-forced case.
+                    generationDecision = "legacy";
+                  }
+                  if (!generationRun) {
+                    if (generationDecision === "durable") return;
+                  } else {
+                    generationRunId = generationRun.id;
+                    generationStatus = generationRun.status;
+                    if (generationStopRequested) {
+                      void cancelChatGenerationRun(generationRun.id).catch(
+                        () => {},
+                      );
+                    }
                   }
                 }
               }

@@ -165,10 +165,20 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             status_code = 400,
             detail = "Durable chat runs are available only for local inference",
         )
-    if raw.get("tools") or request.enable_tools is True or bool(request.mcp_enabled):
+    # Recovery currently rebuilds text and reasoning deltas, not server-side tool
+    # events. Keep any request whose effective policy can enter the local tool loop
+    # on the legacy subscriber-owned stream until those events are replayable.
+    from routes.inference import _effective_enable_tools
+
+    if (
+        raw.get("tools")
+        or request.enable_tools is True
+        or bool(request.mcp_enabled)
+        or _effective_enable_tools(request) is True
+    ):
         raise HTTPException(
             status_code = 400,
-            detail = "Client-executed tool chains use the legacy streaming path",
+            detail = "Tool-enabled chat runs use the legacy streaming path",
         )
     if (request.n or 1) != 1:
         raise HTTPException(status_code = 400, detail = "Durable chat runs require n=1")

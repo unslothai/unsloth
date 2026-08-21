@@ -73,6 +73,16 @@ export class ChatGenerationApiError extends Error {
   }
 }
 
+export function isToolEnabledChatGenerationAdmissionError(
+  error: unknown,
+): boolean {
+  return (
+    error instanceof ChatGenerationApiError &&
+    error.status === 400 &&
+    error.message === "Tool-enabled chat runs use the legacy streaming path"
+  );
+}
+
 async function json<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
