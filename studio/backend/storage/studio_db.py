@@ -2680,6 +2680,20 @@ def _generation_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str
     }
 
 
+def _terminal_generation_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
+    return {
+        str(message_id)
+        for row in conn.execute(
+            """SELECT user_message_id, assistant_message_id
+               FROM chat_generation_runs
+               WHERE thread_id = ? AND status IN ('cancelled', 'completed', 'failed')""",
+            (thread_id,),
+        ).fetchall()
+        for message_id in row
+        if message_id is not None
+    }
+
+
 def _references_tombstoned_generation(conn: sqlite3.Connection, message: dict) -> bool:
     metadata = message.get("metadata")
     if not isinstance(metadata, dict) or metadata.get("serverManaged") is not True:
@@ -3325,7 +3339,12 @@ def sync_chat_messages(
         # Snapshot pruning is not delete intent: terminal generation messages may be absent from
         # a stale client snapshot and must survive unless the delete flow names them explicitly.
         explicitly_deleted_ids = {str(message_id) for message_id in deleted_message_ids}
-        prune_protected_ids = research_ids | (generation_ids - explicitly_deleted_ids)
+        explicitly_deleted_terminal_ids = (
+            explicitly_deleted_ids & _terminal_generation_message_ids(conn, thread_id)
+        )
+        prune_protected_ids = research_ids | (
+            generation_ids - explicitly_deleted_terminal_ids
+        )
         # The rows this sync will delete, computed before the upsert so a relink forced by
         # that deletion can be told apart from an edit. Research ids are subtracted because
         # the delete below exempts them: counting one as pruned would walk the reseat past a

@@ -106,6 +106,14 @@ def test_create_is_owner_scoped_idempotent_and_binds_placeholder(chat_home):
     synced = studio_db.sync_chat_messages("thread-1", [], prune_missing = True)
     assert {message["id"] for message in synced} == {"user-1", "assistant-1"}
     assert runs_db.get_run("run-1", "alice") is not None
+    explicitly_pruned = studio_db.sync_chat_messages(
+        "thread-1",
+        [],
+        prune_missing = True,
+        deleted_message_ids = {"assistant-1"},
+    )
+    assert {message["id"] for message in explicitly_pruned} == {"user-1", "assistant-1"}
+    assert runs_db.get_run("run-1", "alice") is not None
     with pytest.raises(runs_db.ChatGenerationConflictError):
         _create(owner = "bob")
     with pytest.raises(runs_db.ChatGenerationConflictError):
