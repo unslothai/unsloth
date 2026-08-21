@@ -276,14 +276,7 @@ def _pick_repo_weight_file(repo_id: str, hf_token: Optional[str]) -> str:
 
     from hub.utils.gguf import drop_shadowed_appledouble_names, is_imatrix_filename
 
-    files = [
-        f
-        for f in drop_shadowed_appledouble_names(
-            list(HfApi(token = hf_token).list_repo_files(repo_id))
-        )
-        # An imatrix is not adapter weights, and it would be the fallback pick below.
-        if not is_imatrix_filename(f)
-    ]
+    files = drop_shadowed_appledouble_names(list(HfApi(token = hf_token).list_repo_files(repo_id)))
     safes = [f for f in files if f.lower().endswith(".safetensors") and "/" not in f]
     if len(safes) == 1:
         return safes[0]
@@ -293,7 +286,13 @@ def _pick_repo_weight_file(repo_id: str, hf_token: Optional[str]) -> str:
             return f
     if safes:
         return safes[0]
-    ggufs = [f for f in files if f.lower().endswith(".gguf") and "/" not in f]
+    # The gguf fallback only: an imatrix is a .gguf holding no adapter and would be picked
+    # here, while a .safetensors is never one, so the candidates above stay untouched.
+    ggufs = [
+        f
+        for f in files
+        if f.lower().endswith(".gguf") and "/" not in f and not is_imatrix_filename(f)
+    ]
     if ggufs:
         return ggufs[0]
     raise FileNotFoundError(f"no .safetensors/.gguf LoRA file found in '{repo_id}'")
