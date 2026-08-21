@@ -334,6 +334,110 @@ def test_web_search_with_image_queries_gives_one_picture_per_subject(monkeypatch
     assert {e["subject"] for e in envelope} == {"Pug", "Beagle"}
 
 
+def test_named_subjects_survive_a_text_sweep_that_finds_nothing(monkeypatch):
+    # image_queries is an explicit request that succeeds on its own without a query, so
+    # an empty TEXT sweep must not take the pictures down with it.
+    class NoText(_SubjectDDGS):
+        def text(
+            self,
+            query,
+            max_results = 5,
+        ):
+            return []
+
+    # ddgs signals an empty sweep by raising; the name is what tools.py matches on.
+    class DDGSException(Exception):
+        pass
+
+    class RaisesEmpty(_SubjectDDGS):
+        def text(
+            self,
+            query,
+            max_results = 5,
+        ):
+            raise DDGSException("No results found for the given query.")
+
+    class OnlyBlocked(_SubjectDDGS):
+        def text(
+            self,
+            query,
+            max_results = 5,
+        ):
+            return [{"title": "X", "href": "https://blocked.example/x", "body": "b"}]
+
+    for engine in (NoText, RaisesEmpty):
+        _SubjectDDGS.calls = []
+        monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = engine))
+        result = tools._web_search("top dog breeds", include_images = True, image_queries = ["Pug"])
+        assert tools.EMPTY_SEARCH_RESULTS[0] in result
+        assert "Pug:\n- [[img:" in result
+        assert sorted(_SubjectDDGS.calls) == ["Pug"]
+        # With the setting off the parameter is acknowledged, not silently dropped.
+        off = tools._web_search("top dog breeds", include_images = False, image_queries = ["Pug"])
+        assert tools.IMAGE_SEARCH_DISABLED in off and "[[img:" not in off
+        # No image_queries: the empty answer stays exactly as it was.
+        assert (
+            tools._web_search("top dog breeds", include_images = True)
+            == (tools.EMPTY_SEARCH_RESULTS[0])
+        )
+
+    # Every hit filtered out by the website policy is the same empty answer.
+    _SubjectDDGS.calls = []
+    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = OnlyBlocked))
+    scoped = tools._web_search(
+        "top dog breeds",
+        include_images = True,
+        image_queries = ["Pug"],
+        # The image hosts stay allowed; only the text hit's domain is out of scope.
+        website_policy = {"allowedDomains": ["akc.org", "cdn.example.com", "example.com"]},
+    )
+    assert tools.EMPTY_SEARCH_RESULTS[1] in scoped and "Pug:\n- [[img:" in scoped
+    # One image lookup, scoped by the same policy the text sweep used.
+    assert len(_SubjectDDGS.calls) == 1 and _SubjectDDGS.calls[0].startswith("Pug")
+
+
+def test_a_genuine_search_failure_carries_no_pictures(monkeypatch):
+    class Boom(_SubjectDDGS):
+        def text(
+            self,
+            query,
+            max_results = 5,
+        ):
+            raise RuntimeError("upstream exploded")
+
+    _SubjectDDGS.calls = []
+    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = Boom))
+    result = tools._web_search("top dog breeds", include_images = True, image_queries = ["Pug"])
+    # Pictures under an error would read as a partial answer.
+    assert result.startswith("Search failed:") and "[[img:" not in result
+    assert _SubjectDDGS.calls == []
+
+
+def test_clear_all_chats_beats_a_thumbnail_write_already_in_flight(monkeypatch, tmp_path):
+    # The fetch copies its registry entry up front, so without the generation check it
+    # could land tmp.replace() after the clear and restore a thumbnail on disk, where
+    # the cache-first path would keep serving it.
+    entry = search_images.register_images(RAW_IMAGES)[0]
+
+    def clear_then_serve(url, **kwargs):
+        search_images.clear_cache()
+        return None, _png_bytes((60, 40)), "image/png"
+
+    monkeypatch.setattr(tools, "_fetch_url_raw", clear_then_serve)
+    assert search_images.thumbnail_bytes(entry["id"]) is None
+    assert list(tmp_path.glob("*.jpg")) == []
+    assert list(tmp_path.glob("*.tmp")) == []
+    # A fetch with no clear racing it still caches, so the guard is not just "never write".
+    monkeypatch.setattr(
+        tools,
+        "_fetch_url_raw",
+        lambda url, **kwargs: (None, _png_bytes((60, 40)), "image/png"),
+    )
+    fresh = search_images.register_images(RAW_IMAGES)[0]
+    assert search_images.thumbnail_bytes(fresh["id"]) is not None
+    assert (tmp_path / f"{fresh['id']}.jpg").is_file()
+
+
 def test_web_search_tool_with_images_adds_the_field_without_touching_the_base():
     with_images = tools.web_search_tool_with_images()
     props = with_images["function"]["parameters"]["properties"]

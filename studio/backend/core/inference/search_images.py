@@ -40,6 +40,9 @@ _MAX_CONCURRENT_FETCHES = 4
 
 _registry: dict[str, dict[str, Any]] = {}
 _registry_lock = threading.Lock()
+# Bumped by clear_cache. A fetch that started before the clear must not publish its
+# thumbnail after it: the write is done under _registry_lock and skipped if this moved.
+_cache_generation = 0
 _fetch_slots = threading.BoundedSemaphore(_MAX_CONCURRENT_FETCHES)
 _inflight: dict[str, threading.Lock] = {}
 _inflight_lock = threading.Lock()
@@ -299,6 +302,8 @@ def thumbnail_bytes(image_id: str) -> bytes | None:
     entry = lookup_image(image_id)
     if entry is None:
         return None
+    with _registry_lock:
+        generation = _cache_generation
 
     with _inflight_lock:
         gate = _inflight.setdefault(image_id, threading.Lock())
@@ -313,18 +318,26 @@ def thumbnail_bytes(image_id: str) -> bytes | None:
                 data = _fetch_thumbnail_bytes(entry["thumbnail"], entry.get("policy"))
             if data is None:
                 return None
-            try:
-                # Writer-unique: racing writers must not publish a torn JPEG.
-                tmp = path.with_suffix(f".{secrets.token_hex(4)}.tmp")
-                tmp.write_bytes(data)
-                tmp.replace(path)
-                _evict_cache()
-            except OSError as exc:
-                logger.debug("search thumbnail cache write failed: %s", exc)
+            with _registry_lock:
+                if _cache_generation != generation:
+                    # Clear all chats landed while this was in flight. The chat that
+                    # asked for it is gone, so publish nothing and hand back nothing --
+                    # writing here would restore a thumbnail the clear had removed, and
+                    # the cache-first path above would keep serving it.
+                    return None
                 try:
-                    tmp.unlink(missing_ok = True)
-                except OSError:
-                    pass
+                    # Writer-unique: racing writers must not publish a torn JPEG.
+                    tmp = path.with_suffix(f".{secrets.token_hex(4)}.tmp")
+                    tmp.write_bytes(data)
+                    tmp.replace(path)
+                except OSError as exc:
+                    logger.debug("search thumbnail cache write failed: %s", exc)
+                    try:
+                        tmp.unlink(missing_ok = True)
+                    except OSError:
+                        pass
+            # Outside the lock: a glob plus a stat per file, and nothing here needs it.
+            _evict_cache()
             return data
     finally:
         with _inflight_lock:
@@ -336,11 +349,15 @@ def thumbnail_bytes(image_id: str) -> bytes | None:
 def clear_cache() -> None:
     """Drop every registered image and its cached bytes. Called when the user
     clears all chats: the thumbnails say what was searched for."""
+    global _cache_generation
+    # The unlinks are under the lock too, so an in-flight fetch cannot slip its write
+    # in between the bump and the delete and leave a cleared thumbnail on disk.
     with _registry_lock:
         _registry.clear()
-    try:
-        for pattern in ("*.jpg", "*.tmp"):
-            for path in _cache_dir().glob(pattern):
-                path.unlink(missing_ok = True)
-    except OSError:
-        pass
+        _cache_generation += 1
+        try:
+            for pattern in ("*.jpg", "*.tmp"):
+                for path in _cache_dir().glob(pattern):
+                    path.unlink(missing_ok = True)
+        except OSError:
+            pass

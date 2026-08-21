@@ -11953,6 +11953,38 @@ def _search_failure_message(exc: BaseException, timeout: int) -> str:
     return f"Search failed: {exc}"
 
 
+def _empty_result_with_requested_images(
+    empty_text: str, subjects: list, include_images: bool, timeout, cancel_event, website_policy
+) -> str:
+    """``empty_text`` plus the pictures the model asked for by name, if any.
+
+    An ``image_queries`` call is an explicit request, and it succeeds on its own when
+    sent without a query -- so returning the bare "No results found." because the TEXT
+    sweep came back empty dropped images that were there to be had. Only the named
+    subjects are looked up here; the per-query image pile has no answer to garnish.
+    """
+    if not subjects:
+        return empty_text
+    if not include_images:
+        # Replayed history keeps teaching the parameter; say so, don't drop it.
+        return empty_text + "\n\n---\n\n" + IMAGE_SEARCH_DISABLED
+    if cancel_event is not None and cancel_event.is_set():
+        return empty_text
+    try:
+        found = _image_search(
+            subjects,
+            timeout = timeout,
+            cancel_event = cancel_event,
+            website_policy = website_policy,
+        )
+    except Exception as exc:  # noqa: BLE001 - a garnish must not become the answer
+        # One caller is already inside an `except`; raising from here would replace a
+        # clean "No results found." with a traceback out of _web_search.
+        logger.debug("image lookup after an empty search failed (%s)", type(exc).__name__)
+        return empty_text
+    return empty_text + "\n\n---\n\n" + found
+
+
 def _web_search(
     query: str,
     max_results: int = 5,
@@ -12019,7 +12051,14 @@ def _web_search(
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
-            return EMPTY_SEARCH_RESULTS[0]
+            return _empty_result_with_requested_images(
+                EMPTY_SEARCH_RESULTS[0],
+                subjects,
+                include_images,
+                timeout,
+                cancel_event,
+                website_policy,
+            )
         parts = []
         for r in results:
             if len(parts) >= max_results:
@@ -12032,7 +12071,14 @@ def _web_search(
             snippet = " ".join(str(r.get("body") or "").split())
             parts.append(f"Title: {title}\nURL: {href}\nSnippet: {snippet}")
         if not parts:
-            return EMPTY_SEARCH_RESULTS[1]
+            return _empty_result_with_requested_images(
+                EMPTY_SEARCH_RESULTS[1],
+                subjects,
+                include_images,
+                timeout,
+                cancel_event,
+                website_policy,
+            )
         text = "\n\n---\n\n".join(parts)
         text += (
             "\n\n---\n\nIMPORTANT: These are only short snippets. "
@@ -12060,7 +12106,20 @@ def _web_search(
             text += "\n\n---\n\n" + IMAGE_SEARCH_DISABLED
         return text
     except Exception as e:
-        return _search_failure_message(e, timeout)
+        failure = _search_failure_message(e, timeout)
+        # ddgs signals an empty sweep by RAISING, so that exit is an empty result too
+        # and owes the named subjects their pictures. A genuine failure keeps its
+        # message alone: pictures under an error read as a partial answer.
+        if failure == EMPTY_SEARCH_RESULTS[0]:
+            return _empty_result_with_requested_images(
+                failure,
+                subjects,
+                include_images,
+                timeout,
+                cancel_event,
+                website_policy,
+            )
+        return failure
 
 
 IMAGE_SEARCH_MAX_QUERIES = 5
