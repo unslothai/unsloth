@@ -11,6 +11,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import textwrap
 
 import pytest
 
@@ -95,12 +96,15 @@ GPU: 1
 
 
 def _extract_function(script: pathlib.Path, name: str) -> str:
+    """One shell function, dedented. Closes on a brace at the DEFINITION's indentation,
+    so a helper defined inside a block does not run to the next top-level brace."""
     src = script.read_text(encoding = "utf-8")
     start = src.find(f"{name}() {{")
     assert start >= 0, f"{name} missing from {script.name}"
-    end = src.find("\n}", start)
+    indent = src[src.rfind("\n", 0, start) + 1 : start]
+    end = src.find(f"\n{indent}}}", start)
     assert end > start, f"{name} in {script.name} is not brace-terminated"
-    return src[start : end + 2]
+    return textwrap.dedent(indent + src[start : end + len(indent) + 2])
 
 
 def _run_gpu_records(tmp_path, script: pathlib.Path, name: str, rocminfo: str) -> str:
@@ -655,8 +659,31 @@ def test_summary_probes_torch_and_has_a_warning_arm():
         "signal.alarm(60)" in block and "timeout -k 5 60" in block
     ), "the probe must be bounded: a faulted HIP runtime hangs inside `import torch`"
     assert (
-        'step "gpu" "AMD ROCm ($_setup_gfx, PyTorch cannot use it)" "$C_WARN"' in block
+        '_setup_step_amd_warn "PyTorch cannot use it"' in block
     ), "a GPU torch cannot use must not be reported as a healthy ROCm install"
+
+
+def test_a_warning_arm_names_the_arch_only_when_a_probe_found_one(tmp_path):
+    """All three warning arms render through one helper, so both shapes are tested once.
+    The KFD and lspci fallbacks reach the chain with no gfx token at all, and an empty
+    one would otherwise print "AMD ROCm (, PyTorch cannot use it)"."""
+    probe = tmp_path / "warn.sh"
+
+    def render(gfx: str) -> str:
+        probe.write_text(
+            'step() { printf "STEP: %s\\n" "$2"; }\n'
+            f'C_WARN=""\n_setup_gfx="{gfx}"\n'
+            + _extract_function(SETUP_SH, "_setup_step_amd_warn")
+            + '\n_setup_step_amd_warn "PyTorch cannot use it"\n'
+        )
+        result = subprocess.run(
+            ["bash", str(probe)], capture_output = True, text = True, timeout = 30
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    assert render("gfx1201") == "STEP: AMD ROCm (gfx1201, PyTorch cannot use it)"
+    assert render("") == "STEP: AMD ROCm (PyTorch cannot use it)"
 
 
 def test_summary_reports_an_intentional_all_hidden_mask_separately():

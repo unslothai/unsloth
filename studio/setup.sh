@@ -2433,28 +2433,25 @@ EOF
     # visibility mask cannot reach a wheel that does not exist either. Guarded rather than
     # reordered, mirroring the -not $script:ROCmUnsupportedGfxArch guards setup.ps1 uses for
     # the same ranking, so the chain keeps reading in its detection order.
-    if [ "$_setup_rocm_torch_ok" = false ] && [ -z "$_setup_unsup_gfx" ] && [ -n "$_setup_non_rocm_backend" ]; then
+    # "AMD ROCm (gfx1201, <why>)", or without the arch when no probe could name it. One
+    # helper because all three warning arms differ only in that note.
+    _setup_step_amd_warn() {
         if [ -n "$_setup_gfx" ]; then
-            step "gpu" "AMD ROCm ($_setup_gfx, PyTorch backend: $_setup_non_rocm_backend)" "$C_WARN"
+            step "gpu" "AMD ROCm ($_setup_gfx, $1)" "$C_WARN"
         else
-            step "gpu" "AMD ROCm (PyTorch backend: $_setup_non_rocm_backend)" "$C_WARN"
+            step "gpu" "AMD ROCm ($1)" "$C_WARN"
         fi
+    }
+    if [ "$_setup_rocm_torch_ok" = false ] && [ -z "$_setup_unsup_gfx" ] && [ -n "$_setup_non_rocm_backend" ]; then
+        _setup_step_amd_warn "PyTorch backend: $_setup_non_rocm_backend"
         substep "PyTorch GPU use is disabled by the explicit $_setup_non_rocm_backend backend selection."
         substep "Training and GPU inference need a ROCm torch backend; chat and GGUF still work."
     elif [ "$_setup_rocm_torch_ok" = false ] && [ -z "$_setup_unsup_gfx" ] && [ "$_setup_amd_hidden" = true ]; then
-        if [ -n "$_setup_gfx" ]; then
-            step "gpu" "AMD ROCm ($_setup_gfx, hidden by $_setup_vis_name)" "$C_WARN"
-        else
-            step "gpu" "AMD ROCm (hidden by $_setup_vis_name)" "$C_WARN"
-        fi
+        _setup_step_amd_warn "hidden by $_setup_vis_name"
         substep "$_setup_vis_name intentionally hides every AMD device from PyTorch."
         substep "Training and GPU inference are disabled until that mask is changed; chat and GGUF still work."
     elif [ "$_setup_rocm_torch_ok" = false ] && [ -z "$_setup_unsup_gfx" ]; then
-        if [ -n "$_setup_gfx" ]; then
-            step "gpu" "AMD ROCm ($_setup_gfx, PyTorch cannot use it)" "$C_WARN"
-        else
-            step "gpu" "AMD ROCm (PyTorch cannot use it)" "$C_WARN"
-        fi
+        _setup_step_amd_warn "PyTorch cannot use it"
         substep "The GPU is visible to ROCm, but torch.cuda.is_available() is False in this environment."
         substep "Check that the amdgpu kernel driver is loaded and that this user is in the render and video groups."
         # The torch backend fails without an accelerator; llama.cpp remains available.
