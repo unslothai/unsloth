@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   compactionBoundary,
   mergeContextTruncation,
+  promptWasShortened,
 } from "../src/features/chat/utils/context-truncation.ts";
 
 const adapter = readFileSync(
@@ -45,6 +46,29 @@ test("the compaction notice follows the boundary, not the accumulated drops", ()
     0,
   );
   assert.equal(compactionBoundary(undefined), 0);
+});
+
+test("a shortened prompt still counts as a compaction, whatever fits says", () => {
+  // A fit that lands under the physical window but misses the reply reserve sends the
+  // eviction with fits:false. The turns are gone from the model's view, so the notice
+  // and the toast must fire; only a fit that returned the ORIGINAL messages stays quiet.
+  assert.equal(promptWasShortened({ dropped_messages: 2, fits: false }), true);
+  assert.equal(compactionBoundary({ dropped_messages: 2, fits: false }), 2);
+  assert.equal(promptWasShortened({ dropped_messages: 0, fits: false }), false);
+  assert.equal(promptWasShortened(undefined), false);
+});
+
+test("the notice and the toast read the same predicate as the boundary", () => {
+  const notice = readFileSync(
+    new URL(
+      "../src/components/assistant-ui/compaction-notice.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(notice, /promptWasShortened\(truncation\)/);
+  assert.doesNotMatch(notice, /truncation\?\.fits/);
+  assert.match(adapter, /promptWasShortened\(chunk\.context_truncated\)/);
 });
 
 test("the compaction boundary takes the latest value, never the sum", () => {
@@ -285,10 +309,10 @@ test("a fits:false diagnosis is not a compaction", () => {
     "utf8",
   );
   // The fitter returned the ORIGINAL messages with dropped_messages 0, so "older turns
-  // were removed" is untrue, and toasting it burns the once-per-thread flag.
-  assert.match(source, /const reallyCompacted =/);
-  assert.match(source, /context_truncated\.fits === true/);
-  assert.match(source, /dropped_messages \?\? 0\) > 0/);
+  // were removed" is untrue, and toasting it burns the once-per-thread flag. Asserted on
+  // the predicate rather than the literal expression, so it survives a rewording.
+  assert.match(source, /const reallyCompacted = promptWasShortened\(/);
+  assert.equal(promptWasShortened({ dropped_messages: 0, fits: false }), false);
 });
 
 test("the advice depends on WHOSE turn does not fit", () => {
