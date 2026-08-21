@@ -8406,8 +8406,9 @@ class LlamaCppBackend:
         """Return reachable shared Vulkan memory and the bytes it must hold.
 
         Shared iGPU rows overlap, so only the largest pool is credited. The pool
-        must be reachable by an unambiguous full offload, and only selected
-        discrete cards reduce the bytes assigned to it.
+        must be reachable by an unambiguous full offload -- a device pin that
+        names it, or no pin on a host where llama.cpp finds no discrete card --
+        and only selected discrete cards reduce the bytes assigned to it.
         """
         rows = [(row[0], max(0, row[1])) for row in gpus]
         pinned = _extra_args_main_device(argv)
@@ -8415,6 +8416,11 @@ class LlamaCppBackend:
             pinned = env.get("LLAMA_ARG_DEVICE")
         if pinned is None:
             reachable = {idx for idx, _free in rows}
+            # Unpinned, llama.cpp builds the device list itself and appends
+            # integrated GPUs only when it found no discrete one, so a shared
+            # heap beside a discrete card receives nothing.
+            if any(idx not in shared_gpu_ids for idx in reachable):
+                reachable -= set(shared_gpu_ids)
         else:
             # Match the ggml registry names emitted by _vulkan_pin_args.
             names = {device.strip().lower() for device in str(pinned).split(",")}

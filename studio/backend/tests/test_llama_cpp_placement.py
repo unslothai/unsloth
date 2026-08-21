@@ -1826,8 +1826,38 @@ def test_split_mode_none_leaves_a_second_device_heap_uncredited(tmp_path, monkey
     """Split mode none cannot select a shared heap among multiple devices."""
     backend, gguf = _mixed_vulkan(tmp_path, monkeypatch, [(0, 6 * 1024, 8 * 1024), (1, 94641, 0)])
 
+    # Both devices pinned, so the split mode is the only thing left to decide.
     with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(backend, gguf, gpu_memory_mode = "manual", gpu_layers = 33, extra_args = extras)
+        _launch(
+            backend,
+            gguf,
+            gpu_memory_mode = "manual",
+            gpu_layers = 33,
+            extra_args = ["--device", "Vulkan0,Vulkan1", *extras],
+        )
+
+
+def test_an_unpinned_launch_beside_a_discrete_card_leaves_the_heap_uncredited(
+    tmp_path, monkeypatch
+):
+    """llama.cpp drops integrated GPUs when its own device list finds a discrete one."""
+    backend, gguf = _mixed_vulkan(tmp_path, monkeypatch, [(0, 94641, 0), (1, 6 * 1024, 8 * 1024)])
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf, gpu_memory_mode = "manual", gpu_layers = 33)
+
+
+def test_a_pin_still_reaches_the_heap_beside_a_discrete_card(tmp_path, monkeypatch):
+    """Naming the shared device puts it back in llama.cpp's list."""
+    backend, gguf = _mixed_vulkan(tmp_path, monkeypatch, [(0, 94641, 0), (1, 6 * 1024, 8 * 1024)])
+
+    assert _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = 33,
+        extra_args = ["--device", "Vulkan0"],
+    )["cmd"]
 
 
 def test_split_mode_none_still_credits_a_lone_shared_device(tmp_path, monkeypatch):
