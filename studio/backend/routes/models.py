@@ -4440,7 +4440,7 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
     path accepts these as a local pipeline."""
     path = model.path
     _id_hints = (model.model_id, model.display_name, model.id)
-    if model.model_format == "gguf":
+    if model.model_format == "gguf" or Path(path).suffix.lower() == ".gguf":
         try:
             p = Path(path)
             if p.suffix.lower() == ".gguf" and p.is_file():

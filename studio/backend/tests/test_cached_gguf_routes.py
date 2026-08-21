@@ -4,6 +4,7 @@
 import asyncio
 import json
 import os
+import struct
 import sys
 import threading
 import time
@@ -2822,6 +2823,25 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     )
     missing = {a for a in LlamaCppBackend._DIFFUSION_ARCHES if a.lower() not in classified}
     assert not missing, f"diffusion archs would still show in chat: {missing}"
+
+
+def test_local_model_task_classifies_suffix_only_gguf_from_architecture(tmp_path):
+    def gguf_string(value: str) -> bytes:
+        data = value.encode()
+        return struct.pack("<Q", len(data)) + data
+
+    model_path = tmp_path / "opaque.gguf"
+    metadata = gguf_string("general.architecture") + struct.pack("<I", 8) + gguf_string("flux")
+    model_path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
+    model = SimpleNamespace(
+        model_format = None,
+        path = str(model_path),
+        model_id = None,
+        display_name = "Opaque",
+        id = str(model_path),
+    )
+
+    assert models_route._local_model_task(model) == "text-to-image"
 
 
 def test_arch_to_task_tags_the_h3_gguf_bundle_as_video():
