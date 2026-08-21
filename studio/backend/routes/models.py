@@ -41,6 +41,12 @@ class CachedModelRepo(BaseModel):
     # True for an sd.cpp companion mirror (VAE / text encoders, no denoiser). Declared here or
     # response_model drops it and the flag never reaches the picker that has to filter on it.
     companion: Optional[bool] = None
+    # Snapshot path for a copy its bare repo id cannot reach (legacy/default cache while
+    # another is active). Declared here or response_model drops it and the picker loads
+    # through the active cache instead. Mirrors the cached-GGUF row's own load_id.
+    load_id: Optional[str] = None
+    # "adapter" for a cached LoRA/PEFT repo; pickers that offer whole models filter on it.
+    model_format: Optional[str] = None
 
 
 class CachedModelsResponse(BaseModel):
@@ -4741,6 +4747,64 @@ async def list_cached_models(
         return {"cached": []}
 
 
+def _repo_model_snapshots(repo_info) -> list:
+    """Snapshot dirs of a cached non-GGUF repo, newest selection order first."""
+    from hub.utils.hf_cache_state import snapshot_selection_key
+
+    candidates = [
+        Path(snapshot)
+        for revision in getattr(repo_info, "revisions", ()) or ()
+        if (snapshot := getattr(revision, "snapshot_path", None)) is not None
+    ]
+    candidates.sort(key = snapshot_selection_key, reverse = True)
+    return candidates
+
+
+def _repo_model_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
+    """Snapshot dir to load a non-GGUF repo by, for a copy that does not resolve by id.
+    ``None`` when the id works, since the repo dir itself is not loadable.
+
+    The non-GGUF twin of ``_repo_gguf_load_id``. Without it a repo cached only in the
+    legacy or default cache reads as its bare id, which ``ModelConfig`` then resolves
+    through whichever cache is active: offline the pick cannot load, online it re-downloads
+    a copy that is already on disk. The compatibility inventory pins the same way.
+    """
+    repo_path = getattr(repo_info, "repo_path", None)
+    if repo_path is None or active_root is None:
+        return None
+    try:
+        # A recovered repo's refs/main names nothing, so its id resolves nowhere and needs a pin.
+        if Path(repo_path).parent.resolve(
+            strict = False
+        ) == active_root and not _repo_id_will_not_resolve(Path(repo_path)):
+            return None
+    except (OSError, RuntimeError, ValueError):
+        pass
+    for snapshot in _repo_model_snapshots(repo_info):
+        try:
+            if snapshot.is_dir():
+                return str(snapshot)
+        except OSError:
+            continue
+    return None
+
+
+def _repo_model_format(repo_info) -> Optional[str]:
+    """``"adapter"`` for a cached LoRA/PEFT repo, else ``None``.
+
+    ``cached_model_rows`` carries no format of its own, so every consumer that wanted to
+    drop adapters compared against a key that was never set. An adapter ships
+    ``adapter_config.json`` beside its weights; a merged checkpoint does not.
+    """
+    for snapshot in _repo_model_snapshots(repo_info):
+        try:
+            if (snapshot / "adapter_config.json").is_file():
+                return "adapter"
+        except OSError:
+            continue
+    return None
+
+
 def cached_model_rows(cache_scans = None) -> list[dict]:
     _WEIGHT_EXTENSIONS = (".safetensors", ".bin")
     if cache_scans is None:
@@ -4806,6 +4870,14 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                         "size_bytes": total_size,
                         "task": _cached_repo_task(repo_info),
                     }
+                    # Pin a copy that its bare id cannot reach, so the pick loads the
+                    # snapshot that was actually found instead of the active cache's.
+                    model_load_id = _repo_model_load_id(repo_info, active_root)
+                    if model_load_id:
+                        row["load_id"] = model_load_id
+                    model_format = _repo_model_format(repo_info)
+                    if model_format:
+                        row["model_format"] = model_format
                     if is_partial:
                         row["partial"] = True
                     # Listed, so tens of GB of companion weights stay visible and deletable,

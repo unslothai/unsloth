@@ -5651,3 +5651,96 @@ def test_the_listing_probe_hides_a_class_the_installed_diffusers_predates(monkey
     installed[0] = "0.33.0"
     assert family_pipeline_available(wan) is True
     assert "diffusers" not in sys.modules, "the listing probe imported diffusers"
+
+
+def test_cached_model_rows_pins_snapshot_load_id_for_inactive_cache(monkeypatch, tmp_path):
+    """A non-GGUF copy outside the active cache must carry its snapshot path.
+
+    Without the pin the row falls back to the bare repo id, which ModelConfig resolves
+    through the ACTIVE cache: offline the pick cannot load, online it re-downloads a copy
+    already on disk. The cached-GGUF rows have always pinned this way.
+    """
+    active = tmp_path / "active"
+    active.mkdir()
+    snapshot = tmp_path / "legacy" / "models--Org--Away" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    away = _repo(
+        "Org/Away",
+        [],
+        tmp_path / "legacy" / "models--Org--Away",
+        revisions = [
+            SimpleNamespace(files = [_file("model.safetensors", 5_000)], snapshot_path = snapshot),
+        ],
+    )
+    here_snapshot = active / "models--Org--Here" / "snapshots" / "rev"
+    here_snapshot.mkdir(parents = True)
+    here = _repo(
+        "Org/Here",
+        [],
+        active / "models--Org--Here",
+        revisions = [
+            SimpleNamespace(files = [_file("model.safetensors", 6_000)], snapshot_path = here_snapshot),
+        ],
+    )
+
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(
+        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [away, here])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = {row["repo_id"]: row for row in models_route.cached_model_rows()}
+
+    assert rows["Org/Away"]["load_id"] == str(snapshot)
+    # The active-cache copy resolves by id, so pinning it would only freeze a revision.
+    assert "load_id" not in rows["Org/Here"]
+
+
+def test_cached_model_rows_flags_adapter_repos(monkeypatch, tmp_path):
+    """A cached LoRA must be labelled, or every 'no adapters' filter compares against
+    a key that is never set and offers the adapter as a whole model."""
+    active = tmp_path / "active"
+    adapter_snap = active / "models--Org--Lora" / "snapshots" / "rev"
+    adapter_snap.mkdir(parents = True)
+    (adapter_snap / "adapter_config.json").write_text("{}")
+    adapter = _repo(
+        "Org/Lora",
+        [],
+        active / "models--Org--Lora",
+        revisions = [
+            SimpleNamespace(
+                files = [_file("adapter_model.safetensors", 4_000)],
+                snapshot_path = adapter_snap,
+            ),
+        ],
+    )
+    merged_snap = active / "models--Org--Merged" / "snapshots" / "rev"
+    merged_snap.mkdir(parents = True)
+    (merged_snap / "config.json").write_text("{}")
+    merged = _repo(
+        "Org/Merged",
+        [],
+        active / "models--Org--Merged",
+        revisions = [
+            SimpleNamespace(files = [_file("model.safetensors", 9_000)], snapshot_path = merged_snap),
+        ],
+    )
+
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(
+        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
+    )
+    monkeypatch.setattr(
+        models_route,
+        "_all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [adapter, merged])],
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = {row["repo_id"]: row for row in models_route.cached_model_rows()}
+
+    assert rows["Org/Lora"]["model_format"] == "adapter"
+    assert "model_format" not in rows["Org/Merged"]
