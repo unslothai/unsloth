@@ -1199,3 +1199,54 @@ def test_an_on_device_speech_checkpoint_is_never_revalidated(monkeypatch, tmp_pa
 
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
     assert asked == []
+
+
+# ── Every engine and both stages ───────────────────────────────────────────────
+# The refusal has to sit on the plan as well as the load, because the Images and Video pages
+# plan, stage and download BEFORE they call load -- a load-only gate arrives after the bytes.
+# And it has to sit on all three engines: a mixed VIDEO repo goes through VideoBackend, and a
+# CPU/MPS or sd.cpp-forced image pick through SdCppDiffusionBackend, neither of which shares
+# DiffusionBackend's preflight.
+
+
+def test_the_shared_refusal_is_wired_into_every_plan_and_load_path():
+    """A structural check, deliberately. The behavioural tests above pin the verdict itself; what
+    keeps regressing is where it is CALLED, and each engine's plan/load needs a live backend plus
+    a Hub to exercise end to end. Asserting the call sites keeps the wiring pinned cheaply."""
+    import inspect
+
+    from core.inference import diffusion, sd_cpp_backend, video
+
+    # Images: the plan folds the verdict into incompatible_reason rather than raising, because
+    # that field is what the page renders instead of staging entries.
+    plan = inspect.getsource(diffusion.DiffusionBackend.download_plan)
+    assert "speech_pick_refusal" in plan
+
+    # Video: plan and worker both, since a direct begin_load reaches no plan.
+    assert "_assert_pick_is_not_speech" in inspect.getsource(video.VideoBackend.download_plan)
+    assert "_assert_pick_is_not_speech" in inspect.getsource(video.VideoBackend._run_load)
+
+    # sd.cpp: plan and worker. NOT begin_load, which is offline-only by contract and cannot
+    # afford the range request's bound.
+    sd_plan = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend.download_plan)
+    assert "_assert_pick_is_not_speech" in sd_plan
+    assert "_assert_pick_is_not_speech" not in inspect.getsource(
+        sd_cpp_backend.SdCppDiffusionBackend.begin_load
+    )
+
+
+def test_the_video_and_sd_cpp_helpers_delegate_to_the_one_verdict(monkeypatch):
+    """Three engines, one refusal. A second copy of the speech arch set is how they drift."""
+    from core.inference import sd_cpp_backend, video
+
+    seen: list = []
+    monkeypatch.setattr(
+        diffusion_compat,
+        "assert_pick_is_not_speech",
+        lambda *a, **k: seen.append(a),
+    )
+
+    video._assert_pick_is_not_speech(CSM_REPO, CSM_FILE, "tok")
+    sd_cpp_backend._assert_pick_is_not_speech(CSM_REPO, CSM_FILE, "tok")
+
+    assert seen == [(CSM_REPO, CSM_FILE, "tok"), (CSM_REPO, CSM_FILE, "tok")]

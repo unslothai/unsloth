@@ -61,6 +61,7 @@ from .diffusion_compat import (
     assert_flux2_pick_compatible,
     assert_pick_is_not_speech,
     flux2_pick_mismatch,
+    speech_pick_refusal,
 )
 from .diffusion_device import (
     DiffusionDeviceTarget,
@@ -2597,7 +2598,12 @@ class DiffusionBackend:
         # a 400 here would start the very download this is meant to prevent; carried in the
         # envelope instead, the picker can refuse at SELECTION time. Metadata only (one range
         # request for the GGUF's tensor table), and None whenever nothing is known to be wrong.
-        incompatible = flux2_pick_mismatch(fam, repo_id, gguf_filename, base, hf_token)
+        # The plan is where a download is STAGED, so the speech verdict has to be here too and
+        # not only on the load preflight: the Images page plans, stages and downloads before it
+        # ever calls load, so a refusal that waits for the load arrives after the bytes.
+        incompatible = flux2_pick_mismatch(
+            fam, repo_id, gguf_filename, base, hf_token
+        ) or speech_pick_refusal(repo_id, gguf_filename, hf_token)
         # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards.
         te_files = self._te_prequant_plan_files(
             fam, text_encoder_quant, hf_token, load_kwargs.get("gpu_ordinal")

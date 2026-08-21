@@ -461,6 +461,16 @@ def _scheduler_step_progress(pipe: Any, on_step: Any):
         scheduler.step = original
 
 
+def _assert_pick_is_not_speech(
+    repo_id: str,
+    gguf_filename: Optional[str],
+    hf_token: Optional[str] = None,
+) -> None:
+    """The shared speech refusal, imported lazily so this module keeps its import cost."""
+    from .diffusion_compat import assert_pick_is_not_speech
+    assert_pick_is_not_speech(repo_id, gguf_filename, hf_token)
+
+
 def _detect_load_family(
     repo_id: str, gguf_filename: Optional[str], family_override: Optional[str]
 ) -> Optional[VideoFamily]:
@@ -1390,6 +1400,11 @@ class VideoBackend:
         try:
             fam = _detect_load_family(
                 kwargs["repo_id"], kwargs.get("gguf_filename"), kwargs.get("family_override")
+            )
+            # Also on the worker, which a direct begin_load reaches without a plan. Here rather
+            # than in validate_load_request, which is network-free by contract.
+            _assert_pick_is_not_speech(
+                kwargs["repo_id"], kwargs.get("gguf_filename"), kwargs.get("hf_token")
             )
             kind = resolve_video_model_kind(kwargs.get("gguf_filename"), kwargs.get("model_kind"))
             from .video_minimax_h3 import is_h3_native
@@ -2733,6 +2748,10 @@ class VideoBackend:
         from huggingface_hub import HfApi
 
         fam = _detect_load_family(repo_id, gguf_filename, family_override)
+        # _detect_load_family resolves the family from the REPO id first, so a mixed video repo
+        # answers its media family for every file in it and a csm quant is accepted as one of
+        # them. Refuse before the plan stages a byte.
+        _assert_pick_is_not_speech(repo_id, gguf_filename, hf_token)
         kind = resolve_video_model_kind(gguf_filename, model_kind)
         from .video_minimax_h3 import is_h3_native
 
