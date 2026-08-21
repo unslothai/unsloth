@@ -23,7 +23,7 @@ import {
 } from "./download-manager-state";
 import { startJob } from "./poll-loop";
 import { runtimeRegistry } from "./runtime-registry";
-import { getTransportMode } from "./transport-preference";
+import { resolveTransportMode } from "./transport-preference";
 import { ACTIVE_STATES, TRANSPORT_STATUS_TIMEOUT_MS } from "./download-manager-config";
 
 function reportConflictStartError(error: unknown): void {
@@ -144,7 +144,7 @@ export async function requestStart(
   req: DownloadRequest,
 ): Promise<DownloadStartOutcome> {
   return runWithPendingStartGuard(req, async () => {
-    let mode: TransportMode = getTransportMode();
+    let mode: TransportMode = await resolveTransportMode();
     try {
       mode = await effectiveTransportMode(mode);
     } catch (err) {

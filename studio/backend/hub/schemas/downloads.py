@@ -24,16 +24,16 @@ class DownloadModelRequest(BaseModel):
         None,
         description = "Quantization label (e.g. 'Q4_K_M'). Required for GGUF repos.",
     )
-    use_xet: bool = Field(
-        True,
+    use_xet: Optional[bool] = Field(
+        None,
         description = "Legacy transport flag, superseded by transport_mode. Kept so an older "
-        "frontend or a scripted caller keeps working.",
+        "frontend or a scripted caller keeps working. Omitted -> the install's setting.",
     )
     transport_mode: Optional[Literal["auto", "xet", "http"]] = Field(
         None,
-        description = "Transport preference. 'auto' (the default in the UI) lets the backend pick "
-        "per machine: it knows this host's RAM, its hf_xet build, and whether Xet has "
-        "been failing here. 'xet'/'http' force one. Omitted -> use_xet decides.",
+        description = "Transport preference. 'auto' lets the backend pick per machine: it knows "
+        "this host's RAM, its hf_xet build, and whether Xet has been failing here. "
+        "'xet'/'http' force one. Omitted -> use_xet, then the install's setting.",
     )
     scope_id: Optional[str] = Field(
         None,
@@ -181,16 +181,16 @@ class DownloadDatasetRequest(BaseModel):
     """
 
     repo_id: str = Field(..., description = "HuggingFace dataset repo ID")
-    use_xet: bool = Field(
-        True,
+    use_xet: Optional[bool] = Field(
+        None,
         description = "Legacy transport flag, superseded by transport_mode. Kept so an older "
-        "frontend or a scripted caller keeps working.",
+        "frontend or a scripted caller keeps working. Omitted -> the install's setting.",
     )
     transport_mode: Optional[Literal["auto", "xet", "http"]] = Field(
         None,
-        description = "Transport preference. 'auto' (the default in the UI) lets the backend pick "
-        "per machine: it knows this host's RAM, its hf_xet build, and whether Xet has "
-        "been failing here. 'xet'/'http' force one. Omitted -> use_xet decides.",
+        description = "Transport preference. 'auto' lets the backend pick per machine: it knows "
+        "this host's RAM, its hf_xet build, and whether Xet has been failing here. "
+        "'xet'/'http' force one. Omitted -> use_xet, then the install's setting.",
     )
 
 

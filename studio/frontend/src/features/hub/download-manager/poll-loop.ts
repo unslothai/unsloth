@@ -85,7 +85,7 @@ import {
   runtimeRegistry,
   teardownRuntime,
 } from "./runtime-registry";
-import { getTransportMode } from "./transport-preference";
+import { resolveTransportMode } from "./transport-preference";
 
 function notify(
   job: ManagedDownload,
@@ -583,7 +583,7 @@ export async function startJob(
   // boolean here would read "auto" as "not xet" and send every download over HTTP.
   const requestedMode: TransportMode =
     opts.useXet === undefined
-      ? getTransportMode()
+      ? await resolveTransportMode()
       : opts.useXet
         ? TRANSPORT.XET
         : TRANSPORT.HTTP;

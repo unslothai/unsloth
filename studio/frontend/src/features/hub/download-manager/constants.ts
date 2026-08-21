@@ -19,9 +19,23 @@ export const TRANSPORT_MODES = [
   TRANSPORT.XET,
 ] as const;
 export type TransportMode = (typeof TRANSPORT_MODES)[number];
-// Auto by default: the backend picks per machine (RAM, hf_xet build, recent Xet failures), and
-// effectiveTransportMode() resolves that to a concrete transport before any download starts.
-export const DEFAULT_TRANSPORT_MODE: TransportMode = TRANSPORT.AUTO;
+// A fallback, not the whole answer: the install's setting comes from
+// /api/settings/download-transport. This covers the window before it arrives.
+export const DEFAULT_TRANSPORT_MODE: TransportMode = TRANSPORT.HTTP;
+
+/** The preference in force: this browser's own choice, else the install's setting, else HTTPS. */
+export function pickTransportMode(
+  stored: unknown,
+  installed: unknown,
+): TransportMode {
+  if (isTransportMode(stored)) {
+    return stored;
+  }
+  if (isTransportMode(installed)) {
+    return installed;
+  }
+  return DEFAULT_TRANSPORT_MODE;
+}
 
 export function isTransportMode(value: unknown): value is TransportMode {
   return (

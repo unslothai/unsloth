@@ -2,6 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { SettingsDialog } from "./settings-dialog";
+export {
+  type DownloadTransportMode,
+  type DownloadTransportSettings,
+  loadDownloadTransportSettings,
+  subscribeDownloadTransportSettings,
+  updateDownloadTransportSettings,
+} from "./api/download-transport";
 export { loadEmbeddingModelSettings } from "./api/embedding-model";
 export { loadOpenAIAutoSwitchSettings } from "./api/openai-auto-switch";
 export {

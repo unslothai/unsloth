@@ -74,6 +74,7 @@ import {
 import { EmbeddingModelCombobox } from "../components/embedding-model-combobox";
 import { LanguageSelect } from "../components/language-select";
 import { SettingsRow } from "../components/settings-row";
+import { DownloadTransportRow } from "../components/download-transport-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
 import { useDesktopBooleanSetting } from "../hooks/use-desktop-boolean-setting";
@@ -174,9 +175,7 @@ export function GeneralTab() {
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
 
-  const hfTokenPersistenceError = useHfTokenStore(
-    (s) => s.persistenceError,
-  );
+  const hfTokenPersistenceError = useHfTokenStore((s) => s.persistenceError);
   const showLlamaUpdates = useShowLlamaUpdateBanner();
   const showLoadedModels = useShowLoadedModels();
 
@@ -624,9 +623,12 @@ export function GeneralTab() {
               <Switch
                 checked={launchAtLoginSetting.value ?? false}
                 disabled={
-                  launchAtLoginSetting.value === null || launchAtLoginSetting.saving
+                  launchAtLoginSetting.value === null ||
+                  launchAtLoginSetting.saving
                 }
-                onCheckedChange={(enabled) => void launchAtLoginSetting.update(enabled)}
+                onCheckedChange={(enabled) =>
+                  void launchAtLoginSetting.update(enabled)
+                }
               />
               {launchAtLoginSetting.error ? (
                 <span className="max-w-[260px] text-right text-xs text-destructive">
@@ -645,9 +647,12 @@ export function GeneralTab() {
                 <Switch
                   checked={closeToTraySetting.value ?? false}
                   disabled={
-                    closeToTraySetting.value === null || closeToTraySetting.saving
+                    closeToTraySetting.value === null ||
+                    closeToTraySetting.saving
                   }
-                  onCheckedChange={(enabled) => void closeToTraySetting.update(enabled)}
+                  onCheckedChange={(enabled) =>
+                    void closeToTraySetting.update(enabled)
+                  }
                 />
                 {closeToTraySetting.error ? (
                   <span className="max-w-[260px] text-right text-xs text-destructive">
@@ -791,6 +796,10 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
+      <SettingsSection title={t("settings.general.downloads.sectionTitle")}>
+        <DownloadTransportRow />
+      </SettingsSection>
+
       <SettingsSection title={t("settings.general.uploads.sectionTitle")}>
         <SettingsRow
           label={t("settings.general.uploads.maxUploadSize")}
@@ -834,7 +843,6 @@ export function GeneralTab() {
           </div>
         </SettingsRow>
       </SettingsSection>
-
 
       <SettingsSection title={t("settings.general.helperLlm.sectionTitle")}>
         <SettingsRow

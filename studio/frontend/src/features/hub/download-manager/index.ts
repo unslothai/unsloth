@@ -51,6 +51,7 @@ export {
 export { scopedVariant } from "./download-manager-types";
 export {
   getTransportMode,
+  resolveTransportMode,
   useDownloadTransportCapabilities,
   useHttpPartialsResumable,
   useTransportMode,
