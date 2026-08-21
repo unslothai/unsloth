@@ -68,3 +68,4 @@ tabulate==0.9.0; python_version < "3.10"
 openai==3.2.0; python_version >= "3.10"
 openai==2.48.0; python_version < "3.10"
 websockets>=15.0.1
+auto-round

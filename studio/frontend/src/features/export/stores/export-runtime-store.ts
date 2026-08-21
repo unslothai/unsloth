@@ -5,6 +5,7 @@ import { create } from "zustand";
 import {
   cancelExport,
   cleanupExport,
+  exportAutoRound4bit,
   exportGGUF,
   exportLoRA,
   exportMerged,
@@ -151,6 +152,13 @@ export interface RunExportParams {
   /** LoRA: also emit a GGUF LoRA adapter (llama.cpp `--lora`), and its output float type. */
   loraGguf?: boolean;
   loraGgufOuttype?: string;
+  /** Auto-Round 4-bit: target format (auto_awq/auto_gptq/auto_round) and quantization knobs. */
+  autoRoundFormat?: string;
+  autoRoundBits?: number;
+  autoRoundGroupSize?: number;
+  autoRoundIters?: number;
+  autoRoundNsamples?: number;
+  autoRoundDataset?: string;
   saveDirectory: string;
   destination: ExportDestination;
   repoId?: string;
@@ -520,6 +528,23 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             path: outputPath,
           });
         }
+      } else if (params.exportMethod === "autoround4bit") {
+        const { outputPath } = await runRecoverableOp(() =>
+          exportAutoRound4bit({
+            save_directory: params.saveDirectory,
+            export_format: params.autoRoundFormat,
+            bits: params.autoRoundBits,
+            group_size: params.autoRoundGroupSize,
+            iters: params.autoRoundIters,
+            nsamples: params.autoRoundNsamples,
+            dataset: params.autoRoundDataset,
+            push_to_hub: pushToHub,
+            repo_id: params.repoId,
+            hf_token: params.token ?? params.loadToken ?? null,
+            private: params.privateRepo,
+          }),
+        );
+        if (outputPath) outputs.push({ label: "4-bit", path: outputPath });
       }
       if (!isCurrent()) return;
 

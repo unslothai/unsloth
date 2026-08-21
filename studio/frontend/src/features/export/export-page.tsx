@@ -67,6 +67,7 @@ import { ExportRunPanel } from "./components/export-run-panel";
 import { MethodPicker } from "./components/method-picker";
 import { QuantPicker } from "./components/quant-picker";
 import {
+  AUTOROUND_QUANT_OPTIONS,
   EXPORT_METHODS,
   type ExportMethod,
   GUIDE_STEPS,
@@ -773,6 +774,8 @@ export function ExportPage() {
       })),
       loraGguf: emitLoraGguf,
       loraGgufOuttype,
+      autoRoundFormat:
+        effectiveMethod === "autoround4bit" ? quantLevels[0] : undefined,
       saveDirectory,
       destination,
       repoId,
@@ -1386,6 +1389,42 @@ export function ExportPage() {
                         : "LoRA-only export needs a LoRA adapter checkpoint"
                 }
               />
+
+              <AnimatePresence>
+                {exportMethod === "autoround4bit" && (
+                  <motion.div {...collapseAnim} className="overflow-visible">
+                    <div className="flex flex-col gap-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-medium text-muted-foreground">
+                          4-bit Format
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-2 py-1 pl-1">
+                        {AUTOROUND_QUANT_OPTIONS.map((opt) => {
+                          const active = quantLevels[0] === opt.value;
+                          return (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              onClick={() => setQuantLevels([opt.value])}
+                              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 transition-all ${
+                                active
+                                  ? "ring-primary bg-primary/10 text-foreground"
+                                  : "ring-border text-muted-foreground hover:text-foreground hover:ring-foreground/20"
+                              }`}
+                            >
+                              {opt.label}
+                              <span className="text-[10px] opacity-60">
+                                {opt.desc}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
 
               {exportMethod === "merged" && !exportUnsupported && (
                 <div className="space-y-3">

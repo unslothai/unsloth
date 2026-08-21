@@ -37,6 +37,7 @@ from models import (
     ExportStatusResponse,
     ExportOperationResponse,
     ExportMergedModelRequest,
+    ExportAutoRound4bitRequest,
     ExportBaseModelRequest,
     ExportGGUFRequest,
     ExportLoRAAdapterRequest,
@@ -482,7 +483,59 @@ async def export_lora_adapter(
         )
 
 
+@router.post("/export/autoround4bit", response_model = ExportOperationResponse)
+async def export_autoround_4bit(
+    request: ExportAutoRound4bitRequest, current_subject: str = Depends(get_current_subject)
+):
+    """
+    Export the model to 4-bit format using Auto-Round (AWQ/GPTQ).
+
+    Wraps ExportBackend.export_autoround_4bit.
+    """
+    try:
+        await _ensure_export_supported()
+        backend = get_export_backend()
+        success, message, output_path = await asyncio.to_thread(
+            backend.export_autoround_4bit,
+            save_directory = request.save_directory,
+            export_format = request.export_format,
+            bits = request.bits,
+            group_size = request.group_size,
+            iters = request.iters,
+            nsamples = request.nsamples,
+            dataset = request.dataset,
+            push_to_hub = request.push_to_hub,
+            repo_id = request.repo_id,
+            hf_token = request.hf_token,
+            private = request.private,
+        )
+
+        if not success:
+            raise HTTPException(status_code = 400, detail = message)
+
+        return ExportOperationResponse(
+            success = True,
+            message = message,
+            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
+        logger.error(f"Error exporting Auto-Round 4-bit model: {e}", exc_info = True)
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Failed to export Auto-Round 4-bit model: {str(e)}",
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Live export log stream (Server-Sent Events).
+# ─────────────────────────────────────────────────────────────────────
 #
 # The export worker's stdout/stderr is piped to the orchestrator as log
 # entries (core/export/worker.py, orchestrator.py); this endpoint streams

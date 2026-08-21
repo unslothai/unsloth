@@ -3,7 +3,7 @@
 
 import type { TrainingMethod } from "@/types/training";
 
-export type ExportMethod = "merged" | "lora" | "gguf";
+export type ExportMethod = "merged" | "lora" | "gguf" | "autoround4bit";
 
 export const EXPORT_METHODS: {
   value: ExportMethod;
@@ -25,6 +25,14 @@ export const EXPORT_METHODS: {
     description: "Lightweight adapter files (~100 MB). Needs base model.",
     tooltip:
       "Exports only the trained adapter. Pair with the base model at inference time to save storage.",
+  },
+  {
+    value: "autoround4bit",
+    title: "4-bit (vLLM / Auto-Round)",
+    description: "High-accuracy AWQ/GPTQ 4-bit for vLLM deployment.",
+    tooltip:
+      "Uses Intel Auto-Round to quantize your model to W4A16. Best combination of speed, memory, and performance for vLLM.",
+    badge: "Recommended",
   },
   {
     value: "gguf",
@@ -53,6 +61,12 @@ export const QUANT_OPTIONS: {
   { value: "q8_0", label: "Q8_0" },
   { value: "bf16", label: "BF16" },
   { value: "f16", label: "F16" },
+];
+
+export const AUTOROUND_QUANT_OPTIONS = [
+  { value: "auto_awq", label: "AWQ", desc: "Activation aware Weight Quantization" },
+  { value: "auto_gptq", label: "GPTQ", desc: "Alternative 4-bit standard" },
+  { value: "auto_round", label: "Auto-Round", desc: "Native Intel format" },
 ];
 
 /**
@@ -325,6 +339,9 @@ export function getEstimatedSize(
   if (method === "lora") {
     // Adapter size is bounded by LoRA rank, not the base model size.
     return "~100 MB";
+  }
+  if (method === "autoround4bit") {
+    return "~4.1 GB";
   }
   return "";
 }

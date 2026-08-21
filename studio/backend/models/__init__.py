@@ -41,6 +41,7 @@ from .export import (
     ExportBaseModelRequest,
     ExportGGUFRequest,
     ExportLoRAAdapterRequest,
+    ExportAutoRound4bitRequest,
 )
 from .users import Token
 from .inference import (
@@ -98,6 +99,7 @@ __all__ = [
     "ExportBaseModelRequest",
     "ExportGGUFRequest",
     "ExportLoRAAdapterRequest",
+    "ExportAutoRound4bitRequest",
     "Token",
     "LoadRequest",
     "UnloadRequest",
