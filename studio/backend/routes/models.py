@@ -4848,16 +4848,20 @@ def _repo_is_reachable_by_id(repo_path: Path, active_root: Path, loadable: Optio
     return ref_snapshot is None or _snapshot_can_serve_a_load(ref_snapshot)
 
 
-def _repo_model_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
-    """Snapshot dir to load a non-GGUF repo by, or ``None`` when the bare id already works.
+def _repo_model_selection(
+    repo_info, active_root: Optional[Path]
+) -> tuple[Optional[Path], Optional[str]]:
+    """The snapshot a load of this repo will read, and the load id pinning it.
 
-    The non-GGUF twin of ``_repo_gguf_load_id``: a repo cached only in the legacy or
-    default cache otherwise reads as its bare id, which ``ModelConfig`` resolves through
-    the active cache instead, so offline the pick cannot load and online it re-downloads.
+    One choice of revision, so every field describing the pick answers for the SAME copy.
+    Scanning history instead lets an old revision speak for the row: a repo pushed first as
+    a LoRA and later merged into the same id (``push_to_hub_merged``) keeps its stale
+    ``adapter_config.json``, and a whole-model row read as an adapter is dropped from the
+    chat picker. ``load_id`` is ``None`` when the bare id already reaches a serving copy.
     """
     repo_path = getattr(repo_info, "repo_path", None)
     if repo_path is None or active_root is None:
-        return None
+        return None, None
     usable = []
     for snapshot in _repo_model_snapshots(repo_info):
         try:
@@ -4869,19 +4873,32 @@ def _repo_model_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]
     # revision carries weights, but the newest dir can be a half-fetched partial.
     loadable = next((s for s in usable if _snapshot_can_serve_a_load(s)), None)
     if _repo_is_reachable_by_id(Path(repo_path), active_root, loadable):
-        return None
+        # The bare id follows refs/main, so that ref names the revision a load reads.
+        return _default_ref_model_snapshot(Path(repo_path)) or loadable, None
     # No snapshot can serve a load on its own (a diffusers pipeline keeps its config and
     # weights in subdirectories), so keep the previous newest-dir pin rather than drop it.
-    return str(loadable or usable[0]) if usable else None
+    selected = loadable or (usable[0] if usable else None)
+    return selected, (str(selected) if selected else None)
 
 
-def _repo_model_format(repo_info) -> Optional[str]:
+def _repo_model_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
+    """Snapshot dir to load a non-GGUF repo by, or ``None`` when the bare id already works.
+
+    The non-GGUF twin of ``_repo_gguf_load_id``: a repo cached only in the legacy or
+    default cache otherwise reads as its bare id, which ``ModelConfig`` resolves through
+    the active cache instead, so offline the pick cannot load and online it re-downloads.
+    """
+    return _repo_model_selection(repo_info, active_root)[1]
+
+
+def _repo_model_format(repo_info, selected: Optional[Path] = None) -> Optional[str]:
     """``"adapter"`` for a cached LoRA/PEFT repo, else ``None``.
 
     ``cached_model_rows`` set no format, so every consumer filtering out adapters compared
     against a key that never existed. An adapter ships ``adapter_config.json``; a merge does not.
+    Judged on the selected revision; only when none is determinable does history stand in.
     """
-    for snapshot in _repo_model_snapshots(repo_info):
+    for snapshot in [selected] if selected is not None else _repo_model_snapshots(repo_info):
         try:
             if (snapshot / "adapter_config.json").is_file():
                 return "adapter"
@@ -4972,10 +4989,10 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                         "task": _cached_repo_task(repo_info),
                     }
                     # Pin a copy its bare id cannot reach, so the pick loads the found snapshot.
-                    model_load_id = _repo_model_load_id(repo_info, active_root)
+                    selected, model_load_id = _repo_model_selection(repo_info, active_root)
                     if model_load_id:
                         row["load_id"] = model_load_id
-                    model_format = _repo_model_format(repo_info)
+                    model_format = _repo_model_format(repo_info, selected)
                     if model_format:
                         row["model_format"] = model_format
                     # Without this the picker offers an embedding or CLIP repo as a chat model.

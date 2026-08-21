@@ -6066,3 +6066,55 @@ def test_cached_model_rows_ignores_a_training_args_bin_when_pinning(monkeypatch,
     assert models_route._snapshot_can_serve_a_load(decoy) is False
     (decoy / "pytorch_model.bin").write_bytes(b"\0" * 64)
     assert models_route._snapshot_can_serve_a_load(decoy) is True
+
+
+def test_cached_model_rows_classifies_the_selected_revision_not_the_history(
+    monkeypatch, tmp_path
+):
+    """push_to_hub_merged reuses the repo id, so one repo holds a LoRA revision and later a
+    merge. Classifying every snapshot lets the stale adapter_config.json label the whole
+    repo an adapter, and cached_entries drops the merged checkpoint it should offer."""
+    active = tmp_path / "active"
+    repo_dir = active / "models--Org--Tuned"
+
+    adapter = repo_dir / "snapshots" / "lorarev"
+    adapter.mkdir(parents = True)
+    (adapter / "adapter_config.json").write_text("{}")
+    (adapter / "adapter_model.safetensors").write_bytes(b"\0" * 512)
+
+    merged = repo_dir / "snapshots" / "mergedrev"
+    merged.mkdir(parents = True)
+    (merged / "config.json").write_text("{}")
+    (merged / "model.safetensors").write_bytes(b"\0" * 9_000)
+
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text("mergedrev")
+    os.utime(adapter, (1_000_000, 1_000_000))
+    os.utime(merged, (2_000_000, 2_000_000))
+
+    repo = _repo(
+        "Org/Tuned",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(
+                files = [_file("adapter_model.safetensors", 512)], snapshot_path = adapter
+            ),
+            SimpleNamespace(files = [_file("model.safetensors", 9_000)], snapshot_path = merged),
+        ],
+    )
+
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(
+        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = {row["repo_id"]: row for row in models_route.cached_model_rows()}
+
+    assert "model_format" not in rows["Org/Tuned"]
+    # refs/main names the merge, so that is the revision the pick reads.
+    assert models_route._repo_model_selection(repo, active.resolve())[0] == merged
