@@ -4791,22 +4791,35 @@ async def list_cached_models(
 # The weight payload that makes a non-GGUF snapshot loadable. Shared by the row gate and
 # the load-id pin so the two cannot disagree about which copy actually holds weights.
 _NON_GGUF_WEIGHT_EXTENSIONS = (".safetensors", ".bin")
+# Mirrors _MODEL_SNAPSHOT_METADATA in core/training/training.py.
+_NON_GGUF_METADATA_NAMES = ("config.json", "adapter_config.json")
 
 
-def _snapshot_holds_weights(snapshot: Path) -> bool:
-    """Whether this snapshot dir carries non-GGUF weights of its own.
+def _snapshot_can_serve_a_load(snapshot: Path) -> bool:
+    """Whether this snapshot dir can be loaded on its own: metadata AND weights.
 
     huggingface_hub keeps one snapshot per commit holding only the files resolved at that
-    commit, so a metadata-only fetch (AutoConfig / AutoTokenizer against a newer revision)
-    leaves a weightless dir with a newer mtime than the complete snapshot beside it.
+    commit, so a partial fetch leaves an unloadable dir with a newer mtime than the
+    complete snapshot beside it. Both halves happen: a metadata-only fetch (AutoConfig or
+    AutoTokenizer against a newer revision) and a weights-only one (Unsloth's own base
+    model pre-warm passes allow_patterns of the shards plus the index, no config.json).
+    Weights alone raise "Unrecognized model ... should have a model_type key", metadata
+    alone raises "no file named model.safetensors", so requiring both is what
+    latest_snapshot_from_cache_path already means by loadable.
     """
     try:
-        return any(
-            entry.name.endswith(_NON_GGUF_WEIGHT_EXTENSIONS) and entry.is_file()
-            for entry in snapshot.iterdir()
-        )
+        names = [entry.name for entry in snapshot.iterdir() if entry.is_file()]
     except OSError:
         return False
+    return any(name.endswith(_NON_GGUF_WEIGHT_EXTENSIONS) for name in names) and any(
+        name in _NON_GGUF_METADATA_NAMES for name in names
+    )
+
+
+def _default_ref_model_snapshot(repo_cache_dir: Path) -> Optional[Path]:
+    """See hub.utils.inventory_scan; the snapshot dir ``refs/main`` names, or ``None``."""
+    from hub.utils.inventory_scan import default_ref_snapshot
+    return default_ref_snapshot(repo_cache_dir)
 
 
 def _repo_model_snapshots(repo_info) -> list:
@@ -4822,6 +4835,31 @@ def _repo_model_snapshots(repo_info) -> list:
     return candidates
 
 
+def _repo_is_reachable_by_id(
+    repo_path: Path, active_root: Path, loadable: Optional[Path]
+) -> bool:
+    """Whether loading this repo by its bare id lands somewhere that can serve it.
+
+    Only the active cache makes the id a target at all. There, ``from_pretrained`` follows
+    ``refs/main``, so the id is safe only when that landing can serve a load:
+    ``repo_id_will_not_resolve`` catches a ref naming no directory, but a ref naming an
+    EXISTING half-fetched snapshot resolves fine and then fails. The GGUF side draws the
+    same distinction with ``default_ref_offers_no_whole_quant``. An unreadable ref, or a
+    repo with no better sibling to offer, keeps the id it had.
+    """
+    try:
+        if repo_path.parent.resolve(strict = False) != active_root:
+            return False
+        if _repo_id_will_not_resolve(repo_path):
+            return False
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if loadable is None:
+        return True
+    ref_snapshot = _default_ref_model_snapshot(repo_path)
+    return ref_snapshot is None or _snapshot_can_serve_a_load(ref_snapshot)
+
+
 def _repo_model_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
     """Snapshot dir to load a non-GGUF repo by, for a copy that does not resolve by id.
     ``None`` when the id works, since the repo dir itself is not loadable.
@@ -4834,14 +4872,6 @@ def _repo_model_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]
     repo_path = getattr(repo_info, "repo_path", None)
     if repo_path is None or active_root is None:
         return None
-    try:
-        # A recovered repo's refs/main names nothing, so its id resolves nowhere and needs a pin.
-        if Path(repo_path).parent.resolve(
-            strict = False
-        ) == active_root and not _repo_id_will_not_resolve(Path(repo_path)):
-            return None
-    except (OSError, RuntimeError, ValueError):
-        pass
     usable = []
     for snapshot in _repo_model_snapshots(repo_info):
         try:
@@ -4849,15 +4879,15 @@ def _repo_model_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]
                 usable.append(snapshot)
         except OSError:
             continue
-    # Prefer the newest snapshot that actually holds weights. The row is listed because
-    # SOME revision carries them, but pinning the newest directory names a metadata-only
-    # commit the load cannot serve. Training resolves its pin the same way.
-    for snapshot in usable:
-        if _snapshot_holds_weights(snapshot):
-            return str(snapshot)
-    # No snapshot carries root-level weights (a diffusers pipeline keeps them in
-    # subdirectories), so keep the previous newest-dir pin rather than drop the repo.
-    return str(usable[0]) if usable else None
+    # The newest snapshot a load can actually be served from. The row is listed because
+    # SOME revision carries weights, but the newest directory can be a partial fetch that
+    # carries only half of what a load reads. Training resolves its pin the same way.
+    loadable = next((s for s in usable if _snapshot_can_serve_a_load(s)), None)
+    if _repo_is_reachable_by_id(Path(repo_path), active_root, loadable):
+        return None
+    # No snapshot can serve a load on its own (a diffusers pipeline keeps its config and
+    # weights in subdirectories), so keep the previous newest-dir pin rather than drop it.
+    return str(loadable or usable[0]) if usable else None
 
 
 def _repo_model_format(repo_info) -> Optional[str]:

@@ -5893,3 +5893,139 @@ def test_repo_model_can_chat_still_reads_a_metadata_only_snapshot(tmp_path):
     )
 
     assert models_route._repo_model_can_chat(repo) is False
+
+
+def test_cached_model_rows_skips_a_weights_only_snapshot(monkeypatch, tmp_path):
+    """Weights without metadata are as unloadable as metadata without weights.
+
+    Unsloth's own base-model pre-warm fetches the shards plus the index and no
+    config.json, so a weights-only commit lands beside the complete snapshot and sorts
+    first. Pinning it advertises a Downloaded model whose load raises "Unrecognized
+    model ... should have a model_type key".
+    """
+    active = tmp_path / "active"
+    active.mkdir()
+    repo_dir = tmp_path / "legacy" / "models--Org--Chatty"
+
+    complete = repo_dir / "snapshots" / "complete"
+    complete.mkdir(parents = True)
+    (complete / "config.json").write_text("{}")
+    (complete / "model.safetensors").write_bytes(b"\0" * 64)
+
+    weights_only = repo_dir / "snapshots" / "weights"
+    weights_only.mkdir(parents = True)
+    (weights_only / "model.safetensors").write_bytes(b"\0" * 64)
+    (weights_only / "model.safetensors.index.json").write_text("{}")
+
+    # The weight pre-warm happened later, so it sorts first by mtime.
+    os.utime(complete, (1_000_000, 1_000_000))
+    os.utime(weights_only, (2_000_000, 2_000_000))
+
+    repo = _repo(
+        "Org/Chatty",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(
+                files = [_file("model.safetensors", 5_000)], snapshot_path = complete
+            ),
+            SimpleNamespace(
+                files = [_file("model.safetensors", 5_000)], snapshot_path = weights_only
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(
+        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = {row["repo_id"]: row for row in models_route.cached_model_rows()}
+
+    assert rows["Org/Chatty"]["load_id"] == str(complete)
+
+
+def test_cached_model_rows_pins_when_the_active_ref_cannot_serve_a_load(monkeypatch, tmp_path):
+    """An active-cache row is only safe as a bare id while refs/main can serve the load.
+
+    repo_id_will_not_resolve only catches a ref naming no directory at all. A ref naming
+    an EXISTING half-fetched snapshot resolves fine and then fails, so the id must give
+    way to the complete sibling -- the non-GGUF twin of default_ref_offers_no_whole_quant.
+    """
+    active = tmp_path / "active"
+    active.mkdir()
+    repo_dir = active / "models--Org--Chatty"
+
+    complete = repo_dir / "snapshots" / "complete"
+    complete.mkdir(parents = True)
+    (complete / "config.json").write_text("{}")
+    (complete / "model.safetensors").write_bytes(b"\0" * 64)
+
+    metadata_only = repo_dir / "snapshots" / "metadata"
+    metadata_only.mkdir(parents = True)
+    (metadata_only / "config.json").write_text("{}")
+
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text("metadata")
+
+    os.utime(complete, (1_000_000, 1_000_000))
+    os.utime(metadata_only, (2_000_000, 2_000_000))
+
+    repo = _repo(
+        "Org/Chatty",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(
+                files = [_file("model.safetensors", 5_000)], snapshot_path = complete
+            ),
+            SimpleNamespace(files = [_file("config.json", 100)], snapshot_path = metadata_only),
+        ],
+    )
+
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(
+        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(
+        models_route, "_resolve_hf_cache_dir", lambda: active.resolve()
+    )
+
+    rows = {row["repo_id"]: row for row in models_route.cached_model_rows()}
+
+    assert rows["Org/Chatty"]["load_id"] == str(complete)
+
+
+def test_active_cache_repo_with_a_serving_ref_keeps_its_bare_id(tmp_path):
+    """The pin is for refs that cannot serve. A healthy active-cache repo keeps its id,
+    and so does one with nothing better to offer, or the picker would freeze every row
+    to a revision."""
+    active = tmp_path / "active"
+    active.mkdir()
+
+    def _build(name, ref, snaps):
+        repo_dir = active / f"models--Org--{name}"
+        revisions = []
+        for commit, files in snaps.items():
+            snap = repo_dir / "snapshots" / commit
+            snap.mkdir(parents = True)
+            for fname in files:
+                (snap / fname).write_text("{}")
+            revisions.append(SimpleNamespace(snapshot_path = snap, files = []))
+        (repo_dir / "refs").mkdir(parents = True)
+        (repo_dir / "refs" / "main").write_text(ref)
+        return SimpleNamespace(repo_id = f"Org/{name}", repo_path = repo_dir, revisions = revisions)
+
+    healthy = _build("Healthy", "good", {"good": ["config.json", "model.safetensors"]})
+    assert models_route._repo_model_load_id(healthy, active.resolve()) is None
+
+    # Half-fetched ref, but no complete sibling exists: nothing better to pin.
+    nothing_better = _build("Bare", "meta", {"meta": ["config.json"]})
+    assert models_route._repo_model_load_id(nothing_better, active.resolve()) is None
