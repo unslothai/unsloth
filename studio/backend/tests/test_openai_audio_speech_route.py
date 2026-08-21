@@ -444,3 +444,41 @@ def test_external_upstream_error_is_502(monkeypatch):
     )
     assert resp.status_code == 502
     assert "upstream broke" in resp.json()["error"]["message"]
+
+
+def test_external_disconnect_cancels_the_upstream_request(monkeypatch):
+    import asyncio
+
+    from models.inference import AudioSpeechRequest
+
+    _install_external(monkeypatch)
+    upstream_cancelled = asyncio.Event()
+
+    class _DisconnectingRequest:
+        headers = {}
+
+        async def is_disconnected(self):
+            return True
+
+    class _BlockingClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def create_speech(self, **_kwargs):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                upstream_cancelled.set()
+                raise
+
+    monkeypatch.setattr(routes_module, "ExternalProviderClient", _BlockingClient)
+
+    async def _run():
+        with pytest.raises(asyncio.CancelledError):
+            await routes_module._external_tts_speech(
+                AudioSpeechRequest(input = "hi", provider_id = "conn-1", model = "kokoro"),
+                _DisconnectingRequest(),
+            )
+
+    asyncio.run(_run())
+    assert upstream_cancelled.is_set()

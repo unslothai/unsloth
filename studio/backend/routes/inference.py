@@ -12127,14 +12127,23 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
         base_url = base_url,
         api_key = api_key,
     )
-    try:
-        audio_bytes, media_type = await client.create_speech(
+    # Stopping read-aloud aborts the browser fetch, but FastAPI does not cancel a
+    # non-streaming handler on disconnect, so the paid synthesis would run on. Same
+    # task-plus-watcher pair the transcription proxy above uses.
+    speech_task = asyncio.create_task(
+        client.create_speech(
             text = body.input,
             model = body.model,
             voice = body.voice,
             response_format = (body.response_format or "wav").strip().lower(),
             speed = body.speed,
         )
+    )
+    disconnect_watcher = asyncio.create_task(
+        _await_disconnect_then_cancel_task(request, speech_task)
+    )
+    try:
+        audio_bytes, media_type = await speech_task
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code = 502,
@@ -12145,6 +12154,8 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
         )
     except httpx.HTTPError as exc:
         raise HTTPException(status_code = 502, detail = f"Could not reach the TTS endpoint: {exc}")
+    finally:
+        await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
     return Response(content = audio_bytes, media_type = media_type)
 
 
