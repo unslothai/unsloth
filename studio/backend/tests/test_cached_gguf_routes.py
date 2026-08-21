@@ -5244,8 +5244,55 @@ def test_a_runnable_chat_checkpoint_outranks_a_speech_gguf(tmp_path):
     )
 
 
-def _speech_mix_answer(repo_id, folder, *, default_variant):
-    """A two-quant listing for *folder*: the CSM file first, the FLUX denoiser beside it."""
+def test_a_cached_row_listed_from_the_hub_still_drops_its_speech_quant(monkeypatch, tmp_path):
+    """The online cached-row path answers from Hub metadata, so ``context_source`` is empty, and a
+    cached row hands the route its REPO directory rather than a snapshot, so the pin resolves to
+    nothing either. ``context_model`` therefore falls back to the repo id and ``is_local_path`` is
+    False, which skipped the speech filter for exactly the rows most likely to hold a downloaded
+    CSM file. The answering snapshot is resolved now, so the filter applies here too."""
+    repo_dir = tmp_path / "models--someone--mixed-GGUF"
+    snapshot = repo_dir / "snapshots" / "abc123"
+    _arch_gguf(snapshot / "csm-1b-Q4_0.gguf", "llama-csm")
+    _arch_gguf(snapshot / "flux1-dev-Q4_K_M.gguf", "flux")
+
+    async def hub_answer(repo_id, **kwargs):
+        # source=None is the point: a successful Hub listing names no on-disk copy.
+        return _speech_mix_answer(repo_id, snapshot, default_variant = "Q4_K_M", source = None)
+
+    monkeypatch.setattr(GV, "get_gguf_variants_answer", hub_answer)
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: 4096
+    )
+
+    result = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "someone/mixed-GGUF",
+            local_path = str(repo_dir),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+
+    assert [v.quant for v in result.variants] == ["Q4_K_M"]
+    # The runnable quant was the default here, so it survives untouched.
+    assert result.default_variant == "Q4_K_M"
+
+
+_UNSET = object()
+
+
+def _speech_mix_answer(
+    repo_id,
+    folder,
+    *,
+    default_variant,
+    source = _UNSET,
+):
+    """A two-quant listing for *folder*: the CSM file first, the FLUX denoiser beside it.
+
+    *source* defaults to *folder*; pass None for the online Hub path, which names no copy."""
+    if source is _UNSET:
+        source = str(folder)
     return _answer(
         repo_id,
         [
@@ -5265,7 +5312,7 @@ def _speech_mix_answer(repo_id, folder, *, default_variant):
             ),
         ],
         default_variant = default_variant,
-        source = str(folder),
+        source = source,
     )
 
 

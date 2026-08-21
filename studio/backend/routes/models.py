@@ -3649,11 +3649,16 @@ async def get_gguf_variants(
         )
         local = is_local_path(context_model)
         # A llama-csm GGUF is unrunnable on every page, so it must not ride along in the listing
-        # of the folder that outranked it (see the helper). Local only: an undownloaded remote
-        # repo has no header to read, and its files cannot be picked without downloading first.
+        # of the folder that outranked it (see the helper). The read needs a DIRECTORY, which a
+        # local row already is; a cached Hub row expanded online is not, because a successful Hub
+        # listing leaves context_source empty and a repo-directory cache_path pins no snapshot,
+        # so context_model falls back to the repo id. Resolving the answering snapshot puts that
+        # row back under the filter. Absent bytes read as no architecture and are kept, so an
+        # undownloaded quant is never dropped on a guess.
+        speech_root = context_model if local else _cached_snapshot_root(repo_id, local_path)
         listed = (
-            _without_mixed_folder_speech_variants(context_model, list(response.variants))
-            if local
+            _without_mixed_folder_speech_variants(speech_root, list(response.variants))
+            if speech_root
             else list(response.variants)
         )
         default_variant = response.default_variant
@@ -4395,6 +4400,32 @@ def _repo_gguf_task(repo_info) -> Optional[str]:
         return _gguf_folder_task(Path(repo_info.repo_path), (repo_id,))
     except Exception:
         return None
+
+
+def _cached_snapshot_root(repo_id: str, local_path: Optional[str]) -> Optional[str]:
+    """The on-disk snapshot a cached Hub row's variants live in, or None.
+
+    A cached row hands the route its REPO directory (``models--org--name``, routes report
+    ``repo_info.repo_path``), not a snapshot, so the pin resolves to nothing and the speech filter
+    would skip exactly the rows most likely to hold a downloaded CSM file. Resolves to the newest
+    snapshot, the same one ``/api/hub/local-models`` names, so the listing and the filter read one
+    copy rather than two revisions. None when nothing is cached, which leaves the listing alone."""
+    try:
+        if local_path:
+            base = Path(local_path).expanduser()
+            if base.parent.name == "snapshots" and base.is_dir():
+                return str(base)
+            resolved = _resolve_hf_cache_realpath(base)
+            if resolved:
+                return resolved
+        if _is_valid_repo_id(repo_id):
+            from hub.utils.hf_cache_state import repo_cache_dir_name
+            return _resolve_hf_cache_realpath(
+                _resolve_hf_cache_dir() / repo_cache_dir_name("model", repo_id)
+            )
+    except Exception:
+        return None
+    return None
 
 
 def _without_mixed_folder_speech_variants(root: str, variants: list) -> list:
