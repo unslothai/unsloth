@@ -55,8 +55,13 @@ def _bundle(
     return path
 
 
-def _corrupt_deflated_member(path: Path, entries: dict[str, str], member: str) -> Path:
-    with zipfile.ZipFile(path, "w", compression = zipfile.ZIP_DEFLATED) as archive:
+def _corrupt_compressed_member(
+    path: Path,
+    entries: dict[str, str],
+    member: str,
+    compression: int = zipfile.ZIP_DEFLATED,
+) -> Path:
+    with zipfile.ZipFile(path, "w", compression = compression) as archive:
         for name, content in entries.items():
             archive.writestr(name, content)
     with zipfile.ZipFile(path) as archive:
@@ -409,7 +414,7 @@ def test_rejects_an_oversized_archive_resource(tmp_path: Path):
     ["unsloth/SKILL.md", "unsloth/references/config-reference.md"],
 )
 def test_translates_corrupt_deflate_streams(tmp_path: Path, member: str):
-    archive = _corrupt_deflated_member(
+    archive = _corrupt_compressed_member(
         tmp_path / "corrupt.zip",
         {
             "unsloth/SKILL.md": SKILL_MD,
@@ -419,6 +424,22 @@ def test_translates_corrupt_deflate_streams(tmp_path: Path, member: str):
     )
 
     with pytest.raises(skills.SkillError, match = "SKILL.md|valid ZIP"):
+        skills.import_skill_archive(archive)
+    assert not (tmp_path / "skills/unsloth").exists()
+
+
+def test_translates_a_corrupt_bzip2_resource(tmp_path: Path):
+    archive = _corrupt_compressed_member(
+        tmp_path / "corrupt-bzip2.zip",
+        {
+            "unsloth/SKILL.md": SKILL_MD,
+            "unsloth/references/config-reference.md": "Use bf16.\n",
+        },
+        "unsloth/references/config-reference.md",
+        zipfile.ZIP_BZIP2,
+    )
+
+    with pytest.raises(skills.SkillError, match = "valid ZIP"):
         skills.import_skill_archive(archive)
     assert not (tmp_path / "skills/unsloth").exists()
 

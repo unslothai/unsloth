@@ -417,8 +417,15 @@ def import_skill_archive(archive_path: Path, *, replace: bool = False) -> dict:
                     skill_dir.mkdir()
                     for (entry, _), destination in zip(selected_files, destinations):
                         destination.parent.mkdir(parents = True, exist_ok = True)
-                        with archive.open(entry) as source, destination.open("wb") as output:
-                            shutil.copyfileobj(source, output)
+                        try:
+                            with archive.open(entry) as source, destination.open("wb") as output:
+                                shutil.copyfileobj(source, output)
+                        except OSError as exc:
+                            if entry.compress_type == zipfile.ZIP_BZIP2 and exc.errno is None:
+                                raise SkillError(
+                                    "Skill bundle must be a valid ZIP archive."
+                                ) from exc
+                            raise
                         mode = entry.external_attr >> 16
                         destination.chmod(0o755 if mode & 0o111 else 0o644)
             except (zipfile.BadZipFile, zlib.error) as exc:
