@@ -785,7 +785,14 @@ def _is_port_free(host: str, port: int) -> bool:
         addr_info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
         family, socktype, proto, _, sockaddr = addr_info[0]
         with socket.socket(family, socktype, proto) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # On Windows, SO_REUSEADDR lets a second socket bind a listening
+            # port when the incumbent also enabled it. That makes this probe
+            # report the port as free, then uvicorn fails with WinError 10048
+            # instead of letting _resolve_port fall back to the next port.
+            # POSIX keeps the option so a recently closed listener does not
+            # strand the preferred port in TIME_WAIT.
+            if sys.platform != "win32":
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind(sockaddr)
     except OSError:
         return False
