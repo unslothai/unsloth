@@ -2191,12 +2191,19 @@ export function ModelConfigPage({
               llamaExtraArgs: sanitizedLocal,
             })
           : null;
+        // What hydration would leave in the config: the row's list when it carries
+        // one, this browser's when it does not, since a row that says nothing about
+        // arguments cannot overrule the list already here. Judged as a whole, or a
+        // local flag the expanded row has ALREADY refused is declared loadable by a
+        // verdict read off the empty server list, and the row republishes its own
+        // only when its verdict changes, so the objection never comes back.
+        const hydratedArgs = serverConfig?.llamaExtraArgs ?? stored;
         const hydratedIsLoadable =
-          stored.length === 0
+          hydratedArgs.length === 0
             ? true
             : extraArgsAreLoadable(
                 diagnoseExtraArgs(
-                  formatExtraArgs(stored),
+                  formatExtraArgs(hydratedArgs),
                   {
                     flags: {},
                     managed: managed?.managed ?? new Set<string>(),

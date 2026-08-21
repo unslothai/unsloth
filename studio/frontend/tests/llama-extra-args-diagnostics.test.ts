@@ -824,9 +824,19 @@ test("a hydrated list is judged even when the row cannot be", () => {
   // With Advanced collapsed the row never mounts, so nothing objects to a stored
   // list this build refuses (the overrides route only validates its shape), and
   // Load would be live for a request that comes back 400.
+  //
+  // Judged on the list hydration ADOPTS, not on the row's: a row carrying no
+  // arguments leaves the local ones standing, and reading the verdict off the empty
+  // server list called them loadable. That one lands even with Advanced expanded,
+  // where the row has already refused the list and republishes only on a change of
+  // its own verdict, so nothing puts the objection back.
   assert.match(
     body,
-    /const hydratedIsLoadable = stored\.length === 0 \? true : extraArgsAreLoadable\( diagnoseExtraArgs\( formatExtraArgs\(stored\)/,
+    /const hydratedArgs = serverConfig\?\.llamaExtraArgs \?\? stored;/,
+  );
+  assert.match(
+    body,
+    /const hydratedIsLoadable = hydratedArgs\.length === 0 \? true : extraArgsAreLoadable\( diagnoseExtraArgs\( formatExtraArgs\(hydratedArgs\)/,
   );
   // But not over an edit made while the request was out: the row is judging that
   // text, and replacing its verdict re-enabled Load for invalid input.
