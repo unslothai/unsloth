@@ -56,6 +56,10 @@ _REQUIREMENT = re.compile(
     r"""^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?(?P<spec>.*)$"""
 )
 
+# `pip install`, but also `pip3 install` and `"$VENV/bin/pip" install`, which
+# mlx-ci.yml:439 already uses. Matching the literal text `pip install` missed both.
+_PIP_INSTALL = re.compile(r"""(?:^|[\s"'/])pip[0-9.]*["']?\s+install(?:\s|$)""")
+
 _UPPER = re.compile(r"(?P<op><=|<)(?P<version>[0-9][0-9.]*)")
 _EXACT = re.compile(r"===?(?P<version>[0-9][0-9.]*)")
 _COMPATIBLE = re.compile(r"~=(?P<version>[0-9][0-9.]*)")
@@ -86,18 +90,24 @@ def _install_commands_in(text: str) -> list[tuple[int, str]]:
         pending.append(stripped)
         joined = " ".join(pending)
         pending = []
-        if "pip install" in joined:
+        if _PIP_INSTALL.search(joined):
             commands.append((start, joined))
     if pending:
         joined = " ".join(pending)
-        if "pip install" in joined:
+        if _PIP_INSTALL.search(joined):
             commands.append((start, joined))
     return commands
 
 
+def _workflow_files(root: Path = WORKFLOWS) -> list[Path]:
+    """Both extensions: GitHub accepts .yaml, and scanning only .yml would leave one
+    silently unchecked while the .yml pins kept the anti-vacuity test satisfied."""
+    return sorted(list(root.glob("*.yml")) + list(root.glob("*.yaml")))
+
+
 def _install_lines() -> list[tuple[Path, int, str]]:
     found = []
-    for path in sorted(WORKFLOWS.glob("*.yml")):
+    for path in _workflow_files():
         for number, command in _install_commands_in(path.read_text(encoding = "utf-8")):
             found.append((path, number, command))
     return found
@@ -136,7 +146,15 @@ def _specs_for(package: str) -> list[tuple[Path, int, str]]:
 
 
 def _version(raw: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in raw.strip(".").split(".") if part.isdigit())
+    """Version as ints, trailing zeros dropped so 4.0 and 4 compare equal.
+
+    Without this, `<4.0` was rejected against a boundary of `(4,)`: the tuples differ
+    even though the two bounds are the same release.
+    """
+    parts = [int(part) for part in raw.strip(".").split(".") if part.isdigit()]
+    while len(parts) > 1 and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts)
 
 
 def _excludes(spec: str, major: tuple[int, ...]) -> bool:
@@ -276,3 +294,37 @@ def test_a_commented_out_pin_is_not_mistaken_for_an_install() -> None:
     lines = _install_lines()
     assert lines, "no pip install lines found at all"
     assert all(not line.lstrip().startswith("#") for _, _, line in lines)
+
+
+def test_a_yaml_workflow_is_scanned_too(tmp_path) -> None:
+    """GitHub accepts .yaml. Scanning one extension leaves the other unchecked."""
+    (tmp_path / "a.yml").write_text("x", encoding = "utf-8")
+    (tmp_path / "b.yaml").write_text("x", encoding = "utf-8")
+    assert [p.name for p in _workflow_files(tmp_path)] == ["a.yml", "b.yaml"]
+
+
+def test_pip_is_recognized_beyond_the_bare_command() -> None:
+    """`"$STUDIO_VENV/bin/pip" install` is already used at mlx-ci.yml:439.
+
+    Matching the literal text `pip install` missed it and `pip3` alike, so a guarded
+    SDK installed either way was never inspected.
+    """
+    for command in (
+        "pip install openai",
+        "pip3 install openai",
+        '"$STUDIO_VENV/bin/pip" install openai',
+        "python -m pip install openai",
+    ):
+        assert _PIP_INSTALL.search(command), command
+    assert not _PIP_INSTALL.search("npm install openai")
+    assert not _PIP_INSTALL.search("pip download openai")
+
+
+def test_equivalent_bounds_compare_equal() -> None:
+    """`<4.0` and `<4` are the same boundary; only tuple length differed."""
+    assert _version("4.0") == _version("4") == (4,)
+    assert _version("1.58") == (1, 58)
+    assert _excludes(">=1.50,<4.0", GUARDED["openai"])
+    assert _excludes(">=1.50,<4.0.0", GUARDED["openai"])
+    # <4.0.1 still admits 4.0, so it does not exclude the 4 series.
+    assert not _excludes(">=1.50,<4.0.1", GUARDED["openai"])
