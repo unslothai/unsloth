@@ -769,6 +769,23 @@ def test_tool_routes_always_offer_create_and_gate_read_on_enabled_skills(tmp_pat
     assert is_always_safe_tool("create_skill") is False
 
 
+def test_token_count_selection_keeps_the_create_skill_schema():
+    from models.inference import ChatCountTokensRequest
+    from routes import inference
+
+    payload = ChatCountTokensRequest(
+        messages = [{"role": "user", "content": "Create a skill."}],
+        enable_tools = True,
+        enabled_tools = ["create_skill"],
+    )
+
+    selected = asyncio.run(
+        inference._select_request_tools(payload, tools_on = True, mcp_allowed = False)
+    )
+
+    assert [tool["function"]["name"] for tool in selected] == ["create_skill"]
+
+
 def test_corrupt_registry_fails_closed_without_overwriting_state(tmp_path: Path):
     from core.inference.tools import READ_SKILL_TOOL
     from routes import inference

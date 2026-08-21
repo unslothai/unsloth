@@ -3949,7 +3949,7 @@ async def _filter_unavailable_skill_tool(tools: list[dict]) -> list[dict]:
 
 
 async def _select_request_tools(
-    payload: ChatCompletionRequest,
+    payload: ChatCompletionRequest | ChatCountTokensRequest,
     *,
     tools_on: bool,
     mcp_allowed: bool,
@@ -3979,7 +3979,8 @@ async def _select_request_tools(
         # Copy so the shared module-global tool list can't be mutated by callers.
         tools = list(ALL_TOOLS)
     if (
-        not getattr(payload, "stream", False)
+        isinstance(payload, ChatCompletionRequest)
+        and not getattr(payload, "stream", False)
         and getattr(payload, "permission_mode", None) is None
         and getattr(payload, "confirm_tool_calls", None) is None
     ):
