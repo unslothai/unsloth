@@ -4353,6 +4353,7 @@ def _gguf_folder_task(
     except Exception:
         return None
     unsupported: Optional[str] = None
+    speech: Optional[str] = None
     read_deadline = time.monotonic() + _TASK_CLASSIFY_READ_SECONDS
     for index, path in enumerate(paths):
         # The first read always happens, so a folder still classifies from its first ordered file
@@ -4365,17 +4366,23 @@ def _gguf_folder_task(
             continue
         if task in _LOADABLE_MEDIA_GGUF_TASKS:
             return task
-        # Speech ranks with the unsupported diffusion archs, not the loadable ones: nothing
-        # here can run a llama-csm GGUF, so returning it the moment it sorts first would hide
-        # a runnable image/video checkpoint sharing the folder -- the very case the ranking
-        # above exists to avoid. Kept as the fallback answer so a speech-only folder still
-        # tags as speech and stays out of the chat picker.
-        if task in (_UNSUPPORTED_DIFFUSION_TASK, _SPEECH_TASK):
+        # Speech ranks BELOW everything else runnable, not merely below the loadable media archs:
+        # nothing here can run a llama-csm GGUF, so answering speech while any sibling is
+        # loadable hides that sibling. Ranking it with the unsupported diffusion archs was only
+        # half the fix -- it saved a runnable image/video checkpoint, but an ordinary chat GGUF
+        # lands in `fallback`, which `unsupported` still outranked, so a csm + qwen3 folder
+        # answered speech and the arch-task gate then hid the runnable chat model from every
+        # picker. Last resort only, so a speech-only folder still tags speech and stays out of
+        # the chat picker.
+        if task == _SPEECH_TASK:
+            if speech is None:
+                speech = task
+        elif task == _UNSUPPORTED_DIFFUSION_TASK:
             if unsupported is None:
                 unsupported = task
         elif task is not None and fallback is None:
             fallback = task
-    return unsupported or fallback
+    return unsupported or fallback or speech
 
 
 def _repo_gguf_task(repo_info) -> Optional[str]:

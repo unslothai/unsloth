@@ -5222,6 +5222,28 @@ def test_a_runnable_media_checkpoint_outranks_a_speech_gguf(tmp_path):
     )
 
 
+def test_a_runnable_chat_checkpoint_outranks_a_speech_gguf(tmp_path):
+    """Ranking speech with the unsupported diffusion archs saved a runnable image/video sibling
+    but not a runnable CHAT one: an ordinary GGUF answers ``fallback``, which ``unsupported``
+    outranked, so a csm + qwen3 folder tagged speech and the arch-task gate hid the qwen3 from
+    every picker. Speech is the last resort now, under the text fallback too."""
+    folder = tmp_path / "mixed-chat-speech"
+    # "csm" sorts first and cannot load here; the qwen3 chat checkpoint beside it can.
+    _arch_gguf(folder / "csm-1b-Q4_0.gguf", "llama-csm")
+    _arch_gguf(folder / "qwen3-8b-Q4_K_M.gguf", "llama")
+    assert models_route._gguf_folder_task(folder, ("someone/mixed-GGUF",)) == "text-generation"
+
+    # A recognized-but-unsupported diffusion arch still outranks the text fallback, so widening
+    # the speech demotion did not change which tag a diffusion folder answers.
+    diffusion = tmp_path / "mixed-diffusion-speech"
+    _arch_gguf(diffusion / "csm-1b-Q4_0.gguf", "llama-csm")
+    _arch_gguf(diffusion / "sd3-Q4_0.gguf", "sd3")
+    assert (
+        models_route._gguf_folder_task(diffusion, ("someone/sd3-GGUF",))
+        == models_route._UNSUPPORTED_DIFFUSION_TASK
+    )
+
+
 def _speech_mix_answer(repo_id, folder, *, default_variant):
     """A two-quant listing for *folder*: the CSM file first, the FLUX denoiser beside it."""
     return _answer(
