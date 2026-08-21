@@ -55,7 +55,7 @@ from core.inference.context_window import (
     estimate_messages_tokens_dense,
     evicted_messages,
     fit_rolling_context,
-    messages_have_media,
+    messages_without_unpriced_media,
 )
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.llama_server_args import (
@@ -23100,7 +23100,6 @@ class LlamaCppBackend:
         if (
             context_overflow == "truncate_oldest"
             and self._effective_context_length
-            and not messages_have_media(openai_messages)
         ):
             try:
                 _before_fit = openai_messages
@@ -23109,7 +23108,9 @@ class LlamaCppBackend:
                     context_length = self._effective_context_length,
                     max_tokens = payload["max_tokens"],
                     count_tokens = lambda fitted: self.count_chat_tokens(
-                        neutralize_control_markup_in_messages(fitted, None, self.markup_profile),
+                        neutralize_control_markup_in_messages(
+                            messages_without_unpriced_media(fitted), None, self.markup_profile
+                        ),
                         None,
                         None,
                         strict = True,
@@ -23762,7 +23763,6 @@ class LlamaCppBackend:
             if (
                 context_overflow == "truncate_oldest"
                 and self._effective_context_length
-                and not messages_have_media(conversation)
             ):
                 _preflight_context_length = self._effective_context_length
                 try:
@@ -23773,7 +23773,9 @@ class LlamaCppBackend:
                         max_tokens = max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
-                                fitted, _markup_cache, self.markup_profile
+                                messages_without_unpriced_media(fitted),
+                                _markup_cache,
+                                self.markup_profile,
                             ),
                             None,
                             safe_tools,
@@ -23931,7 +23933,9 @@ class LlamaCppBackend:
                         max_tokens = max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
-                                fitted, _markup_cache, self.markup_profile
+                                messages_without_unpriced_media(fitted),
+                                _markup_cache,
+                                self.markup_profile,
                             ),
                             None,
                             safe_tools,
@@ -25308,7 +25312,6 @@ class LlamaCppBackend:
         if (
             context_overflow == "truncate_oldest"
             and self._effective_context_length
-            and not messages_have_media(conversation)
         ):
             _final_preflight_context_length = self._effective_context_length
             try:
@@ -25318,7 +25321,9 @@ class LlamaCppBackend:
                     context_length = self._effective_context_length,
                     max_tokens = _final_max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
-                        neutralize_control_markup_in_messages(fitted, None, self.markup_profile),
+                        neutralize_control_markup_in_messages(
+                            messages_without_unpriced_media(fitted), None, self.markup_profile
+                        ),
                         None,
                         None,
                         strict = True,
@@ -25446,7 +25451,9 @@ class LlamaCppBackend:
                     context_length = self._effective_context_length,
                     max_tokens = max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
-                        neutralize_control_markup_in_messages(fitted, None, self.markup_profile),
+                        neutralize_control_markup_in_messages(
+                            messages_without_unpriced_media(fitted), None, self.markup_profile
+                        ),
                         None,
                         None,
                         strict = True,
