@@ -4,6 +4,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+import ts from "typescript";
 
 import {
   SEARCH_IMAGES_MARKER,
@@ -32,6 +35,99 @@ const ENTRY = {
 };
 const OTHER = { ...ENTRY, id: "abcdef012345", title: "Labrador" };
 const KNOWN = new Set([ENTRY.id, OTHER.id]);
+
+const adapterSource = readFileSync(
+  fileURLToPath(new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url)),
+  "utf8",
+);
+
+function liftAdapterFunction(opener: string): string {
+  const start = adapterSource.indexOf(opener);
+  assert.ok(start >= 0, `${opener} is no longer defined in chat-adapter.ts`);
+  const end = adapterSource.indexOf("\n}", start);
+  assert.ok(end > start, `could not find the end of ${opener}`);
+  return adapterSource.slice(start, end + 2).replace("export function", "function");
+}
+
+const privateContentPredicateJs = ts.transpileModule(
+  [
+    liftAdapterFunction("export function messagesContainImage("),
+    liftAdapterFunction("export function messagesUsePrivateContent("),
+    "return messagesUsePrivateContent;",
+  ].join("\n\n"),
+  { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+).outputText;
+
+const messagesUsePrivateContent = new Function(privateContentPredicateJs)() as (
+  messages: unknown[],
+) => boolean;
+
+test("private message history blocks automatic image lookup", () => {
+  assert.equal(
+    messagesUsePrivateContent([
+      {
+        role: "user",
+        content: [{ type: "text", text: "read this" }],
+        attachments: [
+          {
+            type: "document",
+            content: [{ type: "text", text: "private product name" }],
+          },
+        ],
+      },
+      { role: "user", content: [{ type: "text", text: "list those names" }] },
+    ]),
+    true,
+  );
+  assert.equal(
+    messagesUsePrivateContent([
+      {
+        role: "user",
+        content: [{ type: "image", image: "data:image/png;base64,cHJpdmF0ZQ==" }],
+      },
+    ]),
+    true,
+  );
+  assert.equal(
+    messagesUsePrivateContent([
+      {
+        role: "user",
+        content: [],
+        attachments: [
+          {
+            type: "image",
+            content: [
+              { type: "image", image: "data:image/png;base64,cHJpdmF0ZQ==" },
+            ],
+          },
+        ],
+      },
+    ]),
+    true,
+  );
+  assert.equal(
+    messagesUsePrivateContent([
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolName: "search_knowledge_base" }],
+      },
+    ]),
+    true,
+  );
+});
+
+test("ordinary text and web search history allow automatic image lookup", () => {
+  assert.equal(
+    messagesUsePrivateContent([
+      { role: "user", content: [{ type: "text", text: "list dog breeds" }] },
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolName: "web_search" }],
+      },
+    ]),
+    false,
+  );
+});
 
 test("extractSearchImages splits a valid envelope off the result text", () => {
   const raw = `Title: A\nURL: https://a.test\nSnippet: s${SEARCH_IMAGES_MARKER}${JSON.stringify([ENTRY])}`;

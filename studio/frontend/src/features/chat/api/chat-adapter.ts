@@ -1487,6 +1487,25 @@ export function messagesContainImage(messages: RunMessages): boolean {
   return false;
 }
 
+export function messagesUsePrivateContent(messages: RunMessages): boolean {
+  if (messagesContainImage(messages)) return true;
+  return messages.some((message) => {
+    if (
+      (message.content ?? []).some(
+        (part) =>
+          part.type === "tool-call" &&
+          (part as { toolName?: string }).toolName === "search_knowledge_base",
+      )
+    ) {
+      return true;
+    }
+    if (!("attachments" in message)) return false;
+    return (message.attachments ?? []).some((attachment) =>
+      (attachment.content ?? []).some((part) => part.type === "text"),
+    );
+  });
+}
+
 export function findLatestUserAudioBase64(
   messages: RunMessages,
   includePendingAudio = true,
@@ -6799,17 +6818,10 @@ export function createOpenAIStreamAdapter(
         // those names are still sitting in the conversation -- so "list those product
         // names" could hand private-document subjects to the image engines. Once a
         // chat has retrieved private documents it stays ineligible.
-        const threadUsedPrivateDocs = messages.some((message) =>
-          (message.content ?? []).some(
-            (part) =>
-              part.type === "tool-call" &&
-              (part as { toolName?: string }).toolName === "search_knowledge_base",
-          ),
-        );
         const answerUsedPrivateDocs =
           ragEnabled ||
           projectRagEnabled ||
-          threadUsedPrivateDocs ||
+          messagesUsePrivateContent(messages) ||
           toolCallParts.some((part) => part.toolName === "search_knowledge_base");
         const toolCallsNeedApproval =
           useChatRuntimeStore.getState().confirmToolCalls &&
