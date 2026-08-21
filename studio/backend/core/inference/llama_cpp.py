@@ -8395,34 +8395,51 @@ class LlamaCppBackend:
         n_layers = self.n_layers
         return requested == -1 or (bool(n_layers) and requested > n_layers)
 
-    def _shared_heap_free_mib(
+    def _shared_heap_budget(
         self,
         gpus: Iterable[tuple],
         shared_gpu_ids: Collection[int],
+        model_bytes: int,
         argv: list[str],
         env: Optional[Mapping[str, str]] = None,
-    ) -> int:
-        """How much of a shared Vulkan pool this launch can put the weights in.
+    ) -> tuple[int, int]:
+        """The shared Vulkan pool this launch can use, and the bytes it must hold.
 
-        Every shared row reads the same host-backed pool, so the largest row is the
+        Every shared row reads the same host-backed pool, so the largest row IS the
         pool and summing them would count it twice. It counts at all only when the
-        finished command both sends every weight to a device and can reach that
+        finished command sends every weight to a device and can still reach that
         device: a zero layer count leaves the weights in host RAM, and a ``--device``
         pin naming other devices leaves the heap unreachable, so llama.cpp spills
-        them to host RAM either way. 0 hands the whole remainder back to the host-RAM
-        arm, which is what main charged for a shared device before this existed.
+        them either way.
+
+        The same pin decides the second figure. A card the pin leaves out takes none
+        of the model, so the pool has to cover everything the SELECTED cards cannot,
+        not just what the whole probed set cannot -- crediting an unselected 24 GiB
+        card left a 30 GiB model reading as a 6 GiB remainder that a 10 GiB heap
+        "held". A pool of 0 hands the remainder back to the host-RAM arm below,
+        which is what main charged for a shared device before any of this.
         """
-        if not shared_gpu_ids or not self._argv_offloads_every_layer(argv, env):
-            return 0
+        rows = [(row[0], max(0, row[1])) for row in gpus]
         pinned = _extra_args_main_device(argv)
         if pinned is None and env:
             pinned = env.get("LLAMA_ARG_DEVICE")
-        if pinned is not None:
+        if pinned is None:
+            reachable = {idx for idx, _free in rows}
+        else:
             # ggml registry names, the spelling _vulkan_pin_args emits; a shared id
             # is only ever a Vulkan iGPU, so no other backend prefix can appear.
             names = {device.strip().lower() for device in str(pinned).split(",")}
-            shared_gpu_ids = {idx for idx in shared_gpu_ids if f"vulkan{idx}" in names}
-        return max((max(0, row[1]) for row in gpus if row[0] in shared_gpu_ids), default = 0)
+            reachable = {idx for idx, _free in rows if f"vulkan{idx}" in names}
+        pool = 0
+        if shared_gpu_ids and self._argv_offloads_every_layer(argv, env):
+            pool = max(
+                (free for idx, free in rows if idx in shared_gpu_ids and idx in reachable),
+                default = 0,
+            )
+        on_cards = sum(
+            free for idx, free in rows if idx not in shared_gpu_ids and idx in reachable
+        )
+        return pool, model_bytes - on_cards * 1024 * 1024
 
     def _launch_host_shortfall_message(
         self,
@@ -8488,20 +8505,22 @@ class LlamaCppBackend:
             return None
         shared = set(shared_gpu_ids or ())
         free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
-        shared_free_mib = self._shared_heap_free_mib(gpus, shared, argv, _env)
+        heap_free_mib, heap_bytes = self._shared_heap_budget(
+            gpus, shared, model_bytes, argv, _env
+        )
         offload_bytes = model_bytes - free_vram_mib * 1024 * 1024
         # A carved-out UMA heap may be absent from psutil's host availability even
         # though Vulkan can hold the weights. Count that heap once, never again as RAM.
         # A load with nothing left to place (offload <= 0) is not that case and takes
         # the arm below, which abstains on it: routing it here would price a negative
         # need against a container's remaining budget and refuse a resident model.
-        if 0 < offload_bytes <= shared_free_mib * 1024 * 1024:
+        if 0 < offload_bytes and heap_bytes <= heap_free_mib * 1024 * 1024:
             # A finite cgroup remains an independent ceiling on host-backed GPU
             # allocations. Reuse the RAM check so its system headroom still applies.
             cgroup_mib = self._cgroup_available_memory_mib()
             if cgroup_mib is None:
                 return None
-            return self._apu_ram_shortfall_message(offload_bytes, cgroup_mib)
+            return self._apu_ram_shortfall_message(heap_bytes, cgroup_mib)
         return self._host_offload_shortfall_message(
             offload_bytes,
             self._available_system_memory_mib() if avail_mib is None else avail_mib,

@@ -1700,6 +1700,31 @@ def test_a_device_pin_decides_whether_the_shared_heap_is_reachable(tmp_path, mon
     assert _launch(backend, gguf, extra_args = ["--device", "Vulkan1"], **manual)["cmd"]
 
 
+def test_an_unselected_card_does_not_shrink_what_the_shared_heap_must_hold(tmp_path, monkeypatch):
+    """Vulkan0 is a 24 GiB discrete card the pin leaves out, Vulkan1 the 10 GiB iGPU
+    heap it selects. Subtracting the unselected card first made a 30 GiB model read
+    as a 6 GiB remainder the heap could 'hold', admitting it on a 4 GiB host."""
+    backend, gguf = _backend(
+        tmp_path, vulkan = True, memory = [(0, 24 * 1024, 24 * 1024), (1, 10 * 1024, 0)]
+    )
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: 30 * 1024**3
+    backend._n_layers = 32
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 4 * 1024)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(
+            backend,
+            gguf,
+            gpu_memory_mode = "manual",
+            gpu_layers = 33,
+            extra_args = ["--device", "Vulkan1"],
+        )
+
+
 def test_vulkan_igpu_heap_does_not_bypass_a_cgroup_limit(tmp_path, monkeypatch):
     """A shared Vulkan heap remains host-backed inside a constrained container, so
     its host-wide free reading cannot override the process's cgroup ceiling."""
