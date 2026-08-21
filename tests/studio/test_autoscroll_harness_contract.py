@@ -365,6 +365,9 @@ def _thread_weight_row(deleted: bool = True, layer: str = "auto") -> dict:
             "body_pointer_events_while_open": layer,
             "items_while_open": 5,
             "triggers_while_hovered": 8,
+            "trigger_focused_before_open": True,
+            "focus_returned_to_trigger": True,
+            "active_element_after_close": "BUTTON",
         },
         "delete": {
             "ms": 5 if deleted else None,

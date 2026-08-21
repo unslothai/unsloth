@@ -275,7 +275,6 @@ async (timeoutMs) => {
     bubbles: true, cancelable: true, composed: true,
     button: 0, pointerId: 1, pointerType: "mouse", isPrimary: true,
   };
-  trigger.focus();
   const triggerFocusedBeforeOpen = document.activeElement === trigger;
   const openStarted = performance.now();
   trigger.dispatchEvent(new PointerEvent("pointerdown", { ...pointer, buttons: 1 }));
@@ -488,6 +487,12 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
             timeout = ACTION_TIMEOUT_MS,
         )
         page.locator('[data-role="assistant"]').last.hover(timeout = ACTION_TIMEOUT_MS)
+        page.evaluate(
+            """async () => {
+                window.__threadWeight.actionButton("More")?.focus();
+                await window.__nextPaint();
+            }"""
+        )
         reset_long_tasks(page)
         before = metrics(cdp)
         menu = page.evaluate(MENU_JS, SETTLE_TIMEOUT_MS)
@@ -638,6 +643,9 @@ TABLE_ROWS = (
     ("menu body pe while open", lambda r: r["menu"]["body_pointer_events_while_open"]),
     ("menu body pe after close", lambda r: r["menu"]["body_pointer_events_after_close"]),
     ("menu items while open", lambda r: r["menu"]["items_while_open"]),
+    ("menu trigger focused", lambda r: r["menu"]["trigger_focused_before_open"]),
+    ("menu focus returned", lambda r: r["menu"]["focus_returned_to_trigger"]),
+    ("menu active after close", lambda r: r["menu"]["active_element_after_close"]),
     ("menu layouts", lambda r: r["menu"]["layout_count"]),
     ("menu layout ms", lambda r: r["menu"]["layout_ms"]),
     ("menu recalcs", lambda r: r["menu"]["recalc_style_count"]),
