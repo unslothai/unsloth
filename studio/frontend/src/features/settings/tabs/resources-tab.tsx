@@ -344,6 +344,15 @@ export function ResourcesTab() {
   const cpuFrequencyLabel = formatFrequency(systemInfo.cpu?.frequency_mhz);
   const hasGpu =
     (displayedGpu?.available ?? false) && metrics.devices.length > 0;
+  // The placeholder reads as a CPU-only host with no GPU. Rendering that verdict
+  // tells an AMD/ROCm user their card is unused, so until the host has actually
+  // been read, report which of the two non-answers it is: still checking, or
+  // asked and got nothing back.
+  const gpuUnknown = systemInfo.status !== "ready" && !hasGpu;
+  const gpuUnknownLabel =
+    systemInfo.status === "unavailable"
+      ? t("settings.resources.gpu.unreadable")
+      : t("settings.resources.gpu.detecting");
   const backendLabel = (
     displayedGpu?.backend ??
     systemInfo.device_backend ??
@@ -438,20 +447,24 @@ export function ResourcesTab() {
           <MetricTile
             label={t("settings.resources.liveMonitor.vram")}
             value={
-              hasGpu
-                ? metrics.vramUsageKnown
-                  ? `${formatGiB(metrics.vramUsed)} / ${formatGiB(metrics.vramTotal)}`
-                  : `${unknownLabel} / ${formatGiB(metrics.vramTotal)}`
-                : t("settings.resources.liveMonitor.noGpu")
+              gpuUnknown
+                ? unknownLabel
+                : hasGpu
+                  ? metrics.vramUsageKnown
+                    ? `${formatGiB(metrics.vramUsed)} / ${formatGiB(metrics.vramTotal)}`
+                    : `${unknownLabel} / ${formatGiB(metrics.vramTotal)}`
+                  : t("settings.resources.liveMonitor.noGpu")
             }
             detail={
-              hasGpu
-                ? metrics.vramUsageKnown
-                  ? t("settings.resources.liveMonitor.free", {
-                      value: formatGiB(metrics.vramFree),
-                    })
-                  : unknownLabel
-                : backendLabel
+              gpuUnknown
+                ? gpuUnknownLabel
+                : hasGpu
+                  ? metrics.vramUsageKnown
+                    ? t("settings.resources.liveMonitor.free", {
+                        value: formatGiB(metrics.vramFree),
+                      })
+                    : unknownLabel
+                  : backendLabel
             }
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
@@ -570,7 +583,7 @@ export function ResourcesTab() {
           })
         ) : (
           <div className="py-3 text-sm text-muted-foreground">
-            {t("settings.resources.gpu.noGpu")}
+            {gpuUnknown ? gpuUnknownLabel : t("settings.resources.gpu.noGpu")}
           </div>
         )}
       </SettingsSection>
