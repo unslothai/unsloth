@@ -62,22 +62,23 @@ except ImportError:
 # ── 1. Configuration ──────────────────────────────────────────────────────
 
 MODEL_NAME = "PaddlePaddle/PaddleOCR-VL-1.6"
-MAX_SEQ_LENGTH = 2048          # Context window; reduce if VRAM limited
-LOAD_IN_4BIT = True            # 4-bit QLoRA (saves ~4× VRAM)
-BATCH_SIZE = 2                 # Adjust based on GPU memory
+MAX_SEQ_LENGTH = 2048  # Context window; reduce if VRAM limited
+LOAD_IN_4BIT = True  # 4-bit QLoRA (saves ~4× VRAM)
+BATCH_SIZE = 2  # Adjust based on GPU memory
 GRADIENT_ACCUMULATION_STEPS = 4
 LEARNING_RATE = 5e-5
 NUM_EPOCHS = 3
-LORA_R = 64                    # LoRA rank
-LORA_ALPHA = 64                # LoRA alpha (scaling)
+LORA_R = 64  # LoRA rank
+LORA_ALPHA = 64  # LoRA alpha (scaling)
 OUTPUT_DIR = "paddleocr_vl_finetuned"
-EVAL_RATIO = 0.2               # Fraction of samples held out for evaluation
-NUM_SAMPLES = 50               # Total samples to load from source dataset
+EVAL_RATIO = 0.2  # Fraction of samples held out for evaluation
+NUM_SAMPLES = 50  # Total samples to load from source dataset
 
 os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
 
 
 # ── 2. Load Model & Tokenizer ─────────────────────────────────────────────
+
 
 def load_model_and_tokenizer():
     """
@@ -90,11 +91,11 @@ def load_model_and_tokenizer():
     dtype = torch.bfloat16 if is_bfloat16_supported() else torch.float16
 
     model, tokenizer = FastModel.from_pretrained(
-        model_name=MODEL_NAME,
-        max_seq_length=MAX_SEQ_LENGTH,
-        dtype=dtype,
-        load_in_4bit=LOAD_IN_4BIT,
-        trust_remote_code=True,          # Required for PaddleOCR custom code
+        model_name = MODEL_NAME,
+        max_seq_length = MAX_SEQ_LENGTH,
+        dtype = dtype,
+        load_in_4bit = LOAD_IN_4BIT,
+        trust_remote_code = True,  # Required for PaddleOCR custom code
     )
     print(f"[✓] Loaded {MODEL_NAME}")
     print(f"    Model type: {model.config.model_type}")
@@ -106,7 +107,8 @@ def load_model_and_tokenizer():
 
 # ── 3. Dataset Preparation ────────────────────────────────────────────────
 
-def prepare_datasets(num_samples=NUM_SAMPLES, eval_ratio=EVAL_RATIO):
+
+def prepare_datasets(num_samples = NUM_SAMPLES, eval_ratio = EVAL_RATIO):
     """
     Prepares training and evaluation datasets from a public OCR / document-
     understanding source, returning a train/eval split.
@@ -151,13 +153,13 @@ def prepare_datasets(num_samples=NUM_SAMPLES, eval_ratio=EVAL_RATIO):
     try:
         ds = load_dataset(
             "HuggingFaceM4/Document_Understanding_test",
-            split="train",
+            split = "train",
         )
         ds = ds.select(range(min(num_samples, len(ds))))
     except Exception:
         # Fallback: load a public OCR dataset
         try:
-            ds = load_dataset("lbourdois/OCR-liboaccn-OPUS-MIT-5M-clean", "en", split="train")
+            ds = load_dataset("lbourdois/OCR-liboaccn-OPUS-MIT-5M-clean", "en", split = "train")
             ds = ds.select(range(min(num_samples, len(ds))))
         except Exception:
             print("[!] Could not load demo dataset. Creating a minimal synthetic dataset.")
@@ -168,10 +170,13 @@ def prepare_datasets(num_samples=NUM_SAMPLES, eval_ratio=EVAL_RATIO):
             import requests
 
             try:
-                resp = requests.get("https://upload.wikimedia.org/wikipedia/commons/thumb/8/87/PDF_file_icon.svg/128px-PDF_file_icon.svg.png", timeout=5)
+                resp = requests.get(
+                    "https://upload.wikimedia.org/wikipedia/commons/thumb/8/87/PDF_file_icon.svg/128px-PDF_file_icon.svg.png",
+                    timeout = 5,
+                )
                 img = Image.open(io.BytesIO(resp.content))
             except Exception:
-                img = Image.new("RGB", (384, 384), color="white")
+                img = Image.new("RGB", (384, 384), color = "white")
 
             synthetic = [
                 {
@@ -186,7 +191,10 @@ def prepare_datasets(num_samples=NUM_SAMPLES, eval_ratio=EVAL_RATIO):
                         {
                             "role": "assistant",
                             "content": [
-                                {"type": "text", "text": "This is a sample document transcription for demonstration purposes."}
+                                {
+                                    "type": "text",
+                                    "text": "This is a sample document transcription for demonstration purposes.",
+                                }
                             ],
                         },
                     ]
@@ -233,6 +241,7 @@ def prepare_datasets(num_samples=NUM_SAMPLES, eval_ratio=EVAL_RATIO):
 
 # ── 4. Apply LoRA Adapters ────────────────────────────────────────────────
 
+
 def apply_lora(model):
     """
     Attaches LoRA adapters to both the vision and language layers.
@@ -246,10 +255,10 @@ def apply_lora(model):
     """
     model = FastModel.get_peft_model(
         model,
-        r=LORA_R,
-        lora_alpha=LORA_ALPHA,
-        lora_dropout=0.0,
-        target_modules=[
+        r = LORA_R,
+        lora_alpha = LORA_ALPHA,
+        lora_dropout = 0.0,
+        target_modules = [
             "q_proj",
             "k_proj",
             "v_proj",
@@ -258,15 +267,15 @@ def apply_lora(model):
             "up_proj",
             "down_proj",
         ],
-        use_rslora=False,
+        use_rslora = False,
         # --- Vision-specific flags ---
-        finetune_vision_layers=True,       # Fine-tune vision encoder
-        finetune_language_layers=True,      # Fine-tune language backbone
-        finetune_attention_modules=True,
-        finetune_mlp_modules=True,
+        finetune_vision_layers = True,  # Fine-tune vision encoder
+        finetune_language_layers = True,  # Fine-tune language backbone
+        finetune_attention_modules = True,
+        finetune_mlp_modules = True,
         # --- Training helpers ---
-        use_gradient_checkpointing="unsloth",
-        random_state=3407,
+        use_gradient_checkpointing = "unsloth",
+        random_state = 3407,
     )
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"[✓] LoRA applied (rank={LORA_R}, alpha={LORA_ALPHA})")
@@ -275,6 +284,7 @@ def apply_lora(model):
 
 
 # ── 5. Training ────────────────────────────────────────────────────────────
+
 
 def train(model, tokenizer, dataset):
     """
@@ -291,40 +301,40 @@ def train(model, tokenizer, dataset):
     model.config.use_cache = False
 
     training_args = TrainingArguments(
-        output_dir=OUTPUT_DIR,
-        num_train_epochs=NUM_EPOCHS,
-        per_device_train_batch_size=BATCH_SIZE,
-        gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
-        warmup_steps=5,
-        learning_rate=LEARNING_RATE,
-        logging_steps=10,
-        save_strategy="epoch",
-        save_total_limit=2,
-        optim="adamw_8bit",
-        weight_decay=0.01,
-        lr_scheduler_type="linear",
-        seed=3407,
-        report_to="none",
+        output_dir = OUTPUT_DIR,
+        num_train_epochs = NUM_EPOCHS,
+        per_device_train_batch_size = BATCH_SIZE,
+        gradient_accumulation_steps = GRADIENT_ACCUMULATION_STEPS,
+        warmup_steps = 5,
+        learning_rate = LEARNING_RATE,
+        logging_steps = 10,
+        save_strategy = "epoch",
+        save_total_limit = 2,
+        optim = "adamw_8bit",
+        weight_decay = 0.01,
+        lr_scheduler_type = "linear",
+        seed = 3407,
+        report_to = "none",
         # ── Required for vision model training ──
-        remove_unused_columns=False,
-        dataloader_pin_memory=False,
-        bf16=is_bfloat16_supported(),
-        fp16=not is_bfloat16_supported(),
-        gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
+        remove_unused_columns = False,
+        dataloader_pin_memory = False,
+        bf16 = is_bfloat16_supported(),
+        fp16 = not is_bfloat16_supported(),
+        gradient_checkpointing = True,
+        gradient_checkpointing_kwargs = {"use_reentrant": False},
     )
 
     trainer = SFTTrainer(
-        model=model,
-        tokenizer=tokenizer,
-        args=training_args,
-        train_dataset=dataset,
-        data_collator=UnslothVisionDataCollator(model, tokenizer),
-        max_seq_length=MAX_SEQ_LENGTH,
-        dataset_num_proc=2,
+        model = model,
+        tokenizer = tokenizer,
+        args = training_args,
+        train_dataset = dataset,
+        data_collator = UnslothVisionDataCollator(model, tokenizer),
+        max_seq_length = MAX_SEQ_LENGTH,
+        dataset_num_proc = 2,
         # ── Required for vision model training ──
-        dataset_text_field="",
-        dataset_kwargs={"skip_prepare_dataset": True},
+        dataset_text_field = "",
+        dataset_kwargs = {"skip_prepare_dataset": True},
     )
 
     print("[*] Starting training...")
@@ -352,10 +362,7 @@ def _normalize_text(text: str) -> str:
     return text
 
 
-def compute_wer_cer(
-    predictions: list[str],
-    references: list[str],
-) -> dict[str, float]:
+def compute_wer_cer(predictions: list[str], references: list[str]) -> dict[str, float]:
     """
     Compute Word Error Rate (WER) and Character Error Rate (CER) for a
     batch of predictions against ground-truth references.
@@ -387,10 +394,7 @@ def compute_wer_cer(
     refs_norm = [_normalize_text(r) for r in references]
 
     # Filter out empty references (can't compute meaningful WER on them)
-    valid = [
-        (p, r) for p, r in zip(preds_norm, refs_norm)
-        if len(r) > 0
-    ]
+    valid = [(p, r) for p, r in zip(preds_norm, refs_norm) if len(r) > 0]
     if not valid:
         return {"wer": float("nan"), "cer": float("nan"), "samples": 0}
 
@@ -459,9 +463,7 @@ def evaluate_ocr_benchmark(
 
         # Ground-truth reference
         ref_text = "".join(
-            part["text"]
-            for part in assistant_msg["content"]
-            if part["type"] == "text"
+            part["text"] for part in assistant_msg["content"] if part["type"] == "text"
         )
         references.append(ref_text)
 
@@ -494,24 +496,24 @@ def evaluate_ocr_benchmark(
         try:
             input_text = tokenizer.apply_chat_template(
                 gen_messages,
-                tokenize=False,
-                add_generation_prompt=True,
+                tokenize = False,
+                add_generation_prompt = True,
             )
             inputs = tokenizer(
                 [input_text],
-                images=[image],
-                return_tensors="pt",
-                padding=True,
+                images = [image],
+                return_tensors = "pt",
+                padding = True,
             ).to("cuda")
 
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=max_new_tokens,
-                temperature=1.0,
-                min_p=0.1,
-                do_sample=True,
+                max_new_tokens = max_new_tokens,
+                temperature = 1.0,
+                min_p = 0.1,
+                do_sample = True,
             )
-            decoded = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            decoded = tokenizer.decode(outputs[0], skip_special_tokens = True)
             predictions.append(decoded)
         except Exception as e:
             if verbose:
@@ -543,9 +545,7 @@ def evaluate_ocr_benchmark(
             print(f"    REF:      {references[i][:120]}")
             print(f"    PRED:     {predictions[i][:120]}")
             if HAS_JIWER and len(references[i]) > 0:
-                single = compute_wer_cer(
-                    [predictions[i]], [references[i]]
-                )
+                single = compute_wer_cer([predictions[i]], [references[i]])
                 if single["samples"] > 0:
                     print(f"    WER:      {single['wer']:.2%}   CER: {single['cer']:.2%}")
             print()
@@ -554,6 +554,7 @@ def evaluate_ocr_benchmark(
 
 
 # ── 7. Save & Merge ───────────────────────────────────────────────────────
+
 
 def save_and_merge(model, tokenizer):
     """
@@ -573,7 +574,7 @@ def save_and_merge(model, tokenizer):
     model.save_pretrained_merged(
         f"{OUTPUT_DIR}/merged_16bit",
         tokenizer,
-        save_method="merged_16bit",
+        save_method = "merged_16bit",
     )
     print(f"[✓] Merged 16-bit model saved to {OUTPUT_DIR}/merged_16bit")
 
@@ -582,6 +583,7 @@ def save_and_merge(model, tokenizer):
 
 
 # ── 8. Main ───────────────────────────────────────────────────────────────
+
 
 def main():
     """
@@ -605,8 +607,8 @@ def main():
     # ── Step 2: Prepare train + eval datasets ──
     print("\n[Step 2/7] Preparing datasets...")
     train_dataset, eval_dataset = prepare_datasets(
-        num_samples=NUM_SAMPLES,
-        eval_ratio=EVAL_RATIO,
+        num_samples = NUM_SAMPLES,
+        eval_ratio = EVAL_RATIO,
     )
 
     # ── Step 3: Apply LoRA adapters ──
@@ -621,7 +623,7 @@ def main():
         model,
         tokenizer,
         eval_dataset,
-        show_examples=True,
+        show_examples = True,
     )
 
     # ── Step 5: Train ──
@@ -638,7 +640,7 @@ def main():
         model,
         tokenizer,
         eval_dataset,
-        show_examples=True,
+        show_examples = True,
     )
 
     # ── Improvement summary ──
@@ -649,18 +651,24 @@ def main():
     if HAS_JIWER and baseline_metrics["samples"] > 0 and finetuned_metrics["samples"] > 0:
         wer_delta = baseline_metrics["wer"] - finetuned_metrics["wer"]
         cer_delta = baseline_metrics["cer"] - finetuned_metrics["cer"]
-        print(f"  WER:  {baseline_metrics['wer']:.2%}  →  {finetuned_metrics['wer']:.2%}  "
-              f"({'↓' if wer_delta > 0 else '↑'}{abs(wer_delta):.2%})")
-        print(f"  CER:  {baseline_metrics['cer']:.2%}  →  {finetuned_metrics['cer']:.2%}  "
-              f"({'↓' if cer_delta > 0 else '↑'}{abs(cer_delta):.2%})")
+        print(
+            f"  WER:  {baseline_metrics['wer']:.2%}  →  {finetuned_metrics['wer']:.2%}  "
+            f"({'↓' if wer_delta > 0 else '↑'}{abs(wer_delta):.2%})"
+        )
+        print(
+            f"  CER:  {baseline_metrics['cer']:.2%}  →  {finetuned_metrics['cer']:.2%}  "
+            f"({'↓' if cer_delta > 0 else '↑'}{abs(cer_delta):.2%})"
+        )
         if wer_delta > 0 or cer_delta > 0:
             print(f"\n  ✓ Fine-tuning improved OCR quality!")
         else:
-            print(f"\n  Note: OCR quality did not improve. Consider:\n"
-                  f"    - Using more training data\n"
-                  f"    - Training for more epochs\n"
-                  f"    - Increasing LoRA rank\n"
-                  f"    - Reducing learning rate")
+            print(
+                f"\n  Note: OCR quality did not improve. Consider:\n"
+                f"    - Using more training data\n"
+                f"    - Training for more epochs\n"
+                f"    - Increasing LoRA rank\n"
+                f"    - Reducing learning rate"
+            )
     else:
         print("  (Install jiwer for WER/CER metrics: pip install jiwer)")
     print("=" * 56)
