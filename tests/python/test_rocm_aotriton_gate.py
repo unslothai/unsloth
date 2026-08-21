@@ -297,6 +297,16 @@ def test_install_ps1_marks_the_user_value_as_installer_created():
     assert rollback - user_write < 400
 
 
+def test_install_ps1_creates_the_shared_registry_key_only_when_absent():
+    """New-Item -Force deletes an existing key, and PathBackup lives in this one."""
+    source = _INSTALL_PS1.read_text(encoding = "utf-8")
+    # Add-ToUserPath keeps the pre-install PATH under the same key.
+    assert "CreateSubKey('Software\\Unsloth')" in source
+    create = source.index("New-Item -Path $aotritonOwnerKey")
+    guard = source.rfind("Test-Path -LiteralPath $aotritonOwnerKey", 0, create)
+    assert 0 <= create - guard < 100, "create the key only when it is absent"
+
+
 def test_uninstall_ps1_clears_only_the_installer_created_value():
     """Marked and unmodified, or it stays."""
     source = _UNINSTALL_PS1.read_text(encoding = "utf-8")

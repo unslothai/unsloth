@@ -4831,7 +4831,11 @@ exit 0
             $aotritonOwnerKey = "HKCU:\Software\Unsloth"
             $aotritonOwnerName = "AotritonUserEnvOwned"
             try {
-                New-Item -Path $aotritonOwnerKey -Force -ErrorAction Stop | Out-Null
+                # Create it only when absent: New-Item -Force deletes an existing key,
+                # and Add-ToUserPath keeps PathBackup in this one.
+                if (-not (Test-Path -LiteralPath $aotritonOwnerKey)) {
+                    New-Item -Path $aotritonOwnerKey -Force -ErrorAction Stop | Out-Null
+                }
                 New-ItemProperty -Path $aotritonOwnerKey -Name $aotritonOwnerName `
                     -Value 1 -PropertyType DWord -Force -ErrorAction Stop | Out-Null
                 try {
