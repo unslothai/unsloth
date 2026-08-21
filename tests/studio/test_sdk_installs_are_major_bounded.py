@@ -113,7 +113,10 @@ def _install_commands_in(text: str) -> list[tuple[int, str]]:
         if not pending:
             start = number
         stripped = line.rstrip()
-        if stripped.endswith("\\"):
+        # Backslash for sh, backtick for PowerShell. 92 pwsh steps live here, 9 of them
+        # around a pip install, so the backtick form is one long install list away even
+        # though nothing uses it yet.
+        if stripped.endswith("\\") or stripped.endswith("`"):
             pending.append(stripped[:-1])
             continue
         pending.append(stripped)
@@ -426,3 +429,21 @@ def test_a_windows_pip_executable_is_recognized() -> None:
         assert _PIP_INSTALL.search(command), command
     assert not _PIP_INSTALL.search("npm install openai")
     assert not _PIP_INSTALL.search("pip download openai")
+
+
+def test_a_powershell_continuation_is_joined() -> None:
+    """PowerShell continues with a backtick, not a backslash.
+
+    Nothing here uses the form yet, but 92 pwsh steps live in these workflows and 9 sit
+    around a pip install, so it is one long install list away.
+    """
+    text = (
+        "        shell: pwsh\n"
+        "        run: |\n"
+        "          python -m pip install `\n"
+        "            openai\n"
+    )
+    commands = _install_commands_in(text)
+    assert len(commands) == 1, commands
+    assert "openai" in commands[0][1]
+    assert _requirements_in(commands[0][1], "openai") == [""]
