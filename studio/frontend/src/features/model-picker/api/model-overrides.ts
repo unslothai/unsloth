@@ -12,7 +12,11 @@ import {
   normalizeModelIdentity,
   splitQuantSuffix,
 } from "../model-config/model-identity";
-import type { PerModelConfig } from "../model-config/per-model-config";
+import {
+  DEFAULT_PER_MODEL_CONFIG,
+  type PerModelConfig,
+  normalizePerModelConfig,
+} from "../model-config/per-model-config";
 
 const OVERRIDES_URL = "/api/settings/openai-auto-switch/overrides";
 
@@ -76,16 +80,6 @@ export function modelOverrideKey(
   return ggufVariant ? `${modelId}:${ggufVariant}` : modelId;
 }
 
-/**
- * The stored pass-through args for a model, under any key the backend would resolve.
- *
- * The overrides route folds identities before it reads a row: a repo id and a quant
- * differing only in case resolve to the same entry, and it falls back from
- * `repo:QUANT` to the bare repo. A literal lookup on the two keys this panel happens
- * to use would show an empty box for a model that will launch with arguments, and
- * the first edit would then replace a list nobody saw. Keys are tried most specific
- * first, then folded, mirroring that order.
- */
 /**
  * A path that names one file whatever the casing, folded for comparison, or null
  * when the path is case-sensitive.
@@ -158,10 +152,19 @@ function resolvedFrom(entry: ApiModelOverride): ResolvedExtraArgs {
   return { tokens: tokens ?? [], explicit: Array.isArray(tokens) };
 }
 
-export function resolveStoredExtraArgs(
+function presentOverride(
+  value: ApiModelOverride | undefined | null,
+): ApiModelOverride | null {
+  return value && Object.keys(value).length > 0 ? value : null;
+}
+
+export function resolveStoredOverride(
   overrides: ApiModelOverrides,
   keys: readonly string[],
-): ResolvedExtraArgs {
+): ApiModelOverride | null {
+  // The overrides route folds identities before it reads a row: a repo id and a
+  // quant differing only in case resolve to the same entry, and it falls back from
+  // `repo:QUANT` to the bare repo. Keys are tried most specific first, then folded.
   // Whole ENTRIES, in the order the backend tries them, stopping at the first one
   // that exists. The auto-switch loader breaks on the first non-empty override and
   // reads its fields from there, so falling through to a bare repo id because the
@@ -169,11 +172,9 @@ export function resolveStoredExtraArgs(
   // API load would not use.
   // An entry with no fields is skipped rather than stopping the search, because
   // that is what `if override: break` does on the server.
-  const present = (value: ApiModelOverride | undefined | null) =>
-    value && Object.keys(value).length > 0 ? value : null;
   const folded = new Map<string, ApiModelOverride | null>();
   for (const [key, value] of Object.entries(overrides)) {
-    if (!present(value)) {
+    if (!presentOverride(value)) {
       continue;
     }
     const foldedKey = foldOverrideKey(key);
@@ -183,9 +184,9 @@ export function resolveStoredExtraArgs(
     folded.set(foldedKey, folded.has(foldedKey) ? null : value);
   }
   for (const key of keys) {
-    const exact = present(overrides[key]);
+    const exact = presentOverride(overrides[key]);
     if (exact) {
-      return resolvedFrom(exact);
+      return exact;
     }
     // Folding, by the same rule the backend resolves with: a POSIX path is
     // case-sensitive, so lowercasing one whole would hand /models/foo.gguf the
@@ -194,10 +195,18 @@ export function resolveStoredExtraArgs(
     // lowercases before storing.
     const match = folded.get(foldOverrideKey(key));
     if (match) {
-      return resolvedFrom(match);
+      return match;
     }
   }
-  return { tokens: [], explicit: false };
+  return null;
+}
+
+export function resolveStoredExtraArgs(
+  overrides: ApiModelOverrides,
+  keys: readonly string[],
+): ResolvedExtraArgs {
+  const resolved = resolveStoredOverride(overrides, keys);
+  return resolved ? resolvedFrom(resolved) : { tokens: [], explicit: false };
 }
 
 export async function fetchModelOverrides(): Promise<ApiModelOverrides> {
@@ -223,12 +232,12 @@ export async function fetchModelOverrides(): Promise<ApiModelOverrides> {
  * Falls back to resolving locally against the whole map when the backend predates
  * the parameter, which is the same answer in every case but the exotic ones.
  */
-export async function fetchLoadExtraArgs(
+export async function fetchLoadModelOverride(
   loadId: string,
   aliasId: string,
   ggufVariant?: string | null,
   fallbackKeys: readonly string[] = [],
-): Promise<ResolvedExtraArgs> {
+): Promise<ApiModelOverride | null> {
   const query = new URLSearchParams({ model_id: loadId, alias_id: aliasId });
   if (ggufVariant) {
     query.set("gguf_variant", ggufVariant);
@@ -246,10 +255,7 @@ export async function fetchLoadExtraArgs(
     resolved_key?: string | null;
   };
   if (body.resolved !== undefined) {
-    // An explicit empty list is a cleared box, not an absence, and the caller has
-    // to send it as one: omitting the field lets /load carry the resident model's
-    // arguments over, which is exactly what was cleared.
-    return resolvedFrom(body.resolved ?? {});
+    return presentOverride(body.resolved);
   }
   // A backend that predates the resolved field answers with the whole map, and the
   // caller has to say which keys to look under. Derived here when it did not: the
@@ -266,7 +272,77 @@ export async function fetchLoadExtraArgs(
           loadId,
           aliasId,
         ].filter((key, index, all) => all.indexOf(key) === index);
-  return resolveStoredExtraArgs(body.overrides ?? {}, derived);
+  return resolveStoredOverride(body.overrides ?? {}, derived);
+}
+
+export async function fetchLoadExtraArgs(
+  loadId: string,
+  aliasId: string,
+  ggufVariant?: string | null,
+  fallbackKeys: readonly string[] = [],
+): Promise<ResolvedExtraArgs> {
+  const resolved = await fetchLoadModelOverride(
+    loadId,
+    aliasId,
+    ggufVariant,
+    fallbackKeys,
+  );
+  // An explicit empty list is a cleared box, not an absence, and the caller has
+  // to send it as one: omitting the field lets /load carry the resident model's
+  // arguments over, which is exactly what was cleared.
+  return resolvedFrom(resolved ?? {});
+}
+
+/** Translate one server-resolved override into the config shape the picker uses. */
+export function fromApiOverride(
+  override: ApiModelOverride,
+  localConfig?: PerModelConfig,
+): PerModelConfig {
+  const normalized = normalizePerModelConfig({
+    ...DEFAULT_PER_MODEL_CONFIG,
+    customContextLength: override.custom_context_length ?? null,
+    maxSeqLength: override.max_seq_length ?? null,
+    kvCacheDtype: override.kv_cache_dtype ?? null,
+    mlxKvBits: override.mlx_kv_bits ?? null,
+    speculativeType: override.speculative_type ?? null,
+    specDraftNMax: override.spec_draft_n_max ?? null,
+    specDraftCacheDtype: override.spec_draft_cache_type ?? null,
+    nParallel: override.n_parallel ?? null,
+    nBatch: override.n_batch ?? null,
+    nUbatch: override.n_ubatch ?? null,
+    loadMode: override.load_mode ?? null,
+    ctxCheckpoints: override.ctx_checkpoints ?? null,
+    cacheRam: override.cache_ram ?? null,
+    tensorParallel: override.tensor_parallel ?? false,
+    disableVision: override.disable_vision ?? false,
+    chatTemplateOverride: override.chat_template_override ?? null,
+    llamaExtraArgs: Array.isArray(override.llama_extra_args)
+      ? override.llama_extra_args
+      : undefined,
+    gpuMemoryMode: override.gpu_memory_mode ?? "auto",
+    gpuLayers: override.gpu_layers,
+    nCpuMoe: override.n_cpu_moe,
+    selectedGpuIds: override.gpu_ids ?? null,
+    selectedGpuIndexKind: override.gpu_ids ? "physical" : null,
+  });
+  // normalizePerModelConfig intentionally collapses an empty local list to null.
+  // The server uses [] as a tombstone that stops fallback to a broader override,
+  // so hydration must retain that third state.
+  if (Array.isArray(override.llama_extra_args)) {
+    normalized.llamaExtraArgs = [...override.llama_extra_args];
+  }
+  // Vulkan ids are ordinals in a different namespace from CUDA and ROCm ids, so
+  // toApiOverride deliberately cannot mirror them. Keep that local-only pin when
+  // hydrating a server row that has no physical pin of its own.
+  if (
+    !override.gpu_ids?.length &&
+    localConfig?.selectedGpuIndexKind === "vulkan" &&
+    localConfig.selectedGpuIds?.length
+  ) {
+    normalized.selectedGpuIds = [...localConfig.selectedGpuIds];
+    normalized.selectedGpuIndexKind = "vulkan";
+  }
+  return normalized;
 }
 
 /**

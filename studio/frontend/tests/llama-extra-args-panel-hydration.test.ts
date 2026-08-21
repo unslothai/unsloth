@@ -27,8 +27,11 @@ test("a list typed while hydration was in flight is not sanitized", () => {
   // refuses. But if the user typed during the window, that value is live input:
   // rewriting it cleared the box on "--agent" instead of showing the error, and could
   // trim a long paste behind the cursor. The snapshot tells the two apart.
-  assert.match(PANEL, /const localAtStart = configRef\.current\.llamaExtraArgs;/);
-  assert.match(PANEL, /local !== null && local\.length > 0 && local === localAtStart|local != null && local\.length > 0 && local === localAtStart/);
+  assert.match(PANEL, /const localAtStart = configAtStart\.llamaExtraArgs;/);
+  assert.match(
+    PANEL,
+    /local !== null && local\.length > 0 && local === localAtStart|local != null && local\.length > 0 && local === localAtStart/,
+  );
 });
 
 test("a collapsed section is re-judged once the catalogue lands", () => {
@@ -36,7 +39,10 @@ test("a collapsed section is re-judged once the catalogue lands", () => {
   // still go out with the load. A verdict reached before the probe answered did not
   // know which flags this build documents, and collapsing froze it: a bare --threads
   // kept Load enabled and failed at llama-server startup instead.
-  assert.match(PANEL, /if \(showAdvanced \|\| !target\.isGguf \|\| resolvedIsDiffusion\) \{/);
+  assert.match(
+    PANEL,
+    /if \(showAdvanced \|\| !target\.isGguf \|\| resolvedIsDiffusion\) \{/,
+  );
   assert.match(PANEL, /loadLlamaFlagCatalog\(\)\.then\(\(catalog\) => \{/);
 });
 
@@ -119,7 +125,10 @@ test("the hidden validation re-runs when the binary changes", () => {
   // The row's own subscription cannot help here: it is unmounted whenever this
   // check is the one running, so an in-app llama.cpp update with Advanced collapsed
   // left a verdict reached against the previous binary standing.
-  assert.match(PANEL, /subscribeLlamaFlagCatalog\(\(\) =>\s*\n?\s*setHiddenCatalogEpoch/);
+  assert.match(
+    PANEL,
+    /subscribeLlamaFlagCatalog\(\(\) =>\s*\n?\s*setHiddenCatalogEpoch/,
+  );
   assert.match(PANEL, /hiddenCatalogEpoch,\n\s*\]\);/);
 });
 
@@ -144,8 +153,22 @@ test("the hidden hydration check knows the slot floor", () => {
   // reaches that 400.
   assert.match(
     PANEL,
-    /batchFloor: effectiveBatchFloor\(configRef\.current\.nParallel, managed\)/,
+    /serverConfig\?\.nParallel \?\? configRef\.current\.nParallel/,
   );
+});
+
+test("the panel adopts a shared server config without overwriting a live edit", () => {
+  assert.match(PANEL, /fetchLoadModelOverride\(/);
+  assert.match(
+    PANEL,
+    /const serverConfig = resolvedOverride\s*\n?\s*\? fromApiOverride\(/,
+  );
+  assert.match(PANEL, /\},\s*\n?\s*configAtStart,\s*\n?\s*\)/);
+  assert.match(PANEL, /configRef\.current === configAtStart/);
+  assert.match(PANEL, /rememberRef\.current === rememberAtStart/);
+  assert.match(PANEL, /setConfig\(serverConfig\);/);
+  assert.match(PANEL, /setRemember\(true\);/);
+  assert.match(PANEL, /setSavedRemember\(true\);/);
 });
 
 test("a build that serves one slot does not raise the floor", () => {
@@ -191,7 +214,7 @@ test("a stored empty list hydrates as a clear, not as nothing stored", () => {
   // callers left llamaExtraArgs undefined, omitted the field on /load, and the
   // route carried the resident model's arguments over, the ones just cleared.
   assert.match(OVERRIDES, /explicit: Array\.isArray\(tokens\)/);
-  assert.match(OVERRIDES, /return \{ tokens: \[\], explicit: false \};/);
+  assert.match(OVERRIDES, /\{ tokens: \[\], explicit: false \}/);
   assert.match(PANEL, /resolvedArgs\.explicit && local === undefined/);
   assert.match(ADAPTER, /\} else if \(stored\.explicit\) \{/);
   assert.match(COMPOSER, /\} else if \(resolvedArgs\.explicit\) \{/);
@@ -207,9 +230,18 @@ test("a launch that only applies the remembered config still carries its argumen
   // inherits them from the SAME resident model, so a cold launch or a switch from
   // another model ran without the arguments this model was remembered with. Both
   // paths that load through the runtime alone now pass the config itself.
-  assert.match(HUB, /\.\.\.\(rememberedConfig \? \{ config: rememberedConfig \} : \{\}\),/);
-  assert.match(CHAT_PAGE, /const remembered = rememberedConfigFor\(selection\);/);
-  assert.match(CHAT_PAGE, /\.\.\.\(remembered \? \{ config: remembered \} : \{\}\),/);
+  assert.match(
+    HUB,
+    /\.\.\.\(rememberedConfig \? \{ config: rememberedConfig \} : \{\}\),/,
+  );
+  assert.match(
+    CHAT_PAGE,
+    /const remembered = rememberedConfigFor\(selection\);/,
+  );
+  assert.match(
+    CHAT_PAGE,
+    /\.\.\.\(remembered \? \{ config: remembered \} : \{\}\),/,
+  );
   // Nothing is invented when there is no remembered config: the field stays absent,
   // which is what lets /load keep a resident model's own flags.
   assert.doesNotMatch(HUB, /config: rememberedConfig \?\? null/);

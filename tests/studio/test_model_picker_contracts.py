@@ -151,6 +151,17 @@ def test_model_config_page_floors_the_context_ceiling():
     assert "normalizeMaxSeqLength(modelMaxPosition.maxPositionEmbeddings)" not in src
 
 
+def test_auto_offload_context_matches_picker_custom_seed():
+    """Custom's safe seed must track the backend Auto offload context."""
+    frontend = _read("features/model-picker/components/model-config-page.tsx")
+    backend = _read_backend("core/inference/llama_cpp.py")
+    frontend_value = re.search(r"\bAUTO_OFFLOAD_CONTEXT_LENGTH\s*=\s*(\d+)", frontend)
+    backend_value = re.search(r"\b_AUTO_OFFLOAD_CTX\s*=\s*(\d+)", backend)
+    assert frontend_value is not None
+    assert backend_value is not None
+    assert frontend_value.group(1) == backend_value.group(1)
+
+
 def test_compare_load_clears_stale_native_lease():
     """A compare-pane load never comes from the desktop file picker, so it must
     clear any prior picked file's lease token + expiry, otherwise a reload can
@@ -928,9 +939,7 @@ def test_reset_enabled_for_explicit_context_pin_at_native():
     override, so contextAtDefault must require customContextLength == null."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert (
-        "const contextAtDefault = !target.isGguf || "
-        "(config.customContextLength == null && "
-        "(nativeContextLength == null || contextValue === nativeContextLength));" in src
+        "const contextAtDefault = !target.isGguf || config.customContextLength == null;" in src
     )
     # The old form that ignored an explicit pin equal to native must not return.
     assert (
