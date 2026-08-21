@@ -36,14 +36,20 @@ const VOID_HTML_NAMES = new Set(
 );
 
 const OPAQUE_HTML_BLOCKS = [
-  [HTML_COMMENT_RE, "-->"],
-  [HTML_CDATA_RE, "]]>"],
-  [HTML_PROCESSING_RE, "?>"],
-  [HTML_DECLARATION_RE, ">"],
+  [HTML_COMMENT_RE, "<!--", "-->"],
+  [HTML_CDATA_RE, "<![CDATA[", "]]>"],
+  [HTML_PROCESSING_RE, "<?", "?>"],
+  [HTML_DECLARATION_RE, "<!A", ">"],
 ] as const;
+
+type ContainerFrame =
+  | { kind: "quote"; opening: string }
+  | { continuation: string; kind: "list"; opening: string };
 
 type ContainerState = {
   continuationPrefix: string;
+  frames: readonly ContainerFrame[];
+  hasList: boolean;
   openingPrefix: string;
 };
 
@@ -65,7 +71,8 @@ type DisplayMathState = {
 type RawHtmlState = {
   close: "blank" | { caseInsensitive: boolean; value: string };
   container: ContainerState;
-  syntheticOpening: string | null;
+  syntheticClosing: string;
+  syntheticOpening: string;
   syntheticTag: string | null;
 };
 
@@ -82,6 +89,8 @@ type BoundaryState = {
   atBlockBoundary: boolean;
   displayMath: DisplayMathState | null;
   fence: FenceState | null;
+
+  list: ContainerState | null;
   rawHtml: RawHtmlState | null;
   table: TableState | null;
   tableHeader: TableHeaderState | null;
@@ -109,6 +118,7 @@ type ContainerLine = ContainerState & { content: string };
 function parseContainerLine(line: string): ContainerLine {
   let content = line;
   let continuationPrefix = "";
+  const frames: ContainerFrame[] = [];
   let openingPrefix = "";
 
   for (let depth = 0; depth < 16; depth += 1) {
@@ -116,6 +126,7 @@ function parseContainerLine(line: string): ContainerLine {
     if (quote) {
       content = content.slice(quote[0].length);
       continuationPrefix += quote[0];
+      frames.push({ kind: "quote", opening: quote[0] });
       openingPrefix += quote[0];
       continue;
     }
@@ -123,21 +134,53 @@ function parseContainerLine(line: string): ContainerLine {
     const list = content.match(LIST_PREFIX_RE);
     if (!list) break;
     content = content.slice(list[0].length);
-    continuationPrefix += " ".repeat(list[0].length);
+    const continuation = " ".repeat(list[0].length);
+    continuationPrefix += continuation;
+    frames.push({ continuation, kind: "list", opening: list[0] });
     openingPrefix += list[0];
   }
 
-  return { content, continuationPrefix, openingPrefix };
+  return {
+    content,
+    continuationPrefix,
+    frames,
+    hasList: frames.some((frame) => frame.kind === "list"),
+    openingPrefix,
+  };
 }
 
 function containerContent(
   line: string,
   container: ContainerState,
 ): string | null {
-  const prefix = container.continuationPrefix;
-  if (!prefix) return line;
-  if (line.startsWith(prefix)) return line.slice(prefix.length);
-  return line === prefix.trimEnd() || line.trim().length === 0 ? "" : null;
+  let content = line;
+  for (const frame of container.frames) {
+    if (frame.kind === "quote") {
+      const quote = content.match(BLOCK_QUOTE_PREFIX_RE);
+      if (!quote) return content.trim().length === 0 ? "" : null;
+      content = content.slice(quote[0].length);
+      continue;
+    }
+    if (!content.startsWith(frame.continuation)) {
+      return content.trim().length === 0 ? "" : null;
+    }
+    content = content.slice(frame.continuation.length);
+  }
+  return content;
+}
+
+function parseWithinContainer(
+  content: string,
+  outer: ContainerState,
+): ContainerLine {
+  const nested = parseContainerLine(content);
+  return {
+    content: nested.content,
+    continuationPrefix: outer.continuationPrefix + nested.continuationPrefix,
+    frames: [...outer.frames, ...nested.frames],
+    hasList: outer.hasList || nested.hasList,
+    openingPrefix: outer.openingPrefix + nested.openingPrefix,
+  };
 }
 
 function hasUnescapedTablePipe(content: string): boolean {
@@ -163,12 +206,23 @@ function isTableDelimiter(content: string): boolean {
   );
 }
 
+function isTableBodyContent(content: string): boolean {
+  if (content.trim().length === 0) return false;
+  const parsed = parseContainerLine(content);
+  if (parsed.frames.length > 0) return false;
+  if (rawHtmlStart(parsed, true).recognized) return false;
+  if (nextFenceState(content, null, 0, parsed)) return false;
+  if (nextDisplayMathState(content, null, parsed)) return false;
+  return !/^(?: {0,3})(?:#{1,6}(?:[ \t]|$)|(?:[*_-][ \t]*){3,})/.test(content);
+}
+
 function nextFenceState(
   line: string,
   state: FenceState | null,
   openingOffset: number,
+  parsedOverride?: ContainerLine,
 ): FenceState | null {
-  const parsed = state ? null : parseContainerLine(line);
+  const parsed = state ? null : (parsedOverride ?? parseContainerLine(line));
   const content = state
     ? containerContent(line, state.container)
     : (parsed?.content ?? null);
@@ -198,8 +252,9 @@ function nextFenceState(
 function nextDisplayMathState(
   line: string,
   state: DisplayMathState | null,
+  parsedOverride?: ContainerLine,
 ): DisplayMathState | null {
-  const parsed = state ? null : parseContainerLine(line);
+  const parsed = state ? null : (parsedOverride ?? parseContainerLine(line));
   const content = state
     ? containerContent(line, state.container)
     : (parsed?.content ?? null);
@@ -240,6 +295,8 @@ function rawHtmlStart(
         : {
             close: { caseInsensitive: true, value },
             container,
+
+            syntheticClosing: `</${tag}>`,
             syntheticOpening:
               content.match(HTML_OPENING_TAG_RE)?.[1] ?? `<${tag}>`,
             syntheticTag: tag,
@@ -251,12 +308,13 @@ function rawHtmlStart(
   if (opaque) {
     return {
       recognized: true,
-      state: content.includes(opaque[1])
+      state: content.includes(opaque[2])
         ? null
         : {
-            close: { caseInsensitive: false, value: opaque[1] },
+            close: { caseInsensitive: false, value: opaque[2] },
             container,
-            syntheticOpening: null,
+            syntheticClosing: opaque[2],
+            syntheticOpening: opaque[1],
             syntheticTag: null,
           },
     };
@@ -277,6 +335,8 @@ function rawHtmlStart(
     state: {
       close: "blank",
       container,
+
+      syntheticClosing: `</${syntheticTag}>`,
       syntheticOpening:
         openingTag && !openingTag.trimEnd().endsWith("/>")
           ? openingTag
@@ -307,7 +367,7 @@ function nextBoundaryState(
   let current = state;
   if (current.table) {
     const content = containerContent(line, current.table.container);
-    if (content !== null && hasUnescapedTablePipe(content)) {
+    if (content !== null && isTableBodyContent(content)) {
       return { ...current, atBlockBoundary: false, tableHeader: null };
     }
     current = {
@@ -348,12 +408,26 @@ function nextBoundaryState(
     }
   }
 
+  let parsed: ContainerLine;
+  if (current.list) {
+    const content = containerContent(line, current.list);
+    if (content === null) {
+      current = { ...current, atBlockBoundary: true, list: null };
+      parsed = parseContainerLine(line);
+    } else {
+      parsed = parseWithinContainer(content, current.list);
+    }
+  } else {
+    parsed = parseContainerLine(line);
+  }
+
   if (current.tableHeader) {
     const content = containerContent(line, current.tableHeader.container);
     if (content !== null && isTableDelimiter(content)) {
       return {
         ...current,
         atBlockBoundary: false,
+        list: parsed.hasList ? parsed : null,
         table: {
           ...current.tableHeader,
           delimiter: line,
@@ -363,38 +437,42 @@ function nextBoundaryState(
     }
   }
 
-  const parsed = parseContainerLine(line);
+  const list = parsed.hasList ? parsed : null;
   const rawHtml = rawHtmlStart(parsed, current.atBlockBoundary);
   if (rawHtml.recognized) {
     return {
       ...current,
       atBlockBoundary: rawHtml.state === null,
+      list,
       rawHtml: rawHtml.state,
       tableHeader: null,
     };
   }
 
-  const displayMath = nextDisplayMathState(line, null);
+  const displayMath = nextDisplayMathState(line, null, parsed);
   if (displayMath) {
     return {
       ...current,
       atBlockBoundary: false,
       displayMath,
+      list,
       tableHeader: null,
     };
   }
-  const fence = nextFenceState(line, null, openingOffset);
+  const fence = nextFenceState(line, null, openingOffset, parsed);
   if (fence) {
     return {
       ...current,
       atBlockBoundary: false,
       fence,
+      list,
       tableHeader: null,
     };
   }
   return {
     ...current,
     atBlockBoundary: parsed.content.trim().length === 0,
+    list,
     tableHeader: hasUnescapedTablePipe(parsed.content)
       ? { container: parsed, markdown: line }
       : null,
@@ -407,6 +485,8 @@ function boundaryStateAt(markdown: string, offset: number): BoundaryState {
     atBlockBoundary: true,
     displayMath: null,
     fence: null,
+
+    list: null,
     rawHtml: null,
     table: null,
     tableHeader: null,
@@ -496,13 +576,22 @@ function syntheticDisplayMathClosing(state: DisplayMathState): string {
 }
 
 function syntheticRawHtmlOpening(state: RawHtmlState): string {
-  const marker = state.syntheticOpening ?? "<!--";
-  return `${state.container.openingPrefix}${marker}`;
+  return `${state.container.openingPrefix}${state.syntheticOpening}`;
 }
 
 function syntheticRawHtmlClosing(state: RawHtmlState): string {
-  const marker = state.syntheticTag ? `</${state.syntheticTag}>` : "-->";
-  return `${state.container.continuationPrefix}${marker}`;
+  return `${state.container.continuationPrefix}${state.syntheticClosing}`;
+}
+
+function safeCharacterBoundary(markdown: string, index: number): number {
+  const previous = markdown.charCodeAt(index - 1);
+  const current = markdown.charCodeAt(index);
+  return previous >= 0xd800 &&
+    previous <= 0xdbff &&
+    current >= 0xdc00 &&
+    current <= 0xdfff
+    ? index + 1
+    : index;
 }
 
 function pageStart(
@@ -530,8 +619,9 @@ function pageStart(
   }
 
   const newline = markdown.indexOf("\n", target);
-  const nextLine = newline < 0 ? target : newline + 1;
-  return nextLine < end ? nextLine : target;
+  if (newline < 0) return safeCharacterBoundary(markdown, target);
+  const nextLine = newline + 1;
+  return nextLine < end ? nextLine : safeCharacterBoundary(markdown, target);
 }
 
 // Select exactly one newest-first page. `end` is an absolute source boundary
@@ -587,6 +677,11 @@ export function selectReasoningMarkdownPage(
     );
     if (content !== null && isTableDelimiter(content)) {
       pageMarkdown = `${openingState.tableHeader.markdown}\n${pageMarkdown}`;
+    }
+  } else if (openingState.list) {
+    const firstLine = pageMarkdown.split("\n", 1)[0];
+    if (containerContent(firstLine, openingState.list) !== null) {
+      pageMarkdown = `${openingState.list.openingPrefix.trimEnd()}\n${pageMarkdown}`;
     }
   }
   if (closingState.rawHtml) {

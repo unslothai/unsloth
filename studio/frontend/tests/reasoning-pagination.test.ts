@@ -162,6 +162,21 @@ test("opaque and block HTML keep inner Markdown inert across cuts", () => {
       open: "<!--\n",
     },
     {
+      close: "]]>",
+      markdown: `<![CDATA[\n${body}]]>`,
+      open: "<![CDATA[\n",
+    },
+    {
+      close: "?>",
+      markdown: `<?pi\n${body}?>`,
+      open: "<?\n",
+    },
+    {
+      close: ">",
+      markdown: `<!DECLARATION\n${body}>`,
+      open: "<!A\n",
+    },
+    {
       close: "</details>\n",
       markdown: `<details open>\n${body}</details>`,
       open: "<details open>\n",
@@ -183,8 +198,11 @@ test("opaque and block HTML keep inner Markdown inert across cuts", () => {
 });
 
 test("containerized code and math retain wrappers across cuts", () => {
-  const code = Array.from({ length: 1_500 }, () => "print(1)").join("\n");
-  const quotedFence = `> \`\`\`python\n> ${code.replaceAll("\n", "\n> ")}\n> \`\`\`\n`;
+  const codeLines = Array.from({ length: 1_500 }, () => "print(1)");
+  const code = codeLines.join("\n");
+  const quotedFence = `> \`\`\`python\n${codeLines
+    .map((line, index) => `${index % 2 === 0 ? "> " : ">"}${line}`)
+    .join("\n")}\n> \`\`\`\n`;
   const codePage = selectReasoningMarkdownPage(quotedFence, {
     enabled: true,
     maxCharacters: 2_048,
@@ -221,6 +239,15 @@ test("containerized code and math retain wrappers across cuts", () => {
     { enabled: true, maxCharacters: 2_048 },
   );
   assert.equal(transitioned.markdown.startsWith("```js\n"), true);
+
+  const listPage = selectReasoningMarkdownPage(
+    `- lead\n${Array.from(
+      { length: 3_000 },
+      (_, index) => `  continuation ${index}: ${"text ".repeat(20)}`,
+    ).join("\n")}`,
+    { enabled: true, maxCharacters: 2_048 },
+  );
+  assert.equal(listPage.markdown.startsWith("-\n  continuation"), true);
 });
 
 test("pages preserve display math across cuts", () => {
@@ -248,7 +275,8 @@ test("long GFM tables retain their header across page cuts", () => {
   const delimiter = "| ---: | :--- |";
   const markdown = `${header}\n${delimiter}\n${Array.from(
     { length: 3_000 },
-    (_, index) => `| ${index} | ${"value ".repeat(4)} |`,
+    (_, index) =>
+      index % 2 === 0 ? `| ${index} | ${"value ".repeat(4)} |` : `row ${index}`,
   ).join("\n")}\n`;
   const latest = selectReasoningMarkdownPage(markdown, {
     enabled: true,
@@ -275,6 +303,14 @@ test("a giant single line is hard-bounded", () => {
 
   assert.equal(page.markdown.length, 8_192);
   assert.equal(page.start, markdown.length - 8_192);
+
+  const surrogateBoundary = `a😀${"b".repeat(8_191)}`;
+  const unicodePage = selectReasoningMarkdownPage(surrogateBoundary, {
+    enabled: true,
+    maxCharacters: 8_192,
+  });
+  assert.equal(unicodePage.start, 3);
+  assert.equal(unicodePage.markdown.startsWith("b"), true);
 });
 
 test("short and non-reasoning Markdown remain exact", () => {
