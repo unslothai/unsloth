@@ -23,6 +23,7 @@ from unsloth_cli.commands.start import (
     _SUBAGENT_PLAN_INSTRUCTIONS,
     _claude_flags,
     _claude_local_env,
+    _prefer_windows_cmd_sibling,
     _wsl_shim_env,
 )
 
@@ -144,7 +145,7 @@ def run_local_agent(
     local_env = _claude_local_env(base, key, entry)
     child_env = dict(os.environ)
 
-    executable = shutil.which("claude")
+    executable = _prefer_windows_cmd_sibling(shutil.which("claude"))
     if executable is None:
         raise RuntimeError("`claude` is not installed or is not on PATH.")
     cancel_event = cancel_event or threading.Event()

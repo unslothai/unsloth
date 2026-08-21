@@ -25,6 +25,7 @@ from unsloth_cli.commands.start import (
     _CODEX_SUBAGENT_ROUTING_INSTRUCTIONS,
     _SUBAGENT_INSTRUCTIONS,
     _merge_wslenv,
+    _prefer_windows_cmd_sibling,
     _wsl_shim_env,
 )
 
@@ -82,7 +83,7 @@ def _result_text(stdout: str) -> str:
 
 def run_local_agent(task: str, cancel_event: threading.Event | None = None) -> str:
     config = _config()
-    executable = shutil.which("codex")
+    executable = _prefer_windows_cmd_sibling(shutil.which("codex"))
     if executable is None:
         raise RuntimeError("`codex` is not installed or is not on PATH.")
     cancel_event = cancel_event or threading.Event()
