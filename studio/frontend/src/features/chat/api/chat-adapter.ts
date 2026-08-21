@@ -35,6 +35,7 @@ import {
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
+import { AssistantFencedCodeProvenanceTracker } from "@/lib/fenced-code-provenance";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
 import {
   adoptPreStreamRunReservation,
@@ -126,7 +127,10 @@ import {
   awaitThreadScopedPairing,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
-import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "../presets/preset-policy";
+import {
+  resolveFitMaxSeqLength,
+  resolveManualAutoCtxPin,
+} from "../presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import {
@@ -168,6 +172,7 @@ import { createRetryableSharedRead } from "../utils/retryable-shared-read";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import { mergeContextTruncation } from "../utils/context-truncation";
 import {
+  createReasoningMirrorGuard,
   createThinkTagTracker,
   extractDeltaText,
   parseAssistantContent,
@@ -1051,9 +1056,7 @@ function isSandboxWrapper(
   return isSandboxToolResult(result);
 }
 
-export function isMcpImageToolResult(
-  val: unknown,
-): val is McpImageToolResult {
+export function isMcpImageToolResult(val: unknown): val is McpImageToolResult {
   if (typeof val !== "object" || val === null) {
     return false;
   }
@@ -1942,10 +1945,14 @@ function autoLoadCandidateKey(
   return `${kind}:${normalizeTarget(id)}:${(ggufVariant ?? "").toLowerCase()}`;
 }
 
-function hasBigEndianGgufMarker(filename: string, quant?: string | null): boolean {
+function hasBigEndianGgufMarker(
+  filename: string,
+  quant?: string | null,
+): boolean {
   const normalized = filename.replace(/\\/g, "/").toLowerCase();
   const separatorIndex = normalized.lastIndexOf("/");
-  const basename = separatorIndex >= 0 ? normalized.slice(separatorIndex + 1) : normalized;
+  const basename =
+    separatorIndex >= 0 ? normalized.slice(separatorIndex + 1) : normalized;
   const parent = separatorIndex >= 0 ? normalized.slice(0, separatorIndex) : "";
   const stem = basename.replace(/\.[^.]*$/, "");
   const quantKey = quant?.trim().toLowerCase() || "";
@@ -1959,7 +1966,9 @@ function hasBigEndianGgufMarker(filename: string, quant?: string | null): boolea
     if (quantIndex >= 0 && quantIndex < (match.index ?? 0)) {
       return true;
     }
-    const tail = stem.slice((match.index ?? 0) + match[0].length).replace(/^[._-]+/, "");
+    const tail = stem
+      .slice((match.index ?? 0) + match[0].length)
+      .replace(/^[._-]+/, "");
     if (!tail || !GGUF_KNOWN_QUANT_RE.test(tail)) {
       return !quantInParentOnly;
     }
@@ -2237,7 +2246,9 @@ function isAutoLoadableLocalRow(
 // Reading only the field made such a row a Transformers source, which sends the
 // safetensors context length to /load and remembers the wrong kind.
 function isGgufLocalRow(row: LocalModelInfo): boolean {
-  return row.model_format === "gguf" || row.path.toLowerCase().endsWith(".gguf");
+  return (
+    row.model_format === "gguf" || row.path.toLowerCase().endsWith(".gguf")
+  );
 }
 
 /** Chat-only installs run GGUF anywhere and MLX on a Mac; the picker hides
@@ -2694,7 +2705,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       error instanceof Error && error.message.trim() ? error.message.trim() : "";
     // loadModel also rejects before /api/inference/load is sent (dismissed token dialog, dead
     // backend): those stop the Hub download, but must not blame the model.
-    const marker = error as { unslothTransportFailure?: boolean; unslothUserCancelled?: boolean };
+    const marker = error as {
+      unslothTransportFailure?: boolean;
+      unslothUserCancelled?: boolean;
+    };
     const blamesModel = !(
       marker?.unslothTransportFailure === true || marker?.unslothUserCancelled === true
     );
@@ -2789,7 +2803,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     const failureLabel = candidate.ggufVariant
       ? `${candidate.id} (${candidate.ggufVariant})`
       : candidate.id;
-    const { config } = resolveInitialConfig(candidate.id, candidate.ggufVariant);
+    const { config } = resolveInitialConfig(
+      candidate.id,
+      candidate.ggufVariant,
+    );
     const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
       modelId: candidate.id,
       ggufVariant: candidate.ggufVariant,
@@ -3054,7 +3071,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             : { maxSeqLength: effectiveMaxSeqLength }),
           maxTokens:
             candidate.kind === "gguf"
-              ? loadResp.context_length ?? 131072
+              ? (loadResp.context_length ?? 131072)
               : effectiveMaxSeqLength,
         },
         {
@@ -3240,7 +3257,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         cachedModelsRunOnThisPlatform()
           ? allModelRepos.filter(isChattableCachedRepo)
           : [],
-        localRows.filter((row) => isAutoLoadableLocalRow(row, cachedInventoryFailed)),
+        localRows.filter((row) =>
+          isAutoLoadableLocalRow(row, cachedInventoryFailed),
+        ),
         store.params.maxSeqLength,
         options?.abortSignal,
       ),
@@ -3274,7 +3293,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         while (!autoLoadCancelled && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS) {
           const candidate = await resolveAutoLoadCandidate(
             source,
-            isRemembered ? lastLoaded?.ggufVariant ?? null : null,
+            isRemembered ? (lastLoaded?.ggufVariant ?? null) : null,
             isTried,
           );
           options?.abortSignal?.throwIfAborted();
@@ -3437,11 +3456,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         persistGpuMemoryModeOnLoad(loadResp, rt.gpuMemoryMode);
         useChatRuntimeStore
           .getState()
-          .setCheckpoint(
-            DEFAULT_CHAT_MODEL_REPO,
-            DEFAULT_CHAT_MODEL_VARIANT,
-            { trackQueuedSettings: !options?.preserveVisibleSettings },
-          );
+          .setCheckpoint(DEFAULT_CHAT_MODEL_REPO, DEFAULT_CHAT_MODEL_VARIANT, {
+            trackQueuedSettings: !options?.preserveVisibleSettings,
+          });
         const store = useChatRuntimeStore.getState();
         store.setModelRequiresTrustRemoteCode(
           loadResp.requires_trust_remote_code ?? false,
@@ -3537,9 +3554,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   }
 }
 
-async function resolveQueuedEmptyLocalModel(
-  abortSignal: AbortSignal,
-): Promise<{
+async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
   loadFailureReported?: boolean;
@@ -3659,6 +3674,10 @@ export function createOpenAIStreamAdapter(
       unstable_threadId,
       unstable_assistantMessageId,
     }) {
+      const fencedCodeProvenance = new AssistantFencedCodeProvenanceTracker();
+      const publishedAssistantContent = <T extends { type: string }>(
+        parts: readonly T[],
+      ): T[] => fencedCodeProvenance.annotate(parts);
       // Before the first await: hydration and a model load both run ahead of the
       // first resolveProjectId, and a send survives navigation. Only consulted
       // while the thread's own row is still missing.
@@ -3701,12 +3720,8 @@ export function createOpenAIStreamAdapter(
         ? async () => (await sharedThreadRecordRead()).thread
         : undefined;
       const releaseCurrentPreStreamRun = () =>
-        releasePreStreamRunForThreadIds([
-          unstable_threadId,
-          resolvedThreadId,
-        ]);
-      const queuedRunSettings =
-        consumeQueuedChatRunSettings(resolvedThreadId);
+        releasePreStreamRunForThreadIds([unstable_threadId, resolvedThreadId]);
+      const queuedRunSettings = consumeQueuedChatRunSettings(resolvedThreadId);
       let queuedEmptyModelRuntime: QueuedResolvedModelRuntime | null = null;
       const persistResolvedQueuedModel = async (modelId: string) => {
         if (
@@ -3826,13 +3841,16 @@ export function createOpenAIStreamAdapter(
                 ),
               }
           : liveRuntime;
-        if (!resolvedThreadId) throw new Error("Research requires a saved chat.");
+        if (!resolvedThreadId)
+          throw new Error("Research requires a saved chat.");
         if (!unstable_assistantMessageId) {
           throw new Error(
             "Deep research could not bind its assistant message. Please retry the send.",
           );
         }
-        const userMessage = [...messages].reverse().find((m) => m.role === "user");
+        const userMessage = [...messages]
+          .reverse()
+          .find((m) => m.role === "user");
         if (!userMessage) throw new Error("Research requires a user message.");
         const userMessageIndex = messages.indexOf(userMessage);
         const userMessageParentId =
@@ -3840,10 +3858,12 @@ export function createOpenAIStreamAdapter(
         const { params } = runtime;
         await persistResolvedQueuedModel(params.checkpoint);
         const selectedCheckpoint = params.checkpoint.trim();
-        const researchExternalSelection = parseExternalModelId(selectedCheckpoint);
+        const researchExternalSelection =
+          parseExternalModelId(selectedCheckpoint);
         const researchExternalProvider = researchExternalSelection
           ? loadExternalProviders().find(
-              (provider) => provider.id === researchExternalSelection.providerId,
+              (provider) =>
+                provider.id === researchExternalSelection.providerId,
             )
           : null;
         if (
@@ -3898,10 +3918,10 @@ export function createOpenAIStreamAdapter(
             ? runtime.ragEnabled && runtime.ragSource.type === "kb"
               ? {
                   kb_id: runtime.ragSource.kbId,
-                   default_top_k: runtime.ragTopK,
-                   mode: runtime.ragMode,
-                   autoinject: runtime.ragAutoInject,
-                   autoinject_min_score: runtime.ragAutoInjectMinScore,
+                  default_top_k: runtime.ragTopK,
+                  mode: runtime.ragMode,
+                  autoinject: runtime.ragAutoInject,
+                  autoinject_min_score: runtime.ragAutoInjectMinScore,
                 }
               : {
                   ...(runtime.ragEnabled
@@ -3910,10 +3930,10 @@ export function createOpenAIStreamAdapter(
                   ...(projectRagEnabled && researchProjectId
                     ? { project_id: researchProjectId }
                     : {}),
-                   default_top_k: runtime.ragTopK,
-                   mode: runtime.ragMode,
-                   autoinject: runtime.ragAutoInject,
-                   autoinject_min_score: runtime.ragAutoInjectMinScore,
+                  default_top_k: runtime.ragTopK,
+                  mode: runtime.ragMode,
+                  autoinject: runtime.ragAutoInject,
+                  autoinject_min_score: runtime.ragAutoInjectMinScore,
                 }
             : undefined;
 
@@ -3932,7 +3952,9 @@ export function createOpenAIStreamAdapter(
         };
         runtime.registerThreadServerCancel(threadKey, researchServerCancel);
         releaseCurrentPreStreamRun();
-        runtime.setThreadRunning(threadKey, true, { owner: researchServerCancel });
+        runtime.setThreadRunning(threadKey, true, {
+          owner: researchServerCancel,
+        });
         let report = "";
         let releaseResearchFollow: (() => void) | null = null;
         const researchFollowController = new AbortController();
@@ -3942,13 +3964,15 @@ export function createOpenAIStreamAdapter(
         const forwardAdapterAbort = () => {
           researchFollowController.abort(abortSignal.reason);
         };
-        abortSignal.addEventListener("abort", forwardAdapterAbort, { once: true });
+        abortSignal.addEventListener("abort", forwardAdapterAbort, {
+          once: true,
+        });
         try {
           // The normal history adapter persists messages after model execution,
           // but research validates the user message before it can start.
-          const storedUserMessage = (await listStoredChatMessages(resolvedThreadId)).find(
-            (message) => message.id === userMessage.id,
-          );
+          const storedUserMessage = (
+            await listStoredChatMessages(resolvedThreadId)
+          ).find((message) => message.id === userMessage.id);
           await saveStoredChatMessage({
             id: userMessage.id,
             threadId: resolvedThreadId,
@@ -3965,7 +3989,9 @@ export function createOpenAIStreamAdapter(
             userMessageId: userMessage.id,
             assistantMessageId: unstable_assistantMessageId,
             inferenceRequest,
-            ...(researchInstructions ? { instructions: researchInstructions } : {}),
+            ...(researchInstructions
+              ? { instructions: researchInstructions }
+              : {}),
             ...(ragScope ? { ragScope } : {}),
             budgets: {
               modelTimeoutSeconds: runtime.researchModelTimeoutSeconds,
@@ -3988,8 +4014,7 @@ export function createOpenAIStreamAdapter(
           );
           if (
             !queuedRunSettings ||
-            resolvedThreadId ===
-              useChatRuntimeStore.getState().activeThreadId
+            resolvedThreadId === useChatRuntimeStore.getState().activeThreadId
           ) {
             runtime.setDeepResearchEnabled(false);
           }
@@ -4021,7 +4046,9 @@ export function createOpenAIStreamAdapter(
             }
             yieldedStatus = run.status;
             yield {
-              content: [{ type: "text" as const, text: report }],
+              content: publishedAssistantContent([
+                { type: "text" as const, text: report },
+              ]),
               metadata: {
                 custom: {
                   researchRunId: run.id,
@@ -4033,14 +4060,19 @@ export function createOpenAIStreamAdapter(
             };
           }
         } catch (error) {
-          if (!abortSignal.aborted && !researchFollowController.signal.aborted) {
+          if (
+            !abortSignal.aborted &&
+            !researchFollowController.signal.aborted
+          ) {
             throw error;
           }
         } finally {
           abortSignal.removeEventListener("abort", forwardAdapterAbort);
           releaseResearchFollow?.();
           runtime.clearThreadServerCancel(threadKey, researchServerCancel);
-          runtime.setThreadRunning(threadKey, false, { owner: researchServerCancel });
+          runtime.setThreadRunning(threadKey, false, {
+            owner: researchServerCancel,
+          });
         }
         return;
       }
@@ -4272,7 +4304,6 @@ export function createOpenAIStreamAdapter(
         isExternalRequest &&
         !externalApiKey &&
         !externalProvider?.hasApiKey &&
-
         !externalProviderUsesOAuth &&
         !externalProviderIsCustom &&
         !externalProviderIsGeminiCustomBase
@@ -4339,14 +4370,16 @@ export function createOpenAIStreamAdapter(
       // boundaries, not two spellings of one feature, so the stored pill keeps
       // meaning the provider's sandbox wherever it meant that before the Studio
       // loop reached these providers. See code-tool-placement.ts.
-      const { local: studioLocalCodeTools, hosted: hostedCodeToolsForThisTurn } =
-        selectCodeToolNames({
-          codeToolsEnabled,
-          hostedCodeExecutionForThisTurn: codeExecEnabledForThisTurn,
-          providerHostsCodeExecution: providerHostsCodeExecution(
-            externalProvider?.providerType,
-          ),
-        });
+      const {
+        local: studioLocalCodeTools,
+        hosted: hostedCodeToolsForThisTurn,
+      } = selectCodeToolNames({
+        codeToolsEnabled,
+        hostedCodeExecutionForThisTurn: codeExecEnabledForThisTurn,
+        providerHostsCodeExecution: providerHostsCodeExecution(
+          externalProvider?.providerType,
+        ),
+      });
 
       if (selectedImageEditReference && !imageGenerationEnabledForThisTurn) {
         clearSelectedImageEditReference();
@@ -4375,9 +4408,7 @@ export function createOpenAIStreamAdapter(
       // follow-ups; the backend Gemini translator rebuilds the
       // functionCall / functionResponse parts (with thoughtSignature).
       const outboundMessages = survivingMessages
-        .flatMap((message) =>
-          toOpenAIMessages(message, !isExternalRequest),
-        )
+        .flatMap((message) => toOpenAIMessages(message, !isExternalRequest))
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
         );
@@ -4660,7 +4691,9 @@ export function createOpenAIStreamAdapter(
         runtime.setThreadRunning(threadKey, true, { owner: audioCancel });
         try {
           yield {
-            content: [{ type: "text" as const, text: "Generating audio..." }],
+            content: publishedAssistantContent([
+              { type: "text" as const, text: "Generating audio..." },
+            ]),
           };
 
           const result = await generateAudio(
@@ -4686,12 +4719,12 @@ export function createOpenAIStreamAdapter(
 
           const audioUrl = `data:audio/wav;base64,${result.audio.data}`;
           yield {
-            content: [
+            content: publishedAssistantContent([
               {
                 type: "text" as const,
                 text: `<audio-player src="${audioUrl}" />`,
               },
-            ],
+            ]),
           };
         } catch (err) {
           if (!runSignal.aborted) {
@@ -4819,8 +4852,6 @@ export function createOpenAIStreamAdapter(
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
 
-      const liveAssistantContent = () =>
-        buildAssistantContent(mergeContinuation(cumulativeText));
       // Provisional reason on every streamed yield: an abort skips the terminal yields
       // and a reload rebuilds messages as "complete", so a stopped turn would otherwise
       // lose why it was short. The terminal yields overwrite or clear it.
@@ -4841,6 +4872,8 @@ export function createOpenAIStreamAdapter(
       // <think>...</think> for parseAssistantContent. Lives outside the
       // SSE loop because the close tag fires when content arrives.
       let reasoningContentOpen = false;
+
+      const reasoningMirrorGuard = createReasoningMirrorGuard();
       type ToolCallProvenance = {
         source?: string;
         healed?: boolean;
@@ -4944,12 +4977,16 @@ export function createOpenAIStreamAdapter(
 
         return pinTextThoughtSignature(assembled);
       };
+      const currentAssistantContent = () =>
+        buildAssistantContent(mergeContinuation(cumulativeText));
 
       // Yielded before the request starts: an abort during load skips the partial-content
       // yield below, saving an empty message and stranding the resumed text.
       if (continuation) {
         yield {
-          content: buildAssistantContent(cumulativeText),
+          content: publishedAssistantContent(
+            buildAssistantContent(cumulativeText),
+          ),
           metadata: { custom: liveCustom() },
         };
       }
@@ -5069,9 +5106,7 @@ export function createOpenAIStreamAdapter(
             params.checkpoint ||
             "Unknown model",
           responseModelId:
-            responseModelId ||
-            externalSelection?.modelId ||
-            params.checkpoint,
+            responseModelId || externalSelection?.modelId || params.checkpoint,
           ...(externalProvider?.id ? { providerId: externalProvider.id } : {}),
           providerName:
             externalProvider?.name ??
@@ -5101,10 +5136,10 @@ export function createOpenAIStreamAdapter(
               codeExecEnabledForThisTurn ||
               (!isExternalRequest && supportsTools && codeToolsEnabled),
             images: imageGenerationEnabledForThisTurn,
-            mcp:
-              supportsStudioToolsForThisTurn && mcpEnabledForChat,
+            mcp: supportsStudioToolsForThisTurn && mcpEnabledForChat,
             docs:
-              supportsStudioToolsForThisTurn && (ragEnabled || projectRagEnabled),
+              supportsStudioToolsForThisTurn &&
+              (ragEnabled || projectRagEnabled),
             artifacts: renderHtmlToolEnabledForThisTurn,
             confirmToolCalls,
             bypassPermissions,
@@ -5373,8 +5408,12 @@ export function createOpenAIStreamAdapter(
                     // older bundle sent meaning hosted search, so without this
                     // flag Search silently stayed hosted.
                     run_tools_locally: true,
-                    ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
-                    ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
+                    ...(sandboxSessionId
+                      ? { session_id: sandboxSessionId }
+                      : {}),
+                    ...(resolvedThreadId
+                      ? { thread_id: resolvedThreadId }
+                      : {}),
                     ...(ragEnabled || projectRagEnabled
                       ? {
                           rag_scope: {
@@ -5482,7 +5521,11 @@ export function createOpenAIStreamAdapter(
                       : {
                           reasoning_effort: fallbackExternalEffort,
                         }
-                  : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
+                  : {
+                      thinking: {
+                        type: reasoningEnabled ? "enabled" : "disabled",
+                      },
+                    }
                 : {}),
             };
           }
@@ -5600,7 +5643,9 @@ export function createOpenAIStreamAdapter(
                             ? { whole_doc: false }
                             : {}),
                           context_length:
-                            runtime.ggufContextLength ?? params.maxSeqLength ?? undefined,
+                            runtime.ggufContextLength ??
+                            params.maxSeqLength ??
+                            undefined,
                         },
                       }
                     : {}),
@@ -5662,7 +5707,8 @@ export function createOpenAIStreamAdapter(
                   contextTruncation,
                   chunk.context_truncated,
                 );
-                const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
+                const activeThreadId =
+                  useChatRuntimeStore.getState().activeThreadId;
                 // fits:false means the fitter could NOT make the request fit and returned
                 // the original messages. Toasting "older turns were removed" is untrue
                 // there, and burns the once-per-thread flag so a real one is silent.
@@ -5698,9 +5744,7 @@ export function createOpenAIStreamAdapter(
               const reasoningMs = (
                 chunk as { _reasoningDurationMs?: number } | null | undefined
               )?._reasoningDurationMs;
-              if (
-                reasoningDurationTracker.recordServerDuration(reasoningMs)
-              ) {
+              if (reasoningDurationTracker.recordServerDuration(reasoningMs)) {
                 continue;
               }
 
@@ -5842,7 +5886,9 @@ export function createOpenAIStreamAdapter(
                       // they stay ungated.
                       if (canPublish(streamedChars)) {
                         yield {
-                          content: liveAssistantContent(),
+                          content: publishedAssistantContent(
+                            currentAssistantContent(),
+                          ),
                           metadata: {
                             timing: buildTiming(
                               streamStartTime,
@@ -5880,8 +5926,7 @@ export function createOpenAIStreamAdapter(
                       ? `${toolConfirmationScopeId}:${approvalId}`
                       : backendToolCallId
                         ? resolveToolPartId(backendToolCallId)
-                        : approvalId ||
-                          `${toolEvent.tool_name}_${Date.now()}`;
+                        : approvalId || `${toolEvent.tool_name}_${Date.now()}`;
                   if (awaitingConfirmation && backendToolCallId) {
                     toolConfirmationIdsByBackendId.set(backendToolCallId, id);
                   }
@@ -6009,7 +6054,8 @@ export function createOpenAIStreamAdapter(
                           text: rawResult.slice(0, mcpImgIdx),
                           images,
                         };
-                        if (isMcpImageToolResult(candidate)) mcpImages = candidate;
+                        if (isMcpImageToolResult(candidate))
+                          mcpImages = candidate;
                       } catch {
                         // Not a valid envelope; fall through below.
                       }
@@ -6173,7 +6219,7 @@ export function createOpenAIStreamAdapter(
                   }
                 }
                 yield {
-                  content: liveAssistantContent(),
+                  content: publishedAssistantContent(currentAssistantContent()),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -6227,10 +6273,8 @@ export function createOpenAIStreamAdapter(
               }
               const rawDelta = chunk.choices?.[0]?.delta?.content;
               // Normalize structured delta.content (mistral magistral).
-              const {
-                text: delta,
-                structuredReasoningContinues,
-              } = extractDeltaText(rawDelta);
+              const { text: extractedDelta, structuredReasoningContinues } =
+                extractDeltaText(rawDelta);
               // Latest Gemini text-part thoughtSignature for next-turn replay.
               const deltaExtraContent = (
                 chunk.choices?.[0]?.delta as
@@ -6242,17 +6286,24 @@ export function createOpenAIStreamAdapter(
               // replay. Pace previews, never state.
               let replayStateChanged = false;
               if (deltaExtraContent && typeof deltaExtraContent === "object") {
-                const extraRecord = deltaExtraContent as Record<string, unknown>;
+                const extraRecord = deltaExtraContent as Record<
+                  string,
+                  unknown
+                >;
                 const eGoogle = extraRecord.google;
                 if (eGoogle && typeof eGoogle === "object") {
-                  const sig = (eGoogle as Record<string, unknown>).thought_signature;
+                  const sig = (eGoogle as Record<string, unknown>)
+                    .thought_signature;
                   if (typeof sig === "string" && sig) {
                     replayStateChanged ||= sig !== latestTextThoughtSignature;
                     latestTextThoughtSignature = sig;
                   }
                 }
                 const codexReasoning = extraRecord.openai_codex_reasoning;
-                if (Array.isArray(codexReasoning) && codexReasoning.length > 0) {
+                if (
+                  Array.isArray(codexReasoning) &&
+                  codexReasoning.length > 0
+                ) {
                   codexReasoningLedger = addCodexReasoning(
                     codexReasoningLedger,
                     codexReasoning,
@@ -6291,6 +6342,12 @@ export function createOpenAIStreamAdapter(
               const reasoning =
                 (typeof rawReasoning === "string" ? rawReasoning : "") +
                 reasoningFromDetails;
+
+              reasoningMirrorGuard.appendReasoning(reasoning);
+              const delta = reasoningMirrorGuard.filterVisibleText(
+                extractedDelta,
+                Boolean(chunk.choices?.[0]?.finish_reason),
+              );
               // OpenAI delta.tool_calls: streams fragments by index;
               // accumulate into one part. extra_content carries Gemini 3
               // thoughtSignature for replay.
@@ -6395,7 +6452,8 @@ export function createOpenAIStreamAdapter(
                     toolCallParts[existingIndex] = updated;
                   } else {
                     const callId =
-                      stablePartId || `tool_call_${idx ?? toolCallParts.length}`;
+                      stablePartId ||
+                      `tool_call_${idx ?? toolCallParts.length}`;
 
                     if (!codexRoundToolCallIds.includes(callId)) {
                       codexRoundToolCallIds.push(callId);
@@ -6436,7 +6494,9 @@ export function createOpenAIStreamAdapter(
                   canPublish(streamedChars)
                 ) {
                   yield {
-                    content: liveAssistantContent(),
+                    content: publishedAssistantContent(
+                      currentAssistantContent(),
+                    ),
                     metadata: {
                       timing: buildTiming(
                         streamStartTime,
@@ -6453,10 +6513,10 @@ export function createOpenAIStreamAdapter(
               // thoughtSignature fragment, or the codex reasoning ledger on a
               // terminal delta. The skip below would drop both.
               if (replayStateChanged && !delta && !reasoning) {
-                const replayContent = liveAssistantContent();
+                const replayContent = currentAssistantContent();
                 if (replayContent.length > 0) {
                   yield {
-                    content: replayContent,
+                    content: publishedAssistantContent(replayContent),
                     metadata: {
                       timing: buildTiming(
                         streamStartTime,
@@ -6503,14 +6563,13 @@ export function createOpenAIStreamAdapter(
               // the comment there. Nothing on this path reads the buffer any
               // more, so no arrival can flatten it.
               const textEndsInsideThink = thinkTags.endsInsideThink();
-              const assistantContent = liveAssistantContent();
+              const assistantContent = currentAssistantContent();
 
               // Fallback when no server-side reasoning_summary arrives.
               const parsedReasoningGroupCount =
                 countReasoningGroups(assistantContent);
               if (
-                parsedReasoningGroupCount >
-                reasoningDurationTracker.groupCount
+                parsedReasoningGroupCount > reasoningDurationTracker.groupCount
               ) {
                 reasoningDurationTracker.startGroup(
                   parsedReasoningGroupCount - 1,
@@ -6556,7 +6615,7 @@ export function createOpenAIStreamAdapter(
 
               if (assistantContent.length > 0) {
                 yield {
-                  content: assistantContent,
+                  content: publishedAssistantContent(assistantContent),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -6690,7 +6749,8 @@ export function createOpenAIStreamAdapter(
           }
           if (
             usageThreadIsVisible &&
-            useChatRuntimeStore.getState().params.checkpoint === params.checkpoint
+            useChatRuntimeStore.getState().params.checkpoint ===
+              params.checkpoint
           ) {
             useChatRuntimeStore.getState().setContextUsage(usage);
           }
@@ -6721,11 +6781,11 @@ export function createOpenAIStreamAdapter(
         // Finalize reasoning-only streams.
         reasoningDurationTracker.finishGroup();
         yield {
-          content: [
+          content: publishedAssistantContent([
             ...buildAssistantContent(mergeContinuation(cumulativeText)),
             ...sourceParts,
             ...documentCitationParts,
-          ],
+          ]),
           metadata: {
             timing: finalTiming,
             custom: {
@@ -6734,7 +6794,9 @@ export function createOpenAIStreamAdapter(
 
               openaiCodexReasoning: codexReasoningLedger,
               contextTruncation,
-              incomplete: incompleteReason ? { reason: incompleteReason } : undefined,
+              incomplete: incompleteReason
+                ? { reason: incompleteReason }
+                : undefined,
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
               serverTimings: meta?.timings ?? undefined,
@@ -6789,7 +6851,8 @@ export function createOpenAIStreamAdapter(
             const budget =
               irreducible?.prompt_target ?? irreducible?.context_length ?? 0;
             const oneTurnIsTheProblem =
-              irreducible != null && (irreducible.latest_turn_tokens ?? 0) > budget;
+              irreducible != null &&
+              (irreducible.latest_turn_tokens ?? 0) > budget;
             // Whose turn it is decides the advice: in a tool loop the offending turn is
             // often output the user never wrote and cannot edit, so "shorten this
             // message" names the wrong thing and offers no remedy.
@@ -6838,7 +6901,7 @@ export function createOpenAIStreamAdapter(
               toolCallParts.length,
             );
             yield {
-              content: partialContent,
+              content: publishedAssistantContent(partialContent),
               metadata: {
                 timing: partialTiming,
                 custom: {

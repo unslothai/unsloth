@@ -80,6 +80,42 @@ export function extractDeltaText(delta: unknown): {
   return { text, structuredReasoningContinues };
 }
 
+export type ReasoningMirrorGuard = {
+  appendReasoning(delta: string): void;
+  filterVisibleText(delta: string, terminal: boolean): string;
+};
+
+/**
+ * Some local OpenAI-compatible servers emit the accumulated reasoning twice when
+ * a thinking model stops before producing an answer: first incrementally through
+ * `reasoning_content`, then once more as a terminal `content` delta. Keep the
+ * second copy out of the visible answer without hiding a real answer that began
+ * before the terminal chunk.
+ */
+export function createReasoningMirrorGuard(): ReasoningMirrorGuard {
+  let reasoning = "";
+  let hasVisibleText = false;
+
+  return {
+    appendReasoning(delta: string): void {
+      reasoning += delta;
+    },
+    filterVisibleText(delta: string, terminal: boolean): string {
+      if (!delta) return "";
+      if (
+        terminal &&
+        !hasVisibleText &&
+        reasoning.length === delta.length &&
+        reasoning === delta
+      ) {
+        return "";
+      }
+      hasVisibleText = true;
+      return delta;
+    },
+  };
+}
+
 // ContentPart from @assistant-ui/react has readonly fields, so `last.text +=
 // text` fails (TS2540). Replace the last element with a merged object instead.
 
@@ -103,9 +139,7 @@ export function appendReasoningPart(parts: ContentPart[], text: string): void {
   parts.push({ type: "reasoning", text });
 }
 
-export function parseAssistantContent(
-  raw: string,
-): ContentPart[] {
+export function parseAssistantContent(raw: string): ContentPart[] {
   const parts: ContentPart[] = [];
   if (!raw) {
     return parts;

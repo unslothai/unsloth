@@ -15,5 +15,6 @@ const unexpected = (name) => () => {
 };
 
 export const listChatMessages = unexpected("listChatMessages");
+export const saveChatMessage = unexpected("saveChatMessage");
 export const ensureStoredChatThread = unexpected("ensureStoredChatThread");
 export const syncStoredChatMessages = unexpected("syncStoredChatMessages");
