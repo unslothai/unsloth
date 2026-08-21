@@ -5,6 +5,7 @@ import { authFetch } from "@/features/auth";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { toast } from "@/lib/toast";
 import type { SpeechSynthesisAdapter } from "@assistant-ui/react";
+import { useExternalProvidersStore } from "../stores/external-providers-store";
 
 /** Voice for a stored voiceURI. "default" resolves to the voice the platform
  * marks as its default, so the "System default" choice means what it says
@@ -257,6 +258,11 @@ export async function generateCustomTtsAudio(
   text: string,
   signal?: AbortSignal,
 ): Promise<string> {
+  if (!useExternalProvidersStore.getState().connectionsEnabled) {
+    throw new Error(
+      "Connections are disabled. Turn on Enable connections in Settings → Connections to use a custom TTS endpoint.",
+    );
+  }
   const { ttsProviderId, ttsProviderModel, ttsProviderVoice } =
     useVoiceSettingsStore.getState();
   const model = ttsProviderModel.trim();
