@@ -469,7 +469,12 @@ def _cached_row_companion(repo_id: str) -> bool:
         return False
 
 
-def _cached_row_task(repo_info, *, gguf: bool) -> Optional[str]:
+def _cached_row_task(
+    repo_info,
+    *,
+    gguf: bool,
+    selected: Optional[Path] = None,
+) -> Optional[str]:
     """Pipeline task for a cached row, from the same classifiers the models API uses.
 
     The Images/Video pickers filter On Device rows on this and the chat picker routes a diffusion
@@ -479,7 +484,7 @@ def _cached_row_task(repo_info, *, gguf: bool) -> Optional[str]:
     """
     try:
         from routes.models import _cached_repo_task, _repo_gguf_task
-        return _repo_gguf_task(repo_info) if gguf else _cached_repo_task(repo_info)
+        return _repo_gguf_task(repo_info) if gguf else _cached_repo_task(repo_info, selected)
     except Exception:  # noqa: BLE001 -- a classification failure never hides a row
         return None
 
@@ -1061,7 +1066,7 @@ def _scan_cached_models(
                     else (
                         "text-to-speech"
                         if local_metadata.get("pipeline_tag") == "text-to-speech"
-                        else _cached_row_task(repo_info, gguf = False)
+                        else _cached_row_task(repo_info, gguf = False, selected = load_snapshot)
                     )
                 )
                 if is_whisper_stt:

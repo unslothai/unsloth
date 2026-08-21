@@ -4665,14 +4665,19 @@ def cached_gguf_rows(cache_scans = None) -> list[dict]:
     )
 
 
-def _repo_has_pipeline_index(repo_info) -> bool:
-    """Root-model_index.json check. Shared with the hub inventory scan, which classifies the
-    same repos for the same pickers; see :func:`hub.utils.inventory_scan.repo_has_pipeline_index`."""
+def _repo_has_pipeline_index(repo_info, selected: Optional[Path] = None) -> bool:
+    """Whether the selected snapshot is a conventional or modular pipeline root.
+
+    With no selection, preserve the repo-wide compatibility scan used by direct callers.
+    """
+    if selected is not None:
+        return _local_pipeline_index(selected)
     from hub.utils import inventory_scan as hf_cache_scan
+
     return hf_cache_scan.repo_has_pipeline_index(repo_info)
 
 
-def _repo_is_diffusers(repo_info) -> bool:
+def _repo_is_diffusers(repo_info, selected: Optional[Path] = None) -> bool:
     """True for an image-diffusion repo, so the chat picker hides it (it renders
     images, not chat) and the Images picker claims it — mirroring how cached
     diffusion GGUFs are classified by arch.
@@ -4682,7 +4687,7 @@ def _repo_is_diffusers(repo_info) -> bool:
     Qwen-Image or a z-image .safetensors) ship none. For those, fall back to the
     repo id resolving to a known diffusion family — the same resolver the Images
     backend loads from — so they don't surface as loadable chat models."""
-    if _repo_has_pipeline_index(repo_info):
+    if _repo_has_pipeline_index(repo_info, selected):
         return True
     try:
         from core.inference.diffusion_families import detect_family
@@ -4731,7 +4736,7 @@ def _is_sd_cpp_companion_repo(repo_id: str) -> bool:
         return False
 
 
-def _cached_repo_task(repo_info) -> Optional[str]:
+def _cached_repo_task(repo_info, selected: Optional[Path] = None) -> Optional[str]:
     """Pipeline task for a cached non-GGUF repo: 'text-to-video' for repos the
     video backend can load as full pipelines (its trust list / family detector),
     else 'text-to-image' for diffusers image repos, else None (chat). Without the
@@ -4752,7 +4757,7 @@ def _cached_repo_task(repo_info) -> Optional[str]:
             return _VIDEO_GEN_TASK
     except Exception:
         pass
-    if not _repo_is_diffusers(repo_info):
+    if not _repo_is_diffusers(repo_info, selected):
         return None
     # BOTH gates, mirroring the video branch: trust rule AND a detected image family. A
     # model_index.json only proves it is a diffusers pipeline; newer families need diffusers 0.39.
@@ -5010,10 +5015,13 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                     not bool(existing.get("partial")),
                     existing["size_bytes"],
                 ):
+                    row_task = _cached_repo_task(repo_info, selected)
+                    is_diffusers = _repo_is_diffusers(repo_info, selected)
+                    has_pipeline_index = _repo_has_pipeline_index(repo_info, selected)
                     row = {
                         "repo_id": repo_id,
                         "size_bytes": total_size,
-                        "task": _cached_repo_task(repo_info),
+                        "task": row_task,
                     }
                     # Pin a copy its bare id cannot reach, so the pick loads the found snapshot.
                     if model_load_id:
@@ -5026,7 +5034,7 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                         row["can_chat"] = False
                     # task stays None for a diffusion repo this backend cannot load as a
                     # pipeline, and None is what every chat repo carries, so say it plainly.
-                    if _repo_is_diffusers(repo_info):
+                    if is_diffusers:
                         row["diffusers"] = True
                     if is_partial:
                         row["partial"] = True
@@ -5035,7 +5043,7 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                     if _is_sd_cpp_companion_repo(repo_id):
                         row["companion"] = True
                     # Flag diffusion repos with no pipeline index: loadable only via from_single_file, so pickers must not offer a pipeline load.
-                    if row["task"] is not None and not _repo_has_pipeline_index(repo_info):
+                    if row["task"] is not None and not has_pipeline_index:
                         row["single_file"] = True
                     # Keep the newest timestamp across duplicate caches; absent rows sort as oldest.
                     lm = max(last_modified, (existing or {}).get("last_modified", 0.0))

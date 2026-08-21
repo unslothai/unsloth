@@ -1843,7 +1843,7 @@ def test_list_cached_models_prefers_complete_over_larger_partial(monkeypatch, tm
         "_cached_repo_partial",
         lambda repo_id, repo_cache_dir = None, snapshot_dir = None: "root_b" in str(repo_cache_dir),
     )
-    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected = None: None)
     # List the partial (larger) FIRST, so the old size-only rule would have picked it.
     monkeypatch.setattr(
         models_route,
@@ -3305,7 +3305,9 @@ def test_list_cached_models_flags_single_file_diffusion_repos(monkeypatch, tmp_p
     monkeypatch.setattr(
         models_route,
         "_cached_repo_task",
-        lambda repo_info: "text-to-image" if "Qwen-Image" in repo_info.repo_id else None,
+        lambda repo_info, selected = None: (
+            "text-to-image" if "Qwen-Image" in repo_info.repo_id else None
+        ),
     )
     monkeypatch.setattr(
         models_route,
@@ -3458,7 +3460,9 @@ def test_hub_cached_rows_carry_the_task_the_pickers_filter_on(monkeypatch, tmp_p
 
     repo = _pipeline_repo("unsloth/Qwen-Image", tmp_path)
     monkeypatch.setattr(
-        "routes.models._cached_repo_task", lambda repo_info: "text-to-image", raising = True
+        "routes.models._cached_repo_task",
+        lambda repo_info, selected = None: "text-to-image",
+        raising = True,
     )
     assert cache_inventory._cached_row_task(repo, gguf = False) == "text-to-image"
     monkeypatch.setattr(
@@ -3471,7 +3475,7 @@ def test_hub_cached_row_task_never_hides_a_row_when_classification_fails(monkeyp
     # Best-effort, like the models API: a classifier that raises leaves the row untagged rather than dropping it.
     from hub.services.models import cache_inventory
 
-    def _boom(repo_info):
+    def _boom(repo_info, selected = None):
         raise RuntimeError("unreadable")
 
     monkeypatch.setattr("routes.models._cached_repo_task", _boom, raising = True)
@@ -3595,7 +3599,7 @@ def test_pipeline_class_guard_is_silent_when_a_lazy_submodule_cannot_import(monk
 def test_cached_pipeline_needs_a_detectable_image_family(monkeypatch):
     # A top-level model_index.json only proves the repo is a diffusers pipeline: an unsloth-hosted pipeline of a class this backend
     # cannot assemble cleared the trust gate, was advertised, then failed validate_load_request. Both gates now, like the video branch.
-    monkeypatch.setattr(models_route, "_repo_has_pipeline_index", lambda info: True)
+    monkeypatch.setattr(models_route, "_repo_has_pipeline_index", lambda info, selected = None: True)
 
     def _task(repo_id):
         return models_route._cached_repo_task(SimpleNamespace(repo_id = repo_id, repo_path = "/x"))
@@ -3613,7 +3617,7 @@ def test_cached_repo_task_agrees_with_the_image_loader(monkeypatch):
     # Same invariant as the GGUF arch test: whatever the picker advertises as loadable, validate_load_request must accept.
     from core.inference.diffusion import DiffusionBackend
 
-    monkeypatch.setattr(models_route, "_repo_has_pipeline_index", lambda info: True)
+    monkeypatch.setattr(models_route, "_repo_has_pipeline_index", lambda info, selected = None: True)
     backend = DiffusionBackend.__new__(DiffusionBackend)
     for repo_id in (
         "unsloth/Z-Image-Turbo",
@@ -3645,7 +3649,7 @@ def test_cached_picker_hides_a_family_this_diffusers_cannot_build(monkeypatch):
     # Present in this environment's diffusers, so the row is offered.
     assert family_pipeline_available(fam) is True
 
-    monkeypatch.setattr(models_module, "_repo_is_diffusers", lambda info: True)
+    monkeypatch.setattr(models_module, "_repo_is_diffusers", lambda info, selected = None: True)
     monkeypatch.setattr("core.inference.diffusion._is_trusted_diffusion_repo", lambda repo_id: True)
     info = types.SimpleNamespace(repo_id = "unsloth/Z-Image-Turbo")
     assert models_module._cached_repo_task(info) == "text-to-image"
@@ -3749,7 +3753,7 @@ def test_the_loader_demands_the_diffusers_class_only_when_diffusers_loads_it(mon
 def test_the_video_picker_hides_a_family_this_diffusers_cannot_build(monkeypatch):
     # Same gap on the video branches: LTX-2's pipeline class is 0.39-only too, and video has no native engine to fall back
     # to, so the load asserts it unconditionally (video.py -> assert_pipeline_class_available).
-    monkeypatch.setattr(models_route, "_repo_is_diffusers", lambda info: True)
+    monkeypatch.setattr(models_route, "_repo_is_diffusers", lambda info, selected = None: True)
     info = SimpleNamespace(repo_id = "Lightricks/LTX-2", repo_path = "/x")
     # Offered on this environment's diffusers ...
     assert models_route._arch_to_task("ltxv") == models_route._VIDEO_GEN_TASK
@@ -5743,7 +5747,7 @@ def test_cached_model_rows_pins_snapshot_load_id_for_inactive_cache(monkeypatch,
         ],
     )
 
-    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected = None: None)
     monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [away, here])]
@@ -5787,7 +5791,7 @@ def test_cached_model_rows_flags_adapter_repos(monkeypatch, tmp_path):
         ],
     )
 
-    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected = None: None)
     monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route,
@@ -5846,7 +5850,7 @@ def test_cached_model_rows_marks_encoder_only_repos_unchattable(monkeypatch, tmp
         {"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]},
     )
 
-    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected = None: None)
     monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route,
@@ -5898,7 +5902,7 @@ def test_cached_model_rows_pins_the_snapshot_that_holds_the_weights(monkeypatch,
         ],
     )
 
-    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected = None: None)
     monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
@@ -5977,7 +5981,7 @@ def test_cached_model_rows_skips_a_weights_only_snapshot(monkeypatch, tmp_path):
         ],
     )
 
-    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected = None: None)
     monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
@@ -6043,7 +6047,7 @@ def test_cached_model_rows_pins_when_the_active_ref_cannot_serve_a_load(
         ],
     )
 
-    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected = None: None)
     monkeypatch.setattr(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
@@ -6115,7 +6119,7 @@ def test_cached_model_rows_scope_pipeline_partialness_to_the_pinned_snapshot(mon
         ],
     )
 
-    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected = None: None)
     monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
@@ -6190,7 +6194,7 @@ def test_cached_model_rows_ignores_a_training_args_bin_when_pinning(monkeypatch,
         ],
     )
 
-    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected = None: None)
     monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
@@ -6238,7 +6242,7 @@ def test_cached_model_rows_classifies_the_selected_revision_not_the_history(monk
         ],
     )
 
-    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected = None: None)
     monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
@@ -6277,7 +6281,7 @@ def test_cached_model_rows_judge_chat_capability_on_the_selected_revision(monkey
         ],
     )
 
-    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected = None: None)
     monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
@@ -6289,6 +6293,110 @@ def test_cached_model_rows_judge_chat_capability_on_the_selected_revision(monkey
     # The pin already reads the complete causal-LM, so the row must not read as unchattable.
     assert models_route._repo_model_selection(repo, active.resolve())[0] == old
     assert rows["Org/Repurposed"].get("can_chat") is not False
+
+
+def test_cached_model_rows_judge_diffusers_on_the_selected_revision(monkeypatch, tmp_path):
+    """A newer incomplete pipeline revision must not classify the older pinned LM as Diffusers."""
+    active = tmp_path / "active"
+    repo_dir = active / "models--Org--Repurposed"
+    causal = repo_dir / "snapshots" / "causal"
+    causal.mkdir(parents = True)
+    (causal / "config.json").write_text(
+        json.dumps({"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]})
+    )
+    (causal / "model.safetensors").write_bytes(b"\0" * 64)
+    pipeline = repo_dir / "snapshots" / "pipeline"
+    (pipeline / "vae").mkdir(parents = True)
+    manifest = json.dumps(
+        {
+            "_class_name": "FluxPipeline",
+            "transformer": ["diffusers", "FluxTransformer2DModel"],
+            "vae": ["diffusers", "AutoencoderKL"],
+        }
+    )
+    (pipeline / "model_index.json").write_text(manifest)
+    (pipeline / "vae" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 64)
+    os.utime(causal, (1_000_000, 1_000_000))
+    os.utime(pipeline, (2_000_000, 2_000_000))
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text("pipeline")
+    repo = _repo(
+        "Org/Repurposed",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(
+                files = [_file("config.json", 64), _file("model.safetensors", 64)],
+                snapshot_path = causal,
+            ),
+            SimpleNamespace(
+                files = [
+                    _file("model_index.json", len(manifest)),
+                    _file("vae/diffusion_pytorch_model.safetensors", 64),
+                ],
+                snapshot_path = pipeline,
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    row = {item["repo_id"]: item for item in models_route.cached_model_rows()}["Org/Repurposed"]
+
+    assert row["load_id"] == str(causal)
+    assert row.get("task") is None
+    assert row.get("diffusers") is not True
+    assert "single_file" not in row
+
+
+def test_cached_model_rows_flag_a_selected_modular_pipeline_as_diffusers(monkeypatch, tmp_path):
+    active = tmp_path / "active"
+    repo_dir = active / "models--Org--Custom-Pipeline"
+    snapshot = repo_dir / "snapshots" / "rev"
+    (snapshot / "transformer").mkdir(parents = True)
+    manifest = json.dumps(
+        {
+            "_class_name": "ModularPipeline",
+            "transformer": ["diffusers", "FluxTransformer2DModel"],
+        }
+    )
+    (snapshot / "modular_model_index.json").write_text(manifest)
+    (snapshot / "transformer" / "config.json").write_text("{}")
+    (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 64)
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text("rev")
+    repo = _repo(
+        "Org/Custom-Pipeline",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(
+                files = [
+                    _file("modular_model_index.json", len(manifest)),
+                    _file("transformer/config.json", 2),
+                    _file("transformer/diffusion_pytorch_model.safetensors", 64),
+                ],
+                snapshot_path = snapshot,
+            )
+        ],
+    )
+
+    monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    row = {item["repo_id"]: item for item in models_route.cached_model_rows()}[
+        "Org/Custom-Pipeline"
+    ]
+
+    assert row.get("task") is None
+    assert row["diffusers"] is True
 
 
 def test_cached_model_rows_flag_a_diffusion_repo_this_backend_cannot_load(monkeypatch, tmp_path):
@@ -6356,7 +6464,7 @@ def test_cached_model_rows_pins_a_commit_pinned_repo_with_no_default_ref(monkeyp
         ],
     )
 
-    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected = None: None)
     monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
@@ -6402,7 +6510,7 @@ def test_cached_model_rows_keeps_a_recovered_repo_that_can_serve_a_load(monkeypa
     )
     _, metadata_only = _recovered("Half", {"config.json": b"{}"})
 
-    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected = None: None)
     monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route, "_recovered_repo_is_unusable_by_repo_id", lambda repo_info: True

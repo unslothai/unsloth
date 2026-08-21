@@ -1813,9 +1813,21 @@ def _diffusion_scan(monkeypatch, tmp_path, repo_id: str, files: list, *, task: s
         "is_snapshot_partial",
         lambda *_args, **_kwargs: False,
     )
-    monkeypatch.setattr(cache_inventory, "_cached_row_task", lambda _repo, gguf: task)
+    selected_snapshots = []
+
+    def row_task(
+        _repo,
+        *,
+        gguf,
+        selected = None,
+    ):
+        selected_snapshots.append(selected)
+        return task
+
+    monkeypatch.setattr(cache_inventory, "_cached_row_task", row_task)
     rows = cache_inventory._scan_cached_models()
     assert len(rows) == 1
+    assert selected_snapshots == [snapshot]
     return rows[0]
 
 
