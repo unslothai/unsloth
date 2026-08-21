@@ -493,7 +493,9 @@ def test_the_menu_growth_value_has_both_floors_removed() -> None:
 
 
 def menu_repetition(
-    open_ms: float | None, focus_returned: bool = True, active_element: str = "BUTTON"
+    open_ms: float | None,
+    focus_returned: bool = True,
+    active_element: str = "BUTTON",
 ) -> dict:
     close_ms = 40.0
     total = None if open_ms is None else open_ms + close_ms
