@@ -201,6 +201,7 @@ export function useTauriBackend() {
     statusRef.current = "error";
     setStatus("error");
     setError(detail);
+    syncTrayStatus("error");
   }
 
   function clearAuthFailure() {
