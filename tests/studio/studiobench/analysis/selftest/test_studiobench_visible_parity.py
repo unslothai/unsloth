@@ -239,3 +239,57 @@ def test_both_viewports_ending_empty_is_still_only_a_refusal():
     """Symmetric loss is not evidence about the arm under test; it is an unusable pair."""
     got = P.compare_visible(_cap({}, ever = [14, 15]), _cap({}, ever = [14, 15]))
     assert got["verdict"] == P.NOT_COMPARABLE, got
+
+
+def test_every_mode_names_the_policy_it_is_judging_against():
+    """A BARE "PARITY OK" READS FAR STRONGER THAN ANY MODE CAN SUPPORT.
+
+    Each mode already prints the CLAIM it is making. The claim says what was compared; it does not
+    say what a pass is worth, and the two exemptions are exactly what decide that. So the policy is
+    printed beside the claim, per mode, and this holds that every mode has one, that all three name
+    both exemptions, and that only the visible mode says it can grant the off-screen one.
+    """
+    from studiobench.analysis import parity as P
+
+    assert set(P.POLICY_BY_MODE) == {"structural", "visible", "behaviour"}
+    for mode, text in P.POLICY_BY_MODE.items():
+        assert "idempotency" in text, mode
+        assert "performance improvement" in text, mode
+        assert "OFF SCREEN" in text or "off-screen" in text, mode
+    assert "can GRANT the off-screen exemption" in P.POLICY_BY_MODE["visible"]
+    assert "cannot grant" in P.POLICY_BY_MODE["structural"]
+    assert "cannot grant either exemption" in P.POLICY_BY_MODE["behaviour"]
+    # The floor survives the exemption. An exemption changes what counts as a pass; a measurement
+    # with no floor under it is not a pass in the first place.
+    assert "does not remove the floor" in P.POLICY_BY_MODE["visible"]
+
+
+def test_the_policy_line_is_printed_next_to_every_claim_line():
+    """A constant nothing prints is a constant nobody reads."""
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "sweep" / "ui_parity.py").read_text(
+        encoding = "utf-8"
+    )
+    claims = source.count("CLAIM: {P.CLAIM_")
+    policies = source.count("POLICY: {P.POLICY_BY_MODE[")
+    assert claims == 3, f"expected one claim line per mode, found {claims}"
+    assert policies == claims, f"{claims} claim lines but {policies} policy lines"
+
+
+def test_the_mode_names_the_pull_request_template_uses_are_accepted():
+    """THE TEMPLATE AND THE TOOL MUST AGREE ON WHAT THINGS ARE CALLED.
+
+    The repository's pull request template asks for "the structural digest" and the report header
+    prints "(STRUCTURAL MODE)", but the flag was spelled `--mode digest`, so a reader following
+    either would type a word argparse rejected. `structural` is an alias for `digest`, not a
+    fourth mode, and `behavior` for `behaviour` so the American spelling is not an error either.
+    """
+    from studiobench.sweep import ui_parity
+
+    source = ui_parity.__file__
+    with open(source, encoding = "utf-8") as handle:
+        text = handle.read()
+    for name in ("auto", "digest", "structural", "visible", "behaviour", "behavior"):
+        assert f'"{name}"' in text, name
+    assert '{"structural": "digest", "behavior": "behaviour"}' in text

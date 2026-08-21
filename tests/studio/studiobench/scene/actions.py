@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 from ..runtime.readiness import (
     MODE_FULL,
@@ -48,6 +48,28 @@ def _ev(
     except Exception as exc:  # noqa: BLE001
         ctx.log(f"    action js failed: {type(exc).__name__}: {exc}")
         return {"__error": f"{type(exc).__name__}: {exc}"}
+
+
+#: How much of an exception's message a refusal reason carries.
+_EXC_CHARS = 160
+
+
+def _why(exc: BaseException) -> str:
+    """An exception as a reason a person can act on: the class AND its first line.
+
+    `type(exc).__name__` alone is worthless here and cost a full day of someone else's. Playwright's
+    own exception class is named `Error`, so every clipboard refusal in two complete 100K payloads
+    read "the clipboard could not be read back: Error" -- which names no cause, points at no engine
+    and cannot be told apart from any other failure in the stack. The message is where the browser
+    says `NotAllowedError: Document is not focused` or `TypeError: navigator.clipboard is
+    undefined`, and it is the whole diagnosis.
+
+    First line only, and truncated: Playwright appends the call log, which is dozens of lines and
+    belongs in the log rather than in a row's `reason`.
+    """
+    first = str(exc).strip().splitlines()
+    head = first[0][:_EXC_CHARS] if first else ""
+    return f"{type(exc).__name__}: {head}" if head else type(exc).__name__
 
 
 def _failed(raw: Any) -> str | None:
@@ -838,7 +860,7 @@ def copy_markdown(ctx: ActionContext) -> ActionResult:
     try:
         clip = ctx.page.evaluate("async () => await navigator.clipboard.readText()")
     except Exception as exc:  # noqa: BLE001
-        reason = f"the clipboard could not be read back: {type(exc).__name__}"
+        reason = f"the clipboard could not be read back: {_why(exc)}"
     chars = len(clip) if isinstance(clip, str) else None
     ok = chars is not None and chars > 0
     return ActionResult(
@@ -956,14 +978,54 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
     # A measurement that silently reports a sleep is the worst failure mode in this harness, so the
     # test is on the CLIPBOARD and not on the engine name: an engine that starts working, or a new
     # one, is admitted automatically, and an engine that stops working is refused automatically.
+    #
+    # WHAT THE CHECK NEEDS is a KNOWN PRE-COPY VALUE, and the sentinel is only the best way of
+    # getting one. Writing it can fail on its own: `writeText` needs transient user activation or
+    # the `clipboard-write` permission and throws `NotAllowedError` without either, while
+    # `readText` is gated separately -- so the two are not granted or refused together, and
+    # runtime/browser.py asks for the pair on Chromium and for neither on the other engines.
+    #
+    # Clearing the sentinel on that failure and carrying on is what re-admitted the exact defect
+    # above: with no pre-copy value, `clip == sentinel` can never fire, and a Control+C that did
+    # nothing leaves the clipboard holding whatever `copy_markdown` put there earlier in the same
+    # film -- a plausible, non-empty string that is read back as a fresh copy of the whole thread,
+    # with the 250 ms settle beside it as `copy_ms`.
+    #
+    # So a failed write falls back to SNAPSHOTTING what the clipboard already holds, which answers
+    # the same question ("did this keystroke change the clipboard"), and when even that cannot be
+    # established the action is NOT RUN. The residual, stated: if the clipboard already held
+    # character-for-character what the copy would produce, an honest copy is refused as a
+    # no-op. That direction is the safe one, it needs the write permission to be missing first,
+    # and the film never copies the same thread twice.
     sentinel = f"__sb_clipboard_sentinel_{int(time.monotonic() * 1000)}__"
     sentinel_written = False
+    #: What the clipboard held before Control+C, and where that value came from. `None` means no
+    #: pre-copy value could be established at all, which is refused below.
+    pre_copy: Optional[str] = None
+    pre_copy_source = "sentinel"
+    pre_copy_reason = None
     try:
         ctx.page.evaluate("async (s) => await navigator.clipboard.writeText(s)", sentinel)
         sentinel_written = True
-    except Exception:  # noqa: BLE001
-        # No clipboard-write permission. The readback check below still applies.
+        pre_copy = sentinel
+    except Exception as write_exc:  # noqa: BLE001
         sentinel = ""
+        pre_copy_source = "snapshot"
+        try:
+            existing = ctx.page.evaluate("async () => await navigator.clipboard.readText()")
+        except Exception as read_exc:  # noqa: BLE001
+            existing = None
+            pre_copy_reason = (
+                f"the sentinel could not be written ({_why(write_exc)}) and the clipboard could "
+                f"not be read either ({_why(read_exc)})"
+            )
+        if isinstance(existing, str):
+            pre_copy = existing
+        elif pre_copy_reason is None:
+            pre_copy_reason = (
+                f"the sentinel could not be written ({_why(write_exc)}) and the clipboard handed "
+                "back no string to snapshot in its place"
+            )
 
     copy_started = time.monotonic()
     ctx.page.keyboard.press("Control+C")
@@ -987,18 +1049,30 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
     try:
         clip = ctx.page.evaluate("async () => await navigator.clipboard.readText()")
     except Exception as exc:  # noqa: BLE001
-        clip_reason = f"the clipboard could not be read back: {type(exc).__name__}"
+        clip_reason = f"the clipboard could not be read back: {_why(exc)}"
     clipboard_chars = len(clip) if isinstance(clip, str) else None
     ctx.page.evaluate("() => window.getSelection().removeAllRanges()")
 
     # NO CONFIRMED COPY, NO TIMING. Reported NOT RUN rather than as a number, because a reader who
     # sees `copy_ms` has no way to tell a real copy from a keystroke that went nowhere, and the
     # engines that fail this do so silently and consistently enough to look like data.
-    if sentinel_written and clip == sentinel:
+    if pre_copy is not None and clip == pre_copy:
+        held = (
+            "it still holds the sentinel written before the keystroke"
+            if sentinel_written
+            else "it still holds, character for character, what it held before the keystroke "
+            "(the sentinel could not be written, so the clipboard was snapshotted instead)"
+        )
         return not_run(
-            "Control+C did not put anything on the clipboard: it still holds the sentinel written "
-            "before the keystroke, so this engine did not perform the copy and the elapsed time "
-            f"would be the harness's own {250}ms settle rather than a measurement of the app"
+            f"Control+C did not change the clipboard: {held}, so this engine did not perform the "
+            f"copy and the elapsed time would be the harness's own {250}ms settle rather than a "
+            "measurement of the app"
+        )
+    if pre_copy is None:
+        return not_run(
+            f"the copy could not be confirmed ({pre_copy_reason}), so nothing was known about the "
+            "clipboard before Control+C and a keystroke that did nothing would be indistinguishable "
+            "from a copy. A timing is only reported when the clipboard is known to have changed"
         )
     if clip_reason is not None:
         return not_run(
@@ -1021,6 +1095,11 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
             "clipboard_chars": clipboard_chars,
             "clipboard_readable": clip_reason is None,
             "clipboard_note": clip_reason,
+            # WHICH pre-copy value the change was confirmed against: the sentinel this action
+            # wrote, or a snapshot of what the clipboard already held when the write was refused.
+            # A snapshot is the weaker of the two -- see the note above the write -- and a reader
+            # comparing rows has no other way to see which one a timing rests on.
+            "copy_confirmed_against": pre_copy_source,
             # And the DOM coverage beside it, so the two can be told apart. Where
             # `mounted_fraction` is well below 1 and `clipboard_chars` is nonetheless whole, the
             # copy-from-store path is working; where both are short, the conversation is being
@@ -1379,12 +1458,26 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
             "page navigation; a document reload is not a thread rebuild, so the action was not run "
             f"and no navigation was performed ({leave.reason})"
         )
+    # BOTH CLOCKS START AT THE CLICK THAT WORKED, not at the first attempt on it.
+    #
+    # `_click_or_navigate` tries `handle.click` first, and Playwright's hit-target check retries
+    # for its whole 2,000 ms timeout against a control whose centre does not hit-test to it. The
+    # New chat button IS such a control by design -- `opacity-0 pointer-events-none` until its
+    # header group is hovered -- so that timeout was paid on EVERY run and landed inside
+    # `close_ms`, which sweep/floor_table.py harvests and quotes against the other arm. A metric
+    # that is two seconds of harness retry plus the unmount is the same defect as reporting a
+    # settle delay as `copy_ms`, one action along.
+    #
+    # The retry is not discarded, it is MOVED: `left_click_retry_ms` and `reopen_click_retry_ms`
+    # below carry it as the harness's own cost, which is what it is. `started` still governs the
+    # budget arithmetic, because the retry really did consume the slot's wall clock.
+    click_left_at = leave.started_at if leave.started_at is not None else started
     # Unmount FIRST, or "already back" is indistinguishable from "never left".
     closed_ms = None
     deadline = started + 15
     while time.monotonic() < deadline:
         if _ev(ctx, "() => window.__sb.dom.messageCount()") == 0:
-            closed_ms = (time.monotonic() - started) * 1000
+            closed_ms = (time.monotonic() - click_left_at) * 1000
             break
         ctx.page.wait_for_timeout(50)
     if closed_ms is None:
@@ -1401,6 +1494,7 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
     )
     if not back.ok:
         return not_run(f"the thread could not be reopened: {back.reason}")
+    click_back_at = back.started_at if back.started_at is not None else reopen_started
     if back.navigated:
         ctx.log(
             "    thread_reopen NOT MEASURED: the sidebar row for the thread could not be clicked, "
@@ -1451,7 +1545,7 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
             timeout_s = timeout_s,
             log = ctx.log,
         )
-        reopen_ms = (time.monotonic() - reopen_started) * 1000
+        reopen_ms = (time.monotonic() - click_back_at) * 1000
         readiness = ready.as_dict()
     except ThreadNotReady as exc:
         # A REAL FINDING ABOUT THE ARM, and it keeps `ran = True` so the row carries which
@@ -1480,6 +1574,13 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
             "highlight_spans_after": spans,
             "left_via": leave.path,
             "reopened_via": back.path,
+            # THE HARNESS'S OWN COST, named as such and kept OUT of the two timings above. This is
+            # how long `_click_or_navigate` spent on attempts that failed before the one that
+            # worked -- almost always Playwright's 2,000 ms hit-target retry against a control it
+            # cannot hit at the centre. It belongs in the payload (a run where this grows is a run
+            # whose controls have moved) and it does not belong in a rebuild timing.
+            "left_click_retry_ms": round((click_left_at - started) * 1000, 1),
+            "reopen_click_retry_ms": round((click_back_at - reopen_started) * 1000, 1),
             # WHICH GATE THE TIMING WAS TAKEN AGAINST, beside the timing itself. Two arms in
             # different readiness modes are answering slightly different questions, and a reader
             # comparing their `reopen_ms` has no other way to see that.
@@ -1517,6 +1618,19 @@ class Transition:
     ok: bool
     path: str  # "click", "navigate" or "failed"
     reason: str = ""
+    #: The monotonic instant the interaction that SUCCEEDED was issued, so a caller timing "from
+    #: the click" can start its clock at the click rather than at the first attempt. `None` when
+    #: nothing succeeded.
+    #:
+    #: THE FAILED ATTEMPT IS NOT PART OF THE GESTURE. Playwright's hit-target check reads
+    #: `elementFromPoint` at the control's centre and retries until the timeout, so a control that
+    #: is laid out but not hit-testable at its centre -- the sidebar's `New chat`, which ships
+    #: `opacity-0 pointer-events-none` until its group is hovered, and which therefore falls
+    #: through to the group underneath on every hit test -- costs the full 2,000 ms before the
+    #: reveal path below succeeds. Timed from the first attempt, `thread_reopen.close_ms` was
+    #: two seconds of Playwright retry with the unmount somewhere inside it, on every run, and
+    #: sweep/floor_table.py quotes it as a metric.
+    started_at: Optional[float] = None
 
     @property
     def navigated(self) -> bool:
@@ -1668,8 +1782,9 @@ def _click_or_navigate(
     click_error = f"no element matched {selector}"
     if handle is not None:
         try:
+            attempt_at = time.monotonic()
             handle.click(timeout = 2000)
-            return Transition(ok = True, path = "click")
+            return Transition(ok = True, path = "click", started_at = attempt_at)
         except Exception as exc:  # noqa: BLE001
             click_error = f"{selector} was not clickable: {type(exc).__name__}"
         # THE CENTRE IS COVERED, BUT THE CONTROL IS NOT. Try the rest of it, the way a user would.
@@ -1688,8 +1803,14 @@ def _click_or_navigate(
         point = _reachable_point(ctx, selector) or _reveal_by_hover(ctx, selector)
         if point is not None:
             try:
+                attempt_at = time.monotonic()
                 ctx.page.mouse.click(point[0], point[1])
-                return Transition(ok = True, path = "click", reason = "clicked off-centre")
+                return Transition(
+                    ok = True,
+                    path = "click",
+                    reason = "clicked off-centre",
+                    started_at = attempt_at,
+                )
             except Exception as exc:  # noqa: BLE001
                 click_error += f"; the off-centre click also failed: {type(exc).__name__}"
         else:
@@ -1708,8 +1829,9 @@ def _click_or_navigate(
             ),
         )
     try:
+        attempt_at = time.monotonic()
         ctx.page.goto(url, wait_until = "domcontentloaded", timeout = 60_000)
-        return Transition(ok = True, path = "navigate", reason = click_error)
+        return Transition(ok = True, path = "navigate", reason = click_error, started_at = attempt_at)
     except Exception as exc:  # noqa: BLE001
         ctx.log(f"    navigation to {url} failed: {type(exc).__name__}: {exc}")
         return Transition(

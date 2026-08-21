@@ -449,7 +449,13 @@ highlighting, `content-visibility`, lazy images. Answering NOT_APPLICABLE withho
 rather than giving one, so there is now a mode that gives one.
 
 `sweep/ui_parity.py --mode auto|digest|visible|behaviour`. Every report prints the CLAIM it is
-making, because "PARITY OK" has meant three different things in this file's history:
+making AND the POLICY it is being judged against, because "PARITY OK" has meant three different
+things in this file's history and none of them is "the UI is unchanged". The claim says what was
+compared; the policy says what a pass is worth, and the two exemptions are what decide that. Only
+the `visible` mode can GRANT the off-screen exemption, and its policy line says so, together with
+the reminder that the exemption does not remove the floor. `analysis/parity.py` holds both as
+`POLICY` and `POLICY_BY_MODE`, and a test fails if any mode prints a claim without a policy beside
+it -- a constant nothing prints is a constant nobody reads.
 
 | mode | claim | fails on |
 | --- | --- | --- |

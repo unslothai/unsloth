@@ -423,3 +423,107 @@ def test_a_thread_whose_end_cannot_be_identified_is_refused_before_it_is_touched
     assert result.ran is False
     assert "identify the end of the thread" in (result.reason or "")
     assert page.phase == "thread" and page.goto_calls == []
+
+
+# ── defect three: the harness's own retry, billed to the rebuild ────
+
+#: How long the centre click burns before it gives up. `_click_or_navigate` passes
+#: `timeout = 2000` to Playwright, and the hit-target check retries for the whole of it against a
+#: control it cannot hit at the centre. Scaled down here so the test is fast; what is asserted is
+#: that the timings do not contain it, at whatever size it is.
+RETRY_MS = 400
+
+
+class _HoverRevealedPage(_ThreadPage):
+    """A page whose controls behave the way the sidebar's actually do.
+
+    `.sidebar-header-action` ships `opacity-0 pointer-events-none` and is revealed by its group's
+    `:hover`, so every hit test at rest falls through to the group underneath: `handle.click` waits
+    out its whole actionability timeout, and the off-centre/hover path is the one that works. That
+    is not an edge case, it is the documented behaviour of the New chat button on every run.
+    """
+
+    def __init__(
+        self,
+        *,
+        slow = (),
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.slow = set(slow)
+        self.moves: list[tuple[float, float]] = []
+        self._pending: str | None = None
+
+    def evaluate(
+        self,
+        script,
+        arg = None,
+    ):
+        if "elementFromPoint" in script or "getBoundingClientRect" in script:
+            selector = arg[0] if isinstance(arg, list) else arg
+            self._pending = selector
+            return {"x": 12.0, "y": 34.0}
+        return super().evaluate(script, arg)
+
+    def query_selector(self, selector):
+        page = self
+
+        class _Handle:
+            def click(self, timeout = None):
+                if selector in page.slow:
+                    # The retry, faithfully: time passes and then it fails.
+                    time.sleep(RETRY_MS / 1000)
+                    raise TimeoutError(f"{selector} was not clickable in {timeout}ms")
+                page._route(selector)
+
+        return _Handle()
+
+    @property
+    def mouse(self):
+        page = self
+
+        class _Mouse:
+            def move(self, x, y):
+                page.moves.append((x, y))
+
+            def click(self, x, y):
+                page.moves.append((x, y))
+                if page._pending is not None:
+                    page._route(page._pending)
+
+        return _Mouse()
+
+
+def test_the_failed_click_retry_is_not_charged_to_the_close_or_the_rebuild():
+    """THE DEFECT. `close_ms` and `reopen_ms` were clocked from before the FIRST click attempt, so
+    Playwright's 2,000 ms hit-target retry against the hover-revealed New chat button landed inside
+    them -- on every run, since that control is hover-revealed by design. sweep/floor_table.py
+    harvests both as quotable metrics, so two seconds of harness retry was being compared against
+    the other arm as though it were the cost of tearing down and rebuilding a thread.
+
+    Both clocks now start at the click that WORKED. The retry is not thrown away, it is named.
+    """
+    page = _HoverRevealedPage(slow = {NEW_CHAT, SIDEBAR_ROW})
+    result = A.thread_reopen(_ctx(page))
+
+    assert result.ran is True, result.reason
+    assert page.goto_calls == [], "the click path was available and should not have been replaced"
+    close_ms = result.timings["close_ms"]
+    reopen_ms = result.timings["reopen_ms"]
+    assert close_ms < RETRY_MS, f"the retry is still inside close_ms ({close_ms}ms)"
+    assert reopen_ms < RETRY_MS, f"the retry is still inside reopen_ms ({reopen_ms}ms)"
+    # ...and it is still in the payload, as the harness's own cost rather than the app's.
+    assert result.expect["left_click_retry_ms"] >= RETRY_MS
+    assert result.expect["reopen_click_retry_ms"] >= RETRY_MS
+
+
+def test_a_control_that_clicks_first_time_reports_no_retry_at_all():
+    """The control. Nothing about the ordinary path moves, and the new fields read zero rather than
+    a small plausible number that a reader would have to interpret."""
+    page = _HoverRevealedPage()
+    result = A.thread_reopen(_ctx(page))
+
+    assert result.ran is True, result.reason
+    assert result.expect["left_click_retry_ms"] < 50
+    assert result.expect["reopen_click_retry_ms"] < 50
+    assert result.timings["reopen_ms"] > 0

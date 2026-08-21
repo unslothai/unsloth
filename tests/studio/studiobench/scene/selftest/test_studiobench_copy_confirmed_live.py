@@ -134,7 +134,8 @@ def test_an_engine_that_does_not_copy_is_NOT_RUN_rather_than_a_timing(page):
     _swallow_the_copy(page)
     got = A.select_all_copy(_ctx(page))
     assert got.ran is False, got
-    assert "did not put anything on the clipboard" in (got.reason or "")
+    assert "did not change the clipboard" in (got.reason or "")
+    assert "sentinel" in (got.reason or "")
     assert not got.timings.get("copy_ms")
 
 
@@ -145,6 +146,75 @@ def test_the_refusal_says_the_number_would_have_been_the_harness_own_settle(page
     said: list[str] = []
     got = A.select_all_copy(_ctx(page, said.append))
     assert "settle" in (got.reason or ""), got.reason
+
+
+def _refuse_the_sentinel_write(page) -> None:
+    """Clipboard WRITE refused, clipboard READ still working.
+
+    Not a hypothetical pairing. `writeText` needs transient user activation or the `clipboard-write`
+    permission and throws `NotAllowedError` without either; `readText` is gated on a separate
+    permission, and runtime/browser.py asks for the two only on Chromium. So the write can fail on
+    its own, and the guard has to survive that rather than switch itself off.
+    """
+    page.evaluate(
+        """() => {
+        Object.defineProperty(navigator.clipboard, "writeText", {
+          configurable: true,
+          value: async () => { throw new DOMException("Write permission denied", "NotAllowedError"); },
+        });
+      }"""
+    )
+
+
+def test_a_failed_sentinel_write_does_not_re_admit_the_unchanged_clipboard(page):
+    """THE HOLE THIS CLOSES. When the sentinel could not be written, the action used to clear it and
+    carry on -- and with no pre-copy value, `clip == sentinel` can never fire. A Control+C that did
+    nothing then left the clipboard holding what the PREVIOUS action put there, which read back as a
+    plausible non-empty copy of the whole thread with the 250ms settle beside it as `copy_ms`. That
+    is the exact measurement the sentinel exists to refuse, re-admitted by its own fallback.
+    """
+    # Whatever an earlier action in the film left behind. Non-empty and plausible, which is what
+    # makes it dangerous: an empty clipboard would have been caught by `clipboard_chars > 0`.
+    page.evaluate("async () => await navigator.clipboard.writeText('x'.repeat(2400))")
+    _refuse_the_sentinel_write(page)
+    _swallow_the_copy(page)
+    got = A.select_all_copy(_ctx(page))
+    assert got.ran is False, got
+    assert not got.timings.get("copy_ms")
+    assert "did not change the clipboard" in (got.reason or ""), got.reason
+    assert "snapshot" in (got.reason or ""), got.reason
+
+
+def test_a_real_copy_is_still_measured_when_the_sentinel_could_not_be_written(page):
+    """THE CONTROL FOR THE ABOVE. The fallback must not turn a missing write permission into a dead
+    action: a copy that really happened is still a measurement, and the row says which pre-copy
+    value it was confirmed against."""
+    page.evaluate("async () => await navigator.clipboard.writeText('stale')")
+    _refuse_the_sentinel_write(page)
+    got = A.select_all_copy(_ctx(page))
+    assert got.ran is True, got.reason
+    assert got.timings.get("copy_ms") is not None
+    assert (got.expect or {}).get("clipboard_chars", 0) > 0
+    assert (got.expect or {}).get("copy_confirmed_against") == "snapshot"
+
+
+def test_a_refusal_names_the_cause_and_not_just_the_exception_class(page):
+    """`type(exc).__name__` is `Error` for every Playwright failure, and two complete 100K payloads
+    refused this action with a reason that said exactly that and nothing else. The browser's own
+    message is the diagnosis and has to travel with the row."""
+    page.evaluate(
+        """() => {
+        for (const name of ["writeText", "readText"]) {
+          Object.defineProperty(navigator.clipboard, name, {
+            configurable: true,
+            value: async () => { throw new DOMException("Document is not focused", "NotAllowedError"); },
+          });
+        }
+      }"""
+    )
+    got = A.select_all_copy(_ctx(page))
+    assert got.ran is False, got
+    assert "Document is not focused" in (got.reason or ""), got.reason
 
 
 def test_the_guard_is_on_the_clipboard_and_not_on_the_engine_name():

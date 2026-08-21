@@ -330,6 +330,7 @@ def behaviour_report(
 
     print(f"\n{label}  (BEHAVIOURAL MODE)")
     print(f"  CLAIM: {P.CLAIM_BEHAVIOURAL}.")
+    print(f"  POLICY: {P.POLICY_BY_MODE['behaviour']}.")
     # WHICH REASON, and only if it is true. Forced behavioural mode on a payload that mounts its
     # whole thread -- which is exactly how a NULL CONTROL is scored on the same scale as the
     # windowed arm it is the control for -- used to print "one arm of this payload mounts a window
@@ -493,6 +494,7 @@ def visible_report(
 
     print(f"\n{label}  (VISIBLE-REGION MODE)")
     print(f"  CLAIM: {P.CLAIM_VISIBLE}.")
+    print(f"  POLICY: {P.POLICY_BY_MODE['visible']}.")
     print(
         "  Off-screen differences are EXEMPT by policy and are not reported below. A message that\n"
         "  was visible for any part of the action is compared, in full, even if only partly on\n"
@@ -732,6 +734,7 @@ def report(
 
     print(f"\n{label}  (STRUCTURAL MODE)")
     print(f"  CLAIM: {P.CLAIM_STRUCTURAL}.")
+    print(f"  POLICY: {P.POLICY_BY_MODE['structural']}.")
     print(
         "  Under the current policy an OFF-SCREEN-ONLY difference is exempt, and this mode cannot\n"
         "  tell an off-screen difference from an on-screen one. Use --mode visible for a payload\n"
@@ -861,17 +864,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument(
         "--mode",
-        choices = ("auto", "digest", "visible", "behaviour"),
+        # `structural` and `behavior` are ALIASES, not extra modes. The report header prints
+        # "(STRUCTURAL MODE)" and the pull request template asks for "the structural digest", so
+        # a reader who follows either and types `--mode structural` should not be told it is not
+        # a choice. Same for the American spelling of behaviour.
+        choices = ("auto", "digest", "structural", "visible", "behaviour", "behavior"),
         default = "auto",
         help = (
             "auto (default) decides per ACTION PAIR from the payload: a fully mounted pair is "
             "scored structurally, a windowed pair is scored on the VISIBLE REGION and then on "
             "behavioural invariants, and one payload can contain both; digest forces the "
             "thread-structure comparison on every pair; visible forces the visible-region one; "
-            "behaviour forces the behavioural one"
+            "behaviour forces the behavioural one. `structural` is an alias for `digest` and `behavior` for `behaviour`"
         ),
     )
     args = ap.parse_args(argv)
+    args.mode = {"structural": "digest", "behavior": "behaviour"}.get(args.mode, args.mode)
 
     # THE MODE DECISION FIRST, before the unstable set is even derived. Deriving an unstable set
     # from a null control and then not using it because the payload is windowed would print a page

@@ -106,8 +106,37 @@ were junk.
 
 ## 4. Parity: prove you did not change what is rendered
 
-A performance change that alters what the user sees is a different pull request with a different
-review. Run the parity digest, which takes a normalised structural DOM signature per action window
+### The policy, and the two exemptions
+
+**UI and UX idempotency is required for every change, with exactly two exemptions:**
+
+1. **A deliberate difference accepted for a dramatic performance improvement.** This is a decision
+   somebody makes on the record with the number attached, not a default. If you are relying on it,
+   say so in the pull request and say what the difference is.
+2. **A difference that exists only OFF SCREEN.** This one is a definition rather than a judgement:
+   rendering only what is visible is an accepted technique, not a parity violation.
+
+Neither exemption removes the need for a floor. An exemption changes what counts as a pass; it does
+not make an unmeasured claim into a measured one, so the null control still has to run on the same
+scale.
+
+**A bare "PARITY OK" reads far stronger than any of the three modes can support**, which is why
+each mode prints the CLAIM it is making and the POLICY it is judging against, and why you should
+read both before quoting a pass:
+
+| mode | what a pass means | can it grant the off-screen exemption? |
+|---|---|---|
+| `--mode digest` | the thread root and declared overlays serialise identically, on screen and off | no, it does not know what was on screen |
+| `--mode visible` | every message the viewport showed is present and identical, and every difference lies off screen | **yes** -- this is the mode that can say so |
+| `--mode behaviour` | scroll extent matches and the invariants a windowed mount breaks first still hold | no, and it says nothing about appearance |
+
+The digest is **sidebar-blind and layout-blind**: run against a real sidebar-drag change it reported
+0 of 34 differing pairs, and so did its own null control. So a digest pass is not a statement that
+the UI is unchanged.
+
+### The digest itself
+
+Run the parity digest, which takes a normalised structural DOM signature per action window
 on both arms and compares them.
 
 What the digest **can** see: tag structure, `data-slot`, `data-state`, `data-role`, classes, text.

@@ -530,6 +530,45 @@ CLAIM_BEHAVIOURAL = (
     "first still hold. Says NOTHING about how anything looks"
 )
 
+#: THE POLICY EVERY VERDICT IS JUDGED AGAINST, printed beside the claim.
+#:
+#: A bare "PARITY OK" reads as "the UI is unchanged" and none of the three modes can support that
+#: sentence. Each supports a narrower one, and which one is being made changes what a pass MEANS,
+#: so the policy is named next to the claim rather than left in a document somebody has to find.
+#:
+#: The exemptions are not loopholes. The first is a decision someone makes on the record with a
+#: number attached; the second is a definition, because rendering only what is visible is an
+#: accepted technique rather than a parity violation. Neither removes the need for a floor: a
+#: difference that is exempt still has to be shown to be the difference you think it is, which is
+#: what the null control is for.
+POLICY = (
+    "UI and UX idempotency is required, with two exemptions: a deliberate difference accepted "
+    "for a dramatic performance improvement, and a difference that exists only OFF SCREEN"
+)
+
+#: What each mode can and cannot decide under that policy. The point of the second half of each
+#: line is that a reader can tell which sentence they are being handed.
+POLICY_BY_MODE = {
+    "structural": (
+        f"{POLICY}. This mode judges the FIRST requirement over the thread root and the declared "
+        "overlays only. It cannot grant the off-screen exemption, because it does not know what "
+        "was on screen: an arm that renders only the visible region reads as a difference here "
+        "and needs --mode visible to get a verdict rather than a refusal"
+    ),
+    "visible": (
+        f"{POLICY}. This mode is the one that can GRANT the off-screen exemption: it compares "
+        "only what the viewport actually showed, so an off-screen-only difference passes on its "
+        "merits rather than being argued about. The exemption changes what counts as a pass; it "
+        "does not remove the floor, so read the null control printed on the same scale"
+    ),
+    "behaviour": (
+        f"{POLICY}. This mode judges neither requirement directly. It checks invariants a "
+        "windowed mount breaks first -- scroll extent, what the clipboard carries, whether the "
+        "thread survives being reopened -- so a pass here is evidence about BEHAVIOUR and says "
+        "nothing about appearance. It cannot grant either exemption"
+    ),
+}
+
 
 def compare_visible(base: Optional[dict], treat: Optional[dict]) -> dict:
     """One base/treatment pair, scored on the VISIBLE REGION only.
