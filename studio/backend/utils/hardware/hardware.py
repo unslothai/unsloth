@@ -1970,12 +1970,26 @@ def _rocm_windows_per_device_vram(
     for ordinal, phys_idx in enumerate(device_indices):
         try:
             props = mod.get_device_properties(ordinal)
+            total_bytes = int(props.total_memory)
+            # On a unified-memory APU props.total_memory is the dedicated
+            # carve-out, not what torch can use; same correction, and the same
+            # APU-only price for a context, as _torch_get_device_inventory. The
+            # free half of this reading is the untrusted one, the total is fine.
+            total_is_pool = False
+            if _rocm_props_total_is_carve_out(props) and hasattr(mod, "mem_get_info"):
+                try:
+                    pool_bytes = int(mod.mem_get_info(ordinal)[1])
+                    total_is_pool = pool_bytes > total_bytes
+                    total_bytes = pool_bytes
+                except Exception as e:
+                    logger.debug("ROCm APU driver total failed for ordinal %d: %s", ordinal, e)
             dev_meta.append(
                 {
                     "index": phys_idx,
                     "visible_ordinal": ordinal,
                     "name": props.name,
-                    "total_bytes": int(props.total_memory),
+                    "total_bytes": total_bytes,
+                    "total_is_pool": total_is_pool,
                 }
             )
         except Exception as e:
@@ -1995,6 +2009,20 @@ def _rocm_windows_per_device_vram(
     else:
         # Counter unavailable: show every GPU with a correct total, used unknown.
         assigned = [None] * len(dev_meta)
+
+    # A total widened to the unified pool has no numerator here. Dedicated Usage
+    # counts the carve-out, while the working set on an APU lives in the shared
+    # segment the widened total now spans, and the caller reports free as total
+    # minus used -- which would hand back the whole shared pool as free while a
+    # model sits in it. Completing this means reading Shared Usage as well, and
+    # that needs an APU to validate against rather than a guess, so until then
+    # the honest reading is the corrected total and an unknown occupancy.
+    if any(meta["total_is_pool"] for meta in dev_meta):
+        assigned = [
+            None if meta["total_is_pool"] else used for meta, used in zip(dev_meta, assigned)
+        ]
+        # The aggregate is the visible set's, and one member of it is unknown.
+        aggregate_gb = None
 
     devices: list[Dict[str, Any]] = []
     for meta, used_bytes in zip(dev_meta, assigned):
