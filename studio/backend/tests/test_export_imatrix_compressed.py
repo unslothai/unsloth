@@ -306,5 +306,3 @@ def test_orchestrator_and_worker_pass_gguf_private():
     assert "private: bool = False" in o and '"private": private' in o
     w = _src("core/export/worker.py")
     assert 'private = cmd.get("private", False)' in w
-
-

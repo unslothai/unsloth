@@ -140,7 +140,17 @@ def test_cli_export_forwards_private_flag(
     ckpt.mkdir()
     out = tmp_path / "out"
 
-    cli_args = ["export", str(ckpt), str(out), "--format", format_flag, "--push-to-hub", "--repo-id", "test/repo", "--private"]
+    cli_args = [
+        "export",
+        str(ckpt),
+        str(out),
+        "--format",
+        format_flag,
+        "--push-to-hub",
+        "--repo-id",
+        "test/repo",
+        "--private",
+    ]
     if quant_flag is not None:
         cli_args += ["--quantization", quant_flag]
 
@@ -148,4 +158,3 @@ def test_cli_export_forwards_private_flag(
 
     assert result.exit_code == 0, f"CLI error:\n{result.output}"
     assert _FakeExportBackend.last_call.get("kwargs", {}).get("private") is True
-
