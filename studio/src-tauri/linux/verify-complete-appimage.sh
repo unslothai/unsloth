@@ -86,6 +86,34 @@ if ! grep -aEq '^[[:space:]]*unset[[:space:]]+LD_LIBRARY_PATH([[:space:]]|$)' \
   exit 1
 fi
 
+safe_emoji_font="$appdir/usr/share/unsloth/fonts/UnslothSafeEmoji.ttf"
+safe_emoji_license="$appdir/usr/share/doc/unsloth-safe-emoji/copyright"
+fontconfig_file="$appdir/usr/etc/fonts/unsloth-appimage.conf"
+for required_file in "$safe_emoji_font" "$safe_emoji_license" "$fontconfig_file"; do
+  [[ -f "$required_file" ]] || {
+    echo "Complete AppImage is missing safe emoji runtime file: $required_file" >&2
+    exit 1
+  }
+done
+for table in CBDT CBLC; do
+  grep -aFq "$table" "$safe_emoji_font" || {
+    echo "Complete AppImage safe emoji font has no $table bitmap table" >&2
+    exit 1
+  }
+done
+if grep -aFq 'COLR' "$safe_emoji_font"; then
+  echo "Complete AppImage safe emoji font unexpectedly contains a COLR table" >&2
+  exit 1
+fi
+grep -Fq 'Unsloth Safe Emoji' "$fontconfig_file" || {
+  echo "Complete AppImage fontconfig does not prefer its safe emoji family" >&2
+  exit 1
+}
+grep -Fq 'FONTCONFIG_FILE="$APPDIR/usr/etc/fonts/unsloth-appimage.conf"' "${launchers[@]}" || {
+  echo "Complete AppImage does not pin fontconfig to its safe emoji policy" >&2
+  exit 1
+}
+
 if ! grep -Rqs 'GIO_MODULE_DIR=' \
   "$appdir/AppRun" "$appdir/apprun-hooks" "$appdir/usr/lib" 2>/dev/null; then
   echo "Complete AppImage does not isolate bundled GIO modules" >&2

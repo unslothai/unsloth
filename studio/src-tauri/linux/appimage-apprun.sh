@@ -9,6 +9,11 @@ APPDIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 PATH="$APPDIR/usr/bin:$APPDIR/usr/sbin:${PATH:-/usr/local/bin:/usr/bin:/bin}"
 export APPDIR PATH
 
+# Keep WebKitGTK on the bundled CBDT emoji font. Jammy's Skia can abort when a
+# newer host FreeType selects a COLRv1 font, while host text fonts remain usable.
+FONTCONFIG_FILE="$APPDIR/usr/etc/fonts/unsloth-appimage.conf"
+export FONTCONFIG_FILE
+
 # The loader reads LD_LIBRARY_PATH before those RUNPATHs, so an inherited value would put
 # host GLib, GTK, WebKit or GStreamer in front of the bundle. Managed children still get it;
 # the guard keeps a restart of an already-cleared process from erasing the saved value.

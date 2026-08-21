@@ -18,6 +18,8 @@ FINALIZER = REPO_ROOT / "studio" / "src-tauri" / "linux" / "finalize-complete-ap
 
 APPRUN = REPO_ROOT / "studio" / "src-tauri" / "linux" / "appimage-apprun.sh"
 
+FONTCONFIG = REPO_ROOT / "studio" / "src-tauri" / "linux" / "appimage-fonts.conf"
+
 
 def _workflow():
     return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
@@ -38,7 +40,12 @@ def test_tauri_builds_and_signs_deb_and_complete_appimage_together():
 
     # Require plugins compatible with the bundled GStreamer core.
     dependencies = _step("Install Linux dependencies")["run"]
-    for package in ("gstreamer1.0-plugins-good", "gstreamer1.0-plugins-bad", "gstreamer1.0-libav"):
+    for package in (
+        "fonts-noto-color-emoji",
+        "gstreamer1.0-plugins-good",
+        "gstreamer1.0-plugins-bad",
+        "gstreamer1.0-libav",
+    ):
         assert package in dependencies
 
     build = _step("Build Linux bundles")
@@ -78,7 +85,12 @@ def test_appimage_pr_build_is_unsigned_and_feeds_every_artifact_test():
     build = jobs["appimage-pr-build"]
     build_source = yaml.safe_dump(build)
     assert "github.event_name == 'pull_request'" in build["if"]
-    for package in ("gstreamer1.0-plugins-good", "gstreamer1.0-plugins-bad", "gstreamer1.0-libav"):
+    for package in (
+        "fonts-noto-color-emoji",
+        "gstreamer1.0-plugins-good",
+        "gstreamer1.0-plugins-bad",
+        "gstreamer1.0-libav",
+    ):
         assert package in build_source
     assert "TAURI_SIGNING_PRIVATE_KEY" not in build_source
     assert "createUpdaterArtifacts" in build_source
@@ -182,11 +194,27 @@ def test_release_preseeds_every_tauri_appimage_tool_with_a_digest():
     assert tool_script.index("sha256sum -c") < tool_script.index("chmod +x")
 
     assert "apprun-old" not in tool_script
-    for local_tool in ("appimage-apprun.sh", "finalize-complete-appimage.sh"):
+    for local_tool in (
+        "appimage-apprun.sh",
+        "appimage-fonts.conf",
+        "finalize-complete-appimage.sh",
+    ):
         assert local_tool in tool_script
 
     assert "patchelf --set-rpath" in finalizer_source
     assert "$ORIGIN" in finalizer_source
+
+    for asset in (
+        "UnslothSafeEmoji.ttf",
+        "UnslothSafeEmoji.LICENSE",
+        "unsloth-appimage-fonts.conf",
+    ):
+        assert asset in tool_script
+        assert asset in finalizer_source
+    fontconfig_source = FONTCONFIG.read_text(encoding = "utf-8")
+    assert 'prefix="relative">../../share/unsloth/fonts' in fontconfig_source
+    assert '<match target="scan">' in fontconfig_source
+    assert "Unsloth Safe Emoji" in fontconfig_source
     assert 'case "${APPDIR:-}" in' in tool_script
     assert 'APPDIR="$(dirname "$(realpath "$0")")"' in tool_script
     for host_library in (
@@ -241,6 +269,7 @@ def _fake_complete_appdir(tmp_path: Path) -> Path:
         "#!/bin/sh\n"
         '. "$APPDIR/apprun-hooks/linuxdeploy-plugin-gtk.sh"\n'
         "unset LD_LIBRARY_PATH\n"
+        'FONTCONFIG_FILE="$APPDIR/usr/etc/fonts/unsloth-appimage.conf"\n'
         "exit 0\n",
         encoding = "utf-8",
     )
@@ -294,6 +323,17 @@ def _fake_complete_appdir(tmp_path: Path) -> Path:
     scanner = runtime / "gstreamer1.0/gstreamer-1.0/gst-plugin-scanner"
     scanner.parent.mkdir(parents = True)
     scanner.touch()
+    safe_font = appdir / "usr/share/unsloth/fonts/UnslothSafeEmoji.ttf"
+    safe_font.parent.mkdir(parents = True)
+    safe_font.write_bytes(b"fixture CBDT CBLC bitmap font tables")
+    safe_license = appdir / "usr/share/doc/unsloth-safe-emoji/copyright"
+    safe_license.parent.mkdir(parents = True)
+    safe_license.write_text("fixture OFL license\n", encoding = "utf-8")
+    fontconfig = appdir / "usr/etc/fonts/unsloth-appimage.conf"
+    fontconfig.parent.mkdir(parents = True)
+    fontconfig.write_text("Unsloth Safe Emoji\n", encoding = "utf-8")
+
+
     return appdir
 
 
@@ -413,6 +453,8 @@ def test_apprun_hands_an_inherited_library_path_to_children_only(tmp_path):
     printed = result.stdout.splitlines()
     assert not [line for line in printed if line.startswith("LD_LIBRARY_PATH=")]
     assert "UNSLOTH_HOST_LD_LIBRARY_PATH=/opt/conda/lib:/opt/rocm/lib" in printed
+
+    assert f"FONTCONFIG_FILE={appdir}/usr/etc/fonts/unsloth-appimage.conf" in printed
 
 
 def test_complete_appimage_verifier_rejects_a_launcher_that_keeps_the_host_library_path(tmp_path):
