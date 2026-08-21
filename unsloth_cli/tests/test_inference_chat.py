@@ -1705,11 +1705,7 @@ def test_catalog_local_folder_entries_drop_a_weightless_config_dir(monkeypatch, 
     # separate reason that a diffusers pipeline cannot answer a text turn.
     assert cat._local_dir_holds_a_payload(pipeline) is True
 
-    assert [e.name for e in cat.local_folder_entries()] == [
-        "Real",
-        "GgufFolder",
-        "Tiny",
-    ]
+    assert [e.name for e in cat.local_folder_entries()] == ["Real", "GgufFolder", "Tiny"]
 
 
 def test_catalog_trained_and_exported_entries_drop_non_chat_checkpoints(monkeypatch, tmp_path):

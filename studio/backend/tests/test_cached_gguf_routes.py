@@ -6267,9 +6267,7 @@ def test_cached_model_rows_keeps_a_recovered_repo_that_can_serve_a_load(monkeypa
             [],
             repo_dir,
             revisions = [
-                SimpleNamespace(
-                    files = [_file("model.safetensors", 5_000)], snapshot_path = snapshot
-                ),
+                SimpleNamespace(files = [_file("model.safetensors", 5_000)], snapshot_path = snapshot),
             ],
         )
 
