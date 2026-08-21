@@ -62,6 +62,24 @@ def test_continued_pretraining_with_no_targets_is_allowed():
     assert request.training_type == "Continued Pretraining"
 
 
+def test_image_tagged_continued_pretraining_with_no_targets_is_allowed():
+    # worker.py takes its `if is_cpt` branch BEFORE the LoRA one and passes only
+    # target_modules, so a CPT run never reads these four however its dataset is
+    # tagged. Gating the exemption on is_dataset_image rejected this valid config;
+    # the case above leaves the flag at its default, so it never covered this.
+    request = _request(
+        training_type = "Continued Pretraining",
+        is_dataset_image = True,
+        finetune_vision_layers = False,
+        finetune_language_layers = False,
+        finetune_attention_modules = False,
+        finetune_mlp_modules = False,
+    )
+
+    assert request.training_type == "Continued Pretraining"
+    assert request.is_dataset_image is True
+
+
 def test_vision_only_target_is_enough():
     request = _request(
         is_dataset_image = True,
