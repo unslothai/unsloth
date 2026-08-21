@@ -208,7 +208,24 @@ def behaviour_report(paths: list[Path], label: str) -> int:
     if idle:
         names = sorted({a for a, _s, _r, _v in idle})
         print(f"\n  NOT EXERCISED: {', '.join(names)}")
-    return 1 if broken else 0
+
+    if broken:
+        return 1
+    if matched == 0:
+        # NOTHING WAS VALIDATED, which is not the same as nothing being wrong. With every pair
+        # unchecked, not comparable or never exercised, `broken` is empty and the block above has
+        # just printed "Every declared behavioural invariant held on both arms" -- a sentence that
+        # is technically true of an empty set and reads as a pass. This is the same false green
+        # the digest path returns 2 for, and it is the more dangerous of the two here, because
+        # behavioural mode is what REPLACES the digest on a windowed arm: if it silently validates
+        # nothing then a windowed arm has no UI verdict at all while appearing to have passed one.
+        print(
+            "\n  NOTHING WAS COMPARED. Not one behavioural invariant was evaluated on any pair, "
+            "so this run carries no UI verdict -- neither a pass nor a failure. Treat it as an "
+            "absent result and find out why the actions did not run."
+        )
+        return 2
+    return 0
 
 
 def compare_all(paths: list[Path]) -> tuple[list[tuple], dict]:
@@ -415,22 +432,40 @@ def main(argv: list[str] | None = None) -> int:
     # from a null control and then not using it because the payload is windowed would print a page
     # of scoring apparatus that has no bearing on the report underneath it.
     if args.mode != "digest":
+        # PER PAYLOAD, not once for the whole invocation. Deciding `auto` from the first payload
+        # that happens to be windowed and then applying it to all of them means
+        # `ui_parity normal_run windowed_run` scores the NORMAL run behaviourally too, skipping
+        # its structural digest entirely -- so an ordinary DOM regression in a fully-mounted arm
+        # goes unreported because an unrelated payload on the same command line was windowed.
+        # `--mode behaviour` still forces every payload, because that is what forcing means.
+        decided = []
         for pattern in args.payloads:
             paths = shards_of(pattern)
             if not paths:
                 continue
             why = any_windowed(paths) if args.mode == "auto" else "forced by --mode behaviour"
             if why:
-                print(f"WINDOWED MOUNT DETECTED: {why}")
-                worst = 0
-                for pattern2 in args.payloads:
-                    paths2 = shards_of(pattern2)
-                    if not paths2:
-                        print(f"\nno payload found for {pattern2}")
-                        worst = max(worst, 2)
-                        continue
-                    worst = max(worst, behaviour_report(paths2, f"UI PARITY: {pattern2}"))
+                decided.append((pattern, paths, why))
+        if decided:
+            worst = 0
+            for pattern, paths, why in decided:
+                print(f"WINDOWED MOUNT DETECTED in {pattern}: {why}")
+                worst = max(worst, behaviour_report(paths, f"UI PARITY: {pattern}"))
+            remaining = [p for p in args.payloads if p not in {d[0] for d in decided}]
+            if remaining:
+                # The rest still get the digest they were owed, in the same run.
+                print(
+                    f"\n  {len(remaining)} payload(s) mount their whole thread and are scored "
+                    "structurally below, not behaviourally."
+                )
+                args.payloads = remaining
+            else:
                 return worst
+            _digest_floor = worst
+        else:
+            _digest_floor = 0
+    else:
+        _digest_floor = 0
 
     null_paths: list[Path] = []
     for pattern in args.null:
@@ -464,7 +499,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"film's slot spacing, so this unstable set does not transfer."
             )
         worst = max(worst, report(paths, f"UI PARITY: {pattern}", unstable))
-    return worst
+    # A behavioural failure on one payload is not cancelled by a structural pass on another.
+    return max(worst, _digest_floor)
 
 
 if __name__ == "__main__":

@@ -396,10 +396,20 @@ class SceneRunner:
         # The consequence, stated: the emitted `window` row no longer carries them in its notes,
         # because the row is emitted when the window closes. They live on the ACTION row, which is
         # where every consumer already reads them from.
+        # THE DEADLINE IS SAMPLED HERE, BEFORE THE OBSERVATIONS. Moving the census and the digest
+        # out of the measured window but leaving `over_ms` to be taken after them would have left
+        # half the defect in place: an action that finished comfortably inside its budget would
+        # still be flagged `over_budget` on the strength of a multi-megabyte serialisation that is
+        # explicitly not its cost. Charging instrument time to the thing being measured is the
+        # whole of task #102, and the budget flag is not exempt from it.
+        window_closed_at = time.monotonic()
+        over_ms = ((window_closed_at - t0) * 1000) - deadline_ms
+
         census = self._census()
         parity = self._parity()
-
-        over_ms = ((time.monotonic() - t0) * 1000) - deadline_ms
+        # The observations DO consume wall clock before the next slot, so their cost is recorded
+        # rather than dropped -- it is simply recorded as theirs.
+        observation_ms = (time.monotonic() - window_closed_at) * 1000
         row = result.row(slot.action, window_name, self.cell.cell_id)
         row["window_ms"] = window.duration_ms
         row["census"] = census
@@ -408,6 +418,7 @@ class SceneRunner:
         # page's own timing of the walk; if this pair ever comes to dominate the film's wall clock
         # the number is in the payload rather than in someone's hypothesis.
         row["observation_outside_window"] = True
+        row["observation_ms"] = round(observation_ms, 1)
         # An action that ran but overran its budget has pushed nothing (the next slot has its own
         # absolute start), but it has overlapped the next one, so it is flagged.
         row["over_budget_ms"] = round(over_ms, 1) if over_ms > 0 else 0.0

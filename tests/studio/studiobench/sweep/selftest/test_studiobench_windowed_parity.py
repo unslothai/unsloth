@@ -94,12 +94,20 @@ def test_two_full_mounts_are_still_compared_exactly_as_before():
     assert differ["moved"]
 
 
-def test_unequal_mounted_counts_are_refused_even_without_a_declared_total():
-    """Two arms that mounted different numbers of messages cannot be compared row by row, because
-    the rows are keyed by position in the MOUNTED list."""
+def test_unequal_mounted_counts_are_reported_even_without_a_declared_total():
+    """THIS TEST USED TO ASSERT THE OPPOSITE, and it was wrong in the way the whole gate is meant
+    to be proof against: it treated "these rows cannot be lined up" as "there is nothing to say".
+
+    The rows genuinely cannot be compared position by position, and that is a statement about the
+    ROWS. Two arms that each mounted their whole thread and arrived at different lengths have a
+    difference between them whatever the rows can support, and calling the pair inapplicable
+    hides exactly the regression -- a treatment rendering fewer messages -- that a parity check
+    exists to catch.
+    """
     got = P.compare(_capture(18, 18, "b"), _capture(12, 12, "t"))
-    assert got["verdict"] == P.NOT_APPLICABLE
+    assert got["verdict"] == P.DIFFER
     assert "different numbers of messages" in got["reason"]
+    assert got["moved"] == [], "the positional rows would all read as moved and bury the finding"
 
 
 def test_a_refused_pair_is_not_evidence_of_stability_either():
@@ -287,3 +295,84 @@ def test_every_named_first_to_break_action_has_an_invariant():
         "scroll_after",
     ):
         assert action in B.INVARIANTS, f"{action} has no behavioural invariant declared"
+
+
+# ── the four false greens the first review round found ──────────────
+#
+# Every one of these returned SUCCESS before the fix, which is the only reason they are grouped:
+# they are four different routes to a UI verdict of "fine" over a comparison that either found
+# nothing or declined to look.
+
+
+def test_two_full_mounts_of_different_lengths_is_a_difference_not_an_excuse():
+    """THE MOST SERIOUS ONE. Neither arm is windowing, so neither is holding anything back on
+    purpose, and the treatment renders fewer messages than the base -- a user-visible loss of
+    conversation. It used to be waved through as NOT_APPLICABLE on the argument that the
+    per-message rows are keyed by position, which is true of the ROWS and says nothing about the
+    finding."""
+    base = _capture(mounted = 18, total = 18)
+    treat = _capture(mounted = 17, total = 17)
+    assert P.windowed_mount(base) is False and P.windowed_mount(treat) is False
+    got = P.compare(base, treat)
+    assert got["verdict"] == P.DIFFER, got
+    assert "NEITHER arm is windowing" in got["reason"]
+    # And the positional noise is withheld, so the one finding that matters is not buried.
+    assert got["moved"] == []
+
+
+def test_a_windowed_pair_is_still_refused_rather_than_failed():
+    """The fix must not turn the intended case red. A genuine window is still NOT_APPLICABLE."""
+    got = P.compare(_capture(mounted = 18, total = 18), _capture(mounted = 9, total = 18))
+    assert got["verdict"] == P.NOT_APPLICABLE, got
+    assert "mounts a WINDOW" in got["reason"]
+
+
+def test_equal_full_mounts_are_compared_as_before():
+    got = P.compare(_capture(mounted = 18, total = 18), _capture(mounted = 18, total = 18))
+    assert got["verdict"] == P.MATCH, got
+
+
+def test_behavioural_scoring_that_validated_nothing_is_not_a_pass(tmp_path, capsys):
+    """`broken` empty and `matched` zero used to return 0, under the heading "Every declared
+    behavioural invariant held on both arms" -- a sentence that is true of an empty set and reads
+    as a pass. On a windowed arm this is the ONLY UI verdict there is, so a silent no-op there
+    leaves the arm with no verdict at all while appearing to have one."""
+    from studiobench.sweep import ui_parity as U
+
+    shard = tmp_path / "payload.jsonl"
+    # Both arms recorded the action and NEITHER ran it: nothing to compare, nothing broken.
+    import json
+
+    rows = []
+    for side in ("base", "treatment"):
+        row = _row("thread_reopen", _capture(mounted = 9, total = 18))
+        row["ran"] = False
+        row["cell_id"] = f"r100K.{side}.rep0"
+        rows.append(row)
+    shard.write_text("\n".join(json.dumps(r) for r in rows), encoding = "utf-8")
+
+    code = U.behaviour_report([shard], "UI PARITY: nothing")
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert "NOTHING WAS COMPARED" in out
+
+
+def test_the_observation_cost_is_not_charged_to_the_action_budget():
+    """`over_ms` used to be sampled AFTER the census and the multi-megabyte digest that this
+    change had just moved outside the measured window, so an action that finished inside its
+    budget was flagged `over_budget` for instrument time. The deadline is now read at the moment
+    the window closes."""
+    import inspect
+
+    from studiobench.scene import schedule as S
+
+    src = inspect.getsource(S.SceneRunner)
+    close = src.index("window_closed_at = time.monotonic()")
+    over = src.index("over_ms = ((window_closed_at - t0)", close)
+    # The FIRST census taken after the deadline is read -- `_census` is called from more than one
+    # place, so an unanchored search finds a gap window's copy and compares unrelated lines.
+    census = src.index("census = self._census()", over)
+    assert close < over < census, (
+        "the deadline is sampled after the observations again, which charges instrument time to "
+        "the action's budget"
+    )

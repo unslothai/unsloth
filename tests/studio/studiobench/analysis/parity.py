@@ -107,16 +107,20 @@ def windowed_mount(capture: Optional[dict]) -> bool:
 def applicability(base: Optional[dict], treat: Optional[dict]) -> Optional[str]:
     """Why the STRUCTURAL DIGEST is the wrong question for this pair, or None if it is the right one.
 
-    Two shapes, and both of them are answers rather than failures:
-
-      one arm mounts a window     the digests are of different amounts of DOM on purpose
-      the arms mounted different
-      numbers of messages         the per-message rows are keyed by position in the mounted list,
-                                  so msg3 is not the same message on the two sides and every row
-                                  would be reported as moved
+    ONE shape, and it is an answer rather than a failure: an arm mounts a window of the thread on
+    purpose, so the two digests describe different amounts of DOM by design and the comparison
+    cannot tell the intended change from an unintended one.
 
     What replaces it is in `analysis/behaviour.py`: matched scroll positions plus the behavioural
     invariants that break first when a thread stops mounting everything.
+
+    IT USED TO COVER A SECOND SHAPE and that was a false green. Two arms that both mount their
+    whole thread, differing in how many messages that is, were also waved through here on the
+    argument that the per-message rows are keyed by position and so describe different messages on
+    the two sides. That argument is true and it is not a reason to withhold a verdict: if neither
+    arm is windowing, a treatment that mounts fewer messages than the base has LOST MESSAGES, and
+    that is the most serious thing this comparison could find. It is reported by
+    `mount_count_mismatch` as a difference instead.
     """
     if not isinstance(base, dict) or not isinstance(treat, dict):
         return None
@@ -131,14 +135,33 @@ def applicability(base: Optional[dict], treat: Optional[dict]) -> Optional[str]:
             "screen by design, so the comparison cannot distinguish the intended change from an "
             "unintended one. Score this pair on behavioural invariants instead"
         )
-    bm, tm = base.get("mounted_messages"), treat.get("mounted_messages")
-    if isinstance(bm, int) and isinstance(tm, int) and bm != tm:
-        return (
-            f"the arms mounted different numbers of messages ({bm} vs {tm}), and the per-message "
-            "digests are keyed by position in the mounted list, so no two rows describe the same "
-            "message"
-        )
     return None
+
+
+def mount_count_mismatch(base: Optional[dict], treat: Optional[dict]) -> Optional[str]:
+    """Two NON-windowed arms that mounted different numbers of messages, or None.
+
+    Reached only when neither arm is windowing, so neither is holding anything back deliberately
+    and the counts should be equal. They are not, which means one side is rendering a thread the
+    other side is not -- a user-visible loss of conversation, reported as a difference rather than
+    excused as an incomparable pair.
+
+    The per-message digest rows are not quoted alongside it. They are keyed by position in the
+    mounted list, so with different lengths no two rows describe the same message and every one of
+    them would be listed as moved: a page of noise on top of the one finding that matters.
+    """
+    if not isinstance(base, dict) or not isinstance(treat, dict):
+        return None
+    bm, tm = base.get("mounted_messages"), treat.get("mounted_messages")
+    if not isinstance(bm, int) or not isinstance(tm, int) or bm == tm:
+        return None
+    return (
+        f"the arms mounted different numbers of messages ({bm} vs {tm}) and NEITHER arm is "
+        "windowing, so this is not a difference of what is kept in the DOM on purpose -- one side "
+        "is rendering messages the other is not. The per-message rows are keyed by position in "
+        "the mounted list, so they are not quoted here: with different lengths every row would "
+        "read as moved"
+    )
 
 
 def comparability(base: Optional[dict], treat: Optional[dict]) -> Optional[str]:
@@ -278,6 +301,16 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
             # DIFFER for exactly the same reason and with exactly as much meaning.
             "style_verdict": NOT_APPLICABLE,
             "style_reason": not_applicable,
+        }
+    lost = mount_count_mismatch(base, treat)
+    if lost is not None:
+        style_verdict, style_reason = compare_styles(base, treat)
+        return {
+            "verdict": DIFFER,
+            "reason": lost,
+            "moved": [],
+            "style_verdict": style_verdict,
+            "style_reason": style_reason,
         }
     style_verdict, style_reason = compare_styles(base, treat)
     if not _any_moved(base, treat):
