@@ -17,7 +17,6 @@ import {
   type ThemedToken,
 } from "shiki";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
-
 // Common fence tags shiki doesn't expose as aliases.
 // Keys: lower-cased input; values: canonical shiki language ids.
 const LANGUAGE_ALIAS_OVERRIDES: Record<string, BundledLanguage> = {
@@ -331,7 +330,10 @@ export function createCodePlugin(
       fence.committedLength,
     );
     fence.lastTokenizedAt = monotonicNow();
-    return { ...fence.meta, tokens: [...fence.lines, fence.liveTokens] };
+    return {
+      ...fence.meta,
+      tokens: [...fence.lines, fence.liveTokens],
+    };
   };
 
   const approximateResult = (fence: Fence, code: string): HighlightResult => {

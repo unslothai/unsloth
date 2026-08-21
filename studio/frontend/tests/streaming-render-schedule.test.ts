@@ -13,6 +13,8 @@ import {
 } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
 
+import { renderBlockContents } from "./streaming-render-plan.ts";
+
 test("only Streamdown's animation transformer is removed", () => {
   const first = () => undefined;
   const animation = () => undefined;
@@ -108,6 +110,9 @@ const MARKDOWN_CASES = [
 const processStreamingText = (text: string): string =>
   stabilizeStreamingMarkdown(preprocessLaTeX(text), true);
 
+const processCompletedText = (text: string): string =>
+  stabilizeStreamingMarkdown(preprocessLaTeX(text), false);
+
 test("incremental blocks match a full Streamdown split at every prefix", () => {
   for (const source of MARKDOWN_CASES) {
     const cache = new IncrementalMarkdownCache();
@@ -115,11 +120,43 @@ test("incremental blocks match a full Streamdown split at every prefix", () => {
       const input = processStreamingText(source.slice(0, length));
       const render = cache.update(input);
       assert.deepEqual(
-        render.parseMarkdownIntoBlocks(render.markdown),
+        renderBlockContents(render),
         parseMarkdownIntoBlocks(remend(input)),
         `block mismatch at prefix ${length} of ${JSON.stringify(source)}`,
       );
     }
+  }
+});
+
+
+test("completion preserves the partition and exact final block sequence", () => {
+  const cases = [
+    `${paragraphs(60)}## Result\n\nA **bold** [link](https://x.test).\n\n`,
+    `${paragraphs(60)}\`\`\`ts\nconst answer = 42;\n\`\`\`\n\n$$\nx+y\n$$\n\n`,
+    `${paragraphs(60)}<div>html block</div>\n\n- one\n- two\n\n`,
+    `A claim[^note]\n\n${paragraphs(60)}[^note]: final detail`,
+  ];
+
+  for (const source of cases) {
+    const cache = new IncrementalMarkdownCache();
+    let streaming = cache.update("");
+    for (let length = 7; length <= source.length; length += 7) {
+      streaming = cache.update(processStreamingText(source.slice(0, length)));
+    }
+    streaming = cache.update(processStreamingText(source));
+    const firstCommittedChunk = streaming.chunks[0];
+
+    const completedInput = processCompletedText(source);
+    const completed = cache.update(completedInput);
+    assert.equal(completed.epoch, streaming.epoch);
+    if (firstCommittedChunk) {
+      assert.equal(completed.chunks[0], firstCommittedChunk);
+    }
+    assert.deepEqual(
+      renderBlockContents(completed),
+      parseMarkdownIntoBlocks(remend(completedInput)),
+      JSON.stringify(source.slice(-100)),
+    );
   }
 });
 
@@ -135,7 +172,7 @@ test("incremental parsing bounds the live tail and resets after an edit", () => 
   const edited = source.replace("paragraph 0", "changed 0");
   const reset = cache.update(edited);
   assert.deepEqual(
-    reset.parseMarkdownIntoBlocks(reset.markdown),
+    renderBlockContents(reset),
     parseMarkdownIntoBlocks(remend(edited)),
   );
 });
@@ -195,7 +232,7 @@ test("single-dollar parity affects the retained tail repair", () => {
     const input = source.slice(0, length);
     const render = cache.update(input);
     assert.deepEqual(
-      render.parseMarkdownIntoBlocks(render.markdown),
+      renderBlockContents(render),
       parseMarkdownIntoBlocks(remend(input)),
     );
   }
@@ -215,7 +252,7 @@ test("a code character class matches Streamdown's own footnote short-circuit", (
   const fallback = new IncrementalMarkdownCache().update(matching);
   assert.equal(fallback.markdown, remend(matching));
   assert.deepEqual(
-    fallback.parseMarkdownIntoBlocks(fallback.markdown),
+    renderBlockContents(fallback),
     parseMarkdownIntoBlocks(remend(matching)),
   );
 });
@@ -232,7 +269,7 @@ test("a marker the reply never closes gives up on the retained prefix", () => {
     true,
   );
   assert.deepEqual(
-    render.parseMarkdownIntoBlocks(render.markdown),
+    renderBlockContents(render),
     parseMarkdownIntoBlocks(remend(source)),
   );
 
@@ -248,31 +285,28 @@ test("a marker the reply never closes gives up on the retained prefix", () => {
   );
 });
 
-test("an edit that drops retained blocks moves the render identity", () => {
-  // Deleting exactly the retained prefix leaves the live tail, and with it the
-  // only thing Streamdown compares, unchanged.
+test("resets invalidate block identities while appends keep the epoch", () => {
   const source = paragraphs(30);
   const cache = new IncrementalMarkdownCache();
   const streamed = cache.update(source);
   assert.ok(streamed.markdown.length < source.length / 3);
-  const streamedGeneration = cache.renderGeneration;
 
+  // Deleting exactly the retained prefix leaves the same mutable Markdown, but
+  // it is a replacement and none of the old block identities may survive.
   const edited = cache.update(streamed.markdown);
   assert.equal(edited.markdown, streamed.markdown);
-  assert.notEqual(cache.renderGeneration, streamedGeneration);
+  assert.notEqual(edited.epoch, streamed.epoch);
   assert.deepEqual(
-    edited.parseMarkdownIntoBlocks(edited.markdown),
+    renderBlockContents(edited),
     parseMarkdownIntoBlocks(remend(streamed.markdown)),
   );
 
-  // A reply that only grows never remounts, including while the stabilizer
-  // withholds an ambiguous trailing line.
   const streaming = new IncrementalMarkdownCache();
+  let render = streaming.update("");
   for (let length = 1; length <= source.length; length += 5) {
-    streaming.update(source.slice(0, length));
-    streaming.update(`${source.slice(0, length)}* **`);
+    render = streaming.update(source.slice(0, length));
   }
-  assert.equal(streaming.renderGeneration, 0);
+  assert.equal(render.epoch, 0);
 });
 
 test("a definition shown inside a fenced example still retains", () => {
@@ -298,7 +332,7 @@ test("a definition shown inside a fenced example still retains", () => {
       );
     }
     assert.deepEqual(
-      repeatedRender.parseMarkdownIntoBlocks(repeatedRender.markdown),
+      renderBlockContents(repeatedRender),
       parseMarkdownIntoBlocks(remend(processStreamingText(repeated))),
     );
   }
@@ -318,6 +352,75 @@ test("an update with unchanged text repeats no work", () => {
   }
   assert.ok(performance.now() - started < 100);
 });
+
+test("duplicate text returns the identical partitioned plan", () => {
+  const source = paragraphs(100);
+  const cache = new IncrementalMarkdownCache();
+  const first = cache.update(source);
+
+  assert.equal(cache.update(source), first);
+  assert.ok(first.chunks.length > 1);
+
+  assert.ok(first.chunks.every((chunk) => chunk.blocks.length <= 8));
+  assert.ok(first.tail.length <= 8);
+});
+
+test("token-only updates preserve every closed chunk object", () => {
+  const source = paragraphs(100);
+  const cache = new IncrementalMarkdownCache();
+  const first = cache.update(source);
+  const closedChunks = first.chunks.slice(0, -1);
+  assert.ok(closedChunks.length > 1);
+
+  const suffix = "the mutable paragraph is still receiving tokens";
+  for (let length = 1; length <= suffix.length; length += 1) {
+    const render = cache.update(source + suffix.slice(0, length));
+    assert.ok(render.tail.length <= 8);
+    closedChunks.forEach((chunk, index) => {
+      assert.equal(
+        render.chunks[index],
+        chunk,
+        `closed chunk ${index} changed at token ${length}`,
+      );
+    });
+  }
+});
+
+test("a promoted tail block keeps its persistent identity", () => {
+  const cache = new IncrementalMarkdownCache();
+  const first = cache.update(paragraphs(20));
+  const promoted = first.tail[0];
+  assert.ok(promoted);
+
+  const next = cache.update(paragraphs(50));
+  const committed = next.chunks.flatMap((chunk) => chunk.blocks);
+  assert.equal(
+    committed.find((block) => block.id === promoted.id),
+    promoted,
+  );
+});
+
+test("a safe rewind preserves surviving closed chunks", () => {
+  const source = paragraphs(120);
+  const cache = new IncrementalMarkdownCache();
+
+  for (let length = 40; length <= source.length; length += 40) {
+    cache.update(source.slice(0, length));
+  }
+  const first = cache.update(source);
+  const survivor = first.chunks[0];
+  assert.ok(survivor);
+
+  const editedSource = source.replace("part 90", "changed 90");
+  const edited = cache.update(editedSource);
+  assert.equal(edited.epoch, first.epoch);
+  assert.equal(edited.chunks[0], survivor);
+  assert.deepEqual(
+    renderBlockContents(edited),
+    parseMarkdownIntoBlocks(remend(editedSource)),
+  );
+});
+
 
 test("Streamdown re-renders only when the Markdown string changes", () => {
   // Its memo comparator is what decides whether the parser callback runs again,
@@ -339,25 +442,18 @@ test("Streamdown re-renders only when the Markdown string changes", () => {
 });
 
 test("a repeating reply keeps displaying every retained block", () => {
-  // A reply that repeats a line leaves the tail unchanged when an update
-  // retains exactly what it appended, so the cache must not hand Streamdown a
-  // Markdown string it already holds.
   const line = "I cannot provide that information.\n\n";
   const step = line.length;
   const source = `Here is the answer.\n\n${line.repeat(60)}`;
   const cache = new IncrementalMarkdownCache();
-  let displayedMarkdown: string | null = null;
-  let displayed: string[] = [];
 
   for (let length = step; length <= source.length; length += step) {
     const input = source.slice(0, length);
     const render = cache.update(input);
-    if (render.markdown !== displayedMarkdown) {
-      displayedMarkdown = render.markdown;
-      displayed = render.parseMarkdownIntoBlocks(render.markdown);
-    }
-    assert.deepEqual(displayed, parseMarkdownIntoBlocks(remend(input)));
-    // Retaining one update later must not let the live tail track the reply.
+    assert.deepEqual(
+      renderBlockContents(render),
+      parseMarkdownIntoBlocks(remend(input)),
+    );
     assert.ok(render.markdown.length < step * 6);
   }
 });
@@ -379,7 +475,7 @@ test("an emphasis marker that closes far later stays near the full-repair cost",
   render = cache.update(input);
 
   assert.deepEqual(
-    render.parseMarkdownIntoBlocks(render.markdown),
+    renderBlockContents(render),
     parseMarkdownIntoBlocks(remend(input)),
   );
   // Retaining nothing is the correct answer here; retaining the attempt is not.
@@ -411,7 +507,7 @@ test("a fenced block larger than the budget keeps retaining", () => {
   );
   assert.ok(render.markdown.length < source.length / 4);
   assert.deepEqual(
-    render.parseMarkdownIntoBlocks(render.markdown),
+    renderBlockContents(render),
     parseMarkdownIntoBlocks(remend(input)),
   );
 });

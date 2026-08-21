@@ -10,6 +10,8 @@ import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/strea
 import { IncrementalMarkdownCache } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
 
+import { renderBlockContents } from "./streaming-render-plan.ts";
+
 const processStreamingText = (text: string): string =>
   stabilizeStreamingMarkdown(preprocessLaTeX(text), true);
 
@@ -37,10 +39,10 @@ function stream(reply: string, step: number) {
   let blocks: string[] = [];
   for (let length = step; length <= reply.length; length += step) {
     const render = cache.update(processStreamingText(reply.slice(0, length)));
-    blocks = render.parseMarkdownIntoBlocks(render.markdown);
+    blocks = renderBlockContents(render);
   }
   const render = cache.update(processStreamingText(reply));
-  blocks = render.parseMarkdownIntoBlocks(render.markdown);
+  blocks = renderBlockContents(render);
   const internals = cache as unknown as { committedLength: number };
   return { blocks, retained: internals.committedLength };
 }
@@ -96,7 +98,7 @@ test("a CRLF reply matches a whole-document split at every prefix", () => {
       const input = processStreamingText(source.slice(0, length));
       const render = cache.update(input);
       assert.deepEqual(
-        render.parseMarkdownIntoBlocks(render.markdown),
+        renderBlockContents(render),
         parseMarkdownIntoBlocks(remend(asLf(input))),
         `block mismatch at prefix ${length} of ${JSON.stringify(source.slice(0, 60))}`,
       );
@@ -116,7 +118,7 @@ test("an LF reply is untouched by the line-ending handling", () => {
     const input = processStreamingText(reply.slice(0, length));
     const render = cache.update(input);
     assert.deepEqual(
-      render.parseMarkdownIntoBlocks(render.markdown),
+      renderBlockContents(render),
       parseMarkdownIntoBlocks(remend(input)),
       `block mismatch at prefix ${length}`,
     );

@@ -33,8 +33,14 @@ import "@/features/chat/stores/sidebar-organization-store";
 // page dies with "Cannot access 'MarkdownText' before initialization".
 import "@/features/chat";
 /* eslint-enable no-restricted-imports */
+import {
+  MarkdownText,
+  type MarkdownCodeHighlighting,
+  observeStreamingCodeHighlights,
+} from "@/components/assistant-ui/markdown-text";
+import { OVERSIZED_OPEN_CODE_CHARS } from "@/components/assistant-ui/streaming-code-policy";
 
-import { MarkdownText } from "@/components/assistant-ui/markdown-text";
+import { observeIncrementalMarkdownRenders } from "@/components/assistant-ui/streaming-render-schedule";
 import {
   AssistantRuntimeProvider,
   type ChatModelAdapter,
@@ -77,6 +83,92 @@ export function buildReply(totalChars: number): string {
   return text.slice(0, totalChars);
 }
 
+type FenceMarker = "`" | "~";
+const MODERATE_FENCE_SOURCE_CODE_UNITS = 7_000;
+
+const OPEN_FENCE_RICH_PREFIX =
+  "## Mixed terminal-fence fixture\n\n" +
+  "The stable prefix keeps **bold text**, *emphasis*, `inline code`, and a " +
+  "[safe link](https://example.com) while code grows[^stable].\n\n" +
+  "- first stable item\n- second stable item\n\n" +
+  "| phase | renderer |\n| --- | --- |\n| open | plain code |\n\n" +
+  "> This quote must not remount during terminal-fence growth.\n\n" +
+  "$$x^2 + y^2 = z^2$$\n\n" +
+  "[^stable]: The footnote keeps this provider block globally scoped.\n\n";
+
+
+const OPEN_FENCE_COMPACT_GLOBAL_PREFIX =
+  "## Mixed terminal-fence fixture\n\n" +
+  "A compact global claim keeps provider-wide definitions active[^stable].\n\n" +
+  "[^stable]: stable note\n\n";
+
+export function buildOpenFence(
+  marker: FenceMarker,
+  sourceCodeUnits = MODERATE_FENCE_SOURCE_CODE_UNITS,
+  sourceEndsWithLineEnding = true,
+  followedByProse = false,
+  globalScoped = true,
+
+  richPrefix = true,
+): {
+  closedMarkdown: string;
+  openMarkdown: string;
+  source: string;
+  prefix: string;
+} {
+  const lineEnding = marker === "~" ? "\r\n" : "\n";
+  const markerLength = marker === "~" ? 4 : 3;
+  const fence = marker.repeat(markerLength);
+  const prefix = (
+    globalScoped && !richPrefix
+      ? OPEN_FENCE_COMPACT_GLOBAL_PREFIX
+      : globalScoped
+        ? OPEN_FENCE_RICH_PREFIX
+        : OPEN_FENCE_RICH_PREFIX.replace(" grows[^stable].", " grows.").replace(
+            "[^stable]: The footnote keeps this provider block globally scoped.\n\n",
+            "",
+          )
+  ).replaceAll("\n", lineEnding);
+  const opening = `${fence}typescript title="source-fidelity"${lineEnding}`;
+  const line =
+    'const mixedRow0000: number = 0000; // stable terminal fence payload';
+  const canonicalSourceLine = `${line}\n`;
+  let canonicalSource: string;
+  if (sourceEndsWithLineEnding) {
+    canonicalSource = canonicalSourceLine
+      .repeat(Math.ceil(sourceCodeUnits / canonicalSourceLine.length))
+      .slice(0, sourceCodeUnits - 1);
+    canonicalSource += "\n";
+  } else {
+    canonicalSource = canonicalSourceLine
+      .repeat(Math.ceil(sourceCodeUnits / canonicalSourceLine.length))
+      .slice(0, sourceCodeUnits)
+      .replace(/\n+$/, (ending) => " ".repeat(ending.length));
+  }
+  const source = canonicalSource.replaceAll("\n", lineEnding);
+  const openMarkdown = prefix + opening + source;
+  return {
+    // The source already owns its final line ending, matching the iteration-4
+    // 7,000-character fixture; the closer begins on the following line.
+    closedMarkdown: `${openMarkdown}${
+      sourceEndsWithLineEnding ? "" : lineEnding
+    }${fence}${
+      followedByProse
+        ? `${lineEnding}${lineEnding}## After the oversized fence${lineEnding}${lineEnding}${Array.from(
+            { length: globalScoped ? 1 : 12 },
+            (_, index) =>
+              `Following block ${index} keeps same-update promotion honest.${lineEnding}${lineEnding}`,
+          ).join("")}`
+        : ""
+    }`,
+    openMarkdown,
+    prefix,
+    source,
+  };
+}
+
+type OpenFenceFixture = ReturnType<typeof buildOpenFence>;
+
 type Results = {
   startedAt: number;
   arrivals: number;
@@ -90,16 +182,46 @@ type Results = {
   longTaskSupported: boolean;
   framesOver33ms: number;
   settledChars: number;
+  codeHighlightCalls: number;
+
+  renderPlans: Array<{
+    codeFenceSourceLengths: readonly number[];
+    isStreaming: boolean;
+    sourceLength: number;
+    terminalSourceLength: number | null;
+  }>;
   done: boolean;
+  paused: boolean;
 };
 
-type RunOptions = { totalChars?: number; chunkChars?: number; gapMs?: number };
+type OpenFenceRunOptions = {
+  codeHighlighting?: MarkdownCodeHighlighting;
+  followedByProse?: boolean;
+  globalScoped?: boolean;
+  richPrefix?: boolean;
+  marker: FenceMarker;
+  sourceCodeUnits?: number;
+  sourceEndsWithLineEnding?: boolean;
+};
+
+type RunOptions = {
+  codeHighlighting?: MarkdownCodeHighlighting;
+
+  paginateReasoning?: boolean;
+  totalChars?: number;
+  chunkChars?: number;
+  gapMs?: number;
+};
 
 declare global {
   interface Window {
     __stream: {
       ready: boolean;
       run(options?: RunOptions): void;
+      runOpenFence(options: OpenFenceRunOptions): void;
+      completeOpenFence(): void;
+      expectedOpenCode(): string;
+      expectedOpenPrefix(): string;
       results(): Results;
     };
   }
@@ -118,13 +240,26 @@ const state: Results = {
   longTaskSupported: false,
   framesOver33ms: 0,
   settledChars: 0,
+  codeHighlightCalls: 0,
+
+  renderPlans: [],
   done: false,
+  paused: false,
 };
+
+let activeCodeHighlighting: MarkdownCodeHighlighting = "syntax";
+
+let activePaginateReasoning = false;
+
+let openFenceFixture: OpenFenceFixture | null = null;
+let releaseOpenFence: (() => void) | null = null;
 
 /** Consecutive frames without growth that count as settled. */
 const SETTLED_FRAMES = 30;
 
-let config: Required<RunOptions> = {
+let config: Required<
+  Omit<RunOptions, "codeHighlighting" | "paginateReasoning">
+> = {
   totalChars: 24_000,
   chunkChars: 24,
   gapMs: 2,
@@ -139,7 +274,8 @@ const sleep = (ms: number) =>
 // adapter yields, at a fixed rate.
 const adapter: ChatModelAdapter = {
   async *run() {
-    const reply = buildReply(config.totalChars);
+    const fixture = openFenceFixture;
+    const reply = fixture?.openMarkdown ?? buildReply(config.totalChars);
     let cursor = 0;
     state.startedAt = performance.now();
     while (cursor < reply.length) {
@@ -151,14 +287,39 @@ const adapter: ChatModelAdapter = {
       };
       await sleep(config.gapMs);
     }
+
+    if (fixture) {
+      state.paused = true;
+      await new Promise<void>((resolve) => {
+        releaseOpenFence = resolve;
+      });
+      releaseOpenFence = null;
+      state.paused = false;
+      state.arrivals += 1;
+      state.sentChars = fixture.closedMarkdown.length;
+      yield {
+        content: [{ type: "text" as const, text: fixture.closedMarkdown }],
+      };
+    }
     state.streamEndedAtMs = performance.now() - state.startedAt;
   },
 };
+function PolicyMarkdownText(props: { status?: unknown; text?: string }): ReactElement {
+  return (
+    <MarkdownText
+      {...props}
+      codeHighlighting={activeCodeHighlighting}
+      paginateReasoning={activePaginateReasoning}
+    />
+  );
+}
+
+
 
 function AssistantMessage(): ReactElement {
   return (
     <div className="min-w-0 max-w-full">
-      <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+      <MessagePrimitive.Parts components={{ Text: PolicyMarkdownText }} />
     </div>
   );
 }
@@ -172,6 +333,23 @@ function Harness(): ReactElement {
   const aui = useAui({});
 
   useEffect(() => {
+    const stopObservingRenderPlans = observeIncrementalMarkdownRenders(
+      (observation) => {
+        state.renderPlans.push(observation);
+        if (state.renderPlans.length > 40) state.renderPlans.shift();
+      },
+    );
+
+    const stopObservingCodeHighlights = observeStreamingCodeHighlights(
+      (source) => {
+        if (
+          source.length >= OVERSIZED_OPEN_CODE_CHARS &&
+          source.includes("mixedRow0000")
+        ) {
+          state.codeHighlightCalls += 1;
+        }
+      },
+    );
     // Painted, not published: "the bubble stopped growing" is the complaint, and a store
     // update that never reaches paint does not answer it. So read the DOM.
     const paintedChars = (): number => {
@@ -224,7 +402,10 @@ function Harness(): ReactElement {
         // through one. Rendered length is compared against itself, not the bytes sent,
         // because Markdown syntax (fences, list markers, math delimiters) never
         // reaches textContent.
-        if (state.streamEndedAtMs !== null && state.timeToFullyPaintedMs === null) {
+        if (
+          state.streamEndedAtMs !== null &&
+          state.timeToFullyPaintedMs === null
+        ) {
           if (painted > settledChars) {
             settledChars = painted;
             quietFrames = 0;
@@ -274,14 +455,24 @@ function Harness(): ReactElement {
 
     window.__stream = {
       ready: true,
+
       run(options: RunOptions = {}) {
-        config = { ...config, ...options };
+        const {
+          codeHighlighting = "syntax",
+          paginateReasoning = false,
+          ...streamOptions
+        } = options;
+        activeCodeHighlighting = codeHighlighting;
+        activePaginateReasoning = paginateReasoning;
+        config = { ...config, ...streamOptions };
         // Open the window and drop what the buffered replay banked. A straddling entry is
         // discarded, not prorated: it began before the stream, so it is not the renderer's.
         measureFrom = performance.now();
         state.longTaskMs = 0;
         state.longTasks = 0;
         state.framesOver33ms = 0;
+        state.renderPlans = [];
+        state.codeHighlightCalls = 0;
         // Append from a later task. In this same task, a long task is stamped with its
         // task's start, so runtime startup and the first publish would sort before
         // measureFrom and be dropped as page load. A fresh task starts after it.
@@ -292,12 +483,55 @@ function Harness(): ReactElement {
           });
         }, 0);
       },
+      runOpenFence({
+        codeHighlighting = "syntax",
+        followedByProse,
+        globalScoped,
+        marker,
+        richPrefix,
+        sourceCodeUnits,
+        sourceEndsWithLineEnding,
+      }: OpenFenceRunOptions) {
+        activeCodeHighlighting = codeHighlighting;
+        openFenceFixture = buildOpenFence(
+          marker,
+          sourceCodeUnits,
+          sourceEndsWithLineEnding,
+          followedByProse,
+          globalScoped,
+          richPrefix,
+        );
+        state.renderPlans = [];
+        state.codeHighlightCalls = 0;
+        config = {
+          totalChars: openFenceFixture.openMarkdown.length,
+          chunkChars: 512,
+          gapMs: 0,
+        };
+        measureFrom = performance.now();
+        setTimeout(() => {
+          void runtime.thread.append({
+            role: "user",
+            content: [{ type: "text", text: "stream the open fence fixture" }],
+          });
+        }, 0);
+      },
+      completeOpenFence() {
+        releaseOpenFence?.();
+      },
+      expectedOpenCode: () =>
+        openFenceFixture?.source.replaceAll("\r\n", "\n") ?? "",
+      expectedOpenPrefix: () => openFenceFixture?.prefix ?? "",
       results: () => ({ ...state }),
     };
 
     return () => {
       cancelAnimationFrame(handle);
       observer?.disconnect();
+
+      stopObservingRenderPlans();
+
+      stopObservingCodeHighlights();
     };
   }, [runtime]);
 

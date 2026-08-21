@@ -5,7 +5,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createSegmentedAssistantText } from "../src/features/chat/utils/incremental-assistant-content.ts";
-import { parseAssistantContent } from "../src/features/chat/utils/parse-assistant-content.ts";
+import {
+  createReasoningMirrorGuard,
+  parseAssistantContent,
+} from "../src/features/chat/utils/parse-assistant-content.ts";
 
 /**
  * What the adapter did before: cut the whole reply at the tool cursors and
@@ -255,4 +258,46 @@ test("a think block split by a tool boundary parses as the adapter parses it", (
     [{ type: "reasoning", text: "before" }],
     [{ type: "text", text: "after</think> done" }],
   ]);
+});
+
+test("a terminal server mirror of reasoning never becomes visible answer text", () => {
+  const guard = createReasoningMirrorGuard(true);
+  const first = "reasoning with markdown\n".repeat(16);
+  const second = "```js\nconst value = 1;\n```";
+  guard.appendReasoning(first);
+  assert.equal(guard.filterVisibleText("", false), "");
+  guard.appendReasoning(second);
+
+  assert.equal(guard.filterVisibleText(first + second, true), "");
+});
+
+test("the reasoning mirror guard preserves genuine answer deltas", () => {
+  const streamedAnswer = createReasoningMirrorGuard(true);
+  streamedAnswer.appendReasoning("same words");
+  assert.equal(streamedAnswer.filterVisibleText("Answer: ", false), "Answer: ");
+  assert.equal(
+    streamedAnswer.filterVisibleText("same words", true),
+    "same words",
+  );
+
+  const terminalAnswer = createReasoningMirrorGuard(true);
+  terminalAnswer.appendReasoning("reasoning");
+  assert.equal(
+    terminalAnswer.filterVisibleText("different answer", true),
+    "different answer",
+  );
+});
+
+test("mirror suppression is local-only and keeps short equal answers", () => {
+  const localShortAnswer = createReasoningMirrorGuard(true);
+  localShortAnswer.appendReasoning("42");
+  assert.equal(localShortAnswer.filterVisibleText("42", true), "42");
+
+  const providerAnswer = createReasoningMirrorGuard(false);
+  const longEqualAnswer = "provider-owned answer ".repeat(32);
+  providerAnswer.appendReasoning(longEqualAnswer);
+  assert.equal(
+    providerAnswer.filterVisibleText(longEqualAnswer, true),
+    longEqualAnswer,
+  );
 });

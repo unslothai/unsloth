@@ -31,6 +31,58 @@ def _message(message_id: str, thread_id: str) -> chat_history.ChatMessage:
     )
 
 
+def test_fence_provenance_survives_single_and_batch_route_models(monkeypatch):
+    content = [
+        {
+            "type": "text",
+            "text": "```text\nvalue\n```",
+            "__unslothFenceProvenance": {"v": 1, "trailingLf": [0]},
+        }
+    ]
+    captured = []
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _thread_id: {"id": "thread-1"})
+
+    def save(message):
+        captured.append(message)
+        return message
+
+    def sync(_thread_id, messages, *, prune_missing):
+        assert prune_missing is True
+        captured.extend(messages)
+        return messages
+
+    monkeypatch.setattr(chat_history, "upsert_chat_message", save)
+    monkeypatch.setattr(chat_history, "sync_chat_messages", sync)
+    single = chat_history.ChatMessage(
+        id = "single",
+        threadId = "thread-1",
+        parentId = None,
+        role = "assistant",
+        content = content,
+        createdAt = 1,
+    )
+    saved = chat_history.save_thread_message(
+        "thread-1",
+        "single",
+        single,
+        current_subject = "test-user",
+    )
+    batch_message = single.model_copy(update = {"id": "batch", "createdAt": 2})
+    synced = chat_history.replace_thread_messages(
+        "thread-1",
+        chat_history.ChatMessageSyncRequest(
+            messages = [batch_message],
+            pruneMissing = True,
+        ),
+        current_subject = "test-user",
+    )
+
+    assert saved.content == content
+    assert synced.messages[0].content == content
+    assert captured[0]["content"] == content
+    assert captured[1]["content"] == content
+
+
 def test_async_delete_handlers_dispatch_sqlite_to_the_threadpool():
     """Cleanup handlers may be async, but their blocking sqlite work must leave the event loop."""
     coroutine_handlers = sorted(

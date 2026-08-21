@@ -28,6 +28,11 @@ import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/strea
 import { IncrementalMarkdownCache } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
 
+import {
+  committedBlockContents,
+  renderBlockContents,
+} from "./streaming-render-plan.ts";
+
 const processStreamingText = (text: string): string =>
   stabilizeStreamingMarkdown(preprocessLaTeX(text), true);
 
@@ -165,10 +170,10 @@ function assertMatchesFullSplit(
     const render = cache.update(input);
     everRetained = Math.max(
       everRetained,
-      render.parseMarkdownIntoBlocks("").length,
+      committedBlockContents(render).length,
     );
     assert.deepEqual(
-      render.parseMarkdownIntoBlocks(render.markdown),
+      renderBlockContents(render),
       parseMarkdownIntoBlocks(remend(input)),
       `block mismatch at prefix ${length} of ${name}: ${JSON.stringify(source.slice(0, 200))}`,
     );
@@ -243,7 +248,7 @@ test("rebuilds of the retained prefix do not grow with the reply", () => {
     let retained = 0;
     for (let length = 24; length <= reply.length; length += 24) {
       const render = cache.update(processStreamingText(reply.slice(0, length)));
-      retained = render.parseMarkdownIntoBlocks("").join("").length;
+      retained = committedBlockContents(render).join("").length;
     }
     return {
       rebuilds: (cache as unknown as { retainedPrefixRebuilds: number })

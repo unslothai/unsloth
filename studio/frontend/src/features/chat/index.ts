@@ -229,6 +229,14 @@ export {
   startsNewReasoningRound,
 } from "./utils/reasoning-visibility";
 export { ArtifactCard } from "./artifacts/artifact-card";
+
+export {
+  getCodeFence,
+  isFullHtmlDocument,
+  isHtmlFence,
+  isRenderableRenderHtmlToolPart,
+  isSvgFence,
+} from "./artifacts/html-fences";
 export { ResearchMessage } from "./components/research-message";
 export {
   ResearchActivityPanel,

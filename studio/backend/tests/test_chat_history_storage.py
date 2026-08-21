@@ -647,6 +647,58 @@ def _msg(mid: str, parent: str | None, t: int) -> dict:
     }
 
 
+def test_fence_provenance_round_trips_storage_export_and_fork_byte_for_byte(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("src"))
+    content = [
+        {
+            "type": "text",
+            "text": "```text\nvalue\n```",
+            "__unslothFenceProvenance": {"v": 1, "trailingLf": [0]},
+        },
+        {"type": "reasoning", "text": "kept separate"},
+    ]
+    message = {
+        "id": "provenance",
+        "threadId": "src",
+        "parentId": None,
+        "role": "assistant",
+        "content": content,
+        "createdAt": 1,
+    }
+
+    assert studio_db.upsert_chat_message(message)["content"] == content
+    synced = studio_db.sync_chat_messages("src", [message])
+    assert synced[0]["content"] == content
+    _, _, exported_messages = studio_db.build_chat_history_export()
+    assert exported_messages[0]["content"] == content
+
+    studio_db.fork_chat_thread(
+        source_thread_id = "src",
+        branch_message_id = "provenance",
+        new_thread_id = "fork",
+        new_title = "fork",
+        created_at = 2,
+        id_factory = lambda: "fork-provenance",
+    )
+    forked = studio_db.list_chat_messages("fork")
+    assert forked[0]["content"] == content
+
+    conn = studio_db.get_connection()
+    try:
+        source_json = conn.execute(
+            "SELECT content_json FROM chat_messages WHERE id = ?",
+            ("provenance",),
+        ).fetchone()[0]
+        fork_json = conn.execute(
+            "SELECT content_json FROM chat_messages WHERE id = ?",
+            ("fork-provenance",),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert fork_json == source_json
+
+
 def test_fork_chat_thread_copies_ancestry_with_fresh_ids(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(

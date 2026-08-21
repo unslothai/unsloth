@@ -8,6 +8,7 @@ type ContentPart = NonNullable<ChatModelRunResult["content"]>[number];
 const THINK_OPEN_TAG = "<think>";
 const THINK_CLOSE_TAG = "</think>";
 
+const MIN_REASONING_MIRROR_CHARACTERS = 256;
 /**
  * Normalize streamed string or structured delta content to inline text.
  * Structured reasoning-only chunks remain distinguishable so their fallback
@@ -80,6 +81,43 @@ export function extractDeltaText(delta: unknown): {
   return { text, structuredReasoningContinues };
 }
 
+export type ReasoningMirrorGuard = {
+  appendReasoning(delta: string): void;
+  filterVisibleText(delta: string, terminal: boolean): string;
+};
+
+/**
+ * Filters the affected local backend's terminal reasoning mirror without
+ * suppressing short or provider-owned answer text.
+ */
+export function createReasoningMirrorGuard(
+  suppressTerminalMirror: boolean,
+): ReasoningMirrorGuard {
+  let reasoning = "";
+  let hasVisibleText = false;
+
+  return {
+    appendReasoning(delta: string): void {
+      reasoning += delta;
+    },
+    filterVisibleText(delta: string, terminal: boolean): string {
+      if (!delta) return "";
+      if (
+        terminal &&
+        suppressTerminalMirror &&
+        reasoning.length >= MIN_REASONING_MIRROR_CHARACTERS &&
+        !hasVisibleText &&
+        reasoning.length === delta.length &&
+        reasoning === delta
+      ) {
+        return "";
+      }
+      hasVisibleText = true;
+      return delta;
+    },
+  };
+}
+
 // ContentPart from @assistant-ui/react has readonly fields, so `last.text +=
 // text` fails (TS2540). Replace the last element with a merged object instead.
 
@@ -103,9 +141,7 @@ export function appendReasoningPart(parts: ContentPart[], text: string): void {
   parts.push({ type: "reasoning", text });
 }
 
-export function parseAssistantContent(
-  raw: string,
-): ContentPart[] {
+export function parseAssistantContent(raw: string): ContentPart[] {
   const parts: ContentPart[] = [];
   if (!raw) {
     return parts;

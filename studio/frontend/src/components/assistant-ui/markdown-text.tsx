@@ -3,15 +3,19 @@
 
 "use client";
 
-import { ArtifactCard, useChatRuntimeStore } from "@/features/chat";
 import {
+  ArtifactCard,
   getCodeFence,
   isFullHtmlDocument,
   isHtmlFence,
   isRenderableRenderHtmlToolPart,
   isSvgFence,
-} from "@/features/chat/artifacts/html-fences";
+  useChatRuntimeStore,
+} from "@/features/chat";
+
+import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { readFencedCodeProvenance } from "@/lib/fenced-code-provenance";
 import { preprocessLaTeX } from "@/lib/latex";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { openLink } from "@/lib/open-link";
@@ -21,10 +25,13 @@ import { toast } from "@/lib/toast";
 import { INTERNAL, useAuiState, useMessagePartText } from "@assistant-ui/react";
 import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import type { HighlightResult } from "@streamdown/code";
+
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import {
   type ComponentProps,
+  type ReactElement,
   createContext,
   memo,
   useCallback,
@@ -37,6 +44,7 @@ import {
 import {
   Block,
   type BlockProps,
+  type CustomRendererProps,
   Streamdown,
   type StreamdownProps,
 } from "streamdown";
@@ -44,19 +52,90 @@ import { createCodePlugin } from "./code-plugin";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
+import { OversizedStreamingCodeBlock } from "./oversized-streaming-code-block";
+import {
+  createReasoningPageBoundary,
+  isReasoningPageBoundaryValid,
+  type ReasoningPageBoundary,
+  selectReasoningMarkdownPage,
+} from "./reasoning-pagination";
+import {
+  getCodeFenceFilename,
+  getStreamingCodeFence,
+  isOversizedStreamingCode,
+  normalizeCodeFenceLanguage,
+} from "./streaming-code-policy";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown";
 import {
+  type IncrementalMarkdownBlock,
   IncrementalMarkdownCache,
+  type IncrementalMarkdownChunk,
+  type IncrementalMarkdownCodeFence,
+  type IncrementalMarkdownRender,
+  type IncrementalMarkdownTerminalCodeTail,
   withoutStreamdownAnimationPlugin,
 } from "./streaming-render-schedule";
+import {
+  createStreamingTextPresentationScheduler,
+  scheduleAfterPaint,
+} from "./streaming-text-presentation";
 
 const math = createMathPlugin({ singleDollarTextMath: true });
-const code = createCodePlugin({
+const baseCode = createCodePlugin({
   themes: [unslothLightTheme, unslothDarkTheme],
 });
-const STREAMDOWN_PLUGINS = { code, math, mermaid } satisfies NonNullable<
-  StreamdownProps["plugins"]
->;
+
+type StreamingCodeHighlightObserver = (
+  source: string,
+  language: string,
+) => void;
+let streamingCodeHighlightObserver: StreamingCodeHighlightObserver | null =
+  null;
+
+// The Chromium harness observes the real plugin boundary; normal bundles install no observer.
+export function observeStreamingCodeHighlights(
+  observer: StreamingCodeHighlightObserver,
+): () => void {
+  streamingCodeHighlightObserver = observer;
+  return () => {
+    if (streamingCodeHighlightObserver === observer) {
+      streamingCodeHighlightObserver = null;
+    }
+  };
+}
+
+const code = {
+  ...baseCode,
+  highlight: (...args: Parameters<typeof baseCode.highlight>) => {
+    streamingCodeHighlightObserver?.(args[0].code, String(args[0].language));
+    return baseCode.highlight(...args);
+  },
+} satisfies typeof baseCode;
+export type MarkdownCodeHighlighting = "syntax" | "plain";
+
+const PERSISTENT_OVERSIZED_CODE_LANGUAGE = "unsloth-oversized-code";
+const STREAMDOWN_SYNTAX_PLUGINS = {
+  code,
+  math,
+  mermaid,
+  renderers: [
+    {
+      component: PersistentOversizedCodeRenderer,
+      language: PERSISTENT_OVERSIZED_CODE_LANGUAGE,
+    },
+  ],
+} satisfies NonNullable<StreamdownProps["plugins"]>;
+// Without the code plugin, Streamdown still renders code containers and other plugins.
+const STREAMDOWN_PLAIN_CODE_PLUGINS = {
+  math,
+  mermaid,
+  renderers: [
+    {
+      component: PersistentOversizedCodeRenderer,
+      language: PERSISTENT_OVERSIZED_CODE_LANGUAGE,
+    },
+  ],
+} satisfies NonNullable<StreamdownProps["plugins"]>;
 const STREAMDOWN_CONTROLS = {
   code: false,
   mermaid: {
@@ -70,6 +149,68 @@ const STREAMDOWN_SHIKI_THEME = [
   unslothLightTheme,
   unslothDarkTheme,
 ] satisfies NonNullable<StreamdownProps["shikiTheme"]>;
+
+const FINAL_HIGHLIGHT_CHUNK_CHARACTERS = 512;
+
+// Keep open fences plain; highlight completed source in bounded tasks.
+const prepareOversizedCodeHighlight = (
+  source: string,
+  language: string | null,
+  onReady: (result: HighlightResult) => void,
+): (() => void) => {
+  let cancelled = false;
+  let cursor = 0;
+  let frame: number | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const schedule = (callback: () => void): void => {
+    frame = requestAnimationFrame(() => {
+      frame = null;
+      timer = setTimeout(() => {
+        timer = null;
+        callback();
+      }, 0);
+    });
+  };
+
+  const advance = (): void => {
+    if (cancelled) return;
+    const limit = Math.min(
+      source.length,
+      cursor + FINAL_HIGHLIGHT_CHUNK_CHARACTERS,
+    );
+    const newline = source.lastIndexOf("\n", limit);
+    cursor = newline >= cursor ? newline + 1 : limit;
+
+    const continueAfterChunk = (result: HighlightResult): void => {
+      if (cancelled) return;
+      if (cursor >= source.length) {
+        onReady(result);
+      } else {
+        schedule(advance);
+      }
+    };
+    const result = code.highlight(
+      {
+        code: source.slice(0, cursor),
+        language: (language ?? "text") as Parameters<
+          typeof code.highlight
+        >[0]["language"],
+        themes: STREAMDOWN_SHIKI_THEME,
+      },
+      continueAfterChunk,
+    );
+    if (result) continueAfterChunk(result);
+  };
+
+  const cancelInitialPaint = scheduleAfterPaint(advance);
+  return () => {
+    cancelled = true;
+    cancelInitialPaint();
+    if (frame !== null) cancelAnimationFrame(frame);
+    if (timer !== null) clearTimeout(timer);
+  };
+};
 const { withSmoothContextProvider } = INTERNAL;
 
 // Streamdown 2.5 schedules ordinary streaming blocks in an interruptible React
@@ -109,41 +250,6 @@ function getMermaidSource(blockContent: string): string | null {
   const source = blockContent.match(MERMAID_SOURCE_RE)?.[1]?.trim();
   return source && source.length > 0 ? source : null;
 }
-
-function getCodeFilename(language: string | null) {
-  const extByLanguage: Record<string, string> = {
-    bash: "sh",
-    "c++": "cpp",
-    csharp: "cs",
-    javascript: "js",
-    js: "js",
-    json: "json",
-    jsx: "jsx",
-    markdown: "md",
-    md: "md",
-    python: "py",
-    py: "py",
-    ruby: "rb",
-    rust: "rs",
-    shell: "sh",
-    sh: "sh",
-    sql: "sql",
-    ts: "ts",
-    tsx: "tsx",
-    typescript: "ts",
-    svg: "svg",
-    yaml: "yml",
-    yml: "yml",
-  };
-
-  const normalized = language?.toLowerCase();
-  const fallbackExt = normalized?.replace(/[^a-z0-9]+/g, "-");
-  const ext = normalized
-    ? extByLanguage[normalized] || fallbackExt || "txt"
-    : "txt";
-  return `snippet.${ext}`;
-}
-
 const UNSAFE_SVG_RE =
   /<script[\s>]|on\w+\s*=|javascript:|<foreignObject[\s>]|<iframe[\s>]|<embed[\s>]|<object[\s>]/i;
 
@@ -264,7 +370,7 @@ function CodeBlockActions({
           title="Download file"
           disabled={disabled}
           onClick={() => {
-            downloadTextFile(getCodeFilename(language), source);
+            downloadTextFile(getCodeFenceFilename(language), source);
           }}
         >
           <HugeiconsIcon icon={Download01Icon} className="size-icon" />
@@ -274,12 +380,103 @@ function CodeBlockActions({
   );
 }
 
-function useAnimationFreeBlockProps(props: BlockProps): BlockProps {
+const completedCodeFenceRendererToken = (
+  fence: IncrementalMarkdownCodeFence,
+): string => `unsloth-fence:${fence.id}`;
+
+const EMPTY_COMPLETED_CODE_FENCES = new Map<
+  string,
+  IncrementalMarkdownCodeFence
+>();
+const CompletedCodeFencesContext = createContext<
+  ReadonlyMap<string, IncrementalMarkdownCodeFence>
+>(EMPTY_COMPLETED_CODE_FENCES);
+
+const EMPTY_CANONICAL_CODE_SOURCES = new Map<string, string>();
+const CanonicalCodeSourcesContext = createContext<ReadonlyMap<string, string>>(
+  EMPTY_CANONICAL_CODE_SOURCES,
+);
+
+const MarkdownCodeHighlightingContext =
+  createContext<MarkdownCodeHighlighting>("syntax");
+
+function PersistentOversizedCodeRenderer({
+  code: rendererSource,
+  isIncomplete,
+  meta,
+}: CustomRendererProps) {
+  const codeFences = useContext(CompletedCodeFencesContext);
+
+  const codeHighlighting = useContext(MarkdownCodeHighlightingContext);
+  const withoutParserLineFeed = rendererSource.endsWith("\n")
+    ? rendererSource.slice(0, -1)
+    : rendererSource;
+  // The private metastring contains only this occurrence's deterministic token.
+  // Original metadata and source stay in the block-local map and never leak into
+  // labels, actions, the DOM, or persisted Markdown.
+  const presentation = meta ? codeFences.get(meta) : undefined;
+  const source = presentation?.source ?? withoutParserLineFeed;
+  const language = presentation?.language ?? null;
+
+  return (
+    <div className="relative isolate">
+      <OversizedStreamingCodeBlock
+        isFenceOpen={false}
+        language={language}
+        prepareHighlighted={
+          codeHighlighting === "syntax"
+            ? prepareOversizedCodeHighlight
+            : undefined
+        }
+        source={source}
+      />
+      <CodeBlockActions
+        disabled={isIncomplete}
+        language={language}
+        source={source}
+      />
+    </div>
+  );
+}
+
+const presentCompletedCodeFences = (
+  content: string,
+  codeFences: readonly IncrementalMarkdownCodeFence[],
+): string => {
+  let presented = content;
+  const oversized = [...codeFences]
+    .filter((fence) => isOversizedStreamingCode(fence.source.length))
+    .reverse();
+
+  for (const fence of oversized) {
+    const lineEnd = content.indexOf("\n", fence.openingOffset);
+    const end = lineEnd < 0 ? content.length : lineEnd;
+    const openingLine = content.slice(fence.openingOffset, end);
+    const marker = openingLine.match(/^( {0,3})(`{3,}|~{3,})/);
+    if (!marker) continue;
+    const replacement = `${marker[1]}${marker[2]}${PERSISTENT_OVERSIZED_CODE_LANGUAGE} ${completedCodeFenceRendererToken(fence)}`;
+    presented =
+      presented.slice(0, fence.openingOffset) +
+      replacement +
+      presented.slice(end);
+  }
+  return presented;
+};
+
+function useAnimationFreeBlockProps(
+  props: BlockProps,
+  codeFences: readonly IncrementalMarkdownCodeFence[],
+): BlockProps {
   // `animated` is needed only to bypass Streamdown's starvable React transition.
   // Its rehype plugin still wraps every word even with duration and stagger set
   // to zero. Remove that one plugin before parsing so long streams do not create
-  // thousands of animation spans. Keep the filtered array stable so completed
-  // blocks remain memoised while the final block continues streaming.
+  // thousands of animation spans. Rewrite only completed oversized fence tags
+  // to the private renderer language; the context still carries exact source,
+  // original language, and metadata for actions and labels.
+  const content = useMemo(
+    () => presentCompletedCodeFences(props.content, codeFences),
+    [codeFences, props.content],
+  );
   const rehypePlugins = useMemo(
     () =>
       withoutStreamdownAnimationPlugin(
@@ -291,6 +488,7 @@ function useAnimationFreeBlockProps(props: BlockProps): BlockProps {
   return {
     ...props,
     animatePlugin: null,
+    content,
     rehypePlugins,
   } satisfies BlockProps;
 }
@@ -312,8 +510,38 @@ const RenderHtmlToolPresenceContext = createContext(false);
 
 // Collapse a full-HTML answer in place into an artifact card. Diffusion keeps the
 // raw code visible instead (the trailing MessageHtmlArtifacts appends its card).
+type StreamdownBlockProps = BlockProps & {
+  actionsDisabled?: boolean;
+  canonicalCodeSource?: string;
+  codeFences?: readonly IncrementalMarkdownCodeFence[];
+  isFenceOpen?: boolean;
+  sourceContent?: string;
+};
+
+function StreamdownBlockContent(props: StreamdownBlockProps): ReactElement;
 function StreamdownBlockContent(props: BlockProps) {
-  const blockProps = useAnimationFreeBlockProps(props);
+  const {
+    actionsDisabled,
+    canonicalCodeSource,
+    codeFences = [],
+    isFenceOpen = false,
+    sourceContent,
+    ...renderProps
+  } = props as StreamdownBlockProps;
+
+  const codeHighlighting = useContext(MarkdownCodeHighlightingContext);
+  const canonicalCodeSources = useContext(CanonicalCodeSourcesContext);
+  const completedCodeFencePresentations = useMemo(
+    () =>
+      new Map(
+        codeFences.map((fence) => [
+          completedCodeFenceRendererToken(fence),
+          fence,
+        ]),
+      ),
+    [codeFences],
+  );
+  const blockProps = useAnimationFreeBlockProps(renderProps, codeFences);
   const shouldCollapseHtmlArtifacts = useChatRuntimeStore(
     (state) =>
       (state.artifactsEnabled || state.collapseHtmlArtifacts) &&
@@ -325,6 +553,38 @@ function StreamdownBlockContent(props: BlockProps) {
   const hasMermaidFence = props.content.includes("```mermaid");
   const mermaidSource = getMermaidSource(props.content);
   const codeFence = getCodeFence(props.content);
+  const parsedStreamingCodeFence = getStreamingCodeFence(
+    sourceContent ?? props.content,
+  );
+  // A completed code-only provider block takes this direct rendering path rather
+  // than the tokenized persistent renderer below. Resolve its canonical record
+  // by this block's exact opening offset; semantic mdast source drops the line
+  // ending that positions the closer.
+  const completedStandaloneFence =
+    !props.isIncomplete && parsedStreamingCodeFence
+      ? codeFences.find((fence) => fence.openingOffset === 0)
+      : undefined;
+  const streamingCodeFence =
+    completedStandaloneFence ??
+    parsedStreamingCodeFence ??
+    (codeFence && {
+      ...codeFence,
+      language: normalizeCodeFenceLanguage(codeFence.language),
+    });
+  const exactCodeSource =
+    canonicalCodeSource ??
+    (completedStandaloneFence
+      ? canonicalCodeSources.get(completedStandaloneFence.id)
+      : undefined) ??
+    streamingCodeFence?.source;
+
+  const renderBlock = () => (
+    <CompletedCodeFencesContext.Provider
+      value={completedCodeFencePresentations}
+    >
+      <Block {...blockProps} />
+    </CompletedCodeFencesContext.Provider>
+  );
 
   if (props.isIncomplete && hasMermaidFence) {
     return (
@@ -367,24 +627,25 @@ function StreamdownBlockContent(props: BlockProps) {
   if (mermaidSource) {
     return (
       <div className="relative isolate">
-        <Block {...blockProps} />
+        {renderBlock()}
         <MermaidCopyButton source={mermaidSource} />
       </div>
     );
   }
 
-  if (codeFence) {
+  if (streamingCodeFence) {
     const svgSource =
-      !props.isIncomplete && isSvgFence(codeFence)
-        ? sanitizeSvg(codeFence.source)
+      !isFenceOpen && !props.isIncomplete && isSvgFence(streamingCodeFence)
+        ? sanitizeSvg(streamingCodeFence.source)
         : null;
     const htmlSource =
       shouldCollapseHtmlArtifacts &&
       !messageHasRenderableRenderHtmlTool &&
+      !isFenceOpen &&
       !props.isIncomplete &&
-      isHtmlFence(codeFence) &&
-      isFullHtmlDocument(codeFence.source)
-        ? codeFence.source
+      isHtmlFence(streamingCodeFence) &&
+      isFullHtmlDocument(streamingCodeFence.source)
+        ? streamingCodeFence.source
         : null;
     if (htmlSource) {
       return (
@@ -395,11 +656,25 @@ function StreamdownBlockContent(props: BlockProps) {
     return (
       <>
         <div className="relative isolate">
-          <Block {...blockProps} />
+          {codeHighlighting === "plain" ||
+          isOversizedStreamingCode(exactCodeSource?.length ?? 0) ? (
+            <OversizedStreamingCodeBlock
+              isFenceOpen={isFenceOpen}
+              language={streamingCodeFence.language}
+              prepareHighlighted={
+                codeHighlighting === "syntax"
+                  ? prepareOversizedCodeHighlight
+                  : undefined
+              }
+              source={streamingCodeFence.source}
+            />
+          ) : (
+            renderBlock()
+          )}
           <CodeBlockActions
-            disabled={props.isIncomplete}
-            language={codeFence.language}
-            source={codeFence.source}
+            disabled={actionsDisabled ?? props.isIncomplete}
+            language={streamingCodeFence.language}
+            source={exactCodeSource ?? streamingCodeFence.source}
           />
         </div>
         {svgSource && <SvgPreview source={svgSource} />}
@@ -407,55 +682,219 @@ function StreamdownBlockContent(props: BlockProps) {
     );
   }
 
-  return <Block {...blockProps} />;
+  return renderBlock();
 }
 const StreamdownBlock = memo(StreamdownBlockContent);
+const StreamingMarkdownPlanContext =
+  createContext<IncrementalMarkdownRender | null>(null);
+
+const parseProviderShellBlock = (markdown: string): string[] => [markdown];
+
+type StableCommittedChunkProps = {
+  chunk: IncrementalMarkdownChunk;
+  shellProps: BlockProps;
+};
+
+function StableCommittedChunkContent({
+  chunk,
+  shellProps,
+}: StableCommittedChunkProps) {
+  return chunk.blocks.map((block, index) => (
+    <StreamdownBlock
+      {...shellProps}
+      codeFences={block.codeFences}
+      key={block.id}
+      content={block.content}
+      index={chunk.startIndex + index}
+      isIncomplete={false}
+    />
+  ));
+}
+
+// The provider shell creates a fresh props object when its one live block
+// changes. Completed chunks deliberately ignore that wrapper identity: their
+// Block configuration is constant for the lifetime of MarkdownText, and
+// Streamdown's own contexts still propagate real completion/config changes to
+// descendants. Only a changed chunk object should walk its completed blocks.
+const StableCommittedChunk = memo(
+  StableCommittedChunkContent,
+  (previous, next) => previous.chunk === next.chunk,
+);
+
+type StableCommittedChunksProps = {
+  chunks: readonly IncrementalMarkdownChunk[];
+  shellProps: BlockProps;
+};
+
+function StableCommittedChunksContent({
+  chunks,
+  shellProps,
+}: StableCommittedChunksProps) {
+  return chunks.map((chunk) => (
+    <StableCommittedChunk
+      key={chunk.id}
+      chunk={chunk}
+      shellProps={shellProps}
+    />
+  ));
+}
+
+// Ordinary token updates leave the chunks array untouched, so React does not
+// even map the growing committed list. A promotion changes the array, while the
+// chunk memo above still keeps every closed chunk out of that render.
+const StableCommittedChunks = memo(
+  StableCommittedChunksContent,
+  (previous, next) => previous.chunks === next.chunks,
+);
+
+type StableTerminalPrefixProps = {
+  blocks: readonly IncrementalMarkdownBlock[];
+  index: number;
+  shellProps: BlockProps;
+};
+
+function StableTerminalPrefixContent({
+  blocks,
+  index,
+  shellProps,
+}: StableTerminalPrefixProps) {
+  return blocks.map((block, blockIndex) => (
+    <StreamdownBlock
+      {...shellProps}
+      codeFences={block.codeFences}
+      key={block.id}
+      content={block.content}
+      index={index + blockIndex}
+      isIncomplete={false}
+    />
+  ));
+}
+
+const StableTerminalPrefix = memo(
+  StableTerminalPrefixContent,
+  (previous, next) => previous.blocks === next.blocks,
+);
+
+type TerminalCodeTailProps = {
+  codeTail: IncrementalMarkdownTerminalCodeTail;
+  index: number;
+  shellProps: BlockProps;
+};
+
+function TerminalCodeTail({
+  codeTail,
+  index,
+  shellProps,
+}: TerminalCodeTailProps) {
+  const isFenceOpen = !codeTail.isClosed;
+  const isStreaming = shellProps.isIncomplete;
+  const actionsDisabled = isFenceOpen && isStreaming;
+  return (
+    <>
+      <StableTerminalPrefix
+        blocks={codeTail.prefixBlocks}
+        index={index}
+        shellProps={shellProps}
+      />
+      {/* Syntax keeps the fence plain after stop/cold load; transport state alone
+          controls whether exact-source actions are temporarily disabled. */}
+      <StreamdownBlock
+        {...shellProps}
+        key={codeTail.id}
+        canonicalCodeSource={codeTail.source}
+        content={codeTail.fenceMarkdown}
+        sourceContent={codeTail.fenceMarkdown}
+        index={index + codeTail.prefixBlocks.length}
+        actionsDisabled={actionsDisabled}
+        isFenceOpen={isFenceOpen}
+        isIncomplete={actionsDisabled}
+      />
+    </>
+  );
+}
+
+function PartitionedStreamdownBlock(shellProps: BlockProps) {
+  const plan = useContext(StreamingMarkdownPlanContext);
+  if (!plan) {
+    return null;
+  }
+
+  return (
+    <>
+      <StableCommittedChunks chunks={plan.chunks} shellProps={shellProps} />
+      {plan.tail.map((block, index) => {
+        const codeTail = plan.terminalCodeTail;
+        if (codeTail?.blockId === block.id) {
+          return (
+            <TerminalCodeTail
+              key={codeTail.id}
+              codeTail={codeTail}
+              index={plan.committedBlockCount + index}
+              shellProps={shellProps}
+            />
+          );
+        }
+        return (
+          <StreamdownBlock
+            {...shellProps}
+            codeFences={block.codeFences}
+            key={block.id}
+            content={block.content}
+            sourceContent={
+              index === plan.tail.length - 1
+                ? plan.sourceShellMarkdown
+                : undefined
+            }
+            index={plan.committedBlockCount + index}
+            isIncomplete={
+              index === plan.tail.length - 1 && shellProps.isIncomplete
+            }
+          />
+        );
+      })}
+    </>
+  );
+}
+
+const PartitionedStreamdownShell = memo(PartitionedStreamdownBlock);
 const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
 
-// Coalesce only token events that arrive before the browser's next paint, as
-// textgen does. There is no time or length throttle. Incremental block parsing
-// bounds the work performed per paint, and completion returns immediately.
+// Coalesce ordinary token events to paint. Once a cumulative reply reaches
+// 24 KiB, publish at 75 ms intervals so reconciliation/mutation work stays in
+// the smooth 12-15 Hz band measured by the real trace. Completion, message
+// switches, and replacements still return their exact source immediately.
 function useCoalescedStreamingText(
   text: string,
   isStreaming: boolean,
   messageId: string,
 ): string {
   const [displayed, setDisplayed] = useState({ messageId, text });
-  const pendingRef = useRef({ messageId, text });
-  const rafRef = useRef<number | null>(null);
   const activeMessageIdRef = useRef(messageId);
-
-  const cancelScheduledRender = useCallback(() => {
-    if (rafRef.current !== null) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
-  }, []);
+  const [scheduler] = useState(() =>
+    createStreamingTextPresentationScheduler({
+      publish: setDisplayed,
+      now: () => performance.now(),
+      requestFrame: (callback) => requestAnimationFrame(callback),
+      cancelFrame: (handle) => cancelAnimationFrame(handle),
+      setTimer: (callback, delay) => setTimeout(callback, delay),
+      clearTimer: (handle) => clearTimeout(handle),
+    }),
+  );
 
   useEffect(() => {
-    pendingRef.current = { messageId, text };
+    const pending = { messageId, text };
     if (activeMessageIdRef.current !== messageId) {
-      cancelScheduledRender();
+      scheduler.cancel();
       activeMessageIdRef.current = messageId;
     }
     if (!isStreaming) {
-      cancelScheduledRender();
+      scheduler.flush(pending);
       return;
     }
+    scheduler.schedule(text.length, pending);
+  }, [isStreaming, messageId, scheduler, text]);
 
-    if (rafRef.current !== null) {
-      return;
-    }
-
-    rafRef.current = requestAnimationFrame(() => {
-      rafRef.current = null;
-      setDisplayed(pendingRef.current);
-    });
-  }, [cancelScheduledRender, messageId, text, isStreaming]);
-
-  useEffect(() => {
-    return cancelScheduledRender;
-  }, [cancelScheduledRender]);
+  useEffect(() => () => scheduler.cancel(), [scheduler]);
 
   // Holding the last painted text is only correct while the reply is being
   // appended to. A running message can also be replaced, as the audio path does
@@ -475,14 +914,176 @@ function useCoalescedStreamingText(
   return text;
 }
 
-const MarkdownTextImpl = () => {
+type PartitionedMarkdownTextProps = {
+  codeHighlighting: MarkdownCodeHighlighting;
+  isStreaming: boolean;
+  markdown: string;
+  messageId: string;
+  paginateReasoning: boolean;
+  persistedTrailingLfOrdinals: readonly number[];
+  statusType: string;
+};
+
+const EMPTY_FENCE_PROVENANCE: readonly number[] = [];
+
+function PartitionedMarkdownText({
+  isStreaming,
+  markdown,
+  messageId,
+  statusType,
+  persistedTrailingLfOrdinals,
+  codeHighlighting,
+  paginateReasoning,
+}: PartitionedMarkdownTextProps) {
+  const [incrementalCache] = useState(
+    () => new IncrementalMarkdownCache(persistedTrailingLfOrdinals),
+  );
+  const t = useT();
+  const [reasoningPageBoundaries, setReasoningPageBoundaries] = useState<
+    readonly ReasoningPageBoundary[]
+  >([]);
+  const pageHistoryInvalid = reasoningPageBoundaries.some(
+    (boundary) => !isReasoningPageBoundaryValid(markdown, boundary),
+  );
+  if (pageHistoryInvalid) setReasoningPageBoundaries([]);
+  const reasoningPageEnd = pageHistoryInvalid
+    ? null
+    : (reasoningPageBoundaries.at(-1)?.end ?? null);
+  const reasoningPage = useMemo(
+    () =>
+      selectReasoningMarkdownPage(markdown, {
+        enabled: paginateReasoning,
+        end: reasoningPageEnd,
+
+        streaming: isStreaming && reasoningPageEnd === null,
+      }),
+    [isStreaming, markdown, paginateReasoning, reasoningPageEnd],
+  );
+  const showEarlierReasoning = useCallback(() => {
+    if (!reasoningPage.hasEarlier) return;
+    setReasoningPageBoundaries((current) => [
+      ...current,
+      createReasoningPageBoundary(markdown, reasoningPage.start),
+    ]);
+  }, [markdown, reasoningPage.hasEarlier, reasoningPage.start]);
+  const showNewerReasoning = useCallback(() => {
+    setReasoningPageBoundaries((current) => current.slice(0, -1));
+  }, []);
+
+  // An older page is immutable even if the live tail keeps growing. Only the
+  // latest page participates in streaming repair and presentation cadence.
+  const pageIsStreaming = isStreaming && !reasoningPage.hasNewer;
+  const pageUsesSourceSlice =
+    reasoningPage.start > 0 || reasoningPage.end < markdown.length;
+  const incrementalRender = incrementalCache.update(
+    reasoningPage.markdown,
+    pageIsStreaming,
+    pageUsesSourceSlice ? EMPTY_FENCE_PROVENANCE : persistedTrailingLfOrdinals,
+  );
+  const canonicalCodeSources = useMemo(() => {
+    if (!reasoningPage.canonicalCodeSources.some(Boolean)) {
+      return EMPTY_CANONICAL_CODE_SOURCES;
+    }
+    const fences = [
+      ...incrementalRender.chunks.flatMap((chunk) =>
+        chunk.blocks.flatMap((block) => block.codeFences),
+      ),
+      ...incrementalRender.tail.flatMap((block) => block.codeFences),
+    ];
+    const sources = new Map<string, string>();
+    reasoningPage.canonicalCodeSources.forEach((source, index) => {
+      const fence = fences[index];
+      if (source && fence) sources.set(fence.id, source);
+    });
+    return sources;
+  }, [incrementalRender, reasoningPage.canonicalCodeSources]);
+
+  return (
+    <div data-status={statusType} className="min-w-0 max-w-full">
+      {reasoningPage.hasEarlier && (
+        <button
+          type="button"
+          data-slot="reasoning-show-earlier"
+          className="mb-4 w-full cursor-pointer rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
+          onClick={showEarlierReasoning}
+        >
+          {t("shell.navigation.showMore")}
+        </button>
+      )}
+      <CanonicalCodeSourcesContext.Provider value={canonicalCodeSources}>
+        <MarkdownCodeHighlightingContext.Provider value={codeHighlighting}>
+          <StreamingMarkdownPlanContext.Provider value={incrementalRender}>
+            <Streamdown
+              key={messageId}
+              mode="streaming"
+              parseIncompleteMarkdown={false}
+              parseMarkdownIntoBlocksFn={parseProviderShellBlock}
+              isAnimating={pageIsStreaming}
+              animated={STREAMDOWN_IMMEDIATE_UPDATES}
+              plugins={
+                codeHighlighting === "syntax"
+                  ? STREAMDOWN_SYNTAX_PLUGINS
+                  : STREAMDOWN_PLAIN_CODE_PLUGINS
+              }
+              components={STREAMDOWN_COMPONENTS}
+              urlTransform={safeMarkdownUrl}
+              controls={STREAMDOWN_CONTROLS}
+              shikiTheme={STREAMDOWN_SHIKI_THEME}
+              BlockComponent={PartitionedStreamdownShell}
+            >
+              {incrementalRender.shellMarkdown}
+            </Streamdown>
+          </StreamingMarkdownPlanContext.Provider>
+        </MarkdownCodeHighlightingContext.Provider>
+      </CanonicalCodeSourcesContext.Provider>
+      {reasoningPage.hasNewer && (
+        <button
+          type="button"
+          data-slot="reasoning-show-newer"
+          className="mt-4 w-full cursor-pointer rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
+          onClick={showNewerReasoning}
+        >
+          {t("shell.navigation.showLess")}
+        </button>
+      )}
+    </div>
+  );
+}
+
+type MarkdownTextProps = {
+  // Keep this renderer assignable to assistant-ui's text/reasoning component
+  // contracts while exposing stable presentation policies to direct callers.
+  status?: unknown;
+  text?: string;
+  codeHighlighting?: MarkdownCodeHighlighting;
+  paginateReasoning?: boolean;
+};
+
+const MarkdownTextImpl = ({
+  codeHighlighting = "syntax",
+  paginateReasoning = false,
+}: MarkdownTextProps) => {
   const { text, status } = useMessagePartText();
   // Parts are keyed by index, so switching conversations hands this instance a
-  // different message, and Streamdown only extends its parsed blocks: key it per
-  // message. The cache generation joins the key for the case the Markdown string
-  // cannot express, an edit that drops retained blocks without changing the tail.
+  // different message. Key the renderer so that message gets its own cache and
+  // provider shell, while completion of one message keeps both intact.
   const messageId = useAuiState(({ message }) => message.id);
   // Read once here for every block below: see RenderHtmlToolPresenceContext.
+  const persistedFenceProvenance = useAuiState(({ part }) =>
+    part.type === "text"
+      ? (part as { __unslothFenceProvenance?: unknown })
+          .__unslothFenceProvenance
+      : undefined,
+  );
+  const persistedTrailingLfOrdinals = useMemo(
+    () =>
+      persistedFenceProvenance === undefined
+        ? EMPTY_FENCE_PROVENANCE
+        : readFencedCodeProvenance({
+            __unslothFenceProvenance: persistedFenceProvenance,
+          }),
+    [persistedFenceProvenance],
+  );
   const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
     message.parts.some(isRenderableRenderHtmlToolPart),
   );
@@ -492,20 +1093,6 @@ const MarkdownTextImpl = () => {
     () => stabilizeStreamingMarkdown(preprocessLaTeX(displayText), isStreaming),
     [displayText, isStreaming],
   );
-  const incrementalCacheRef = useRef({
-    messageId,
-    cache: new IncrementalMarkdownCache(),
-  });
-  if (incrementalCacheRef.current.messageId !== messageId) {
-    incrementalCacheRef.current = {
-      messageId,
-      cache: new IncrementalMarkdownCache(),
-    };
-  }
-  const incrementalCache = incrementalCacheRef.current.cache;
-  const incrementalRender = isStreaming
-    ? incrementalCache.update(processedText)
-    : null;
 
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
   if (audioMatch) {
@@ -516,24 +1103,16 @@ const MarkdownTextImpl = () => {
     <RenderHtmlToolPresenceContext.Provider
       value={messageHasRenderableRenderHtmlTool}
     >
-      <div data-status={status.type} className="min-w-0 max-w-full">
-        <Streamdown
-          key={`${messageId}:${incrementalCache.renderGeneration}`}
-          mode="streaming"
-          parseIncompleteMarkdown={!incrementalRender}
-          parseMarkdownIntoBlocksFn={incrementalRender?.parseMarkdownIntoBlocks}
-          isAnimating={isStreaming}
-          animated={STREAMDOWN_IMMEDIATE_UPDATES}
-          plugins={STREAMDOWN_PLUGINS}
-          components={STREAMDOWN_COMPONENTS}
-          urlTransform={safeMarkdownUrl}
-          controls={STREAMDOWN_CONTROLS}
-          shikiTheme={STREAMDOWN_SHIKI_THEME}
-          BlockComponent={StreamdownBlock}
-        >
-          {incrementalRender?.markdown ?? processedText}
-        </Streamdown>
-      </div>
+      <PartitionedMarkdownText
+        key={messageId}
+        codeHighlighting={codeHighlighting}
+        isStreaming={isStreaming}
+        markdown={processedText}
+        messageId={messageId}
+        statusType={status.type}
+        persistedTrailingLfOrdinals={persistedTrailingLfOrdinals}
+        paginateReasoning={paginateReasoning}
+      />
     </RenderHtmlToolPresenceContext.Provider>
   );
 };
