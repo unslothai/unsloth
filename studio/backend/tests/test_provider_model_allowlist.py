@@ -29,6 +29,7 @@ def test_current_generation_model_ids_reach_the_picker():
             "gemini-3-pro-image",
             "gemini-2.5-flash",
         ],
+        "kimi": ["kimi-k3", "kimi-k2.6", "kimi-k2.5"],
     }
     for provider, model_ids in live.items():
         registry = PROVIDER_REGISTRY[provider]
@@ -47,3 +48,8 @@ def test_dated_snapshots_and_retired_ids_stay_out_of_the_picker():
         assert openai["model_id_denylist"].search(model_id), model_id
     gemini = PROVIDER_REGISTRY["gemini"]
     assert "gemini-3-pro-preview" in gemini["model_id_deny_exact"]
+
+
+def test_kimi_k3_seeds_direct_and_openrouter_connections():
+    assert PROVIDER_REGISTRY["kimi"]["default_models"][0] == "kimi-k3"
+    assert "moonshotai/kimi-k3" in PROVIDER_REGISTRY["openrouter"]["default_models"]

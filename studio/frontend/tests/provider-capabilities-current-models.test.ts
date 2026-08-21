@@ -11,6 +11,9 @@ registerBundlerResolver();
 const {
   getExternalMaxOutputTokens,
   getExternalReasoningCapabilities,
+  getProviderCapabilities,
+  isKimiK3Selection,
+  kimiSearchRequiresThinkingOff,
   providerSupportsBuiltinCodeExecution,
 
   providerSupportsBuiltinWebSearch,
@@ -121,6 +124,39 @@ test("Gemini 3.x minors keep the thinkingLevel ladder", () => {
   }
   const pro = getExternalReasoningCapabilities("gemini", "gemini-3.1-pro-preview");
   assert.deepEqual([...pro.reasoningEffortLevels], ["low", "medium", "high"]);
+});
+
+test("Kimi K3 exposes its fixed reasoning, vision, tools, and output limits", () => {
+  const caps = getExternalReasoningCapabilities("kimi", "kimi-k3");
+  assert.equal(caps.supportsReasoning, true);
+  assert.equal(caps.reasoningStyle, "reasoning_effort");
+  assert.equal(caps.reasoningAlwaysOn, true);
+  assert.equal(caps.supportsReasoningOff, false);
+  assert.deepEqual([...caps.reasoningEffortLevels], ["low", "high", "max"]);
+  assert.equal(getExternalMaxOutputTokens("kimi", "kimi-k3"), 1048576);
+  assert.equal(providerSupportsBuiltinWebSearch("kimi", "kimi-k3"), true);
+  assert.equal(providerModelSupportsVision("kimi", "kimi-k3"), true);
+  assert.equal(getProviderCapabilities("kimi")?.presencePenalty, false);
+});
+
+test("Kimi K3 keeps search enabled and uses route-specific reasoning controls", () => {
+  assert.equal(isKimiK3Selection("kimi", "kimi-k3"), true);
+  assert.equal(kimiSearchRequiresThinkingOff("kimi", "kimi-k3"), false);
+  assert.equal(kimiSearchRequiresThinkingOff("kimi", "kimi-k2.6"), true);
+
+  const openRouterCaps = getExternalReasoningCapabilities(
+    "openrouter",
+    "moonshotai/kimi-k3",
+  );
+  assert.equal(isKimiK3Selection("openrouter", "moonshotai/kimi-k3"), true);
+  assert.equal(openRouterCaps.supportsReasoning, true);
+  assert.equal(openRouterCaps.reasoningStyle, "reasoning_effort");
+  assert.equal(openRouterCaps.reasoningAlwaysOn, false);
+  assert.equal(openRouterCaps.supportsReasoningOff, true);
+  assert.deepEqual(
+    [...openRouterCaps.reasoningEffortLevels],
+    ["low", "high", "max"],
+  );
 });
 
 test("new Anthropic and OpenAI ids keep their max-output cap and code pill", () => {

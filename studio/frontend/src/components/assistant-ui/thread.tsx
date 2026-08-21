@@ -4856,7 +4856,6 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     externalSelection != null
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
       : undefined;
-  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const supportsPreserveThinking = useChatRuntimeStore(
@@ -4870,6 +4869,9 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     lastOpenRouterChosenModel
       ? lastOpenRouterChosenModel
       : externalSelection?.modelId;
+  const isKimiExternal =
+    selectedExternalProvider?.providerType === "kimi" &&
+    externalSelection?.modelId.trim().toLowerCase() !== "kimi-k3";
   const externalReasoningCaps =
     externalSelection != null
       ? getExternalReasoningCapabilities(
@@ -4998,8 +5000,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                       setReasoningEffort(level);
                       setReasoningEnabled(true);
                       applyQwenThinkingParams(true);
-                      // Kimi's $web_search builtin forbids thinking, so
-                      // enabling thinking flips the Search pill off.
+                      // older kimi models require search and thinking to stay exclusive.
                       if (isKimiExternal && toolsEnabled) {
                         setToolsEnabled(false, { persist: false });
                       }
@@ -5092,7 +5093,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
         const next = !reasoningEnabled;
         setReasoningEnabled(next);
         applyQwenThinkingParams(next);
-        // Mutually exclusive with Search on Kimi (see dropdown branch).
+        // older kimi models require search and thinking to stay exclusive.
         if (isKimiExternal && next && toolsEnabled) {
           setToolsEnabled(false, { persist: false });
         }
@@ -5150,7 +5151,9 @@ const WebSearchToggle: FC = () => {
     externalSelection != null
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
       : undefined;
-  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const isKimiExternal =
+    selectedExternalProvider?.providerType === "kimi" &&
+    externalSelection?.modelId.trim().toLowerCase() !== "kimi-k3";
   // Disable only when a loaded model lacks the capability; with no model the
   // tool can still be pre-selected, matching the + menu.
   const disabled = modelLoaded && !(supportsTools || supportsBuiltinWebSearch);
@@ -5162,9 +5165,7 @@ const WebSearchToggle: FC = () => {
       onClick={() => {
         const next = !toolsEnabled;
         setToolsEnabled(next);
-        // Kimi's $web_search builtin requires thinking=disabled (see
-        // https://platform.kimi.ai/docs/guide/use-web-search). Keep the two
-        // pills mutually exclusive so visible state matches what's sent.
+        // older kimi models require search and thinking to stay exclusive.
         if (isKimiExternal) {
           setReasoningEnabled(!next, { persist: false });
           applyQwenThinkingParams(!next);
@@ -5461,7 +5462,9 @@ const ComposerToolsMenu: FC<{
     externalSelection != null
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
       : undefined;
-  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const isKimiExternal =
+    selectedExternalProvider?.providerType === "kimi" &&
+    externalSelection?.modelId.trim().toLowerCase() !== "kimi-k3";
   // Disable only when a loaded model lacks the capability; with no model the
   // tool can still be pre-selected, matching the pill logic above.
   const searchDisabled =
@@ -5791,7 +5794,7 @@ const ComposerToolsMenu: FC<{
           onSelect={() => {
             const next = !toolsEnabled;
             setToolsEnabled(next);
-            // Mirror the Search pill: Kimi forbids search + thinking together.
+            // older kimi models require search and thinking to stay exclusive.
             if (isKimiExternal) {
               setReasoningEnabled(!next, { persist: false });
               applyQwenThinkingParams(!next);

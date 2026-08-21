@@ -82,6 +82,7 @@ export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
  *   OpenAI:    developers.openai.com/api/docs/models/gpt-5.5
  *   Anthropic: platform.claude.com/docs/en/about-claude/models
  *   Gemini:    ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview
+ *   kimi:      platform.kimi.ai/docs/models
  *   DeepSeek:  api-docs.deepseek.com/quick_start/pricing (V4 family)
  * Local-model path is unaffected.
  */
@@ -128,6 +129,7 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
     prefixes: ["gemini-3", "gemini-pro", "gemini-flash"],
     cap: 65536,
   },
+  { providerType: "kimi", prefixes: ["kimi-k3"], cap: 1048576 },
   // DeepSeek (V4: deepseek-chat / deepseek-reasoner alias V4-flash).
   { providerType: "deepseek", prefixes: ["deepseek"], cap: 384000 },
 ];
@@ -234,8 +236,8 @@ function _inferProviderFromOpenrouterId(
  *                 router's universal web-search shape; works for every
  *                 underlying model including the `openrouter/free` router).
  *   - Kimi:       `tools: [{type: "builtin_function", function: {name:
- *                          "$web_search"}}]` with `thinking: {type:
- *                          "disabled"}`. Requires a client round-trip:
+ *                          "$web_search"}}]` with model-specific reasoning
+ *                 controls. Requires a client round-trip:
  *                 the first call returns the search args; the backend
  *                 echoes them back as a role=tool message; the second
  *                 call streams the answer. Handled in
@@ -629,17 +631,14 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     repetitionPenalty: false,
     presencePenalty: true,
   },
-  // Kimi k2.5/k2.6 are reasoning-class — the API locks temperature and top_p to
-  // fixed defaults and 400s on any other value ("invalid temperature: only 1 is
-  // allowed for this model"). Hide both sliders. Backend also strips these via
-  // PROVIDER_REGISTRY['kimi']['body_omit'].
+  // kimi k2.5/k2.6/k3 lock temperature and top_p to fixed defaults.
   kimi: {
     temperature: false,
     topP: false,
     topK: false,
     minP: false,
     repetitionPenalty: false,
-    presencePenalty: true,
+    presencePenalty: false,
   },
   // DeepSeek deprecated presence/frequency penalty in their current docs.
   deepseek: {
@@ -690,6 +689,28 @@ function isOpenRouterMandatoryReasoningModel(modelId: string): boolean {
   const normalized = modelId.trim().toLowerCase();
   const canonical = normalized.startsWith("~") ? normalized.slice(1) : normalized;
   return OPENROUTER_MANDATORY_REASONING_MODELS.has(canonical);
+}
+
+export function isKimiK3Selection(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  const provider = providerType?.trim().toLowerCase();
+  const model = modelId?.trim().toLowerCase();
+  return (
+    (provider === "kimi" && model === "kimi-k3") ||
+    (provider === "openrouter" && model === "moonshotai/kimi-k3")
+  );
+}
+
+export function kimiSearchRequiresThinkingOff(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  return (
+    providerType?.trim().toLowerCase() === "kimi" &&
+    modelId?.trim().toLowerCase() !== "kimi-k3"
+  );
 }
 type ReasoningCaps = {
   supportsReasoning: boolean;
@@ -835,7 +856,17 @@ function withReasoningEffortStyle(caps: ReasoningCaps): ExternalReasoningCapabil
 }
 
 function resolveKimiReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
-  // Kimi exposes a boolean thinking toggle, not an effort scale.
+  if (modelId === "kimi-k3") {
+    return {
+      ...DEFAULT_EXTERNAL_REASONING_CAPABILITIES,
+      supportsReasoning: true,
+      reasoningStyle: "reasoning_effort",
+      reasoningAlwaysOn: true,
+      supportsReasoningOff: false,
+      reasoningEffortLevels: ["low", "high", "max"],
+    };
+  }
+  // kimi k2 exposes a boolean thinking toggle, not an effort scale.
   //   - kimi-k2.6:        on by default, toggleable via
   //                       extra_body: {thinking: {type: enabled|disabled}}
   //   - kimi-k2-thinking: always on, no off switch
@@ -1047,6 +1078,15 @@ export function getExternalReasoningCapabilities(
   const isMistralProvider = normalizedProvider === "mistral";
   const isOpenRouterProvider = normalizedProvider === "openrouter";
   if (isOpenRouterProvider) {
+    if (isKimiK3Selection(normalizedProvider, normalizedModel)) {
+      return {
+        supportsReasoning: true,
+        reasoningStyle: "reasoning_effort",
+        reasoningAlwaysOn: false,
+        supportsReasoningOff: true,
+        reasoningEffortLevels: ["low", "high", "max"],
+      };
+    }
     // OpenRouter's unified `reasoning` param is accepted on every request; the
     // gateway no-ops for non-reasoning models. Mandatory-reasoning ids are
     // handled by the early guard; everything else gets a toggleable control.
