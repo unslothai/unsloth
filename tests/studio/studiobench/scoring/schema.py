@@ -49,6 +49,21 @@ ZERO_OK_KEYS = frozenset(
         # an ordinal like every other name on this list, and rejecting it made `--report` fail
         # on any payload that carried parity rows at all.
         "i",
+        # ── the visible-region capture, whose zeros are all true statements ──
+        #
+        # NOT the whole `visible` subtree, deliberately. Exempting a subtree here once already
+        # defeated a test that required a zero-length `chars` inside `parity` to stay a loud
+        # failure, and the same argument applies with more force to this one: a visible message
+        # whose signature is zero characters long is a broken capture and must stay loud. Only the
+        # counters are named, and each is a fact rather than a measurement:
+        #   unmounted_at_capture: 0  every message the viewport showed was still mounted
+        #   mounted_ever_visible: 0  a windowed arm had unmounted them all again, which the
+        #                            analysis reports as NOT COMPARABLE rather than as agreement
+        #   ever_visible_count: 0    the scan observed nothing, which the positive control in
+        #                            compare_visible refuses; it is not scored anywhere
+        "ever_visible_count",
+        "mounted_ever_visible",
+        "unmounted_at_capture",
         "rung_index",
         "arm_index",
         "window_index",

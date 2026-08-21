@@ -271,6 +271,29 @@ class SceneRunner:
         except Exception as exc:  # noqa: BLE001
             return {"census_attempted": False, "reason": f"{type(exc).__name__}: {exc}"}
 
+    def _watch_visible(self) -> None:
+        """Install the visible-region observer BEFORE the window opens.
+
+        Before, not after, because the compared set is the union of everything the viewport showed
+        during the action. An action that scrolls reveals messages and hides them again, and an
+        observer installed at the close would compare only wherever the scroll happened to stop.
+        """
+        try:
+            self.page.evaluate("() => window.__sb.parityVisible.watch()")
+        except Exception:  # noqa: BLE001
+            # A page that cannot install it still gets a structural digest; the visible-region
+            # capture reports itself absent rather than empty, which the analysis refuses.
+            pass
+
+    def _visible(self) -> dict:
+        """The visible-region capture, taken at the close alongside the census and the digest."""
+        try:
+            got = self.page.evaluate("async () => await window.__sb.parityVisible.capture()")
+            self.page.evaluate("() => window.__sb.parityVisible.stop()")
+            return got
+        except Exception as exc:  # noqa: BLE001
+            return {"visible_attempted": False, "reason": f"{type(exc).__name__}: {exc}"}
+
     def _parity(self) -> dict:
         """A structural digest of what is on screen, for the UI-parity check across arms.
 
@@ -353,6 +376,7 @@ class SceneRunner:
                 expect = {"t_start_ms": slot.t_start_ms, "reached_at_ms": round(now_ms, 1)},
             ).row(slot.action, window_name, self.cell.cell_id)
 
+        self._watch_visible()
         with self.open_window(window_name, "action") as window:
             ctx = ActionContext(
                 page = self.page,
@@ -407,6 +431,7 @@ class SceneRunner:
 
         census = self._census()
         parity = self._parity()
+        visible = self._visible()
         # The observations DO consume wall clock before the next slot, so their cost is recorded
         # rather than dropped -- it is simply recorded as theirs.
         observation_ms = (time.monotonic() - window_closed_at) * 1000
@@ -414,6 +439,7 @@ class SceneRunner:
         row["window_ms"] = window.duration_ms
         row["census"] = census
         row["parity"] = parity
+        row["visible"] = visible
         # The observation cost itself, so it is never invisible again. `census_cost_ms` is the
         # page's own timing of the walk; if this pair ever comes to dominate the film's wall clock
         # the number is in the payload rather than in someone's hypothesis.

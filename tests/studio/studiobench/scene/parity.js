@@ -250,6 +250,186 @@
 
   const D = () => (window.__sb.dom || {});
 
+  // ── VISIBLE-REGION PARITY ────────────────────────────────────────────────────────────────────
+  //
+  // THE POLICY THIS SERVES. All changes must preserve UI and UX idempotency, with two exemptions:
+  // a difference may be accepted deliberately when performance improves dramatically, and a
+  // difference that exists only OFF SCREEN is fine by definition, because rendering only what is
+  // visible is an accepted technique rather than a parity violation.
+  //
+  // The whole-document digest above cannot express the second exemption. It compares everything
+  // that is in the DOM, so ANY deferred off-screen work fails it by construction -- virtualization,
+  // deferred syntax highlighting, content-visibility, lazy images. Refusing such a pair as
+  // NOT_APPLICABLE was the right instinct and it withholds a verdict. This supplies the verdict.
+  //
+  // THE CLAIM IT SUPPORTS, exactly: every message that was visible in the viewport at any point
+  // during the action is present on both arms and identical between them, and every difference
+  // lies outside the viewport.
+  //
+  // ── TWO BOUNDARY DECISIONS, MADE EXPLICITLY ──────────────────────────────────────────────────
+  //
+  // These are where a visible-region check goes wrong quietly, so they are decided here in the
+  // open rather than left implicit in whatever the code happens to do.
+  //
+  // 1. PARTIAL INTERSECTION COUNTS AS VISIBLE, AND THE ELEMENT IS DIGESTED IN FULL.
+  //    A message one pixel into the viewport is visible to the user. The alternative -- digesting
+  //    only the part inside the viewport -- is not definable on a DOM subtree without reading
+  //    geometry per node, and reading geometry is the one thing this must not do (see below). So
+  //    the whole element is compared. The error this admits is a FALSE ALARM: a difference in the
+  //    off-screen tail of a partly-visible message is reported as a visible difference. The error
+  //    it refuses to admit is a false pass. Given a parity gate, that is the right way round.
+  //
+  // 2. ANYTHING VISIBLE AT ANY POINT DURING THE ACTION IS COMPARED, not just at the end.
+  //    An action that scrolls makes messages visible and then hides them again; a single sample at
+  //    the close of the window would compare the DOM the scroll happened to land on and silently
+  //    ignore everything the user actually saw on the way. So the observer is installed BEFORE the
+  //    window opens and the compared set is the UNION of everything that ever intersected. The
+  //    per-message digest is still the one taken at the close, which is a real limitation and is
+  //    named as such in `now_visible` versus `ever_visible`: a message that was visible mid-action
+  //    and has since changed is compared in its final state.
+  //
+  // ── WHY INTERSECTIONOBSERVER AND NOT GEOMETRY ────────────────────────────────────────────────
+  //
+  // `getBoundingClientRect()` / `getClientRects()` on content inside a `content-visibility` locked
+  // subtree makes Chromium render that subtree in order to answer, so a geometry-based visibility
+  // probe unlocks exactly what it came to observe and then reports that nothing was skipped. That
+  // is measured, not theoretical: one session reported 0 off-screen unrendered roots while the
+  // event counter recorded 22 simultaneously in the skipped state. See the content-visibility trap
+  // section of CONTRIBUTING-perf.md.
+  //
+  // IntersectionObserver is the correct instrument and not merely a safe one: it is the same
+  // mechanism Blink's own relevance machinery uses to decide whether a `content-visibility: auto`
+  // subtree is skipped, so observing with it neither forces rendering nor perturbs the decision.
+  // NOTHING in this section may call a geometry method on a candidate element.
+  const VIS = { obs: null, mut: null, ever: new Set(), seen: new WeakSet(), watching: false };
+
+  const ordinalOf = (el, index) => {
+    // The message's position in the THREAD, not in the mounted list. This is what makes a windowed
+    // arm comparable with a fully mounted one at all: mounted index 0 is message 10 on one arm and
+    // message 1 on the other, so a per-index comparison compares different messages and reports
+    // every row as changed. `aria-posinset` is the windowed arm's own claim about position; a
+    // fully mounted thread does not publish it and does not need to, because there the DOM order
+    // IS the thread order.
+    const owner = el.closest ? el.closest("[aria-posinset]") : null;
+    if (owner) {
+      const n = Number(owner.getAttribute("aria-posinset"));
+      if (Number.isFinite(n)) return n;
+    }
+    return index + 1;
+  };
+
+  const observeMessages = () => {
+    if (!VIS.obs) return;
+    const nodes = (D().messages && D().messages()) || [];
+    for (let i = 0; i < nodes.length; i++) {
+      const el = nodes[i];
+      if (VIS.seen.has(el)) continue;
+      VIS.seen.add(el);
+      // The ordinal is stamped on the node, because by the time an entry is delivered the node may
+      // have been unmounted and `closest()` would return nothing.
+      el.__sbOrdinal = ordinalOf(el, i);
+      VIS.obs.observe(el);
+    }
+  };
+
+  window.__sb.parityVisible = {
+    watch() {
+      try {
+        const vp = D().viewport && D().viewport();
+        if (!vp) return { visible_attempted: false, reason: "no thread viewport" };
+        if (VIS.watching) return { visible_attempted: true, already: true };
+        VIS.ever = new Set();
+        VIS.seen = new WeakSet();
+        VIS.obs = new IntersectionObserver((entries) => {
+          for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            const ord = entry.target.__sbOrdinal;
+            if (typeof ord === "number") VIS.ever.add(ord);
+          }
+        }, { root: vp, threshold: 0 });
+        observeMessages();
+        // A windowed list mounts and unmounts rows as it scrolls, so the observed set has to be
+        // topped up. childList on the subtree is enough: a row entering the DOM is what needs
+        // observing, and a row leaving it has already contributed to `ever`.
+        VIS.mut = new MutationObserver(() => observeMessages());
+        VIS.mut.observe(vp, { childList: true, subtree: true });
+        VIS.watching = true;
+        return { visible_attempted: true, already: false };
+      } catch (e) {
+        return { visible_attempted: false, reason: String(e) };
+      }
+    },
+
+    async capture() {
+      try {
+        if (!VIS.watching) {
+          return { visible_attempted: false, reason: "the visibility observer was never installed" };
+        }
+        // WAIT FOR A FRAME FIRST, and this is not defensive padding.
+        //
+        // IntersectionObserver computes intersections as a step of the rendering lifecycle, so
+        // with no frame between `observe()` and the read there is nothing to deliver and
+        // `takeRecords()` returns an empty list. An action that scrolls produces frames and hides
+        // this completely; a QUIET action -- open a menu, change a setting, type a character --
+        // may not, and the capture then reports that the viewport showed nothing at all. The
+        // analysis would correctly refuse such a pair as NOT_COMPARABLE, so it is not a false
+        // pass, but it would silently strip visible-region coverage from exactly the actions that
+        // are cheapest to get right. Observed directly: at rest, with no scroll, the observer
+        // reported an empty set while message 1 filled the viewport.
+        await new Promise((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
+        });
+        // Then deliver anything still queued. Tearing down before this drops the last entries of
+        // the action -- the ones most likely to describe what it just put on screen.
+        const records = VIS.obs.takeRecords();
+        for (const entry of records) {
+          if (entry.isIntersecting && typeof entry.target.__sbOrdinal === "number") {
+            VIS.ever.add(entry.target.__sbOrdinal);
+          }
+        }
+        const nodes = (D().messages && D().messages()) || [];
+        const byOrdinal = {};
+        let mounted_ever_visible = 0;
+        for (let i = 0; i < nodes.length; i++) {
+          const el = nodes[i];
+          const ord = typeof el.__sbOrdinal === "number" ? el.__sbOrdinal : ordinalOf(el, i);
+          if (!VIS.ever.has(ord)) continue;
+          mounted_ever_visible += 1;
+          const sig = signature(el);
+          byOrdinal[String(ord)] = {
+            role: el.getAttribute("data-role") || "?",
+            digest: hash(sig),
+            chars: sig.length,
+          };
+        }
+        const ever = [...VIS.ever].sort((a, b) => a - b);
+        return {
+          visible_attempted: true,
+          // Every ordinal the viewport ever showed during the window, INCLUDING any that have
+          // since been unmounted. The gap between this and `messages` is the honest measure of
+          // what a windowed arm could not be asked about at capture time.
+          ever_visible: ever,
+          ever_visible_count: ever.length,
+          mounted_ever_visible,
+          unmounted_at_capture: ever.length - mounted_ever_visible,
+          messages: byOrdinal,
+        };
+      } catch (e) {
+        return { visible_attempted: false, reason: String(e) };
+      }
+    },
+
+    stop() {
+      try {
+        if (VIS.obs) VIS.obs.disconnect();
+        if (VIS.mut) VIS.mut.disconnect();
+      } catch (e) { /* nothing to do */ }
+      VIS.obs = null;
+      VIS.mut = null;
+      VIS.watching = false;
+    },
+  };
+
   window.__sb.parity = {
     // Exposed so the offline unit tests can drive the exact regexes that ship, rather than a
     // second copy of them that is free to drift.

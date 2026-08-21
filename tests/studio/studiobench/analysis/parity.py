@@ -488,3 +488,117 @@ def summarise(results: Iterable[dict[str, Any]]) -> dict[str, int]:
     for r in results:
         tally[r.get("verdict", NOT_COMPARABLE)] += 1
     return dict(tally)
+
+
+# ── visible-region parity ───────────────────────────────────────────
+#
+# THE POLICY. All changes must preserve UI and UX idempotency, with two exemptions: a difference
+# may be accepted deliberately when performance improves dramatically, and a difference that exists
+# only OFF SCREEN is fine by definition, because rendering only what is visible is an accepted
+# technique rather than a parity violation.
+#
+# `compare()` above cannot express the second exemption. It digests the whole document, so any
+# deferred off-screen work fails it by construction: virtualization, deferred fence highlighting,
+# content-visibility, lazy images. Returning NOT_APPLICABLE for those pairs withholds a verdict.
+# This supplies one.
+
+#: The claim each verdict makes, so a reader knows which of the three was actually checked. A bare
+#: "PARITY OK" has meant three very different things in this file's history and the difference
+#: between them is the difference between a strong result and a weak one.
+CLAIM_STRUCTURAL = (
+    "whole-document structural parity: every element in the DOM is identical on both arms"
+)
+CLAIM_VISIBLE = (
+    "visible-region parity: every message the viewport showed at any point during the action is "
+    "present on both arms and identical between them, and every difference lies off screen"
+)
+CLAIM_BEHAVIOURAL = (
+    "behavioural parity: the scroll extent matches and the invariants a windowed mount breaks "
+    "first still hold. Says NOTHING about how anything looks"
+)
+
+
+def compare_visible(base: Optional[dict], treat: Optional[dict]) -> dict:
+    """One base/treatment pair, scored on the VISIBLE REGION only.
+
+    Returns {verdict, reason, moved, claim}. `moved` names the ordinals that differ, in thread
+    position rather than mounted index, so the row is actionable on a windowed arm.
+    """
+    for label, side in (("base", base), ("treatment", treat)):
+        if not isinstance(side, dict) or not side.get("visible_attempted"):
+            why = (side or {}).get("reason") or "no visible-region capture"
+            return {
+                "verdict": NOT_COMPARABLE,
+                "reason": f"the {label} arm produced no visible-region capture: {why}",
+                "moved": [],
+                "claim": CLAIM_VISIBLE,
+            }
+    assert base is not None and treat is not None
+
+    # THE POSITIVE CONTROL. A visibility scan that matched nothing has equal (empty) ordinal sets
+    # and no differing digests, so without this it returns the strongest verdict available on the
+    # strength of never having seen a single message. Exactly the failure `compare_styles` had.
+    bn, tn = len(base.get("ever_visible") or []), len(treat.get("ever_visible") or [])
+    if bn == 0 or tn == 0:
+        return {
+            "verdict": NOT_COMPARABLE,
+            "reason": (
+                f"the visibility scan matched no messages (base={bn}, treatment={tn}). Nothing "
+                "was observed on at least one arm, so there is nothing to agree about: this is a "
+                "probe that needs fixing, not two arms that match"
+            ),
+            "moved": [],
+            "claim": CLAIM_VISIBLE,
+        }
+
+    bev, tev = set(base.get("ever_visible") or []), set(treat.get("ever_visible") or [])
+    if bev != tev:
+        only_b, only_t = sorted(bev - tev), sorted(tev - bev)
+        return {
+            "verdict": DIFFER,
+            "reason": (
+                "the two arms put DIFFERENT MESSAGES on screen during this action, which is a "
+                "visible difference and not an off-screen one "
+                f"(only base: {only_b[:8]}, only treatment: {only_t[:8]})"
+            ),
+            "moved": [f"ordinal {o}" for o in (only_b + only_t)[:8]],
+            "claim": CLAIM_VISIBLE,
+        }
+
+    bmsg, tmsg = base.get("messages") or {}, treat.get("messages") or {}
+    # Ordinals seen during the window but unmounted by capture time cannot be digested. Reported,
+    # never counted as agreement: this is the residue of comparing a windowed arm at one instant.
+    uncomparable = sorted(int(o) for o in map(str, sorted(bev)) if o not in bmsg or o not in tmsg)
+    moved = []
+    for ordinal in sorted(bev):
+        key = str(ordinal)
+        b, t = bmsg.get(key), tmsg.get(key)
+        if b is None or t is None:
+            continue
+        if b.get("digest") != t.get("digest"):
+            moved.append(f"ordinal {ordinal}({b.get('role')}):{b.get('chars')}->{t.get('chars')}c")
+    if moved:
+        return {
+            "verdict": DIFFER,
+            "reason": f"{len(moved)} visible message(s) rendered differently",
+            "moved": moved,
+            "claim": CLAIM_VISIBLE,
+            "not_digested": uncomparable,
+        }
+    if uncomparable and len(uncomparable) == len(bev):
+        return {
+            "verdict": NOT_COMPARABLE,
+            "reason": (
+                f"all {len(uncomparable)} message(s) that were visible during this action had been "
+                "unmounted again by the time the capture ran, so none of them could be digested"
+            ),
+            "moved": [],
+            "claim": CLAIM_VISIBLE,
+        }
+    return {
+        "verdict": MATCH,
+        "reason": "",
+        "moved": [],
+        "claim": CLAIM_VISIBLE,
+        "not_digested": uncomparable,
+    }

@@ -156,6 +156,7 @@ def behaviour_report(
         results.append((action, shard, rep, B.compare_behaviour(sides["base"], sides["treatment"])))
 
     print(f"\n{label}  (BEHAVIOURAL MODE)")
+    print(f"  CLAIM: {P.CLAIM_BEHAVIOURAL}.")
     # WHICH REASON, and only if it is true. Forced behavioural mode on a payload that mounts its
     # whole thread -- which is exactly how a NULL CONTROL is scored on the same scale as the
     # windowed arm it is the control for -- used to print "one arm of this payload mounts a window
@@ -246,6 +247,108 @@ def behaviour_report(
     return 0
 
 
+def visible_report(paths: list[Path], label: str) -> int:
+    """VISIBLE-REGION PARITY. The verdict the off-screen exemption asks for.
+
+    Policy: all changes preserve UI and UX idempotency, except that a difference may be accepted
+    deliberately when performance improves dramatically, and a difference that exists only OFF
+    SCREEN is fine by definition. The whole-document digest cannot express the second exemption --
+    it fails every deferred-off-screen technique by construction -- so this scores the claim the
+    policy actually cares about.
+    """
+    results, _got = compare_all_with(paths, P.compare_visible, "visible")
+
+    print(f"\n{label}  (VISIBLE-REGION MODE)")
+    print(f"  CLAIM: {P.CLAIM_VISIBLE}.")
+    print(
+        "  Off-screen differences are EXEMPT by policy and are not reported below. A message that\n"
+        "  was visible for any part of the action is compared, in full, even if only partly on\n"
+        "  screen. Messages are keyed by THREAD POSITION, so a windowed arm and a fully mounted\n"
+        "  one are comparable."
+    )
+    if not results:
+        print("  NO ACTION DATA in this payload.")
+        return 2
+
+    differing, blind, idle, matched = [], [], [], 0
+    for action, shard, rep, r in results:
+        if not r.get("_ran"):
+            idle.append((action, shard, rep, r))
+        elif r["verdict"] == P.NOT_COMPARABLE:
+            blind.append((action, shard, rep, r))
+        elif r["verdict"] == P.DIFFER:
+            differing.append((action, shard, rep, r))
+        else:
+            matched += 1
+
+    print(f"\n  {len(results)} action pairs across {len(paths)} shard(s)")
+    print(f"  visible region matched:     {matched}")
+    print(f"  VISIBLE DIFFERENCES:        {len(differing)}")
+    print(f"  NOT COMPARABLE:             {len(blind)}  (never observed; not a pass)")
+    print(f"  NOT EXERCISED:              {len(idle)}  (the action did not run; not coverage)")
+
+    if differing:
+        print(
+            "\n  DIFFERENCES INSIDE THE VIEWPORT -- the off-screen exemption does not cover these:"
+        )
+        for action, shard, rep, r in differing:
+            print(f"    {action:<26} {shard} {rep}: {r['reason']}")
+            for m in r.get("moved", [])[:4]:
+                print(f"        {m}")
+    elif matched:
+        print(
+            "\n  Every message that reached the viewport was identical on both arms.\n"
+            "  Differences outside the viewport are not reported here and are exempt by policy;\n"
+            "  run --mode digest if you want the whole-document comparison instead."
+        )
+    if blind:
+        print("\n  NOT COMPARABLE -- these carry no verdict in either direction:")
+        for action, shard, rep, r in blind[:8]:
+            print(f"    {action:<26} {shard} {rep}: {r['reason']}")
+    if idle:
+        names = sorted({a for a, _s, _r, _v in idle})
+        print(f"\n  NOT EXERCISED: {', '.join(names)}")
+
+    if differing:
+        return 1
+    if matched == 0:
+        # The same false green every other mode here has already been fixed for: nothing compared
+        # is not the same as nothing wrong, and it must not exit 0.
+        print(
+            "\n  NOTHING WAS COMPARED. Not one action pair yielded a visible-region verdict, so\n"
+            "  this run carries no UI verdict at all -- neither a pass nor a failure."
+        )
+        return 2
+    return 0
+
+
+def compare_all_with(paths: list[Path], compare, key: str) -> tuple[list[tuple], dict]:
+    """[(action, shard, rep, result)] using `compare` over payload sub-object `key`."""
+    got = collect(paths)
+    results = []
+    for (shard, rep, action), sides in sorted(got["pairs"].items()):
+        if "base" not in sides or "treatment" not in sides:
+            results.append(
+                (
+                    action,
+                    shard,
+                    rep,
+                    {
+                        "verdict": P.NOT_COMPARABLE,
+                        "moved": [],
+                        "_ran": True,
+                        "reason": f"only the {next(iter(sides))} arm recorded this action",
+                    },
+                )
+            )
+            continue
+        ran = bool(sides["base"].get("ran")) and bool(sides["treatment"].get("ran"))
+        out = compare(sides["base"].get(key), sides["treatment"].get(key))
+        out["_ran"] = ran
+        results.append((action, shard, rep, out))
+    return results, got
+
+
 def compare_all(paths: list[Path]) -> tuple[list[tuple], dict]:
     """[(action, shard, rep, compare-result)] over every base/treatment pair found."""
     got = collect(paths)
@@ -328,7 +431,13 @@ def report(paths: list[Path], label: str, unstable: frozenset[str]) -> int:
         entry = (action, shard, rep, r["moved"])
         (unstable_bad if action in unstable else stable_bad).append(entry)
 
-    print(f"\n{label}")
+    print(f"\n{label}  (STRUCTURAL MODE)")
+    print(f"  CLAIM: {P.CLAIM_STRUCTURAL}.")
+    print(
+        "  Under the current policy an OFF-SCREEN-ONLY difference is exempt, and this mode cannot\n"
+        "  tell an off-screen difference from an on-screen one. Use --mode visible for a payload\n"
+        "  that defers off-screen work deliberately."
+    )
     print(f"  {len(results)} action pairs across {len(paths)} shard(s)")
     print(f"  matched:                    {matched}")
     print(f"  stable actions differing:   {len(stable_bad)}")
@@ -443,12 +552,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument(
         "--mode",
-        choices = ("auto", "digest", "behaviour"),
+        choices = ("auto", "digest", "visible", "behaviour"),
         default = "auto",
         help = (
-            "auto (default) reads the payload and switches to behavioural scoring when an arm "
-            "mounted a window of the thread; digest forces the structural comparison; behaviour "
-            "forces the behavioural one"
+            "auto (default) reads the payload: a fully mounted pair is scored structurally, a "
+            "windowed pair is scored on the VISIBLE REGION and then on behavioural invariants; "
+            "digest forces the whole-document structural comparison; visible forces the "
+            "visible-region one; behaviour forces the behavioural one"
         ),
     )
     args = ap.parse_args(argv)
@@ -468,19 +578,30 @@ def main(argv: list[str] | None = None) -> int:
             paths = shards_of(pattern)
             if not paths:
                 continue
-            why = any_windowed(paths) if args.mode == "auto" else "forced by --mode behaviour"
+            why = any_windowed(paths) if args.mode == "auto" else f"forced by --mode {args.mode}"
             if why:
                 decided.append((pattern, paths, why))
         if decided:
             worst = 0
             for pattern, paths, why in decided:
                 print(f"WINDOWED MOUNT DETECTED in {pattern}: {why}")
-                worst = max(
-                    worst,
-                    behaviour_report(
-                        paths, f"UI PARITY: {pattern}", windowed = any_windowed(paths) is not None
-                    ),
-                )
+                # BOTH, and in this order. Visible-region parity is the verdict the off-screen
+                # exemption asks for and it is the one that can FAIL a windowed arm for something
+                # a user would see. The behavioural invariants are the complement: they catch what
+                # a viewport comparison cannot, such as a clipboard that no longer carries the
+                # thread. Neither subsumes the other, so a windowed pair gets both and the run
+                # fails if either does.
+                if args.mode in ("auto", "visible"):
+                    worst = max(worst, visible_report(paths, f"UI PARITY: {pattern}"))
+                if args.mode in ("auto", "behaviour"):
+                    worst = max(
+                        worst,
+                        behaviour_report(
+                            paths,
+                            f"UI PARITY: {pattern}",
+                            windowed = any_windowed(paths) is not None,
+                        ),
+                    )
             remaining = [p for p in args.payloads if p not in {d[0] for d in decided}]
             if remaining:
                 # The rest still get the digest they were owed, in the same run.

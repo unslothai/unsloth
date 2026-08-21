@@ -381,6 +381,84 @@ Not covered, and not detectable by this digest at all:
 A change confined to any of those needs its own capture. `sweep/ui_parity.py` prints this
 limitation next to the passing verdict rather than leaving it in a source comment.
 
+### The policy, and the three claims
+
+All changes must preserve UI and UX idempotency, with two exemptions:
+
+1. a UI difference may be accepted DELIBERATELY when performance improves dramatically;
+2. a difference that exists only OFF SCREEN is fine by definition, because rendering only what is
+   visible is an accepted technique rather than a parity violation.
+
+The whole-document digest cannot express exemption 2. It compares everything in the DOM, so every
+deferred-off-screen technique fails it by construction: virtualization, deferred fence
+highlighting, `content-visibility`, lazy images. Answering NOT_APPLICABLE withholds a verdict
+rather than giving one, so there is now a mode that gives one.
+
+`sweep/ui_parity.py --mode auto|digest|visible|behaviour`. Every report prints the CLAIM it is
+making, because "PARITY OK" has meant three different things in this file's history:
+
+| mode | claim | fails on |
+| --- | --- | --- |
+| `digest` | whole-document structural parity | any DOM difference, on screen or off |
+| `visible` | every message the viewport showed during the action is present on both arms and identical; every difference lies off screen | a difference the user could see |
+| `behaviour` | the scroll extent matches and the invariants a windowed mount breaks first still hold. Says NOTHING about how anything looks | a broken invariant, e.g. a truncated clipboard |
+
+`auto` scores a fully mounted pair structurally, and a windowed pair on BOTH the visible region and
+the behavioural invariants: neither subsumes the other, and the run fails if either does.
+
+### The two boundary decisions in visible-region parity
+
+Written down because this is where a visible-region check goes wrong quietly.
+
+**Partial intersection counts as visible, and the element is digested IN FULL.** A message one
+pixel into the viewport is visible. Digesting only the part inside the viewport is not definable on
+a DOM subtree without reading geometry per node, and reading geometry is the one thing this must
+not do. The error this admits is a FALSE ALARM: a difference in the off-screen tail of a partly
+visible message is reported as visible. The error it refuses to admit is a false pass.
+
+**Anything visible at ANY point during the action is compared, not just at the end.** The observer
+is installed before the window opens and the compared set is the UNION of everything that ever
+intersected. A single sample at the close would compare wherever a scroll happened to stop and
+ignore everything the user saw on the way. The per-message digest is still the one taken at the
+close, which is a real limitation: a message visible mid-action and since unmounted appears in
+`ever_visible` but not in `messages`, and is reported as `unmounted_at_capture` rather than counted
+as agreement.
+
+**Visibility is read with `IntersectionObserver` and never with geometry.**
+`getBoundingClientRect()` / `getClientRects()` on content inside a `content-visibility` locked
+subtree makes Chromium render that subtree to answer, so a geometry-based probe unlocks exactly
+what it came to observe: one session reported 0 off-screen unrendered roots while the event counter
+recorded 22 in the skipped state. IntersectionObserver is the same mechanism Blink's own relevance
+machinery uses, so it neither forces rendering nor perturbs the decision. A live test installs a
+counting trap on both geometry methods and fails if the capture touches either.
+
+**What the exemption does NOT cover.** A clipboard that carries different content, and native
+find-in-page. Both are questions about the whole conversation rather than about the viewport, so
+they are scored behaviourally and an off-screen rendering difference is no defence.
+
+### Three corrections to the record
+
+**The `thread_reopen` control was never covered. It was never HOVERED.** Both the earlier
+"the sticky group label overlaps it" explanation and its successor were wrong. `.sidebar-header-action`
+ships `opacity: 0; pointer-events: none` and is revealed by `.group\/sidebar-header:hover`. The
+button is laid out, passes every actionability check Playwright makes, and is transparent to every
+hit test, so `click()` times out and a hit-test spread finds no reachable point -- both accurate,
+both pointing the wrong way. `_click_or_navigate` now hovers the control's own centre before giving
+up, which is what a user does; the pointer falls through to the group underneath and the button
+becomes solid under a mouse already on it.
+
+**A window that opens on an action reporting `ran: false` still records frames, and an idle window
+sits near the compositor ceiling.** So an action that ran on one arm and not the other compares a
+busy window against an empty one and reports a large improvement. In the 100K virtualization run
+this produced `delete_message` +167.3% and `thread_reopen` +88.8%, two of the three largest wins on
+the page, both fabricated: the actions ran 4x on the base arm and 0x on the treatment. Any
+per-window comparison must drop windows whose action did not run on BOTH arms, and say which it
+dropped. This is general and is not specific to virtualization.
+
+**`reasoning_toggle` runs at 2.2 fps on BOTH arms at the 100K rung**, with a p95 frame of 2,084 ms.
+It is the worst number the harness produces, it is not a virtualization finding, and it is not
+fixed. It is the standing complaint.
+
 **Any scan that can return zero carries a positive control.** The style probe walks a hand-written
 selector list; a class rename empties it, and two empty scans have equal element counts and equal
 digests (both the hash of an empty string), so a probe that observed nothing used to report MATCH.
