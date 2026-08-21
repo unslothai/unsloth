@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getCompletedCodeFences } from "./streaming-render-schedule.ts";
+
 // One page is several screens of rich Markdown, but remains far below the native
 // WebKit DOM cliff measured on long local-model reasoning traces.
 export const REASONING_PAGE_CHARACTERS = 8_192;
@@ -11,11 +13,23 @@ const MAX_SYNTHETIC_FENCE_MARKER = 256;
 const MAX_SYNTHETIC_FENCE_INFO = 128;
 const FENCE_LINE_RE = /^( {0,3})(`{3,}|~{3,})(.*)$/;
 
+const RAW_HTML_OPEN_RE = /^(?: {0,3})<(pre|script|style|textarea)(?:\s|>|$)/i;
+
 type FenceState = {
   character: string;
   indent: string;
   info: string;
   length: number;
+  openingOffset: number;
+};
+
+type RawHtmlState = {
+  tag: string;
+};
+
+type BoundaryState = {
+  fence: FenceState | null;
+  rawHtml: RawHtmlState | null;
 };
 
 export type ReasoningMarkdownPage = {
@@ -23,6 +37,7 @@ export type ReasoningMarkdownPage = {
   hasEarlier: boolean;
   hasNewer: boolean;
   markdown: string;
+  canonicalCodeSources: readonly (string | null)[];
   start: number;
 };
 
@@ -37,6 +52,7 @@ type ReasoningMarkdownPageOptions = {
 function nextFenceState(
   line: string,
   state: FenceState | null,
+  openingOffset: number,
 ): FenceState | null {
   const match = line.match(FENCE_LINE_RE);
   if (!match) return state;
@@ -55,24 +71,95 @@ function nextFenceState(
     indent: match[1],
     info: match[3],
     length: marker.length,
+    openingOffset,
   };
 }
 
-function fenceStateAt(markdown: string, offset: number): FenceState | null {
+function rawHtmlCloses(line: string, tag: string): boolean {
+  return line.toLowerCase().includes(`</${tag}>`);
+}
+
+function nextBoundaryState(
+  line: string,
+  openingOffset: number,
+  state: BoundaryState,
+): BoundaryState {
+  if (state.fence) {
+    return {
+      ...state,
+      fence: nextFenceState(line, state.fence, openingOffset),
+    };
+  }
+  if (state.rawHtml) {
+    return rawHtmlCloses(line, state.rawHtml.tag)
+      ? { fence: null, rawHtml: null }
+      : state;
+  }
+
+  const rawHtmlOpening = line.match(RAW_HTML_OPEN_RE);
+  if (rawHtmlOpening) {
+    const tag = rawHtmlOpening[1].toLowerCase();
+    return rawHtmlCloses(line, tag) ? state : { fence: null, rawHtml: { tag } };
+  }
+
+  return {
+    ...state,
+    fence: nextFenceState(line, null, openingOffset),
+  };
+}
+
+function boundaryStateAt(markdown: string, offset: number): BoundaryState {
   let lineStart = 0;
-  let state: FenceState | null = null;
+  let state: BoundaryState = { fence: null, rawHtml: null };
 
   while (lineStart < offset) {
     const newline = markdown.indexOf("\n", lineStart);
     const lineEnd = newline < 0 ? markdown.length : newline;
     if (lineEnd > offset) break;
 
-    state = nextFenceState(markdown.slice(lineStart, lineEnd), state);
+    state = nextBoundaryState(
+      markdown.slice(lineStart, lineEnd),
+      lineStart,
+      state,
+    );
     if (newline < 0) break;
     lineStart = newline + 1;
   }
 
   return state;
+}
+
+function canonicalFenceSource(
+  markdown: string,
+  state: FenceState,
+): string | null {
+  const openingNewline = markdown.indexOf("\n", state.openingOffset);
+  if (openingNewline < 0) return "";
+  const sourceStart = openingNewline + 1;
+  let lineStart = sourceStart;
+
+  while (lineStart < markdown.length) {
+    const newline = markdown.indexOf("\n", lineStart);
+    const lineEnd = newline < 0 ? markdown.length : newline;
+    const match = markdown.slice(lineStart, lineEnd).match(FENCE_LINE_RE);
+    const closes =
+      match &&
+      match[2][0] === state.character &&
+      match[2].length >= state.length &&
+      match[3].trim().length === 0;
+    if (closes) {
+      let sourceEnd = lineStart;
+      if (markdown.slice(sourceStart, sourceEnd).endsWith("\r\n"))
+        sourceEnd -= 2;
+      else if (markdown.slice(sourceStart, sourceEnd).endsWith("\n"))
+        sourceEnd -= 1;
+      return markdown.slice(sourceStart, sourceEnd).replace(/\r\n?/g, "\n");
+    }
+    if (newline < 0) break;
+    lineStart = newline + 1;
+  }
+
+  return markdown.slice(sourceStart).replace(/\r\n?/g, "\n");
 }
 
 function syntheticFenceOpening(state: FenceState): string {
@@ -132,6 +219,7 @@ export function selectReasoningMarkdownPage(
       hasEarlier: false,
       hasNewer: false,
       markdown,
+      canonicalCodeSources: [],
       start: 0,
     };
   }
@@ -151,14 +239,38 @@ export function selectReasoningMarkdownPage(
     Boolean(options.streaming && end === markdown.length),
   );
   let pageMarkdown = markdown.slice(start, end);
-  const openingFence = fenceStateAt(markdown, start);
-  const closingFence = fenceStateAt(markdown, end);
+  const openingState = boundaryStateAt(markdown, start);
+  const closingState = boundaryStateAt(markdown, end);
 
-  if (openingFence) {
-    pageMarkdown = `${syntheticFenceOpening(openingFence)}\n${pageMarkdown}`;
+  if (openingState.rawHtml) {
+    pageMarkdown = `<${openingState.rawHtml.tag}>\n${pageMarkdown}`;
+  } else if (openingState.fence) {
+    pageMarkdown = `${syntheticFenceOpening(openingState.fence)}\n${pageMarkdown}`;
   }
-  if (closingFence) {
-    pageMarkdown += `${pageMarkdown.endsWith("\n") ? "" : "\n"}${syntheticFenceClosing(closingFence)}\n`;
+  if (closingState.rawHtml) {
+    pageMarkdown += `${pageMarkdown.endsWith("\n") ? "" : "\n"}</${closingState.rawHtml.tag}>\n`;
+  } else if (closingState.fence) {
+    pageMarkdown += `${pageMarkdown.endsWith("\n") ? "" : "\n"}${syntheticFenceClosing(closingState.fence)}\n`;
+  }
+
+  const canonicalCodeSources = getCompletedCodeFences(pageMarkdown).map(
+    () => null,
+  ) as (string | null)[];
+  if (openingState.fence && canonicalCodeSources.length > 0) {
+    canonicalCodeSources[0] = canonicalFenceSource(
+      markdown,
+      openingState.fence,
+    );
+  }
+  if (closingState.fence && canonicalCodeSources.length > 0) {
+    const index =
+      openingState.fence?.openingOffset === closingState.fence.openingOffset
+        ? 0
+        : canonicalCodeSources.length - 1;
+    canonicalCodeSources[index] = canonicalFenceSource(
+      markdown,
+      closingState.fence,
+    );
   }
 
   return {
@@ -166,6 +278,7 @@ export function selectReasoningMarkdownPage(
     hasEarlier: start > 0,
     hasNewer: end < markdown.length,
     markdown: pageMarkdown,
+    canonicalCodeSources,
     start,
   };
 }

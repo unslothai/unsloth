@@ -130,6 +130,30 @@ test("pages cut a giant fence safely instead of mounting the whole fence", () =>
   assert.match(earlier.markdown, /~~~\n?$/);
 });
 
+test("a paginated fence retains its complete canonical source for code actions", () => {
+  const source = "const preserved = true;\n".repeat(2_000).trimEnd();
+  const markdown = `~~~typescript\n${source}\n~~~\n`;
+  const page = selectReasoningMarkdownPage(markdown, {
+    enabled: true,
+    maxCharacters: 2_048,
+  });
+
+  assert.deepEqual(page.canonicalCodeSources, [source]);
+});
+
+test("a page inside a raw pre block stays literal Markdown", () => {
+  const markdown = `<pre>\n${"literal html line\n".repeat(1_000)}~~~js\n${"not a fence\n".repeat(1_000)}</pre>\n`;
+  const page = selectReasoningMarkdownPage(markdown, {
+    enabled: true,
+    maxCharacters: 2_048,
+  });
+
+  assert.match(page.markdown, /^<pre>\n/);
+  assert.match(page.markdown, /<\/pre>\n?$/);
+
+  assert.deepEqual(page.canonicalCodeSources, []);
+});
+
 test("a giant single line is hard-bounded", () => {
   const markdown = "continuous reasoning ".repeat(20_000);
   const page = selectReasoningMarkdownPage(markdown, {
@@ -144,6 +168,7 @@ test("a giant single line is hard-bounded", () => {
 test("short and non-reasoning Markdown remain exact", () => {
   const short = "# Thought\n\nStill working";
   assert.deepEqual(selectReasoningMarkdownPage(short, { enabled: true }), {
+    canonicalCodeSources: [],
     end: short.length,
     hasEarlier: false,
     hasNewer: false,
@@ -153,6 +178,7 @@ test("short and non-reasoning Markdown remain exact", () => {
   assert.deepEqual(
     selectReasoningMarkdownPage(richReasoning, { enabled: false }),
     {
+      canonicalCodeSources: [],
       end: richReasoning.length,
       hasEarlier: false,
       hasNewer: false,

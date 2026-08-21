@@ -387,6 +387,11 @@ const CompletedCodeFencesContext = createContext<
   ReadonlyMap<string, IncrementalMarkdownCodeFence>
 >(EMPTY_COMPLETED_CODE_FENCES);
 
+const EMPTY_CANONICAL_CODE_SOURCES = new Map<string, string>();
+const CanonicalCodeSourcesContext = createContext<ReadonlyMap<string, string>>(
+  EMPTY_CANONICAL_CODE_SOURCES,
+);
+
 const MarkdownCodeHighlightingContext =
   createContext<MarkdownCodeHighlighting>("syntax");
 
@@ -520,6 +525,7 @@ function StreamdownBlockContent(props: BlockProps) {
   } = props as StreamdownBlockProps;
 
   const codeHighlighting = useContext(MarkdownCodeHighlightingContext);
+  const canonicalCodeSources = useContext(CanonicalCodeSourcesContext);
   const completedCodeFencePresentations = useMemo(
     () =>
       new Map(
@@ -560,7 +566,12 @@ function StreamdownBlockContent(props: BlockProps) {
       ...codeFence,
       language: normalizeCodeFenceLanguage(codeFence.language),
     });
-  const exactCodeSource = canonicalCodeSource ?? streamingCodeFence?.source;
+  const exactCodeSource =
+    canonicalCodeSource ??
+    (completedStandaloneFence
+      ? canonicalCodeSources.get(completedStandaloneFence.id)
+      : undefined) ??
+    streamingCodeFence?.source;
 
   const renderBlock = () => (
     <CompletedCodeFencesContext.Provider
@@ -926,7 +937,13 @@ function PartitionedMarkdownText({
   const [reasoningPageEnds, setReasoningPageEnds] = useState<readonly number[]>(
     [],
   );
-  const reasoningPageEnd = reasoningPageEnds.at(-1) ?? null;
+  const pageHistoryInvalid = reasoningPageEnds.some(
+    (end) => end > markdown.length,
+  );
+  if (pageHistoryInvalid) setReasoningPageEnds([]);
+  const reasoningPageEnd = pageHistoryInvalid
+    ? null
+    : (reasoningPageEnds.at(-1) ?? null);
   const reasoningPage = useMemo(
     () =>
       selectReasoningMarkdownPage(markdown, {
@@ -945,12 +962,6 @@ function PartitionedMarkdownText({
     setReasoningPageEnds((current) => current.slice(0, -1));
   }, []);
 
-  useEffect(() => {
-    setReasoningPageEnds((current) =>
-      current.some((end) => end > markdown.length) ? [] : current,
-    );
-  }, [markdown.length]);
-
   // An older page is immutable even if the live tail keeps growing. Only the
   // latest page participates in streaming repair and presentation cadence.
   const pageIsStreaming = isStreaming && !reasoningPage.hasNewer;
@@ -961,6 +972,23 @@ function PartitionedMarkdownText({
     pageIsStreaming,
     pageUsesSourceSlice ? EMPTY_FENCE_PROVENANCE : persistedTrailingLfOrdinals,
   );
+  const canonicalCodeSources = useMemo(() => {
+    if (!reasoningPage.canonicalCodeSources.some(Boolean)) {
+      return EMPTY_CANONICAL_CODE_SOURCES;
+    }
+    const fences = [
+      ...incrementalRender.chunks.flatMap((chunk) =>
+        chunk.blocks.flatMap((block) => block.codeFences),
+      ),
+      ...incrementalRender.tail.flatMap((block) => block.codeFences),
+    ];
+    const sources = new Map<string, string>();
+    reasoningPage.canonicalCodeSources.forEach((source, index) => {
+      const fence = fences[index];
+      if (source && fence) sources.set(fence.id, source);
+    });
+    return sources;
+  }, [incrementalRender, reasoningPage.canonicalCodeSources]);
 
   return (
     <div data-status={statusType} className="min-w-0 max-w-full">
@@ -974,30 +1002,32 @@ function PartitionedMarkdownText({
           {t("shell.navigation.showMore")}
         </button>
       )}
-      <MarkdownCodeHighlightingContext.Provider value={codeHighlighting}>
-        <StreamingMarkdownPlanContext.Provider value={incrementalRender}>
-          <Streamdown
-            key={messageId}
-            mode="streaming"
-            parseIncompleteMarkdown={false}
-            parseMarkdownIntoBlocksFn={parseProviderShellBlock}
-            isAnimating={pageIsStreaming}
-            animated={STREAMDOWN_IMMEDIATE_UPDATES}
-            plugins={
-              codeHighlighting === "syntax"
-                ? STREAMDOWN_SYNTAX_PLUGINS
-                : STREAMDOWN_PLAIN_CODE_PLUGINS
-            }
-            components={STREAMDOWN_COMPONENTS}
-            urlTransform={safeMarkdownUrl}
-            controls={STREAMDOWN_CONTROLS}
-            shikiTheme={STREAMDOWN_SHIKI_THEME}
-            BlockComponent={PartitionedStreamdownShell}
-          >
-            {incrementalRender.shellMarkdown}
-          </Streamdown>
-        </StreamingMarkdownPlanContext.Provider>
-      </MarkdownCodeHighlightingContext.Provider>
+      <CanonicalCodeSourcesContext.Provider value={canonicalCodeSources}>
+        <MarkdownCodeHighlightingContext.Provider value={codeHighlighting}>
+          <StreamingMarkdownPlanContext.Provider value={incrementalRender}>
+            <Streamdown
+              key={messageId}
+              mode="streaming"
+              parseIncompleteMarkdown={false}
+              parseMarkdownIntoBlocksFn={parseProviderShellBlock}
+              isAnimating={pageIsStreaming}
+              animated={STREAMDOWN_IMMEDIATE_UPDATES}
+              plugins={
+                codeHighlighting === "syntax"
+                  ? STREAMDOWN_SYNTAX_PLUGINS
+                  : STREAMDOWN_PLAIN_CODE_PLUGINS
+              }
+              components={STREAMDOWN_COMPONENTS}
+              urlTransform={safeMarkdownUrl}
+              controls={STREAMDOWN_CONTROLS}
+              shikiTheme={STREAMDOWN_SHIKI_THEME}
+              BlockComponent={PartitionedStreamdownShell}
+            >
+              {incrementalRender.shellMarkdown}
+            </Streamdown>
+          </StreamingMarkdownPlanContext.Provider>
+        </MarkdownCodeHighlightingContext.Provider>
+      </CanonicalCodeSourcesContext.Provider>
       {reasoningPage.hasNewer && (
         <button
           type="button"
