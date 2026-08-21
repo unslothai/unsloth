@@ -179,6 +179,7 @@ def _parse_skill_markdown(raw: bytes, parent_name: Optional[str] = None) -> dict
         AttributeError,
         IndexError,
         KeyError,
+        OverflowError,
         RecursionError,
         ValueError,
     ) as exc:
