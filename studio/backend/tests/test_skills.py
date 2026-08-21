@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import os
 import stat
 import zipfile
 from pathlib import Path
@@ -14,8 +15,6 @@ import pytest
 
 from core.inference import skills
 
-
-BUILTIN_SKILLS_ROOT = Path(skills.__file__).with_name("builtin_skills")
 
 SKILL_MD = """---
 name: unsloth
@@ -36,7 +35,6 @@ Read [the configuration reference](references/config-reference.md) when needed.
 @pytest.fixture(autouse = True)
 def isolated_skills_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(skills, "studio_root", lambda: tmp_path)
-    monkeypatch.setattr(skills, "_builtin_skills_root", lambda: tmp_path / "no-builtins")
 
 
 def _bundle(
@@ -56,55 +54,180 @@ def _bundle(
     return path
 
 
-def test_bundled_skill_creator_is_discoverable_and_read_only(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(skills, "_builtin_skills_root", lambda: BUILTIN_SKILLS_ROOT)
-
-    bundled = skills.list_skills()
-
-    assert [skill["name"] for skill in bundled] == ["skill-creator"]
-    assert bundled[0]["bundled"] is True
-    assert bundled[0]["metadata"]["bundled"] == "true"
-    assert "Code is enabled" in skills.read_skill_resource("skill-creator")
-    disabled = skills.set_skill_enabled("skill-creator", False)
-    assert disabled["enabled"] is False
-    assert disabled["bundled"] is True
-    with pytest.raises(skills.SkillError, match = "cannot be deleted"):
-        skills.delete_skill("skill-creator")
-
-
-def test_existing_skill_creator_keeps_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(skills, "_builtin_skills_root", lambda: BUILTIN_SKILLS_ROOT)
-    custom = SKILL_MD.replace("name: unsloth", "name: skill-creator").replace(
-        "Train and run models with Unsloth. Use for Unsloth workflows.",
-        "Keep my existing custom skill.",
-    )
-    skills.import_skill_archive(
-        _bundle(tmp_path / "custom.zip", {"skill-creator/SKILL.md": custom})
+def test_create_skill_installs_markdown_and_text_resources(tmp_path: Path):
+    created = skills.create_skill(
+        "unsloth",
+        SKILL_MD,
+        [
+            {"path": "references/config-reference.md", "content": "Use bf16.\n"},
+            {"path": "scripts/check.py", "content": "print('ok')\n"},
+            {"path": "assets/template.yaml", "content": "model: llama\n"},
+        ],
     )
 
-    custom_skill = skills.list_skills()[0]
-    assert custom_skill["description"] == "Keep my existing custom skill."
-    assert custom_skill["bundled"] is False
-    skills.delete_skill("skill-creator")
-    bundled_skill = skills.list_skills()[0]
-    assert bundled_skill["metadata"]["bundled"] == "true"
-    assert bundled_skill["bundled"] is True
+    assert created["name"] == "unsloth"
+    assert created["enabled"] is True
+    assert (tmp_path / "skills/unsloth/references/config-reference.md").read_text() == "Use bf16.\n"
+    assert (tmp_path / "skills/unsloth/scripts/check.py").read_text() == "print('ok')\n"
+    assert (tmp_path / "skills/unsloth/assets/template.yaml").read_text() == "model: llama\n"
 
 
-def test_imported_skill_cannot_spoof_bundled_status(tmp_path: Path):
-    manifest = SKILL_MD.replace(
-        '  version: "1.0"',
-        '  version: "1.0"\n  bundled: "true"',
+def test_create_skill_tool_schema_and_scoped_execution(tmp_path: Path):
+    from core.inference.tools import CREATE_SKILL_TOOL, execute_tool
+
+    parameters = CREATE_SKILL_TOOL["function"]["parameters"]
+    assert parameters["required"] == ["name", "skill_markdown"]
+    assert parameters["properties"]["files"]["type"] == "array"
+    assert parameters["properties"]["files"]["items"]["required"] == ["path", "content"]
+    assert set(parameters["properties"]) == {"name", "skill_markdown", "files", "replace"}
+
+    result = execute_tool(
+        "create_skill",
+        {
+            "name": "unsloth",
+            "skill_markdown": SKILL_MD,
+            "files": [{"path": "references/guide.md", "content": "Guide\n"}],
+        },
     )
-    archive = _bundle(tmp_path / "spoofed.zip", {"unsloth/SKILL.md": manifest})
+    escaped = execute_tool(
+        "create_skill",
+        {
+            "name": "escape",
+            "skill_markdown": SKILL_MD.replace("name: unsloth", "name: escape"),
+            "files": [{"path": "../escape.txt", "content": "escape"}],
+        },
+    )
 
-    imported = skills.import_skill_archive(archive)
+    assert result == "Installed skill 'unsloth'. It will be available on the next turn."
+    assert (tmp_path / "skills/unsloth/references/guide.md").read_text() == "Guide\n"
+    assert escaped.startswith("Error: Archive contains unsafe path")
+    assert not (tmp_path / "escape.txt").exists()
 
-    assert imported["metadata"]["bundled"] == "true"
-    assert imported["bundled"] is False
-    assert skills.list_skills()[0]["bundled"] is False
-    skills.delete_skill("unsloth")
-    assert skills.list_skills() == []
+
+def test_create_skill_rejects_a_linked_skills_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from core.inference.tools import execute_tool
+
+    root = tmp_path / "skills"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real_lstat = skills.os.lstat
+
+    def linked_root_lstat(path):
+        if Path(path) == root:
+            return os.stat_result((stat.S_IFLNK, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        return real_lstat(path)
+
+    monkeypatch.setattr(skills.os, "lstat", linked_root_lstat)
+
+    result = execute_tool(
+        "create_skill",
+        {"name": "unsloth", "skill_markdown": SKILL_MD},
+        disable_sandbox = True,
+    )
+
+    assert result == "Error: Skills directory cannot be a symbolic link or reparse point."
+    assert not root.exists()
+    assert list(outside.iterdir()) == []
+    with pytest.raises(skills.SkillError, match = "symbolic link"):
+        skills.list_skills()
+
+
+def test_skills_root_link_detector_recognizes_a_windows_reparse_point(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    reparse_point = 0x400
+
+    class ReparsePointStatus:
+        st_mode = stat.S_IFDIR
+        st_file_attributes = reparse_point
+
+    monkeypatch.setattr(
+        skills.stat,
+        "FILE_ATTRIBUTE_REPARSE_POINT",
+        reparse_point,
+        raising = False,
+    )
+    monkeypatch.setattr(skills.os, "lstat", lambda _path: ReparsePointStatus())
+
+    assert skills._is_linked_skills_root(tmp_path / "skills") is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX symbolic-link regression")
+def test_create_skill_allows_a_symlinked_studio_root_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    real_root = tmp_path / "real-root"
+    real_root.mkdir()
+    alias = tmp_path / "studio-alias"
+    alias.symlink_to(real_root, target_is_directory = True)
+    monkeypatch.setattr(skills, "studio_root", lambda: alias)
+
+    skills.create_skill("unsloth", SKILL_MD)
+
+    assert (real_root / "skills/unsloth/SKILL.md").is_file()
+
+
+@pytest.mark.parametrize(
+    ("name", "manifest", "files", "message"),
+    [
+        ("Bad Name", SKILL_MD, [], "lowercase letters"),
+        ("unsloth", SKILL_MD.replace("name: unsloth", "name: other"), [], "must match"),
+        ("unsloth", SKILL_MD, [{"path": "/tmp/out", "content": "x"}], "unsafe path"),
+        ("unsloth", SKILL_MD, [{"path": "SKILL.md", "content": "x"}], "one SKILL.md"),
+        (
+            "unsloth",
+            SKILL_MD,
+            [
+                {"path": "references/Guide.md", "content": "first"},
+                {"path": "references/guide.md", "content": "second"},
+            ],
+            "duplicate path",
+        ),
+        (
+            "unsloth",
+            SKILL_MD,
+            [
+                {"path": "references", "content": "file"},
+                {"path": "references/guide.md", "content": "nested"},
+            ],
+            "conflicting file paths",
+        ),
+    ],
+)
+def test_create_skill_rejects_invalid_names_and_paths(
+    name: str, manifest: str, files: list[dict], message: str
+):
+    with pytest.raises(skills.SkillError, match = message):
+        skills.create_skill(name, manifest, files)
+
+
+def test_create_skill_requires_explicit_replace_and_preserves_enabled_state(tmp_path: Path):
+    from core.inference.tools import execute_tool
+
+    skills.create_skill(
+        "unsloth",
+        SKILL_MD,
+        [{"path": "references/old.md", "content": "old"}],
+    )
+    skills.set_skill_enabled("unsloth", False)
+    replacement = SKILL_MD.replace("Train and run", "Fine-tune and run")
+
+    with pytest.raises(skills.SkillError, match = "already installed"):
+        skills.create_skill("unsloth", replacement)
+    assert "Train and run models" in (tmp_path / "skills/unsloth/SKILL.md").read_text()
+    with pytest.raises(skills.SkillError, match = "flag must be a boolean"):
+        skills.create_skill("unsloth", replacement, replace = "true")
+
+    result = execute_tool(
+        "create_skill",
+        {"name": "unsloth", "skill_markdown": replacement, "replace": True},
+    )
+    replaced = skills.list_skills()[0]
+
+    assert result == "Installed skill 'unsloth'. It remains disabled."
+    assert replaced["enabled"] is False
+    assert "Fine-tune and run models" in (tmp_path / "skills/unsloth/SKILL.md").read_text()
+    assert not (tmp_path / "skills/unsloth/references/old.md").exists()
 
 
 def test_imports_pr_style_nested_agent_skill_bundle(tmp_path: Path):
@@ -127,7 +250,6 @@ def test_imports_pr_style_nested_agent_skill_bundle(tmp_path: Path):
         "metadata": {"author": "unslothai", "version": "1.0"},
         "allowed_tools": "Read Bash(python:*)",
         "enabled": True,
-        "bundled": False,
     }
     assert (tmp_path / "skills/unsloth/assets/train.yaml").is_file()
     assert not (tmp_path / "skills/unsloth/README.md").exists()
@@ -425,22 +547,26 @@ def test_rejects_an_enabled_catalog_over_the_context_budget(
     )
 
 
-def test_tool_routes_offer_the_loader_only_for_enabled_skills(tmp_path: Path):
-    from core.inference.tools import READ_SKILL_TOOL, is_always_safe_tool
+def test_tool_routes_always_offer_create_and_gate_read_on_enabled_skills(tmp_path: Path):
+    from core.inference.tools import CREATE_SKILL_TOOL, READ_SKILL_TOOL, is_always_safe_tool
     from routes import inference
 
-    selected = asyncio.run(inference._filter_unavailable_skill_tool([READ_SKILL_TOOL]))
-    assert selected == []
+    selected = asyncio.run(
+        inference._filter_unavailable_skill_tool([CREATE_SKILL_TOOL, READ_SKILL_TOOL])
+    )
+    assert [tool["function"]["name"] for tool in selected] == ["create_skill"]
 
-    archive = _bundle(tmp_path / "skill.zip", {"unsloth/SKILL.md": SKILL_MD})
-    skills.import_skill_archive(archive)
-    selected = asyncio.run(inference._filter_unavailable_skill_tool([READ_SKILL_TOOL]))
+    skills.create_skill("unsloth", SKILL_MD)
+    selected = asyncio.run(
+        inference._filter_unavailable_skill_tool([CREATE_SKILL_TOOL, READ_SKILL_TOOL])
+    )
 
-    assert selected[0]["function"]["name"] == "read_skill"
-    assert selected[0]["function"]["parameters"]["properties"]["offset"]["minimum"] == 0
-    assert "- unsloth: Train and run models with Unsloth." in selected[0]["function"]["description"]
+    assert [tool["function"]["name"] for tool in selected] == ["create_skill", "read_skill"]
+    assert selected[1]["function"]["parameters"]["properties"]["offset"]["minimum"] == 0
+    assert "- unsloth: Train and run models with Unsloth." in selected[1]["function"]["description"]
     assert "read_skill" in inference._ANTHROPIC_UNPROMPTED_SAFE_TOOLS
     assert is_always_safe_tool("read_skill") is True
+    assert is_always_safe_tool("create_skill") is False
 
 
 def test_corrupt_registry_fails_closed_without_overwriting_state(tmp_path: Path):

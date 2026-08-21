@@ -38,7 +38,6 @@ import {
   sandboxSessionIdFor,
 } from "@/components/assistant-ui/sandbox-files";
 import { apiUrl } from "@/lib/api-base";
-import { hasEnabledSkills } from "./skills-api";
 import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
@@ -1696,25 +1695,6 @@ export async function buildLocalTokenCountExtras(
     ? await projectHasSources(ragProjectId)
     : false;
   const ragOn = ragEnabled || projectRagEnabled;
-  const skillsOn = await hasEnabledSkills();
-  if (
-    !toolsEnabled &&
-    !codeToolsEnabled &&
-    !artifactsEnabled &&
-    !mcpEnabledForChat &&
-    !ragOn &&
-    !skillsOn
-  ) {
-    // Explicit false, not an omitted field: the server defaults tools on for a
-    // request that never mentions them, so every pill being off has to say so.
-    // The permission level rides along because `--enable-tools` still outranks
-    // that false in _effective_enable_tools, so a CLI policy can inject
-    // python/terminal into a pill-less request and the count would otherwise
-    // price sandboxed schemas against an unsandboxed completion. Inert whenever
-    // the false stands and no tool list is built.
-    return { enable_tools: false, bypass_permissions: bypassPermissions };
-  }
-
   return {
     enable_tools: true,
     // Auto-Heal off leaves leaked tool markup in the real prompt, so the count keeps it.
@@ -1727,7 +1707,8 @@ export async function buildLocalTokenCountExtras(
       ...(toolsEnabled ? ["web_search"] : []),
       ...(codeToolsEnabled ? ["python", "terminal", "edit_file"] : []),
       ...(artifactsEnabled ? ["render_html"] : []),
-      ...(skillsOn ? ["read_skill"] : []),
+      "create_skill",
+      "read_skill",
     ],
     mcp_enabled: mcpEnabledForChat,
     // Only truthiness is read server-side, to keep search_knowledge_base and its grounding nudge
@@ -4495,14 +4476,12 @@ export function createOpenAIStreamAdapter(
 
       // safetensors and mlx disable their server-side tool loop for vision turns.
       const imageBase64 = findLatestUserImageBase64(survivingMessages);
-      const skillLoaderAvailableForThisTurn = Boolean(
+      const skillToolsAvailableForThisTurn = Boolean(
         supportsStudioToolsForThisTurn &&
           (isExternalRequest ||
             !imageBase64 ||
             selectedModelSummary?.isGguf === true),
       );
-      const skillsEnabledForThisTurn =
-        skillLoaderAvailableForThisTurn && (await hasEnabledSkills());
       const combinedSystemPrompt = await resolveChatInstructions(
         resolvedThreadId,
         params.systemPrompt,
@@ -4533,7 +4512,7 @@ export function createOpenAIStreamAdapter(
           !anyWebEnabledForThisTurn &&
           !codeExecEnabledForThisTurn &&
           !imageGenerationEnabledForThisTurn &&
-          !skillsEnabledForThisTurn
+          !skillToolsAvailableForThisTurn
         ) {
           disabledToolGuard =
             `You do not have ${webLabel}, code execution, or image generation tools in this conversation. ` +
@@ -4544,7 +4523,7 @@ export function createOpenAIStreamAdapter(
         } else if (!anyWebEnabledForThisTurn && !codeExecEnabledForThisTurn) {
           const availableTools = [
             imageGenerationEnabledForThisTurn ? "image generation" : null,
-            skillsEnabledForThisTurn ? "Agent Skills" : null,
+            skillToolsAvailableForThisTurn ? "Agent Skills" : null,
           ].filter(Boolean);
           disabledToolGuard =
             `You do not have ${webLabel} or code execution tools in this conversation. ` +
@@ -4556,7 +4535,7 @@ export function createOpenAIStreamAdapter(
           const availableTools = [
             codeExecEnabledForThisTurn ? "code execution" : null,
             imageGenerationEnabledForThisTurn ? "image generation" : null,
-            skillsEnabledForThisTurn ? "Agent Skills" : null,
+            skillToolsAvailableForThisTurn ? "Agent Skills" : null,
           ].filter(Boolean);
           disabledToolGuard =
             `You do not have ${webLabel} tools in this conversation. ` +
@@ -4570,7 +4549,7 @@ export function createOpenAIStreamAdapter(
           const availableTools = [
             webLabel,
             imageGenerationEnabledForThisTurn ? "image generation" : null,
-            skillsEnabledForThisTurn ? "Agent Skills" : null,
+            skillToolsAvailableForThisTurn ? "Agent Skills" : null,
           ].filter(Boolean);
           disabledToolGuard =
             "You do not have code execution tools in this conversation. " +
@@ -5402,7 +5381,7 @@ export function createOpenAIStreamAdapter(
                 mcpEnabledForChat ||
                 ragEnabled ||
                 projectRagEnabled ||
-                skillsEnabledForThisTurn)
+                skillToolsAvailableForThisTurn)
                 ? {
                     enable_tools: true,
                     enabled_tools: [
@@ -5411,7 +5390,9 @@ export function createOpenAIStreamAdapter(
                         : []),
                       ...(toolsEnabled ? ["web_search"] : []),
                       ...studioLocalCodeTools,
-                      ...(skillsEnabledForThisTurn ? ["read_skill"] : []),
+                      ...(skillToolsAvailableForThisTurn
+                        ? ["create_skill", "read_skill"]
+                        : []),
                       // Hosted tools Studio has no local stand-in for. Their
                       // pills stay lit whether or not a Studio tool is on, so
                       // listing only the local names here would silently drop
@@ -5634,7 +5615,7 @@ export function createOpenAIStreamAdapter(
               mcpEnabledForChat ||
               ragEnabled ||
               projectRagEnabled ||
-              skillsEnabledForThisTurn)
+              skillToolsAvailableForThisTurn)
               ? {
                   enable_tools: true,
                   enabled_tools: [
@@ -5649,7 +5630,9 @@ export function createOpenAIStreamAdapter(
                     ...(renderHtmlToolEnabledForThisTurn
                       ? ["render_html"]
                       : []),
-                    ...(skillsEnabledForThisTurn ? ["read_skill"] : []),
+                    ...(skillToolsAvailableForThisTurn
+                      ? ["create_skill", "read_skill"]
+                      : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
                   // Scope: thread_id = this thread's docs, kb_id = a KB,

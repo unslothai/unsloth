@@ -6586,6 +6586,8 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
         return True
     if name in _ALWAYS_SAFE_TOOLS:
         return False
+    if name == "create_skill":
+        return False
     if name == "render_html":
         # A static canvas is fine; only a networked canvas can egress.
         return _render_html_reaches_network(arguments)
@@ -9850,6 +9852,56 @@ READ_SKILL_TOOL = {
     },
 }
 
+CREATE_SKILL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "create_skill",
+        "description": (
+            "Create and install a portable Agent Skill inside Studio's skills directory. "
+            "Provide the complete SKILL.md and any supporting UTF-8 text files. Set replace "
+            "only when the user explicitly asked to replace the installed skill."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Lowercase hyphenated name matching SKILL.md frontmatter.",
+                },
+                "skill_markdown": {
+                    "type": "string",
+                    "description": "Complete UTF-8 contents of SKILL.md.",
+                },
+                "files": {
+                    "type": "array",
+                    "description": (
+                        "Optional UTF-8 references, scripts, or text assets in the skill bundle."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Relative path inside the skill bundle.",
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "Complete UTF-8 file contents.",
+                            },
+                        },
+                        "required": ["path", "content"],
+                    },
+                },
+                "replace": {
+                    "type": "boolean",
+                    "description": "Replace an installed skill with the same name.",
+                },
+            },
+            "required": ["name", "skill_markdown"],
+        },
+    },
+}
+
 ALL_TOOLS = [
     WEB_SEARCH_TOOL,
     PYTHON_TOOL,
@@ -9858,6 +9910,7 @@ ALL_TOOLS = [
     RENDER_HTML_TOOL,
     SEARCH_KNOWLEDGE_BASE_TOOL,
     SEARCH_CONVERSATION_TOOL,
+    CREATE_SKILL_TOOL,
     READ_SKILL_TOOL,
 ]
 
@@ -10118,6 +10171,21 @@ def execute_tool(
             cancel_event,
             search_fn = _search_conversation,
         )
+    if name == "create_skill":
+        from core.inference.skills import SkillError, create_skill
+
+        try:
+            skill = create_skill(
+                arguments.get("name"),
+                arguments.get("skill_markdown"),
+                arguments.get("files"),
+                replace = arguments.get("replace", False),
+            )
+        except SkillError as exc:
+            return f"Error: {exc}"
+        if skill["enabled"]:
+            return f"Installed skill '{skill['name']}'. It will be available on the next turn."
+        return f"Installed skill '{skill['name']}'. It remains disabled."
     if name == "read_skill":
         from core.inference.skills import (
             MAX_SKILL_PAGE_CHARS,

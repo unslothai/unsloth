@@ -7,30 +7,26 @@ export interface AgentSkill {
   name: string;
   description: string;
   enabled: boolean;
-  bundled: boolean;
   license?: string;
   compatibility?: string;
   metadata?: Record<string, string>;
 }
 
-let enabledSkillsCache: AgentSkill[] | null = null;
-let enabledSkillsRequest: Promise<AgentSkill[]> | null = null;
-let catalogRevision = 0;
 let catalogChannel: BroadcastChannel | null | undefined;
+let catalogRevision = 0;
 const catalogListeners = new Set<() => void>();
 const CATALOG_CHANNEL_NAME = "unsloth.skills.changed";
 
-function resetSkillCatalogCache(): void {
-  catalogRevision += 1;
-  enabledSkillsCache = null;
-  enabledSkillsRequest = null;
-}
-
 function notifySkillCatalogChanged(): void {
-  resetSkillCatalogCache();
+  catalogRevision += 1;
   for (const listener of catalogListeners) {
     listener();
   }
+}
+
+function broadcastSkillCatalogChanged(): void {
+  catalogRevision += 1;
+  getCatalogChannel()?.postMessage("changed");
 }
 
 function getCatalogChannel(): BroadcastChannel | null {
@@ -59,41 +55,16 @@ async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   return body as T;
 }
 
-function cacheEnabledSkills(skills: AgentSkill[]): void {
-  enabledSkillsCache = skills.filter((skill) => skill.enabled);
-}
-
 export async function listSkills(): Promise<AgentSkill[]> {
   getCatalogChannel();
   while (true) {
     const revision = catalogRevision;
     const response = await authFetch("/api/skills");
     const body = await parseJsonOrThrow<{ skills: AgentSkill[] }>(response);
-    if (revision !== catalogRevision) {
-      continue;
+    if (revision === catalogRevision) {
+      return body.skills;
     }
-    cacheEnabledSkills(body.skills);
-    return body.skills;
   }
-}
-
-export async function enabledSkills(): Promise<AgentSkill[]> {
-  getCatalogChannel();
-  if (enabledSkillsCache !== null) {
-    return enabledSkillsCache;
-  }
-  if (enabledSkillsRequest) {
-    return enabledSkillsRequest;
-  }
-  const request = listSkills()
-    .then((skills) => skills.filter((skill) => skill.enabled))
-    .finally(() => {
-      if (enabledSkillsRequest === request) {
-        enabledSkillsRequest = null;
-      }
-    });
-  enabledSkillsRequest = request;
-  return request;
 }
 
 export async function importSkillBundle(
@@ -107,7 +78,7 @@ export async function importSkillBundle(
     { method: "POST", body: form },
   );
   const body = await parseJsonOrThrow<{ skill: AgentSkill }>(response);
-  clearSkillCatalogCache();
+  broadcastSkillCatalogChanged();
   return body.skill;
 }
 
@@ -124,7 +95,7 @@ export async function setSkillEnabled(
     },
   );
   const body = await parseJsonOrThrow<{ skill: AgentSkill }>(response);
-  clearSkillCatalogCache();
+  broadcastSkillCatalogChanged();
   return body.skill;
 }
 
@@ -137,20 +108,7 @@ export async function deleteSkill(name: string): Promise<void> {
     const detail = (body as { detail?: string } | null)?.detail;
     throw new Error(detail ?? `Delete failed (${response.status})`);
   }
-  clearSkillCatalogCache();
-}
-
-export async function hasEnabledSkills(): Promise<boolean> {
-  try {
-    return (await enabledSkills()).length > 0;
-  } catch {
-    return false;
-  }
-}
-
-export function clearSkillCatalogCache(): void {
-  notifySkillCatalogChanged();
-  getCatalogChannel()?.postMessage("changed");
+  broadcastSkillCatalogChanged();
 }
 
 export function subscribeSkillCatalogChanges(listener: () => void): () => void {

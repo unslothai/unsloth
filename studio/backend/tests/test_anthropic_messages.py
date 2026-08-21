@@ -994,6 +994,17 @@ class TestAnthropicToolsToOpenAI:
 
         assert [tool["function"]["name"] for tool in result] == ["web_search", "python"]
 
+    def test_server_tool_selection_keeps_create_skill(self):
+        create_skill = {"type": "function", "function": {"name": "create_skill"}}
+
+        result = _select_anthropic_server_tools(
+            [create_skill],
+            requested_studio_tools = set(),
+            enabled_tools = ["create_skill"],
+        )
+
+        assert result == [create_skill]
+
     def test_pydantic_model_input(self):
         tool = AnthropicTool(name = "test", description = "desc", input_schema = {"type": "object"})
         result = anthropic_tools_to_openai([tool])
@@ -2754,6 +2765,17 @@ class TestAnthropicMessagesToolRouting:
             payload = _basic_payload(tools = safe_tools, **extra)
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
             assert backend.calls[0][0] == "tools"
+
+        backend = _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            enable_tools = True,
+            enabled_tools = ["create_skill"],
+            permission_mode = "auto",
+        )
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        path, kwargs = backend.calls[0]
+        assert path == "tools"
+        assert [tool["function"]["name"] for tool in kwargs["tools"]] == ["create_skill"]
 
         # Reading this conversation's own archive is as read-only as the other two, and
         # is_potentially_unsafe_tool_call says so, so selecting it must not trip the gate.

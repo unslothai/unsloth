@@ -67,33 +67,24 @@ def _normalize_skill_name(name: str) -> str:
     return normalized
 
 
+def _is_linked_skills_root(root: Path) -> bool:
+    try:
+        status = os.lstat(root)
+    except FileNotFoundError:
+        return False
+    attributes = getattr(status, "st_file_attributes", 0)
+    reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return stat.S_ISLNK(status.st_mode) or bool(reparse_point and attributes & reparse_point)
+
+
 def _skills_root() -> Path:
-    return ensure_dir(studio_root() / "skills")
-
-
-def _builtin_skills_root() -> Path:
-    return Path(__file__).with_name("builtin_skills")
-
-
-def _builtin_skills() -> dict[str, tuple[Path, dict]]:
-    root = _builtin_skills_root()
-    if not root.is_dir():
-        return {}
-    bundled: dict[str, tuple[Path, dict]] = {}
-    for candidate in root.iterdir():
-        if candidate.name.startswith("."):
-            continue
-        metadata = _validate_installed_skill(candidate)
-        bundled[metadata["name"]] = (candidate, metadata)
-    return bundled
-
-
-def _skill_directory(name: str) -> Path:
-    installed = _skills_root() / name
-    if installed.exists():
-        return installed
-    bundled = _builtin_skills().get(name)
-    return bundled[0] if bundled is not None else installed
+    root = studio_root() / "skills"
+    if _is_linked_skills_root(root):
+        raise SkillError("Skills directory cannot be a symbolic link or reparse point.")
+    ensure_dir(root)
+    if _is_linked_skills_root(root):
+        raise SkillError("Skills directory cannot be a symbolic link or reparse point.")
+    return root
 
 
 def _registry_path() -> Path:
@@ -351,6 +342,42 @@ def _archive_source(
     return metadata, selected_files
 
 
+def _install_staged_skill(skill_dir: Path, *, replace: bool) -> dict:
+    metadata = _validate_installed_skill(skill_dir)
+    root = _skills_root()
+    target = root / metadata["name"]
+    if target.exists() and not replace:
+        raise SkillError(f"Skill '{metadata['name']}' is already installed.")
+    registry = _load_registry()
+    enabled = registry.get(metadata["name"], True)
+    format_skill_catalog(
+        [skill for skill in list_skills() if skill["name"] != metadata["name"]]
+        + [{**metadata, "enabled": enabled}]
+    )
+    backup: Optional[Path] = None
+    try:
+        if target.exists():
+            backup = root / f".backup-{metadata['name']}-{os.getpid()}-{threading.get_ident()}"
+            os.replace(target, backup)
+        os.replace(skill_dir, target)
+        try:
+            registry.setdefault(metadata["name"], True)
+            _save_registry(registry)
+        except Exception:
+            os.replace(target, skill_dir)
+            if backup is not None and backup.exists():
+                os.replace(backup, target)
+                backup = None
+            raise
+        if backup is not None:
+            shutil.rmtree(backup, ignore_errors = True)
+        return {**metadata, "enabled": registry[metadata["name"]]}
+    except Exception:
+        if backup is not None and backup.exists() and not target.exists():
+            os.replace(backup, target)
+        raise
+
+
 def import_skill_archive(archive_path: Path, *, replace: bool = False) -> dict:
     try:
         archive_size = archive_path.stat().st_size
@@ -364,8 +391,6 @@ def import_skill_archive(archive_path: Path, *, replace: bool = False) -> dict:
     with _LOCK:
         root = _skills_root()
         temporary = Path(tempfile.mkdtemp(prefix = ".import-", dir = root))
-        backup: Optional[Path] = None
-        target: Optional[Path] = None
         try:
             try:
                 with zipfile.ZipFile(archive_path) as archive:
@@ -392,44 +417,86 @@ def import_skill_archive(archive_path: Path, *, replace: bool = False) -> dict:
                     raise SkillError("Archive paths exceed the filesystem path limit.") from exc
                 raise
 
-            metadata = _validate_installed_skill(skill_dir)
-            target = root / metadata["name"]
-            if target.exists() and not replace:
-                raise SkillError(f"Skill '{metadata['name']}' is already installed.")
-            registry = _load_registry()
-            enabled = registry.get(metadata["name"], True)
-            format_skill_catalog(
-                [skill for skill in list_skills() if skill["name"] != metadata["name"]]
-                + [{**metadata, "enabled": enabled}]
-            )
-            if target.exists():
-                backup = root / f".backup-{metadata['name']}-{os.getpid()}-{threading.get_ident()}"
-                os.replace(target, backup)
-            os.replace(skill_dir, target)
-            try:
-                registry.setdefault(metadata["name"], True)
-                _save_registry(registry)
-            except Exception:
-                os.replace(target, skill_dir)
-                if backup is not None and backup.exists():
-                    os.replace(backup, target)
-                    backup = None
-                raise
-            if backup is not None:
-                shutil.rmtree(backup, ignore_errors = True)
-            return {
-                **metadata,
-                "enabled": registry[metadata["name"]],
-                "bundled": False,
-            }
-        except Exception:
-            if (
-                backup is not None
-                and backup.exists()
-                and target is not None
-                and not target.exists()
-            ):
-                os.replace(backup, target)
+            return _install_staged_skill(skill_dir, replace = replace)
+        finally:
+            shutil.rmtree(temporary, ignore_errors = True)
+
+
+def create_skill(
+    name: str,
+    skill_markdown: str,
+    files: Optional[list[dict]] = None,
+    *,
+    replace: bool = False,
+) -> dict:
+    name = _normalize_skill_name(name)
+    if not isinstance(skill_markdown, str):
+        raise SkillError("Skill markdown must be UTF-8 text.")
+    if files is None:
+        files = []
+    if not isinstance(files, list):
+        raise SkillError("Skill files must be a list.")
+    if not isinstance(replace, bool):
+        raise SkillError("Skill replacement flag must be a boolean.")
+    if len(files) + 1 > MAX_ARCHIVE_FILES:
+        raise SkillError(f"Skill bundle exceeds the {MAX_ARCHIVE_FILES}-file limit.")
+    try:
+        manifest_raw = skill_markdown.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise SkillError("Skill markdown must be UTF-8 text.") from exc
+    if len(manifest_raw) > MAX_SKILL_MD_BYTES:
+        raise SkillError("SKILL.md exceeds the 512 KB limit.")
+
+    selected_files: list[tuple[PurePosixPath, bytes]] = []
+    seen = {_portable_archive_key(PurePosixPath("SKILL.md"))}
+    total_size = len(manifest_raw)
+    for entry in files:
+        if not isinstance(entry, dict):
+            raise SkillError("Each skill file must contain a path and text content.")
+        path_value = entry.get("path")
+        content = entry.get("content")
+        if not isinstance(path_value, str) or not isinstance(content, str):
+            raise SkillError("Each skill file must contain a path and text content.")
+        path = _normalize_archive_name(path_value)
+        if path.name == "SKILL.md":
+            raise SkillError("Skill bundle must contain exactly one SKILL.md.")
+        portable_key = _portable_archive_key(path)
+        if portable_key in seen:
+            raise SkillError(f"Skill bundle contains duplicate path '{path_value}'.")
+        seen.add(portable_key)
+        try:
+            raw = content.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise SkillError(f"Skill file '{path_value}' must be UTF-8 text.") from exc
+        if len(raw) > MAX_SKILL_FILE_BYTES:
+            raise SkillError(f"{path.name} exceeds the {MAX_SKILL_FILE_BYTES // 1024} KB limit.")
+        total_size += len(raw)
+        selected_files.append((path, raw))
+    for key in seen:
+        parts = key.split("/")
+        if any("/".join(parts[:index]) in seen for index in range(1, len(parts))):
+            raise SkillError("Skill bundle contains conflicting file paths.")
+    if total_size > MAX_EXTRACTED_BYTES:
+        raise SkillError("Skill bundle exceeds the 100 MB extracted-size limit.")
+
+    with _LOCK:
+        root = _skills_root()
+        temporary = Path(tempfile.mkdtemp(prefix = ".create-", dir = root))
+        try:
+            skill_dir = temporary / name
+            destinations = [skill_dir / "SKILL.md"] + [
+                skill_dir.joinpath(*path.parts) for path, _ in selected_files
+            ]
+            _validate_extraction_paths(temporary, destinations)
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_bytes(manifest_raw)
+            for (path, raw), destination in zip(selected_files, destinations[1:]):
+                destination.parent.mkdir(parents = True, exist_ok = True)
+                destination.write_bytes(raw)
+            return _install_staged_skill(skill_dir, replace = replace)
+        except OSError as exc:
+            if exc.errno == errno.ENAMETOOLONG or getattr(exc, "winerror", None) == 206:
+                raise SkillError("Skill paths exceed the filesystem path limit.") from exc
             raise
         finally:
             shutil.rmtree(temporary, ignore_errors = True)
@@ -447,25 +514,14 @@ def list_skills() -> list[dict]:
                 metadata = _validate_installed_skill(candidate)
             except SkillError:
                 continue
-            skills.append(
-                {
-                    **metadata,
-                    "enabled": registry.get(metadata["name"], True),
-                    "bundled": False,
-                }
-            )
-        installed_names = {skill["name"] for skill in skills}
-        for name, (_, metadata) in _builtin_skills().items():
-            if name not in installed_names:
-                skills.append({**metadata, "enabled": registry.get(name, True), "bundled": True})
+            skills.append({**metadata, "enabled": registry.get(metadata["name"], True)})
         return sorted(skills, key = lambda skill: skill["name"])
 
 
 def set_skill_enabled(name: str, enabled: bool) -> dict:
     name = _normalize_skill_name(name)
     with _LOCK:
-        bundled = not (_skills_root() / name).exists()
-        metadata = _validate_installed_skill(_skill_directory(name))
+        metadata = _validate_installed_skill(_skills_root() / name)
         registry = _load_registry()
         if enabled:
             format_skill_catalog(
@@ -474,7 +530,7 @@ def set_skill_enabled(name: str, enabled: bool) -> dict:
             )
         registry[name] = enabled
         _save_registry(registry)
-        return {**metadata, "enabled": enabled, "bundled": bundled}
+        return {**metadata, "enabled": enabled}
 
 
 def delete_skill(name: str) -> None:
@@ -482,8 +538,6 @@ def delete_skill(name: str) -> None:
     with _LOCK:
         root = _skills_root()
         target = root / name
-        if not target.exists() and name in _builtin_skills():
-            raise SkillError(f"Skill '{name}' is bundled with Studio and cannot be deleted.")
         _validate_installed_skill(target)
         quarantine = Path(tempfile.mkdtemp(prefix = f".delete-{name}-", dir = root))
         backup = quarantine / name
@@ -533,7 +587,7 @@ def read_skill_resource(
             or any(part in ("", ".", "..") for part in path.parts)
         ):
             raise SkillError("Skill resource path must stay inside the skill directory.")
-        root = _skill_directory(name).resolve()
+        root = (_skills_root() / name).resolve()
         candidate = root.joinpath(*path.parts)
         try:
             resolved = candidate.resolve(strict = True)

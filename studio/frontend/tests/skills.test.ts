@@ -185,36 +185,49 @@ test("Agent Skills is available under More in both chat composers", () => {
   );
 });
 
-test("skill mutations and cross-tab events invalidate cached availability", () => {
-  const reset = findFunction(API_SOURCE, "resetSkillCatalogCache");
-  const resetText = compact(bodyOf(reset), API_SOURCE);
-  assert.equal(resetText.includes("catalogRevision+=1"), true);
-  assert.equal(resetText.includes("enabledSkillsCache=null"), true);
-  assert.equal(resetText.includes("enabledSkillsRequest=null"), true);
-
+test("skill mutations broadcast once and keep same-tab updates local", () => {
   for (const name of ["importSkillBundle", "setSkillEnabled", "deleteSkill"]) {
     assert.equal(
       calls(
         findFunction(API_SOURCE, name),
         API_SOURCE,
-        "clearSkillCatalogCache",
+        "broadcastSkillCatalogChanged",
       ),
       true,
-      `${name} leaves the enabled-skill cache stale`,
+      `${name} leaves other tabs stale`,
     );
   }
+  assert.equal(API_SOURCE.text.includes("clearSkillCatalogCache"), false);
 
-  const listText = compact(findFunction(API_SOURCE, "listSkills"), API_SOURCE);
-  assert.equal(listText.includes("while(true)"), true);
   assert.equal(
-    listText.includes("if(revision!==catalogRevision){continue;}"),
+    compact(
+      bodyOf(findFunction(API_SOURCE, "notifySkillCatalogChanged")),
+      API_SOURCE,
+    ).includes(
+      "catalogRevision+=1;for(constlistenerofcatalogListeners){listener();}",
+    ),
+    true,
+  );
+  assert.equal(
+    compact(
+      bodyOf(findFunction(API_SOURCE, "broadcastSkillCatalogChanged")),
+      API_SOURCE,
+    ).includes(
+      'catalogRevision+=1;getCatalogChannel()?.postMessage("changed");',
+    ),
     true,
   );
   assert.equal(
     calls(
-      findFunction(API_SOURCE, "notifySkillCatalogChanged"),
+      findFunction(API_SOURCE, "broadcastSkillCatalogChanged"),
       API_SOURCE,
-      "resetSkillCatalogCache",
+      "notifySkillCatalogChanged",
+    ),
+    false,
+  );
+  assert.equal(
+    compact(findFunction(API_SOURCE, "listSkills"), API_SOURCE).includes(
+      "if(revision===catalogRevision){returnbody.skills;}",
     ),
     true,
   );
@@ -232,6 +245,16 @@ test("skill mutations and cross-tab events invalidate cached availability", () =
     ),
     true,
   );
+  assert.equal(
+    calls(findFunction(DIALOG_SOURCE, "importBundle"), DIALOG_SOURCE, "refresh"),
+    true,
+  );
+  for (const name of ["toggleSkill", "removeSkill"]) {
+    assert.equal(
+      calls(findFunction(DIALOG_SOURCE, name), DIALOG_SOURCE, "setSkills"),
+      true,
+    );
+  }
 });
 
 test("the import input passes its selected ZIP to the API path", () => {
@@ -258,77 +281,67 @@ test("the import input passes its selected ZIP to the API path", () => {
   assert.equal(handler.includes("if(file){importBundle(file,false);}"), true);
 });
 
-test("delete controls use server-derived bundled status", () => {
+test("every installed skill has a delete control", () => {
   const dialog = compact(
     findFunction(DIALOG_SOURCE, "ChatSkillsDialog"),
     DIALOG_SOURCE,
   );
-  assert.equal(dialog.includes("!skill.bundled?"), true);
-  assert.equal(dialog.includes("metadata?.bundled"), false);
+  assert.equal(dialog.includes("setConfirmingDelete(skill)"), true);
+  assert.equal(dialog.includes("skill.bundled"), false);
+  assert.equal(compact(API_SOURCE, API_SOURCE).includes("bundled:"), false);
 });
 
-test("vision support gates the loader and every request list uses that decision", () => {
+test("vision support gates skill tools and request lists keep create and read together", () => {
   const availability = findVariable(
     ADAPTER_SOURCE,
-    "skillLoaderAvailableForThisTurn",
+    "skillToolsAvailableForThisTurn",
   );
   assert.equal(
     compact(initializerOf(availability), ADAPTER_SOURCE),
     "Boolean(supportsStudioToolsForThisTurn&&(isExternalRequest||!imageBase64||selectedModelSummary?.isGguf===true),)",
   );
-  const enabled = findVariable(ADAPTER_SOURCE, "skillsEnabledForThisTurn");
-  assert.equal(
-    compact(initializerOf(enabled), ADAPTER_SOURCE),
-    "skillLoaderAvailableForThisTurn&&(awaithasEnabledSkills())",
-  );
-
-  const loaderConditions: string[] = [];
+  const createConditions: string[] = [];
+  let pairedToolLists = 0;
   const visit = (node: ts.Node) => {
+    if (ts.isArrayLiteralExpression(node)) {
+      const toolNames = node.elements
+        .filter(ts.isStringLiteral)
+        .map((element) => element.text);
+      if (toolNames.includes("create_skill")) {
+        assert.equal(toolNames.includes("read_skill"), true);
+        pairedToolLists += 1;
+      }
+    }
     if (
       ts.isConditionalExpression(node) &&
       ts.isArrayLiteralExpression(node.whenTrue) &&
       node.whenTrue.elements.some(
         (element) =>
-          ts.isStringLiteral(element) && element.text === "read_skill",
+          ts.isStringLiteral(element) && element.text === "create_skill",
       )
     ) {
-      loaderConditions.push(node.condition.getText(ADAPTER_SOURCE));
+      createConditions.push(node.condition.getText(ADAPTER_SOURCE));
     }
     ts.forEachChild(node, visit);
   };
   visit(ADAPTER_SOURCE);
-  assert.deepEqual(loaderConditions.sort(), [
-    "skillsEnabledForThisTurn",
-    "skillsEnabledForThisTurn",
-    "skillsOn",
+  assert.deepEqual(createConditions.sort(), [
+    "skillToolsAvailableForThisTurn",
+    "skillToolsAvailableForThisTurn",
   ]);
+  assert.equal(pairedToolLists, 3);
 
   assert.equal(
     compact(ADAPTER_SOURCE, ADAPTER_SOURCE).includes(
-      "!anyWebEnabledForThisTurn&&!codeExecEnabledForThisTurn&&!imageGenerationEnabledForThisTurn&&!skillsEnabledForThisTurn",
+      "!anyWebEnabledForThisTurn&&!codeExecEnabledForThisTurn&&!imageGenerationEnabledForThisTurn&&!skillToolsAvailableForThisTurn",
     ),
     true,
   );
 });
 
-test("token counts query skill availability and include its schema", () => {
+test("token counts include create and server-filtered read schemas", () => {
   const tokenCount = findFunction(ADAPTER_SOURCE, "buildLocalTokenCountExtras");
-  const skillsOn = findDescendant(
-    tokenCount,
-    (node): node is ts.VariableDeclaration =>
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.name.text === "skillsOn",
-    "token-count skill availability not found",
-  );
-  assert.equal(
-    compact(initializerOf(skillsOn), ADAPTER_SOURCE),
-    "awaithasEnabledSkills()",
-  );
-  assert.equal(
-    compact(tokenCount, ADAPTER_SOURCE).includes(
-      '...(skillsOn?["read_skill"]:[])',
-    ),
-    true,
-  );
+  const text = compact(tokenCount, ADAPTER_SOURCE);
+  assert.equal(text.includes('"create_skill","read_skill"'), true);
+  assert.equal(text.includes("hasEnabledSkills"), false);
 });

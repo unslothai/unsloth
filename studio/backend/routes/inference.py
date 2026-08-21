@@ -3197,8 +3197,8 @@ def _confirm_gate_needs_stream(payload) -> bool:
     The gate can only prompt while streaming, so a non-streaming request that will
     prompt must 400 up front. auto ("Approve for me") only prompts for a call the
     classifier flags, so an auto request whose confirm is derived from the mode
-    (not an explicit confirm_tool_calls=true) and whose selectable tools are all
-    always-safe (web_search / RAG) never prompts and needs no stream. ask,
+    (not an explicit confirm_tool_calls=true) and whose selectable tools never
+    prompt in auto needs no stream. ask,
     an explicit confirm flag, MCP tools, and an unrestricted or unsafe selection
     still require streaming.
     """
@@ -3222,7 +3222,9 @@ def _confirm_gate_needs_stream(payload) -> bool:
     # web_search prompts once the model supplies a ``url`` (it fetches that page), and the
     # gate can only prompt while streaming. Without this a non-streaming auto request is
     # admitted, then blocks in wait_tool_decision on an approval the client never reads.
-    return not all(is_always_safe_tool(t) and t != "web_search" for t in enabled)
+    return not all(
+        (is_always_safe_tool(t) and t != "web_search") or t == "create_skill" for t in enabled
+    )
 
 
 def _anthropic_reasoning_args(payload) -> dict:
@@ -20892,14 +20894,14 @@ _STUDIO_ANTHROPIC_TOOL_ALIASES = {
     "python": "python",
     "terminal": "terminal",
 }
-# Server tools that never need a confirmation prompt (read-only / non code-
-# executing; mirrors the unconditional-safe names in is_potentially_unsafe_tool_call).
-# Any other selected tool (terminal, python, render_html) can require the gate
-# this channel has no way to present, so an omitted permission_mode ("ask") only
-# asks then. render_html is excluded because a networked canvas prompts in auto,
-# and this channel invokes the loop without confirm; auto/ask reject, off/full run.
 _ANTHROPIC_UNPROMPTED_SAFE_TOOLS = frozenset(
-    {"web_search", "search_knowledge_base", "search_conversation", "read_skill"}
+    {
+        "web_search",
+        "search_knowledge_base",
+        "search_conversation",
+        "create_skill",
+        "read_skill",
+    }
 )
 
 

@@ -206,18 +206,16 @@ export function ChatSkillsDialog({
                       onCheckedChange={(enabled) => toggleSkill(skill, enabled)}
                       aria-label={`Enable ${skill.name}`}
                     />
-                    {!skill.bundled ? (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        disabled={busyName === skill.name}
-                        onClick={() => setConfirmingDelete(skill)}
-                        aria-label={`Delete ${skill.name}`}
-                      >
-                        <Trash2Icon size={14} />
-                      </Button>
-                    ) : null}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      disabled={busyName === skill.name}
+                      onClick={() => setConfirmingDelete(skill)}
+                      aria-label={`Delete ${skill.name}`}
+                    >
+                      <Trash2Icon size={14} />
+                    </Button>
                   </div>
                 </li>
               ))}
@@ -238,7 +236,7 @@ export function ChatSkillsDialog({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete skill</AlertDialogTitle>
             <AlertDialogDescription>
-              Delete &quot;{confirmingDelete?.name}&quot; and all bundled files?
+              Delete &quot;{confirmingDelete?.name}&quot; and all of its files?
               This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
