@@ -3009,6 +3009,7 @@ _CPU_PLACEMENT_PRESENCE_FLAGS = (_MOE_OFFLOAD_FLAGS - _CPU_MOE_COUNT_FLAGS) | fr
 )
 _CPU_PLACEMENT_FLAGS = _MOE_OFFLOAD_FLAGS | frozenset({"-ot", "--override-tensor"})
 _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
+_TENSOR_SPLIT_FLAGS = frozenset({"--tensor-split", "-ts"})
 
 
 def _strip_flag_pairs(args: Iterable[str], flags: frozenset[str]) -> list[str]:
@@ -8436,7 +8437,17 @@ class LlamaCppBackend:
             names = {device.strip().lower() for device in str(pinned).split(",")}
             reachable = {idx for idx, _free in rows if f"vulkan{idx}" in names}
         pool = 0
-        if shared_gpu_ids and self._argv_offloads_every_layer(argv, env):
+        if (
+            shared_gpu_ids
+            and self._argv_offloads_every_layer(argv, env)
+            # An explicit per-device ratio hands out shares positionally, in llama.cpp's
+            # own enumeration order, which this cannot map onto probe indices -- the same
+            # reason --fit-target is broadcast rather than listed. A zero share for the
+            # shared device puts no weight in its heap at all, and no share is verifiable
+            # here, so any split leaves the pool uncredited.
+            and not _extra_args_set_any_flag(argv, _TENSOR_SPLIT_FLAGS)
+            and not str((env or {}).get("LLAMA_ARG_TENSOR_SPLIT") or "").strip()
+        ):
             pool = max(
                 (free for idx, free in rows if idx in shared_gpu_ids and idx in reachable),
                 default = 0,
