@@ -285,9 +285,9 @@ def test_a_filtered_variant_set_cannot_drop_every_positive_control() -> None:
     MUST_FLICKER member has to be refused up front rather than exiting clean.
     """
     source = harness_source()
-    assert "MUST_FLICKER & set(VARIANTS)" in source, (
-        "the harness does not check that the selected variants keep a positive control"
-    )
+    assert (
+        "MUST_FLICKER & set(VARIANTS)" in source
+    ), "the harness does not check that the selected variants keep a positive control"
     guard = source[source.index("if not MUST_FLICKER & set(VARIANTS)") :]
     assert "raise SystemExit" in guard[:400], "the missing-control check does not stop the run"
 
