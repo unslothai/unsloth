@@ -127,6 +127,10 @@ test("skill catalog changes recount context after active runs finish", () => {
   );
   assert.match(runtimeSource, /setCatalogRevision[\s\S]{0,100}\}, true\);/);
   assert.match(
+    skillsApiSource,
+    /if \(typeof window !== "undefined"\) \{\s*getCatalogChannel\(\);/,
+  );
+  assert.match(
     runtimeSource,
     /runActive[\s\S]{0,300}catalogRecountPending\.current[\s\S]{0,240}supersedeInFlight: true[\s\S]{0,80}!activeThreadId/,
   );

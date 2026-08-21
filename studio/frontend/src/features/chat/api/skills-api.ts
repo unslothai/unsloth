@@ -50,6 +50,10 @@ function getCatalogChannel(): BroadcastChannel | null {
   return catalogChannel;
 }
 
+if (typeof window !== "undefined") {
+  getCatalogChannel();
+}
+
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {

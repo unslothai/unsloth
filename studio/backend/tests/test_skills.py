@@ -780,6 +780,44 @@ def test_large_resources_are_read_in_bounded_pages(tmp_path: Path):
     assert "Resource continues" not in second
 
 
+def test_resource_path_limit_keeps_fallback_tool_pages_readable():
+    from core.inference.tools import execute_tool
+
+    name = "\U00020000" * 63
+    assert len(name.encode("utf-8")) == 252
+    resource = f"{'a' * 200}/{'b' * 195}.txt"
+    assert len(resource.encode("utf-8")) == skills.MAX_SKILL_RESOURCE_PATH_BYTES
+    skills.create_skill(
+        name,
+        SKILL_MD.replace("name: unsloth", f"name: {name}"),
+        [{"path": resource, "content": "x" * 3_000}],
+    )
+
+    result = execute_tool("read_skill", {"name": name, "resource": resource})
+
+    assert len(result.encode("utf-8")) + 8 <= 1_536
+    assert "Resource continues" in result
+
+
+def test_rejects_resource_paths_outside_the_readable_envelope(tmp_path: Path):
+    resource = f"{'a' * 200}/{'b' * 196}.txt"
+    assert len(resource.encode("utf-8")) == skills.MAX_SKILL_RESOURCE_PATH_BYTES + 1
+
+    with pytest.raises(skills.SkillError, match = "400 UTF-8 bytes"):
+        skills.create_skill(
+            "unsloth",
+            SKILL_MD,
+            [{"path": resource, "content": "content"}],
+        )
+
+    archive = _bundle(
+        tmp_path / "long-resource.zip",
+        {"unsloth/SKILL.md": SKILL_MD, f"unsloth/{resource}": "content"},
+    )
+    with pytest.raises(skills.SkillError, match = "400 UTF-8 bytes"):
+        skills.import_skill_archive(archive)
+
+
 def test_tool_pages_dense_resources_to_the_remaining_context_budget(tmp_path: Path):
     from core.inference.tools import execute_tool
 
