@@ -3269,9 +3269,7 @@ def sync_chat_messages(
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
         messages = [
-            message
-            for message in messages
-            if not _references_tombstoned_generation(conn, message)
+            message for message in messages if not _references_tombstoned_generation(conn, message)
         ]
         # Generation-linked messages are server-managed: keep the record rather than reject the
         # batch on client drift. No _guard_research_messages call here as a result -- these ids
