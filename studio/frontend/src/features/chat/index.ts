@@ -23,6 +23,7 @@ export {
   loadModel,
   unloadModel,
   notifyChatHistoryUpdated,
+  notifyChatProjectsUpdated,
   removeScanFolder,
   revealCachedModel,
   type BrowseFoldersResponse,
@@ -64,7 +65,6 @@ export {
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
 export {
   preferFullToolOutput,
-
   preferSanitizedFullToolOutput,
   toolOutputKey,
   toolThreadScope,
