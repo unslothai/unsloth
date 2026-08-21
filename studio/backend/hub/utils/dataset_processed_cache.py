@@ -20,6 +20,16 @@ _CACHE_DIRNAME = "snapshot-loads"
 _METADATA_FILENAME = "metadata.json"
 
 
+class UnsafeDatasetCachePathError(OSError):
+    """A processed cache entry is not provably inside the trusted cache root.
+
+    Kept distinct from a plain ``OSError`` so a caller doing best-effort bookkeeping can
+    swallow "the write did not land" (purged entry, read-only home, full disk) without
+    also swallowing "this path is no longer trusted". Subclasses ``OSError`` so existing
+    ``except OSError`` callers keep catching it.
+    """
+
+
 @dataclass(frozen = True)
 class AppProcessedDatasetCache:
     repo_id: str
@@ -106,6 +116,63 @@ def _resolved_app_processed_dataset_cache_root(*, create: bool) -> Optional[Path
         return None
 
 
+def _symlinked_component(path: Path, root: Path) -> Optional[Path]:
+    """First symlinked component on the way from ``root`` down to ``path``, if any.
+
+    Walks the components rather than testing only the leaf, because a swapped hashed
+    parent redirects the entry just as effectively as a swapped leaf, and ``is_symlink()``
+    on the leaf reports False in that case. Returns None when ``path`` is not lexically
+    under ``root``; the caller's escape check covers that.
+    """
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return None
+    current = root
+    for part in relative.parts:
+        current = current / part
+        try:
+            if current.is_symlink():
+                return current
+        except OSError:
+            return current
+    return None
+
+
+def _cache_root_is_present() -> bool:
+    """Whether the root is present-but-unresolvable rather than simply gone.
+
+    A dangling symlink anywhere between ``cache_root()`` and ``snapshot-loads`` leaves
+    ``exists()`` False on the leaf -- it follows the broken parent -- while the tree has
+    in fact been redirected. Testing only the leaf therefore reports a redirected root as
+    a plain missing directory, which the caller treats as a benign purge. Walk the
+    components so any link in the chain counts as present.
+    """
+    from utils.paths.storage_roots import cache_root
+
+    try:
+        configured_root = Path(cache_root()).expanduser()
+        root_path = app_processed_dataset_cache_root().expanduser()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+    # The configured root is the trust anchor, so classify it too -- the walk below only
+    # covers its descendants. Anything ABOVE it is the user's own filesystem layout and
+    # deliberately out of scope. This only runs once resolution has already failed, so a
+    # live symlink pointing the cache at another volume -- a legitimate setup -- resolves
+    # normally and never reaches here.
+    try:
+        if configured_root.is_symlink():
+            return True
+    except OSError:
+        return True
+    if _symlinked_component(root_path, configured_root) is not None:
+        return True
+    try:
+        return root_path.is_symlink() or root_path.exists()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+
+
 def _atomic_write_metadata(path: Path, payload: dict[str, Any]) -> None:
     temporary = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex[:8]}")
     try:
@@ -182,11 +249,28 @@ def prepare_app_processed_dataset_cache(repo_id: str, snapshot: Path) -> AppProc
 def mark_app_processed_dataset_cache_complete(entry: AppProcessedDatasetCache) -> None:
     root = _resolved_app_processed_dataset_cache_root(create = False)
     if root is None:
-        raise OSError("Dataset cache root is unavailable")
+        # A root that is simply gone was purged out from under us -- benign. A root that
+        # is still there but would not resolve inside the trusted root is a symlink or an
+        # escape, so it must not be reported as a mere missing directory.
+        if _cache_root_is_present():
+            raise UnsafeDatasetCachePathError("Dataset cache root is not inside the trusted root")
+        raise FileNotFoundError("Dataset cache root is unavailable")
+    # Classify symlinked components BEFORE resolving. A symlink whose target is removed
+    # between the load and here makes strict resolution raise FileNotFoundError, which a
+    # best-effort caller reads as "the entry was purged" -- hiding the very swap this
+    # check exists to catch. Every component under the root has to be checked, not just
+    # the leaf: swapping a hashed parent redirects the entry just as effectively.
+    for candidate in (entry.path, entry.cache_dir):
+        linked = _symlinked_component(candidate, root)
+        if linked is not None:
+            raise UnsafeDatasetCachePathError(f"Dataset cache path is a symlink: {linked}")
     entry_path = entry.path.resolve(strict = True)
-    entry_path.relative_to(root)
-    if entry.path.is_symlink() or entry.cache_dir.is_symlink():
-        raise OSError(f"Dataset cache path is a symlink: {entry.path}")
+    try:
+        entry_path.relative_to(root)
+    except ValueError as error:
+        raise UnsafeDatasetCachePathError(
+            f"Dataset cache entry escapes the cache root: {entry.path}"
+        ) from error
     _atomic_write_metadata(
         entry_path / _METADATA_FILENAME,
         _metadata_payload(
