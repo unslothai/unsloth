@@ -661,7 +661,7 @@ function StreamdownBlockContent(props: BlockProps) {
                   ? prepareOversizedCodeHighlight
                   : undefined
               }
-              source={exactCodeSource ?? streamingCodeFence.source}
+              source={streamingCodeFence.source}
             />
           ) : (
             renderBlock()

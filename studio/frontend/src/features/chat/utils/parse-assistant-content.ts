@@ -8,6 +8,7 @@ type ContentPart = NonNullable<ChatModelRunResult["content"]>[number];
 const THINK_OPEN_TAG = "<think>";
 const THINK_CLOSE_TAG = "</think>";
 
+const MIN_REASONING_MIRROR_CHARACTERS = 256;
 /**
  * Normalize streamed string or structured delta content to inline text.
  * Structured reasoning-only chunks remain distinguishable so their fallback
@@ -86,13 +87,12 @@ export type ReasoningMirrorGuard = {
 };
 
 /**
- * Some local OpenAI-compatible servers emit the accumulated reasoning twice when
- * a thinking model stops before producing an answer: first incrementally through
- * `reasoning_content`, then once more as a terminal `content` delta. Keep the
- * second copy out of the visible answer without hiding a real answer that began
- * before the terminal chunk.
+ * Filters the affected local backend's terminal reasoning mirror without
+ * suppressing short or provider-owned answer text.
  */
-export function createReasoningMirrorGuard(): ReasoningMirrorGuard {
+export function createReasoningMirrorGuard(
+  suppressTerminalMirror: boolean,
+): ReasoningMirrorGuard {
   let reasoning = "";
   let hasVisibleText = false;
 
@@ -104,6 +104,8 @@ export function createReasoningMirrorGuard(): ReasoningMirrorGuard {
       if (!delta) return "";
       if (
         terminal &&
+        suppressTerminalMirror &&
+        reasoning.length >= MIN_REASONING_MIRROR_CHARACTERS &&
         !hasVisibleText &&
         reasoning.length === delta.length &&
         reasoning === delta

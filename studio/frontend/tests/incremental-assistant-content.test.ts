@@ -261,8 +261,8 @@ test("a think block split by a tool boundary parses as the adapter parses it", (
 });
 
 test("a terminal server mirror of reasoning never becomes visible answer text", () => {
-  const guard = createReasoningMirrorGuard();
-  const first = "reasoning with markdown\n";
+  const guard = createReasoningMirrorGuard(true);
+  const first = "reasoning with markdown\n".repeat(16);
   const second = "```js\nconst value = 1;\n```";
   guard.appendReasoning(first);
   assert.equal(guard.filterVisibleText("", false), "");
@@ -272,7 +272,7 @@ test("a terminal server mirror of reasoning never becomes visible answer text", 
 });
 
 test("the reasoning mirror guard preserves genuine answer deltas", () => {
-  const streamedAnswer = createReasoningMirrorGuard();
+  const streamedAnswer = createReasoningMirrorGuard(true);
   streamedAnswer.appendReasoning("same words");
   assert.equal(streamedAnswer.filterVisibleText("Answer: ", false), "Answer: ");
   assert.equal(
@@ -280,10 +280,24 @@ test("the reasoning mirror guard preserves genuine answer deltas", () => {
     "same words",
   );
 
-  const terminalAnswer = createReasoningMirrorGuard();
+  const terminalAnswer = createReasoningMirrorGuard(true);
   terminalAnswer.appendReasoning("reasoning");
   assert.equal(
     terminalAnswer.filterVisibleText("different answer", true),
     "different answer",
+  );
+});
+
+test("mirror suppression is local-only and keeps short equal answers", () => {
+  const localShortAnswer = createReasoningMirrorGuard(true);
+  localShortAnswer.appendReasoning("42");
+  assert.equal(localShortAnswer.filterVisibleText("42", true), "42");
+
+  const providerAnswer = createReasoningMirrorGuard(false);
+  const longEqualAnswer = "provider-owned answer ".repeat(32);
+  providerAnswer.appendReasoning(longEqualAnswer);
+  assert.equal(
+    providerAnswer.filterVisibleText(longEqualAnswer, true),
+    longEqualAnswer,
   );
 });

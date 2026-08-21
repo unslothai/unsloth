@@ -4929,7 +4929,9 @@ export function createOpenAIStreamAdapter(
       // SSE loop because the close tag fires when content arrives.
       let reasoningContentOpen = false;
 
-      const reasoningMirrorGuard = createReasoningMirrorGuard();
+      const reasoningMirrorGuard = createReasoningMirrorGuard(
+        !isExternalRequest,
+      );
       type ToolCallProvenance = {
         source?: string;
         healed?: boolean;
