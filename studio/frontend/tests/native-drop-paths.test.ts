@@ -60,7 +60,7 @@ const OPEN_DOCUMENT_EXTENSION_RE = /\.ods/;
 const OPEN_DOCUMENT_ADAPTER_ACCEPT_RE =
   /class OpenDocumentAttachmentAdapter[^{]*\{[\s\S]*?accept = OPEN_DOCUMENT_ATTACHMENT_ACCEPT;/;
 const OPEN_DOCUMENT_DROP_TO_COMPOSER_RE =
-  /const composerAttachments = \[[\s\S]*?\.\.\.registered\.images,[\s\S]*?\.\.\.registered\.composerDocuments,[\s\S]*?await attachOptions\.onAttachImages\?\.\(composerAttachments\)/;
+  /const composerAttachments = \[[\s\S]*?\.\.\.registered\.composerDocuments,[\s\S]*?\.\.\.registered\.images,[\s\S]*?await attachOptions\.onAttachImages\?\.\(composerAttachments\)/;
 const OPEN_DOCUMENT_REGISTRATION_CLASS_RE =
   /const composerDocumentPaths = docPaths\.filter\(isComposerAttachmentName\);[\s\S]*?const ragDocumentPaths = docPaths\.filter[\s\S]*?registerEach\(ragDocumentPaths\),[\s\S]*?registerEach\(composerDocumentPaths\),[\s\S]*?composerDocuments: composerDocuments\.intents/;
 const OPEN_DOCUMENT_IMAGE_REGISTRATION_RE =
@@ -627,6 +627,15 @@ test("RAG documents keep their existing route", () => {
     assert.equal(classifyDropPaths([path]).kind, "docs", path);
     assert.equal(isComposerAttachmentName(path), false, path);
   }
+});
+
+test("a dotfile is not mistaken for a source file", () => {
+  // Rust classifies on Path::extension, which ".env" does not have.
+  for (const path of ["/p/.env", "/p/.properties", "/p/.log"]) {
+    assert.equal(isComposerAttachmentName(path), false, path);
+    assert.equal(classifyDropPaths([path]).kind, "unsupported", path);
+  }
+  assert.equal(isComposerAttachmentName("/p/app.env"), true);
 });
 
 test("an unreadable type is still refused", () => {

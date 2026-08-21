@@ -391,9 +391,11 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
             if (registered.docs.length > 0) {
               await attachOptions.onAttach?.(registered.docs);
             }
+            // Documents first: a vision-less model throws on the image and
+            // aborts the batch, which would discard them.
             const composerAttachments = [
-              ...registered.images,
               ...registered.composerDocuments,
+              ...registered.images,
             ];
             if (composerAttachments.length > 0) {
               await attachOptions.onAttachImages?.(composerAttachments);

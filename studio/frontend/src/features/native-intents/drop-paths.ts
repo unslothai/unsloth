@@ -21,8 +21,11 @@ export function isComposerAttachmentName(path: string): boolean {
 }
 
 function isTextDropName(path: string): boolean {
-  const lower = path.toLowerCase();
-  return TEXT_EXTS.some((ext) => lower.endsWith(ext));
+  // Rust classifies on Path::extension, which a dotfile like ".env" has none of.
+  const name = nativeFileName(path).toLowerCase();
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return false;
+  return TEXT_EXTS.includes(name.slice(dot));
 }
 
 /** Vision chat attachments; keep in sync with `shared-composer` `IMAGE_ACCEPT`. */

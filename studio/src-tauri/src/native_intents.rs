@@ -602,8 +602,9 @@ pub fn open_path_token(
 // Covers the generic client-side limit (audio, 25 MB).
 const MAX_NATIVE_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
 
-// Text inlines whole into the prompt, so it gets a far smaller ceiling.
-const MAX_NATIVE_TEXT_BYTES: u64 = 2 * 1024 * 1024;
+// Matches the clipboard reader, so a dropped source file and a pasted one
+// accept the same sizes.
+const MAX_NATIVE_TEXT_BYTES: u64 = 20 * 1024 * 1024;
 // OpenDocument archives use the composer's larger archive limit.
 const MAX_NATIVE_OPEN_DOCUMENT_BYTES: u64 = 50 * 1024 * 1024;
 // Images stop lower: the composer throws over 20 MB without a toast and the
@@ -642,7 +643,7 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         "avi" => Some("video/x-msvideo"),
         "ods" => Some("application/vnd.oasis.opendocument.spreadsheet"),
         "odt" => Some("application/vnd.oasis.opendocument.text"),
-        // Stamped like native_clipboard.rs, so a drop and a paste agree.
+        // Stamped like native_clipboard.rs.
         "json" | "jsonl" | "ndjson" => Some("application/json"),
         "mdx" => Some("text/markdown"),
         "csv" => Some("text/csv"),
