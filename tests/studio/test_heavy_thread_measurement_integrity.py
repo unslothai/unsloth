@@ -374,21 +374,16 @@ const notify = () => {
   queueMicrotask(() => { if (observer) { notifications += 1; observer([]); } });
 };
 const trigger = {
-  tagName: "BUTTON",
-  focus: () => { document.activeElement = trigger; },
   dispatchEvent: (e) => { if (e.type === "pointerdown") { menuOpen = true; notify(); } },
 };
 globalThis.document = {
   body: {},
-  activeElement: null,
   querySelector: (sel) => {
     querySelectorCalls += 1;
     return sel === ".aui-action-bar-more-content" && menuOpen ? {} : null;
   },
   querySelectorAll: () => { querySelectorAllCalls += 1; return []; },
-  dispatchEvent: (e) => {
-    if (e.type === "keydown") { menuOpen = false; document.activeElement = trigger; notify(); }
-  },
+  dispatchEvent: (e) => { if (e.type === "keydown") { menuOpen = false; notify(); } },
 };
 window.__heavyThread = { actionButton: () => trigger, openMenuItemCount: () => 5 };
 const menu = eval("(" + MENU_JS + ")");
@@ -443,18 +438,13 @@ globalThis.getComputedStyle = () => ({ pointerEvents: menuOpen ? "none" : "auto"
 // flag, so it always waits out one __nextPaint() even when the menu opened instantly.
 const notify = () => { queueMicrotask(() => { if (observer) observer(); }); };
 const trigger = {
-  tagName: "BUTTON",
-  focus: () => { document.activeElement = trigger; },
   dispatchEvent: (e) => { if (e.type === "pointerdown") { menuOpen = true; notify(); } },
 };
 globalThis.document = {
   body: {},
-  activeElement: null,
   querySelector: (sel) => (sel === ".aui-action-bar-more-content" && menuOpen ? {} : null),
   querySelectorAll: () => [],
-  dispatchEvent: (e) => {
-    if (e.type === "keydown") { menuOpen = false; document.activeElement = trigger; notify(); }
-  },
+  dispatchEvent: (e) => { if (e.type === "keydown") { menuOpen = false; notify(); } },
 };
 window.__heavyThread = {
   actionButton: () => trigger,
@@ -718,6 +708,9 @@ class StubPage:
         if "restore()" in script:
             self.log.append(("evaluate", "restore"))
             return 20
+        if 'actionButton("More")?.focus' in script:
+            self.log.append(("evaluate", "focusMenu"))
+            return None
         if "__hvTokens = undefined" in script:
             return None
         self.log.append(("evaluate", "other"))
@@ -810,6 +803,11 @@ def test_the_smoke_page_can_restore_the_thread_it_seeded() -> None:
     )
     assert "restore(): number" in page
     assert "seeded.current = built.messages" in page
+
+
+def test_menu_focus_setup_runs_before_the_measured_action() -> None:
+    log = repetition_log()
+    assert log.index(("evaluate", "focusMenu")) < log.index(("action", "MENU_JS")), log
 
 
 # ── the declared paint floor ──────────────────────────────────────────

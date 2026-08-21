@@ -560,9 +560,6 @@ async (timeoutMs) => {
     bubbles: true, cancelable: true, composed: true,
     button: 0, pointerId: 1, pointerType: "mouse", isPrimary: true,
   };
-  // Establish keyboard focus outside the recorder so focus styles are not charged to the menu.
-  trigger.focus();
-  await window.__nextPaint();
   const triggerFocusedBeforeOpen = document.activeElement === trigger;
   window.__hv.begin();
   const openStarted = performance.now();
@@ -914,6 +911,12 @@ def one_repetition(page, cdp) -> dict[str, dict]:
         timeout = ACTION_TIMEOUT_MS,
     )
     page.locator('[data-role="assistant"]').last.hover(timeout = ACTION_TIMEOUT_MS)
+    page.evaluate(
+        """async () => {
+            window.__heavyThread.actionButton("More")?.focus();
+            await window.__nextPaint();
+        }"""
+    )
     rep["menu"] = run_action(page, cdp, "menu", MENU_JS, SETTLE_TIMEOUT_MS)
 
     page.locator('[data-role="assistant"]').last.hover(timeout = ACTION_TIMEOUT_MS)
