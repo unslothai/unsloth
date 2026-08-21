@@ -67,6 +67,18 @@ def test_tauri_builds_and_signs_deb_and_complete_appimage_together():
     assert "tauri-driver --version 2.0.6 --locked" in webdriver_install["run"]
     assert "appimage_model_download_webdriver.py" in e2e_source
 
+    colrv1_sha = "0ae57fe58645638523ba35f388d93739d292539a9acb84df5700c81b1e1a28d2"
+    assert "googlefonts/noto-emoji/8998f5dd683424a73e2314a8c1f1e359c19e8742" in e2e_source
+    assert e2e_source.count(colrv1_sha) >= 2
+    assert "APPIMAGE_COLRV1_FONT" in e2e_source
+    webdriver_script = (
+        REPO_ROOT / "tests/studio/appimage_model_download_webdriver.py"
+    ).read_text(encoding = "utf-8")
+    assert "Unsloth Test COLRv1" in webdriver_script
+    assert '"route": "/hub"' in webdriver_script
+    assert '"survived_seconds": 0' in webdriver_script
+    assert "colrv1-model-hub.json" in webdriver_script
+
 
 def test_appimage_pr_build_is_unsigned_and_feeds_every_artifact_test():
     workflow = yaml.safe_load(CLEAN_MACHINE_WORKFLOW.read_text(encoding = "utf-8"))
