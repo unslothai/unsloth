@@ -70,6 +70,15 @@ const DEFAULT_UPDATE_POLICY: DesktopUpdatePolicy = {
   releasePageBaseUrl: "https://github.com/unslothai/unsloth/releases/tag/",
   releaseTagPrefix: "v",
 };
+const STARTUP_UPDATE_CHECK_DELAY_MS = 5000;
+const PERIODIC_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+type DesktopUpdate = NonNullable<Awaited<ReturnType<typeof checkDesktopUpdate>>>;
+
+function closeDesktopUpdate(update: DesktopUpdate): void {
+  update.close().catch((error) => {
+    console.warn("Could not release desktop update resource:", error);
+  });
+}
 
 // Desktop quit never fires beforeunload, and only the renderer sees the shell installer.
 function publishShellUpdateActive(active: boolean): void {
@@ -114,9 +123,9 @@ export function useTauriUpdate(isExternalServer = false) {
   const [error, setError] = useState<string | null>(null);
   const [lastFailure, setLastFailure] = useState<RetainedUpdateFailure | null>(null);
   const [updatePolicy, setUpdatePolicy] = useState<DesktopUpdatePolicy>(DEFAULT_UPDATE_POLICY);
-  const updateRef = useRef<Awaited<ReturnType<typeof checkDesktopUpdate>>>(null);
+  const updateRef = useRef<DesktopUpdate | null>(null);
+  const lifecycleRef = useRef(0);
   const checkedRef = useRef(false);
-  const startupScheduledRef = useRef(false);
   const checkingRef = useRef(false);
   const updatingRef = useRef(false);
   // Windows kill-on-close: false once a re-arm has failed, and every path that
@@ -142,6 +151,14 @@ export function useTauriUpdate(isExternalServer = false) {
   function replaceInfo(nextInfo: UpdateInfo | null) {
     infoRef.current = nextInfo;
     setInfo(nextInfo);
+  }
+
+  function replaceUpdate(nextUpdate: DesktopUpdate | null) {
+    const previousUpdate = updateRef.current;
+    updateRef.current = nextUpdate;
+    if (previousUpdate && previousUpdate !== nextUpdate) {
+      closeDesktopUpdate(previousUpdate);
+    }
   }
 
   function offerUpdate(nextInfo: UpdateInfo) {
@@ -215,22 +232,14 @@ export function useTauriUpdate(isExternalServer = false) {
     }
   }
 
-  async function checkManualUpdate(policy: DesktopUpdatePolicy) {
-    if (policy.mode !== "manual_linux_package") return false;
+  async function checkManualUpdate(
+    policy: DesktopUpdatePolicy,
+  ): Promise<ManualUpdateInfo | null> {
+    if (policy.mode !== "manual_linux_package") return null;
     const { invoke } = await import("@tauri-apps/api/core");
-    const manualUpdate = await invoke<ManualUpdateInfo | null>(
+    return invoke<ManualUpdateInfo | null>(
       "check_desktop_manual_update",
     );
-    if (!manualUpdate) return false;
-    updateRef.current = null;
-    offerUpdate({
-      version: manualUpdate.version,
-      currentVersion: manualUpdate.currentVersion,
-      pypiVersion: manualUpdate.pypiVersion ?? undefined,
-      body: manualUpdate.body,
-      date: manualUpdate.date,
-    });
-    return true;
   }
 
   async function openManualUpdatePage(policy: DesktopUpdatePolicy, version: string) {
@@ -244,6 +253,8 @@ export function useTauriUpdate(isExternalServer = false) {
 
   async function checkForUpdate() {
     if (checkingRef.current || updatingRef.current) return;
+    const lifecycle = lifecycleRef.current;
+    let pendingUpdate: DesktopUpdate | null = null;
     // A manual check covers startup, so the delayed timer must not repeat it.
     checkedRef.current = true;
     checkingRef.current = true;
@@ -252,14 +263,27 @@ export function useTauriUpdate(isExternalServer = false) {
 
     try {
       const { policy, resolved } = await resolveUpdatePolicy();
+      if (lifecycle !== lifecycleRef.current) return;
 
       if (policy.mode === "manual_linux_package") {
         // Self-gates on the real target_os, so it is authoritative even if policy is a guess.
-        if (await checkManualUpdate(policy)) return;
+        const manualUpdate = await checkManualUpdate(policy);
+        if (lifecycle !== lifecycleRef.current) return;
+        if (manualUpdate) {
+          replaceUpdate(null);
+          offerUpdate({
+            version: manualUpdate.version,
+            currentVersion: manualUpdate.currentVersion,
+            pypiVersion: manualUpdate.pypiVersion ?? undefined,
+            body: manualUpdate.body,
+            date: manualUpdate.date,
+          });
+          return;
+        }
         if (resolved) {
           // latest.json has no deb/rpm key, so the in-app updater would offer an
           // AppImage this install cannot apply. Stop instead.
-          updateRef.current = null;
+          replaceUpdate(null);
           replaceInfo(null);
           setStatus("idle");
           return;
@@ -268,43 +292,66 @@ export function useTauriUpdate(isExternalServer = false) {
         // and do have an in-app path. Fall through to it.
       }
 
-      const update = await checkDesktopUpdate();
-      if (update) {
-        updateRef.current = update;
-        offerUpdate({
-          version: update.version,
-          currentVersion: update.currentVersion,
-          pypiVersion: rawPypiVersion(update.rawJson),
-          body: update.body,
-          date: update.date,
-        });
+      pendingUpdate = await checkDesktopUpdate();
+      const nextInfo = pendingUpdate
+        ? {
+            version: pendingUpdate.version,
+            currentVersion: pendingUpdate.currentVersion,
+            pypiVersion: rawPypiVersion(pendingUpdate.rawJson),
+            body: pendingUpdate.body,
+            date: pendingUpdate.date,
+          }
+        : null;
+      if (lifecycle !== lifecycleRef.current) return;
+      replaceUpdate(pendingUpdate);
+      pendingUpdate = null;
+      if (nextInfo) {
+        offerUpdate(nextInfo);
       } else {
-        updateRef.current = null;
         replaceInfo(null);
         setStatus("idle");
       }
     } catch (e) {
-      console.error("Update check failed:", e);
-      setCheckError(String(e));
-      setStatus(infoRef.current ? "available" : "idle");
+      if (lifecycle === lifecycleRef.current) {
+        console.error("Update check failed:", e);
+        setCheckError(String(e));
+        setStatus(infoRef.current ? "available" : "idle");
+      }
     } finally {
+      if (pendingUpdate) {
+        closeDesktopUpdate(pendingUpdate);
+      }
       checkingRef.current = false;
-      setHasChecked(true);
+      if (lifecycle === lifecycleRef.current) {
+        setHasChecked(true);
+      }
     }
   }
-  // Startup owns one delayed check; this ref keeps a per-render function out of
-  // the empty dep list. The closure reads only refs/setState, so it cannot stale.
-  const initialCheckRef = useRef(checkForUpdate);
+  // scheduled checks use the mount's stable closure, which only reads refs and state setters.
+  const scheduledCheckRef = useRef(checkForUpdate);
 
   useEffect(() => {
-    if (!isTauri || startupScheduledRef.current) return;
-    startupScheduledRef.current = true;
+    if (!isTauri) {
+      return;
+    }
+    lifecycleRef.current += 1;
 
-    const timer = setTimeout(() => {
-      if (checkedRef.current) return;
-      void initialCheckRef.current();
-    }, 5000);
-    return () => clearTimeout(timer);
+    const startupTimer = setTimeout(() => {
+      if (checkedRef.current) {
+        return;
+      }
+      void scheduledCheckRef.current();
+    }, STARTUP_UPDATE_CHECK_DELAY_MS);
+    const periodicTimer = setInterval(() => {
+      void scheduledCheckRef.current();
+    }, PERIODIC_UPDATE_CHECK_INTERVAL_MS);
+
+    return () => {
+      lifecycleRef.current += 1;
+      clearTimeout(startupTimer);
+      clearInterval(periodicTimer);
+      replaceUpdate(null);
+    };
   }, []);
 
   async function installUpdate() {
