@@ -4172,10 +4172,14 @@ _persist_rocm_aotriton_env() {
         printf 'export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1\n'
         printf '# <<< Unsloth ROCm AOTriton attention <<<\n'
     )"
+    # 0644 explicitly: both writers inherit the caller's umask (sudo unions it with the
+    # sudoers one), and a 077 umask would leave a drop-in no other login shell can read.
     if [ "$(id -u)" = "0" ]; then
         printf '%s\n' "$_aot_dropin" > "$_aot_profile_d/unsloth-rocm-aotriton.sh" 2>/dev/null || true
+        chmod 0644 "$_aot_profile_d/unsloth-rocm-aotriton.sh" 2>/dev/null || true
     elif command -v sudo >/dev/null 2>&1; then
         printf '%s\n' "$_aot_dropin" | sudo tee "$_aot_profile_d/unsloth-rocm-aotriton.sh" >/dev/null 2>&1 || true
+        sudo chmod 0644 "$_aot_profile_d/unsloth-rocm-aotriton.sh" >/dev/null 2>&1 || true
     fi
     return 0
 }

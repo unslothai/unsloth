@@ -126,6 +126,7 @@ def _run_persist_helper(
     tmp_path,
     skip_torch,
     env = None,
+    umask = None,
 ):
     """Run the helper with its profile directory redirected to tmp_path."""
     tmp_path.mkdir(parents = True, exist_ok = True)
@@ -138,7 +139,7 @@ def _run_persist_helper(
     script = tmp_path / "harness.sh"
     script.write_text(
         # Take the root branch so the result does not depend on passwordless sudo.
-        "id() { echo 0; }\n" + body + "\n"
+        (f"umask {umask}\n" if umask else "") + "id() { echo 0; }\n" + body + "\n"
         "_persist_rocm_aotriton_env\n"
         'printf "%s" "${TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL-<unset>}"\n',
         encoding = "utf-8",
@@ -176,6 +177,16 @@ def test_install_sh_leaves_an_existing_opinion_alone(tmp_path):
     )
     assert value == "0"
     assert not wrote
+
+
+@_REQUIRES_POSIX_SHELL
+def test_install_sh_writes_a_dropin_every_login_shell_can_read(tmp_path):
+    """A restrictive umask must not leave the drop-in unreadable to other users."""
+    value, wrote = _run_persist_helper(tmp_path, "false", umask = "077")
+    assert value == "1"
+    assert wrote
+    mode = (tmp_path / "profile.d" / "unsloth-rocm-aotriton.sh").stat().st_mode & 0o777
+    assert mode == 0o644, oct(mode)
 
 
 def test_install_sh_persists_the_gate_off_the_resolved_index_leaf():
