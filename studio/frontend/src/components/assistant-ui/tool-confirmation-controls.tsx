@@ -12,6 +12,7 @@ import type {
   ToolCallMessagePartStatus,
 } from "@assistant-ui/react";
 import { useCallback, useEffect, useState } from "react";
+import { useChatActive } from "@/features/chat";
 
 /**
  * Allow / Always allow / Deny controls for a tool call paused awaiting the
@@ -101,8 +102,11 @@ export function ToolConfirmationControls({
 
   // ⏎ / Esc, only while this card is asking: an auto-approved one answers
   // itself. With two cards parked, preventDefault keeps it to one decision.
+  // Off route the chat pane is hidden rather than unmounted, so without the
+  // active check a bare key would decide a request nobody can see.
+  const chatActive = useChatActive();
   const keyboardReady =
-    showControls && pending === null && !(autoAllowed && !failed);
+    chatActive && showControls && pending === null && !(autoAllowed && !failed);
   useShortcut("approveToolRequest", () => void resolve("allow"), {
     enabled: keyboardReady,
     // Enter belongs to the composer while it has focus.

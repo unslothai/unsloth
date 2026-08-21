@@ -11,6 +11,7 @@ import {
   defaultBindingFor,
   formatBindingLabel,
   formatBindingValue,
+  activationBelongsToFocus,
   isAcceptableBinding,
   isBrowserReservedBinding,
   isShortcutId,
@@ -123,6 +124,36 @@ test("no Ctrl-only default survives onto Windows and Linux", () => {
       );
     }
   }
+});
+
+test("a focused control keeps its own Enter", () => {
+  const enter = parseBinding("Enter");
+  assert.ok(enter);
+  const deny = { tagName: "BUTTON", getAttribute: () => null };
+  // preventDefault on a window keydown cancels the click the browser would
+  // have made, so approving here would overrule the button the user picked.
+  assert.equal(activationBelongsToFocus(enter, deny), true);
+  assert.equal(activationBelongsToFocus(enter, null), false);
+  assert.equal(
+    activationBelongsToFocus(enter, { tagName: "DIV", getAttribute: () => null }),
+    false,
+  );
+  // A div acting as a button counts too.
+  assert.equal(
+    activationBelongsToFocus(enter, {
+      tagName: "DIV",
+      getAttribute: (name: string) => (name === "role" ? "button" : null),
+    }),
+    true,
+  );
+  // Escape activates nothing, so declining still works from any focus.
+  const escape = parseBinding("Escape");
+  assert.ok(escape);
+  assert.equal(activationBelongsToFocus(escape, deny), false);
+  // A chord with a modifier is nobody else's.
+  const modEnter = parseBinding("Mod+Enter");
+  assert.ok(modEnter);
+  assert.equal(activationBelongsToFocus(modEnter, deny), false);
 });
 
 test("nothing that deletes chats ships on a chord", () => {

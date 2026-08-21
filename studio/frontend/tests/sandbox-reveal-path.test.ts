@@ -108,8 +108,9 @@ test("a failed history read is reported, not mistaken for a chat that ran no too
   // No React renderer here, so this asserts on source, like ~50 sibling tests.
   // A per-pane catch makes a failed read look like "never ran a tool", and the
   // fallback is project membership, the answer the recorded id overrides.
-  const start = SIDEBAR.indexOf("const recorded: (string | undefined)[] = [];");
-  const end = SIDEBAR.indexOf("let distinct = ");
+  // Both "Open chat folder" and "Copy session id" read through this helper.
+  const start = SIDEBAR.indexOf("async function recordedSandboxSessionIds");
+  const end = SIDEBAR.indexOf("\n  }", start);
   assert.ok(start !== -1 && end > start, "the read block moved");
   const block = SIDEBAR.slice(start, end);
   assert.ok(block.includes("recordedSandboxSessionId"), "the read block moved");
@@ -157,9 +158,12 @@ test("a probe that could not be answered is reported, not read as an empty folde
 test("the legacy probe runs only for a chat now inside a project", () => {
   // A chat moved OUT of a project wrote under project-<id>, and nothing retains
   // which one, so there is no candidate to probe in that direction.
+  // From the reveal path's read, not the copy path's: both resolve the same
+  // ids, but only this one has a legacy folder to fall back to.
+  const start = SIDEBAR.indexOf("let distinct =");
   const block = SIDEBAR.slice(
-    SIDEBAR.indexOf("let distinct = [...new Set(recorded.filter(Boolean))];"),
-    SIDEBAR.indexOf("if (distinct.length > 1)"),
+    start,
+    SIDEBAR.indexOf("if (distinct.length > 1)", start),
   );
   assert.ok(block.includes("distinct.length === 0 && item.projectId"));
   assert.ok(block.includes("sandboxHasFiles(threadId)"));

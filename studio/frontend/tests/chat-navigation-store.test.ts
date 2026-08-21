@@ -28,6 +28,7 @@ function seed(): void {
   });
   store().publishLists({
     pinnedItems: [],
+    projectItems: [],
     recentItems: ["A", "B", "C", "D"].map(row),
     attentionItemIds: [],
     activeItemId: "A",
@@ -94,6 +95,7 @@ test("a row that disappears mid-walk is stepped over", () => {
   press(1);
   store().publishLists({
     pinnedItems: [],
+    projectItems: [],
     recentItems: ["A", "B", "D"].map(row),
     attentionItemIds: [],
     activeItemId: "B",
@@ -106,6 +108,7 @@ test("an empty stack has nothing to walk", () => {
   useChatNavigationStore.setState({ recentlyViewedIds: [], traversal: null });
   store().publishLists({
     pinnedItems: [],
+    projectItems: [],
     recentItems: [],
     attentionItemIds: [],
     activeItemId: null,
@@ -127,4 +130,40 @@ test("the other navigation selectors read the published lists", () => {
   // Wraps at the top rather than stopping.
   assert.equal(adjacentChatItem(store(), -1)?.id, "D");
   assert.equal(nextAttentionChatItem(store()), null);
+});
+
+test("a chat that lives in a project folder is still navigable", () => {
+  useChatNavigationStore.setState({ recentlyViewedIds: [], traversal: null });
+  // Organized by project, an unpinned project chat is drawn under its folder
+  // and never reaches Recents, so it has to be published in its own right.
+  store().publishLists({
+    pinnedItems: [row("pinned")],
+    projectItems: [row("in-project")],
+    recentItems: [row("loose")],
+    attentionItemIds: [],
+    activeItemId: "in-project",
+  });
+  assert.deepEqual(
+    visibleChatItems(store()).map((item) => item.id),
+    ["pinned", "in-project", "loose"],
+  );
+  // Next from the project chat is its neighbour, not the top of the list.
+  assert.equal(adjacentChatItem(store(), 1)?.id, "loose");
+  assert.equal(adjacentChatItem(store(), -1)?.id, "pinned");
+});
+
+test("a pinned project chat is drawn twice but walked once", () => {
+  useChatNavigationStore.setState({ recentlyViewedIds: [], traversal: null });
+  store().publishLists({
+    pinnedItems: [row("both")],
+    projectItems: [row("both"), row("other")],
+    recentItems: [],
+    attentionItemIds: [],
+    activeItemId: "both",
+  });
+  assert.deepEqual(
+    visibleChatItems(store()).map((item) => item.id),
+    ["both", "other"],
+  );
+  assert.equal(adjacentChatItem(store(), 1)?.id, "other");
 });

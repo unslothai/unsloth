@@ -17,6 +17,9 @@ const RECENTLY_VIEWED_LIMIT = 24;
 export interface ChatNavigationState {
   /** The pinned block, in the order the sidebar draws it. */
   pinnedItems: SidebarItem[];
+  /** Project chats on screen. Empty when the sidebar is organized as one list,
+   *  where those chats are in Recents instead. */
+  projectItems: SidebarItem[];
   /** Recents, likewise. ⌥⌘1-6 indexes into this list alone. */
   recentItems: SidebarItem[];
   /** Rows generating, queued or unread, most urgent first. */
@@ -33,6 +36,7 @@ export interface ChatNavigationState {
 
   publishLists: (next: {
     pinnedItems: SidebarItem[];
+    projectItems: SidebarItem[];
     recentItems: SidebarItem[];
     attentionItemIds: string[];
     activeItemId: string | null;
@@ -65,6 +69,7 @@ function sameStrings(a: string[], b: string[]): boolean {
 export const useChatNavigationStore = create<ChatNavigationState>(
   (set, get) => ({
     pinnedItems: [],
+    projectItems: [],
     recentItems: [],
     attentionItemIds: [],
     activeItemId: null,
@@ -79,6 +84,7 @@ export const useChatNavigationStore = create<ChatNavigationState>(
         if (
           state.activeItemId === next.activeItemId &&
           sameIds(state.pinnedItems, next.pinnedItems) &&
+          sameIds(state.projectItems, next.projectItems) &&
           sameIds(state.recentItems, next.recentItems) &&
           sameStrings(state.attentionItemIds, next.attentionItemIds)
         ) {
@@ -171,9 +177,24 @@ export const useChatNavigationStore = create<ChatNavigationState>(
   }),
 );
 
-/** Every chat row the sidebar shows, pinned block first. */
+/**
+ * Every chat row the sidebar shows, in the order it draws them: pinned, then
+ * the project folders, then Recents. A pinned project chat is drawn twice, so
+ * the first of the pair wins and the walk does not stop on it again.
+ */
 export function visibleChatItems(state: ChatNavigationState): SidebarItem[] {
-  return [...state.pinnedItems, ...state.recentItems];
+  const seen = new Set<string>();
+  const out: SidebarItem[] = [];
+  for (const item of [
+    ...state.pinnedItems,
+    ...state.projectItems,
+    ...state.recentItems,
+  ]) {
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    out.push(item);
+  }
+  return out;
 }
 
 /** The row `slot` (1-based) of Recents only, ignoring the pinned block. */

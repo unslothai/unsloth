@@ -306,6 +306,29 @@ export function isBrowserReservedBinding(
   return !mac && NON_MAC_RESERVED_VALUES.has(value);
 }
 
+/**
+ * Keys the browser turns into a click on whatever control has focus. A chord
+ * built from one of these with no modifier has to leave that click alone, or
+ * pressing Enter on a focused Deny button would run the shortcut instead and
+ * preventDefault would cancel the button's own activation.
+ */
+const ACTIVATION_CODES = new Set(["Enter", "NumpadEnter", "Space"]);
+
+const ACTIVATABLE_TAGS = new Set(["BUTTON", "A", "SUMMARY", "SELECT", "OPTION"]);
+
+/** True when this chord is a bare activation key and focus is on a control. */
+export function activationBelongsToFocus(
+  binding: ShortcutBinding,
+  el: { tagName?: string; getAttribute?: (name: string) => string | null } | null,
+): boolean {
+  if (binding.mod || binding.ctrl || binding.alt || binding.shift) return false;
+  if (!ACTIVATION_CODES.has(binding.code)) return false;
+  if (!el) return false;
+  if (ACTIVATABLE_TAGS.has(el.tagName ?? "")) return true;
+  const role = el.getAttribute?.("role") ?? null;
+  return role === "button" || role === "link" || role === "menuitem";
+}
+
 /** Modifier codes are never a binding's key on their own. */
 const MODIFIER_CODES = new Set([
   "MetaLeft",

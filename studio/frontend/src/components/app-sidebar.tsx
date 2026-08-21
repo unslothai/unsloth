@@ -1181,35 +1181,6 @@ export function AppSidebar() {
     () => sortChatItems(pinnedChatItems, PINNED_ORDER_SCOPE, pinnedSort),
     [pinnedChatItems, sortChatItems, pinnedSort],
   );
-  // Rows wanting attention, most urgent first. Same rule the Priority sort uses.
-  const attentionItemIds = useMemo(
-    () =>
-      [...sortedPinnedChatItems, ...sortedRecentChatItems]
-        .filter((item) => chatPriorityRank(item) < 3)
-        .sort(
-          (a, b) =>
-            chatPriorityRank(a) - chatPriorityRank(b) ||
-            b.updatedAt - a.updatedAt,
-        )
-        .map((item) => item.id),
-    [sortedPinnedChatItems, sortedRecentChatItems, chatPriorityRank],
-  );
-  // Publish the finished order, so the chords cannot disagree with the screen.
-  const publishLists = useChatNavigationStore((s) => s.publishLists);
-  useEffect(() => {
-    publishLists({
-      pinnedItems: sortedPinnedChatItems,
-      recentItems: sortedRecentChatItems,
-      attentionItemIds,
-      activeItemId: activeThreadId ?? null,
-    });
-  }, [
-    publishLists,
-    sortedPinnedChatItems,
-    sortedRecentChatItems,
-    attentionItemIds,
-    activeThreadId,
-  ]);
   // The open chat heads the ⌃Tab stack, however it was opened.
   useEffect(() => {
     if (activeThreadId) noteViewed(activeThreadId);
@@ -1249,6 +1220,71 @@ export function AppSidebar() {
   );
   // Whole lists, not the visible slices, so a drop cannot lose what a
   // collapsed "Show more" is hiding.
+  // The project chats actually on screen: grouping by project keeps them out of
+  // Recents, so without these the chords cannot see them at all. Same rule the
+  // Projects section renders by, collapsed folders and the per-folder limit
+  // included.
+  const renderedProjectChatItems = useMemo(() => {
+    if (organizeBy !== "project") return [];
+    const out: SidebarItem[] = [];
+    for (const project of visibleProjectRecords) {
+      if (collapsedProjectIds.has(project.id)) continue;
+      const chats = sortedChatsByProjectId.get(project.id) ?? [];
+      out.push(
+        ...(expandedChatProjectIds.has(project.id)
+          ? chats
+          : chats.slice(0, PROJECT_CHAT_LIMIT)),
+      );
+    }
+    return out;
+  }, [
+    organizeBy,
+    visibleProjectRecords,
+    collapsedProjectIds,
+    expandedChatProjectIds,
+    sortedChatsByProjectId,
+  ]);
+  // Rows wanting attention, most urgent first. Same rule the Priority sort uses.
+  const attentionItemIds = useMemo(
+    () =>
+      [
+        ...sortedPinnedChatItems,
+        ...renderedProjectChatItems,
+        ...sortedRecentChatItems,
+      ]
+        .filter((item) => chatPriorityRank(item) < 3)
+        .sort(
+          (a, b) =>
+            chatPriorityRank(a) - chatPriorityRank(b) ||
+            b.updatedAt - a.updatedAt,
+        )
+        .map((item) => item.id),
+    [
+      sortedPinnedChatItems,
+      renderedProjectChatItems,
+      sortedRecentChatItems,
+      chatPriorityRank,
+    ],
+  );
+  // Publish the finished order, so the chords cannot disagree with the screen.
+  const publishLists = useChatNavigationStore((s) => s.publishLists);
+  useEffect(() => {
+    publishLists({
+      pinnedItems: sortedPinnedChatItems,
+      projectItems: renderedProjectChatItems,
+      recentItems: sortedRecentChatItems,
+      attentionItemIds,
+      activeItemId: activeThreadId ?? null,
+    });
+  }, [
+    publishLists,
+    sortedPinnedChatItems,
+    renderedProjectChatItems,
+    sortedRecentChatItems,
+    attentionItemIds,
+    activeThreadId,
+  ]);
+
   const projectRowIds = useMemo(
     () => sidebarProjectRecords.map((project) => project.id),
     [sidebarProjectRecords],
@@ -1329,15 +1365,22 @@ export function AppSidebar() {
 
   /** Select every chat row on screen, pinned block included. */
   const selectAllChats = useCallback(() => {
-    const ids = [...sortedPinnedChatItems, ...sortedRecentChatItems].map(
-      (item) => item.id,
-    );
+    const ids = [
+      ...sortedPinnedChatItems,
+      ...renderedProjectChatItems,
+      ...sortedRecentChatItems,
+    ].map((item) => item.id);
     if (ids.length === 0) return;
     dropProjectSelection();
     // No anchor: a shift click after this one has no row to reach back to.
     selectionAnchorRef.current = null;
     setSelectedChatIds(new Set(ids));
-  }, [sortedPinnedChatItems, sortedRecentChatItems, dropProjectSelection]);
+  }, [
+    sortedPinnedChatItems,
+    renderedProjectChatItems,
+    sortedRecentChatItems,
+    dropProjectSelection,
+  ]);
 
   // Escape is the way out of a selection, as it is for the menus.
   useEffect(() => {
@@ -2294,13 +2337,48 @@ export function AppSidebar() {
     }
   }
 
+  /** The sandbox sessions this chat's stored tool results name, if any. */
+  async function recordedSandboxSessionIds(ids: string[]): Promise<string[]> {
+    const recorded: (string | undefined)[] = [];
+    // One at a time, not Promise.all: this file's export contract forbids a
+    // concurrent await here, and two panes win nothing.
+    for (const threadId of ids) {
+      recorded.push(
+        recordedSandboxSessionId(await listStoredChatMessages(threadId)),
+      );
+    }
+    return [...new Set(recorded.filter((id): id is string => Boolean(id)))];
+  }
+
   /** The sandbox session this chat's tool calls write into. */
   async function copyChatSessionId(item: SidebarItem) {
     const threadIds = getSidebarItemThreadIds(item);
-    // As the row's "Show files": a compare row spans two sandboxes.
-    const sessionId =
+    const ids = threadIds.length > 0 ? threadIds : [item.id];
+    // The chat's own history names the folder it wrote to, which is not where
+    // current membership points once it has moved between projects. Same read
+    // as "Open chat folder", and the same answer when a compare row's panes
+    // wrote to two.
+    let sessionId: string | undefined;
+    try {
+      const distinct = await recordedSandboxSessionIds(ids);
+      if (distinct.length > 1) {
+        toast.error("This chat wrote to more than one folder.", {
+          description: "Copy the session id from a tool card instead.",
+        });
+        return;
+      }
+      sessionId = distinct[0];
+    } catch (error) {
+      toast.error("Could not read this chat's session id.", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    // Nothing recorded means no tool has run yet, so the id it would get is
+    // the one current membership gives it.
+    sessionId ??=
       item.type === "single" || item.projectId
-        ? sandboxSessionIdFor(threadIds[0] ?? item.id, item.projectId)
+        ? sandboxSessionIdFor(ids[0], item.projectId)
         : undefined;
     if (!sessionId) {
       toast.info("This chat has no single session id");
@@ -2826,26 +2904,14 @@ export function AppSidebar() {
                           try {
                             // A chat moved between projects keeps the sandbox it
                             // wrote to, so its own history names the folder, not
-                            // current membership. Every pane is read, since a
-                            // compare row can hold one folder per pane.
-                            // One at a time, not Promise.all: this file's export
-                            // contract forbids a concurrent await here, and two
-                            // panes win nothing. A failed read stops the loop and
-                            // is reported below rather than being caught per pane,
-                            // which would read as "never ran a tool" and fall back
-                            // to current membership, the answer the recorded id
-                            // exists to override.
+                            // current membership. A failed read is reported
+                            // below rather than caught per pane, which would
+                            // read as "never ran a tool" and fall back to
+                            // membership, the answer the recorded id overrides.
                             const ids =
                               threadIds.length > 0 ? threadIds : [item.id];
-                            const recorded: (string | undefined)[] = [];
-                            for (const threadId of ids) {
-                              recorded.push(
-                                recordedSandboxSessionId(
-                                  await listStoredChatMessages(threadId),
-                                ),
-                              );
-                            }
-                            let distinct = [...new Set(recorded.filter(Boolean))];
+                            let distinct =
+                              await recordedSandboxSessionIds(ids);
                             if (distinct.length === 0 && item.projectId) {
                               // Chats stored before results carried a session
                               // recorded nothing, so one that ran loose and has
