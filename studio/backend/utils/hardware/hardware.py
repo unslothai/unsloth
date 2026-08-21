@@ -1597,13 +1597,22 @@ def _rocm_linux_sysfs_power_w() -> Optional[float]:
         return None
 
 
-def _rocm_windows_perf_counter_gpu_util_pct() -> Optional[float]:
-    """Query AMD GPU compute utilization via Windows Performance Counters (3D engine nodes)."""
+def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optional[float]:
+    """Query AMD GPU compute utilization via Windows Performance Counters (3D engine nodes).
+
+    Instances are named ``pid_<pid>_luid_0x<high>_0x<low>_phys_<n>_eng_<n>_engtype_3D``,
+    so ``luid`` narrows the sum to one adapter's engines. Without it every
+    adapter's work counts, including the iGPU driving the display and the Basic
+    Render Driver, which is the whole host's 3D load and not this card's.
+    """
     if platform.system() != "Windows":
         return None
     try:
+        instance = "*engtype_3D*"
+        if luid is not None:
+            instance = f"*luid_0x{luid >> 32:08x}_0x{luid & 0xFFFFFFFF:08x}_*engtype_3D*"
         ps = (
-            "$s=(Get-Counter '\\GPU Engine(*engtype_3D*)\\Utilization Percentage'"
+            f"$s=(Get-Counter '\\GPU Engine({instance})\\Utilization Percentage'"
             " -ErrorAction SilentlyContinue).CounterSamples;"
             "if($s){[math]::Min(($s|Measure-Object CookedValue -Sum).Sum,100)}else{-1}"
         )
@@ -1834,6 +1843,368 @@ def _rocm_windows_perf_counter_vram_by_adapter() -> Optional[list[tuple[str, flo
         return None
 
 
+# DirectX writes one record per adapter here, keyed by a GUID, holding the same
+# AdapterLuid the counter instances are named after alongside the Description
+# string torch reports as props.name and the gfx target it reports as
+# gcnArchName. Those are the join keys capacity ranking lacks.
+_WINDOWS_DIRECTX_KEY = r"SOFTWARE\Microsoft\DirectX"
+
+
+def _parse_adapter_luid(instance_name: str) -> Optional[int]:
+    """The 64-bit LUID in a ``GPU Adapter Memory`` instance name, or None.
+
+    Instances are named ``luid_0x<high>_0x<low>_phys_<n>``; DirectX stores the
+    same value as one 64-bit ``AdapterLuid``, so recombine the halves.
+    """
+    m = re.match(r"luid_0x([0-9a-f]+)_0x([0-9a-f]+)", instance_name.strip(), re.IGNORECASE)
+    if m is None:
+        return None
+    try:
+        return (int(m.group(1), 16) << 32) | int(m.group(2), 16)
+    except ValueError:
+        return None
+
+
+# hipDeviceProp_tR0600 opens with name[256], hipUUID[16], luid[8],
+# luidDeviceNodeMask[4]. The R0600 suffix IS the ABI version, so that prefix is
+# fixed by the same contract that named it; the name is read back and compared
+# against the device's own anyway, so a layout that ever moved is caught rather
+# than trusted.
+_HIP_PROPS_NAME = slice(0, 256)
+_HIP_PROPS_LUID = slice(272, 280)
+_HIP_PROPS_NODE_MASK = slice(280, 284)
+# Oversized on purpose: HIP writes the whole struct, ~2 KiB, and only the prefix
+# above is read back.
+_HIP_PROPS_BUFFER_BYTES = 64 * 1024
+
+
+def _rocm_windows_hip_adapter_ids(
+    ordinals: list[int], names: list[str]
+) -> Optional[list[tuple[int, int]]]:
+    """The ``(luid, node_mask)`` HIP itself reports for each visible ordinal.
+
+    ``hipDeviceProp_tR0600`` carries the same DXGI LUID the ``GPU Adapter
+    Memory`` counter instances are named after, so asking HIP joins the two
+    sides on the adapter itself rather than on anything about it. Windows
+    reassigns LUIDs across a reboot or a driver restart, and all three sources
+    move together, so the value is only ever compared within one poll.
+
+    ``node_mask`` is ``luidDeviceNodeMask``: which nodes of a linked adapter
+    this ordinal owns, and 0 on the ordinary adapter that is the whole thing.
+
+    Returns one pair per ordinal, or None when the runtime cannot be asked at
+    all (off Windows, the DLL not loaded into this process, the symbol absent,
+    an ordinal that will not answer, an all-zero LUID, or a name that does not
+    read back) so the caller falls back to the DirectX join. All or nothing for
+    the same reason that map is: a partially resolved set would let one card's
+    counter answer for another.
+
+    Idea and the R0600 route from @pablo86gr in #8793.
+    """
+    if platform.system() != "Windows" or not ordinals:
+        return None
+    try:
+        import ctypes
+
+        torch = sys.modules.get("torch")
+        major = str(getattr(getattr(torch, "version", None), "hip", "")).split(".", 1)[0]
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+        kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+        # Only a module already in this process: torch loaded the runtime it is
+        # built against, and LoadLibrary could pull in a different one.
+        hip = None
+        for dll in dict.fromkeys(
+            [f"amdhip64_{major}.dll" if major.isdigit() else "", "amdhip64.dll"]
+        ):
+            handle = kernel32.GetModuleHandleW(dll) if dll else None
+            if handle:
+                hip = ctypes.WinDLL(dll, handle = handle)
+                break
+        if hip is None:
+            return None
+        get_properties = hip.hipGetDevicePropertiesR0600
+        get_properties.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        get_properties.restype = ctypes.c_int
+
+        identities: list[tuple[int, int]] = []
+        for ordinal, name in zip(ordinals, names):
+            raw = ctypes.create_string_buffer(_HIP_PROPS_BUFFER_BYTES)
+            if get_properties(ctypes.byref(raw), ordinal) != 0:
+                return None
+            blob = bytes(raw)
+            if blob[_HIP_PROPS_NAME].rstrip(b"\x00").decode("utf-8", "replace") != name:
+                # Not the struct this reads, so the offsets below mean nothing.
+                logger.debug("HIP properties prefix did not read back ordinal %d", ordinal)
+                return None
+            luid_bytes = blob[_HIP_PROPS_LUID]
+            if not any(luid_bytes):
+                return None  # the runtime has no LUID for this device
+            identities.append(
+                (
+                    int.from_bytes(luid_bytes, "little"),
+                    int.from_bytes(blob[_HIP_PROPS_NODE_MASK], "little"),
+                )
+            )
+        return identities
+    except Exception as e:
+        logger.debug("HIP adapter identity probe unavailable: %s", e)
+        return None
+
+
+def _match_adapter_used_by_hip_luid(
+    adapters: list[tuple[str, float]], dev_meta: list[Dict[str, Any]]
+) -> Optional[tuple[list[Optional[float]], float, list[Optional[int]]]]:
+    """Attribute per-adapter used bytes on the LUID HIP reports for each ordinal.
+
+    The exact key, so unlike the DirectX join this separates two cards of one
+    model. Ordinals come from ``visible_ordinal``, not from this list's own
+    positions, which are compacted when a device fails to probe.
+
+    A linked-node adapter puts several ordinals behind one LUID, and the
+    counters index its nodes as ``phys_N`` without saying which ordinal owns
+    which. The node mask says how many nodes each ordinal holds, which is
+    enough to tell "these counters are exactly these ordinals' nodes" from "one
+    of them belongs to a node HIP is not showing us" -- but not enough to pair
+    them, so several ordinals under one LUID report unknown per device and
+    contribute only to the aggregate, which the pairing does not change.
+
+    The third return is that same LUID per device, but only where this
+    established that the device is the whole of what the LUID names. Anything
+    else keyed on a LUID -- the engine counters, which are instanced the same
+    way -- needs that, not the raw LUID, or it sums a node the device does not
+    own.
+    """
+    ordinals = [int(meta["visible_ordinal"]) for meta in dev_meta]
+    identities = _rocm_windows_hip_adapter_ids(ordinals, [str(meta["name"]) for meta in dev_meta])
+    if identities is None:
+        return None
+
+    useds_by_luid: dict[int, list[float]] = {}
+    physes_by_luid: dict[int, set[int]] = {}
+    for instance, used in adapters:
+        luid = _parse_adapter_luid(instance)
+        phys = re.search(r"_phys_(\d+)", instance, re.IGNORECASE)
+        if luid is None or phys is None:
+            continue
+        index = int(phys.group(1))
+        if index in physes_by_luid.setdefault(luid, set()):
+            # One physical node cannot report twice; summing would double-count.
+            return None
+        physes_by_luid[luid].add(index)
+        useds_by_luid.setdefault(luid, []).append(used)
+
+    positions_by_luid: dict[int, list[int]] = {}
+    nodes_by_luid: dict[int, int] = {}
+    for position, (luid, node_mask) in enumerate(identities):
+        positions_by_luid.setdefault(luid, []).append(position)
+        # A plain adapter reports no mask and is one node.
+        nodes_by_luid[luid] = nodes_by_luid.get(luid, 0) + (bin(node_mask).count("1") or 1)
+
+    assigned: list[Optional[float]] = [None] * len(dev_meta)
+    whole_adapter: list[Optional[int]] = [None] * len(dev_meta)
+    total_used = 0.0
+    for luid, positions in positions_by_luid.items():
+        useds = useds_by_luid.get(luid, [])
+        # Fewer counters than nodes means a visible node has no reading; more
+        # means the adapter has a node these ordinals do not own, whose usage is
+        # not theirs to claim.
+        if len(useds) != nodes_by_luid[luid]:
+            return None
+        used = float(sum(useds))
+        capacity = sum(dev_meta[position]["total_bytes"] for position in positions)
+        if used > capacity:
+            return None
+        total_used += used
+        if len(positions) == 1:
+            # One ordinal, and the count above says its nodes are the adapter's,
+            # so everything this LUID names belongs to this device.
+            assigned[positions[0]] = used
+            whole_adapter[positions[0]] = luid
+    return assigned, total_used, whole_adapter
+
+
+_ADAPTER_NAME_NOISE = re.compile(r"\((?:tm|r)\)|[™®]", re.IGNORECASE)
+
+
+def _normalize_adapter_name(name: str) -> str:
+    """A GPU name in the one spelling both sides of the join can agree on.
+
+    DirectX takes its Description from the driver INF and HIP fills props.name
+    from the ASIC record, so the same card reaches the two sides with the
+    trademark marks and the spacing around them differing -- "AMD Radeon(TM)
+    780M Graphics" against "AMD Radeon 780M Graphics". Nothing here merges two
+    different models, and a collision between two that did normalize alike is
+    caught by the count check in _attribute_adapter_useds_by_key.
+    """
+    return " ".join(_ADAPTER_NAME_NOISE.sub(" ", name).split()).casefold()
+
+
+def _parse_adapter_family_gfx(family: str) -> str:
+    """The gfx target in a DirectX ``AdapterFamily``, or "" when it holds none.
+
+    The AMD driver writes ``AMD_NAVI44:gfx1200``; torch reports the same target
+    as ``props.gcnArchName``, which on Linux carries feature suffixes
+    (``gfx1201:sramecc-:xnack-``) the comparison has to drop.
+    """
+    for token in str(family).split(":"):
+        token = token.strip().lower()
+        if re.fullmatch(r"gfx[0-9a-f]+", token):
+            return token
+    return ""
+
+
+def _windows_amd_adapter_records_by_luid() -> dict[int, Dict[str, str]]:
+    """``{luid: {"name": description, "gfx": arch}}`` for the AMD adapters DirectX records.
+
+    ``gfx`` is absent when the driver wrote no ``AdapterFamily``.
+
+    All or nothing: a record this cannot read makes the map incomplete, and an
+    incomplete map is indistinguishable from a complete one at the join, which
+    would then pair a visible card with a hidden same-named card's counter. So
+    any failure past the point where a subkey is known to be an adapter returns
+    ``{}``, which drops the caller back to capacity ranking. Same for off
+    Windows or without the key.
+    """
+    if platform.system() != "Windows":
+        return {}
+    try:
+        import winreg
+    except ImportError:
+        return {}
+    by_luid: dict[int, Dict[str, str]] = {}
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _WINDOWS_DIRECTX_KEY) as dx_key:
+            for index in range(winreg.QueryInfoKey(dx_key)[0]):
+                subkey = winreg.EnumKey(dx_key, index)
+                # Adapter records are GUID-named; ShaderCache and any future
+                # named subkey are not adapters and are not ours to read.
+                if not (subkey.startswith("{") and subkey.endswith("}")):
+                    continue
+                with winreg.OpenKey(dx_key, subkey) as adapter_key:
+                    vendor_id, _ = winreg.QueryValueEx(adapter_key, "VendorId")
+                    if int(vendor_id) != _AMD_PCI_VENDOR_ID:
+                        continue
+                    luid, _ = winreg.QueryValueEx(adapter_key, "AdapterLuid")
+                    description, _ = winreg.QueryValueEx(adapter_key, "Description")
+                    try:
+                        family, _ = winreg.QueryValueEx(adapter_key, "AdapterFamily")
+                    except OSError:
+                        family = ""
+                name = str(description).strip()
+                if not name:
+                    # An AMD adapter this cannot name: see the all-or-nothing note.
+                    return {}
+                record = {"name": name}
+                gfx = _parse_adapter_family_gfx(str(family))
+                if gfx:
+                    record["gfx"] = gfx
+                by_luid[int(luid)] = record
+    except Exception as e:
+        logger.debug("DirectX adapter registry read declined: %s", e)
+        return {}
+    return by_luid
+
+
+def _attribute_adapter_useds_by_key(
+    useds_by_key: dict[str, list[float]],
+    positions_by_key: dict[str, list[int]],
+    dev_meta: list[Dict[str, Any]],
+) -> Optional[tuple[list[Optional[float]], float]]:
+    """Pair each key's counters with the devices carrying that key, or decline.
+
+    Returns ``(per_device_used_bytes, aggregate_used_bytes)``, or None when any
+    key's counters are not exactly its devices'. Several devices under one key
+    (two cards of a model, two cards of an arch) leave per-device unknown --
+    nothing says which counter is which ordinal -- while still contributing to
+    the aggregate, which the pairing does not change.
+    """
+    assigned: list[Optional[float]] = [None] * len(dev_meta)
+    total_used = 0.0
+    for key, positions in positions_by_key.items():
+        useds = useds_by_key.get(key, [])
+        # Fewer counters than cards under this key means a visible card has no
+        # reading; more means a same-keyed adapter HIP does not enumerate, or one
+        # adapter emitting several _phys_N instances. Either way this key's
+        # counters are not exactly its devices'.
+        if len(useds) != len(positions):
+            return None
+        # Largest usage against the largest capacity: any other pairing of the
+        # same multiset only makes the check below stricter, never truer.
+        by_capacity = sorted(positions, key = lambda p: -dev_meta[p]["total_bytes"])
+        for used, position in zip(sorted(useds, reverse = True), by_capacity):
+            # A usage above its own card's capacity: a record outliving its
+            # hardware, so the key is not identifying what it appears to.
+            if used > dev_meta[position]["total_bytes"]:
+                return None
+            total_used += used
+        if len(positions) == 1:
+            assigned[positions[0]] = useds[0]
+    return assigned, total_used
+
+
+def _match_adapter_used_by_luid(
+    adapters: list[tuple[str, float]], dev_meta: list[Dict[str, Any]]
+) -> Optional[tuple[list[Optional[float]], float]]:
+    """Attribute per-adapter used bytes to torch devices on the adapter LUID.
+
+    Joins each counter to a DirectX adapter record by the LUID in its instance
+    name, then to a torch device by what the record and the device agree on.
+    Identity, not capacity, so it resolves the single-GPU case that
+    _match_adapter_used_to_devices can never force (nothing smaller exists to
+    exceed) and stays right when a busy foreign adapter outweighs an idle card.
+
+    The model name is tried first, because it separates two cards of one arch
+    (a 9070 beside a 9070 XT) where the arch cannot. DirectX takes it from the
+    driver INF and HIP from the ASIC record, though, and on an iGPU the two
+    spellings differ by more than normalizing fixes, so a declined name join
+    falls to the gfx target both sides also carry -- which is what tells an
+    iGPU from the dGPU beside it. The arch pass runs only when every AMD record
+    has one, so a driver too old to write ``AdapterFamily`` cannot leave a
+    hidden card's counter looking like the visible card's.
+
+    Returns ``(per_device_used_bytes, aggregate_used_bytes)``, or None when
+    neither key establishes the join, so the caller falls back to capacity
+    ranking.
+    """
+    records = _windows_amd_adapter_records_by_luid()
+    if not records:
+        return None
+
+    useds_by_luid: dict[int, list[float]] = {}
+    for instance, used in adapters:
+        luid = _parse_adapter_luid(instance)
+        if luid is not None and luid in records:
+            useds_by_luid.setdefault(luid, []).append(used)
+
+    for field, record_key, device_key in (
+        (
+            "name",
+            lambda record: _normalize_adapter_name(record["name"]),
+            lambda meta: _normalize_adapter_name(str(meta.get("name", ""))),
+        ),
+        (
+            "gfx",
+            lambda record: record["gfx"],
+            lambda meta: _parse_adapter_family_gfx(str(meta.get("gfx", ""))),
+        ),
+    ):
+        if not all(record.get(field) for record in records.values()):
+            continue
+        useds_by_key: dict[str, list[float]] = {}
+        for luid, useds in useds_by_luid.items():
+            useds_by_key.setdefault(record_key(records[luid]), []).extend(useds)
+        positions_by_key: dict[str, list[int]] = {}
+        for position, meta in enumerate(dev_meta):
+            positions_by_key.setdefault(device_key(meta), []).append(position)
+        if "" in positions_by_key:  # a visible device carrying no such key
+            continue
+        matched = _attribute_adapter_useds_by_key(useds_by_key, positions_by_key, dev_meta)
+        if matched is not None:
+            return matched
+    return None
+
+
 def _match_adapter_used_to_devices(
     adapter_useds: list[float], device_totals: list[float]
 ) -> list[Optional[float]]:
@@ -1975,6 +2346,8 @@ def _rocm_windows_per_device_vram(
                     "index": phys_idx,
                     "visible_ordinal": ordinal,
                     "name": props.name,
+                    # Second join key for _match_adapter_used_by_luid, unused elsewhere.
+                    "gfx": str(getattr(props, "gcnArchName", "") or ""),
                     "total_bytes": int(props.total_memory),
                 }
             )
@@ -1985,11 +2358,28 @@ def _rocm_windows_per_device_vram(
 
     adapters = _rocm_windows_perf_counter_vram_by_adapter()
     aggregate_gb: Optional[float] = None
+    # Set only where the HIP join established that the device is the whole of
+    # what the LUID names, which is what the engine counters need to be filtered.
+    whole_adapter: list[Optional[int]] = [None] * len(dev_meta)
     if adapters:
-        adapter_useds = [used for _, used in adapters]
-        totals = [d["total_bytes"] for d in dev_meta]
-        assigned = _match_adapter_used_to_devices(adapter_useds, totals)
-        aggregate_bytes = _rocm_windows_aggregate_used_bytes(adapter_useds, totals)
+        # Identity first, in the order the keys are exact: HIP's own LUID, then
+        # the DirectX record reached by name or arch. Either answers where
+        # capacity ranking declines unless the sizes force a pairing, which one
+        # visible GPU never does.
+        by_hip = _match_adapter_used_by_hip_luid(adapters, dev_meta)
+        by_identity: Optional[tuple[list[Optional[float]], float]] = None
+        if by_hip is not None:
+            assigned, aggregate_bytes, whole_adapter = by_hip
+            by_identity = (assigned, aggregate_bytes)
+        else:
+            by_identity = _match_adapter_used_by_luid(adapters, dev_meta)
+        if by_identity is not None:
+            assigned, aggregate_bytes = by_identity
+        else:
+            adapter_useds = [used for _, used in adapters]
+            totals = [d["total_bytes"] for d in dev_meta]
+            assigned = _match_adapter_used_to_devices(adapter_useds, totals)
+            aggregate_bytes = _rocm_windows_aggregate_used_bytes(adapter_useds, totals)
         if aggregate_bytes is not None:
             aggregate_gb = round(aggregate_bytes / (1024**3), 2)
     else:
@@ -1997,7 +2387,7 @@ def _rocm_windows_per_device_vram(
         assigned = [None] * len(dev_meta)
 
     devices: list[Dict[str, Any]] = []
-    for meta, used_bytes in zip(dev_meta, assigned):
+    for meta, used_bytes, luid in zip(dev_meta, assigned, whole_adapter):
         total_gb = round(meta["total_bytes"] / (1024**3), 2)
         used_gb = round(used_bytes / (1024**3), 2) if used_bytes is not None else None
         devices.append(
@@ -2007,6 +2397,9 @@ def _rocm_windows_per_device_vram(
                 "name": meta["name"],
                 "used_gb": used_gb,
                 "total_gb": total_gb,
+                # Internal: the caller filters the engine counters with it. Not
+                # in either endpoint's payload, which both build their keys out.
+                "luid": luid,
             }
         )
     return devices, aggregate_gb
@@ -2108,10 +2501,17 @@ def get_gpu_utilization() -> Dict[str, Any]:
                 _win_ids = list(range(_torch_get_physical_gpu_count() or 0))
             _win_devices, _win_aggregate = _rocm_windows_per_device_vram(_win_ids)
             if _win_devices:
-                # A single visible GPU can own the aggregate 3D-engine utilization;
-                # across several GPUs the sum isn't per-device, so leave it unset.
+                # A single visible GPU can own the 3D-engine utilization; across
+                # several the sum isn't per-device, so leave it unset. Narrowed to
+                # this card's own LUID where the VRAM join established the device
+                # is the whole of what that LUID names, since the unfiltered sum
+                # is every adapter's work, the display iGPU's too. Where it did
+                # not, the LUID is absent and the sum stays the host's, which is
+                # what it has always been.
                 _win_util = (
-                    _rocm_windows_perf_counter_gpu_util_pct() if len(_win_devices) == 1 else None
+                    _rocm_windows_perf_counter_gpu_util_pct(_win_devices[0]["luid"])
+                    if len(_win_devices) == 1
+                    else None
                 )
                 return _gpu_utilization_payload(
                     device,
