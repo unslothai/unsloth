@@ -102,6 +102,7 @@ def register_images(
     website_policy: dict | None = None,
     max_images: int = MAX_IMAGES_PER_SEARCH,
     subject: str | None = None,
+    expected_generation: int | None = None,
 ) -> list[dict[str, str]]:
     # Public entries only; the URLs stay in this process.
     from .web_access_policy import check_url_access
@@ -111,6 +112,8 @@ def register_images(
     now = time.monotonic()
     with _registry_lock:
         generation = _cache_generation
+        if expected_generation is not None and expected_generation != generation:
+            return []
         _prune_registry_locked(now)
         for item in raw_results:
             if len(public) >= max_images:
@@ -153,6 +156,11 @@ def register_images(
         # would otherwise accumulate sidecars with nothing ever bounding them.
         _evict_cache()
     return public
+
+
+def cache_generation() -> int:
+    with _registry_lock:
+        return _cache_generation
 
 
 def _lookup_locked(image_id: str) -> dict[str, Any] | None:

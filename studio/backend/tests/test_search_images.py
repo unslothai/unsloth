@@ -11,6 +11,7 @@ import asyncio
 import io
 import json
 import sys
+import threading
 from email.message import Message
 from types import SimpleNamespace
 
@@ -449,6 +450,36 @@ def test_clear_all_chats_beats_metadata_waiting_to_publish(monkeypatch, tmp_path
     entry = search_images.register_images(RAW_IMAGES)[0]
 
     assert search_images.lookup_image(entry["id"]) is None
+    assert list(tmp_path.glob("*.json")) == []
+
+
+def test_clear_all_chats_invalidates_an_image_lookup_already_in_a_thread(monkeypatch, tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingDDGS:
+        def __init__(self, **_kwargs):
+            pass
+
+        def images(self, query, max_results = 5, **kwargs):
+            started.set()
+            release.wait(2)
+            return RAW_IMAGES
+
+    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = BlockingDDGS))
+
+    async def race_clear_against_lookup():
+        task = asyncio.create_task(asyncio.to_thread(tools._image_search, ["Pug"], 20))
+        try:
+            assert await asyncio.to_thread(started.wait, 1)
+            search_images.clear_cache()
+        finally:
+            release.set()
+        return await task
+
+    result = asyncio.run(race_clear_against_lookup())
+    assert search_images.SEARCH_IMAGES_SENTINEL not in result
+    assert search_images._registry == {}
     assert list(tmp_path.glob("*.json")) == []
 
 

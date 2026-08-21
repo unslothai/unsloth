@@ -12156,13 +12156,14 @@ def _image_search(
     # One lookup per subject, concurrently; same registry and tokens as web_search.
     from concurrent.futures import ThreadPoolExecutor
 
-    from .search_images import images_envelope, register_images
+    from .search_images import cache_generation, images_envelope, register_images
 
     cleaned = _clean_image_queries(queries)
     if not cleaned:
         return "No subjects provided."
     if cancel_event is not None and cancel_event.is_set():
         return "Search cancelled."
+    expected_generation = cache_generation()
     try:
         from ddgs import DDGS
 
@@ -12200,6 +12201,7 @@ def _image_search(
             website_policy,
             max_images = IMAGE_SEARCH_PER_QUERY,
             subject = subject,
+            expected_generation = expected_generation,
         )
         if not entries:
             sections.append(f"{subject}: no image found")

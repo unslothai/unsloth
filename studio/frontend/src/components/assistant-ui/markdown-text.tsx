@@ -525,6 +525,19 @@ const MarkdownTextImpl = () => {
     const index = texts.indexOf(text);
     return index > 0 ? texts.slice(0, index).join("\n\n") : "";
   });
+  const messageTextKey = useAuiState(({ message }) =>
+    allowSearchImages
+      ? JSON.stringify(
+          message.parts
+            .filter((part) => part.type === "text")
+            .map((part) => part.text),
+        )
+      : "[]",
+  );
+  const messageTexts = useMemo(
+    () => JSON.parse(messageTextKey) as string[],
+    [messageTextKey],
+  );
   const isStreaming = status.type === "running";
   const displayText = useCoalescedStreamingText(text, isStreaming, messageId);
   const processedText = useMemo(
@@ -541,13 +554,14 @@ const MarkdownTextImpl = () => {
               searchImages,
               isStreaming,
               precedingText,
+              messageTexts,
             ),
             searchImages,
           ),
         ),
         isStreaming,
       ),
-    [displayText, isStreaming, precedingText, searchImages],
+    [displayText, isStreaming, messageTexts, precedingText, searchImages],
   );
   const incrementalCacheRef = useRef({
     messageId,

@@ -226,6 +226,7 @@ export function placeSubjectImages(
   isStreaming: boolean,
   // Earlier text parts, so a subject named twice is illustrated once.
   alreadyNamed = "",
+  messageTexts: readonly string[] = [text],
 ): string {
   if (isStreaming || images.size === 0) return text;
   const bySubject = new Map<string, SearchImageEntry>();
@@ -240,11 +241,21 @@ export function placeSubjectImages(
   const mathRegions = findDisplayMathRegions(text);
   const insertions: Array<{ at: number; chunk: string }> = [];
   const namedRegions = findCodeBlockRegions(alreadyNamed);
+  const messageParts = messageTexts.map((part) => ({
+    text: part,
+    codeRegions: findCodeBlockRegions(part),
+  }));
   for (const [key, entry] of bySubject) {
     // Outside code only, the same rule the subject match follows:
     // rewriteSearchImageTokens leaves a token inside a fence as literal text, so
     // counting that as "the model already placed it" showed no picture at all.
-    if (tokenPlacedOutsideCode(text, entry.id, codeRegions)) continue;
+    if (
+      messageParts.some(({ text: part, codeRegions: regions }) =>
+        tokenPlacedOutsideCode(part, entry.id, regions),
+      )
+    ) {
+      continue;
+    }
     // On the original text: lowercasing can change length and shift every offset.
     // Global, so a mention inside code can be stepped over rather than ending the
     // search: `\`Go\`` in a snippet used to abandon the subject that a later prose

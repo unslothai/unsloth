@@ -476,6 +476,24 @@ test("placeSubjectImages illustrates a subject once per message", () => {
   assert.equal(placeSubjectImages("The Pug again.", images, false, first), "The Pug again.");
 });
 
+test("a token in a later text part prevents an earlier duplicate card", () => {
+  const pug = { ...ENTRY, id: "cccccccccccc", subject: "Pug" };
+  const images = new Map([[pug.id, pug]]);
+  const first = "A Pug is small.";
+  const later = "Here it is.\n\n[[img:cccccccccccc]]";
+  assert.equal(placeSubjectImages(first, images, false, "", [first, later]), first);
+  const codeOnly = "```\n[[img:cccccccccccc]]\n```";
+  assert.equal(
+    placeSubjectImages(first, images, false, "", [first, codeOnly]),
+    `${first}\n\n[[img:cccccccccccc]]`,
+  );
+  const unclosedFence = `${first}\n\n\`\`\``;
+  assert.equal(
+    placeSubjectImages(unclosedFence, images, false, "", [unclosedFence, later]),
+    unclosedFence,
+  );
+});
+
 test("missingListSubjects matches coverage on word boundaries", () => {
   const answer = "1. **Caterpillar:** a\n2. **Catalina Island:** b\n3. **Pug:** c";
   const covered = (subject: string) => [
