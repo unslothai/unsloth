@@ -312,7 +312,14 @@ class SAOValueModel(nn.Module):
             return_dict = True,
             **kwargs,
         )
-        hidden_states = outputs.hidden_states[-1]
+        # Clone: Unsloth's patched fast-path kernels reuse activation buffers
+        # in place across forward calls on the same backbone. SAOTrainer calls
+        # this forward K times per training_step (once per critic gradient
+        # step), each producing its own backward - without cloning, a later
+        # forward's in-place op can mutate a tensor an earlier call's backward
+        # still needs, raising "modified by an inplace operation ... expected
+        # version 0 instead".
+        hidden_states = outputs.hidden_states[-1].clone()
         return self.value_head(hidden_states.to(self.value_head.weight.dtype)).squeeze(-1)
 
 
