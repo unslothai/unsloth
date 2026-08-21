@@ -1338,9 +1338,7 @@ def record_import_ledger(
     accepted, inserted, complete = record_chat_legacy_import(
         payload.threadIds, complete = payload.complete
     )
-    return ChatImportLedgerRecordResponse(
-        accepted = accepted, inserted = inserted, complete = complete
-    )
+    return ChatImportLedgerRecordResponse(accepted = accepted, inserted = inserted, complete = complete)
 
 
 @router.delete("")

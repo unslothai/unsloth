@@ -3954,9 +3954,7 @@ def is_chat_legacy_import_complete() -> bool:
     """Return whether the legacy browser database was fully imported."""
     conn = get_connection()
     try:
-        row = conn.execute(
-            "SELECT 1 FROM chat_legacy_import_state WHERE singleton = 1"
-        ).fetchone()
+        row = conn.execute("SELECT 1 FROM chat_legacy_import_state WHERE singleton = 1").fetchone()
         return row is not None
     finally:
         conn.close()

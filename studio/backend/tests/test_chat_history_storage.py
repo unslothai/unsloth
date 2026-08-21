@@ -597,9 +597,11 @@ def test_legacy_import_can_complete_without_records(tmp_path, monkeypatch):
 
 def test_legacy_import_records_and_completes_atomically(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
-    assert studio_db.record_chat_legacy_import(
-        ["legacy-a", "legacy-b"], complete = True
-    ) == (2, 2, True)
+    assert studio_db.record_chat_legacy_import(["legacy-a", "legacy-b"], complete = True) == (
+        2,
+        2,
+        True,
+    )
     assert set(studio_db.list_chat_legacy_imports()) == {"legacy-a", "legacy-b"}
 
 
