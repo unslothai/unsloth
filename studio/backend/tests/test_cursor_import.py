@@ -322,7 +322,7 @@ def test_a_message_deleted_here_is_not_recreated(cursor_home):
 def test_a_chat_no_longer_in_studio_is_imported_whole_again(cursor_home):
     # The ledger outlives the chats it describes -- a cleared history, a rolled
     # back database -- and must not leave those conversations half imported.
-    studio_db.record_cursor_import_mark("session-one", 2**62, 99)
+    studio_db.record_external_import_mark("cursor", "session-one", 2**62, 99)
 
     summary = import_cursor_chats()
 
@@ -415,7 +415,7 @@ def test_appended_turns_arrive_even_when_the_file_mtime_does_not_move(cursor_hom
     import_cursor_chats()
     # A ledger that already saw a newer clock than the file will have, the
     # situation on a filesystem that preserves mtime across appends.
-    studio_db.record_cursor_import_mark("session-one", 2**62, 2)
+    studio_db.record_external_import_mark("cursor", "session-one", 2**62, 2)
     write_transcript(
         cursor_home,
         "Users-me-app",
@@ -431,6 +431,56 @@ def test_appended_turns_arrive_even_when_the_file_mtime_does_not_move(cursor_hom
 
     assert summary.messages == 1
     assert len(studio_db.list_chat_messages(thread_id_for("session-one"))) == 3
+
+
+def test_cursor_marks_from_the_old_table_still_apply(cursor_home):
+    # A database that ran the Cursor-only ledger still has those rows. Folding
+    # them onto the shared table is what keeps a later append from being treated
+    # as already imported -- or skipped entirely for want of a mark.
+    import_cursor_chats()
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("DELETE FROM external_import_sessions WHERE source = 'cursor'")
+        conn.execute(
+            """
+            CREATE TABLE cursor_import_sessions (
+                session_id TEXT NOT NULL PRIMARY KEY,
+                transcript_updated_at INTEGER NOT NULL,
+                turns_imported INTEGER NOT NULL
+            ) WITHOUT ROWID
+            """
+        )
+        conn.execute(
+            "INSERT INTO cursor_import_sessions VALUES (?, ?, ?)",
+            ("session-one", 2**62, 2),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    studio_db._schema_ready = False
+    write_transcript(
+        cursor_home,
+        "Users-me-app",
+        "session-one",
+        [
+            turn("user", "<user_query>Fix the header</user_query>"),
+            turn("assistant", "Fixed it."),
+            turn("user", "<user_query>And the footer</user_query>"),
+        ],
+    )
+
+    summary = import_cursor_chats()
+
+    assert summary.messages == 1
+    assert studio_db.get_external_import_mark("cursor", "session-one")["turnsImported"] == 3
+    conn = studio_db.get_connection()
+    try:
+        tables = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        assert "cursor_import_sessions" not in tables
+    finally:
+        conn.close()
 
 
 def test_a_no_op_import_does_not_promote_the_project_in_the_sidebar(cursor_home):
