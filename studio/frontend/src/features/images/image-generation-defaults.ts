@@ -35,13 +35,20 @@ const MODEL_DEFAULTS: Array<{
   { match: "sdxl", steps: 30, guidance: 7 },
 ];
 
-export function defaultsFor(repoId: string): {
+export function defaultsFor(
+  repoId: string,
+  familyOverride?: string | null,
+): {
   steps: number;
   guidance: number;
 } {
   const id = repoId.toLowerCase();
   const matched = MODEL_DEFAULTS.find((entry) => id.includes(entry.match));
-  return matched
-    ? { steps: matched.steps, guidance: matched.guidance }
-    : DEFAULT_GEN;
+  if (matched) return { steps: matched.steps, guidance: matched.guidance };
+  if (familyOverride && familyOverride !== "auto") {
+    const fam = familyOverride.toLowerCase();
+    const famMatch = MODEL_DEFAULTS.find((entry) => fam.includes(entry.match));
+    if (famMatch) return { steps: famMatch.steps, guidance: famMatch.guidance };
+  }
+  return DEFAULT_GEN;
 }

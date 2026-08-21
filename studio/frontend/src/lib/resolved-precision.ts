@@ -63,6 +63,31 @@ export function formatResolvedValue(key: string, value: string | boolean | null 
   if (value === "_native_cudnn" || value.toLowerCase() === "cudnn") return "cuDNN";
   // Deferred speed auto: the dense pipe stays exact/eager and compiles on the 3rd image (the tooltip carries the full reason).
   if (value === "deferred") return "On from 3rd image";
+  if (key === "family" || key === "family_override") {
+    const familyLabels: Record<string, string> = {
+      "flux.1": "FLUX.1",
+      "flux.2-klein": "FLUX.2 Klein",
+      "flux.2-dev": "FLUX.2 Dev",
+      "flux.1-kontext": "FLUX.1 Kontext",
+      "qwen-image": "Qwen-Image",
+      "qwen-image-edit": "Qwen-Image-Edit",
+      "z-image": "Z-Image",
+      "krea-2": "Krea 2",
+      "lumina-2": "Lumina 2",
+      "hunyuanimage-2.1": "HunyuanImage 2.1",
+      "hidream-i1": "HiDream-I1",
+      "ideogram-4": "Ideogram 4",
+      "sdxl": "SDXL",
+      "minimax-h3": "MiniMax-H3",
+      "ltx-2": "LTX-2",
+      "wan2.2-ti2v-5b": "Wan2.2-TI2V-5B",
+      "wan2.2-t2v-a14b": "Wan2.2-T2V-A14B",
+      "hunyuanvideo-1.5": "HunyuanVideo-1.5 (480p)",
+      "hunyuanvideo-1.5-720p": "HunyuanVideo-1.5 (720p)",
+    };
+    const keyLower = String(value).trim().toLowerCase();
+    return familyLabels[keyLower] ?? String(value);
+  }
   return value.toUpperCase();
 }
 
@@ -180,6 +205,7 @@ export function resolvedSeedKey(
     part(resolved.transformer_quant, true),
     part(resolved.memory_mode, true),
     part(resolved.attention_backend, false),
+    part(resolved.family_override, true),
   ].join("|");
 }
 

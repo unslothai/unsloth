@@ -1120,6 +1120,12 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
               : "Native SDPA"
         }
       />
+      {status.family ? (
+        <BuildRow
+          label="Family"
+          value={formatResolvedValue("family", status.family)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1164,6 +1170,7 @@ type LoadAdvanced = Pick<
   | "memory_mode"
   | "transformer_cache"
   | "loras"
+  | "family_override"
   | "gpu_ids"
 >;
 
@@ -1290,6 +1297,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   );
   const gpuChoices = useDiffusionGpuChoices();
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
+  const [familyOverride, setFamilyOverride] = useState<string>("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options without the user re-picking it.
   const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
@@ -1434,7 +1442,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // is whether the user takes the form after THIS pick, not after the one it replaced.
       const claimedAt = imageFormClaimId();
       pickRecipeSuperseded.current = () => imageFormClaimId() !== claimedAt;
-      const recommended = defaultsFor(repoId);
+      const recommended = defaultsFor(repoId, familyOverride);
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
@@ -1443,7 +1451,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         revert.appliedGuidance = recommended.guidance;
       }
     },
-    [claimImageRecipe, imageFormClaimId],
+    [claimImageRecipe, familyOverride, imageFormClaimId],
   );
 
   const dismissLoadToast = useCallback(() => {
@@ -2335,11 +2343,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }
     // Seed from base_repo (the resolved diffusers base, holding the family), not repo_id: a GGUF resident has no family substring.
     // Status is the authority for a resident model, so this is not a pick's optimistic claim.
-    const d = defaultsFor(status?.base_repo ?? repoId);
+    const d = defaultsFor(status?.base_repo ?? status?.family ?? repoId, status?.family);
     setPendingModelDefaults(null);
     setSteps(d.steps);
     setGuidance(d.guidance);
-  }, [imagePresets.storedRecipe, status?.loaded, status?.repo_id, status?.base_repo, status?.model_kind]);
+  }, [imagePresets.storedRecipe, status?.loaded, status?.repo_id, status?.base_repo, status?.family, status?.model_kind]);
 
   // Reseed the Advanced selects from the LOADED build, so they stop being pure local request state.
   // An honored request re-selects itself (a no-op); a declined one snaps to what actually engaged,
@@ -2370,6 +2378,25 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       ) ?? null,
     );
     if (attention) setAttentionBackend(attention);
+    const famOverride = resolvedSelectValue(record.family_override, (v) =>
+      ([
+        "auto",
+        "flux.1",
+        "flux.2-klein",
+        "flux.2-dev",
+        "flux.1-kontext",
+        "qwen-image",
+        "qwen-image-edit",
+        "z-image",
+        "krea-2",
+        "lumina-2",
+        "hunyuanimage-2.1",
+        "hidream-i1",
+        "ideogram-4",
+        "sdxl",
+      ] as const).find((o) => o === v) ?? null,
+    );
+    if (famOverride) setFamilyOverride(famOverride);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
   }, [resolvedKey]);
 
@@ -2395,6 +2422,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
         memory_mode: memoryMode === "auto" ? undefined : memoryMode,
         transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
+        family_override: familyOverride === "auto" ? undefined : familyOverride,
         loras: baked.length > 0 ? baked : undefined,
         // Dropped when the chosen card is gone (a driver reset, an eGPU unplugged), so a stale pick loads automatically instead of 400ing.
         gpu_ids:
@@ -2412,6 +2440,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       attentionBackend,
       memoryMode,
       transformerCache,
+      familyOverride,
       selectedGpu,
       gpuChoices,
     ],
@@ -2485,6 +2514,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           attention_backend: advanced.attention_backend,
           memory_mode: advanced.memory_mode,
           transformer_cache: advanced.transformer_cache,
+          family_override: advanced.family_override,
           loras: bakeLoras.length > 0 ? bakeLoras : undefined,
           gpu_ids: advanced.gpu_ids,
         });
@@ -2625,6 +2655,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // Non-GGUF loads ignore this control; the plan must describe the same request as handleLoad.
         transformer_quant: opts.kind === "gguf" ? advanced.transformer_quant : undefined,
         memory_mode: advanced.memory_mode,
+        family_override: advanced.family_override,
         // The backend prefetch decision reads the adapter selection too: a baked LoRA always runs the dense build path. Omitting it
         // planned a quantized file set and staged too little. Same list handleLoad bakes.
         loras: advanced.loras,
@@ -2862,19 +2893,17 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (l) void handleLoad(l.repoId, { kind: l.kind, filename: l.filename });
   }, [handleLoad]);
 
-  // Every pick supersedes the one before it, whichever route it takes. A staged download outlives
-  // its pick, and the direct-local branches call handleLoad rather than loadOrStage, so clearing
-  // only inside loadOrStage left the old job's onReady free to load the abandoned model over the
-  // one just chosen. Bumping the sequence here also invalidates any plan still in flight.
-  // A pick that is rejected after beginPick() has already retired the staged pick it replaced, so
-  // nothing will load and nothing else will restore the label. Hand the resident state back here or
-  // the selector keeps showing the abandoned pick's quant and recipe for good.
   const abandonPick = useCallback(() => {
     if (quantRevert.current) {
       revertPick(quantRevert.current);
       quantRevert.current = null;
     }
-  }, [revertPick]);
+    pickGuard.release();
+    pickSeq.current += 1;
+    pendingStagedLoad.current = null;
+    stagedLoadDeferred.current = false;
+    stagedQuantRevert.current = null;
+  }, []);
 
   const beginPick = useCallback(() => {
     pickSeq.current += 1;
@@ -3024,6 +3053,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       applyImageModelDefaults,
       beginPick,
       busy,
+      familyOverride,
+      guidance,
+      steps,
       handleLoad,
       loadGgufRepoPick,
       loadOrStage,
@@ -3466,9 +3498,41 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const activeWorkflowTab =
     WORKFLOW_TABS.find((t) => t.id === workflow) ?? WORKFLOW_TABS[0];
 
+  const DIFFUSION_FAMILY_OPTIONS: Array<[string, string]> = [
+    ["auto", "Auto (detect)"],
+    ["flux.1", "FLUX.1"],
+    ["flux.2-klein", "FLUX.2 Klein"],
+    ["flux.2-dev", "FLUX.2 Dev"],
+    ["flux.1-kontext", "FLUX.1 Kontext"],
+    ["qwen-image", "Qwen-Image"],
+    ["qwen-image-edit", "Qwen-Image-Edit"],
+    ["z-image", "Z-Image"],
+    ["krea-2", "Krea 2"],
+    ["lumina-2", "Lumina 2"],
+    ["hunyuanimage-2.1", "HunyuanImage 2.1"],
+    ["hidream-i1", "HiDream-I1"],
+    ["ideogram-4", "Ideogram 4"],
+    ["sdxl", "SDXL"],
+  ];
+
   // The Advanced (load-time) tuning controls, rendered in the right-docked panel below.
   const advancedControls = (
     <>
+      <AdvancedSelect
+        label="Family"
+        hint="Diffusion model architecture family. Auto detects from the repository name and metadata. Specify an override if loading a custom fine-tune or merge whose name does not contain the standard family keywords."
+        badge={<ResolvedBadge status={status} controlKey="family_override" />}
+        value={familyOverride}
+        onValueChange={(v) => {
+          setFamilyOverride(v);
+          if (v !== "auto") {
+            const d = defaultsFor("", v);
+            setSteps(d.steps);
+            setGuidance(d.guidance);
+          }
+        }}
+        options={DIFFUSION_FAMILY_OPTIONS}
+      />
       <AdvancedSelect
         label="Speed"
         hint="Auto picks per model: GGUF compiles at load; a dense model keeps the first two images exact and eager, then compiles from the 3rd (~2x from there). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV)."

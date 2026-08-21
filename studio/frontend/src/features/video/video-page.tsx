@@ -181,12 +181,23 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   // Wan2.2 pipelines default to 50 steps at CFG 5.0 (verified in diffusers 0.39). The backend supplies the fps per family.
   { match: "wan", steps: 50, guidance: 5 },
   // HunyuanVideo-1.5 runs 50 steps; guidance 6 matches the guider the repo ships (there is no pipeline kwarg).
+  { match: "hunyuanvideo-1.5-720p", steps: 50, guidance: 6 },
   { match: "hunyuanvideo", steps: 50, guidance: 6 },
 ];
 
-function defaultsFor(repoId: string): { steps: number; guidance: number } {
+function defaultsFor(
+  repoId: string,
+  familyOverride?: string | null,
+): { steps: number; guidance: number } {
   const id = repoId.toLowerCase();
-  return MODEL_DEFAULTS.find((d) => id.includes(d.match)) ?? DEFAULT_GEN;
+  const matched = MODEL_DEFAULTS.find((d) => id.includes(d.match));
+  if (matched) return matched;
+  if (familyOverride && familyOverride !== "auto") {
+    const fam = familyOverride.toLowerCase();
+    const famMatch = MODEL_DEFAULTS.find((d) => fam.includes(d.match));
+    if (famMatch) return famMatch;
+  }
+  return DEFAULT_GEN;
 }
 
 // Resolution presets offered before a model is loaded. Once loaded, status.defaults.resolution_presets replaces these.
@@ -526,6 +537,12 @@ function LoadedBuildSummary({ status }: { status: VideoStatus | null }) {
             : "Native SDPA"
         }
       />
+      {status.family ? (
+        <BuildRow
+          label="Family"
+          value={formatResolvedValue("family", status.family)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -739,7 +756,10 @@ const H3_BF16_REPO = "MiniMaxAI/MiniMax-H3";
  *  pinned it to fl2va and its transformer_ref partition was unreachable even with the weights
  *  sitting on disk. Matched on the final path segment, the same way a local checkpoint's family
  *  is read off its filename elsewhere. */
-function isH3PipelinePick(repoId: string, kind: VideoLoadOptions["kind"]): boolean {
+function isH3PipelinePick(
+  repoId: string,
+  kind: VideoLoadOptions["kind"],
+): boolean {
   if (kind !== "pipeline") return false;
   const id = repoId.toLowerCase();
   if (id === H3_BF16_REPO.toLowerCase()) return true;
@@ -769,6 +789,7 @@ type VideoLoadAdvanced = Pick<
   | "attention_backend"
   | "transformer_cache"
   | "transformer_quant"
+  | "family_override"
   | "gpu_ids"
 >;
 
@@ -916,6 +937,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const [transformerQuant, setTransformerQuant] = useState<
     "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8"
   >("auto");
+  const [familyOverride, setFamilyOverride] = useState<string>("auto");
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options.
   const lastLoad = useRef<({ repoId: string } & VideoLoadOptions) | null>(null);
   // Render-safe mirror of whether a page-initiated load supplied a complete Reapply target.
@@ -1271,7 +1293,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       // is whether the user takes the form after THIS pick, not after the one it replaced.
       const claimedAt = videoFormClaimId();
       pickRecipeSuperseded.current = () => videoFormClaimId() !== claimedAt;
-      const recommended = defaultsFor(repoId);
+      const recommended = defaultsFor(repoId, familyOverride);
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
@@ -1286,7 +1308,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       modelSeeded.current = true;
       familySeeded.current = true;
     },
-    [claimVideoRecipe, videoFormClaimId],
+    [claimVideoRecipe, familyOverride, videoFormClaimId],
   );
 
   useEffect(() => {
@@ -1429,6 +1451,18 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       ) ?? null,
     );
     if (attention) setAttentionBackend(attention);
+    const famOverride = resolvedSelectValue(record.family_override, (v) =>
+      ([
+        "auto",
+        "minimax-h3",
+        "ltx-2",
+        "wan2.2-ti2v-5b",
+        "wan2.2-t2v-a14b",
+        "hunyuanvideo-1.5",
+        "hunyuanvideo-1.5-720p",
+      ] as const).find((o) => o === v) ?? null,
+    );
+    if (famOverride) setFamilyOverride(famOverride);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
   }, [resolvedKey]);
 
@@ -2170,6 +2204,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     attentionBackend,
     transformerCache,
     transformerQuant,
+    familyOverride,
     selectedGpu,
     gpuChoices,
   });
@@ -2179,6 +2214,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     attentionBackend,
     transformerCache,
     transformerQuant,
+    familyOverride,
     selectedGpu,
     gpuChoices,
   };
@@ -2196,6 +2232,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           kind === "pipeline" && controls.transformerQuant !== "auto"
             ? controls.transformerQuant
             : undefined,
+        family_override:
+          controls.familyOverride === "auto" ? undefined : controls.familyOverride,
         // Dropped when the chosen card is gone (a driver reset, an eGPU unplugged), so a stale pick loads automatically instead of 400ing.
         gpu_ids:
           controls.selectedGpu !== "auto" &&
@@ -2217,6 +2255,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         hf_token: hfApiToken(getHfToken()),
         transformer_quant: advanced.transformer_quant,
         memory_mode: advanced.memory_mode,
+        family_override: advanced.family_override,
         // The plan sizes its file set against the card the load will use, so it needs the pick.
         gpu_ids: advanced.gpu_ids,
       });
@@ -2282,6 +2321,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           attention_backend: advanced.attention_backend,
           transformer_cache: advanced.transformer_cache,
           transformer_quant: advanced.transformer_quant,
+          family_override: advanced.family_override,
           // Not an Advanced control: the partition is chosen per pick, so it stays on opts rather
           // than joining the pinned set.
           h3_task: opts.h3Task,
@@ -2442,6 +2482,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           // The route preflights the same values used by the eventual load.
           transformer_quant: advanced.transformer_quant,
           memory_mode: advanced.memory_mode,
+          family_override: advanced.family_override,
           // And the partition, for the same reason: the two H3 denoisers are separate downloads,
           // so a plan asked without it stages the default fl2va weights for a References pick.
           h3_task: opts.h3Task,
@@ -2646,6 +2687,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   }, [
     active,
     applyVideoModelDefaults,
+    familyOverride,
     routeSearch?.model,
     routeSearch?.quant,
     routeSearch?.ggufQuant,
@@ -2876,6 +2918,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       applyVideoModelDefaults,
       beginPick,
       busy,
+      familyOverride,
+      guidance,
+      steps,
       handleLoad,
       loadGgufRepoPick,
       loadOrStage,
@@ -3072,9 +3117,34 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     resyncAfterGenerateRefusal,
   ]);
 
+  const VIDEO_FAMILY_OPTIONS: Array<[string, string]> = [
+    ["auto", "Auto (detect)"],
+    ["minimax-h3", "MiniMax-H3"],
+    ["ltx-2", "LTX-2"],
+    ["wan2.2-ti2v-5b", "Wan2.2-TI2V-5B"],
+    ["wan2.2-t2v-a14b", "Wan2.2-T2V-A14B"],
+    ["hunyuanvideo-1.5", "HunyuanVideo-1.5 (480p)"],
+    ["hunyuanvideo-1.5-720p", "HunyuanVideo-1.5 (720p)"],
+  ];
+
   // The Advanced (load-time) tuning controls, rendered in the right-docked panel below.
   const advancedControls = (
     <>
+      <AdvancedSelect
+        label="Family"
+        hint="Video model architecture family. Auto detects from the repository name and metadata. Specify an override if loading a custom fine-tune whose name does not contain the standard family keywords."
+        badge={<ResolvedBadge status={status} controlKey="family_override" />}
+        value={familyOverride}
+        onValueChange={(v) => {
+          setFamilyOverride(v);
+          if (v !== "auto") {
+            const d = defaultsFor("", v);
+            setSteps(d.steps);
+            setGuidance(d.guidance);
+          }
+        }}
+        options={VIDEO_FAMILY_OPTIONS}
+      />
       <AdvancedSelect
         label="Memory"
         hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram offloads every component (lowest VRAM, slower)."
