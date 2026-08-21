@@ -231,7 +231,7 @@ class ChatGenerationSupervisor:
         if activity is None:
             activity = InferenceActivityReservation()
             activity.reserve()
-        pending: list[tuple[str, dict[str, Any]]] = []
+        pending: list[tuple[str, dict[str, Any], int]] = []
         iterator: AsyncIterator[Any] | None = None
         last_flush = time.monotonic()
         finish_reason: str | None = None
@@ -340,7 +340,7 @@ class ChatGenerationSupervisor:
                         continue
                     if not isinstance(chunk, dict):
                         continue
-                    pending.append(("chunk", chunk))
+                    pending.append(("chunk", chunk, db.now_ms()))
                     finish_reason = _chunk_finish_reason(chunk) or finish_reason
                     error = _chunk_error(chunk) or error
                     now = time.monotonic()

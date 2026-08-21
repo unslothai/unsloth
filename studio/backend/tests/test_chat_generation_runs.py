@@ -228,6 +228,19 @@ def test_batched_events_have_gapless_cursor_and_terminal_flush(chat_home):
     assert runs_db.request_cancel("run-1", "alice")["lastEventSeq"] == 7
 
 
+def test_batched_events_preserve_receipt_timestamps(chat_home):
+    _create()
+    worker_token = runs_db.get_worker_token("run-1")
+    assert runs_db.mark_running("run-1", worker_token) is True
+    runs_db.append_events(
+        "run-1",
+        worker_token,
+        [("chunk", {"i": 1}, 1001), ("chunk", {"i": 2}, 1002)],
+    )
+    chunks = [event for event in runs_db.list_events("run-1") if event["type"] == "chunk"]
+    assert [event["createdAt"] for event in chunks] == [1001, 1002]
+
+
 def test_cancel_before_registration_and_startup_orphan_reconciliation(chat_home):
     queued, _created = _create("queued")
     cancelled = runs_db.request_cancel("queued", "alice")

@@ -20,6 +20,7 @@ TERMINAL_STATUSES = frozenset({"cancelled", "completed", "failed"})
 ALL_STATUSES = ACTIVE_STATUSES | TERMINAL_STATUSES
 _EVENTS_CHANGED = threading.Condition()
 _RUN_TOMBSTONE_PREFIX = "chat-generation-run-tombstone:"
+ChatGenerationEventInput = tuple[str, dict[str, Any]] | tuple[str, dict[str, Any], int]
 
 
 class ChatGenerationConflictError(RuntimeError):
@@ -87,7 +88,7 @@ def _run_from_row(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _append_events_locked(
-    conn: sqlite3.Connection, run_id: str, events: Iterable[tuple[str, dict[str, Any]]]
+    conn: sqlite3.Connection, run_id: str, events: Iterable[ChatGenerationEventInput]
 ) -> list[int]:
     row = conn.execute(
         "SELECT last_event_seq FROM chat_generation_runs WHERE id=?",
@@ -96,9 +97,11 @@ def _append_events_locked(
     if row is None:
         raise KeyError(run_id)
     seq = int(row["last_event_seq"])
-    created = now_ms()
+    batch_created = now_ms()
     sequences: list[int] = []
-    for event_type, payload in events:
+    for event in events:
+        event_type, payload = event[:2]
+        created = event[2] if len(event) == 3 else batch_created
         seq += 1
         conn.execute(
             """INSERT INTO chat_generation_events
@@ -116,7 +119,7 @@ def _append_events_locked(
     if sequences:
         conn.execute(
             "UPDATE chat_generation_runs SET last_event_seq=?, updated_at=? WHERE id=?",
-            (seq, created, run_id),
+            (seq, batch_created, run_id),
         )
     return sequences
 
@@ -386,7 +389,7 @@ def list_active(owner_subject: str, thread_id: str) -> list[dict[str, Any]]:
 
 
 def append_events(
-    run_id: str, worker_token: str, events: Iterable[tuple[str, dict[str, Any]]]
+    run_id: str, worker_token: str, events: Iterable[ChatGenerationEventInput]
 ) -> list[int]:
     batch = list(events)
     if not batch:
@@ -505,7 +508,7 @@ def finish_run(
     status: str,
     finish_reason: str | None = None,
     error: str | None = None,
-    pending_events: Iterable[tuple[str, dict[str, Any]]] = (),
+    pending_events: Iterable[ChatGenerationEventInput] = (),
 ) -> dict[str, Any] | None:
     if status not in TERMINAL_STATUSES:
         raise ValueError(f"Invalid terminal status: {status}")
