@@ -9,13 +9,8 @@ APPDIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 PATH="$APPDIR/usr/bin:$APPDIR/usr/sbin:${PATH:-/usr/local/bin:/usr/bin:/bin}"
 export APPDIR PATH
 
-# Keep WebKitGTK on the bundled CBDT emoji font. Jammy's Skia can abort when a
-# newer host FreeType selects a COLRv1 font, while host text fonts remain usable.
-# The policy carries this mount's AppDir because Fontconfig has no portable way
-# to name a directory relative to the config file: prefix="relative" arrived in
-# 2.14, and 2.13 hosts such as Ubuntu 22.04 anchor such a path at the host root.
-# Materialize it in a directory this user owns; a shared /tmp path would let
-# anyone else on the machine choose what this process treats as a font policy.
+# Keep Jammy's Skia off host COLRv1 fonts. Fontconfig 2.13 misresolves relative
+# font paths, so materialize this mount's absolute path in user-owned state.
 unsloth_fonts_template="$APPDIR/usr/etc/fonts/unsloth-appimage.conf"
 unsloth_fonts_state="${XDG_RUNTIME_DIR:-${XDG_CACHE_HOME:-${HOME:-}/.cache}}/unsloth-studio"
 FONTCONFIG_FILE="$unsloth_fonts_template"
@@ -24,11 +19,7 @@ if [ -r "$unsloth_fonts_template" ] &&
   sed "s|@APPDIR@|$APPDIR|g" "$unsloth_fonts_template" \
     >"$unsloth_fonts_state/fonts-${APPDIR##*/}.conf" 2>/dev/null; then
   FONTCONFIG_FILE="$unsloth_fonts_state/fonts-${APPDIR##*/}.conf"
-  # Each mount gets its own name, so a second instance cannot repoint the first
-  # one's policy mid-run. Drop only the copies whose mount is gone: an age-based
-  # sweep would delete a live instance's copy out from under it, and its next
-  # WebKit helper would start with an unreadable FONTCONFIG_FILE, back on the
-  # host's COLRv1 font and back to the crash this file exists to prevent.
+  # Preserve policies for live mounts and remove only departed ones.
   for unsloth_stale in "$unsloth_fonts_state"/fonts-*.conf; do
     [ -f "$unsloth_stale" ] || continue
     [ "$unsloth_stale" != "$FONTCONFIG_FILE" ] || continue

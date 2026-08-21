@@ -226,11 +226,9 @@ def test_release_preseeds_every_tauri_appimage_tool_with_a_digest():
         assert asset in tool_script
         assert asset in finalizer_source
     fontconfig_source = FONTCONFIG.read_text(encoding = "utf-8")
-    # Fontconfig skips a malformed file wholesale and logs to stderr the app
-    # never shows, which reads exactly like the policy not applying.
+    # Fontconfig silently ignores malformed policies.
     ElementTree.fromstring(fontconfig_source)
-    # Fontconfig 2.13, which Ubuntu 22.04 still ships, ignores prefix="relative"
-    # and anchors the path at the host root, so AppRun fills in the real AppDir.
+    # AppRun replaces @APPDIR@ because Fontconfig 2.13 misresolves relative paths.
     assert "<dir>@APPDIR@/usr/share/unsloth/fonts</dir>" in fontconfig_source
     assert "<dir prefix=" not in fontconfig_source
     assert '<match target="scan">' in fontconfig_source
@@ -239,15 +237,12 @@ def test_release_preseeds_every_tauri_appimage_tool_with_a_digest():
     assert "<selectfont>" in fontconfig_source
     assert "<rejectfont>" in fontconfig_source
     assert '<patelt name="color"><bool>true</bool></patelt>' in fontconfig_source
-    # The bundled font keeps its real color=true, so the color-emoji queries
-    # WebKitGTK makes still reach it; acceptfont is what spares it the filter.
+    # Spare the bundled color font from the host-color rejection.
     assert "<acceptfont>" in fontconfig_source
     assert '<patelt name="family"><string>Unsloth Safe Emoji</string></patelt>' in fontconfig_source
     assert fontconfig_source.index("<acceptfont>") < fontconfig_source.index("<rejectfont>")
 
-    # Every pattern rule must be guarded by what it answers for. An unguarded
-    # prepend wins FcFontMatch outright, and WebKitGTK then draws spaces and
-    # digits, which a CBDT emoji font covers, out of that font.
+    # Only emoji requests may strongly prefer the bundled font.
     pattern_rules = re.findall(
         r'<match target="pattern">(.*?)</match>', fontconfig_source, re.DOTALL
     )
@@ -518,8 +513,7 @@ def test_apprun_hands_an_inherited_library_path_to_children_only(tmp_path):
     assert not [line for line in printed if line.startswith("LD_LIBRARY_PATH=")]
     assert "UNSLOTH_HOST_LD_LIBRARY_PATH=/opt/conda/lib:/opt/rocm/lib" in printed
 
-    # The shipped policy names its font directory as @APPDIR@; a mount-specific
-    # copy is what fontconfig actually reads, on every version.
+    # AppRun materializes the mount-specific font path.
     materialized = state / "unsloth-studio/fonts-AppDir.conf"
     assert f"FONTCONFIG_FILE={materialized}" in printed
     assert f"<dir>{appdir}/usr/share/unsloth/fonts</dir>" in materialized.read_text(
@@ -529,12 +523,7 @@ def test_apprun_hands_an_inherited_library_path_to_children_only(tmp_path):
 
 
 def test_apprun_retires_only_the_font_policies_whose_mount_is_gone(tmp_path):
-    """A second launch must not pull the policy out from under a running one.
-
-    The survivor's next WebKit helper would start with an unreadable
-    FONTCONFIG_FILE, fall back to the host config, and pick the COLRv1 font
-    the policy exists to keep away from Jammy's Skia.
-    """
+    """A later launch preserves live-mount policies and removes departed ones."""
 
     state = tmp_path / "state"
     env = {"PATH": "/usr/bin:/bin", "XDG_RUNTIME_DIR": str(state)}
@@ -543,7 +532,7 @@ def test_apprun_retires_only_the_font_policies_whose_mount_is_gone(tmp_path):
     live_policy = state / "unsloth-studio/fonts-mount-live.conf"
     assert live_policy.is_file()
 
-    # A mount that exited: same shape, but its AppDir is no longer on disk.
+    # Simulate an unmounted AppImage.
     dead = _apprun_mount(tmp_path, "mount-dead")
     subprocess.run([dead / "AppRun"], check = True, capture_output = True, env = env)
     dead_policy = state / "unsloth-studio/fonts-mount-dead.conf"

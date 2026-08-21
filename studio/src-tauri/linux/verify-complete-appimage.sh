@@ -118,9 +118,7 @@ grep -Fq 'sed "s|@APPDIR@|$APPDIR|g" "$unsloth_fonts_template"' "${launchers[@]}
   exit 1
 }
 
-# Prove the policy under the fontconfig this machine runs, not by reading it.
-# The Jammy build host and the portability images span 2.13 to 2.15, and the
-# 2.13 behavior above is invisible to any text search of the config.
+# Exercise the policy with the host Fontconfig, including version 2.13.
 if command -v fc-match >/dev/null && command -v fc-query >/dev/null &&
   fc-query "$safe_emoji_font" >/dev/null 2>&1; then
   fc_root="$(mktemp -d "${RUNNER_TEMP:-/tmp}/unsloth-appimage-fc.XXXXXX")"
