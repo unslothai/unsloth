@@ -647,11 +647,7 @@ def _msg(mid: str, parent: str | None, t: int) -> dict:
     }
 
 
-
-def test_fence_provenance_round_trips_storage_export_and_fork_byte_for_byte(
-    tmp_path,
-    monkeypatch,
-):
+def test_fence_provenance_round_trips_storage_export_and_fork_byte_for_byte(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread("src"))
     content = [
