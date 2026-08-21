@@ -530,6 +530,51 @@ def test_rejects_too_many_archive_entries_before_opening_zipfile(
         skills.import_skill_archive(archive)
 
 
+def test_rejects_zip64_entry_count_before_opening_zipfile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    archive = _bundle(
+        tmp_path / "zip64-entry-heavy.zip",
+        {
+            "unsloth/SKILL.md": SKILL_MD,
+            "outside/one.txt": "",
+            "outside/two.txt": "",
+        },
+    )
+    payload = bytearray(archive.read_bytes())
+    end_record = payload.rfind(b"PK\x05\x06")
+    central_size = int.from_bytes(payload[end_record + 12 : end_record + 16], "little")
+    central_offset = int.from_bytes(payload[end_record + 16 : end_record + 20], "little")
+    classic_end = bytearray(payload[end_record:])
+    struct.pack_into("<HHLL", classic_end, 8, 1, 1, 0xFFFFFFFF, 0xFFFFFFFF)
+    zip64_end = struct.pack(
+        "<4sQ2H2L4Q",
+        b"PK\x06\x06",
+        44,
+        45,
+        45,
+        0,
+        0,
+        3,
+        3,
+        central_size,
+        central_offset,
+    )
+    zip64_locator = struct.pack("<4sLQL", b"PK\x06\x07", 0, end_record, 1)
+    archive.write_bytes(payload[:end_record] + zip64_end + zip64_locator + classic_end)
+    with zipfile.ZipFile(archive) as handle:
+        assert len(handle.infolist()) == 3
+
+    monkeypatch.setattr(skills, "MAX_ARCHIVE_ENTRIES", 2)
+    monkeypatch.setattr(
+        skills.zipfile,
+        "ZipFile",
+        lambda *_args, **_kwargs: pytest.fail("ZipFile materialized the central directory"),
+    )
+    with pytest.raises(skills.SkillError, match = "2-entry limit"):
+        skills.import_skill_archive(archive)
+
+
 def test_rejects_oversized_manifest_before_inflating_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -928,6 +973,35 @@ def test_replacement_reports_cleanup_failure_and_uses_a_fresh_backup(
     )
 
     assert "Serve and run models" in skills.read_skill_resource("unsloth")
+
+
+@pytest.mark.parametrize(
+    ("operation", "prefix"),
+    [("import", ".import-"), ("create", ".create-")],
+)
+def test_staging_cleanup_failures_are_reported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    prefix: str,
+):
+    skills.create_skill("unsloth", SKILL_MD)
+    archive = _bundle(tmp_path / "duplicate.zip", {"unsloth/SKILL.md": SKILL_MD})
+    real_rmtree = skills.shutil.rmtree
+
+    def fail_staging_cleanup(path, *args, **kwargs):
+        if Path(path).name.startswith(prefix):
+            raise PermissionError("staged file is in use")
+        real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(skills.shutil, "rmtree", fail_staging_cleanup)
+    with pytest.raises(PermissionError, match = "staged file is in use"):
+        if operation == "import":
+            skills.import_skill_archive(archive)
+        else:
+            skills.create_skill("unsloth", SKILL_MD)
+
+    assert any(path.name.startswith(prefix) for path in (tmp_path / "skills").iterdir())
 
 
 @pytest.mark.parametrize(

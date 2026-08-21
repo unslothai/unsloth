@@ -43,6 +43,10 @@ _ZIP_END_SIZE = 22
 _ZIP_MAX_COMMENT_BYTES = (1 << 16) - 1
 _ZIP_CENTRAL_SIGNATURE = b"PK\x01\x02"
 _ZIP_CENTRAL_SIZE = 46
+_ZIP64_END_SIGNATURE = b"PK\x06\x06"
+_ZIP64_END_SIZE = 56
+_ZIP64_LOCATOR_SIGNATURE = b"PK\x06\x07"
+_ZIP64_LOCATOR_SIZE = 20
 
 _LOCK = threading.RLock()
 _REGISTRY_NAME = ".registry.json"
@@ -386,6 +390,45 @@ def _archive_source(
     return metadata, selected_files
 
 
+def _zip64_directory_metadata(handle, end_offset: int) -> Optional[tuple[int, int, int]]:
+    locator_offset = end_offset - _ZIP64_LOCATOR_SIZE
+    if locator_offset < 0:
+        return None
+    handle.seek(locator_offset)
+    locator = handle.read(_ZIP64_LOCATOR_SIZE)
+    if len(locator) != _ZIP64_LOCATOR_SIZE or locator[:4] != _ZIP64_LOCATOR_SIGNATURE:
+        return None
+    disk_number = int.from_bytes(locator[4:8], "little")
+    record_relative_offset = int.from_bytes(locator[8:16], "little")
+    total_disks = int.from_bytes(locator[16:20], "little")
+    record_offset = locator_offset - _ZIP64_END_SIZE
+    if disk_number != 0 or total_disks > 1 or record_relative_offset > record_offset:
+        raise SkillError("Skill bundle must be a valid ZIP archive.")
+
+    handle.seek(record_relative_offset)
+    record = handle.read(_ZIP64_END_SIZE)
+    extra_size = record_offset - record_relative_offset
+    record_start = record_relative_offset
+    if record[:4] != _ZIP64_END_SIGNATURE and record_relative_offset != record_offset:
+        handle.seek(record_offset)
+        record = handle.read(_ZIP64_END_SIZE)
+        extra_size = 0
+        record_start = record_offset
+    if len(record) != _ZIP64_END_SIZE or record[:4] != _ZIP64_END_SIGNATURE:
+        raise SkillError("Skill bundle must be a valid ZIP archive.")
+
+    record_size = int.from_bytes(record[4:12], "little")
+    entries = int.from_bytes(record[32:40], "little")
+    central_size = int.from_bytes(record[40:48], "little")
+    central_offset = int.from_bytes(record[48:56], "little")
+    if (
+        central_offset + central_size != record_relative_offset
+        or record_size + 12 != _ZIP64_END_SIZE + extra_size
+    ):
+        raise SkillError("Skill bundle must be a valid ZIP archive.")
+    return entries, central_size, record_start
+
+
 def _validate_archive_entry_count(archive_path: Path) -> None:
     try:
         archive_size = archive_path.stat().st_size
@@ -403,10 +446,13 @@ def _validate_archive_entry_count(archive_path: Path) -> None:
             if len(record) != _ZIP_END_SIZE:
                 return
             entries = int.from_bytes(record[10:12], "little")
-            if entries > MAX_ARCHIVE_ENTRIES:
-                raise SkillError(f"Skill archive exceeds the {MAX_ARCHIVE_ENTRIES}-entry limit.")
             central_size = int.from_bytes(record[12:16], "little")
             central_end = archive_size - len(tail) + offset
+            zip64_metadata = _zip64_directory_metadata(handle, central_end)
+            if zip64_metadata is not None:
+                entries, central_size, central_end = zip64_metadata
+            if entries > MAX_ARCHIVE_ENTRIES:
+                raise SkillError(f"Skill archive exceeds the {MAX_ARCHIVE_ENTRIES}-entry limit.")
             central_start = central_end - central_size
             if central_start < 0:
                 return
@@ -526,7 +572,7 @@ def import_skill_archive(archive_path: Path, *, replace: bool = False) -> dict:
 
             return _install_staged_skill(skill_dir, replace = replace)
         finally:
-            shutil.rmtree(temporary, ignore_errors = True)
+            shutil.rmtree(temporary)
 
 
 def create_skill(
@@ -601,7 +647,7 @@ def create_skill(
                 raise SkillError("Skill paths exceed the filesystem path limit.") from exc
             raise
         finally:
-            shutil.rmtree(temporary, ignore_errors = True)
+            shutil.rmtree(temporary)
 
 
 def list_skills() -> list[dict]:
