@@ -2842,6 +2842,57 @@ def _ensure_cpu_torch() -> None:
     )
 
 
+def _amd_torch_needs_dependency_pass() -> bool:
+    """Return True when setup must run the dependency pass to repair non-ROCm torch.
+
+    Fail closed when torch or host classification is uncertain. This probe never installs.
+    """
+    if NO_TORCH or not IS_LINUX:
+        return False
+    # ROCm wheels are published for Linux x86_64 only.
+    if platform.machine().lower() not in {"x86_64", "amd64"}:
+        return False
+    # install.sh's resolved backend is authoritative, exactly as it is for the repair.
+    if _TORCH_BACKEND in ("cuda", "cpu", "xpu"):
+        return False
+    # A ROCm pin bypasses hardware detection; any other pin owns its repair path.
+    if _explicit_rocm_torch_index_url() is None:
+        if _explicit_torch_index_url() is not None:
+            return False
+        if _has_usable_nvidia_gpu():
+            return False
+        # An all-hidden mask provides no target to classify.
+        _mask = _first_set_visible_mask()
+        if _mask is not None and (os.environ.get(_mask) or "").strip() in ("", "-1"):
+            return False
+        # Match the repair's two host signals: a visible GPU or an inferred/named arch.
+        _inferred_gfx = _infer_linux_amd_gfx_arch()
+        _rocm_visible = _has_rocm_gpu()
+        if not _rocm_visible and not _inferred_gfx:
+            return False
+        # Probe and runtime mask indexing can disagree on mixed-arch hosts.
+        if len(set(_detect_amd_gfx_codes())) > 1:
+            return False
+        # The inferred per-arch repair can run without a readable ROCm version.
+        _inferred_arm = (
+            bool(_inferred_gfx)
+            and bool((os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip() or not _rocm_visible)
+            and _amd_arch_index_url(_inferred_gfx) is not None
+        )
+        if not _inferred_arm:
+            # Other repair arms need a readable version with a published wheel family.
+            _ver = _detect_rocm_version()
+            if _ver is None or _generic_pytorch_rocm_tag(_ver) is None:
+                return False
+
+    _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
+    # An unreadable torch is not evidence that its wheel family is wrong.
+    if not (_ran and _importable) or not _version:
+        return False
+    # The +rocm tag covers builds that omit torch.version.hip.
+    return not (_hip or "rocm" in _version.lower())
+
+
 def _ensure_rocm_torch() -> None:
     """Reinstall torch with ROCm wheels when the venv received CPU-only torch.
 
@@ -3203,14 +3254,7 @@ def _ensure_rocm_torch() -> None:
             index_url = _override_idx
             tag = _torch_index_leaf(index_url)
         else:
-            tag = next(
-                (
-                    t
-                    for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
-                    if ver >= (maj, mn)
-                ),
-                None,
-            )
+            tag = _generic_pytorch_rocm_tag(ver)
         if tag is None:
             _safe_print(
                 f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- skipping torch reinstall"
@@ -4784,4 +4828,7 @@ def install_python_stack() -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--amd-torch-needs-dependency-pass"]:
+        # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
+        sys.exit(0 if _amd_torch_needs_dependency_pass() else 1)
     sys.exit(install_python_stack())
