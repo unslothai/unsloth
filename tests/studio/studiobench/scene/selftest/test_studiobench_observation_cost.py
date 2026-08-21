@@ -224,3 +224,70 @@ def test_thread_reopen_says_so_in_the_log_as_well_as_in_the_row():
     ctx.log = lines.append
     A.thread_reopen(ctx)
     assert any("NOT MEASURED" in line for line in lines), lines
+
+
+# ── the action bar does not exist while a reply is being written ────
+
+
+class _RunningPage:
+    """A page whose reply finishes after `runs_for` polls."""
+
+    def __init__(self, runs_for: int):
+        self.runs_for = runs_for
+        self.polls = 0
+        self.waits = 0
+
+    def evaluate(self, script, *_a, **_k):
+        if "isRunning" in script:
+            self.polls += 1
+            return self.polls <= self.runs_for
+        return 18
+
+    def wait_for_timeout(self, ms):
+        # Actually sleeps, like Playwright's. A no-op here lets the bounded wait spin thousands of
+        # times inside its deadline, which exhausted the scripted reply and made a test about a
+        # reply that never lands pass for the opposite reason.
+        self.waits += 1
+        time.sleep(ms / 1000.0)
+
+
+def _running_ctx(page, budget_ms = 12000):
+    return ActionContext(
+        page = page,
+        cdp = None,
+        cell = Cell(cell_id = "r100K.A0.rep0", rung = "100K", rung_tokens = 100_000),
+        window = None,
+        args = {"thread_id": "t1", "base_url": "http://localhost:1"},
+        budget_ms = budget_ms,
+        dom = None,
+        log = lambda _m: None,
+    )
+
+
+def test_it_waits_for_a_generating_reply_instead_of_reporting_no_menu():
+    """THE DEFECT, and it cost this action on every CI run since the branch opened.
+
+    Studio hides a message's action bar while the message is generating, and the film schedules
+    `message_menu` about four seconds after a `send_turn` whose reply runs for roughly fourteen.
+    So the harness asked for a menu on a message that was still being written, got no More button,
+    and reported NOT RUN -- an accurate observation of a question nobody should have asked yet.
+    Waiting is what a user does, and it is the only thing that makes the action measurable.
+    """
+    page = _RunningPage(runs_for = 3)
+    assert A._wait_for_the_reply_to_land(_running_ctx(page)) is True
+    assert page.waits >= 1, "it returned without ever waiting"
+
+
+def test_a_reply_that_never_lands_is_reported_honestly_rather_than_waited_on_forever():
+    """The wait is bounded by the slot's own budget: a reply that never finishes must not swallow
+    the rest of the film."""
+    page = _RunningPage(runs_for = 10_000)
+    assert A._wait_for_the_reply_to_land(_running_ctx(page, budget_ms = 200)) is False
+
+
+def test_an_idle_thread_is_not_waited_on_at_all():
+    """No stream, no wait: the action must not add latency to the common case, and a wait that
+    always fires would change what every other reading is taken against."""
+    page = _RunningPage(runs_for = 0)
+    assert A._wait_for_the_reply_to_land(_running_ctx(page)) is True
+    assert page.waits == 0

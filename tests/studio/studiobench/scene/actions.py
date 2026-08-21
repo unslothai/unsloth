@@ -1645,8 +1645,44 @@ async (timeoutMs) => {
 """
 
 
+#: How long an action that needs a message's ACTION BAR will wait for the reply to finish.
+#:
+#: Studio hides the action bar while a message is generating, so "no More button on the last
+#: assistant message" and "no Delete button (a running message hides it)" are the same fact
+#: reported by two actions. The film schedules `message_menu` about four seconds after a
+#: `send_turn` whose reply runs for roughly fourteen, so the menu was being asked for on a message
+#: that was still being written, and the action reported NOT RUN on every CI run.
+#:
+#: Waiting is what a USER does, and it is the only thing that makes the action measurable at all:
+#: there is no menu to open until the reply lands. Bounded by the slot's own budget so a reply
+#: that never finishes cannot swallow the rest of the film, and the wait happens BEFORE the
+#: operation the action times, so `menu_open_ms` is unaffected.
+_ACTION_BAR_WAIT_FRACTION = 0.6
+_ACTION_BAR_POLL_MS = 100
+
+
+def _wait_for_the_reply_to_land(ctx: ActionContext) -> bool:
+    """True once no reply is generating, False if one still is when the budget runs out."""
+    budget_ms = max(0.0, float(ctx.budget_ms or 0)) * _ACTION_BAR_WAIT_FRACTION
+    deadline = time.monotonic() + budget_ms / 1000.0
+    running = bool(_ev(ctx, "() => window.__sb.dom.isRunning()"))
+    if not running:
+        return True
+    ctx.log("    a reply is still generating; waiting for it before asking for the action bar")
+    while time.monotonic() < deadline:
+        ctx.page.wait_for_timeout(_ACTION_BAR_POLL_MS)
+        if not _ev(ctx, "() => window.__sb.dom.isRunning()"):
+            return True
+    return False
+
+
 @register_action(name = "message_menu", default_budget_ms = 12000)
 def message_menu(ctx: ActionContext) -> ActionResult:
+    if not _wait_for_the_reply_to_land(ctx):
+        return not_run(
+            "a reply was still generating when the slot's budget ran out, and Studio hides the "
+            "action bar on a generating message, so there was no menu to open"
+        )
     raw = _ev(ctx, MENU_JS, SETTLE_TIMEOUT_MS)
     err = _failed(raw)
     if err:
