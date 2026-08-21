@@ -73,12 +73,36 @@ def _resolved_windows_path(path: Path) -> str:
     return resolved.rstrip("\\/")
 
 
+def _resolve_windows_powershell() -> str:
+    """Absolute Windows PowerShell path that does not depend on PATH (#9440).
+
+    A GUI-launched Desktop app can run with a PATH that omits
+    ``System32\WindowsPowerSphere1.0`` (or a stripped environment), and
+    ``subprocess`` then fails with ``FileNotFoundError: [WinError 2]`` before
+    PowerShell ever starts. Prefer PATH resolution, fall back to the built-in
+    absolute location, then PowerShell 7.
+    """
+    import shutil
+
+    on_path = shutil.which("powershell.exe")
+    if on_path:
+        return on_path
+    system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+    builtin = ntpath.join(system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    if os.path.isfile(builtin):
+        return builtin
+    pwsh = shutil.which("pwsh.exe")
+    if pwsh:
+        return pwsh
+    return "powershell.exe"
+
+
 def _canonical_windows_path(path: Path) -> str:
     return _resolved_windows_path(path).replace("/", "\\")
 
 
 def _windows_paths_equal(left: str, right: str) -> bool:
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     compare = kernel32.CompareStringOrdinal
     compare.argtypes = [
         wintypes.LPCWSTR,
@@ -114,7 +138,7 @@ def runtime_mutex_name_for_studio_home(studio_home: Path) -> str:
 
 def _current_windows_user_sid() -> str:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
-    advapi32 = ctypes.WinDLL("advapi32", use_last_error = True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
 
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -182,7 +206,7 @@ def studio_runtime_launch_guard(studio_home: Path, *, inherited: bool = False) -
         yield False
         return
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateMutexW.argtypes = [
         ctypes.c_void_p,
         wintypes.BOOL,
@@ -254,13 +278,13 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
         "[Console]::Out.Write(($items|ConvertTo-Json -Compress))"
     )
     result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output = True,
-        text = True,
-        encoding = "utf-8",
-        errors = "replace",
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        check = False,
+        [_resolve_windows_powershell(), "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        check=False,
     )
     if result.returncode != 0:
         detail = result.stderr.strip() or f"exit code {result.returncode}"
