@@ -821,24 +821,28 @@ def test_replace_rolls_back_when_registry_cannot_be_saved(
     assert "Fine-tune and run models" not in skills.read_skill_resource("unsloth")
 
 
-def test_replacement_uses_a_fresh_backup_after_cleanup_fails(
+def test_replacement_reports_cleanup_failure_and_uses_a_fresh_backup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     skills.create_skill("unsloth", SKILL_MD)
     real_rmtree = skills.shutil.rmtree
 
-    def leave_backups(path, *args, **kwargs):
+    def fail_backup_cleanup(path, *args, **kwargs):
         if Path(path).name.startswith(".backup-"):
-            return
+            if kwargs.get("ignore_errors"):
+                return
+            raise PermissionError("file is in use")
         real_rmtree(path, *args, **kwargs)
 
-    monkeypatch.setattr(skills.shutil, "rmtree", leave_backups)
-    skills.create_skill(
-        "unsloth",
-        SKILL_MD.replace("Train and run", "Fine-tune and run"),
-        replace = True,
-    )
+    monkeypatch.setattr(skills.shutil, "rmtree", fail_backup_cleanup)
+    with pytest.raises(PermissionError, match = "file is in use"):
+        skills.create_skill(
+            "unsloth",
+            SKILL_MD.replace("Train and run", "Fine-tune and run"),
+            replace = True,
+        )
 
+    monkeypatch.setattr(skills.shutil, "rmtree", real_rmtree)
     skills.create_skill(
         "unsloth",
         SKILL_MD.replace("Train and run", "Serve and run"),

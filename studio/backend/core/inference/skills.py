@@ -403,7 +403,7 @@ def _install_staged_skill(skill_dir: Path, *, replace: bool) -> dict:
                 backup = None
             raise
         if backup is not None:
-            shutil.rmtree(backup, ignore_errors = True)
+            shutil.rmtree(backup)
         return {**metadata, "enabled": registry[metadata["name"]]}
     except Exception:
         if backup is not None and backup.exists() and not target.exists():
