@@ -627,13 +627,20 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    # Import ledger inside studio.db (vs a localStorage boolean) so a db wipe re-triggers the
-    # legacy Dexie import instead of silently hiding threads. Keyed by legacy thread id.
+    # Keep migration state with the imported chats so a studio.db wipe retries the import.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_legacy_imports (
             legacy_thread_id TEXT NOT NULL PRIMARY KEY,
             imported_at INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_legacy_import_state (
+            singleton INTEGER NOT NULL PRIMARY KEY CHECK(singleton = 1),
+            completed_at INTEGER NOT NULL
         ) WITHOUT ROWID
         """
     )
@@ -3943,16 +3950,26 @@ def list_chat_legacy_imports() -> list[str]:
         conn.close()
 
 
-def upsert_chat_legacy_imports(legacy_thread_ids: list[str]) -> tuple[int, int]:
-    """Mark each given legacy thread id as imported. Idempotent.
+def is_chat_legacy_import_complete() -> bool:
+    """Return whether the legacy browser database was fully imported."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM chat_legacy_import_state WHERE singleton = 1"
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
 
-    Returns (accepted, inserted): count of deduped non-empty input ids, and
-    count of rows actually new. RETURNING lets callers tell first-time imports
-    from idempotent re-runs without an extra SELECT.
+
+def record_chat_legacy_import(
+    legacy_thread_ids: list[str], *, complete: bool = False
+) -> tuple[int, int, bool]:
+    """Record imported thread ids and optionally complete the migration atomically.
+
+    Returns the accepted count, inserted count, and resulting completion state.
     """
     ids = list(dict.fromkeys(tid for tid in legacy_thread_ids if tid))
-    if not ids:
-        return 0, 0
     ts = int(datetime.now(timezone.utc).timestamp() * 1000)
     conn = get_connection()
     try:
@@ -3969,7 +3986,22 @@ def upsert_chat_legacy_imports(legacy_thread_ids: list[str]) -> tuple[int, int]:
             ).fetchone()
             if row is not None:
                 inserted += 1
+        if complete:
+            conn.execute(
+                """
+                INSERT INTO chat_legacy_import_state (singleton, completed_at)
+                VALUES (1, ?)
+                ON CONFLICT(singleton) DO NOTHING
+                """,
+                (ts,),
+            )
         conn.commit()
-        return len(ids), inserted
+        completed = conn.execute(
+            "SELECT 1 FROM chat_legacy_import_state WHERE singleton = 1"
+        ).fetchone()
+        return len(ids), inserted, completed is not None
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()

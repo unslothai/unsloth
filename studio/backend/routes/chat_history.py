@@ -41,6 +41,7 @@ from storage.studio_db import (
     get_chat_project,
     get_chat_thread,
     get_chat_message,
+    is_chat_legacy_import_complete,
     list_chat_attachments_page,
     list_chat_projects,
     list_chat_legacy_imports,
@@ -52,7 +53,7 @@ from storage.studio_db import (
     update_chat_project,
     update_chat_thread,
     upsert_chat_project,
-    upsert_chat_legacy_imports,
+    record_chat_legacy_import,
     upsert_chat_message,
     upsert_chat_settings_merge,
     write_chat_thread_settings,
@@ -294,6 +295,7 @@ class ChatProjectPatch(BaseModel):
 
 class ChatThreadListResponse(BaseModel):
     threads: list[ChatThread]
+    legacyImportComplete: bool = False
 
 
 class ChatProjectListResponse(BaseModel):
@@ -505,11 +507,13 @@ class ChatMessagesBatchResponse(BaseModel):
 
 class ChatImportLedgerResponse(BaseModel):
     threadIds: list[str]
+    complete: bool = False
 
 
 class ChatImportLedgerRecordRequest(BaseModel):
     # 10k cap bounds the request body; real users have << 1k threads.
     threadIds: list[str] = Field(default_factory = list, max_length = 10_000)
+    complete: bool = False
 
 
 class ChatImportLedgerRecordResponse(BaseModel):
@@ -517,6 +521,7 @@ class ChatImportLedgerRecordResponse(BaseModel):
     # (ON CONFLICT DO NOTHING skips already-recorded ids).
     accepted: int
     inserted: int
+    complete: bool
 
 
 @router.get("/threads", response_model = ChatThreadListResponse)
@@ -533,7 +538,10 @@ def list_threads(
         project_id = project_id,
         include_archived = include_archived,
     )
-    return ChatThreadListResponse(threads = [thread_from_row(t) for t in threads])
+    return ChatThreadListResponse(
+        threads = [thread_from_row(t) for t in threads],
+        legacyImportComplete = is_chat_legacy_import_complete(),
+    )
 
 
 def _missing_project_error(project_id: Optional[str]) -> HTTPException:
@@ -1316,7 +1324,10 @@ def get_import_ledger(current_subject: str = Depends(get_current_subject)):
 
     The frontend checks this on tab open to decide whether to re-run the Dexie -> studio.db import.
     """
-    return ChatImportLedgerResponse(threadIds = list_chat_legacy_imports())
+    return ChatImportLedgerResponse(
+        threadIds = list_chat_legacy_imports(),
+        complete = is_chat_legacy_import_complete(),
+    )
 
 
 @router.post("/import-ledger", response_model = ChatImportLedgerRecordResponse)
@@ -1324,8 +1335,12 @@ def record_import_ledger(
     payload: ChatImportLedgerRecordRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Mark each legacy thread id as imported. Idempotent."""
-    accepted, inserted = upsert_chat_legacy_imports(payload.threadIds)
-    return ChatImportLedgerRecordResponse(accepted = accepted, inserted = inserted)
+    accepted, inserted, complete = record_chat_legacy_import(
+        payload.threadIds, complete = payload.complete
+    )
+    return ChatImportLedgerRecordResponse(
+        accepted = accepted, inserted = inserted, complete = complete
+    )
 
 
 @router.delete("")

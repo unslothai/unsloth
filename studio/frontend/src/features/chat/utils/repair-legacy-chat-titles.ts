@@ -104,7 +104,8 @@ async function runRepairPass(threads: ThreadRecord[]): Promise<number> {
   if (withoutMessages.length > 0) {
     let imported = new Set<string>();
     try {
-      imported = await listChatImportLedger();
+      const ledger = await listChatImportLedger();
+      imported = ledger.complete ? new Set(ids) : ledger.threadIds;
     } catch {
       // Undecided, so keep every one of them retryable.
     }

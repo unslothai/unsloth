@@ -688,14 +688,19 @@ export async function removeScanFolder(id: number): Promise<void> {
   await parseJsonOrThrow<unknown>(response);
 }
 
-export async function listChatThreads(
+export interface ChatThreadListResult {
+  threads: ThreadRecord[];
+  legacyImportComplete: boolean;
+}
+
+export async function listChatThreadsWithMigrationState(
   args: {
     modelType?: ModelType;
     pairId?: string;
     projectId?: string | null;
     includeArchived?: boolean;
   } = {},
-): Promise<ThreadRecord[]> {
+): Promise<ChatThreadListResult> {
   const params = new URLSearchParams();
   if (args.modelType) params.set("model_type", args.modelType);
   if (args.pairId) params.set("pair_id", args.pairId);
@@ -705,9 +710,20 @@ export async function listChatThreads(
   }
   const qs = params.toString();
   const response = await authFetch(`/api/chat/threads${qs ? `?${qs}` : ""}`);
-  const data = await parseJsonOrThrow<{ threads: ThreadRecord[] }>(response);
-  // Always hand back an array: an older or misbehaving backend may omit it or send a non-array.
-  return Array.isArray(data.threads) ? data.threads : [];
+  const data = await parseJsonOrThrow<{
+    threads: ThreadRecord[];
+    legacyImportComplete?: boolean;
+  }>(response);
+  return {
+    threads: Array.isArray(data.threads) ? data.threads : [],
+    legacyImportComplete: data.legacyImportComplete === true,
+  };
+}
+
+export async function listChatThreads(
+  args: Parameters<typeof listChatThreadsWithMigrationState>[0] = {},
+): Promise<ThreadRecord[]> {
+  return (await listChatThreadsWithMigrationState(args)).threads;
 }
 
 /** One chat message attachment, as listed for the settings uploaded-files view. */
@@ -1153,50 +1169,65 @@ export async function buildBackendChatExport(): Promise<{
   return parseJsonOrThrow(response);
 }
 
-// Legacy-Dexie import ledger: a server-side source of truth replacing the localStorage
-// sentinel, so a studio.db wipe keeps the import recoverable.
-export async function listChatImportLedger(): Promise<Set<string>> {
+// The ledger and completion state live with the imported chats in studio.db.
+export interface ChatImportLedger {
+  threadIds: Set<string>;
+  complete: boolean;
+  supported: boolean;
+}
+
+export async function listChatImportLedger(): Promise<ChatImportLedger> {
   const response = await authFetch("/api/chat/import-ledger");
   // Backends without this endpoint behave like an empty ledger -- the caller re-imports every
   // legacy thread, and syncChatMessages UPSERTs prevent duplicates.
-  if (response.status === 404 || response.status === 405) return new Set();
-  const data = await parseJsonOrThrow<{ threadIds: string[] }>(response);
-  return new Set(data.threadIds);
+  if (response.status === 404 || response.status === 405) {
+    return { threadIds: new Set(), complete: false, supported: false };
+  }
+  const data = await parseJsonOrThrow<{
+    threadIds: string[];
+    complete?: boolean;
+  }>(response);
+  return {
+    threadIds: new Set(data.threadIds),
+    complete: data.complete === true,
+    supported: true,
+  };
 }
 
 export interface RecordChatImportLedgerResult {
   accepted: number;
   inserted: number;
-  // false when the backend predates /api/chat/import-ledger, so the caller does not poison the
-  // localStorage perf hint; the next launch retries the (idempotent) import.
+  // False when the backend predates the migration endpoint.
   supported: boolean;
+  complete: boolean;
 }
 
 export async function recordChatImportLedger(
   threadIds: string[],
+  options: { complete?: boolean } = {},
 ): Promise<RecordChatImportLedgerResult> {
-  if (threadIds.length === 0) {
-    return { accepted: 0, inserted: 0, supported: true };
-  }
   const response = await authFetch("/api/chat/import-ledger", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ threadIds }),
+    body: JSON.stringify({ threadIds, complete: options.complete === true }),
   });
   if (
     response.status === 404 ||
     response.status === 405 ||
     response.status === 501
   ) {
-    return { accepted: 0, inserted: 0, supported: false };
+    return { accepted: 0, inserted: 0, supported: false, complete: false };
   }
-  const data = await parseJsonOrThrow<{ accepted: number; inserted: number }>(
-    response,
-  );
+  const data = await parseJsonOrThrow<{
+    accepted: number;
+    inserted: number;
+    complete?: boolean;
+  }>(response);
   return {
     accepted: data.accepted,
     inserted: data.inserted,
     supported: true,
+    complete: data.complete === true,
   };
 }
 

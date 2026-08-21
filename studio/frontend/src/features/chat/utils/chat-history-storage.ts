@@ -15,6 +15,7 @@ import {
   listChatMessages,
   listChatProjects,
   listChatThreads,
+  listChatThreadsWithMigrationState,
   notifyChatHistoryUpdated,
   recordChatImportLedger,
   saveChatMessage,
@@ -37,6 +38,7 @@ import {
   markChatThreadDeleted,
   markChatThreadsDeleted,
 } from "./chat-thread-tombstones";
+import { LegacyStoreGate } from "./legacy-store-gate";
 import { ThreadRecordWriteCoordinator } from "./thread-record-write-coordinator";
 
 // Thread ids that belong to a temporary/incognito session. A thread is
@@ -66,14 +68,14 @@ type ThreadListArgs = {
   includeArchived?: boolean;
 };
 
-// localStorage perf-hint that the Dexie -> studio.db import already
-// finished. NOT the import gate -- the server-side ledger
-// (chat_legacy_imports) is the source of truth so a studio.db wipe stays
-// recoverable. The hint only short-circuits the listing paths' "also
-// surface Dexie threads?" branches once the ledger has covered everything.
-const LEGACY_CHAT_IMPORT_KEY = "unsloth_chat_legacy_imported_to_studio_db";
+const LEGACY_CHAT_FAILURE_VERSION_KEY =
+  "unsloth_chat_legacy_store_failed_app_version";
 
 let legacyChatImportPromise: Promise<void> | null = null;
+let legacyChatImportComplete = false;
+let legacyImportStatePromise: ReturnType<typeof listChatImportLedger> | null =
+  null;
+let desktopAppVersionPromise: Promise<string | null> | null = null;
 
 // Bumped whenever a backend thread row is created or backfilled, so a listing can tell whether its read raced one.
 let legacyChatImportGeneration = 0;
@@ -156,22 +158,8 @@ function hasOwn(value: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
 
-function isLegacyChatImportDone(): boolean {
-  if (!canUseStorage()) return true;
-  try {
-    return localStorage.getItem(LEGACY_CHAT_IMPORT_KEY) === "true";
-  } catch {
-    return false;
-  }
-}
-
-function markLegacyChatImportDone(): void {
-  if (!canUseStorage()) return;
-  try {
-    localStorage.setItem(LEGACY_CHAT_IMPORT_KEY, "true");
-  } catch {
-    // ignore
-  }
+function noteLegacyChatImportComplete(complete: boolean): void {
+  if (complete) legacyChatImportComplete = true;
 }
 
 function matchesThreadListArgs(
@@ -188,17 +176,120 @@ function matchesThreadListArgs(
   );
 }
 
+// Legacy storage must never block server-backed history.
+const legacyStore = new LegacyStoreGate();
+
+// Enumeration does not open the store, so it has an independent gate.
+const legacyDatabaseList = new LegacyStoreGate();
+const legacyDatabaseDelete = new LegacyStoreGate();
+
+function isDesktopApp(): boolean {
+  return (
+    canUseStorage() &&
+    ("__TAURI__" in window ||
+      "__TAURI_INTERNALS__" in window ||
+      window.location.protocol === "tauri:")
+  );
+}
+
+async function desktopAppVersion(): Promise<string | null> {
+  if (!isDesktopApp()) return null;
+  desktopAppVersionPromise ??= import("@tauri-apps/api/app")
+    .then(({ getVersion }) => getVersion())
+    .catch(() => null);
+  return desktopAppVersionPromise;
+}
+
+async function failedForCurrentAppVersion(): Promise<boolean> {
+  const version = await desktopAppVersion();
+  if (!version) return false;
+  try {
+    return localStorage.getItem(LEGACY_CHAT_FAILURE_VERSION_KEY) === version;
+  } catch {
+    return false;
+  }
+}
+
+async function persistLegacyStoreFailure(): Promise<void> {
+  const version = await desktopAppVersion();
+  if (!version) return;
+  try {
+    localStorage.setItem(LEGACY_CHAT_FAILURE_VERSION_KEY, version);
+  } catch {
+    // Best effort. The in-memory gate still avoids repeated waits this session.
+  }
+}
+
+async function clearLegacyStoreFailure(): Promise<void> {
+  if (!canUseStorage()) return;
+  try {
+    localStorage.removeItem(LEGACY_CHAT_FAILURE_VERSION_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+async function readLegacyStore<T>(
+  read: () => Promise<T>,
+  fallback: T,
+): Promise<T> {
+  if (await failedForCurrentAppVersion()) return fallback;
+  const respondedBefore = legacyStore.responds;
+  const result = await legacyStore.read(read, fallback);
+  if (respondedBefore && !legacyStore.responds) {
+    await persistLegacyStoreFailure();
+  } else if (legacyStore.responds) {
+    await clearLegacyStoreFailure();
+  }
+  return result;
+}
+
+async function getLegacyImportState() {
+  if (legacyChatImportComplete) {
+    return { threadIds: new Set<string>(), complete: true, supported: true };
+  }
+  legacyImportStatePromise ??= listChatImportLedger().then(
+    (state) => {
+      noteLegacyChatImportComplete(state.complete);
+      return state;
+    },
+    () => {
+      legacyImportStatePromise = null;
+      return {
+        threadIds: new Set<string>(),
+        complete: false,
+        supported: false,
+      };
+    },
+  );
+  return legacyImportStatePromise;
+}
+
+async function readLegacyStoreIfNeeded<T>(
+  read: () => Promise<T>,
+  fallback: T,
+): Promise<T> {
+  const state = await getLegacyImportState();
+  return state.complete ? fallback : readLegacyStore(read, fallback);
+}
+
+export function legacyChatStoreResponds(): boolean {
+  return legacyStore.responds;
+}
+
 async function listLegacyThreads(
   args: ThreadListArgs,
 ): Promise<ThreadRecord[]> {
-  const legacyQuery = args.pairId
-    ? db.threads.where("pairId").equals(args.pairId)
-    : args.modelType
-      ? db.threads.where("modelType").equals(args.modelType)
-      : db.threads.toCollection();
-  return (await legacyQuery.toArray()).filter((thread) =>
-    matchesThreadListArgs(thread, args),
-  );
+  return readLegacyStoreIfNeeded(async () => {
+    const legacyQuery = args.pairId
+      ? db.threads.where("pairId").equals(args.pairId)
+      : args.modelType
+        ? db.threads.where("modelType").equals(args.modelType)
+        : db.threads.toCollection();
+    return (await legacyQuery.toArray()).filter((thread) =>
+      matchesThreadListArgs(thread, args),
+    );
+  }, []);
 }
 
 function sortMessages(messages: MessageRecord[]): MessageRecord[] {
@@ -327,10 +418,10 @@ async function importLegacyThreadRow(
   }
   // A point lookup can import a row too, and a listing mid-flight has to re-read to see it.
   legacyChatImportGeneration += 1;
-  const legacyMessages = await db.messages
-    .where("threadId")
-    .equals(thread.id)
-    .toArray();
+  const legacyMessages = await readLegacyStoreIfNeeded(
+    () => db.messages.where("threadId").equals(thread.id).toArray(),
+    [] as MessageRecord[],
+  );
   if (legacyMessages.length > 0) {
     await syncChatMessages(thread.id, normalizeLegacyMessages(legacyMessages), {
       pruneMissing: false,
@@ -411,7 +502,10 @@ async function dexieDbAbsent(): Promise<boolean> {
   const dbs = (indexedDB as IDBFactory).databases;
   if (typeof dbs !== "function") return false;
   try {
-    const list = await dbs.call(indexedDB);
+    const list = await legacyDatabaseList.read<IDBDatabaseInfo[] | null>(
+      () => dbs.call(indexedDB),
+      null,
+    );
     if (!Array.isArray(list)) return false;
     return !list.some((entry) => entry?.name === DEXIE_DB_NAME);
   } catch {
@@ -423,10 +517,12 @@ async function dexieDbAbsent(): Promise<boolean> {
 // store metadata, not the rows -- cheap regardless of record count.
 async function dexieIsEmpty(): Promise<boolean> {
   try {
-    const [threadCount, messageCount] = await Promise.all([
-      db.threads.count(),
-      db.messages.count(),
-    ]);
+    const counts = await readLegacyStore<[number, number] | null>(
+      () => Promise.all([db.threads.count(), db.messages.count()]),
+      null,
+    );
+    if (counts === null) return false;
+    const [threadCount, messageCount] = counts;
     return threadCount === 0 && messageCount === 0;
   } catch {
     // Dexie threw (corrupt DB / version mismatch / quota). Returning
@@ -436,36 +532,49 @@ async function dexieIsEmpty(): Promise<boolean> {
   }
 }
 
+async function retireLegacyChatStore(): Promise<void> {
+  db.close();
+  await legacyDatabaseDelete.read(() => db.delete(), undefined);
+}
+
+async function completeLegacyChatImport(threadIds: string[]): Promise<boolean> {
+  const result = await recordChatImportLedger(threadIds, { complete: true });
+  if (!result.supported || !result.complete) return false;
+  noteLegacyChatImportComplete(true);
+  legacyImportStatePromise = Promise.resolve({
+    threadIds: new Set(threadIds),
+    complete: true,
+    supported: true,
+  });
+  return true;
+}
+
 async function importLegacyChatsIfNeeded(): Promise<void> {
-  // Session-level cache: repeated sidebar mounts in the same tab share
-  // one import. localStorage is NOT consulted -- the server-side ledger
-  // is the source of truth, so a studio.db wipe re-triggers the import
-  // even if the browser kept its old hint.
   if (legacyChatImportPromise) return legacyChatImportPromise;
 
   legacyChatImportPromise = (async () => {
-    // Fast-path: no Dexie DB -- new user, never had browser-only Unsloth.
+    const importState = await getLegacyImportState();
+    if (importState.complete) return;
+
     if (await dexieDbAbsent()) {
-      markLegacyChatImportDone();
+      await completeLegacyChatImport([]);
       return;
     }
 
-    // Fast-path: Dexie exists but is empty (already migrated long
-    // ago and Dexie just hasn't been GC'd, or the browser created an
-    // empty DB for some reason).
     if (await dexieIsEmpty()) {
-      markLegacyChatImportDone();
+      if (await completeLegacyChatImport([])) {
+        await retireLegacyChatStore();
+      }
       return;
     }
 
-    // Slow path: diff Dexie against the server-side ledger and import
-    // any threads not already recorded.
-    const [legacyThreads, backendThreads, importedThreadIds] =
-      await Promise.all([
-        db.threads.toArray(),
-        listChatThreads({ includeArchived: true }),
-        listChatImportLedger(),
-      ]);
+    const legacyThreads = await readLegacyStore(
+      () => db.threads.toArray(),
+      null,
+    );
+    if (legacyThreads === null) return;
+    const backendThreads = await listChatThreads({ includeArchived: true });
+    const importedThreadIds = importState.threadIds;
 
     const backendThreadsById = new Map(
       backendThreads.map((thread) => [thread.id, thread]),
@@ -484,16 +593,18 @@ async function importLegacyChatsIfNeeded(): Promise<void> {
     }
 
     if (unimportedIds.length === 0) {
-      markLegacyChatImportDone();
+      if (await completeLegacyChatImport([])) {
+        await retireLegacyChatStore();
+      }
       return;
     }
 
     // Two bulk reads instead of 2N per-thread round-trips.
-    const allLegacyMessages = await db.messages
-      .where("threadId")
-      .anyOf(unimportedIds)
-      .toArray()
-      .catch(() => [] as MessageRecord[]);
+    const allLegacyMessages = await readLegacyStore<MessageRecord[] | null>(
+      () => db.messages.where("threadId").anyOf(unimportedIds).toArray(),
+      null,
+    );
+    if (allLegacyMessages === null) return;
     const legacyByThread = new Map<string, MessageRecord[]>();
     for (const message of allLegacyMessages) {
       const arr = legacyByThread.get(message.threadId);
@@ -541,22 +652,18 @@ async function importLegacyChatsIfNeeded(): Promise<void> {
     }
 
     if (newlyImportedIds.length === 0) {
-      markLegacyChatImportDone();
+      if (await completeLegacyChatImport([])) {
+        await retireLegacyChatStore();
+      }
       return;
     }
-    let result: { supported: boolean };
     try {
-      result = await recordChatImportLedger(newlyImportedIds);
+      if (await completeLegacyChatImport(newlyImportedIds)) {
+        await retireLegacyChatStore();
+      }
     } catch {
-      // Network error: leave the perf hint alone so the next launch
-      // retries. Import is idempotent via UPSERT, so no duplicates.
+      // Import is idempotent, so a failed completion record can retry.
       return;
-    }
-    // Only flip the hint when the backend actually has the ledger. On
-    // older deployments (404/405/501) it would lie ("import done" with an
-    // empty ledger), defeating recovery after a studio.db wipe.
-    if (result.supported) {
-      markLegacyChatImportDone();
     }
   })();
 
@@ -585,23 +692,27 @@ export async function getStoredChatThreadReadResult(
   if (isChatThreadDeleted(threadId)) {
     return { thread: undefined, cacheable: true };
   }
-  const legacyThread = await db.threads.get(threadId);
-  let backendThread: ThreadRecord | null;
-  try {
+  // Start the server read without waiting for legacy IndexedDB.
+  const [legacyResult, backendResult] = await Promise.allSettled([
+    readLegacyStoreIfNeeded(() => db.threads.get(threadId), undefined),
     // Bounded for a caller that is gating the UI on this read: an unbounded GET that
     // never answers leaves the request open for the life of the page, and every retry
     // opens another.
-    backendThread = await getChatThread(threadId, {
+    getChatThread(threadId, {
       bounded: options.bounded,
       timeoutMs: options.timeoutMs,
       signal: options.signal,
-    });
-  } catch (error) {
+    }),
+  ]);
+  const legacyThread =
+    legacyResult.status === "fulfilled" ? legacyResult.value : undefined;
+  if (backendResult.status === "rejected") {
     if (legacyThread && !isChatThreadDeleted(legacyThread.id)) {
       return { thread: legacyThread, cacheable: false };
     }
-    throw error;
+    throw backendResult.reason;
   }
+  const backendThread = backendResult.value;
   if (backendThread && !isChatThreadDeleted(backendThread.id)) {
     return {
       thread: await backfillLegacyThreadFields(backendThread, legacyThread),
@@ -637,22 +748,25 @@ export async function ensureStoredChatThread(
   // Outcome ignored on purpose: adopting the failure here would skip the retryFailedThreadRecord
   // branch below for exactly the callers already waiting when the write rejected.
   await awaitStoredChatThreadWrites(threadId);
-  const legacyThread = fallback ?? (await db.threads.get(threadId));
-  let backendThread: ThreadRecord | null;
-  try {
-    // Bounded for a caller whose own request carries a deadline: this read runs BEFORE
-    // it, so an unbounded one here means neither the caller's signal nor the write
-    // timeout ever applies and the write chain behind it never settles.
-    backendThread = await getChatThread(threadId, {
+  const [legacyResult, backendResult] = await Promise.allSettled([
+    fallback === undefined
+      ? readLegacyStoreIfNeeded(() => db.threads.get(threadId), undefined)
+      : Promise.resolve(fallback),
+    // Keep this prerequisite within the caller's deadline.
+    getChatThread(threadId, {
       bounded: options.bounded,
       signal: options.signal,
-    });
-  } catch (error) {
+    }),
+  ]);
+  const legacyThread =
+    legacyResult.status === "fulfilled" ? legacyResult.value : undefined;
+  if (backendResult.status === "rejected") {
     if (!legacyThread || isChatThreadDeleted(legacyThread.id)) {
-      throw error;
+      throw backendResult.reason;
     }
     return legacyThread;
   }
+  const backendThread = backendResult.value;
   if (backendThread) {
     return backfillLegacyThreadFields(backendThread, legacyThread);
   }
@@ -687,23 +801,36 @@ export async function listStoredChatMessages(
 ): Promise<MessageRecord[]> {
   if (isThreadIncognito(threadId)) return [];
   if (isChatThreadDeleted(threadId)) return [];
-  const legacyMessages = await db.messages
-    .where("threadId")
-    .equals(threadId)
-    .toArray();
-  const [backendThread, backendMessages] = await Promise.all([
-    getChatThread(threadId).catch(() => undefined),
-    listChatMessages(threadId).catch((error) => {
-      if (legacyMessages.length > 0) {
-        return undefined;
-      }
-      throw error;
-    }),
-  ]);
+  const [legacyResult, backendThreadResult, backendMessagesResult] =
+    await Promise.allSettled([
+      readLegacyStoreIfNeeded(
+        () => db.messages.where("threadId").equals(threadId).toArray(),
+        [] as MessageRecord[],
+      ),
+      getChatThread(threadId),
+      listChatMessages(threadId),
+    ]);
+  const legacyMessages =
+    legacyResult.status === "fulfilled" ? legacyResult.value : [];
+  const backendThread =
+    backendThreadResult.status === "fulfilled"
+      ? backendThreadResult.value
+      : undefined;
+  if (
+    backendMessagesResult.status === "rejected" &&
+    legacyMessages.length === 0
+  ) {
+    throw backendMessagesResult.reason;
+  }
+  // Keep the final tombstone filter on the legacy fallback.
+  const backendMessages =
+    backendMessagesResult.status === "fulfilled"
+      ? backendMessagesResult.value
+      : undefined;
   if (backendMessages && (backendThread || backendMessages.length > 0)) {
     const merged = mergeMessages(backendMessages, legacyMessages, {
       includeLegacyOnly:
-        !isLegacyChatImportDone() ||
+        !legacyChatImportComplete ||
         (backendMessages.length === 0 && legacyMessages.length > 0),
     });
     if (legacyMessages.length > 0 && merged.shouldSync) {
@@ -715,7 +842,7 @@ export async function listStoredChatMessages(
   }
   if (
     backendMessages &&
-    isLegacyChatImportDone() &&
+    legacyChatImportComplete &&
     legacyMessages.length === 0
   ) {
     return [];
@@ -731,18 +858,21 @@ export async function getStoredChatMessage(
 ): Promise<MessageRecord | undefined> {
   if (isThreadIncognito(threadId)) return undefined;
   if (isChatThreadDeleted(threadId)) return undefined;
-  const legacyMessage = await db.messages.get(messageId);
+  const [legacyResult, backendResult] = await Promise.allSettled([
+    readLegacyStoreIfNeeded(() => db.messages.get(messageId), undefined),
+    getChatMessage(threadId, messageId),
+  ]);
+  const legacyMessage =
+    legacyResult.status === "fulfilled" ? legacyResult.value : undefined;
   const matchingLegacyMessage =
     legacyMessage?.threadId === threadId ? legacyMessage : undefined;
-  let backendMessage: MessageRecord | null;
-  try {
-    backendMessage = await getChatMessage(threadId, messageId);
-  } catch (error) {
+  if (backendResult.status === "rejected") {
     if (matchingLegacyMessage) {
       return matchingLegacyMessage;
     }
-    throw error;
+    throw backendResult.reason;
   }
+  const backendMessage = backendResult.value;
   if (backendMessage) {
     if (
       matchingLegacyMessage &&
@@ -759,25 +889,41 @@ export async function listStoredChatThreads(
   args: ThreadListArgs = {},
 ): Promise<ThreadRecord[]> {
   const importGenerationBeforeRead = legacyChatImportGeneration;
-  const legacyThreads = await listLegacyThreads(args);
-  let backendThreads = await listChatThreads(args).catch((error) => {
-    if (legacyThreads.length > 0) {
-      return undefined;
-    }
-    throw error;
-  });
+  const serverRead = listChatThreadsWithMigrationState(args);
+  const backendResult = await serverRead.then(
+    (result) => {
+      noteLegacyChatImportComplete(result.legacyImportComplete);
+      return { threads: result.threads };
+    },
+    (error: unknown) => ({ error }),
+  );
+  const legacyThreads =
+    "threads" in backendResult && legacyChatImportComplete
+      ? []
+      : await listLegacyThreads(args);
+  if ("error" in backendResult && legacyThreads.length === 0) {
+    throw backendResult.error;
+  }
+  let backendThreads =
+    "threads" in backendResult ? backendResult.threads : undefined;
   if (backendThreads) {
     await importLegacyChatsIfNeeded().catch(() => undefined);
     // a point import can commit its row before its generation bump lands, so wait on the ones
     // already in flight rather than trusting the generation alone
     await Promise.allSettled([...pendingLegacyThreadImports]);
     if (legacyChatImportGeneration !== importGenerationBeforeRead) {
-      backendThreads = await listChatThreads(args).catch(() => backendThreads);
+      backendThreads = await listChatThreadsWithMigrationState(args).then(
+        (result) => {
+          noteLegacyChatImportComplete(result.legacyImportComplete);
+          return result.threads;
+        },
+        () => backendThreads,
+      );
     }
   }
   const includeLegacyOnly =
     !backendThreads ||
-    !isLegacyChatImportDone() ||
+    !legacyChatImportComplete ||
     (backendThreads.length === 0 && legacyThreads.length > 0);
   const byId = new Map<string, ThreadRecord>();
   if (includeLegacyOnly) {
@@ -985,12 +1131,17 @@ export async function deleteStoredChatThreads(
   }
   threadRecordWrites.confirmFinalState(ids);
   if (ids.length === 0) return kept;
-  await db
-    .transaction("rw", db.threads, db.messages, async () => {
-      await db.messages.where("threadId").anyOf(ids).delete();
-      await db.threads.bulkDelete(ids);
-    })
-    .catch(() => undefined);
+  // Legacy cleanup must not block the completed server deletion.
+  await readLegacyStoreIfNeeded(
+    () =>
+      db
+        .transaction("rw", db.threads, db.messages, async () => {
+          await db.messages.where("threadId").anyOf(ids).delete();
+          await db.threads.bulkDelete(ids);
+        })
+        .catch(() => undefined),
+    undefined,
+  );
   markChatThreadsDeleted(ids);
   return kept;
 }
@@ -1037,7 +1188,10 @@ async function clearStoredChatsWithAdmissionClosed(
   // Admission is closed before this one-shot fence snapshot.
   const pendingThreadIds = threadRecordWrites.idsRequiringFence();
   const operationId = crypto.randomUUID();
-  const legacyThreads = await db.threads.toArray().catch(() => []);
+  const legacyThreads = await readLegacyStoreIfNeeded(
+    () => db.threads.toArray(),
+    [] as ThreadRecord[],
+  );
   const legacyThreadIds = new Set(legacyThreads.map((thread) => thread.id));
   const idsToFence = Array.from(
     new Set([...legacyThreadIds, ...pendingThreadIds]),
@@ -1077,15 +1231,22 @@ async function clearStoredChatsWithAdmissionClosed(
     console.error("clearStoredChats: backend clear failed", error);
   }
 
-  try {
-    await db.transaction("rw", db.threads, db.messages, async () => {
-      await db.messages.clear();
-      await db.threads.clear();
-    });
-    result.legacy = "cleared";
-  } catch (error) {
-    result.legacy = "failed";
-    console.error("clearStoredChats: legacy Dexie clear failed", error);
+  const clearLegacyChats = async () => {
+    try {
+      await db.transaction("rw", db.threads, db.messages, async () => {
+        await db.messages.clear();
+        await db.threads.clear();
+      });
+      return true;
+    } catch (error) {
+      console.error("clearStoredChats: legacy Dexie clear failed", error);
+      return false;
+    }
+  };
+  if (!legacyChatImportComplete) {
+    result.legacy = (await readLegacyStoreIfNeeded(clearLegacyChats, false))
+      ? "cleared"
+      : "failed";
   }
 
   // reported from the rows the backend says it removed, never from the fence set: an id fenced for
@@ -1113,10 +1274,9 @@ async function clearStoredChatsWithAdmissionClosed(
 
 export async function buildStoredChatExport(): Promise<ExportedChat> {
   await importLegacyChatsIfNeeded().catch(() => undefined);
-  const [legacyThreads, legacyMessages] = await Promise.all([
-    db.threads.toArray(),
-    db.messages.toArray(),
-  ]);
+  const [legacyThreads, legacyMessages] = await readLegacyStoreIfNeeded<
+    [ThreadRecord[], MessageRecord[]]
+  >(() => Promise.all([db.threads.toArray(), db.messages.toArray()]), [[], []]);
   const hasLegacyData =
     legacyThreads.some((thread) => !isChatThreadDeleted(thread.id)) ||
     legacyMessages.some((message) => !isChatThreadDeleted(message.threadId));
@@ -1139,7 +1299,7 @@ export async function buildStoredChatExport(): Promise<ExportedChat> {
     if (isChatThreadDeleted(message.threadId)) continue;
     messagesById.set(message.id, message);
   }
-  const includeLegacyOnly = backend === null || !isLegacyChatImportDone();
+  const includeLegacyOnly = backend === null || !legacyChatImportComplete;
   for (const thread of legacyThreads as ThreadRecord[]) {
     if (
       isChatThreadDeleted(thread.id) ||

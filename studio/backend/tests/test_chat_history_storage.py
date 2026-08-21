@@ -586,24 +586,40 @@ def test_list_chat_messages_for_threads_chunks_over_900_ids(tmp_path, monkeypatc
 def test_legacy_imports_empty_by_default(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     assert studio_db.list_chat_legacy_imports() == []
+    assert studio_db.is_chat_legacy_import_complete() is False
+
+
+def test_legacy_import_can_complete_without_records(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    assert studio_db.record_chat_legacy_import([], complete = True) == (0, 0, True)
+    assert studio_db.is_chat_legacy_import_complete() is True
+
+
+def test_legacy_import_records_and_completes_atomically(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    assert studio_db.record_chat_legacy_import(
+        ["legacy-a", "legacy-b"], complete = True
+    ) == (2, 2, True)
+    assert set(studio_db.list_chat_legacy_imports()) == {"legacy-a", "legacy-b"}
 
 
 def test_legacy_imports_records_and_lists(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
-    accepted, inserted = studio_db.upsert_chat_legacy_imports(
+    accepted, inserted, complete = studio_db.record_chat_legacy_import(
         ["legacy-a", "legacy-b", "legacy-c"],
     )
     assert accepted == 3
     assert inserted == 3
+    assert complete is False
     assert set(studio_db.list_chat_legacy_imports()) == {"legacy-a", "legacy-b", "legacy-c"}
 
 
 def test_legacy_imports_is_idempotent(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
-    accepted1, inserted1 = studio_db.upsert_chat_legacy_imports(
+    accepted1, inserted1, _ = studio_db.record_chat_legacy_import(
         ["legacy-a", "legacy-b"],
     )
-    accepted2, inserted2 = studio_db.upsert_chat_legacy_imports(
+    accepted2, inserted2, _ = studio_db.record_chat_legacy_import(
         ["legacy-b", "legacy-c"],
     )
     assert (accepted1, inserted1) == (2, 2)
@@ -614,7 +630,7 @@ def test_legacy_imports_is_idempotent(tmp_path, monkeypatch):
 
 def test_legacy_imports_dedups_input(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
-    accepted, inserted = studio_db.upsert_chat_legacy_imports(
+    accepted, inserted, _ = studio_db.record_chat_legacy_import(
         ["x", "x", "y", "x"],
     )
     # accepted is the deduped non-empty input size; inserted is the rows newly
@@ -626,8 +642,12 @@ def test_legacy_imports_dedups_input(tmp_path, monkeypatch):
 
 def test_legacy_imports_ignores_empty(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
-    assert studio_db.upsert_chat_legacy_imports([]) == (0, 0)
-    assert studio_db.upsert_chat_legacy_imports(["", None]) == (0, 0)  # type: ignore[list-item]
+    assert studio_db.record_chat_legacy_import([]) == (0, 0, False)
+    assert studio_db.record_chat_legacy_import(["", None]) == (  # type: ignore[list-item]
+        0,
+        0,
+        False,
+    )
     assert studio_db.list_chat_legacy_imports() == []
 
 

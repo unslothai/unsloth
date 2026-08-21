@@ -453,34 +453,38 @@ def test_get_import_ledger_round_trips_through_storage(monkeypatch):
         return list(seen)
 
     monkeypatch.setattr(chat_history, "list_chat_legacy_imports", fake_list)
+    monkeypatch.setattr(chat_history, "is_chat_legacy_import_complete", lambda: False)
 
     response = chat_history.get_import_ledger(current_subject = "test-user")
     assert response.threadIds == []
+    assert response.complete is False
 
     seen.extend(["legacy-a", "legacy-b"])
     response = chat_history.get_import_ledger(current_subject = "test-user")
     assert response.threadIds == ["legacy-a", "legacy-b"]
 
 
-def test_record_import_ledger_returns_accepted_and_inserted(monkeypatch):
-    captured: list[list[str]] = []
+def test_record_import_ledger_returns_completion_state(monkeypatch):
+    captured: list[tuple[list[str], bool]] = []
 
-    def fake_upsert(thread_ids):
-        captured.append(list(thread_ids))
+    def fake_record(thread_ids, *, complete = False):
+        captured.append((list(thread_ids), complete))
         # Pretend two of the three were already in the ledger.
-        return (len(thread_ids), max(0, len(thread_ids) - 2))
+        return (len(thread_ids), max(0, len(thread_ids) - 2), complete)
 
-    monkeypatch.setattr(chat_history, "upsert_chat_legacy_imports", fake_upsert)
+    monkeypatch.setattr(chat_history, "record_chat_legacy_import", fake_record)
 
     response = chat_history.record_import_ledger(
         payload = chat_history.ChatImportLedgerRecordRequest(
             threadIds = ["a", "b", "c"],
+            complete = True,
         ),
         current_subject = "test-user",
     )
     assert response.accepted == 3
     assert response.inserted == 1
-    assert captured == [["a", "b", "c"]]
+    assert response.complete is True
+    assert captured == [(["a", "b", "c"], True)]
 
 
 def test_record_import_ledger_rejects_oversize_payload():
