@@ -111,6 +111,18 @@ def rep_of(cell_id: str) -> str:
     return f"{parts[0]}.{parts[-1]}" if len(parts) >= 3 else parts[-1]
 
 
+def rung_of(rep_key: str) -> str:
+    """The RUNG segment of a `rep_of` key: `r100K.rep0` -> `r100K`, and `""` when there is none.
+
+    The scope a measured noise floor is allowed to be applied at. Not the shard: a null control is
+    its own output directory, so a shard-scoped floor would match nothing in the payload it was
+    measured for. Not the rep either: reps are repetitions of one configuration, and pooling them
+    is what turns a single flake into the several observations a floor has to be built from.
+    """
+    parts = rep_key.split(".")
+    return parts[0] if len(parts) >= 2 else ""
+
+
 def collect(paths: list[Path], select: Optional[set] = None) -> dict:
     """{(shard, rep, action): {arm: action row}} plus a tally of what was captured at all.
 
@@ -408,8 +420,8 @@ def behaviour_report(
     return 0
 
 
-def visible_unstable_set(null_paths: list[Path] | None) -> frozenset[str]:
-    """Actions whose VISIBLE REGION differs between two runs of the SAME build.
+def visible_unstable_set(null_paths: list[Path] | None) -> frozenset[tuple[str, str]]:
+    """(rung, action) pairs whose VISIBLE REGION differs between two runs of the SAME build.
 
     A floor, measured rather than assumed, and it has to be measured separately from the digest's
     because the two ask different questions. Observed on a 100K base-vs-base control: 13 of 64
@@ -420,21 +432,51 @@ def visible_unstable_set(null_paths: list[Path] | None) -> frozenset[str]:
     The mechanism is the same one the digest already normalises around and does not fully catch:
     the rows differ at identical character counts (`7609->7609c`), which is a volatile attribute
     rather than changed content.
+
+    KEYED BY RUNG AS WELL AS BY ACTION, AND EARNED AT THAT KEY. A bare action name was both too
+    broad and too cheap: ONE differing null-control pair silenced that action for every rep and
+    every rung. A payload legitimately holds several rungs -- the windowed readiness gate is
+    written to permit an arm to mount everything at 1K and a window at 100K -- so transient visible
+    noise on the null's 100K `model_change` pair suppressed a reproducible visible regression on
+    the target's 1K `model_change` pair, and `visible_report` exited 0 over it.
+
+    The rung is where the instability lives. How much thread there is, and where the film's slots
+    land against it, is what makes an action differ against itself; that is the same argument
+    `tier_of` already makes about the film's spacing, applied one level down. `P.derive_unstable`
+    then supplies the observation count, so an entry needs more than one reading at the key it will
+    be applied at.
+
+    WHERE THIS DIVERGES FROM THE STRUCTURAL FLOOR, deliberately. `unstable_set` keys on the action
+    alone -- but it is UNIONED with the declared `P.UNSTABLE_ACTIONS`, where every entry carries a
+    written mechanism, and its derived half already refuses to call anything unstable on a single
+    reading. The visible floor has no declared set behind it, so being derived is the only claim it
+    can make, and a claim with no mechanism attached has to be earned at the scope it silences.
+
+    None of this reaches the SEVERE verdicts: `visible_report` never routes an arm whose viewport
+    ended empty into the floor, whatever the floor is keyed by.
     """
     if not null_paths:
         return frozenset()
     results, _got = compare_all_with(null_paths, P.compare_visible, "visible")
-    return frozenset(
-        action
-        for action, _shard, _rep, r in results
-        if r.get("_ran") and r.get("verdict") == P.DIFFER
-    )
+    by_rung: dict[str, list[tuple[str, dict]]] = collections.defaultdict(list)
+    for action, _shard, rep, r in results:
+        # A pair whose action never ran on both arms is not an observation of anything, in either
+        # direction. `derive_unstable` refuses to count a verdict it cannot read; this refuses to
+        # hand it one it should not read.
+        if r.get("_ran"):
+            by_rung[rung_of(rep)].append((action, r))
+    out: set[tuple[str, str]] = set()
+    for rung, pairs in by_rung.items():
+        for action, row in P.derive_unstable(pairs).items():
+            if row["unstable"]:
+                out.add((rung, action))
+    return frozenset(out)
 
 
 def visible_report(
     paths: list[Path],
     label: str,
-    unstable: frozenset[str] = frozenset(),
+    unstable: frozenset[tuple[str, str]] = frozenset(),
     select: Optional[set] = None,
 ) -> int:
     """VISIBLE-REGION PARITY. The verdict the off-screen exemption asks for.
@@ -480,7 +522,11 @@ def visible_report(
             # A SEVERE difference is never routed into the noise floor. See compare_visible: an
             # action can be in the derived unstable set for an unrelated attribute and still be
             # the action on which one arm lost the whole thread.
-            noise = action in unstable and not r.get("severe")
+            #
+            # AT THIS PAIR'S OWN RUNG. An action that differs against an identical build at 100K
+            # says nothing about the same action at 1K, where the thread is a fraction of the size
+            # and the film's slots land somewhere else entirely.
+            noise = (rung_of(rep), action) in unstable and not r.get("severe")
             (unstable_bad if noise else differing).append((action, shard, rep, r))
         else:
             matched += 1
@@ -538,6 +584,17 @@ def visible_report(
             "\n  NO FLOOR WAS MEASURED. Pass --null OUTDIR of a base-vs-base run: an identical\n"
             "  pair of builds has been observed differing on 13 of 64 pairs inside the viewport,\n"
             "  so an unfloored count here can rank a real arm below two copies of the same build."
+        )
+    else:
+        # WHICH RUNG EACH FLOOR ENTRY WAS MEASURED AT, printed, because it is also the only rung it
+        # silences anything at. A floor that reads as a list of action names would look like it
+        # covers the whole payload.
+        keys = sorted(unstable)
+        shown = ", ".join(f"{rung or '?'} {action}" for rung, action in keys[:12])
+        print(
+            f"\n  FLOOR: {len(keys)} (rung, action) pair(s) measured differing against an "
+            f"identical build,\n  and silenced ONLY at the rung they were measured at: {shown}"
+            + (f", and {len(keys) - 12} more" if len(keys) > 12 else "")
         )
 
     if differing:
@@ -871,7 +928,7 @@ def main(argv: list[str] | None = None) -> int:
 
     worst = 0
     scored_windowed = 0
-    vis_unstable: Optional[frozenset[str]] = None
+    vis_unstable: Optional[frozenset[tuple[str, str]]] = None
     for entry in plan:
         win, struct = entry["windowed"], entry["structural"] or set()
         if not win and not entry.get("forced"):

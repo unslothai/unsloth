@@ -423,6 +423,178 @@ def test_a_real_rendering_difference_is_still_caught(browser):
     assert verdict["verdict"] == P.DIFFER, verdict
 
 
+# ── a rebuilt row is at its own position, not at the end of a lifetime count ──
+#
+# `thread_reopen` leaves the thread and comes back, and a FULLY MOUNTED arm answers that by
+# removing every message row and creating a new one for every message inside the same document.
+# Those rebuilt rows publish no `aria-posinset` -- only a windowed arm publishes one -- so their
+# ordinal comes from the fallback, and the fallback used to be a LIFETIME counter of observed
+# nodes. It already stood at N, so the rebuilt rows were stamped N+1..2N while the windowed arm on
+# the other side of the A/B stamped its real 1..N. `compare_visible` compares the two sets of
+# ordinals first, found them disjoint, and reported "the two arms put DIFFERENT MESSAGES on
+# screen" -- a hard visible-difference verdict -- for a rebuild that was identical.
+
+
+#: The shipped shape: every message mounted, and NOTHING publishing a virtualization ordinal.
+#: `__rebuild()` is the thread_reopen rebuild, in one commit, in the same document.
+REBUILD_FIXTURE = """
+<!doctype html><meta charset="utf-8">
+<style>
+  body { margin: 0; }
+  .aui-thread-viewport { height: 400px; overflow-y: auto; }
+  [data-role] { height: 500px; }
+</style>
+<div class="aui-thread-root">
+  <div class="aui-thread-viewport" id="vp"></div>
+</div>
+<script>
+  window.__rebuild = () => {
+    const vp = document.getElementById("vp");
+    vp.innerHTML = "";
+    for (let i = 1; i <= 20; i++) {
+      const row = document.createElement("div");
+      row.className = "row";
+      const msg = document.createElement("div");
+      msg.setAttribute("data-role", i % 2 ? "user" : "assistant");
+      msg.textContent = "message " + i;
+      row.appendChild(msg);
+      vp.appendChild(row);
+    }
+  };
+  window.__rebuild();
+</script>
+"""
+
+
+def _rebuild_page(browser):
+    pg = browser.new_page(viewport = {"width": 800, "height": 600})
+    pg.set_content(REBUILD_FIXTURE)
+    pg.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
+    pg.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+    return pg
+
+
+def _capture_after_rebuild(browser) -> dict:
+    pg = _rebuild_page(browser)
+    try:
+        _watch(pg)
+        pg.evaluate("() => window.__rebuild()")
+        pg.wait_for_timeout(150)
+        return _capture(pg)
+    finally:
+        pg.close()
+
+
+def test_a_rebuilt_row_carries_its_thread_position_not_a_lifetime_count(browser):
+    """THE DEFECT. Twenty messages are observed, then all twenty rows are replaced. The viewport
+    still shows message 1 and nothing else, so that is the only ordinal the capture may report."""
+    got = _capture_after_rebuild(browser)
+    assert got["ever_visible"] == [1], got["ever_visible"]
+    assert set(got["messages"]) == {"1"}, got["messages"]
+    # Every rebuilt row was placed, so nothing was dropped to buy the assertion above.
+    assert got["unplaced_rows"] == 0, got
+
+
+def test_a_rebuilt_full_mount_still_matches_a_windowed_arm(browser):
+    """THE SYMPTOM, end to end: the verdict `thread_reopen` was getting on every pair.
+
+    The two arms render the same twenty messages and show the same one. One rebuilds its rows the
+    way a fully mounted arm does on reopen; the other publishes the ordinals the readiness gate
+    requires of a windowed arm. Nothing a user could see differs, and the pair must say so.
+    """
+    from studiobench.analysis import parity as P
+
+    verdict = P.compare_visible(
+        _capture_after_rebuild(browser), _capture_arm(browser, "on_the_row")
+    )
+    assert verdict["verdict"] == P.MATCH, verdict
+
+
+def test_a_real_difference_after_a_rebuild_is_still_caught(browser):
+    """THE POSITIVE CONTROL for the two above, without which they pass on an instrument that
+    stopped distinguishing anything. Same rebuild, different rendered text on the other arm."""
+    from studiobench.analysis import parity as P
+
+    verdict = P.compare_visible(
+        _capture_after_rebuild(browser), _capture_arm(browser, "on_the_row", suffix = " (v2)")
+    )
+    assert verdict["verdict"] == P.DIFFER, verdict
+
+
+def _count_document_queries(pg) -> None:
+    pg.evaluate(
+        """() => {
+             window.__docQsa = 0;
+             const original = Document.prototype.querySelectorAll;
+             Document.prototype.querySelectorAll = function () {
+               window.__docQsa += 1;
+               return original.apply(this, arguments);
+             };
+           }"""
+    )
+
+
+def test_placing_a_batch_of_rebuilt_rows_costs_ONE_document_read_for_the_batch(browser):
+    """THE PRICE OF GETTING THE ORDINAL RIGHT, and the reason a counter was tempting.
+
+    Resolving a position needs the thread's current message list, and `observeAdded` runs inside
+    the MEASURED action window. Read per row, a twenty-row rebuild would charge twenty O(document)
+    walks to `thread_reopen` on a DOM whose size is the quantity under investigation -- workspace
+    task #102 all over again. The index is therefore built once per mutation batch and shared by
+    every row in it.
+
+    Exactly one, in both directions: more than one means the lookup is back on the per-row path,
+    and NONE means no position was resolved from the DOM at all, which is the lifetime counter
+    this replaced.
+    """
+    pg = _rebuild_page(browser)
+    try:
+        _count_document_queries(pg)
+        _watch(pg)
+        baseline = pg.evaluate("() => window.__docQsa")
+        pg.evaluate("() => window.__rebuild()")
+        pg.wait_for_timeout(150)
+        spent = pg.evaluate("() => window.__docQsa") - baseline
+    finally:
+        pg.close()
+    assert spent == 1, f"a twenty-row rebuild in one batch cost {spent} document-wide queries"
+
+
+def test_a_row_that_publishes_its_ordinal_costs_no_document_read_at_all(browser):
+    """A windowed arm mounts rows continuously as it scrolls, and it is the arm that would pay
+    most for a document read per batch. It publishes `aria-posinset`, which is read first and
+    answers the question outright, so it never reaches the position index."""
+    pg = browser.new_page(viewport = {"width": 800, "height": 600})
+    pg.set_content(FIXTURE)
+    pg.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
+    pg.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+    try:
+        _count_document_queries(pg)
+        _watch(pg)
+        baseline = pg.evaluate("() => window.__docQsa")
+        # Ten more rows, each publishing its own position, in one batch.
+        pg.evaluate(
+            """() => {
+                 const vp = document.getElementById("vp");
+                 for (let i = 21; i <= 30; i++) {
+                   const row = document.createElement("div");
+                   row.setAttribute("aria-posinset", String(i));
+                   row.setAttribute("aria-setsize", "30");
+                   const msg = document.createElement("div");
+                   msg.setAttribute("data-role", "assistant");
+                   msg.textContent = "message " + i;
+                   row.appendChild(msg);
+                   vp.appendChild(row);
+                 }
+               }"""
+        )
+        pg.wait_for_timeout(150)
+        spent = pg.evaluate("() => window.__docQsa") - baseline
+    finally:
+        pg.close()
+    assert spent == 0, f"a windowed arm's mounted rows cost {spent} document-wide queries"
+
+
 def test_the_structural_digest_still_sees_the_ordinals(browser):
     """THE SCOPING DECISION, in the browser. The exclusion is passed in by the visible-region
     caller and is NOT baked into the shared `signature`: the structural digest only ever scores

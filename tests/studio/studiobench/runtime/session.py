@@ -40,6 +40,7 @@ from ..scene.schedule import SceneRunner
 from .browser import cdp_counters, cdp_metrics, dump_diagnostics
 from .lifecycle import StudioAuth
 from .readiness import (
+    COVERAGE_STATES_SCOREABLE,
     MODE_FULL,
     MODE_WINDOWED,
     MODES,
@@ -121,13 +122,35 @@ def record_completeness_gate(recorder: Recorder, cell: Cell, completeness: dict)
     exists to find out. `cell_id` is `r{rung}.{arm}.rep{rep}`, so attributing the row names all
     three. `Recorder.failure` already takes a cell_id for the same reason.
 
-    THE VERDICT ITSELF is the head marker AND the ordinal coverage, and coverage is three-valued:
-    only `False` is a finding. `None` is the traversal not having looked -- a gesture that never
-    reached the top, or an arm that publishes no ordinals at all -- and failing a cell on that
-    would be reporting "we could not tell" as "the app lost messages".
+    THE VERDICT ITSELF is the head marker AND the ordinal coverage, and coverage is three-valued.
+    `False` is a finding. `None` is two different answers wearing one value, and they are told
+    apart by `ordinal_coverage_state`:
+
+      not_applicable  no row published an `aria-posinset` for the traversal to count. A fully
+                      mounted arm publishes none anywhere -- the shipped build publishes none --
+                      so the question does not arise, and failing on it would fail the shipped
+                      build's own completeness gate on every cell.
+      unmeasured      the question arises and the sweep could not answer it: the gesture stopped
+                      short of the top, or its consecutive stops did not overlap so the middle of
+                      the thread was never in view.
+
+    Only the first is a pass. A store that retains the first page and the last one and has lost
+    everything between them is the exact arm this probe was written to catch, and accepting
+    `unmeasured` let it back in through the unknown state: the head marker arrives, the coverage
+    sweep never looks, and the cell stays scoreable. "We could not tell" must not be recorded as
+    "it was fine". The remedy for a coarse sweep is a smaller `step_px`, not a pass.
+
+    A completeness dict carrying no state at all is treated the same way as `unmeasured`, because
+    an undifferentiated `None` is precisely the ambiguity above and resolving it in favour of a
+    pass is the defect.
     """
     coverage = completeness.get("ordinal_coverage_complete")
-    passed = bool(completeness.get("head_reached")) and coverage is not False
+    state = completeness.get("ordinal_coverage_state")
+    passed = (
+        bool(completeness.get("head_reached"))
+        and coverage is not False
+        and state in COVERAGE_STATES_SCOREABLE
+    )
     recorder.emit(
         {
             "row_type": "gate",

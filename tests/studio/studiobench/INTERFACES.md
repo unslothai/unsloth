@@ -338,7 +338,28 @@ mount. Standing at the bottom, a correct virtualizer and a thread that has lost 
 identical, and this is the only reading that separates them. It is reported as a `thread_complete`
 gate row, not raised.
 
-New payload keys, all additive: `readiness` and `completeness` on the cell row, `mounted_messages`
+The head marker is not the whole verdict. A store that kept the first page and the last one and
+lost everything between them mounts the head on demand, so the traversal also records the
+`aria-posinset` of every row it passes and `ordinal_coverage` reports what that covers.
+`ordinal_coverage_complete` stays three-valued, and `ordinal_coverage_state` says which kind of
+`None` a `None` is:
+
+| state | verdict | scored? |
+| --- | --- | --- |
+| `complete` | every seeded ordinal was mounted somewhere on the way up | yes |
+| `incomplete` | an ordinal is missing that the sweep was in a position to see, so the arm has lost it | no, and the cell is excluded |
+| `not_applicable` | no row published an `aria-posinset` at all. A fully mounted thread publishes none anywhere, so the question does not arise | yes |
+| `unmeasured` | the question arises and the sweep could not answer it: the gesture stopped short of the top, or consecutive stops did not overlap so the middle was never in view | **no** |
+
+`unmeasured` used to pass, which let the first-page-and-last-page store back in through the unknown
+state: the marker arrives, the sweep never looks, the cell stays scoreable. It does not any more,
+and the remedy for a coarse sweep is a smaller `step_px`, not a softer gate. The distinction is the
+reason a blanket "None fails" would be wrong -- it would fail the shipped build, which publishes no
+ordinals, on every cell it is pointed at.
+
+New payload keys, all additive: `readiness` and `completeness` on the cell row,
+`ordinal_coverage_state` on that `completeness` and on the `thread_complete` gate's detail,
+`unplaced_rows` on every visible-region capture, `mounted_messages`
 and `thread_total` on every parity capture, `mounted_before` / `mounted_after` on `send_turn`,
 `delete_message` and `thread_reopen`, `left_via` / `reopened_via` / `reopen_ready_mode` /
 `reopen_readiness` on `thread_reopen`, `visible` on every action row, `observation_ms` on every
@@ -484,6 +505,32 @@ ever scored when neither arm is windowing and an ordinal appearing there is a re
 gives up: a wrong ordinal on a windowed arm is no longer visible in this digest, and is instead the
 readiness gate's `posinset_ordinals_valid` / `posinset_reaches_end` and the completeness probe's
 coverage, which are the checks that can say what a right ordinal would be.
+
+**A message is keyed by its position in the THREAD, and the fallback is its position in the DOM.**
+A windowed arm publishes `aria-posinset` and that is used. An arm that publishes none is fully
+mounted, so the row's position among the thread's messages at the moment it is observed IS its
+thread position. It is resolved then rather than at delivery time, because by delivery the row may
+have been unmounted and `closest()` would answer nothing. It is NOT a lifetime count of observed
+nodes: `thread_reopen` makes a fully mounted arm recreate all N rows in one document, and a counter
+already standing at N stamped them N+1..2N, so the pair reported "the two arms put DIFFERENT
+MESSAGES on screen" for a rebuild that was identical. The lookup is kept off the per-mutation path
+-- a published ordinal short-circuits it, and the index is built at most once per mutation batch and
+only by a batch that mounted a message element, so a stream (text churn inside mounted rows) builds
+none. A row that can be placed by neither route is stamped with no ordinal and counted in
+`unplaced_rows` rather than given a guess.
+
+**The visible-region noise floor is keyed by (rung, action), and needs more than one observation.**
+`visible_unstable_set` derives it from a base-vs-base null control. It returned ACTION NAMES, so a
+single differing null pair silenced that action for every rep and every rung -- and a payload
+legitimately holds several rungs, so noise on the null's 100K `model_change` suppressed a
+reproducible visible regression on the target's 1K `model_change` and the command exited 0. The
+rung is where the instability lives (the same argument `tier_of` makes about the film's spacing),
+the shard cannot be part of the key because the null control is its own directory, and the reps at
+one rung are the repeated observations `P.derive_unstable` requires before it will call anything
+unstable. The structural floor keys on the action alone because it is unioned with a declared set
+whose every entry carries a written mechanism; the visible floor has no such backing, so it is
+earned at the scope it silences. SEVERE verdicts -- an arm whose viewport ended empty -- are never
+routed into the floor whatever it is keyed by.
 
 **Visibility is read with `IntersectionObserver` and never with geometry.**
 `getBoundingClientRect()` / `getClientRects()` on content inside a `content-visibility` locked

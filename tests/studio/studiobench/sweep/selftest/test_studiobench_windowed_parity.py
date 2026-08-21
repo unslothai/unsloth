@@ -612,31 +612,40 @@ def _visible_shard(
     name,
     differ_actions,
     actions = ("a", "b", "c"),
+    rung = "r100K",
+    reps = 2,
 ):
-    """A payload shard whose visible-region captures differ on `differ_actions` and match elsewhere."""
+    """A payload shard whose visible-region captures differ on `differ_actions` and match elsewhere.
+
+    TWO REPS BY DEFAULT, and the rung is a parameter. Both are what the floor is keyed and counted
+    by: an entry is derived from repeated readings at one rung, so a shard with a single rep is a
+    shard that cannot produce a floor at all, and one recorded at a different rung produces a floor
+    that does not apply here.
+    """
     import json
 
     rows = []
     for action in actions:
-        for side in ("base", "treatment"):
-            digest = "X" if (action in differ_actions and side == "treatment") else "same"
-            rows.append(
-                {
-                    "row_type": "action",
-                    "action": action,
-                    "ran": True,
-                    "cell_id": f"r100K.{side}.rep0",
-                    "parity": _capture(mounted = 18, total = 18),
-                    "visible": {
-                        "visible_attempted": True,
-                        "ever_visible": [1],
-                        "ever_visible_count": 1,
-                        "mounted_ever_visible": 1,
-                        "unmounted_at_capture": 0,
-                        "messages": {"1": {"role": "assistant", "digest": digest, "chars": 10}},
-                    },
-                }
-            )
+        for rep in range(reps):
+            for side in ("base", "treatment"):
+                digest = "X" if (action in differ_actions and side == "treatment") else "same"
+                rows.append(
+                    {
+                        "row_type": "action",
+                        "action": action,
+                        "ran": True,
+                        "cell_id": f"{rung}.{side}.rep{rep}",
+                        "parity": _capture(mounted = 18, total = 18),
+                        "visible": {
+                            "visible_attempted": True,
+                            "ever_visible": [1],
+                            "ever_visible_count": 1,
+                            "mounted_ever_visible": 1,
+                            "unmounted_at_capture": 0,
+                            "messages": {"1": {"role": "assistant", "digest": digest, "chars": 10}},
+                        },
+                    }
+                )
     shard = tmp_path / name
     shard.mkdir()
     (shard / "payload.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding = "utf-8")
@@ -660,12 +669,12 @@ def test_an_action_that_differs_against_an_identical_build_is_not_counted_agains
     arm = _visible_shard(tmp_path, "arm", differ_actions = {"a"})
 
     unstable = U.visible_unstable_set([null])
-    assert unstable == frozenset({"a", "b"}), unstable
+    assert unstable == frozenset({("r100K", "a"), ("r100K", "b")}), unstable
 
     # Unfloored: the arm's one difference is counted and the run fails.
     assert U.visible_report([arm], "unfloored") == 1
-    # Floored by its own null: that action is known to differ against itself, so it is reported
-    # and not counted.
+    # Floored by its own null: that action is known to differ against itself at this rung, so it
+    # is reported and not counted.
     assert U.visible_report([arm], "floored", unstable) == 0
     out = capsys.readouterr().out
     assert "differ against an identical build" in out
@@ -679,6 +688,56 @@ def test_a_real_visible_difference_outside_the_floor_still_fails(tmp_path):
     null = _visible_shard(tmp_path, "null2", differ_actions = {"b"})
     arm = _visible_shard(tmp_path, "arm2", differ_actions = {"a"})
     assert U.visible_report([arm], "floored", U.visible_unstable_set([null])) == 1
+
+
+def test_noise_at_one_rung_does_not_silence_a_regression_at_another(tmp_path, capsys):
+    """THE FLOOR APPLIED WHERE IT WAS NEVER MEASURED.
+
+    A payload holds several rungs -- the windowed readiness gate is written to permit an arm to
+    mount everything at 1K and a window at 100K -- and the noise floor was a set of ACTION NAMES,
+    so one differing null-control pair marked that action unstable everywhere. Here the null's
+    100K `model_change` differs for its own reasons and the arm's 1K `model_change` differs
+    reproducibly. Keyed by name alone the second is filed as noise, the other pairs supply
+    `matched > 0`, and the command exits 0 having silenced the one real finding in the run.
+
+    The 1K rung is a different thread at a different size with the film's slots landing somewhere
+    else entirely; the null measured nothing there and the floor may not speak for it.
+    """
+    from studiobench.sweep import ui_parity as U
+
+    both = ("model_change", "keystroke")
+    null = [
+        _visible_shard(
+            tmp_path, "null_rungs", differ_actions = {"model_change"}, actions = both, rung = "r100K"
+        )
+    ]
+    big = _visible_shard(
+        tmp_path, "arm_100k", differ_actions = {"model_change"}, actions = both, rung = "r100K"
+    )
+    small = _visible_shard(
+        tmp_path, "arm_1k", differ_actions = {"model_change"}, actions = both, rung = "r1K"
+    )
+    unstable = U.visible_unstable_set(null)
+    assert unstable == frozenset({("r100K", "model_change")}), unstable
+    assert U.visible_report([big, small], "mixed rungs", unstable) == 1
+    out = capsys.readouterr().out
+    assert "DIFFERENCES INSIDE THE VIEWPORT" in out
+    # And it is the 1K pair that is counted, with the 100K one still reported as floored noise.
+    assert "r1K.rep0" in out
+    assert "differ against an identical build" in out
+
+
+def test_a_floor_derived_from_a_single_pair_is_not_a_floor(tmp_path):
+    """ONE OCCURRENCE IS NOT EVIDENCE, which is the guard `derive_unstable` already applies to the
+    structural set and this one had none of. A single flake in a null control would otherwise
+    silence that action, at that rung, for every rep of every payload scored against it -- and the
+    visible floor carries no declared mechanism behind it to justify the entry."""
+    from studiobench.sweep import ui_parity as U
+
+    thin = _visible_shard(tmp_path, "null_thin", differ_actions = {"a"}, reps = 1)
+    assert U.visible_unstable_set([thin]) == frozenset()
+    thick = _visible_shard(tmp_path, "null_thick", differ_actions = {"a"}, reps = 2)
+    assert U.visible_unstable_set([thick]) == frozenset({("r100K", "a")})
 
 
 def test_an_unfloored_visible_run_says_so(tmp_path, capsys):
@@ -737,7 +796,7 @@ def test_the_noise_floor_cannot_silence_an_arm_that_lost_the_thread(tmp_path, ca
         tmp_path, "null_mc", differ_actions = {"model_change"}, actions = ("model_change",)
     )
     unstable = U.visible_unstable_set([null])
-    assert "model_change" in unstable
+    assert ("r100K", "model_change") in unstable
     # ...and the arm that lost the thread on it is STILL a failure.
     assert U.visible_report([_shard("arm_mc", True)], "severe", unstable) == 1
     assert "one arm lost the thread" in capsys.readouterr().out

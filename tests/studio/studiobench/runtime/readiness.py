@@ -614,6 +614,28 @@ COLLECT_ORDINALS_JS = """
 #: thread that lost half of itself does not write a thousand integers into every payload.
 MISSING_ORDINALS_LISTED = 40
 
+#: WHY `ordinal_coverage` GAVE THE ANSWER IT GAVE, which the three-valued verdict on its own cannot
+#: say and which the `thread_complete` gate has to know.
+#:
+#: `not_applicable` and `unmeasured` are BOTH `None` and they are opposites. The first is a question
+#: that does not arise on this arm: a fully mounted thread publishes no `aria-posinset` anywhere --
+#: the shipped build publishes none -- so there are no ordinals to cover and none missing. The
+#: second is a question that does arise and was not answered: the gesture stopped short of the top,
+#: or its consecutive stops did not overlap, so rows nobody scrolled past are rows nobody looked at.
+#:
+#: A gate that passes both reads "we could not tell" as "it was fine", which is the store that kept
+#: only its first and last page staying scoreable. A gate that fails both fails the shipped build on
+#: every cell for publishing no ordinals. So the two are recorded apart, and only the second is
+#: withheld from a pass.
+COVERAGE_COMPLETE = "complete"
+COVERAGE_INCOMPLETE = "incomplete"
+COVERAGE_NOT_APPLICABLE = "not_applicable"
+COVERAGE_UNMEASURED = "unmeasured"
+
+#: The coverage states a cell may still be scored on. `unmeasured` is deliberately absent, and
+#: `incomplete` is excluded by the verdict itself rather than by this tuple.
+COVERAGE_STATES_SCOREABLE = (COVERAGE_COMPLETE, COVERAGE_NOT_APPLICABLE)
+
 
 def ordinal_coverage(
     traverse: dict,
@@ -628,14 +650,27 @@ def ordinal_coverage(
     the old code could not give and the reason a coarse gesture must never be allowed to report a
     row it never scrolled past as a row the app lost.
 
+    AND `ordinal_coverage_state` SAYS WHICH KIND OF `None` IT IS, because the two are opposites and
+    a caller that cannot tell them apart has to treat them the same. `not_applicable` is a question
+    that does not arise -- no row published an ordinal, which is what a fully mounted arm does by
+    design -- and `unmeasured` is a question that arises and was not answered. The `thread_complete`
+    gate passes the first and refuses the second; collapsing them made a store that kept only its
+    first and last page scoreable whenever the sweep happened to be coarse.
+
     The three ways `None` is the honest answer:
 
-      the gesture never reached the top     nothing was traversed, so nothing was covered
-      no row published an ordinal           a fully mounted arm publishes none at all, by design,
-                                            and MODE_FULL never asked it to
-      consecutive stops did not overlap     the gesture jumps `TRAVERSE_STEP_PX` at a time and a
-                                            virtualizer mounts what is near the viewport, so rows
-                                            between two stops were never in view
+      no row published an ordinal           NOT APPLICABLE. A fully mounted arm publishes none at
+                                            all, by design, and MODE_FULL never asked it to.
+                                            Checked FIRST: a windowed arm records the ordinals of
+                                            its mounted rows before the gesture takes its first
+                                            step, so an empty union really does mean an arm that
+                                            publishes nothing rather than a gesture that failed
+      the gesture never reached the top     UNMEASURED. Nothing was traversed, so nothing was
+                                            covered
+      consecutive stops did not overlap     UNMEASURED. The gesture jumps `TRAVERSE_STEP_PX` at a
+                                            time and a virtualizer mounts what is near the
+                                            viewport, so rows between two stops were never in view.
+                                            The remedy is a finer step, not a softer verdict
 
     And the two that are a verdict about the arm:
 
@@ -666,23 +701,29 @@ def ordinal_coverage(
         "traversal_stops": traverse.get("traversal_stops"),
         "coverage_reason": None,
     }
-    if not traverse.get("reached_target"):
-        out["ordinal_coverage_complete"] = None
-        out["coverage_reason"] = (
-            "the stepped gesture never reached the top, so an ordinal it did not see is an "
-            "ordinal it never looked for"
-        )
-        return out
+    # NOT APPLICABLE BEFORE UNMEASURED. An arm publishing no ordinals anywhere has nothing to cover
+    # whatever the gesture did, and asking about the gesture first would report the shipped build's
+    # own shape as a measurement this probe failed to take -- which the gate now refuses to score.
     if not seen:
         out["ordinal_coverage_complete"] = None
+        out["ordinal_coverage_state"] = COVERAGE_NOT_APPLICABLE
         out["coverage_reason"] = (
             "no mounted row published aria-posinset during the traversal, so there was nothing to "
             "count. A fully mounted arm publishes none by design, and a windowed one is refused "
             "by the readiness gate long before it reaches this probe"
         )
         return out
+    if not traverse.get("reached_target"):
+        out["ordinal_coverage_complete"] = None
+        out["ordinal_coverage_state"] = COVERAGE_UNMEASURED
+        out["coverage_reason"] = (
+            "the stepped gesture never reached the top, so an ordinal it did not see is an "
+            "ordinal it never looked for"
+        )
+        return out
     if holes:
         out["ordinal_coverage_complete"] = False
+        out["ordinal_coverage_state"] = COVERAGE_INCOMPLETE
         out["coverage_reason"] = (
             f"{len(holes)} ordinal(s) were absent from a mounted window that spanned them and "
             f"appeared at no other scroll position ({out['ordinals_in_window_holes']}), so the "
@@ -691,9 +732,11 @@ def ordinal_coverage(
         return out
     if not missing:
         out["ordinal_coverage_complete"] = True
+        out["ordinal_coverage_state"] = COVERAGE_COMPLETE
         return out
     if traverse.get("sweep_continuous"):
         out["ordinal_coverage_complete"] = False
+        out["ordinal_coverage_state"] = COVERAGE_INCOMPLETE
         out["coverage_reason"] = (
             f"{len(missing)} of {expected_messages} ordinals never mounted ({out['ordinals_missing']}"
             f"{', truncated' if out['ordinals_missing_truncated'] else ''}), and every stop of the "
@@ -701,10 +744,12 @@ def ordinal_coverage(
         )
         return out
     out["ordinal_coverage_complete"] = None
+    out["ordinal_coverage_state"] = COVERAGE_UNMEASURED
     out["coverage_reason"] = (
         f"{len(missing)} of {expected_messages} ordinals never mounted, but consecutive stops of "
         f"the gesture did not overlap, so rows between two stops were never in view. NOT a claim "
-        "that the arm lost them"
+        "that the arm lost them, and NOT a coverage result either: run the traversal at a step "
+        "small enough for consecutive stops to overlap"
     )
     return out
 
@@ -802,6 +847,15 @@ def probe_thread_completeness(
         # alone reported as a pass: first page kept, last page kept, middle gone.
         out["reason"] = f"the head of the thread mounted, but {out['coverage_reason']}"
         log(f"  COMPLETENESS FAILED: {out['reason']}")
+    elif out.get("ordinal_coverage_state") == COVERAGE_UNMEASURED:
+        # THE HEAD ARRIVED AND THE MIDDLE WAS NEVER INSPECTED. Not a finding about the arm, and
+        # not a pass either: this is the same first-page-and-last-page store re-entering through
+        # the unknown state, so the cell carries a reason and the gate declines to score it.
+        out["reason"] = (
+            f"the head of the thread mounted, but coverage of the middle was NOT ESTABLISHED: "
+            f"{out['coverage_reason']}"
+        )
+        log(f"  COMPLETENESS NOT ESTABLISHED: {out['reason']}")
     else:
         log(
             f"  completeness: the head of the thread mounted on scroll-to-top "
@@ -810,5 +864,7 @@ def probe_thread_completeness(
             f"({out.get('ordinals_seen_count')} of {expected_messages} ordinals seen)"
         )
         if out.get("ordinal_coverage_complete") is None:
-            log(f"  coverage NOT MEASURED: {out.get('coverage_reason')}")
+            # Only the not-applicable kind reaches here; the unmeasured kind is caught above and
+            # carries a reason of its own.
+            log(f"  coverage DOES NOT APPLY: {out.get('coverage_reason')}")
     return out

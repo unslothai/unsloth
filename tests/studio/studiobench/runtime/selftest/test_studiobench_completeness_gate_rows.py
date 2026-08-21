@@ -15,6 +15,12 @@ So the row is written here through `record_completeness_gate` and read back thro
 `excluded_from_rows`, in that order, rather than asserted against a hand-built dict. No browser:
 this is about what reaches the payload, not about what the page did.
 
+AND WHICH `None` THE COVERAGE WAS. `ordinal_coverage` answers `None` for two opposite reasons --
+no ordinals were published at all, so the question does not arise, versus the sweep never having
+inspected the middle of the thread -- and a gate that passes both lets the first-page-and-last-page
+store back in through the unknown state. The pair of positive controls below is what stops the
+repair turning into a gate that fails the shipped build instead.
+
     python -m pytest tests/studio/studiobench/runtime/selftest/test_studiobench_completeness_gate_rows.py -q
 """
 
@@ -29,6 +35,13 @@ if str(_STUDIO_TESTS) not in sys.path:
     sys.path.insert(0, str(_STUDIO_TESTS))
 
 from studiobench.report.payload import excluded_from_rows  # noqa: E402
+from studiobench.runtime.readiness import (  # noqa: E402
+    COVERAGE_COMPLETE,
+    COVERAGE_INCOMPLETE,
+    COVERAGE_NOT_APPLICABLE,
+    COVERAGE_UNMEASURED,
+    ordinal_coverage,
+)
 from studiobench.runtime.session import record_completeness_gate  # noqa: E402
 from studiobench.runtime.types import Cell, Recorder, make_cell_id  # noqa: E402
 
@@ -48,6 +61,7 @@ LOST_MIDDLE = {
     "expected_messages": 18,
     "head_reached": True,
     "ordinal_coverage_complete": False,
+    "ordinal_coverage_state": COVERAGE_INCOMPLETE,
     "ordinals_seen_count": 6,
     "ordinals_missing": list(range(4, 16)),
     "ordinals_missing_count": 12,
@@ -92,12 +106,33 @@ def test_a_cell_that_lost_messages_is_excluded_as_itself_and_not_as_the_run(tmp_
     assert "thread_complete" in excluded[0]["detail"]
 
 
-def test_coverage_that_was_never_measured_does_not_fail_the_cell(tmp_path):
-    """`None` is the traversal not having looked, and a cell may not be thrown away for that.
+def test_coverage_that_does_not_apply_does_not_fail_the_cell(tmp_path):
+    """A fully mounted arm publishes no `aria-posinset` anywhere, so there are no ordinals to
+    cover and none missing. The question does not arise, and failing a cell on a question that was
+    never asked of it would fail the shipped build's own completeness gate on every cell."""
+    rows, passed = _rows(
+        tmp_path,
+        {
+            "probe_attempted": True,
+            "head_reached": True,
+            "ordinal_coverage_complete": None,
+            "ordinal_coverage_state": COVERAGE_NOT_APPLICABLE,
+            "coverage_reason": "no mounted row published aria-posinset during the traversal",
+        },
+    )
+    assert passed is True and rows[0]["passed"] is True
+    assert excluded_from_rows(rows) == []
 
-    A coarse gesture whose stops did not overlap, and an arm that publishes no ordinals at all,
-    both produce `None`. Failing on it would report "we could not tell" as "the app lost
-    messages", which is the same mistake in the other direction.
+
+def test_coverage_that_applies_but_was_never_measured_is_not_a_pass(tmp_path):
+    """THE COMPLETENESS FIX, RE-ENTERING THROUGH THE UNKNOWN STATE.
+
+    A store that kept the first page and the last one and lost everything between them mounts the
+    head when the traversal scrolls to it, so the marker check is satisfied. The ordinals are what
+    catch it -- and when the sweep's consecutive stops did not overlap, the ordinals were never
+    inspected. Reading that `None` as a pass hands the cell straight back to the arm this probe
+    exists to refuse, and the report then carries its frame rate as if it had been earned on a
+    complete thread.
     """
     rows, passed = _rows(
         tmp_path,
@@ -105,11 +140,89 @@ def test_coverage_that_was_never_measured_does_not_fail_the_cell(tmp_path):
             "probe_attempted": True,
             "head_reached": True,
             "ordinal_coverage_complete": None,
+            "ordinal_coverage_state": COVERAGE_UNMEASURED,
             "coverage_reason": "consecutive stops of the gesture did not overlap",
         },
     )
+    assert passed is False and rows[0]["passed"] is False
+    assert [c["cell_id"] for c in excluded_from_rows(rows)] == [CELL.cell_id]
+
+
+def test_an_undifferentiated_coverage_None_is_not_a_pass_either(tmp_path):
+    """A payload written before the state existed carries the ambiguity and nothing that resolves
+    it. That is exactly the reading the gate must not resolve in favour of a pass."""
+    rows, passed = _rows(
+        tmp_path,
+        {"probe_attempted": True, "head_reached": True, "ordinal_coverage_complete": None},
+    )
+    assert passed is False and rows[0]["passed"] is False
+
+
+# ── the two ends, joined: the probe's own output through the gate ───
+
+
+def _coverage(**traverse) -> dict:
+    """What `probe_thread_completeness` would hand the gate, from a real traversal record."""
+    got = {"probe_attempted": True, "head_reached": True}
+    got.update(ordinal_coverage(traverse, 18))
+    return got
+
+
+def test_a_coarse_sweep_over_a_thread_missing_its_middle_does_not_pass_the_gate(tmp_path):
+    """END TO END, with no hand-written state string between the two halves.
+
+    `ordinal_coverage` and `record_completeness_gate` have to agree about which `None` this is, so
+    the traversal record goes through the real function and the real gate. Six of eighteen
+    ordinals ever mounted, the head among them, and a gesture too coarse to say whether the other
+    twelve exist: not a finding, and not a pass.
+    """
+    rows, passed = _rows(
+        tmp_path,
+        _coverage(
+            reached_target = True,
+            ordinals_seen = [1, 2, 3, 16, 17, 18],
+            ordinals_in_window_holes = [],
+            sweep_continuous = False,
+            traversal_stops = 2,
+        ),
+    )
+    assert passed is False and rows[0]["passed"] is False
+    assert rows[0]["detail"]["ordinal_coverage_state"] == COVERAGE_UNMEASURED
+    assert [c["cell_id"] for c in excluded_from_rows(rows)] == [CELL.cell_id]
+
+
+def test_a_continuous_sweep_that_saw_every_ordinal_passes_the_gate(tmp_path):
+    """The positive control for the test above: the same joining, on a sweep that did establish
+    coverage. Without it, "not a pass" could be coming from a gate that passes nothing."""
+    rows, passed = _rows(
+        tmp_path,
+        _coverage(
+            reached_target = True,
+            ordinals_seen = list(range(1, 19)),
+            ordinals_in_window_holes = [],
+            sweep_continuous = True,
+            traversal_stops = 9,
+        ),
+    )
     assert passed is True and rows[0]["passed"] is True
-    assert excluded_from_rows(rows) == []
+    assert rows[0]["detail"]["ordinal_coverage_state"] == COVERAGE_COMPLETE
+
+
+def test_an_arm_that_publishes_no_ordinals_at_all_passes_the_gate(tmp_path):
+    """The other positive control, and the reason a blanket "None fails" would be wrong: this is
+    the shipped build, traversed to the top, publishing nothing for the sweep to count."""
+    rows, passed = _rows(
+        tmp_path,
+        _coverage(
+            reached_target = True,
+            ordinals_seen = [],
+            ordinals_in_window_holes = [],
+            sweep_continuous = True,
+            traversal_stops = 3,
+        ),
+    )
+    assert passed is True and rows[0]["passed"] is True
+    assert rows[0]["detail"]["ordinal_coverage_state"] == COVERAGE_NOT_APPLICABLE
 
 
 def test_a_head_that_never_mounted_still_fails_the_cell(tmp_path):

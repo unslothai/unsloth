@@ -313,30 +313,93 @@
   // subtree is skipped, so observing with it neither forces rendering nor perturbs the decision.
   // NOTHING in this section may call a geometry method on a candidate element.
   const VIS = {
-    obs: null, mut: null, ever: new Set(), seen: new WeakSet(), watching: false, seen_count: 0,
+    obs: null, mut: null, ever: new Set(), seen: new WeakSet(), watching: false,
+    // Rows that were observed and could NOT be placed in the thread at all: no `aria-posinset`
+    // and not among the messages the DOM currently holds. Such a row is stamped with no ordinal,
+    // so it is silently absent from `ever_visible`, and a silence that cannot be counted is the
+    // failure this whole file is written against. Reported with the capture.
+    unplaced: 0,
+    // The batch-scoped position index. See `positionIndex`.
+    index: null,
   };
 
-  const ordinalOf = (el, index) => {
+  const ordinalOf = (el, position) => {
     // The message's position in the THREAD, not in the mounted list. This is what makes a windowed
     // arm comparable with a fully mounted one at all: mounted index 0 is message 10 on one arm and
     // message 1 on the other, so a per-index comparison compares different messages and reports
     // every row as changed. `aria-posinset` is the windowed arm's own claim about position; a
     // fully mounted thread does not publish it and does not need to, because there the DOM order
-    // IS the thread order.
+    // IS the thread order, which is what `position` carries.
     const owner = el.closest ? el.closest("[aria-posinset]") : null;
     if (owner) {
       const n = Number(owner.getAttribute("aria-posinset"));
       if (Number.isFinite(n)) return n;
     }
-    return index + 1;
+    return position;
   };
 
-  const observeOne = (el, fallbackIndex) => {
+  // THE POSITION INDEX, AND WHY THE FALLBACK ORDINAL IS NOT A COUNTER.
+  //
+  // A row publishing no `aria-posinset` is stamped with its position among the thread's messages
+  // in the DOM AS IT STANDS. That has to be resolved when the row is OBSERVED rather than when an
+  // entry is delivered, which is the reason the ordinal is stamped onto the node in the first
+  // place: by delivery time the row may have been unmounted and `closest()` would answer nothing.
+  //
+  // A LIFETIME COUNT OF OBSERVED NODES IS NOT THAT POSITION, and the gap between them was a
+  // measured failure rather than a tidiness point. `thread_reopen` makes a fully mounted arm
+  // remove and recreate every message row inside one document. Those rebuilt rows legitimately
+  // publish no `aria-posinset` -- only a windowed arm publishes one -- so a counter that had
+  // already seen the thread's N rows stamped the rebuilt ones N+1..2N, while the windowed arm on
+  // the other side of the A/B stamped its real 1..N. `compare_visible` then saw two disjoint
+  // visible sets and reported "the two arms put DIFFERENT MESSAGES on screen" for a rebuild that
+  // was identical, failing thread_reopen on every base-versus-windowed pair.
+  //
+  // THE COST, WHICH IS WHY A COUNTER WAS TEMPTING. `observeAdded` runs inside the MEASURED action
+  // window, so an O(document) lookup per mutation is workspace task #102 exactly: the instrument
+  // charging its own walk to the action, on a DOM whose size is the quantity under investigation.
+  // Three things keep that walk off the per-mutation path:
+  //
+  //   1. `aria-posinset` is read FIRST, so a windowed arm -- the only kind that mounts rows by the
+  //      hundred as it scrolls -- never builds an index at all.
+  //   2. The index is built at most ONCE PER MUTATION BATCH, and only by a batch that actually
+  //      mounted a message element. A stream is text churn inside rows that are already mounted:
+  //      it adds no elements, so it builds nothing, which is what
+  //      `test_the_top_up_is_proportional_to_the_mutation_not_to_the_document` pins.
+  //   3. It is read from the live DOM inside the callback, i.e. after every mutation in the batch
+  //      has been applied, so ONE read describes the batch's settled state rather than some
+  //      intermediate one. A rebuild that removes N rows and adds N rows in one commit is read
+  //      once, and reads N rows rather than 2N.
+  //
+  // What is left paying for it is an arm publishing no ordinals that mounts rows mid-action:
+  // send_turn's one or two new messages, and thread_reopen's single rebuild. That is a handful of
+  // document reads per action window, in exchange for the ordinals being right.
+  const positionIndex = () => {
+    if (VIS.index) return VIS.index;
+    const nodes = (D().messages && D().messages()) || [];
+    const map = new Map();
+    for (let i = 0; i < nodes.length; i++) map.set(nodes[i], i + 1);
+    VIS.index = map;
+    return map;
+  };
+
+  //: `position` is the row's 1-based position among the thread's messages when the caller already
+  //: knows it -- the full scan below holds the whole ordered list and needs no index. Left
+  //: undefined, the position is resolved from the index, and only when no ordinal was published.
+  const observeOne = (el, position) => {
     if (!VIS.obs || VIS.seen.has(el)) return;
     VIS.seen.add(el);
+    let ord = ordinalOf(el, typeof position === "number" ? position : null);
+    if (ord === null) ord = positionIndex().get(el) || 0;
     // The ordinal is stamped on the node, because by the time an entry is delivered the node may
     // have been unmounted and `closest()` would return nothing.
-    el.__sbOrdinal = ordinalOf(el, fallbackIndex);
+    if (ord > 0) {
+      el.__sbOrdinal = ord;
+    } else {
+      // NO ORDINAL RATHER THAN A MADE-UP ONE. A row that publishes nothing and is not in the
+      // thread's message list has no position this instrument can honestly claim, and a guessed
+      // one lands in `ever_visible` as a message the other arm never showed.
+      VIS.unplaced += 1;
+    }
     VIS.obs.observe(el);
   };
 
@@ -345,7 +408,7 @@
   const observeAll = () => {
     if (!VIS.obs) return;
     const nodes = (D().messages && D().messages()) || [];
-    for (let i = 0; i < nodes.length; i++) observeOne(nodes[i], i);
+    for (let i = 0; i < nodes.length; i++) observeOne(nodes[i], i + 1);
   };
 
   // THE TOP-UP, AND WHY IT IS NOT A RESCAN.
@@ -361,25 +424,33 @@
   //
   // So this walks only what was ADDED. `addedNodes` is small by construction -- a virtualizer
   // mounts one or two rows per scroll step -- and the cost is proportional to the mutation rather
-  // than to the document.
+  // than to the document. The one exception is stated in full at `positionIndex` above: an arm
+  // that publishes no ordinals needs the thread's current message list to place a row it just
+  // mounted, and that list is read ONCE for the whole batch and never once per row.
   const observeAdded = (records) => {
+    // ONE INDEX PER BATCH AT MOST, and none at all for a batch that mounts nothing needing one.
+    // Dropped again on the way out so the next batch cannot be answered from a stale list: rows
+    // mount and unmount between batches, and a position read from the previous DOM is precisely
+    // the wrong answer -- the same class of mistake as the lifetime counter this replaced.
+    VIS.index = null;
     for (const rec of records) {
       const added = rec.addedNodes;
       for (let i = 0; i < added.length; i++) {
         const node = added[i];
         if (!node || node.nodeType !== 1) continue;
         if (node.hasAttribute && node.hasAttribute("data-role")) {
-          observeOne(node, VIS.seen_count++);
+          observeOne(node);
         }
         // A row wrapper arrives with the message inside it, so the added node is the ancestor.
         // Bounded by the added subtree, never by the document.
         if (node.querySelectorAll) {
           for (const inner of node.querySelectorAll("[data-role]")) {
-            observeOne(inner, VIS.seen_count++);
+            observeOne(inner);
           }
         }
       }
     }
+    VIS.index = null;
   };
 
   window.__sb.parityVisible = {
@@ -390,7 +461,8 @@
         if (VIS.watching) return { visible_attempted: true, already: true };
         VIS.ever = new Set();
         VIS.seen = new WeakSet();
-        VIS.seen_count = 0;
+        VIS.unplaced = 0;
+        VIS.index = null;
         VIS.obs = new IntersectionObserver((entries) => {
           for (const entry of entries) {
             if (!entry.isIntersecting) continue;
@@ -399,7 +471,6 @@
           }
         }, { root: vp, threshold: 0 });
         observeAll();
-        VIS.seen_count = (D().messages && D().messages().length) || 0;
         // childList only, and no attribute or character-data records: a row ENTERING the DOM is
         // the only thing that needs observing, and a row leaving it has already contributed to
         // `ever`. Text changing inside a mounted row -- which is what a stream is -- must not
@@ -445,7 +516,7 @@
         let mounted_ever_visible = 0;
         for (let i = 0; i < nodes.length; i++) {
           const el = nodes[i];
-          const ord = typeof el.__sbOrdinal === "number" ? el.__sbOrdinal : ordinalOf(el, i);
+          const ord = typeof el.__sbOrdinal === "number" ? el.__sbOrdinal : ordinalOf(el, i + 1);
           if (!VIS.ever.has(ord)) continue;
           mounted_ever_visible += 1;
           // WITHOUT THE VIRTUALIZATION BOOKKEEPING, and the asymmetry is the reason.
@@ -490,6 +561,11 @@
           ever_visible_count: ever.length,
           mounted_ever_visible,
           unmounted_at_capture: ever.length - mounted_ever_visible,
+          // Rows observed that this instrument could not place in the thread: no published
+          // ordinal, and absent from the message list when they were observed. They carry no
+          // ordinal and so appear nowhere above, which is a hole in the compared set rather than
+          // agreement, and it is counted here so a reader can see it is zero.
+          unplaced_rows: VIS.unplaced,
           messages: byOrdinal,
         };
       } catch (e) {

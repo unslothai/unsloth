@@ -64,6 +64,10 @@ if str(_STUDIO_TESTS) not in sys.path:
     sys.path.insert(0, str(_STUDIO_TESTS))
 
 from studiobench.runtime.readiness import (  # noqa: E402
+    COVERAGE_COMPLETE,
+    COVERAGE_INCOMPLETE,
+    COVERAGE_NOT_APPLICABLE,
+    COVERAGE_UNMEASURED,
     MODE_FULL,
     MODE_WINDOWED,
     ThreadNotReady,
@@ -313,6 +317,10 @@ def test_a_virtualised_thread_passes_the_completeness_probe(browser):
     assert out["ordinal_coverage_complete"] is None, out
     assert out["sweep_continuous"] is False
     assert "never in view" in out["coverage_reason"]
+    # WHICH KIND OF NOT MEASURED. The arm publishes ordinals, so the question applies and the
+    # sweep failed to answer it, which `record_completeness_gate` refuses to score the cell on.
+    # The remedy is the smaller step the next test uses, not a gate that accepts the unknown.
+    assert out["ordinal_coverage_state"] == COVERAGE_UNMEASURED, out
 
 
 def test_a_virtualised_thread_covers_every_ordinal_when_the_sweep_is_continuous(browser):
@@ -326,6 +334,7 @@ def test_a_virtualised_thread_covers_every_ordinal_when_the_sweep_is_continuous(
     assert out["head_reached"] is True, out
     assert out["sweep_continuous"] is True
     assert out["ordinal_coverage_complete"] is True, out
+    assert out["ordinal_coverage_state"] == COVERAGE_COMPLETE, out
     assert out["ordinals_seen_count"] == MESSAGES
     assert out["ordinals_missing"] == []
 
@@ -346,18 +355,23 @@ def test_a_thread_that_lost_the_middle_passes_the_head_marker_and_fails_coverage
     out, got = _completeness(browser, "windowed_lost_middle")
     assert out["head_reached"] is True, out
     assert out["ordinal_coverage_complete"] is False, out
+    assert out["ordinal_coverage_state"] == COVERAGE_INCOMPLETE, out
     assert out["ordinals_missing"] == list(range(4, MESSAGES - 2))
     assert out["ordinals_in_window_holes"] == list(range(4, MESSAGES - 2))
     assert "MIDDLE" in out["coverage_reason"]
     assert any("COMPLETENESS FAILED" in line for line in got)
 
 
-def test_coverage_is_not_measured_on_an_arm_that_publishes_no_ordinals(browser):
+def test_coverage_does_not_apply_to_an_arm_that_publishes_no_ordinals(browser):
     """A fully mounted arm publishes no aria-posinset, and that is not eighteen lost messages.
 
     The probe can be pointed at a `full` arm (`--completeness-probe` is a per-runner flag, not a
     property of the mode), and there is nothing to count when it is. Reporting the seeded ordinals
     as missing there would turn the shipped build into the worst data-loss finding in the payload.
+
+    NOT APPLICABLE rather than UNMEASURED, and the distinction is load-bearing: the gate declines
+    to score a cell whose coverage was unmeasured, so calling this one unmeasured would fail the
+    shipped build on every cell it is pointed at.
     """
     page = _page(browser, "full")
     got, log = _lines()
@@ -382,6 +396,7 @@ def test_coverage_is_not_measured_on_an_arm_that_publishes_no_ordinals(browser):
     assert out["head_reached"] is True, out
     assert out["ordinals_seen_count"] == 0
     assert out["ordinal_coverage_complete"] is None, out
+    assert out["ordinal_coverage_state"] == COVERAGE_NOT_APPLICABLE, out
     assert "nothing to count" in out["coverage_reason"]
 
 
@@ -402,6 +417,7 @@ def test_coverage_is_not_measured_when_the_gesture_never_reached_the_top(browser
     assert out["head_reached"] is None, out
     assert out["reached_top"] is False
     assert out["ordinal_coverage_complete"] is None, out
+    assert out["ordinal_coverage_state"] == COVERAGE_UNMEASURED, out
     assert "never looked for" in out["coverage_reason"]
     assert any("NOT MEASURED" in line for line in got)
 
@@ -778,10 +794,16 @@ def test_ordinal_coverage_never_reports_a_gap_in_the_gesture_as_data_loss():
         "sweep_continuous": False,
         "traversal_stops": 2,
     }
-    assert ordinal_coverage(coarse, 18)["ordinal_coverage_complete"] is None
+    got_coarse = ordinal_coverage(coarse, 18)
+    assert got_coarse["ordinal_coverage_complete"] is None
+    # And it is the kind of None that is NOT a pass: the ordinals apply to this arm and the sweep
+    # did not inspect them. `not_applicable` -- the other None -- is an arm publishing no ordinals
+    # at all, which is the case below in `test_ordinal_coverage_separates_...`.
+    assert got_coarse["ordinal_coverage_state"] == COVERAGE_UNMEASURED
     continuous = dict(coarse, sweep_continuous = True)
     got = ordinal_coverage(continuous, 18)
     assert got["ordinal_coverage_complete"] is False
+    assert got["ordinal_coverage_state"] == COVERAGE_INCOMPLETE
     assert got["ordinals_missing"] == list(range(4, 16))
     assert got["ordinals_missing_count"] == 12
 
@@ -826,7 +848,30 @@ def test_ordinal_coverage_is_unmeasured_when_the_traversal_never_reached_the_top
     }
     got = ordinal_coverage(stopped, 18)
     assert got["ordinal_coverage_complete"] is None
+    assert got["ordinal_coverage_state"] == COVERAGE_UNMEASURED
     assert "never looked for" in got["coverage_reason"]
+
+
+def test_ordinal_coverage_separates_a_question_that_does_not_apply_from_one_it_could_not_answer():
+    """THE TWO KINDS OF `None`, side by side, on traversals that differ in one thing.
+
+    Both sweeps reached the top and both are too coarse to overlap. One is walking an arm that
+    publishes ordinals and cannot say what happened to twelve of them; the other is walking an arm
+    that publishes none at all, which is the shipped build, where there is nothing to say. The
+    `thread_complete` gate refuses to score the first and passes the second, so a single `None`
+    covering both is a gate that has to choose which mistake to make.
+    """
+    walked = {
+        "reached_target": True,
+        "ordinals_in_window_holes": [],
+        "sweep_continuous": False,
+        "traversal_stops": 2,
+    }
+    applies = ordinal_coverage(dict(walked, ordinals_seen = [1, 2, 3, 16, 17, 18]), 18)
+    does_not = ordinal_coverage(dict(walked, ordinals_seen = []), 18)
+    assert applies["ordinal_coverage_complete"] is does_not["ordinal_coverage_complete"] is None
+    assert applies["ordinal_coverage_state"] == COVERAGE_UNMEASURED
+    assert does_not["ordinal_coverage_state"] == COVERAGE_NOT_APPLICABLE
 
 
 def test_evaluate_cannot_settle_on_a_single_sample():
