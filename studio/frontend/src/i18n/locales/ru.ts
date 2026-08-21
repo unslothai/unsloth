@@ -282,6 +282,17 @@ export const ru = {
         engineModel: "Локальное распознавание",
         engineModelDescription:
           "Запускает модель распознавания речи (STT) локально и работает офлайн. Скачайте модель, затем загрузите её; после простоя она выгружается.",
+        engineCustom: "Пользовательский эндпоинт",
+        engineCustomDescription:
+          "Отправляет записанный звук на OpenAI-совместимый сервер STT из ваших подключений.",
+        connectionLabel: "Подключение",
+        connectionDescription:
+          "Добавьте OpenAI-совместимый сервер и при необходимости ключ API в разделе «Подключения».",
+        connectionPlaceholder: "Выберите подключение",
+        connectionEmpty: "Нет доступных подключений",
+        customModelLabel: "Модель",
+        customModelDescription:
+          "Имя модели, отправляемое в /v1/audio/transcriptions.",
         sttModelLabel: "Модель распознавания речи",
         sttModelDescription:
           "Выберите или найдите модель STT для локального запуска.",
@@ -341,6 +352,7 @@ export const ru = {
         languageLabel: "Язык диктовки",
         languageDescription: "Язык для распознавания",
         languageAuto: "Автоматически (язык браузера)",
+        languageAutoDetect: "Автоматически (определить язык)",
       },
       dictionary: {
         sectionTitle: "Словарь диктовки",

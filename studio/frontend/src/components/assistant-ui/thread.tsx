@@ -2185,6 +2185,16 @@ const PendingAudioChip: FC = () => {
   );
 };
 
+/** Keep a drop on a portaled child, such as a dialog or its overlay, from also
+ * attaching to the composer. React routes portal events through the composer,
+ * whose dropzone attaches in the capture phase before the dialog sees them. */
+function claimPortaledDrop(event: ReactDragEvent): void {
+  const target = event.target as Element | null;
+  if (!target?.closest?.(".aui-composer-attachment-dropzone")) {
+    event.preventDefault();
+  }
+}
+
 const Composer: FC<{
   disabled?: boolean;
   placeholder?: string;
@@ -4492,7 +4502,12 @@ const Composer: FC<{
           {composerContent}
         </div>
       ) : (
-        <ComposerPrimitive.AttachmentDropzone className="group/dropzone aui-composer-attachment-dropzone unsloth-composer-surface relative z-10">
+        <ComposerPrimitive.AttachmentDropzone
+          className="group/dropzone aui-composer-attachment-dropzone unsloth-composer-surface relative z-10"
+          onDragEnterCapture={claimPortaledDrop}
+          onDragOverCapture={claimPortaledDrop}
+          onDropCapture={claimPortaledDrop}
+        >
           {composerContent}
           {/* Gemini-style drop affordance, shown while a file is dragged over
               the composer. Absolute + pointer-events-none so the outline adds

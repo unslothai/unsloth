@@ -6092,6 +6092,7 @@ class LlamaCppBackend:
                 "supports_fit_target": False,
                 "supports_cache_ram": False,
                 "supports_ctx_checkpoints": False,
+                "ctx_checkpoints_flag": None,
                 "supports_no_cache_prompt": False,
                 "supports_metrics": False,
                 "supports_slot_save": False,
@@ -6138,6 +6139,7 @@ class LlamaCppBackend:
         supports_fit_target = False
         supports_cache_ram = False
         supports_ctx_checkpoints = False
+        ctx_checkpoints_flag = None
         supports_no_cache_prompt = False
         supports_metrics = False
         supports_slot_save = False
@@ -6340,7 +6342,15 @@ class LlamaCppBackend:
             supports_fit_ctx = _is_real("--fit-ctx")
             supports_fit_target = _is_real("--fit-target")
             supports_cache_ram = _is_real("--cache-ram")
-            supports_ctx_checkpoints = _is_real("--ctx-checkpoints")
+            # --swa-checkpoints is the older spelling, kept as an alias on newer
+            # builds. Probing the modern name alone drops the Checkpoints control on
+            # a build carrying only the old one, so record WHICH name this build has,
+            # like the draft-cache pair below.
+            for _alias in ("--ctx-checkpoints", "--swa-checkpoints"):
+                if _is_real(_alias):
+                    ctx_checkpoints_flag = _alias
+                    break
+            supports_ctx_checkpoints = ctx_checkpoints_flag is not None
             supports_no_cache_prompt = _is_real("--no-cache-prompt")
             supports_metrics = _is_real("--metrics")
             supports_slot_save = _is_real("--slot-save-path")
@@ -6423,6 +6433,7 @@ class LlamaCppBackend:
             "supports_fit_target": supports_fit_target,
             "supports_cache_ram": supports_cache_ram,
             "supports_ctx_checkpoints": supports_ctx_checkpoints,
+            "ctx_checkpoints_flag": ctx_checkpoints_flag,
             "supports_no_cache_prompt": supports_no_cache_prompt,
             "supports_metrics": supports_metrics,
             "supports_slot_save": supports_slot_save,
@@ -16520,6 +16531,36 @@ class LlamaCppBackend:
                     # discrete card with an APU enumerates both, and demanding every one
                     # be discrete refused the pin there, keeping a projector the discrete
                     # card could have been rid of.
+                    # Applied here, or after the pooled weight-budget check gives
+                    # tensor mode up. One body, so the two sites cannot drift.
+                    _mm_pin_deferred = False
+
+                    def _apply_mmproj_cpu_pin(floor_ctx: int) -> None:
+                        nonlocal _mmproj_cpu_pinned, _mmproj_pinned_bytes
+                        nonlocal mmproj_size, model_size
+                        _mmproj_cpu_pinned = True
+                        _mmproj_pinned_bytes = mmproj_size
+                        # Everything downstream prices the projector off these two,
+                        # including the drop probe below: it sees the lighter footprint
+                        # and gives the drafter up only if the pin was not enough.
+                        mmproj_size = 0
+                        model_size = gguf_size
+                        # What the startup-recovery pin reports, so a CPU-resident
+                        # projector is announced whether it was predicted or salvaged;
+                        # otherwise image encoding just gets mysteriously slower. After
+                        # the per-load reset, before the recovery paths, which override
+                        # it with their more specific reason.
+                        self._mmproj_fallback_reason = "cpu_offload"
+                        logger.info(
+                            "Auto: running the vision projector on the CPU "
+                            "(--no-mmproj-offload); it does not fit in VRAM "
+                            "alongside the model at %d context. Image encoding "
+                            "gets slower, text generation is unaffected. Pass "
+                            "--mmproj-offload in the advanced arguments to keep it "
+                            "on the GPU.",
+                            floor_ctx,
+                        )
+
                     _mm_budgeted_gpus = [
                         (_idx, _free) for _idx, _free in gpus if total_by_idx.get(_idx, 0) > 0
                     ]
@@ -16530,16 +16571,13 @@ class LlamaCppBackend:
                         and _discrete_vram
                         and not _mmproj_cpu_pinned
                         and gpu_memory_mode != "manual"
-                        # TP replicates a per-device buffer whose geometry the numbers
-                        # below do not model. Same exclusion and same escape as the
-                        # MTP-drop probe: the TP downgrades are hoisted above this gate,
-                        # but the pooled weight-budget check further down is not, and it
-                        # prices weights + projector, so it can downgrade a load this
-                        # probe would have rescued. Re-asking after that downgrade is the
-                        # non-circular fix and needs this whole probe as a second
-                        # application point, so the corner keeps main's behaviour: the
-                        # layer-split fit still has --fit on and pays in spilled layers.
-                        and not tensor_parallel
+                        # Not gated on tensor_parallel: these are layer-split numbers,
+                        # so the ANSWER is still never applied to a tensor load, but the
+                        # pooled weight-budget check below can end one, and it prices
+                        # weights + projector -- it downgrades exactly the loads moving
+                        # the encoder would have rescued. Asking here and applying after
+                        # that downgrade is the non-circular order; making the check
+                        # pin-aware would decide TP from a pin decided from TP.
                         and _paravirtual_mmproj_pinnable(server_caps)
                         # Last-wins on the placement pair, so whoever named either
                         # spelling owns it. The environment counts: arg.cpp applies
@@ -16644,29 +16682,13 @@ class LlamaCppBackend:
                             )
                         )
                         if _mm_needs_fit:
-                            _mmproj_cpu_pinned = True
-                            _mmproj_pinned_bytes = mmproj_size
-                            # Everything downstream prices the projector off these two,
-                            # including the drop probe below: it sees the lighter
-                            # footprint and gives the drafter up only if the pin was not
-                            # enough on its own.
-                            mmproj_size = 0
-                            model_size = gguf_size
-                            # What the startup-recovery pin reports, so a CPU-resident
-                            # projector is announced whether it was predicted or salvaged;
-                            # otherwise image encoding just gets mysteriously slower. After
-                            # the per-load reset, before the recovery paths, which override
-                            # it with their more specific reason.
-                            self._mmproj_fallback_reason = "cpu_offload"
-                            logger.info(
-                                "Auto: running the vision projector on the CPU "
-                                "(--no-mmproj-offload); it does not fit in VRAM "
-                                "alongside the model at %d context. Image encoding "
-                                "gets slower, text generation is unaffected. Pass "
-                                "--mmproj-offload in the advanced arguments to keep it "
-                                "on the GPU.",
-                                _mm_floor_ctx,
-                            )
+                            if tensor_parallel:
+                                # Held, not dropped. Applying it here would price a
+                                # tensor load off layer-split numbers; discarding it
+                                # would lose the verdict the downgrade below needs.
+                                _mm_pin_deferred = True
+                            else:
+                                _apply_mmproj_cpu_pin(_mm_floor_ctx)
 
                     # Target pins but the drafter's reserve tips it over: Auto drops the
                     # drafter rather than pay for speed with context (or a --fit offload,
@@ -17024,6 +17046,53 @@ class LlamaCppBackend:
                             # Restore the dropped quantized KV + cache extras (minus
                             # --split-mode); layer split supports them.
                             _restore_after_tensor_downgrade()
+                            # Layer split now, so the withheld verdict applies -- but
+                            # only where it is still true. It was measured before two
+                            # things this arm changes underneath it.
+                            #
+                            # _restore_after_tensor_downgrade just above put back a
+                            # quantized KV cache that tensor mode had dropped, and the
+                            # probe priced its floor against the heavier f16 the tensor
+                            # attempt ran with. That verdict is pessimistic by exactly
+                            # the cache difference, and acting on it would pin a
+                            # projector that fits, buying an 8.8x image encode for
+                            # nothing -- the one outcome this whole probe exists to
+                            # avoid.
+                            #
+                            # And the drafter-drop probe carries the same tensor
+                            # exclusion this one did, so it has not run either. The
+                            # documented order is projector first and drafter second;
+                            # pinning here without being able to re-ask the second half
+                            # pays the encoder cost AND still reaches --fit on.
+                            #
+                            # Re-running both probes against the restored cache is the
+                            # complete fix and is a larger change than this one. Until
+                            # then these two cases keep main's behaviour rather than act
+                            # on a stale answer.
+                            if (
+                                _mm_pin_deferred
+                                and _tensor_dropped_cache_type_kv is None
+                                and not _mtp_reserves_gpu
+                            ):
+                                _apply_mmproj_cpu_pin(_mm_floor_ctx)
+                                _mm_pin_deferred = False
+                                # Rebuild what was derived from model_size before the
+                                # pin. _subset_model_size closes over model_size_fit by
+                                # name, so rebinding it carries to the fit below.
+                                _soft_overhead = self._CUDA_CONTEXT_RESERVE_BYTES if gpus else 0
+                                if _mtp_reserves_gpu:
+                                    _soft_overhead += self._MTP_DRAFT_COMPUTE_BYTES
+                                _shared_pool_mmproj = (
+                                    _mmproj_pinned_bytes
+                                    if (not gpus or len(_mm_budgeted_gpus) < len(gpus))
+                                    else 0
+                                )
+                                model_size_fit = (
+                                    model_size
+                                    + _compute_buffer_pipeline
+                                    + _soft_overhead
+                                    + _shared_pool_mmproj
+                                )
 
                     if tensor_parallel and tp_gpus:
                         # Tensor-parallel allocation; see _plan_tensor_parallel.
@@ -17811,8 +17880,9 @@ class LlamaCppBackend:
                 # last-wins over the control. Each is gated on the capability
                 # probe, because a build that predates the flag exits on it.
                 if ctx_checkpoints is not None:
-                    if server_caps.get("supports_ctx_checkpoints"):
-                        cmd.extend(["--ctx-checkpoints", str(int(ctx_checkpoints))])
+                    _ctxcp_flag = server_caps.get("ctx_checkpoints_flag")
+                    if _ctxcp_flag:
+                        cmd.extend([str(_ctxcp_flag), str(int(ctx_checkpoints))])
                     else:
                         logger.info(
                             "llama-server has no --ctx-checkpoints; skipping the requested %s.",
@@ -18417,8 +18487,8 @@ class LlamaCppBackend:
                         unsupported_cache_flags.append("--cache-ram")
                     if ctx_checkpoints is not None:
                         pass
-                    elif server_caps.get("supports_ctx_checkpoints"):
-                        cmd.extend(["--ctx-checkpoints", "0"])
+                    elif server_caps.get("ctx_checkpoints_flag"):
+                        cmd.extend([str(server_caps["ctx_checkpoints_flag"]), "0"])
                     else:
                         unsupported_cache_flags.append("--ctx-checkpoints")
                     if unsupported_cache_flags:
