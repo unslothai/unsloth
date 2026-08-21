@@ -504,9 +504,8 @@ def fit_checkpoint_context(
             block = ""
             current_tokens = count_tokens(projected)
     if current_tokens > prompt_target:
-        # Refused, returning the ORIGINAL messages as the rolling fit does: the request
-        # fails either way, so dropping turns off a doomed request loses them for nothing.
-        # Same keys, because every consumer gates on `fits`.
+        # Let the rolling fit retry from the originals; any projection made here would
+        # be discarded by `_fit_context`.
         from core.inference.context_window import _latest_turn_tokens  # noqa: PLC0415
         return messages, {
             "fits": False,

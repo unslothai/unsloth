@@ -315,17 +315,19 @@ def fit_rolling_context(
         current_tokens = count_tokens(fitted)
 
     if current_tokens > prompt_target:
-        # Evicted everything evictable and it still does not fit. Return the ORIGINAL
-        # messages, not the partial eviction: the request is refused either way, so
-        # dropping turns off a doomed request loses them for nothing. The diagnosis is
-        # still worth returning; llama-server's own error reports the size of the WHOLE
-        # conversation and advises shortening it, which cannot work when what is left is
-        # the system prompt plus the latest turn. Consumers all gate on `fits`.
-        return messages, {
+        # Missing the prompt target only loses reserved reply room. Keep the original if
+        # it fits the physical window; otherwise use an eviction that does. `fits` stays
+        # false because the target was not reached.
+        rescued = (
+            dropped_total > 0
+            and initial_tokens > context_length
+            and current_tokens <= context_length
+        )
+        return (fitted if rescued else messages), {
             "fits": False,
-            "dropped_messages": 0,
+            "dropped_messages": dropped_total if rescued else 0,
             "prompt_tokens_before": initial_tokens,
-            "prompt_tokens_after": initial_tokens,
+            "prompt_tokens_after": current_tokens if rescued else initial_tokens,
             # Floor for the conversation, and how much of it is the message just sent:
             # together they say whether the chat or the single message is the problem.
             "irreducible_tokens": current_tokens,

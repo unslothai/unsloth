@@ -157,6 +157,46 @@ def test_archive_and_recall_skips_recall_once_already_done(archived):
     assert "recalled_chunks" not in result["counts"]
 
 
+def test_a_refused_fit_still_archives_what_it_evicted(archived):
+    """`recall_done` skips recall without skipping the archive write."""
+    before = _conversation() + [{"role": "user", "content": "a turn only the fit saw"}]
+    after = _conversation()
+
+    result = llama_cpp._archive_and_recall(
+        after, before, thread_id = THREAD, style = "tool", recall_done = True
+    )
+
+    assert result["counts"]["archived_messages"] >= 1
+    assert result["recalled"] is False
+
+
+def test_a_shrunken_window_hands_the_respawn_refit_a_reduced_refusal():
+    """A smaller window can produce a reduced prompt with `fits` false."""
+    from core.inference.context_window import fit_rolling_context
+
+    latest = {"role": "user", "content": "latest" * 133}  # 798 chars
+    messages = [
+        {"role": "user", "content": "old" * 133},
+        {"role": "assistant", "content": "answer" * 66},
+        latest,
+    ]
+    counter = lambda candidate: sum(  # noqa: E731
+        len(str(message.get("content", ""))) for message in candidate
+    )
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 1000,
+        max_tokens = 250,
+        count_tokens = counter,
+    )
+
+    assert counter(messages) > 1000 >= counter(fitted)
+    assert info["fits"] is False
+    assert info["dropped_messages"] == 2
+    assert fitted == [latest]
+
+
 def test_archive_and_recall_is_a_noop_without_a_thread_id(archived):
     after = _conversation()
 
@@ -776,6 +816,29 @@ def test_recall_is_sized_by_the_room_the_fit_actually_obtained():
     assert 0 < llama_cpp._recall_top_k(1024) <= 4
     # Plenty of room is still capped by the configured top-k.
     assert llama_cpp._recall_top_k(1_000_000) == 4
+
+
+def test_a_tool_loop_retrieval_leaves_room_for_the_turn_it_enables():
+    """A tool-loop retrieval leaves room for the reply that follows it."""
+    from core.inference import llama_cpp
+
+    # ctx 3000: budget 2250, fit landed at 747.
+    single_shot = llama_cpp._retrieval_budget(3000, 3000, 747)
+    in_loop = llama_cpp._retrieval_budget(3000, 3000, 747, reply_returns = True)
+
+    assert single_shot == 2250 - 747
+    assert in_loop == 1125
+    assert in_loop < single_shot
+
+
+def test_a_retrieval_budget_is_only_capped_where_it_would_take_most_of_the_turn():
+    from core.inference import llama_cpp
+
+    # A window with room to spare is untouched: half of 24,576 is far more than the
+    # 5,600-token remainder, so the cap never binds.
+    assert llama_cpp._retrieval_budget(32768, 32768, 18976, reply_returns = True) == 24576 - 18976
+    # And a fit that already used the whole budget gets nothing, not a negative number.
+    assert llama_cpp._retrieval_budget(3000, 3000, 9000, reply_returns = True) == 0
 
 
 def test_the_sticky_boundary_is_applied_once_per_request():

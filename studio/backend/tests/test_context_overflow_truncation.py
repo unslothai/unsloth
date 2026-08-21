@@ -481,6 +481,61 @@ def test_rolling_fit_keeps_original_when_protected_messages_still_do_not_fit():
     assert info["prompt_tokens_after"] == info["prompt_tokens_before"]
 
 
+def test_an_irreducible_fit_serves_the_eviction_when_the_original_is_past_the_window():
+    """Use an eviction that fits the window when the original does not."""
+    # 450 chars: past the 400-token target, inside the 500-token window.
+    latest = {"role": "user", "content": "latest" * 75}
+    messages = [
+        {"role": "user", "content": "old" * 100},
+        {"role": "assistant", "content": "answer" * 100},
+        latest,
+    ]
+    counter = lambda candidate: sum(  # noqa: E731
+        len(str(message.get("content", ""))) for message in candidate
+    )
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = counter,
+    )
+
+    assert counter(messages) > 500 >= counter(fitted)
+    assert fitted == [latest]
+    # Still a refusal: the diagnosis is what the client explains the short reply with.
+    assert info is not None and info["fits"] is False
+    assert info["dropped_messages"] == 2
+    assert info["prompt_tokens_after"] == counter(fitted) < info["prompt_tokens_before"]
+    assert info["irreducible_tokens"] == counter(fitted)
+
+
+def test_an_irreducible_fit_keeps_the_original_while_it_still_fits_the_window():
+    """Keep full history when only the reply reserve is exhausted."""
+    messages = [
+        {"role": "user", "content": "old" * 10},
+        {"role": "assistant", "content": "answer" * 5},
+        # 480 chars on its own, so evicting the pair still misses the 450-token target.
+        {"role": "user", "content": "latest" * 80},
+    ]
+    counter = lambda candidate: sum(  # noqa: E731
+        len(str(message.get("content", ""))) for message in candidate
+    )
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 600,
+        max_tokens = 150,
+        count_tokens = counter,
+    )
+
+    assert 450 < counter(messages) <= 600
+    assert fitted is messages
+    assert info is not None and info["fits"] is False
+    assert info["dropped_messages"] == 0
+    assert info["prompt_tokens_after"] == info["prompt_tokens_before"]
+
+
 def test_an_irreducible_fit_says_WHOSE_turn_does_not_fit():
     """A tool loop refits with the tool result appended.
 
@@ -941,9 +996,9 @@ def test_sticky_boundary_holds_still_while_short_turns_are_appended():
     for appended in range(1, 6):
         info = _fit_with_appended(base, appended, sticky = boundary)
         assert info is not None
-        assert (
-            info["dropped_messages"] == boundary
-        ), f"the boundary moved after {appended} appended turns"
+        assert info["dropped_messages"] == boundary, (
+            f"the boundary moved after {appended} appended turns"
+        )
 
 
 def test_sticky_boundary_moves_again_once_the_headroom_is_used_up():
