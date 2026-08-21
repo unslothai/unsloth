@@ -599,8 +599,10 @@ pub fn open_path_token(
     crate::process::open_detached(entry.canonical_path).map_err(|e| format!("Failed to open path: {e}"))
 }
 
-// Covers the largest client-side limit (audio, 25 MB).
+// Covers the generic client-side limit (audio, 25 MB).
 const MAX_NATIVE_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
+// OpenDocument archives use the composer's larger archive limit.
+const MAX_NATIVE_OPEN_DOCUMENT_BYTES: u64 = 50 * 1024 * 1024;
 // Images stop lower: the composer throws over 20 MB without a toast and the
 // drain swallows it, so a larger read loses them silently.
 const MAX_NATIVE_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
@@ -691,6 +693,8 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
         MAX_NATIVE_IMAGE_BYTES
     } else if mime_type.starts_with("video/") {
         MAX_NATIVE_VIDEO_BYTES
+    } else if mime_type.starts_with("application/vnd.oasis.opendocument.") {
+        MAX_NATIVE_OPEN_DOCUMENT_BYTES
     } else {
         MAX_NATIVE_ATTACHMENT_BYTES
     };
@@ -887,6 +891,20 @@ mod tests {
             panic!("expected the read to be refused");
         };
         assert!(err.contains("too large"), "unexpected error: {err}");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn open_document_read_allows_more_than_the_generic_cap() {
+        let path = temp_path("spreadsheet").with_extension("ods");
+        fs::write(&path, vec![0u8; MAX_NATIVE_ATTACHMENT_BYTES as usize + 1]).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let payload =
+            read_attachment_payload(&entry).expect("OpenDocument archive under 50 MiB reads");
+        assert_eq!(
+            payload.mime_type,
+            "application/vnd.oasis.opendocument.spreadsheet"
+        );
         let _ = fs::remove_file(path);
     }
 
