@@ -44,6 +44,7 @@ SOURCES = (REFRESH, PROVIDER, STORE, RUNTIME)
 BOUND_NAMES = {
     "activeThreadId",
     "aui",
+    "catalogRevision",
     "checkpoint",
     "enabled",
     "ggufContextLength",
@@ -359,6 +360,25 @@ const auiFixture: any = {
   }),
 };
 
+let catalogRevision = 0;
+const catalogRecountPending = { current: false };
+let skillCatalogSubscriber: (() => void) | null = null;
+
+function subscribeSkillCatalogChanges(callback: () => void): () => void {
+  skillCatalogSubscriber = callback;
+  return () => {
+    if (skillCatalogSubscriber === callback) skillCatalogSubscriber = null;
+  };
+}
+
+function setCatalogRevision(update: (revision: number) => number): void {
+  catalogRevision = update(catalogRevision);
+}
+
+export function signalSkillCatalogChange(): void {
+  skillCatalogSubscriber?.();
+}
+
 // ---- PRELUDE ENDS: verbatim studio source follows ----
 """
 
@@ -394,6 +414,7 @@ export function renderThreadContextUsageRecount(props: any = {}): void {
   const runActive = Object.values(state.runningByThreadId ?? {}).some(Boolean);
   const scope: any = {
     activeThreadId,
+    catalogRevision,
     checkpoint,
     enabled,
     ggufContextLength,
@@ -1616,6 +1637,49 @@ def test_a_thread_becoming_active_with_a_blank_bar_is_repriced(seed_script, scen
     assert len(out["sent"]) == 2, "the thread's stored branch must be priced"
 
 
+def test_a_skill_catalog_change_reprices_the_visible_thread():
+    """Skill schemas alter the rendered prompt, so a catalog revision invalidates saved usage."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{
+              renderThreadContextUsageRecount,
+              seed,
+              signalSkillCatalogChange,
+              snapshot,
+              world,
+            }} from "./harness.ts";
+            {LOADED_MODEL}
+            {TWO_STORED_TURNS}
+            seed({{
+              activeThreadId: "thread-a",
+              contextUsage: {{ promptTokens: 900, completionTokens: 30, totalTokens: 930, cachedTokens: 0 }},
+              contextUsageByThreadId: {{
+                "thread-a": {{ promptTokens: 900, completionTokens: 30, totalTokens: 930, cachedTokens: 0 }},
+              }},
+            }});
+
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            const beforeChange = world.countedMessages.length;
+            signalSkillCatalogChange();
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+
+            console.log(JSON.stringify({{
+              beforeChange,
+              counts: world.countedMessages.length,
+              contextUsage: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    assert out["beforeChange"] == 0
+    assert out["counts"] == 1
+    assert (out["contextUsage"] or {}).get("totalTokens") == 62
+
+
 @pytest.mark.parametrize(
     ("mount", "expected_total"),
     [
@@ -1776,15 +1840,17 @@ def test_the_count_is_retried_once_the_run_finishes():
     """Skipping is only safe because the run finishing re-fires the effect. The recount
     component lists runActive in its dependency array for exactly this reason, so a count
     skipped for being busy is not a count lost."""
-    src = read(PROVIDER)
     recount = slice_between(
-        src,
+        read(PROVIDER),
         "function ThreadContextUsageRecount(",
         "\n// Exposes the current thread's cancelRun()",
     )
     assert "runningByThreadId" in recount, "the effect must observe decoding"
-    deps = re.search(r"\}, \[([^\]]*)\]\);", recount, re.S)
-    assert deps and "runActive" in deps.group(1), (
+    recount_effects = [
+        deps for deps, body in _thread_recount_effects() if "refreshContextUsage" in body
+    ]
+    assert len(recount_effects) == 1, "the recount effect must stay independently testable"
+    assert "runActive" in recount_effects[0], (
         "runActive must be a DEPENDENCY, not just a guard: nothing else in this array "
         "changes when a run ends, so without it a skipped count would never be retried"
     )
