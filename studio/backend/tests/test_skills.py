@@ -242,6 +242,14 @@ def test_import_rejects_recursive_root_yaml_frontmatter(tmp_path: Path):
         skills.import_skill_archive(archive)
 
 
+def test_import_rejects_invalid_root_yaml_timestamps(tmp_path: Path):
+    manifest = SKILL_MD.replace("metadata:\n", "created: 2026-13-01\nmetadata:\n")
+    archive = _bundle(tmp_path / "invalid-date.zip", {"SKILL.md": manifest})
+
+    with pytest.raises(skills.SkillError, match = "invalid YAML frontmatter"):
+        skills.import_skill_archive(archive)
+
+
 def test_import_rejects_unpaired_surrogates(tmp_path: Path):
     manifest = SKILL_MD.replace(
         "description: Train and run models with Unsloth. Use for Unsloth workflows.",

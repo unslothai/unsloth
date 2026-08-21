@@ -163,7 +163,7 @@ def _parse_skill_markdown(raw: bytes, parent_name: str) -> dict:
         raise SkillError("SKILL.md YAML frontmatter is not closed.")
     try:
         frontmatter = yaml.safe_load("\n".join(lines[1:closing]))
-    except (yaml.YAMLError, RecursionError) as exc:
+    except (yaml.YAMLError, RecursionError, ValueError) as exc:
         raise SkillError("SKILL.md contains invalid YAML frontmatter.") from exc
     if not isinstance(frontmatter, dict):
         raise SkillError("SKILL.md frontmatter must be a mapping.")
@@ -327,7 +327,7 @@ def _archive_source(
             )
             raw_metadata = yaml.safe_load("\n".join(lines[1:closing]))
             root_name = raw_metadata.get("name") if isinstance(raw_metadata, dict) else ""
-        except (UnicodeDecodeError, StopIteration, yaml.YAMLError, RecursionError):
+        except (UnicodeDecodeError, StopIteration, yaml.YAMLError, RecursionError, ValueError):
             root_name = ""
         metadata = _parse_skill_markdown(manifest_raw, root_name)
     if source_root.parts and any(path == source_root for _, path in files):
