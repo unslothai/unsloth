@@ -9,8 +9,15 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 registerBundlerResolver();
 
 const {
+  AUTO_CONTINUE_ARM_TIMEOUT_MS,
+  AUTO_CONTINUE_LEASE_KEY,
+  AUTO_CONTINUE_LEASE_RENEW_MS,
+  AUTO_CONTINUE_LEASE_SETTLE_MS,
+  AUTO_CONTINUE_LEASE_TTL_MS,
   AUTO_CONTINUE_LIMIT,
   autoContinueCount,
+  createAutoContinueLeaseKeeper,
+  createAutoContinueTab,
   budgetImpliesTruncation,
   incompleteLabel,
   isContinuableContent,
@@ -33,6 +40,12 @@ const {
 
 const PARTIAL =
   "There are three steps to proofing dough properly. First, warm the bowl and";
+
+/**
+ * The runtime a claim belongs to. One Thread is one holder; compare mode has two, which is
+ * what the two-pane test below stands up.
+ */
+const PANE = "pane-1";
 
 test("a token-exact continuation is appended verbatim", () => {
   // A local model's prompt ended inside the partial turn, so the continuation opens
@@ -421,52 +434,52 @@ test("an unknown fit does not block resuming", () => {
   );
 });
 
-test("a message is claimed for automatic continuation exactly once", () => {
+test("a message is claimed for automatic continuation exactly once", async () => {
   resetAutoContinue();
-  assert.equal(claimAutoContinue("m1"), true);
-  assert.equal(claimAutoContinue("m1"), false);
-  assert.equal(claimAutoContinue("m1"), false);
+  assert.equal(await claimAutoContinue("m1", PANE), "started");
+  assert.equal(await claimAutoContinue("m1", PANE), "skipped");
+  assert.equal(await claimAutoContinue("m1", PANE), "skipped");
 });
 
-test("the claim survives a remount, which a component ref did not", () => {
+test("the claim survives a remount, which a component ref did not", async () => {
   // Leave the chat with a truncated branch selected and come back: a ref was fresh
   // while the parent still had budget, so the effect fired again and created another
   // sibling and another paid provider request.
   resetAutoContinue();
-  assert.equal(claimAutoContinue("m1"), true);
+  assert.equal(await claimAutoContinue("m1", PANE), "started");
   assert.equal(shouldAutoContinue("length", "parent-1"), true);
-  assert.equal(claimAutoContinue("m1"), false);
+  assert.equal(await claimAutoContinue("m1", PANE), "skipped");
 });
 
-test("claims are tracked per message", () => {
+test("claims are tracked per message", async () => {
   resetAutoContinue();
-  assert.equal(claimAutoContinue("m1"), true);
-  assert.equal(claimAutoContinue("m2"), true);
-  assert.equal(claimAutoContinue("m1"), false);
+  assert.equal(await claimAutoContinue("m1", PANE), "started");
+  assert.equal(await claimAutoContinue("m2", PANE), "started");
+  assert.equal(await claimAutoContinue("m1", PANE), "skipped");
 });
 
-test("a missing message id is refused rather than claimed", () => {
+test("a missing message id is refused rather than claimed", async () => {
   resetAutoContinue();
-  assert.equal(claimAutoContinue(null), false);
-  assert.equal(claimAutoContinue(undefined), false);
-  assert.equal(claimAutoContinue(""), false);
+  assert.equal(await claimAutoContinue(null, PANE), "skipped");
+  assert.equal(await claimAutoContinue(undefined, PANE), "skipped");
+  assert.equal(await claimAutoContinue("", PANE), "skipped");
 });
 
-test("a claim is reported and cleared by a full reset", () => {
+test("a claim is reported and cleared by a full reset", async () => {
   resetAutoContinue();
   assert.equal(wasAutoContinued("m1"), false);
-  claimAutoContinue("m1");
+  await claimAutoContinue("m1", PANE);
   assert.equal(wasAutoContinued("m1"), true);
   resetAutoContinue();
   assert.equal(wasAutoContinued("m1"), false);
-  assert.equal(claimAutoContinue("m1"), true);
+  assert.equal(await claimAutoContinue("m1", PANE), "started");
 });
 
-test("a message already claimed stops reporting itself as continuing", () => {
+test("a message already claimed stops reporting itself as continuing", async () => {
   resetAutoContinue();
   // The turn that fires it: nothing has claimed the message yet.
   assert.equal(shouldAutoContinueMessage("m1", "length", "parent-1"), true);
-  claimAutoContinue("m1");
+  await claimAutoContinue("m1", PANE);
   recordAutoContinue("parent-1");
 
   // Back on the truncated branch, whether through the branch picker or by returning to
@@ -476,9 +489,9 @@ test("a message already claimed stops reporting itself as continuing", () => {
   assert.equal(shouldAutoContinueMessage("m1", "length", "parent-1"), false);
 });
 
-test("a claim on one message does not silence another", () => {
+test("a claim on one message does not silence another", async () => {
   resetAutoContinue();
-  claimAutoContinue("m1");
+  await claimAutoContinue("m1", PANE);
   // The next round of the same turn is a new message with budget left, and continues.
   recordAutoContinue("parent-1");
   assert.equal(shouldAutoContinueMessage("m2", "length", "parent-1"), true);
@@ -491,5 +504,741 @@ test("a claimed message still honours the gates the turn itself fails", () => {
   assert.equal(
     shouldAutoContinueMessage("m2", "length", "parent-1", { fits: false }),
     false,
+  );
+});
+
+// --- cross-tab claim ------------------------------------------------------------------
+// The module claim above is per TAB: each one loads its own copy of the module with its
+// own empty set. Open the same saved thread twice with a `length` reply last and both
+// tabs claim it, both start a run, and the user pays for two continuations and gets two
+// sibling branches. A tab here is a second `createAutoContinueTab` over one shared store
+// and one shared lock manager, which is what two browser tabs are.
+
+/**
+ * An in-memory `localStorage`.
+ *
+ * `onSet` runs after a write and `onGet` after a read has taken its value, which is where
+ * another tab is interleaved: both hooks land in the middle of a read-modify-write, which
+ * is the sequence localStorage does not make atomic.
+ */
+function storageFake(
+  onSet?: (store: Map<string, string>) => void,
+  onGet?: (store: Map<string, string>) => void,
+) {
+  const store = new Map<string, string>();
+  return {
+    store,
+    storage: {
+      getItem: (key: string) => {
+        const value = store.get(key) ?? null;
+        // After the value is taken, so the caller carries on with the snapshot it read
+        // and whatever the other tab does next is invisible to it. That staleness is the
+        // whole bug.
+        onGet?.(store);
+        return value;
+      },
+      setItem: (key: string, value: string) => {
+        store.set(key, value);
+        onSet?.(store);
+      },
+      removeItem: (key: string) => {
+        store.delete(key);
+      },
+    },
+  };
+}
+
+/** A win, in the pre-fix boolean shape as well as the current one. */
+function startedARun(outcome: unknown): boolean {
+  return outcome === "started" || outcome === true;
+}
+
+/**
+ * A `navigator.locks` stand-in: one queue per name, exclusive, FIFO.
+ *
+ * The property the real API gives and a bare read-modify-write does not: a second request
+ * for a held name does not run until the first has returned.
+ */
+function lockManagerFake() {
+  const tails = new Map<string, Promise<unknown>>();
+  return {
+    request<T>(name: string, callback: () => T | Promise<T>): Promise<T> {
+      const tail = tails.get(name) ?? Promise.resolve();
+      const run = tail.then(() => callback());
+      // The queue advances on settle, so one throwing holder cannot wedge the name.
+      tails.set(
+        name,
+        run.then(
+          () => undefined,
+          () => undefined,
+        ),
+      );
+      return run;
+    },
+  };
+}
+
+test("a second tab with the same thread open does not start its own continuation", async () => {
+  const { storage } = storageFake();
+  const locks = lockManagerFake();
+  const first = createAutoContinueTab({ storage, locks });
+  const second = createAutoContinueTab({ storage, locks });
+  const now = 1_000;
+
+  assert.equal(await first.claim("m1", { now }), "started");
+  // Fresh module scope, empty claim set, same truncated reply on screen. Before the lease
+  // this said yes and the second tab fired a second paid request.
+  assert.equal(await second.claim("m1", { now }), "held-elsewhere");
+  // And it reports the message as being continued, so it shows no spinner of its own.
+  assert.equal(second.claimed("m1", { now }), true);
+});
+
+test("a lease covers only the message it was taken for", async () => {
+  const { storage } = storageFake();
+  const locks = lockManagerFake();
+  const first = createAutoContinueTab({ storage, locks });
+  const second = createAutoContinueTab({ storage, locks });
+  const now = 1_000;
+
+  assert.equal(await first.claim("m1", { now }), "started");
+  // The next round of the same turn is a different message and is nobody's yet.
+  assert.equal(await second.claim("m2", { now }), "started");
+});
+
+test("two tabs claiming at once leave exactly one winner", async () => {
+  // ITEM A. Write-then-read-back is not a compare-and-swap: both tabs read the slot free,
+  // both write, and each verifies the token it just wrote if the two verifications happen
+  // before the two writes interleave -- so both start a run. Individual localStorage
+  // operations are atomic; a read-modify-write across statements is not, and the storage
+  // mutex that once serialized such sequences is no longer in the spec.
+  //
+  // Started together, with no await between them, which is what two tabs reaching the
+  // effect in the same instant are. The lock is what makes the second one wait for the
+  // first, see the lease it wrote, and stand down.
+  const { storage } = storageFake();
+  const locks = lockManagerFake();
+  const first = createAutoContinueTab({ storage, locks });
+  const second = createAutoContinueTab({ storage, locks });
+  const now = 1_000;
+
+  const outcomes = await Promise.all([
+    first.claim("m1", { now }),
+    second.claim("m1", { now }),
+  ]);
+  assert.equal(outcomes.filter(startedARun).length, 1);
+  assert.equal(
+    outcomes.filter((outcome) => outcome === "held-elsewhere").length,
+    1,
+  );
+});
+
+test("a tab that reads the slot free does not win it behind another tab's back", async () => {
+  // ITEM A, at the exact interleaving that survives a write-then-read-back: the second
+  // tab claims in full between the first tab READING the slot free and writing to it. The
+  // first tab then writes over a lease it never saw and reads its own token back, so both
+  // tabs believe they won and the user pays twice. Nothing about the sequence is atomic;
+  // only holding a lock across it is.
+  const now = 1_000;
+  let intruder: (() => unknown) | null = null;
+  let secondOutcome: unknown;
+  let reads = 0;
+  const { storage } = storageFake(undefined, () => {
+    reads += 1;
+    // The second read is the one the write is about to be based on: a free check, then
+    // the read-modify-write itself. Slipping the other tab in there is what leaves the
+    // first tab holding a snapshot that is already out of date.
+    if (reads !== 2) {
+      return;
+    }
+    const run = intruder;
+    intruder = null;
+    if (run) {
+      secondOutcome = run();
+    }
+  });
+  const locks = lockManagerFake();
+  const first = createAutoContinueTab({ storage, locks });
+  const second = createAutoContinueTab({ storage, locks });
+
+  intruder = () => second.claim("m1", { now });
+  const outcomes = [await first.claim("m1", { now }), await secondOutcome];
+  assert.equal(
+    outcomes.filter(startedARun).length,
+    1,
+    "exactly one tab may start the run",
+  );
+});
+
+test("a claim that loses says so, rather than just failing", async () => {
+  // ITEM B. The two ways of not starting a run need opposite things on screen, so they
+  // cannot both be a bare false. `held-elsewhere` is the loser, and is what puts this
+  // tab's manual Continue button back in place of a spinner for a run it never owned.
+  // `skipped` is this tab's own second call -- a StrictMode replay, or a claim already in
+  // flight -- where the run is coming and nothing should move.
+  const { storage } = storageFake();
+  const locks = lockManagerFake();
+  const winner = createAutoContinueTab({ storage, locks });
+  const loser = createAutoContinueTab({ storage, locks });
+  const now = 1_000;
+
+  assert.equal(startedARun(await winner.claim("m1", { now })), true);
+  const lost = await loser.claim("m1", { now });
+  // The winner's own replay is not a loss and must not repaint anything, so the two
+  // cannot be the same answer. One bare false for both is what left the losing tab
+  // spinning: its effect returned early, changed no state, and hid its own button.
+  const replay = await winner.claim("m1", { now });
+  assert.notEqual(lost, replay);
+  assert.equal(lost, "held-elsewhere");
+  assert.equal(replay, "skipped");
+  // Nor is a second call while the first is still inside the lock.
+  const inFlight = winner.claim("m2", { now });
+  assert.equal(await winner.claim("m2", { now }), "skipped");
+  assert.equal(await inFlight, "started");
+});
+
+test("two tabs writing in the same tick leave exactly one winner", async () => {
+  // The same race with no lock manager to settle it, which is what an older browser or an
+  // embedded webview gets. The write-then-read-back is all that is left: a record that
+  // appears between this tab's write and its read-back means the tab does not find its
+  // own token, and stands down.
+  const now = 1_000;
+  let interleave = true;
+  const { storage } = storageFake((store) => {
+    if (!interleave) {
+      return;
+    }
+    interleave = false;
+    store.set(
+      AUTO_CONTINUE_LEASE_KEY,
+      JSON.stringify({
+        m1: { token: "other-tab", expires: now + AUTO_CONTINUE_LEASE_TTL_MS },
+      }),
+    );
+  });
+  const first = createAutoContinueTab({ storage, locks: null });
+
+  assert.equal(await first.claim("m1", { now }), "held-elsewhere");
+  // Nothing recorded locally either, so once that lease lapses this tab can take over.
+  assert.equal(
+    await first.claim("m1", { now: now + AUTO_CONTINUE_LEASE_TTL_MS + 1 }),
+    "started",
+  );
+});
+
+test("a browser with no lock manager still continues", async () => {
+  const { storage } = storageFake();
+  const only = createAutoContinueTab({ storage, locks: null });
+  assert.equal(await only.claim("m1"), "started");
+  assert.equal(await only.claim("m1"), "skipped");
+});
+
+test("a lock manager that refuses the request does not block the claim", async () => {
+  const { storage } = storageFake();
+  const angryLocks = {
+    request<T>(): Promise<T> {
+      return Promise.reject(new Error("NotSupportedError"));
+    },
+  };
+  const tab = createAutoContinueTab({ storage, locks: angryLocks });
+  // Degraded to the read-back, not to a refusal: the user is waiting for this run.
+  assert.equal(await tab.claim("m1"), "started");
+  assert.equal(
+    await createAutoContinueTab({ storage }).claim("m1"),
+    "held-elsewhere",
+  );
+});
+
+test("a tab with no storage keeps the claim it always had", async () => {
+  // Private mode, an embedded webview, or the test runner: no seam to share. Falling back
+  // to module scope is what shipped before the lease, and it must never refuse a
+  // continuation the single tab in front of the user is waiting for.
+  const only = createAutoContinueTab({ storage: null });
+  assert.equal(await only.claim("m1"), "started");
+  assert.equal(await only.claim("m1"), "skipped");
+  assert.equal(only.claimed("m1"), true);
+});
+
+test("storage that throws is no worse than no storage", async () => {
+  // A quota-exceeded write, or a getItem that throws before it returns anything.
+  const angry = {
+    getItem(): string | null {
+      throw new Error("SecurityError");
+    },
+    setItem(): void {
+      throw new Error("QuotaExceededError");
+    },
+    removeItem(): void {
+      throw new Error("SecurityError");
+    },
+  };
+  const tab = createAutoContinueTab({ storage: angry });
+  assert.equal(await tab.claim("m1"), "started");
+  assert.equal(await tab.claim("m1"), "skipped");
+  // A second tab cannot see through a broken seam either, so it behaves as it did before
+  // the lease: module-only. Duplicates are not made worse, and nothing crashes.
+  assert.equal(
+    await createAutoContinueTab({ storage: angry }).claim("m1"),
+    "started",
+  );
+});
+
+test("a lease lapses, so a tab that died mid-run does not wedge the message", async () => {
+  const { storage } = storageFake();
+  const locks = lockManagerFake();
+  const winner = createAutoContinueTab({ storage, locks });
+  const later = createAutoContinueTab({ storage, locks });
+  const start = 1_000;
+
+  assert.equal(await winner.claim("m1", { now: start }), "started");
+  // Still inside the lease: the holder is presumed alive and nobody else touches it.
+  assert.equal(
+    await later.claim("m1", { now: start + AUTO_CONTINUE_LEASE_TTL_MS - 1 }),
+    "held-elsewhere",
+  );
+  // Past it, with no renewal in between: a permanent flag would have left this message
+  // unresumable for the life of the profile, because the tab that owned it is gone and
+  // can never clear it.
+  assert.equal(
+    await later.claim("m1", { now: start + AUTO_CONTINUE_LEASE_TTL_MS + 1 }),
+    "started",
+  );
+});
+
+test("a running continuation keeps its lease past the TTL", async () => {
+  // ITEM C. A local model on a large Max Tokens can generate for longer than the TTL, and
+  // an unrenewed lease would hand its message to the next tab to open, mid-stream. The
+  // holder renews for as long as its run is live, so the TTL only ever measures silence.
+  const { storage } = storageFake();
+  const locks = lockManagerFake();
+  const running = createAutoContinueTab({ storage, locks });
+  const other = createAutoContinueTab({ storage, locks });
+  const start = 1_000;
+
+  assert.equal(
+    startedARun(await running.claim("m1", { now: start, holder: PANE })),
+    true,
+  );
+  // Three renewals at the interval the keeper uses, still inside the run.
+  for (let tick = 1; tick <= 3; tick += 1) {
+    await running.renew("m1", PANE, {
+      now: start + tick * AUTO_CONTINUE_LEASE_RENEW_MS,
+    });
+  }
+  const past =
+    start + AUTO_CONTINUE_LEASE_TTL_MS + AUTO_CONTINUE_LEASE_RENEW_MS;
+  assert.equal(await other.claim("m1", { now: past }), "held-elsewhere");
+});
+
+test("a finished run gives its lease back, without handing over a stale branch", async () => {
+  // Released on any terminal state, so the full TTL is left to mean one thing: a crash.
+  // Cut to the settle window rather than deleted, because a tab still showing the
+  // pre-continuation branch has not seen the sibling yet and would start the duplicate.
+  const { storage } = storageFake();
+  const locks = lockManagerFake();
+  const running = createAutoContinueTab({ storage, locks });
+  const other = createAutoContinueTab({ storage, locks });
+  const start = 1_000;
+
+  assert.equal(
+    await running.claim("m1", { now: start, holder: PANE }),
+    "started",
+  );
+  await running.release("m1", PANE, { now: start });
+  assert.equal(
+    await other.claim("m1", { now: start + AUTO_CONTINUE_LEASE_SETTLE_MS - 1 }),
+    "held-elsewhere",
+  );
+  assert.equal(
+    await other.claim("m1", { now: start + AUTO_CONTINUE_LEASE_SETTLE_MS + 1 }),
+    "started",
+  );
+  // And a release holds nothing, so a later renewal cannot resurrect it.
+  await running.renew("m1", PANE, {
+    now: start + AUTO_CONTINUE_LEASE_SETTLE_MS + 2,
+  });
+  assert.equal(
+    await createAutoContinueTab({ storage, locks }).claim("m1", {
+      now: start + AUTO_CONTINUE_LEASE_SETTLE_MS + 3,
+    }),
+    "held-elsewhere",
+  );
+});
+
+/**
+ * Two rounds of one turn, in the order the app produces them.
+ *
+ * A round ends on another Max Tokens cut, so the bar under the new reply claims the next
+ * message while the thread is still winding the finished run down: React runs child
+ * effects before parent ones, so the claim lands before the keeper observes `isRunning`
+ * going false. `release` therefore has to name the message whose run ended, and nothing
+ * wider: the same holder owns both.
+ */
+async function sequentialRounds(
+  locks: ReturnType<typeof lockManagerFake> | null,
+) {
+  const { storage } = storageFake();
+  const tab = createAutoContinueTab({ storage, locks });
+  const otherTab = createAutoContinueTab({ storage, locks });
+  const start = 1_000;
+
+  assert.equal(
+    startedARun(await tab.claim("round-1", { now: start, holder: PANE })),
+    true,
+  );
+  // The next round, claimed before the finished one is given back.
+  assert.equal(
+    startedARun(await tab.claim("round-2", { now: start, holder: PANE })),
+    true,
+  );
+  await tab.release("round-1", PANE, { now: start });
+
+  // The second round is the live one, and its keeper is still renewing it.
+  for (let tick = 1; tick <= 3; tick += 1) {
+    await tab.renew("round-2", PANE, {
+      now: start + tick * AUTO_CONTINUE_LEASE_RENEW_MS,
+    });
+  }
+  const past =
+    start + AUTO_CONTINUE_LEASE_TTL_MS + AUTO_CONTINUE_LEASE_RENEW_MS;
+  assert.equal(
+    await otherTab.claim("round-2", { now: past }),
+    "held-elsewhere",
+    "the round that just started keeps its lease",
+  );
+  // The round that did finish settles on the usual schedule.
+  assert.equal(
+    await otherTab.claim("round-1", {
+      now: start + AUTO_CONTINUE_LEASE_SETTLE_MS + 1,
+    }),
+    "started",
+  );
+}
+
+test("the next round keeps its lease when the last one is released", async () => {
+  // No lock manager, where the claim resolves soonest and so lands earliest.
+  await sequentialRounds(null);
+});
+
+test("the next round keeps its lease with a lock manager in the way", async () => {
+  // And with one, because the effect ordering is not guaranteed in our favour there
+  // either -- the fix must not depend on which path ran.
+  await sequentialRounds(lockManagerFake());
+});
+
+/**
+ * The per-thread run signal the keeper reads, with no notion of what is on screen.
+ *
+ * Selection is deliberately absent: it is not an input to a lease's lifetime, and the whole
+ * point of the case below is that changing it changes nothing.
+ */
+function runSignalFake(running: Set<string>) {
+  const listeners = new Set<() => void>();
+  return {
+    signal: {
+      isRunning: (threadId: string) => running.has(threadId),
+      subscribe: (onChange: () => void) => {
+        listeners.add(onChange);
+        return () => listeners.delete(onChange);
+      },
+    },
+    /** The store told everyone something changed. */
+    change: () => {
+      for (const listener of [...listeners]) {
+        listener();
+      }
+    },
+  };
+}
+
+test("a run on a background thread keeps its lease while the user reads another chat", async () => {
+  // Switching chats does not stop a generation: the chat view is keyed by project, so the
+  // provider is not remounted and the run keeps streaming on the thread the user left. A
+  // lease whose lifetime was read off the SELECTED thread was released the moment they
+  // looked away, and one settle window later a second tab could claim a message that was
+  // still being written.
+  const { storage } = storageFake();
+  const locks = lockManagerFake();
+  const tab = createAutoContinueTab({ storage, locks });
+  const otherTab = createAutoContinueTab({ storage, locks });
+  const start = 1_000;
+  let clock = start;
+  const pending: Promise<void>[] = [];
+
+  // Thread A is generating; thread B, which the user is about to open, is idle.
+  const running = new Set<string>();
+  const runs = runSignalFake(running);
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId, holder, now) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: (messageId, holder, now) => {
+      pending.push(tab.release(messageId, holder, { now }));
+    },
+    now: () => clock,
+  });
+
+  assert.equal(
+    startedARun(await tab.claim("a-m1", { now: start, holder: "thread-A" })),
+    true,
+  );
+  keeper.hold("a-m1", "thread-A");
+  // The continuation starts on thread A.
+  running.add("thread-A");
+  runs.change();
+
+  // The user opens idle thread B. Nothing about thread A changed, so nothing here does.
+  for (let tick = 1; tick <= 5; tick += 1) {
+    clock = start + tick * AUTO_CONTINUE_LEASE_RENEW_MS;
+    keeper.tick();
+  }
+  await Promise.all(pending);
+
+  const past =
+    start + AUTO_CONTINUE_LEASE_TTL_MS + AUTO_CONTINUE_LEASE_RENEW_MS;
+  assert.equal(
+    await otherTab.claim("a-m1", { now: past }),
+    "held-elsewhere",
+    "the background run keeps the message it is still writing",
+  );
+
+  // Thread A's own run ends. That, and only that, gives the lease back.
+  clock = past;
+  running.delete("thread-A");
+  runs.change();
+  await Promise.all(pending);
+  assert.equal(
+    await otherTab.claim("a-m1", {
+      now: past + AUTO_CONTINUE_LEASE_SETTLE_MS + 1,
+    }),
+    "started",
+  );
+  assert.equal(keeper.held(), 0);
+});
+
+test("a hold waits for its own run, not the one already in flight", async () => {
+  // The next round is claimed while the finished one is still winding down, so a hold that
+  // armed on "the thread is busy" would arm on its predecessor's run and be released the
+  // moment THAT one ended, mid-stream.
+  const { storage } = storageFake();
+  const tab = createAutoContinueTab({ storage, locks: null });
+  const otherTab = createAutoContinueTab({ storage, locks: null });
+  const start = 1_000;
+  let clock = start;
+  const pending: Promise<void>[] = [];
+  const running = new Set<string>(["thread-A"]);
+  const runs = runSignalFake(running);
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId, holder, now) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: (messageId, holder, now) => {
+      pending.push(tab.release(messageId, holder, { now }));
+    },
+    now: () => clock,
+  });
+
+  await tab.claim("round-2", { now: start, holder: "thread-A" });
+  keeper.hold("round-2", "thread-A");
+
+  // The previous round ends, and the next one starts.
+  running.delete("thread-A");
+  runs.change();
+  running.add("thread-A");
+  runs.change();
+  for (let tick = 1; tick <= 5; tick += 1) {
+    clock = start + tick * AUTO_CONTINUE_LEASE_RENEW_MS;
+    keeper.tick();
+  }
+  await Promise.all(pending);
+  const past =
+    start + AUTO_CONTINUE_LEASE_TTL_MS + AUTO_CONTINUE_LEASE_RENEW_MS;
+  assert.equal(await otherTab.claim("round-2", { now: past }), "held-elsewhere");
+});
+
+test("a hold whose run never appears is forgotten, and its lease simply lapses", async () => {
+  const { storage } = storageFake();
+  const tab = createAutoContinueTab({ storage, locks: null });
+  const otherTab = createAutoContinueTab({ storage, locks: null });
+  const start = 1_000;
+  let clock = start;
+  const runs = runSignalFake(new Set<string>());
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: () => undefined,
+    release: () => {
+      assert.fail("a hold that never armed has nothing to give back");
+    },
+    now: () => clock,
+  });
+
+  await tab.claim("a-m1", { now: start, holder: "thread-A" });
+  keeper.hold("a-m1", "thread-A");
+  clock = start + AUTO_CONTINUE_ARM_TIMEOUT_MS + 1;
+  keeper.tick();
+  assert.equal(keeper.held(), 0);
+  // Untouched, so it runs out the TTL, exactly as a tab that closed mid-claim leaves it.
+  assert.equal(
+    await otherTab.claim("a-m1", { now: start + AUTO_CONTINUE_LEASE_TTL_MS - 1 }),
+    "held-elsewhere",
+  );
+  assert.equal(
+    await otherTab.claim("a-m1", { now: start + AUTO_CONTINUE_LEASE_TTL_MS + 1 }),
+    "started",
+  );
+});
+
+test("one compare pane finishing does not release the other pane's lease", async () => {
+  // Compare mode mounts two Thread runtimes in ONE tab, each with its own thread and its
+  // own run, and either can be resuming a truncated reply while the other is idle. A
+  // release that restamped every lease the tab owns and then dropped the lot would end the
+  // hold on the pane still generating: its renewals would find nothing held, and one settle
+  // window later another tab could claim its message and pay for a second run.
+  const { storage } = storageFake();
+  const locks = lockManagerFake();
+  const compareTab = createAutoContinueTab({ storage, locks });
+  const otherTab = createAutoContinueTab({ storage, locks });
+  const base = "pane-base";
+  const lora = "pane-lora";
+  const start = 1_000;
+
+  assert.equal(
+    startedARun(
+      await compareTab.claim("base-m1", { now: start, holder: base }),
+    ),
+    true,
+  );
+  assert.equal(
+    startedARun(
+      await compareTab.claim("lora-m1", { now: start, holder: lora }),
+    ),
+    true,
+  );
+
+  // The base pane finishes first. Only its own lease goes back.
+  await compareTab.release("base-m1", base, { now: start });
+
+  // The lora pane is still generating, and its keeper is still renewing.
+  for (let tick = 1; tick <= 3; tick += 1) {
+    await compareTab.renew("lora-m1", lora, {
+      now: start + tick * AUTO_CONTINUE_LEASE_RENEW_MS,
+    });
+  }
+  const past =
+    start + AUTO_CONTINUE_LEASE_TTL_MS + AUTO_CONTINUE_LEASE_RENEW_MS;
+  assert.equal(
+    await otherTab.claim("lora-m1", { now: past }),
+    "held-elsewhere",
+    "the still-running pane keeps its message",
+  );
+  // And the pane that did finish settles on the usual schedule.
+  assert.equal(
+    await otherTab.claim("base-m1", {
+      now: start + AUTO_CONTINUE_LEASE_SETTLE_MS + 1,
+    }),
+    "started",
+  );
+});
+
+test("a renewal touches this tab's leases and nobody else's", async () => {
+  const { storage, store } = storageFake();
+  const locks = lockManagerFake();
+  const mine = createAutoContinueTab({ storage, locks });
+  const theirs = createAutoContinueTab({ storage, locks });
+  const start = 1_000;
+
+  await mine.claim("m1", { now: start, holder: PANE });
+  await theirs.claim("m2", { now: start, holder: PANE });
+  await mine.renew("m1", PANE, { now: start + AUTO_CONTINUE_LEASE_RENEW_MS });
+
+  const leases = JSON.parse(store.get(AUTO_CONTINUE_LEASE_KEY) ?? "{}");
+  assert.equal(
+    leases.m1.expires,
+    start + AUTO_CONTINUE_LEASE_RENEW_MS + AUTO_CONTINUE_LEASE_TTL_MS,
+  );
+  assert.equal(leases.m2.expires, start + AUTO_CONTINUE_LEASE_TTL_MS);
+});
+
+test("lapsed leases are pruned rather than accumulating", async () => {
+  const { storage, store } = storageFake();
+  const locks = lockManagerFake();
+  const tab = createAutoContinueTab({ storage, locks });
+  const start = 1_000;
+
+  await tab.claim("m1", { now: start });
+  await createAutoContinueTab({ storage, locks }).claim("m2", {
+    now: start + AUTO_CONTINUE_LEASE_TTL_MS + 1,
+  });
+  const leases = JSON.parse(store.get(AUTO_CONTINUE_LEASE_KEY) ?? "{}");
+  assert.deepEqual(Object.keys(leases), ["m2"]);
+});
+
+test("reloading one tab does not fire a second continuation", async () => {
+  // What stops this today is branch selection: the continuation runs as a sibling and
+  // becomes the selected branch, so the truncated reply is no longer last and the effect
+  // never asks. The lease is the belt to that pair of braces -- a reload lands on the
+  // truncated branch, its module scope is empty, and storage is the only thing that
+  // remembers. Nothing here changes what selection already refuses.
+  const { storage } = storageFake();
+  const locks = lockManagerFake();
+  const before = createAutoContinueTab({ storage, locks });
+  const start = 1_000;
+  assert.equal(await before.claim("m1", { now: start }), "started");
+
+  // The reload: same tab, same profile, brand new module scope.
+  const after = createAutoContinueTab({ storage, locks });
+  assert.equal(
+    await after.claim("m1", { now: start + 5_000 }),
+    "held-elsewhere",
+  );
+  assert.equal(after.claimed("m1", { now: start + 5_000 }), true);
+});
+
+test("a reset gives back this tab's lease and leaves other tabs alone", async () => {
+  const { storage } = storageFake();
+  const locks = lockManagerFake();
+  const mine = createAutoContinueTab({ storage, locks });
+  const theirs = createAutoContinueTab({ storage, locks });
+  const now = 1_000;
+
+  assert.equal(await mine.claim("m1", { now }), "started");
+  mine.reset();
+  // Cleared in both places, so "start from zero" means what it did before the lease.
+  assert.equal(await mine.claim("m1", { now }), "started");
+
+  assert.equal(await theirs.claim("m2", { now }), "started");
+  mine.reset();
+  // Not mine to release: a run another tab is driving is still going.
+  assert.equal(
+    await createAutoContinueTab({ storage, locks }).claim("m2", { now }),
+    "held-elsewhere",
+  );
+});
+
+test("a stored lease survives a full reset by the module, being another tab's", async () => {
+  // `resetAutoContinue()` clears the module claim and the round budget. It cannot know
+  // about a lease it never wrote, and must not stamp on one.
+  const { storage, store } = storageFake();
+  const locks = lockManagerFake();
+  await createAutoContinueTab({ storage, locks }).claim("m1", { now: 1_000 });
+  resetAutoContinue();
+  assert.equal(
+    await createAutoContinueTab({ storage, locks }).claim("m1", { now: 1_000 }),
+    "held-elsewhere",
+  );
+  assert.equal(store.has(AUTO_CONTINUE_LEASE_KEY), true);
+});
+
+test("a malformed lease record is ignored rather than blocking", async () => {
+  const { storage, store } = storageFake();
+  store.set(AUTO_CONTINUE_LEASE_KEY, "not json at all");
+  assert.equal(await createAutoContinueTab({ storage }).claim("m1"), "started");
+
+  const { storage: other, store: otherStore } = storageFake();
+  otherStore.set(AUTO_CONTINUE_LEASE_KEY, JSON.stringify({ m1: { token: 7 } }));
+  assert.equal(
+    await createAutoContinueTab({ storage: other }).claim("m1"),
+    "started",
   );
 });
