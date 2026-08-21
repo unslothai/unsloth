@@ -245,3 +245,56 @@ confound unless you contain it:
 - Anything that did not run, said plainly.
 
 A result quoted without its floor will be asked for its floor.
+
+## Recorded negative result: do not virtualize the message list
+
+Somebody proposes this roughly once a campaign, and the argument is good: a 100K thread stands
+64,707 elements in the DOM, most of them off screen, so mount a window instead. It was built, it
+was measured at the 100K rung on the standard tier with a concurrent in-band null control, and it
+was rejected. The measurements are here so the next person can decide from evidence rather than
+rebuild it to find out.
+
+**It buys what it says it buys.** 54,015 elements against the base arm's 64,707. `select_all_copy`
+went from 6.1 to 31.6 fps, a p95 frame of 2,284 ms down to 58 ms. Headline 28.2% faster, weighted.
+
+**It costs the thing the campaign exists to fix.** `send_turn` went from 61.1 to 37.3 fps, with the
+p95 frame rising from 34.0 ms to 374.8 ms, while the concurrent null moved -3.9% on the same
+window. Reproduced on two independent runs. Streaming at long context is the whole complaint, and
+this made it worse by more than anything else on the page got better.
+
+The mechanism, measured rather than guessed. It is NOT per-chunk: every `stream:gap*` window, the
+windows in which the reply is actually streaming into a growing last row, is flat (+0.2%, -0.1%,
++0.6%). It is a ONE-TIME cost at the first append into a freshly opened thread: the eight treatment
+readings alternate 13.2, 58.9, 13.7, 62.0, 14.6, 59.8, 14.7, 60.9 fps, two sends per cell, first
+expensive and second free. A direct probe put the cost in RECALC STYLE (60 ms against the base
+arm's 14 ms) and not in layout (2 ms on both) and not in measurement callbacks (2 ResizeObserver
+callbacks, 3 style writes). Appending to a windowed, end-anchored list re-renders and re-positions
+every mounted row; the unvirtualized path appends one node and touches nothing that already exists.
+The first append also resolves size estimates that are badly wrong: `estimateSize` is 460 px and
+the fixture's mounted rows measure a median of 2,379 px, a mean of 5,146 px and a maximum of
+21,132 px.
+
+**It loses the thread.** On the treatment arm the census goes from 12 mounted messages to 0 at the
+`model_change` slot and never recovers: 2,107 elements for the remaining four slots of the film,
+all four reps, both runs, while the concurrent null keeps all 25 messages through the same action.
+Visible-region parity reports it as a difference rather than a refusal. Two caveats kept with the
+finding: `model_change` is the weakest selector in the suite by its own docstring, and in these
+runs it selected an option labelled "Search Hub", which is not a chat model, so this is "the
+windowed arm did not survive an interaction the base arm survived" and not "changing the model
+empties a virtualized thread". It was not chased further because the arm was closed.
+
+**Three of eighteen actions could not be measured on it.** `delete_message` and `thread_reopen` ran
+four times on the base arm and zero times on the treatment; `image_upload` ran on neither. Any
+per-window comparison must drop those rather than compare a busy window against an empty one.
+
+**And two accessibility and correctness obligations come with it.** A windowed list must publish
+`aria-setsize` and `aria-posinset` or the accessibility tree reports a forty-turn conversation as
+the six messages that happen to be mounted. Select-all copy must be served from the message store,
+because a windowed DOM cannot select what it has not mounted: measured at 0.61 of the thread before
+the fix. The obvious store serialiser is the "save this reply" one, which emits reasoning and
+tool-call payloads that no user can select, and it lands at 2.16 of the thread instead. Both
+failure directions are now bounds on `clipboard_carries_the_whole_thread`.
+
+If you want the structural win without any of this, defer off-screen work instead of unmounting it.
+Score it with `sweep/ui_parity.py --mode visible --null OUTDIR`: an off-screen-only difference is
+exempt by policy, and that mode is the one that can say so.
