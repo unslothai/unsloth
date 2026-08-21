@@ -3,6 +3,7 @@ build (the pre-fix KFD gpu_id false positive), but leaves healthy CUDA / CPU / R
 macOS / Windows untouched. Fully mocked -- no GPU required."""
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -398,22 +399,18 @@ class TestTorchBackendDerivationFromPin:
 
     @staticmethod
     def _derive(env):
-        # Re-run the module's import-time derivation, using its own _is_cuda_family_leaf
-        # so this stays in lockstep.
-        idx_override = (
-            env.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
-            or env.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
-        )
-        backend = env.get("UNSLOTH_TORCH_BACKEND", "").lower()
-        if not backend:
-            leaf = idx_override.rstrip("/").rsplit("/", 1)[-1].lower()
-            if leaf.startswith(("rocm", "gfx")):
-                backend = "rocm"
-            elif leaf == "cpu":
-                backend = "cpu"
-            elif stack_mod._is_cuda_family_leaf(leaf):
-                backend = "cuda"
-        return backend
+        # The module's own derivation, not a copy of it: a reimplementation here drifts
+        # (this one had already lost the xpu arm) and then asserts nothing about the code.
+        with patch.dict(
+            os.environ,
+            {
+                "UNSLOTH_TORCH_BACKEND": "",
+                "UNSLOTH_TORCH_INDEX_URL": "",
+                "UNSLOTH_TORCH_INDEX_FAMILY": "",
+                **env,
+            },
+        ):
+            return stack_mod._infer_torch_backend()
 
     def test_cu128_pin_is_cuda(self):
         assert (
@@ -442,15 +439,16 @@ class TestTorchBackendDerivationFromPin:
     def test_cpu_pin_is_cpu(self):
         assert self._derive({"UNSLOTH_TORCH_INDEX_FAMILY": "cpu"}) == "cpu"
 
-    def test_source_uses_helper_not_bare_startswith(self):
-        # Guard against a regression back to elif _idx_leaf.startswith("cu").
-        src = _STACK_PATH.read_text(encoding = "utf-8")
+    def test_xpu_pin_is_xpu(self):
+        assert self._derive({"UNSLOTH_TORCH_INDEX_FAMILY": "xpu"}) == "xpu"
+
+    def test_an_exported_backend_wins_over_a_pin(self):
         assert (
-            "elif _is_cuda_family_leaf(_idx_leaf):" in src
-        ), "_TORCH_BACKEND derivation must classify CUDA via _is_cuda_family_leaf"
-        assert (
-            'elif _idx_leaf.startswith("cu"):' not in src
-        ), "_TORCH_BACKEND derivation must not use a bare startswith('cu')"
+            self._derive(
+                {"UNSLOTH_TORCH_BACKEND": "rocm", "UNSLOTH_TORCH_INDEX_FAMILY": "cu128"}
+            )
+            == "rocm"
+        )
 
 
 # CUDA index ladder.

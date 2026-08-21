@@ -53,9 +53,27 @@ check "install.ps1 torchvision"   "$(ps_has "$VISION")" yes
 check "install.ps1 torchaudio"    "$(ps_has "$AUDIO")"  yes
 
 # The pin must be acted on from the update route: an xpu leaf names no family the cuda/rocm
-# helpers know, so without this the CPU wheel survives forever.
-check "stack classifies the xpu leaf" \
-    "$(grep -q '_TORCH_BACKEND = "xpu"' "$STACK_PY" && echo yes || echo no)" yes
+# helpers know, so without this the CPU wheel survives forever. Asked of the module rather
+# than grepped, so the answer survives a rename of the constant that computes it.
+stack_backend() {
+    UNSLOTH_TORCH_BACKEND="" UNSLOTH_TORCH_INDEX_URL="" UNSLOTH_TORCH_INDEX_FAMILY="$1" \
+        python3 - "$STACK_PY" <<'PYEOF'
+import importlib.util, os, sys
+path = sys.argv[1]
+sys.path.insert(0, os.path.dirname(os.path.abspath(path)))
+spec = importlib.util.spec_from_file_location("xpu_parity_stack", path)
+mod = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = mod
+spec.loader.exec_module(mod)
+print(mod._TORCH_BACKEND)
+PYEOF
+}
+# A missing or broken interpreter must not read as "no backend" and pass the unknown-leaf
+# case below vacuously.
+[ "$(stack_backend cu128)" = "cuda" ] || {
+    echo "FATAL: could not read _TORCH_BACKEND from $STACK_PY" >&2; exit 1; }
+check "stack classifies the xpu leaf" "$(stack_backend xpu)" xpu
+check "stack leaves an unknown leaf to the GPU probe" "$(stack_backend current)" ""
 check "stack repairs an xpu pin" \
     "$(grep -q 'def _ensure_xpu_torch' "$STACK_PY" && echo yes || echo no)" yes
 # Wired in at BOTH repair points, or the final pass silently undoes the first.

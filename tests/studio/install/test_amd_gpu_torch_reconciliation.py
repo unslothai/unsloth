@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 import importlib.util
+import os
 import pathlib
 import subprocess
 import sys
@@ -1429,3 +1430,18 @@ def test_the_rocm_probe_environment_is_seeded_before_the_repair_probe():
     summary = src.index("# ── GPU detection summary")
     assert export < probe < summary
     assert path_append < probe
+# ── Collection-time environment isolation ──
+
+
+def test_the_collection_time_routing_environment_is_sanitized():
+    """NO_TORCH and _TORCH_BACKEND are module constants read during collection.
+
+    install.sh exports UNSLOTH_NO_TORCH and UNSLOTH_TORCH_BACKEND, so a suite started
+    from an installer shell would assert the environment instead of the code: both make
+    the ROCm helpers return before any routing decision. The per-test fixture cannot
+    reach them, so tests/studio/install/conftest.py clears them at import.
+    """
+    assert "UNSLOTH_NO_TORCH" not in os.environ
+    assert "UNSLOTH_TORCH_BACKEND" not in os.environ
+    assert stack.NO_TORCH == stack._infer_no_torch()
+    assert stack._TORCH_BACKEND == stack._infer_torch_backend()

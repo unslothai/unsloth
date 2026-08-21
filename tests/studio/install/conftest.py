@@ -16,16 +16,21 @@ _STUDIO_DIR = Path(__file__).resolve().parents[3] / "studio"
 if str(_STUDIO_DIR) not in sys.path:
     sys.path.insert(0, str(_STUDIO_DIR))
 
-# UNSLOTH_NO_TORCH cannot go in the per-test fixture below: install_python_stack reads it
-# once at module scope into NO_TORCH, and for a test module that import happens during
-# collection, before any fixture runs. A shell that exports it (install.sh does) would
-# otherwise return every routing plan early and fail the suite on the environment rather
-# than on the code. Recompute the constant too, since a whole-tree run collects other
-# directories first and may already have imported the module.
+# These two cannot go in the per-test fixture below: install_python_stack reads them once
+# at module scope, into NO_TORCH and _TORCH_BACKEND, and for a test module that import
+# happens during collection, before any fixture runs. A shell that exports either --
+# install.sh exports both -- would otherwise return every routing plan early and fail the
+# suite on the environment rather than on the code. Recompute the constants too, since a
+# whole-tree run collects other directories first and may already have imported the module.
 os.environ.pop("UNSLOTH_NO_TORCH", None)
+os.environ.pop("UNSLOTH_TORCH_BACKEND", None)
 _ips = sys.modules.get("install_python_stack")
 if _ips is not None and hasattr(_ips, "_infer_no_torch"):
     _ips.NO_TORCH = _ips._infer_no_torch()
+if _ips is not None and hasattr(_ips, "_infer_torch_backend"):
+    # Not simply "": UNSLOTH_TORCH_INDEX_URL / _FAMILY still feed the derivation, and those
+    # are deliberately left alone (see _isolate_torch_routing_env).
+    _ips._TORCH_BACKEND = _ips._infer_torch_backend()
 
 
 # Every variable here steers torch routing, so a developer or a CI runner that exports

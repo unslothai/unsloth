@@ -3666,30 +3666,40 @@ try:
 except Exception:
     _RECORDED_TORCH_INDEX_URL = None
 
-# UNSLOTH_TORCH_BACKEND is set by install.sh after get_torch_index_url() ("cuda", "rocm",
-# "cpu"; empty = standalone `studio update`, where we re-detect).
-_TORCH_BACKEND: str = os.environ.get("UNSLOTH_TORCH_BACKEND", "").lower()
-# Standalone update with an explicit pin: derive the backend from the override (classify on
-# the final URL/family segment, mirroring install.sh) instead of re-probing the GPU.
-if not _TORCH_BACKEND:
+def _infer_torch_backend() -> str:
+    """The torch family this run is building against, or "" to probe the GPU.
+
+    UNSLOTH_TORCH_BACKEND is set by install.sh after get_torch_index_url() ("cuda",
+    "rocm", "cpu"); empty means a standalone `studio update`, where an explicit pin
+    is classified on the final URL/family segment (mirroring install.sh) rather than
+    by re-probing the GPU. A function rather than inline code so the install tests can
+    recompute it after sanitizing the environment, as they do for NO_TORCH.
+    """
+    backend = os.environ.get("UNSLOTH_TORCH_BACKEND", "").lower()
+    if backend:
+        return backend
     _idx_override = (
         os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
         or os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
     )
     _idx_leaf = _torch_index_leaf(_idx_override)
     if _idx_leaf.startswith(("rocm", "gfx")):
-        _TORCH_BACKEND = "rocm"
+        backend = "rocm"
     elif _idx_leaf == "cpu":
-        _TORCH_BACKEND = "cpu"
+        backend = "cpu"
     elif _idx_leaf == "xpu":
         # Without this the leaf falls through as unknown and the standalone update never acts
         # on an authoritative XPU pin -- see _ensure_xpu_torch.
-        _TORCH_BACKEND = "xpu"
+        backend = "xpu"
     elif _is_cuda_family_leaf(_idx_leaf):
         # Require a digit after "cu" so /current or /custom is NOT branded CUDA (a wrong backend
         # makes _ensure_rocm_torch return early on AMD hosts). An unknown leaf keeps "" so the
         # helpers probe the GPU.
-        _TORCH_BACKEND = "cuda"
+        backend = "cuda"
+    return backend
+
+
+_TORCH_BACKEND: str = _infer_torch_backend()
 
 
 def _torch_step_label(suffix: str) -> str:
