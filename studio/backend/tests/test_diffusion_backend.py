@@ -2567,7 +2567,9 @@ def test_pipeline_kind_assembles_krea_and_ideogram_from_the_mirror(fake_runtime,
     assert ideogram["repo_id"] == "ideogram-ai/ideogram-4-fp8"
 
 
-def test_krea_single_file_load_reaches_cleanup_without_pipe_kwargs(fake_runtime, monkeypatch, tmp_path):
+def test_krea_single_file_load_reaches_cleanup_without_pipe_kwargs(
+    fake_runtime, monkeypatch, tmp_path
+):
     from core.inference import diffusion as dmod
 
     diffusers = sys.modules["diffusers"]
