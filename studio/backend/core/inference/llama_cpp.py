@@ -12153,9 +12153,8 @@ class LlamaCppBackend:
     _DIFFUSION_ARCHES = (
         _IMAGE_ARCHES | _AMBIGUOUS_IMAGE_ARCHES | _VIDEO_ARCHES | _UNRUNNABLE_MEDIA_ARCHES
     )
-    # Text-to-speech archs llama.cpp has no support for: "llama-csm" (Sesame CSM) only
-    # exists on an unmerged upstream branch, so every build fails the load. Studio runs
-    # these families from the Audio page instead. Mirrors routes.models._SPEECH_GGUF_ARCHS.
+    # TTS archs llama.cpp cannot load ("llama-csm" is only on an unmerged upstream branch);
+    # Studio runs them from the Audio page. Mirrors routes.models._SPEECH_GGUF_ARCHS.
     _SPEECH_ARCHES = frozenset(("llama-csm",))
 
     # Not architectures: the literal placeholders gguf-connector writes into

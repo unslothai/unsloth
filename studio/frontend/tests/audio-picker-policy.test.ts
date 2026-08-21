@@ -596,10 +596,9 @@ test("a local Whisper checkpoint is not advertised as a routable ASR row", () =>
 });
 
 test("an arch-tasked speech GGUF is rejected however its path or repo id is named", () => {
-  // The backend tags text-to-speech on a GGUF only after reading a llama-csm arch
-  // (routes/models._SPEECH_GGUF_ARCHS). The family heuristic re-infers from the NAME, so a
-  // CSM file parked under a runnable-looking directory used to clear the gate, route to
-  // Audio, and evict the chat model for a row the page cannot show.
+  // text-to-speech is tagged on a GGUF only after reading a llama-csm arch. The family
+  // heuristic re-infers from the NAME, so a CSM file parked under a runnable-looking
+  // directory used to clear the gate and evict the chat model for a row Audio cannot show.
   const parkedUnderOrpheus = {
     id: "/models/orpheus/custom.gguf",
     task: "text-to-speech",

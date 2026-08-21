@@ -1947,9 +1947,8 @@ class DiffusionBackend:
         # range request for the GGUF's tensor table), and fails open on anything it cannot read.
         # The UPSTREAM base, not the mirror: the size tables key on vendor ids.
         assert_flux2_pick_compatible(fam, repo_id, gguf_filename, base, hf_token)
-        # Same preflight budget, different question: a speech GGUF is not decodable by ANY media
-        # backend, and detect_family_for_pick answers from the folder name, so a csm file beside a
-        # denoiser reaches this loader looking like one of its own.
+        # No media backend decodes a speech GGUF, and detect_family_for_pick answers from the
+        # folder name, so a csm file beside a denoiser reaches this loader as one of its own.
         assert_pick_is_not_speech(repo_id, gguf_filename, hf_token)
 
     # ── Background load + progress ─────────────────────────────────────────
@@ -2142,7 +2141,7 @@ class DiffusionBackend:
             assert_flux2_pick_compatible(
                 fam, kwargs["repo_id"], kwargs.get("gguf_filename"), base, kwargs.get("hf_token")
             )
-            # And the speech verdict on the same path, so a direct begin_load is covered too.
+            # Same verdict here, so a direct begin_load is covered too.
             assert_pick_is_not_speech(
                 kwargs["repo_id"],
                 kwargs.get("gguf_filename"),
@@ -2601,9 +2600,8 @@ class DiffusionBackend:
         # a 400 here would start the very download this is meant to prevent; carried in the
         # envelope instead, the picker can refuse at SELECTION time. Metadata only (one range
         # request for the GGUF's tensor table), and None whenever nothing is known to be wrong.
-        # The plan is where a download is STAGED, so the speech verdict has to be here too and
-        # not only on the load preflight: the Images page plans, stages and downloads before it
-        # ever calls load, so a refusal that waits for the load arrives after the bytes.
+        # The speech verdict belongs here too, not only on the load preflight: the Images page
+        # stages and downloads before it calls load, so a later refusal arrives after the bytes.
         incompatible = flux2_pick_mismatch(
             fam, repo_id, gguf_filename, base, hf_token
         ) or speech_pick_refusal(repo_id, gguf_filename, hf_token)

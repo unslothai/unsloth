@@ -65,9 +65,8 @@ export function communityAudioRowIsRunnable({
   return !(isGguf && /(?:^|[-_./])csm(?:$|[-_./])/.test(family));
 }
 
-/** A GGUF whose family llama.cpp cannot decode as speech. CSM is Transformers-only, so
- * the arch never loads in llama-server regardless of how the file was discovered. Kept
- * beside communityAudioRowIsRunnable's family list so the two stay in step. */
+/** A GGUF llama.cpp cannot decode, however it was found: CSM is Transformers-only, so it
+ * never loads in llama-server. Beside communityAudioRowIsRunnable's list to stay in step. */
 export function speechGgufIsUndecodable({
   isGguf,
   id,
@@ -114,13 +113,10 @@ export function audioPickIsRoutable({
   tags?: readonly string[] | null;
   libraryName?: string | null;
 }): boolean {
-  // A filesystem GGUF row's task is read off the file's architecture, and the backend
-  // tags text-to-speech ONLY for llama-csm (routes/models._SPEECH_GGUF_ARCHS), the one
-  // arch llama.cpp has no decoder for. That read outranks both the curated name match
-  // and the family heuristic below, which re-infers the family from the PATH and so
-  // clears a CSM file parked under a runnable-looking name like
-  // /models/orpheus/custom.gguf -- it finds "orpheus", never sees "csm", and routes an
-  // undecodable file to Audio after the handoff has already evicted the chat model.
+  // The backend tags text-to-speech ONLY for llama-csm (_SPEECH_GGUF_ARCHS), the one arch
+  // llama.cpp has no decoder for, so that read outranks both the curated match and the
+  // PATH-based heuristic below -- which clears a CSM file at /models/orpheus/custom.gguf
+  // and routes it to Audio after the handoff already evicted the chat model.
   if (taskFromGgufArch && isGguf && task === "text-to-speech") return false;
   if (isCurated) return true;
   // A checkpoint from outputs/ has no Hub identity for communityAudioRowIsRunnable to
@@ -128,10 +124,9 @@ export function audioPickIsRoutable({
   // name. Its task came from the backend reading the checkpoint, which is the stronger
   // signal, and the Audio page lists it off that same tag.
   if (isLocalCheckpoint) {
-    // Provenance is not evidence against the decoder: llama.cpp has no CSM decoder, so a
-    // CSM GGUF discovered on disk is as unrunnable as a cached one. Routing it anyway
-    // hands the Audio page a row it cannot show, after its ?model= handoff already
-    // evicted the chat model.
+    // Provenance says nothing about the decoder: a CSM GGUF found on disk is as
+    // unrunnable as a cached one, and routing it hands Audio a row it cannot show after
+    // the ?model= handoff already evicted the chat model.
     if (speechGgufIsUndecodable({ isGguf, id, baseModel, tags })) return false;
     return (
       task === "text-to-speech" || task === "automatic-speech-recognition"

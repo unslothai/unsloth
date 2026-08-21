@@ -2752,9 +2752,8 @@ class VideoBackend:
         from huggingface_hub import HfApi
 
         fam = _detect_load_family(repo_id, gguf_filename, family_override)
-        # _detect_load_family resolves the family from the REPO id first, so a mixed video repo
-        # answers its media family for every file in it and a csm quant is accepted as one of
-        # them. Refuse before the plan stages a byte.
+        # _detect_load_family resolves from the REPO id first, so a mixed repo answers its media
+        # family for every file in it, a csm quant included. Refuse before the plan stages a byte.
         _assert_pick_is_not_speech(repo_id, gguf_filename, hf_token)
         kind = resolve_video_model_kind(gguf_filename, model_kind)
         from .video_minimax_h3 import is_h3_native

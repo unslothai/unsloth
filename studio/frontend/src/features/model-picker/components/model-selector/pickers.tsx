@@ -3537,10 +3537,9 @@ export function HubModelPicker({
         lmStudioModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
-            // The same speech gate the cached GGUF rows get. A CSM file discovered in LM
-            // Studio, ./models or a scan folder is just as undecodable, and letting it
-            // through routes the pick to Audio, which evicts the chat model and only then
-            // reports the row unsupported. Non-audio rows always pass.
+            // The same speech gate the cached GGUF rows get: a CSM file found in LM
+            // Studio, ./models or a scan folder is just as undecodable, and routing it to
+            // Audio evicts the chat model before the row is reported unsupported.
             audioPickIsRoutable({
               id: m.model_id ?? m.id,
               task: m.task,
@@ -3584,10 +3583,9 @@ export function HubModelPicker({
         localDirModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
-            // The same speech gate the cached GGUF rows get. A CSM file discovered in LM
-            // Studio, ./models or a scan folder is just as undecodable, and letting it
-            // through routes the pick to Audio, which evicts the chat model and only then
-            // reports the row unsupported. Non-audio rows always pass.
+            // The same speech gate the cached GGUF rows get: a CSM file found in LM
+            // Studio, ./models or a scan folder is just as undecodable, and routing it to
+            // Audio evicts the chat model before the row is reported unsupported.
             audioPickIsRoutable({
               id: m.model_id ?? m.id,
               task: m.task,
@@ -3634,10 +3632,9 @@ export function HubModelPicker({
         customFolderModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
-            // The same speech gate the cached GGUF rows get. A CSM file discovered in LM
-            // Studio, ./models or a scan folder is just as undecodable, and letting it
-            // through routes the pick to Audio, which evicts the chat model and only then
-            // reports the row unsupported. Non-audio rows always pass.
+            // The same speech gate the cached GGUF rows get: a CSM file found in LM
+            // Studio, ./models or a scan folder is just as undecodable, and routing it to
+            // Audio evicts the chat model before the row is reported unsupported.
             audioPickIsRoutable({
               id: m.model_id ?? m.id,
               task: m.task,

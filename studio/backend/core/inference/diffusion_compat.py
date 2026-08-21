@@ -363,8 +363,8 @@ def flux2_pick_mismatch(
     )
 
 
-# GGUF ``general.architecture`` values nothing in Studio can decode. Kept beside the FLUX.2
-# check because both answer the same question -- is this pick loadable -- from the same prefix.
+# GGUF ``general.architecture`` values nothing in Studio can decode. Beside the FLUX.2 check
+# because both ask whether the pick is loadable, off the same prefix.
 _SPEECH_GGUF_ARCHS = frozenset({"llama-csm"})
 _SPEECH_ARCH_CACHE: dict[tuple[str, str, str, Optional[tuple]], Optional[str]] = {}
 _SPEECH_ARCH_CACHE_MAX = 256
@@ -380,8 +380,8 @@ def _arch_from_prefix(prefix: bytes, gguf_filename: str) -> Optional[str]:
 
         from utils.models.gguf_metadata import read_gguf_architecture
         with tempfile.TemporaryDirectory(prefix = "unsloth-speech-probe-") as probe_dir:
-            # Named after the real file, as the chat-side probe is: a GGUF declaring no
-            # architecture is judged by its name, and a temp name would lose that.
+            # Named after the real file, like the chat-side probe: a GGUF declaring no
+            # architecture is judged by its name, which a temp name would lose.
             probe_path = os.path.join(probe_dir, os.path.basename(gguf_filename))
             with open(probe_path, "wb") as handle:
                 handle.write(prefix)
@@ -398,20 +398,15 @@ def _revalidated_speech_arch(
     arch: Optional[str],
     allow_network: bool = True,
 ) -> Optional[str]:
-    """*arch* again, re-read off the Hub when it came from a cached copy the Hub has moved past.
+    """*arch* again, re-read off the Hub when the cached copy it came from is behind.
 
-    ``try_to_load_from_cache`` resolves the LOCAL ``refs/main``, so a checkpoint republished at
-    the same filename is judged here off bytes the loader's own ``hf_hub_download`` is about to
-    replace. BOTH directions, unlike the size pairing's revalidation, which runs only on a
-    would-be refusal: there a stale allow is caught by the loader's own guard, whereas here it
-    means csm bytes reach a media loader after the download and the teardown -- the precise
-    outcome this preflight exists to prevent, so it cannot be the cheap side of an asymmetry.
-
-    An unknown revision keeps *arch* and a live header we cannot read is no opinion, so an
-    offline host never flips a verdict. A pick with no CACHED copy has no revision to be behind:
-    that covers both an uncached remote pick and an On Device file, neither of which spends the
-    HEAD. The caller folds the result into the probe memo, so this costs one HEAD per cached copy
-    per token per session, not one per pick."""
+    ``try_to_load_from_cache`` resolves the LOCAL ``refs/main``, so a republished checkpoint is
+    judged off bytes ``hf_hub_download`` is about to replace. BOTH directions, unlike the size
+    pairing (refusals only): a stale allow hands csm bytes to a media loader after the download
+    and the teardown, the very outcome this preflight exists to prevent. An unknown revision or
+    an unreadable live header keeps *arch*, so an offline host never flips a verdict, and no
+    CACHED copy means no revision to be behind -- an uncached remote pick and an On Device file
+    both skip the HEAD. Memoised by the caller: one HEAD per cached copy per token per session."""
     cached = _snapshot_revision(local)
     if cached is None:
         return arch
@@ -433,12 +428,10 @@ def _speech_probe_architecture(
 ) -> Optional[str]:
     """``general.architecture`` of a pick, from a cached copy or one range request.
 
-    Keyed like the inner-dim memo beside it, and for the same two reasons. The token
-    fingerprint, because a probe that failed on an expired credential caches "no verdict", and
-    keying without it would hand that stale answer back to the retry that finally has a working
-    one -- letting the speech file through to the download. The file identity, because a
-    checkpoint that arrives or is replaced under the same name after the first probe is a
-    different checkpoint, and its header may say something else."""
+    Keyed like the inner-dim memo beside it, for the same two reasons: the token fingerprint,
+    because a probe that failed on an expired credential caches "no verdict" and the retry with a
+    working one would read that back and let the speech file through to the download; the file
+    identity, because a checkpoint replaced under the same name is a different checkpoint."""
     token = (hf_token or "").strip() or None
     # Resolved BEFORE the memo is consulted, because the file's identity is part of the key.
     local = _local_gguf_path(repo_id, gguf_filename)
@@ -447,9 +440,8 @@ def _speech_probe_architecture(
         if key in _SPEECH_ARCH_CACHE:
             return _SPEECH_ARCH_CACHE[key]
     if local is None and not allow_network:
-        # Answers from the memo or from disk and gives up rather than making the range request,
-        # as the size pairing does. Nothing is memoised, so the next caller that CAN wait still
-        # gets a real answer instead of this one's silence.
+        # Memo or local header only, as the size pairing does. Nothing is memoised, so the next
+        # caller that CAN wait still gets a real answer instead of this one's silence.
         return None
     prefix = (
         _read_local_header(local) if local else _read_gguf_header(repo_id, gguf_filename, token)
@@ -477,16 +469,15 @@ def speech_pick_refusal(
 ) -> Optional[str]:
     """Why this diffusion pick cannot load, when it names a speech GGUF, else None.
 
-    A mixed repo keeps its row under the media task it can serve, and the variant listing drops
-    the speech quants whose bytes are on disk. An UNDOWNLOADED one has no bytes to read there, so
-    it stays offered, and ``detect_family_for_pick`` resolves its family from the folder name --
-    a csm file beside a FLUX denoiser answers flux.1. Without this the pick pulls the checkpoint
-    and tears the resident pipeline down before the loader discovers it cannot decode it.
+    The variant listing drops the speech quants whose bytes are on disk, but an UNDOWNLOADED one
+    has none to read and stays offered -- and ``detect_family_for_pick`` resolves its family from
+    the folder name, so a csm file beside a FLUX denoiser answers flux.1, and the pick pulls the
+    checkpoint and tears the resident pipeline down before the loader finds out.
 
-    Metadata only, like the FLUX.2 pairing above: a cached copy answers with no request, and
-    otherwise one range request for the prefix. Fails open on everything -- no filename, an
-    unreadable or truncated header, an offline host, a server that ignores Range -- because a
-    false positive would refuse a pick that works, which is worse than the download this saves.
+    Metadata only, like the FLUX.2 pairing above: a cached copy answers with no request, else one
+    range request. Fails open on everything -- no filename, an unreadable header, an offline host,
+    a server that ignores Range -- because refusing a pick that works is worse than the download
+    this saves.
     """
     # A ".gguf" name only, as the size pairing does: a single_file pick names a .safetensors,
     # which has no GGUF header, and a range request to learn that on every such load is waste.
@@ -509,8 +500,8 @@ def assert_pick_is_not_speech(
 ) -> None:
     """Refuse a speech GGUF pick before anything is downloaded or unloaded.
 
-    ``ValueError`` for the same reason as the FLUX.2 assert: /images/load maps it to 400 and
-    ``/images/download-plan`` catches it, whereas a RuntimeError escapes the plan as a bare 500."""
+    ``ValueError`` like the FLUX.2 assert: /images/load maps it to 400 and the download-plan
+    catches it, whereas a RuntimeError escapes the plan as a bare 500."""
     reason = speech_pick_refusal(repo_id, gguf_filename, hf_token, allow_network)
     if reason is not None:
         raise ValueError(reason)

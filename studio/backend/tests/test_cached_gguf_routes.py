@@ -5205,17 +5205,15 @@ def test_the_classify_order_is_the_same_wherever_the_folder_lives(tmp_path):
 
 
 def test_a_runnable_media_checkpoint_outranks_a_speech_gguf(tmp_path):
-    """llama.cpp cannot load a ``llama-csm`` GGUF at all, so speech ranks with the unsupported
-    diffusion archs rather than the loadable media ones. Returning it the moment it sorts first
-    would hide the runnable denoiser beside it -- the same mistake the test below guards."""
+    """Nothing loads a ``llama-csm`` GGUF, so returning speech the moment it sorts first would
+    hide the runnable denoiser beside it."""
     folder = tmp_path / "mixed-speech"
     # "csm" sorts before "flux" and cannot load here; the FLUX denoiser beside it can.
     _arch_gguf(folder / "csm-1b-Q4_0.gguf", "llama-csm")
     _arch_gguf(folder / "flux1-dev-Q4_K_M.gguf", "flux")
     assert models_route._gguf_folder_task(folder, ("someone/mixed-GGUF",)) == "text-to-image"
 
-    # Nothing runnable beside it: the folder still reports speech, so the chat picker keeps
-    # leaving it out instead of falling through to a text tag.
+    # Nothing runnable beside it: still speech, so the chat picker keeps leaving it out.
     speech = tmp_path / "speech-only"
     _arch_gguf(speech / "csm-1b-Q4_0.gguf", "llama-csm")
     assert (
@@ -5225,17 +5223,15 @@ def test_a_runnable_media_checkpoint_outranks_a_speech_gguf(tmp_path):
 
 def test_a_runnable_chat_checkpoint_outranks_a_speech_gguf(tmp_path):
     """Ranking speech with the unsupported diffusion archs saved a runnable image/video sibling
-    but not a runnable CHAT one: an ordinary GGUF answers ``fallback``, which ``unsupported``
-    outranked, so a csm + qwen3 folder tagged speech and the arch-task gate hid the qwen3 from
-    every picker. Speech is the last resort now, under the text fallback too."""
+    but not a chat one: a chat GGUF answers ``fallback``, which ``unsupported`` outranked, so a
+    csm + qwen3 folder tagged speech and the gate hid the qwen3. Speech is the last resort now."""
     folder = tmp_path / "mixed-chat-speech"
     # "csm" sorts first and cannot load here; the qwen3 chat checkpoint beside it can.
     _arch_gguf(folder / "csm-1b-Q4_0.gguf", "llama-csm")
     _arch_gguf(folder / "qwen3-8b-Q4_K_M.gguf", "llama")
     assert models_route._gguf_folder_task(folder, ("someone/mixed-GGUF",)) == "text-generation"
 
-    # A recognized-but-unsupported diffusion arch still outranks the text fallback, so widening
-    # the speech demotion did not change which tag a diffusion folder answers.
+    # Unsupported diffusion still outranks the text fallback; the demotion did not change that.
     diffusion = tmp_path / "mixed-diffusion-speech"
     _arch_gguf(diffusion / "csm-1b-Q4_0.gguf", "llama-csm")
     _arch_gguf(diffusion / "sd3-Q4_0.gguf", "sd3")
@@ -5246,11 +5242,10 @@ def test_a_runnable_chat_checkpoint_outranks_a_speech_gguf(tmp_path):
 
 
 def test_a_cached_row_listed_from_the_hub_still_drops_its_speech_quant(monkeypatch, tmp_path):
-    """The online cached-row path answers from Hub metadata, so ``context_source`` is empty, and a
-    cached row hands the route its REPO directory rather than a snapshot, so the pin resolves to
-    nothing either. ``context_model`` therefore falls back to the repo id and ``is_local_path`` is
-    False, which skipped the speech filter for exactly the rows most likely to hold a downloaded
-    CSM file. The answering snapshot is resolved now, so the filter applies here too."""
+    """An online listing leaves ``context_source`` empty and a cached row names its REPO
+    directory, not a snapshot, so ``context_model`` fell back to the repo id and the filter
+    skipped exactly the rows most likely to hold a downloaded CSM file. The answering snapshot is
+    resolved now."""
     repo_dir = tmp_path / "models--someone--mixed-GGUF"
     snapshot = repo_dir / "snapshots" / "abc123"
     _arch_gguf(snapshot / "csm-1b-Q4_0.gguf", "llama-csm")
@@ -5283,10 +5278,9 @@ _UNSET = object()
 
 
 def test_a_speech_quant_in_an_older_snapshot_is_dropped_too(monkeypatch, tmp_path):
-    """The runnable quant sits in the newest revision, the CSM one only in an older sibling.
-    Reading a single snapshot could not see the CSM file, yet the online listing marks quants
-    downloaded across every snapshot and ``cached_gguf_for_load`` resolves a load the same way,
-    so it stayed both listed and loadable. Every cached revision is read now."""
+    """The CSM quant lives only in an older sibling revision, which a single-snapshot read could
+    not see -- yet the listing and ``cached_gguf_for_load`` both span snapshots, so it stayed
+    listed and loadable. Every cached revision is read now."""
     repo_dir = tmp_path / "models--someone--mixed-GGUF"
     older = repo_dir / "snapshots" / "old111"
     newest = repo_dir / "snapshots" / "new222"
@@ -5314,17 +5308,14 @@ def test_a_speech_quant_in_an_older_snapshot_is_dropped_too(monkeypatch, tmp_pat
 
     assert [v.quant for v in result.variants] == ["Q4_K_M"]
 
-    # A row pinned to the newest snapshot resolves inside it and nothing else, so the older
-    # revision's file is not its business.
+    # A pinned row resolves inside its own snapshot, so an older revision is not its business.
     pinned = models_route._cached_snapshot_roots("someone/mixed-GGUF", str(newest))
     assert pinned == [str(newest)]
 
 
 def test_every_listed_variant_reaches_the_architecture_gate(tmp_path):
-    """The gate has to be reachable by every listed variant. A positional cap exempted whatever
-    sorted past it, so a CSM entry at 65 was copied through unread and stayed selectable; the
-    earlier fix preserved the drops already found but still left that tail exposed. The budget is
-    time now, so position alone never buys a variant a pass."""
+    """A positional cap exempted whatever sorted past it, so a CSM entry at 65 was copied through
+    unread and stayed selectable. The budget is time now, so position alone never buys a pass."""
     folder = tmp_path / "big-mixed-GGUF"
     variants = []
     # One CSM first, one well past where the old positional cap cut off.
@@ -5348,10 +5339,9 @@ def test_every_listed_variant_reaches_the_architecture_gate(tmp_path):
 
 def test_a_windows_spelled_local_root_is_normalized_before_the_headers_are_read(monkeypatch):
     """``get_gguf_variants_answer`` works off ``_loader_normalize_path(repo_id)`` but reports the
-    ORIGINAL spelling as ``context_source``. ``is_local_path`` calls "C:\\models\\x" local, and
-    ``Path`` does not treat it as absolute off Windows, so joining a filename onto it produced a
-    relative path, every header read missed, and the CSM quant survived a directory that listed
-    fine. The root is normalized the way the listing normalized it."""
+    ORIGINAL spelling, and ``Path`` does not treat "C:\\models\\x" as absolute off Windows, so
+    every header read missed and the CSM quant survived a directory that listed fine. The root is
+    normalized the way the listing normalized it."""
     from utils.paths import normalize_path
 
     seen: list = []
@@ -5396,9 +5386,9 @@ def test_a_windows_spelled_local_root_is_normalized_before_the_headers_are_read(
 
 
 def test_the_snapshot_roots_break_mtime_ties_the_way_the_loader_does(tmp_path):
-    """mtime alone is not a total order. A filter that broke ties by ``iterdir`` order could read
-    a different copy than the loader picks, which for one filename replaced between revisions
-    means retaining the unrunnable quant or hiding the runnable one."""
+    """mtime alone is not a total order, and breaking ties by ``iterdir`` order could read a
+    different copy than the loader picks -- for a filename replaced between revisions, either
+    retaining the unrunnable quant or hiding the runnable one."""
     from hub.utils.hf_cache_state import snapshot_selection_key
 
     repo_dir = tmp_path / "models--someone--mixed-GGUF"
@@ -5417,11 +5407,9 @@ def test_the_snapshot_roots_break_mtime_ties_the_way_the_loader_does(tmp_path):
 
 
 def test_a_hung_speech_probe_leaves_the_loop_running_and_lists_unfiltered(monkeypatch):
-    """``is_file()`` and the header read block indefinitely on an unresponsive network or
-    removable mount. Inline that froze the loop for every request, not just this expansion. The
-    probe runs off-loop under one budget now, and times out to the UNFILTERED listing: the filter
-    only removes a quant it positively read as llama-csm, and a mount too slow to answer is one
-    the loader cannot read either."""
+    """``is_file()`` and the header read block indefinitely on an unresponsive mount, which
+    inline froze the loop for every request. Off-loop under one budget now, timing out to the
+    UNFILTERED listing: a mount too slow to answer is one the loader cannot read either."""
     monkeypatch.setattr(models_route, "_SPEECH_FILTER_HARD_TIMEOUT_SECONDS", 0.1)
 
     def hang(roots, variants):
@@ -5462,7 +5450,6 @@ def _speech_mix_answer(
     source = _UNSET,
 ):
     """A two-quant listing for *folder*: the CSM file first, the FLUX denoiser beside it.
-
     *source* defaults to *folder*; pass None for the online Hub path, which names no copy."""
     if source is _UNSET:
         source = str(folder)
@@ -5490,12 +5477,10 @@ def _speech_mix_answer(
 
 
 def test_the_variant_listing_drops_a_speech_gguf_the_media_folder_outranked(monkeypatch, tmp_path):
-    """The ranking above keeps a mixed folder visible under the task it CAN serve, which keeps the
-    row -- and the row's expander lists every GGUF in the folder with no per-variant task of its
-    own, so the undecodable ``llama-csm`` file stayed clickable under Images. A pick resolves its
-    family from the folder name (``detect_family_for_pick`` falls back to ``<path>/<filename>``,
-    which answers "flux.1" here), so it reached the image loader and died there. The listing drops
-    it instead."""
+    """The ranking above keeps the row, and its expander lists every GGUF in the folder with no
+    per-variant task, so the undecodable ``llama-csm`` file stayed clickable under Images -- and a
+    pick resolves its family from the folder name, which answers "flux.1" here, so it reached the
+    image loader and died there. The listing drops it instead."""
     folder = tmp_path / "flux1-dev-GGUF"
     _arch_gguf(folder / "csm-1b-Q4_0.gguf", "llama-csm")
     _arch_gguf(folder / "flux1-dev-Q4_K_M.gguf", "flux")
@@ -5520,9 +5505,8 @@ def test_the_variant_listing_drops_a_speech_gguf_the_media_folder_outranked(monk
 
 
 def test_the_variant_listing_keeps_a_speech_only_folders_own_quant(monkeypatch, tmp_path):
-    """Control. With nothing runnable to outrank it the folder tags ``_SPEECH_TASK`` and is
-    filtered a row earlier, so emptying its listing as well would only report "no variants" for a
-    folder that plainly has one."""
+    """Control. A speech-only folder is already filtered a row earlier, so emptying its listing
+    too would only report "no variants" for a folder that plainly has one."""
     folder = tmp_path / "csm-1b-GGUF"
     _arch_gguf(folder / "csm-1b-Q4_0.gguf", "llama-csm")
 

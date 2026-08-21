@@ -3649,18 +3649,14 @@ async def get_gguf_variants(
         )
         local = is_local_path(context_model)
         # A llama-csm GGUF is unrunnable on every page, so it must not ride along in the listing
-        # of the folder that outranked it (see the helper). The read needs a DIRECTORY, which a
-        # local row already is; a cached Hub row expanded online is not, because a successful Hub
-        # listing leaves context_source empty and a repo-directory cache_path pins no snapshot,
-        # so context_model falls back to the repo id. Resolving the answering snapshot puts that
-        # row back under the filter, and every cached revision is offered because the listing and
-        # the loader both span them. Absent bytes read as no architecture and are kept, so an
-        # undownloaded quant is never dropped on a guess.
-        # Normalized the way the listing normalized it: get_gguf_variants_answer works off
-        # _loader_normalize_path(repo_id) but reports the ORIGINAL spelling as context_source, so
-        # under WSL a "C:\\models\\x" row answers from /mnt/c/models/x while this root would keep
-        # the raw spelling. Path() does not treat that as absolute off Windows, so every header
-        # read would miss and the CSM quant would survive in a directory that listed fine.
+        # of the folder that outranked it (see the helper). The read needs a DIRECTORY: a local
+        # row is one; a cached Hub row is not, since an online listing leaves context_source
+        # empty and context_model falls back to the repo id, so resolve its snapshots instead --
+        # all of them, because listing and loader both span revisions. Absent bytes read as no
+        # architecture and are kept, so an undownloaded quant is never dropped on a guess.
+        # The local root is normalized the way the listing normalized it: get_gguf_variants_answer
+        # works off _loader_normalize_path(repo_id) but reports the ORIGINAL spelling, so a
+        # "C:\\models\\x" root is not absolute off Windows and every header read would miss.
         speech_roots = (
             [_speech_normalize_root(context_model)]
             if local
@@ -3670,8 +3666,7 @@ async def get_gguf_variants(
             speech_roots, list(response.variants)
         )
         default_variant = response.default_variant
-        # A default naming a quant that just left the listing would preselect a row the picker
-        # no longer offers.
+        # A default naming a dropped quant would preselect a row the picker no longer offers.
         if default_variant is not None and all(
             getattr(v, "quant", None) != default_variant for v in listed
         ):
@@ -4113,9 +4108,8 @@ _VIDEO_GEN_TASK = "text-to-video"
 # Task tag for the archs above; mirrored by the frontend NON_CHAT_TASKS gate.
 _UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
 
-# TTS-only GGUF archs llama.cpp cannot load at all ("llama-csm" only exists on an
-# unmerged branch). Tagged as speech so the chat picker routes them at the Audio page
-# instead of handing them to llama-server. Mirrors LlamaCppBackend._SPEECH_ARCHES.
+# TTS-only GGUF archs llama.cpp cannot load, tagged speech so the chat picker routes them to
+# the Audio page instead of llama-server. Mirrors LlamaCppBackend._SPEECH_ARCHES.
 _SPEECH_GGUF_ARCHS = frozenset({"llama-csm"})
 _SPEECH_TASK = "text-to-speech"
 
@@ -4379,14 +4373,12 @@ def _gguf_folder_task(
             continue
         if task in _LOADABLE_MEDIA_GGUF_TASKS:
             return task
-        # Speech ranks BELOW everything else runnable, not merely below the loadable media archs:
-        # nothing here can run a llama-csm GGUF, so answering speech while any sibling is
-        # loadable hides that sibling. Ranking it with the unsupported diffusion archs was only
-        # half the fix -- it saved a runnable image/video checkpoint, but an ordinary chat GGUF
-        # lands in `fallback`, which `unsupported` still outranked, so a csm + qwen3 folder
-        # answered speech and the arch-task gate then hid the runnable chat model from every
-        # picker. Last resort only, so a speech-only folder still tags speech and stays out of
-        # the chat picker.
+        # Speech ranks below everything else runnable, not just below the loadable media archs:
+        # nothing here runs a llama-csm GGUF, so answering speech while a sibling is loadable
+        # hides that sibling. Ranking it with the unsupported diffusion archs saved a runnable
+        # image/video checkpoint but not a chat one -- a chat GGUF lands in `fallback`, which
+        # `unsupported` outranked, so a csm + qwen3 folder answered speech and the arch-task gate
+        # hid the qwen3. Last resort only, so a speech-only folder still tags speech.
         if task == _SPEECH_TASK:
             if speech is None:
                 speech = task
@@ -4439,17 +4431,15 @@ def _settle_speech_filter(slots: asyncio.Semaphore, future: "asyncio.Future", va
 async def _without_mixed_folder_speech_variants_bounded(roots: list, variants: list) -> list:
     """``_without_mixed_folder_speech_variants`` off the event loop, with a hard bound.
 
-    The probes are ``is_file()`` and a header read, and a cached snapshot or custom model folder
-    can sit on an unresponsive network or removable mount where either blocks indefinitely. Run
-    inline this would freeze the loop for every request, not just this expansion, so it follows
-    the same shape as the native-context read beside it: a daemon thread so a stranded probe never
-    joins at interpreter exit, a slot cap so a dead mount cannot accumulate threads, and one
-    budget covering the wait and the reads.
+    ``is_file()`` and the header read block indefinitely on an unresponsive network or removable
+    mount, which inline would freeze the loop for every request, not just this expansion. Same
+    shape as the native-context read beside it: a daemon thread so a stranded probe never joins
+    at interpreter exit, a slot cap so a dead mount cannot accumulate threads, and one budget
+    covering the wait and the reads.
 
-    Times out to the UNFILTERED listing, deliberately. The filter only removes a quant it has
-    positively read as ``llama-csm``, and a mount too slow to answer is one the loader cannot read
-    either, so failing open keeps this consistent with the absent-bytes case rather than hiding a
-    runnable quant on a timeout."""
+    Times out to the UNFILTERED listing, deliberately: the filter only removes a quant it read
+    positively as ``llama-csm``, and a mount too slow to answer is one the loader cannot read
+    either, so failing open matches the absent-bytes case rather than hiding a runnable quant."""
     if not roots or not variants:
         return list(variants)
 
@@ -4503,20 +4493,20 @@ def _speech_normalize_root(root: str) -> str:
 def _cached_snapshot_roots(repo_id: str, local_path: Optional[str]) -> list[str]:
     """Every cached snapshot a Hub row's variants may live in, most-preferred first.
 
-    A cached row hands the route its REPO directory (``models--org--name``, routes report
-    ``repo_info.repo_path``), not a snapshot, so the pin resolves to nothing and the speech filter
-    would skip exactly the rows most likely to hold a downloaded CSM file.
+    A cached row hands the route its REPO directory (``models--org--name``), not a snapshot, so
+    the pin resolves to nothing and the filter would skip exactly the rows most likely to hold a
+    downloaded CSM file.
 
     All snapshots, not just the newest, because the rest of the stack already spans revisions: the
-    online listing counts a quant as downloaded across every snapshot (``iter_hf_cache_snapshots``
-    when nothing is pinned) and ``cached_gguf_for_load`` resolves a load the same way. Reading one
-    revision would leave a CSM quant that lives only in an older sibling both listed and loadable.
-    A pinned snapshot path stays alone, since that row resolves inside it and nothing else.
+    online listing counts a quant downloaded across every snapshot and ``cached_gguf_for_load``
+    resolves a load the same way, so reading one revision would leave a CSM quant living only in
+    an older sibling both listed and loadable. A pinned snapshot path stays alone, since that row
+    resolves inside it and nothing else.
 
-    Ordered by ``snapshot_selection_key``, the one key every snapshot selector here shares. mtime
-    alone is not a total order, and a filter that broke ties its own way could read a different
-    copy than the loader picks -- which for one filename replaced between revisions means either
-    retaining the unrunnable quant or hiding the runnable one."""
+    Ordered by ``snapshot_selection_key``, the key every snapshot selector here shares: mtime
+    alone is not a total order, and breaking ties another way could read a different copy than the
+    loader picks -- for a filename replaced between revisions, either retaining the unrunnable
+    quant or hiding the runnable one."""
     try:
         if local_path:
             base = Path(local_path).expanduser()
@@ -4548,18 +4538,16 @@ def _cached_snapshot_roots(repo_id: str, local_path: Optional[str]) -> list[str]
 def _without_mixed_folder_speech_variants(roots: list, variants: list) -> list:
     """The listed quants minus the speech GGUFs, when a runnable one is listed beside them.
 
-    ``_gguf_folder_task`` ranks speech BELOW a loadable image/video checkpoint so a folder holding
-    both still surfaces under the task it can actually serve. That keeps the ROW, and the row's
-    expander lists every GGUF in the folder with no per-variant task of its own, so the
-    undecodable ``llama-csm`` file stayed selectable there. The pick then resolves its family from
-    the FOLDER name (``detect_family_for_pick`` falls back to ``<path>/<filename>``), so a CSM file
-    beside a FLUX denoiser answers "flux.1" and reaches the image loader, which cannot decode it.
+    ``_gguf_folder_task`` ranks speech below a loadable image/video checkpoint, which keeps the
+    ROW -- and the row's expander lists every GGUF in the folder with no per-variant task of its
+    own, so the undecodable ``llama-csm`` file stayed selectable there. The pick then resolves its
+    family from the FOLDER name (``detect_family_for_pick`` falls back to ``<path>/<filename>``),
+    so a CSM file beside a FLUX denoiser answers "flux.1" and reaches the image loader.
 
-    Only when something non-speech survives: a speech-only folder already tags ``_SPEECH_TASK`` and
-    is filtered at the row level, and emptying its listing would report "no variants" for a folder
-    that plainly has one. Bounded by the classify cap and fails open, like the walk that tags the
-    folder; the header reads are cached by path/mtime/size, so the tagging walk has usually paid
-    for them already."""
+    Only when something non-speech survives: a speech-only folder is already filtered at the row
+    level, and emptying its listing would report "no variants" for a folder that plainly has one.
+    Bounded and fails open, like the walk that tags the folder; the header reads are cached by
+    path/mtime/size, so that walk has usually paid for them already."""
     bases: list[Path] = []
     for root in roots:
         try:
@@ -4572,9 +4560,8 @@ def _without_mixed_folder_speech_variants(roots: list, variants: list) -> list:
     dropped = 0
     read_deadline = time.monotonic() + _SPEECH_FILTER_READ_SECONDS
     for index, variant in enumerate(variants):
-        # Bounded by TIME, not by position. A positional cap exempted whatever sorted past it
-        # from the architecture gate, so a CSM entry at 65 was copied through unread and stayed
-        # selectable -- the gate has to be reachable by every listed variant. The first read
+        # Bounded by TIME, not position: a positional cap exempted whatever sorted past it from
+        # the architecture gate, so a CSM entry at 65 was copied through unread. The first read
         # always happens, as in the folder walk, so a spent budget still classifies one file.
         if index and time.monotonic() >= read_deadline:
             kept.extend(variants[index:])

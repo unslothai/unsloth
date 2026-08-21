@@ -1385,9 +1385,8 @@ class SdCppDiffusionBackend:
             # offline load asks it the way begin_load does: memo or local header or nothing. A
             # None here only falls back to the filename heuristic for the encoder pick, and a
             # cache-only load can fetch nothing the heuristic did not already have.
-            # The worker is where the network is allowed, so the speech verdict lands here and
-            # not in begin_load, which is offline-only by contract. Before _asset_specs, so the
-            # refusal precedes any fetch.
+            # The speech verdict lands here rather than in begin_load, which is offline-only by
+            # contract; before _asset_specs, so the refusal precedes any fetch.
             _assert_pick_is_not_speech(
                 repo_id, gguf_filename, hf_token, allow_network = not local_files_only
             )
