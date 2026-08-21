@@ -7711,6 +7711,113 @@ def test_stop_reaches_a_queued_generation_before_its_first_lock_attempt(fake_run
         worker.join(5)
 
 
+class _SlotHandoffLock:
+    """Generation-lock wrapper that pauses a waiter after it receives the slot."""
+
+    def __init__(self, lock, handed_off, admit_waiter):
+        self._lock = lock
+        self._handed_off = handed_off
+        self._admit_waiter = admit_waiter
+
+    def acquire(self, *args, **kwargs):
+        acquired = self._lock.acquire(*args, **kwargs)
+        if acquired and threading.current_thread().name == "serialized-waiter":
+            self._handed_off.set()
+            assert self._admit_waiter.wait(5), "the waiter was not allowed to register"
+        return acquired
+
+    def release(self):
+        self._lock.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *_args):
+        self.release()
+
+
+def test_cancel_spares_a_serialized_request_during_slot_handoff(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Once the active request releases _generate_lock, a waiter can own it before moving its
+    # cancel event from the queued set to the active slot. Stop in that handoff must not mistake
+    # the ordinary serialized waiter for a request blocked by model replacement.
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+
+    denoising = threading.Event()
+    release_active = threading.Event()
+    handed_off = threading.Event()
+    admit_waiter = threading.Event()
+    calls: list[int] = []
+    real_call = _FakePipe.__call__
+
+    def _call(self, **kwargs):
+        first = not calls
+        calls.append(1)
+        if first:
+            denoising.set()
+            assert release_active.wait(5), "the active generation was never released"
+        return real_call(self, **kwargs)
+
+    monkeypatch.setattr(_FakePipe, "__call__", _call)
+    backend._generate_lock = _SlotHandoffLock(
+        backend._generate_lock, handed_off, admit_waiter
+    )
+
+    outcomes: dict = {}
+
+    def generate(key, prompt):
+        try:
+            outcomes[key] = backend.generate(prompt = prompt, steps = 2)
+        except RuntimeError as exc:
+            outcomes[key] = exc
+
+    active = threading.Thread(
+        target = generate,
+        args = ("active", "active"),
+        name = "active-generation",
+        daemon = True,
+    )
+    active.start()
+    assert denoising.wait(5), "the first generation never started denoising"
+    serialized = threading.Thread(
+        target = generate,
+        args = ("serialized", "serialized"),
+        name = "serialized-waiter",
+        daemon = True,
+    )
+    serialized.start()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with backend._generation_cancel_lock:
+            if backend._queued_generate_cancels:
+                break
+        time.sleep(0.01)
+    else:
+        pytest.fail("the serialized request was never published")
+
+    release_active.set()
+    assert handed_off.wait(5), "the serialized waiter never received the slot"
+    assert backend.cancel_generate() is False
+    admit_waiter.set()
+
+    active.join(5)
+    serialized.join(5)
+    assert not active.is_alive() and not serialized.is_alive()
+    assert isinstance(outcomes["active"], dict), outcomes["active"]
+    assert isinstance(outcomes["serialized"], dict), outcomes["serialized"]
+    assert outcomes["serialized"]["images"]
+
+
+
 class _SlotContentionLock:
     """Generation-lock wrapper that reports a failed (contended) acquisition."""
 

@@ -1108,6 +1108,11 @@ class DiffusionBackend:
         # owns the slot for the epilogue, and a request queued behind it is still queued behind a
         # GENERATION for all of it.
         self._generation_owns_slot = False
+
+        # True while a load or unload owns _generate_lock after its teardown fence drops.
+        # cancel_generate() uses this to distinguish transition-blocked requests from the
+        # ordinary generation waiter in the release-to-admission handoff.
+        self._transition_owns_slot = False
         # Unloads / superseding loads waiting on _generate_lock to free this pipeline. A queued
         # generation is not the ACTIVE one teardown should cancel, so without this fence it could
         # win the lock after an eject and denoise anyway. A count lets concurrent teardowns reserve.
@@ -1158,6 +1163,26 @@ class DiffusionBackend:
         self._teardown_waiters -= 1
         if self._teardown_waiters == 0:
             self._teardown_drained.set()
+
+    @contextmanager
+    def _model_transition_slot(self):
+        """Hold the generation lock and publish that a model transition owns it.
+
+        The teardown fence remains raised until after this context is entered, so queued
+        cancellation always observes either that reservation or this owner flag. Releasing
+        the flag and lock under the cancellation lock makes the handoff equally atomic.
+        """
+        self._generate_lock.acquire()
+        with self._generation_cancel_lock:
+            assert not self._transition_owns_slot, "two model transitions own one slot"
+            self._transition_owns_slot = True
+        try:
+            yield
+        finally:
+            with self._generation_cancel_lock:
+                self._transition_owns_slot = False
+                self._generate_lock.release()
+
 
     @contextmanager
     def _generation_slot(self, cancel: threading.Event):
@@ -3197,7 +3222,7 @@ class DiffusionBackend:
                     self._active_generate_cancel.set()
             # Same fence unload() takes: a queued generation must not run on the pipeline this load is about to free.
             self._reserve_teardown_locked()
-        with self._generate_lock:
+        with self._model_transition_slot():
             with self._lock:
                 try:
                     # Re-check: a newer load/unload may have superseded this one while we waited.
@@ -5902,10 +5927,13 @@ class DiffusionBackend:
                 # Past cancelling: the images are committed, so the route must not be told true
                 # and then handed the picture. A request behind it is still behind a GENERATION.
                 return False
-            # No generation owns the slot, so every waiter is queued behind a model transition
-            # and Stop is the answer for all of them. Decided here, on live state, rather than by
-            # each waiter polling: a waiter asleep in its timed acquisition cannot notice that
-            # the generation it was behind has exited.
+            # Only a teardown reservation or a transition that still owns the slot makes these
+            # waiters cancellable. With neither, _generate_lock is merely handing off between two
+            # generations; cancelling here would fail the unrelated request taking its turn.
+            if not self._teardown_waiters and not self._transition_owns_slot:
+                return False
+            # Decided on live state rather than cached by each waiter: one asleep in its timed
+            # acquisition must notice when a replacement takes the slot it was waiting for.
             cancels = set(self._queued_generate_cancels)
             if not cancels:
                 return False
@@ -5930,7 +5958,7 @@ class DiffusionBackend:
             self._loading = None
         # Wait for the signalled denoise to exit BEFORE tearing down: _unload_locked uninstalls process-wide state
         # (attention patches, GGUF compile hooks, backend flags, compile cache) the denoise still depends on.
-        with self._generate_lock:
+        with self._model_transition_slot():
             with self._lock:
                 try:
                     self._unload_locked()
