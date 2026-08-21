@@ -4168,7 +4168,7 @@ _persist_rocm_aotriton_env() {
     [ -r "$_aot_profile_d/unsloth-rocm-aotriton.sh" ] && return 0
     _aot_dropin="$(
         printf '# >>> Unsloth ROCm AOTriton attention >>>\n'
-        printf '# Unset or set to 0 to fall back to torch'"'"'s MATH SDPA kernel.\n'
+        printf '# Set to 0 to fall back to torch'"'"'s MATH SDPA kernel.\n'
         printf 'export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1\n'
         printf '# <<< Unsloth ROCm AOTriton attention <<<\n'
     )"

@@ -221,7 +221,7 @@ def _installer_dropin_text():
     """The drop-in exactly as _persist_rocm_aotriton_env writes it."""
     return (
         f"{_DROPIN_MARKER}\n"
-        "# Unset or set to 0 to fall back to torch's MATH SDPA kernel.\n"
+        "# Set to 0 to fall back to torch's MATH SDPA kernel.\n"
         f"export {AOTRITON_ENV}=1\n"
         "# <<< Unsloth ROCm AOTriton attention <<<\n"
     )
@@ -274,6 +274,18 @@ def test_the_drop_in_directory_is_redirectable_end_to_end(tmp_path):
     # Keep the fixture aligned with install.sh's output.
     assert written_text == _installer_dropin_text()
     assert _run_remove_helper(remove_tmp, profile_d = profile_d) is False
+
+
+def test_the_installers_advertise_an_opt_out_that_survives_import():
+    """Importing unsloth restores an unset gate, so only 0 turns it back off."""
+    for path in (_INSTALL_SH, _INSTALL_PS1):
+        advice = next(
+            ln
+            for ln in path.read_text(encoding = "utf-8").splitlines()
+            if "fall back to" in ln and "MATH" in ln
+        )
+        assert "0" in advice, f"{path.name}: {advice.strip()}"
+        assert "unset" not in advice.lower(), f"{path.name}: {advice.strip()}"
 
 
 def test_uninstall_sh_removes_the_dropin_outside_the_wsl_branch():

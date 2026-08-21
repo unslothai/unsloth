@@ -521,7 +521,7 @@ _remove_rocm_aotriton_dropin() {
     # Preserve the file if it no longer exactly matches install.sh's output.
     _ad_expected="$(
         printf '# >>> Unsloth ROCm AOTriton attention >>>\n'
-        printf '# Unset or set to 0 to fall back to torch'"'"'s MATH SDPA kernel.\n'
+        printf '# Set to 0 to fall back to torch'"'"'s MATH SDPA kernel.\n'
         printf 'export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1\n'
         printf '# <<< Unsloth ROCm AOTriton attention <<<\n'
     )"

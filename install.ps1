@@ -4845,7 +4845,7 @@ exit 0
                         -Force -ErrorAction SilentlyContinue
                     throw
                 }
-                substep "$aotritonVar=1 (AOTriton attention; unset it to fall back to MATH)" "Cyan"
+                substep "$aotritonVar=1 (AOTriton attention; set it to 0 to fall back to MATH)" "Cyan"
             } catch {
                 # The process copy still enables AOTriton for this run.
                 substep "could not persist $aotritonVar : $($_.Exception.Message)" "Yellow"
