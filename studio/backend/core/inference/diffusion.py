@@ -2144,7 +2144,10 @@ class DiffusionBackend:
             )
             # And the speech verdict on the same path, so a direct begin_load is covered too.
             assert_pick_is_not_speech(
-                kwargs["repo_id"], kwargs.get("gguf_filename"), kwargs.get("hf_token")
+                kwargs["repo_id"],
+                kwargs.get("gguf_filename"),
+                kwargs.get("hf_token"),
+                allow_network = not local_files_only,
             )
             with self._lock:
                 # Stamp progress only if this load is still current (a superseder has its own token).

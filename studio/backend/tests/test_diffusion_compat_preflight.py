@@ -1246,10 +1246,12 @@ def test_the_video_and_sd_cpp_helpers_delegate_to_the_one_verdict(monkeypatch):
         lambda *a, **k: seen.append(a),
     )
 
-    video._assert_pick_is_not_speech(CSM_REPO, CSM_FILE, "tok")
-    sd_cpp_backend._assert_pick_is_not_speech(CSM_REPO, CSM_FILE, "tok")
+    video._assert_pick_is_not_speech(CSM_REPO, CSM_FILE, "tok", allow_network = False)
+    sd_cpp_backend._assert_pick_is_not_speech(CSM_REPO, CSM_FILE, "tok", allow_network = False)
 
-    assert seen == [(CSM_REPO, CSM_FILE, "tok"), (CSM_REPO, CSM_FILE, "tok")]
+    # The cache-only flag rides through too: a worker that promised to stay offline must not have
+    # that promise dropped at the delegation boundary.
+    assert seen == [(CSM_REPO, CSM_FILE, "tok", False), (CSM_REPO, CSM_FILE, "tok", False)]
 
 
 def test_a_media_gguf_republished_as_speech_is_refused(monkeypatch, tmp_path):
@@ -1283,3 +1285,54 @@ def test_an_uncached_pick_never_spends_a_revision_head(monkeypatch):
 
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
     assert asked == []
+
+
+def test_a_cache_only_load_never_range_reads_an_uncached_pick(monkeypatch):
+    """An automatic load sets local_files_only, and those worker contracts promise the metadata
+    probes stay offline too. An uncached pick must give up rather than spend the range request
+    and its 15s bound on a thread that promised not to."""
+    requests = _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("llama-csm")})
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: None)
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE, allow_network = False) is None
+    assert requests == []
+
+    # And nothing was memoised, so the next caller that CAN wait still gets a real answer.
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert len(requests) == 1
+
+
+def test_a_cache_only_load_still_reads_a_checkpoint_already_on_disk(monkeypatch, tmp_path):
+    """Offline does not mean blind: a copy already on disk answers with no request at all, which
+    is the whole point of preferring the local header."""
+    on_device = tmp_path / CSM_FILE
+    on_device.write_bytes(_arch_header("llama-csm"))
+    requests = _stub_range_reads(monkeypatch, {})
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: str(on_device))
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE, allow_network = False) is not None
+    assert requests == []
+
+
+def test_a_cache_only_probe_does_not_memoise_a_skipped_revision_check(monkeypatch, tmp_path):
+    """A cached copy read WITHOUT its revision check is half an answer. Memoising it would let
+    the network-allowed caller behind it read that back and never revalidate."""
+    snapshot = tmp_path / "models--someone--mixed-media-GGUF" / "snapshots" / "oldsha"
+    snapshot.mkdir(parents = True)
+    cached = snapshot / CSM_FILE
+    cached.write_bytes(_arch_header("flux"))
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: str(cached))
+
+    heads: list = []
+    monkeypatch.setattr(
+        diffusion_compat, "_hub_revision", lambda *a, **k: heads.append(a) or "newsha"
+    )
+    _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("llama-csm")})
+
+    # Offline: reads the stale local bytes, asks no revision, allows the pick.
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE, allow_network = False) is None
+    assert heads == []
+
+    # The next caller that can reach the Hub must still catch the republish.
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert len(heads) == 1

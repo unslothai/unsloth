@@ -1019,10 +1019,11 @@ def _assert_pick_is_not_speech(
     repo_id: str,
     gguf_filename: Optional[str],
     hf_token: Optional[str] = None,
+    allow_network: bool = True,
 ) -> None:
     """The shared speech refusal, imported lazily so this module keeps its import cost."""
     from .diffusion_compat import assert_pick_is_not_speech
-    assert_pick_is_not_speech(repo_id, gguf_filename, hf_token)
+    assert_pick_is_not_speech(repo_id, gguf_filename, hf_token, allow_network)
 
 
 class SdCppDiffusionBackend:
@@ -1387,7 +1388,9 @@ class SdCppDiffusionBackend:
             # The worker is where the network is allowed, so the speech verdict lands here and
             # not in begin_load, which is offline-only by contract. Before _asset_specs, so the
             # refusal precedes any fetch.
-            _assert_pick_is_not_speech(repo_id, gguf_filename, hf_token)
+            _assert_pick_is_not_speech(
+                repo_id, gguf_filename, hf_token, allow_network = not local_files_only
+            )
             inner_dim = self._flux2_inner_dim(
                 repo_id, gguf_filename, fam, hf_token, allow_network = not local_files_only
             )

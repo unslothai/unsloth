@@ -396,6 +396,7 @@ def _revalidated_speech_arch(
     token: Optional[str],
     local: Optional[str],
     arch: Optional[str],
+    allow_network: bool = True,
 ) -> Optional[str]:
     """*arch* again, re-read off the Hub when it came from a cached copy the Hub has moved past.
 
@@ -414,6 +415,10 @@ def _revalidated_speech_arch(
     cached = _snapshot_revision(local)
     if cached is None:
         return arch
+    if not allow_network:
+        # A cache-only caller cannot wear the HEAD; the caller declines to memoise this answer,
+        # so the next one that CAN reach the Hub still revalidates it.
+        return arch
     live = _hub_revision(repo_id, gguf_filename, token)
     if live is None or live == cached:
         return arch
@@ -421,7 +426,10 @@ def _revalidated_speech_arch(
 
 
 def _speech_probe_architecture(
-    repo_id: str, gguf_filename: str, hf_token: Optional[str]
+    repo_id: str,
+    gguf_filename: str,
+    hf_token: Optional[str],
+    allow_network: bool = True,
 ) -> Optional[str]:
     """``general.architecture`` of a pick, from a cached copy or one range request.
 
@@ -438,13 +446,22 @@ def _speech_probe_architecture(
     with _CACHE_LOCK:
         if key in _SPEECH_ARCH_CACHE:
             return _SPEECH_ARCH_CACHE[key]
+    if local is None and not allow_network:
+        # Answers from the memo or from disk and gives up rather than making the range request,
+        # as the size pairing does. Nothing is memoised, so the next caller that CAN wait still
+        # gets a real answer instead of this one's silence.
+        return None
     prefix = (
         _read_local_header(local) if local else _read_gguf_header(repo_id, gguf_filename, token)
     )
     arch = _arch_from_prefix(prefix, gguf_filename)
     # Inside the memo, so a republished checkpoint is caught in either direction and the HEAD is
     # spent once per cached copy rather than on every pick.
-    arch = _revalidated_speech_arch(repo_id, gguf_filename, token, local, arch)
+    arch = _revalidated_speech_arch(repo_id, gguf_filename, token, local, arch, allow_network)
+    # A cached copy whose revision check was skipped is only HALF an answer, so it must not be
+    # memoised: the network-allowed caller behind it would read this back and never revalidate.
+    if not allow_network and _snapshot_revision(local) is not None:
+        return arch
     with _CACHE_LOCK:
         if len(_SPEECH_ARCH_CACHE) >= _SPEECH_ARCH_CACHE_MAX:
             _SPEECH_ARCH_CACHE.clear()
@@ -456,6 +473,7 @@ def speech_pick_refusal(
     repo_id: str,
     gguf_filename: Optional[str],
     hf_token: Optional[str] = None,
+    allow_network: bool = True,
 ) -> Optional[str]:
     """Why this diffusion pick cannot load, when it names a speech GGUF, else None.
 
@@ -474,7 +492,7 @@ def speech_pick_refusal(
     # which has no GGUF header, and a range request to learn that on every such load is waste.
     if not repo_id or not gguf_filename or not gguf_filename.lower().endswith(".gguf"):
         return None
-    arch = _speech_probe_architecture(repo_id, gguf_filename, hf_token)
+    arch = _speech_probe_architecture(repo_id, gguf_filename, hf_token, allow_network)
     if arch is not None and arch in _SPEECH_GGUF_ARCHS:
         return (
             f"'{os.path.basename(gguf_filename)}' is a {arch} speech checkpoint, which no image "
@@ -487,12 +505,13 @@ def assert_pick_is_not_speech(
     repo_id: str,
     gguf_filename: Optional[str],
     hf_token: Optional[str] = None,
+    allow_network: bool = True,
 ) -> None:
     """Refuse a speech GGUF pick before anything is downloaded or unloaded.
 
     ``ValueError`` for the same reason as the FLUX.2 assert: /images/load maps it to 400 and
     ``/images/download-plan`` catches it, whereas a RuntimeError escapes the plan as a bare 500."""
-    reason = speech_pick_refusal(repo_id, gguf_filename, hf_token)
+    reason = speech_pick_refusal(repo_id, gguf_filename, hf_token, allow_network)
     if reason is not None:
         raise ValueError(reason)
 
