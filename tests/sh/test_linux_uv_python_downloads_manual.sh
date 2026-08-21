@@ -1,9 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# _uv_venv_requested: when uv venv fails because a distro uv.toml set
-# python-downloads = "manual" (Fedora), run `uv python install` for the same
-# _python_request and retry. Any other venv failure must stay failed.
+# Exercise Fedora's manual-download recovery and unchanged failure behavior.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -57,10 +55,7 @@ grep -q '^_uv_venv_requested()' "$_FN" || { echo "  FAIL: _uv_venv_requested not
 _FEDORA_HINT="hint: A managed Python download is available for Python >=3.13, !=3.13.8, <3.14, but Python downloads are set to 'manual', use \`uv python install >=3.13, !=3.13.8, <3.14\` to install the required version"
 
 # $1 = shell, $2 = first-venv mode (clean|fedora|other), $3 = python-install rc
-# The hint travels in the environment: interpolated into the program text its
-# backticks stay live, so the nested shell would run uv's own example command,
-# leave the file its `>=3.13,` redirection creates in the working directory, and
-# then assert against a hint with that part already substituted away.
+# Pass the hint as data so sh -c does not evaluate its backticked example.
 _run() {
     FEDORA_HINT="$_FEDORA_HINT" "$1" -c '
         . "'"$_FN"'"
@@ -156,9 +151,7 @@ fi
 
 echo "=== Studio installer stream ==="
 
-# install.rs turns [TAURI:ERROR_OUTPUT] into "Installation failed" until a later
-# [TAURI:ERROR_CLEAR]. A recovered fallback must emit one or Studio reports a
-# failure it already recovered from.
+# A successful retry must clear the first attempt's Studio failure marker.
 _STREAM=$(mktemp)
 {
     printf 'C_ERR=""; TAURI_MODE=true; UNSLOTH_VERBOSE=false; UNSLOTH_DL_MARKER_MIN_BYTES=52428800\n'
@@ -245,8 +238,7 @@ assert_contains "recovery clears the Studio failure" "$_out" "ERROR_CLEAR"
 assert_eq "ERROR_CLEAR is the last error-state line" "ERROR_CLEAR" \
     "$(echo "$_out" | grep -oE 'ERROR_OUTPUT|ERROR_CLEAR' | tail -1)"
 
-# Redirect-and-cat would hold [TAURI:*] until uv venv returns. Tee must emit
-# OUTPUT_CLEAR while the first venv is still running (the stub sleeps).
+# Verify output is visible before the first, sleeping venv attempt exits.
 _sd=$(mktemp -d)
 _live=$(mktemp)
 _log=$(mktemp)
@@ -308,8 +300,7 @@ assert_contains "python install stream failure: non-zero" "$_out" "RC=1"
 
 echo "=== capture fallback ==="
 
-# The capture is only how uv's hint is read. A host that cannot provide one must
-# still get the venv it got before this fallback existed, not a failed install.
+# Capture setup failure must preserve the original venv behavior.
 rm -f "$_STUB_STATE/fail_manual" "$_STUB_STATE/fail_other"
 
 _sd=$(mktemp -d)
@@ -358,8 +349,7 @@ rm -rf "$_NOTEE"
 
 echo "=== interrupt cleanup ==="
 
-# The FIFOs and the captured output live in a temp dir, so the EXIT/signal
-# cleanup has to own it the way it owns the other installer temporaries.
+# Signal cleanup must remove the global FIFO capture directory.
 case "$(sed -n '/^_cleanup_install_temporaries()/,/^}/p' "$INSTALL_SH")" in
     *_UV_VENV_CAPTURE_DIR*)
         echo "  PASS: EXIT/signal cleanup owns the venv capture directory"

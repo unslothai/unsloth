@@ -805,9 +805,7 @@ _on_install_signal() {
     _cleanup_install_temporaries
     exit "$_signal_status"
 }
-# Empty so an inherited value never reaches the trap's rm; only temp paths this
-# script creates below (spaced-path dir, uv install_name_tool guard, venv output
-# capture, torch-trio overrides) are removed.
+# Clear inherited cleanup targets before installing traps.
 _UV_OVERRIDE_TMPDIR=""
 _UV_INSTALL_NAME_TOOL_SHIM_DIR=""
 _UV_VENV_CAPTURE_DIR=""
@@ -2916,24 +2914,14 @@ _uv_venv_arm64() {  # label
         --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
 }
 
-# Generic (non-arm64-macOS) venv. Fedora ships /etc/uv/uv.toml with
-# python-downloads = "manual", so the installer-pinned uv still will not fetch a
-# matching interpreter on its own. Fedora 44's system Python is 3.14, which the
-# <3.14 bound (torch / 3.13.8) rejects, and uv then prints the hint that
-# `uv python install <request>` is the explicit fetch. Do that and retry -- and
-# only then: any other venv failure must stay failed. The explicit `uv python
-# install` rather than UV_PYTHON_DOWNLOADS=automatic on the same command:
-# "manual" permits an explicit install and "never" refuses one, so a distro that
-# ruled downloads out entirely keeps that answer instead of an env-var override.
+# Fedora sets python-downloads = "manual", so uv venv cannot fetch a matching
+# interpreter. Install it only after that hint, then retry. An explicit install
+# still honors "never"; UV_PYTHON_DOWNLOADS=automatic would not.
 _uv_venv_requested() {  # label
     _uvvr_label="$1"
     _uvvr_req="$(_python_request "$PYTHON_VERSION")"
-    # Tee, don't redirect-and-replay: Studio consumes [TAURI:*] as they arrive,
-    # and holding them until uv venv exits makes a recovered fallback look idle.
-    # The capture exists only to read uv's hint, so a host that cannot set one up
-    # (no tee, a TMPDIR that rejects FIFOs) still gets the venv it got before the
-    # fallback existed -- the same trade _uv_download_markers makes without awk.
-    # _UV_VENV_CAPTURE_DIR, not a local, so an interrupt's cleanup owns it too.
+    # Capture the hint while streaming Studio output live. If capture setup fails,
+    # use the original venv path. The global directory is owned by trap cleanup.
     _UV_VENV_CAPTURE_DIR=""
     if ! command -v tee >/dev/null 2>&1 \
        || ! _UV_VENV_CAPTURE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/unsloth-uv-venv.XXXXXX") \
@@ -2945,7 +2933,7 @@ _uv_venv_requested() {  # label
     fi
     _uvvr_out="$_UV_VENV_CAPTURE_DIR/out"
     _uvvr_err="$_UV_VENV_CAPTURE_DIR/err"
-    # GNU coreutils dropped POSIX -u (always unbuffered); BSD tee still has it.
+    # BSD tee supports -u; GNU tee is already unbuffered.
     tee -u /dev/null </dev/null >/dev/null 2>&1 && _uvvr_tee_u=-u || _uvvr_tee_u=
     tee $_uvvr_tee_u "$_uvvr_out" < "$_UV_VENV_CAPTURE_DIR/out_pipe" &
     _uvvr_tee_out=$!
