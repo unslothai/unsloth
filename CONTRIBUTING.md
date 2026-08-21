@@ -66,3 +66,10 @@ wrong in practice:
 If you are changing what the thread renders, measure at the 100K rung or larger against a
 concurrent control, and say which of the two exemptions you are relying on, or that you are
 relying on neither.
+
+Run the parity suite either way and put its verdict in the PR, with the number of action
+pairs compared and the concurrent null control's score on the same run. Without the null
+there is no floor, so a clean-looking verdict cannot be distinguished from a suite that
+compared nothing. Say which claim the verdict supports: the structural digest covers thread
+structure and is blind to the sidebar and to computed layout, while visible-region parity is
+the check that supports the off-screen exemption.
