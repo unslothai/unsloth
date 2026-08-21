@@ -2093,6 +2093,15 @@ export function ModelConfigPage({
     // rewrite live input: typing --agent during the window cleared the box instead
     // of showing the error, and a long paste could be trimmed behind the cursor.
     const configAtStart = configRef.current;
+    // What STORAGE holds for this model, which is not always what the panel shows:
+    // an active model seeds the panel from loadedConfig, the config the resident
+    // model is running with. The hydrated record is written against this instead,
+    // or opening the panel replaces settings the user never touched here -- a legacy
+    // config just migrated in, one saved from another origin -- with the runtime.
+    const storedAtStart = resolveInitialConfig(
+      configId,
+      target.ggufVariant,
+    ).config;
     const rememberAtStart = rememberRef.current;
     const localAtStart = configAtStart.llamaExtraArgs;
     // The denylist, not the catalogue: sanitizing a stored list needs only the flags
@@ -2168,14 +2177,19 @@ export function ModelConfigPage({
             );
           }
         }
-        const serverConfig = resolvedOverride
-          ? fromApiOverride(
-              {
-                ...resolvedOverride,
-                ...(resolvedArgs.explicit ? { llama_extra_args: stored } : {}),
-              },
-              { ...configAtStart, llamaExtraArgs: sanitizedLocal },
-            )
+        // The row as it should be read: its own fields, with the arguments it carries
+        // sanitized against what this build refuses.
+        const resolvedRow = resolvedOverride
+          ? {
+              ...resolvedOverride,
+              ...(resolvedArgs.explicit ? { llama_extra_args: stored } : {}),
+            }
+          : null;
+        const serverConfig = resolvedRow
+          ? fromApiOverride(resolvedRow, {
+              ...configAtStart,
+              llamaExtraArgs: sanitizedLocal,
+            })
           : null;
         const hydratedIsLoadable =
           stored.length === 0
@@ -2209,6 +2223,7 @@ export function ModelConfigPage({
         // absent field is as much a gap in the mirror as a chosen default. Never
         // over an edit made while the request was in flight.
         if (
+          resolvedRow &&
           serverConfig &&
           configRef.current === configAtStart &&
           rememberRef.current === rememberAtStart
@@ -2220,8 +2235,12 @@ export function ModelConfigPage({
           if (hasNonDefaultAdvanced(serverConfig)) {
             setAutoOpenAdvanced(true);
           }
-          if (!isDefaultConfig(serverConfig)) {
-            savePerModelConfig(configId, target.ggufVariant, serverConfig);
+          // Onto the stored record, not the shown one: see storedAtStart. The row
+          // outranks both, so the shared settings still land in local storage for
+          // the load paths that never open this panel.
+          const rememberedConfig = fromApiOverride(resolvedRow, storedAtStart);
+          if (!isDefaultConfig(rememberedConfig)) {
+            savePerModelConfig(configId, target.ggufVariant, rememberedConfig);
           }
           return;
         }

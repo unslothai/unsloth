@@ -161,18 +161,38 @@ test("the panel adopts a shared server config without overwriting a live edit", 
   assert.match(PANEL, /fetchLoadModelOverride\(/);
   assert.match(
     PANEL,
-    /const serverConfig = resolvedOverride\s*\n?\s*\? fromApiOverride\(/,
+    /const serverConfig = resolvedRow\s*\n?\s*\? fromApiOverride\(resolvedRow, \{/,
   );
-  // The local config is the merge base, so a field the row does not carry keeps the
-  // value this browser holds instead of coming back as an app default. It travels
-  // sanitized: a row that says nothing about arguments leaves the local list
-  // standing, and a flag this build refuses would re-enable Load for a 400.
+  // The panel's config is the merge base for what it SHOWS, so a field the row does
+  // not carry keeps the value this browser holds instead of coming back as an app
+  // default. It travels sanitized: a row that says nothing about arguments leaves
+  // the local list standing, and a flag this build refuses would re-enable Load for
+  // a 400.
   assert.match(
     PANEL,
-    /\{ \.\.\.configAtStart, llamaExtraArgs: sanitizedLocal \},/,
+    /\.\.\.configAtStart,\s*\n?\s*llamaExtraArgs: sanitizedLocal,/,
   );
   assert.match(PANEL, /let sanitizedLocal = localAtStart;/);
-  assert.match(PANEL, /sanitizedLocal = cleaned\.length > 0 \? cleaned : null;/);
+  assert.match(
+    PANEL,
+    /sanitizedLocal = cleaned\.length > 0 \? cleaned : null;/,
+  );
+  // What it WRITES is merged onto the stored record instead. An active model seeds
+  // the panel from loadedConfig, so persisting the shown config replaced remembered
+  // settings this browser never touched (a just-migrated legacy config among them)
+  // with whatever the resident model is running.
+  assert.match(
+    PANEL,
+    /const storedAtStart = resolveInitialConfig\(\s*\n?\s*configId,\s*\n?\s*target\.ggufVariant,\s*\n?\s*\)\.config;/,
+  );
+  assert.match(
+    PANEL,
+    /const rememberedConfig = fromApiOverride\(resolvedRow, storedAtStart\);/,
+  );
+  assert.match(
+    PANEL,
+    /savePerModelConfig\(configId, target\.ggufVariant, rememberedConfig\)/,
+  );
   assert.match(PANEL, /configRef\.current === configAtStart/);
   assert.match(PANEL, /rememberRef\.current === rememberAtStart/);
   assert.match(PANEL, /setConfig\(serverConfig\);/);
