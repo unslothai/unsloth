@@ -4340,6 +4340,7 @@ def _report_live_llama_timings(callback, chunk) -> None:
 # margin (default 1024 MiB per device). ggml reports an iGPU's "VRAM" as shared
 # system RAM, so hold back the same margin rather than inventing a larger one.
 _IGPU_HOST_RESERVE_MIB = 1024
+_HOST_RAM_HEADROOM_MIB = 2048
 _CGROUP_ROOT = "/sys/fs/cgroup"
 _PROC_SELF_CGROUP = "/proc/self/cgroup"
 
@@ -8125,15 +8126,6 @@ class LlamaCppBackend:
             # fit stays on free*frac (the host reserve below is its
             # headroom); a discrete card passes its real total through.
             total_mib = 0 if is_igpu else row["total_mib"]
-            if is_igpu:
-                backed = LlamaCppBackend._igpu_backed_free_mib(free_mib)
-                if backed < free_mib:
-                    logger.info(
-                        f"Vulkan device VK{idx} reports {free_mib}MiB free across its "
-                        f"heaps, more than this host can back; reading it as "
-                        f"{backed}MiB (memory outside the OS pool, plus available RAM)"
-                    )
-                free_mib = backed
             capped = _apply_igpu_host_reserve_mib(free_mib, is_igpu)
             if capped < free_mib:
                 logger.info(
@@ -8150,20 +8142,40 @@ class LlamaCppBackend:
         return gpus
 
     @staticmethod
-    def _igpu_backed_free_mib(free_mib: int) -> int:
-        """Bound iGPU free memory by host RAM plus any firmware carve-out.
+    def _igpu_backed_free_mib(free_mib: int, headroom_mib: int = 0) -> int:
+        """Bound a raw iGPU free reading by host RAM plus any firmware carve-out.
 
         Vulkan combines OS-visible RAM with carve-outs. Memory above ``MemTotal``
         is a conservative floor for the free carve-out; add ``MemAvailable`` for
-        the host-backed share. WSL cannot use this inference because the VM and
-        adapter report different memory scopes.
+        the host-backed share after its required headroom. WSL cannot use this
+        inference because the VM and adapter report different memory scopes.
         """
         available = LlamaCppBackend._available_system_memory_mib()
         total_ram = LlamaCppBackend._total_system_memory_mib()
         if available is None or total_ram is None:
             return free_mib
         unseen = 0 if _is_wsl() else max(0, free_mib - total_ram)
-        return min(free_mib, unseen + available)
+        host_backed = max(0, available - max(0, headroom_mib))
+        return min(free_mib, unseen + host_backed)
+
+    @staticmethod
+    def _igpu_backed_usable_mib(usable_mib: int) -> int:
+        """Bound a post-reserve iGPU budget for shared-heap admission.
+
+        Placement keeps the Vulkan reading so an existing full-offload plan is
+        not demoted to the fitter. The host guard alone reconstructs the raw
+        reading, bounds its host-backed share with the whole-system headroom,
+        and caps that against the already-reserved placement budget. A zero
+        budget stays zero because the raw value below the reserve is no longer
+        recoverable and could not admit weights either way.
+        """
+        if usable_mib <= 0:
+            return 0
+        raw_free_mib = usable_mib + _IGPU_HOST_RESERVE_MIB
+        backed_mib = LlamaCppBackend._igpu_backed_free_mib(
+            raw_free_mib, headroom_mib = _HOST_RAM_HEADROOM_MIB
+        )
+        return min(usable_mib, backed_mib)
 
     @staticmethod
     def _cgroup_available_memory_mib() -> Optional[int]:
@@ -8417,10 +8429,18 @@ class LlamaCppBackend:
             # With multiple devices, split-mode none does not identify the recipient.
             and not (len(reachable) > 1 and _split_mode_confines_to_one_device(argv, env))
         ):
-            pool = max(
-                (free for idx, free in rows if idx in shared_gpu_ids and idx in reachable),
-                default = 0,
-            )
+            budgets = []
+            for idx, free in rows:
+                if idx not in shared_gpu_ids or idx not in reachable:
+                    continue
+                backed = self._igpu_backed_usable_mib(free)
+                if backed < free:
+                    logger.info(
+                        f"Vulkan device VK{idx} offers {free}MiB to placement; "
+                        f"host admission credits {backed}MiB"
+                    )
+                budgets.append(backed)
+            pool = max(budgets, default = 0)
         on_cards = sum(free for idx, free in rows if idx not in shared_gpu_ids and idx in reachable)
         return pool, model_bytes - on_cards * 1024 * 1024
 
@@ -8507,7 +8527,7 @@ class LlamaCppBackend:
     def _apu_ram_shortfall_message(
         model_size_bytes: int,
         avail_mib: Optional[int],
-        headroom_mib: int = 2048,
+        headroom_mib: int = _HOST_RAM_HEADROOM_MIB,
     ) -> Optional[str]:
         """On a unified-memory APU, return a user-facing refusal when the weights
         cannot fit in available system RAM (else None). Weights only: KV/context
@@ -8530,7 +8550,7 @@ class LlamaCppBackend:
     def _host_offload_shortfall_message(
         offload_bytes: int,
         avail_mib: Optional[int],
-        headroom_mib: int = 2048,
+        headroom_mib: int = _HOST_RAM_HEADROOM_MIB,
     ) -> Optional[str]:
         """On a discrete GPU, return a user-facing refusal when the part of a load
         that misses VRAM cannot fit in available system RAM (else None). The spill is

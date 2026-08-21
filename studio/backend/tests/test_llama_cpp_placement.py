@@ -1629,9 +1629,61 @@ def test_vulkan_igpu_heap_can_hold_weights_missing_from_host_available(tmp_path,
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 13 * 1024)
     )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 32 * 1024)
+    )
     monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
 
     assert _launch(backend, gguf)["cmd"]
+
+
+@pytest.mark.parametrize(
+    "gguf_mib,admitted",
+    [(4096, True), (8192, True), (8256, False), (8704, False), (9216, False)],
+    ids = ["4-gib", "8-gib", "8.06-gib", "8.5-gib", "9-gib"],
+)
+def test_vulkan_igpu_backing_bound_preserves_placement_and_host_headroom(
+    tmp_path, monkeypatch, gguf_mib, admitted
+):
+    """The raw planner reading never lets host-backed credit lose system headroom."""
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 15 * 1024, 0)])
+    _restore_host_guard(backend)
+    backend._get_gpu_memory = (
+        lambda _binary = None, **_kw: LlamaCppBackend._get_gpu_free_memory_vulkan(_binary)
+    )
+    backend._get_gguf_size_bytes = lambda _path: gguf_mib * 1024**2
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_run_vulkan_probe",
+        staticmethod(
+            lambda _binary = None: [
+                {
+                    "index": 0,
+                    "free_mib": 16 * 1024,
+                    "is_igpu": True,
+                    "total_mib": 16 * 1024,
+                    "name": "Vulkan0",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 10 * 1024)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 16 * 1024)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
+
+    if not admitted:
+        with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+            _launch(backend, gguf)
+        return
+
+    cmd = _launch(backend, gguf)["cmd"]
+    assert cmd[cmd.index("-ngl") + 1] == "-1"
+    assert cmd[cmd.index("--fit") + 1] == "off"
+    assert cmd[cmd.index("--device") + 1] == "Vulkan0"
 
 
 @pytest.mark.parametrize(
@@ -1653,6 +1705,9 @@ def test_vulkan_igpu_heap_is_not_credited_to_a_host_resident_launch(
     backend._get_gguf_size_bytes = lambda _path: int(16.5 * 1024**3)
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 13 * 1024)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 32 * 1024)
     )
     monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
 
@@ -1676,6 +1731,9 @@ def test_a_device_pin_decides_whether_the_shared_heap_is_reachable(tmp_path, mon
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 13 * 1024)
     )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 32 * 1024)
+    )
     monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
     manual = {"gpu_memory_mode": "manual", "gpu_layers": 33}
 
@@ -1697,6 +1755,9 @@ def test_an_unselected_card_does_not_shrink_what_the_shared_heap_must_hold(tmp_p
     backend._n_layers = 32
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 4 * 1024)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 32 * 1024)
     )
     monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
 
@@ -1724,6 +1785,9 @@ def test_an_explicit_tensor_split_leaves_the_shared_heap_uncredited(tmp_path, mo
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 4 * 1024)
     )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 32 * 1024)
+    )
     monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
 
     with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
@@ -1745,6 +1809,9 @@ def _mixed_vulkan(tmp_path, monkeypatch, memory):
     backend._n_layers = 32
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 4 * 1024)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 32 * 1024)
     )
     monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
     return backend, gguf
