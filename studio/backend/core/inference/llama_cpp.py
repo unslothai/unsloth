@@ -4064,6 +4064,24 @@ def _device_selection_is_cpu(
     return not devices or all(d in _CPU_DEVICE_VALUES for d in devices)
 
 
+def _split_mode_confines_to_one_device(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """True when the effective split mode puts the whole model on a single device.
+
+    ``--split-mode none`` sends every weight to ``--main-gpu``, an index into
+    llama.cpp's own device enumeration. argv wins over the env twin, and an
+    unreadable value answers False like the rest of the unknowns here.
+    """
+    try:
+        mode = parse_split_mode_override(args)
+    except ValueError:
+        return False
+    if mode is None and env:
+        mode = env.get("LLAMA_ARG_SPLIT_MODE")
+    return str(mode or "").strip().lower() == "none"
+
+
 def _extra_args_draft_device(extra_args: Optional[Iterable[str]]) -> Optional[str]:
     """Return the last explicit draft-device value, if any."""
     return _extra_args_device(extra_args, {"--spec-draft-device", "-devd", "--device-draft"})
@@ -8443,6 +8461,11 @@ class LlamaCppBackend:
             # rather than listed -- so no share is verifiable here, a zero one included.
             and not _extra_args_set_any_flag(argv, _TENSOR_SPLIT_FLAGS)
             and not str((env or {}).get("LLAMA_ARG_TENSOR_SPLIT") or "").strip()
+            # --split-mode none sends the whole model to one --main-gpu index in that
+            # same enumeration, so with more than one device in play this cannot say the
+            # heap is the one receiving it. It cannot exclude a lone device, which is the
+            # #9454 shape, where the ratio above can still zero one out.
+            and not (len(reachable) > 1 and _split_mode_confines_to_one_device(argv, env))
         ):
             pool = max(
                 (free for idx, free in rows if idx in shared_gpu_ids and idx in reachable),

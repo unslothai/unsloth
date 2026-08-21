@@ -1754,6 +1754,52 @@ def test_an_explicit_tensor_split_leaves_the_shared_heap_uncredited(tmp_path, mo
         )
 
 
+def _mixed_vulkan(tmp_path, monkeypatch, memory):
+    """A 30 GiB GGUF on a host with 4 GiB of RAM left, full manual offload."""
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = memory)
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: 30 * 1024**3
+    backend._n_layers = 32
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 4 * 1024)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
+    return backend, gguf
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [["--split-mode", "none", "--main-gpu", "0"], ["-sm", "none"]],
+    ids = ["with-main-gpu", "bare"],
+)
+def test_split_mode_none_leaves_a_second_device_heap_uncredited(tmp_path, monkeypatch, extras):
+    """``none`` sends the whole model to one --main-gpu index, in llama.cpp's own
+    enumeration, so beside a 6 GiB Vulkan0 this cannot claim the 94 GiB Vulkan1 heap
+    receives it. Crediting it admitted a 30 GiB model onto the 6 GiB card."""
+    backend, gguf = _mixed_vulkan(
+        tmp_path, monkeypatch, [(0, 6 * 1024, 8 * 1024), (1, 94641, 0)]
+    )
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(
+            backend, gguf, gpu_memory_mode = "manual", gpu_layers = 33, extra_args = extras
+        )
+
+
+def test_split_mode_none_still_credits_a_lone_shared_device(tmp_path, monkeypatch):
+    """One device leaves ``none`` nothing to exclude, so #9454's own shape keeps
+    loading rather than being priced against the 4 GiB the host has."""
+    backend, gguf = _mixed_vulkan(tmp_path, monkeypatch, [(0, 94641, 0)])
+
+    assert _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = 33,
+        extra_args = ["--split-mode", "none"],
+    )["cmd"]
+
+
 def test_vulkan_igpu_heap_does_not_bypass_a_cgroup_limit(tmp_path, monkeypatch):
     """A shared Vulkan heap remains host-backed inside a constrained container, so
     its host-wide free reading cannot override the process's cgroup ceiling."""
