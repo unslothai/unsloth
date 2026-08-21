@@ -111,8 +111,14 @@ export async function deleteSkill(name: string): Promise<void> {
   broadcastSkillCatalogChanged();
 }
 
-export function subscribeSkillCatalogChanges(listener: () => void): () => void {
+export function subscribeSkillCatalogChanges(
+  listener: () => void,
+  replayCurrent = false,
+): () => void {
   getCatalogChannel();
   catalogListeners.add(listener);
+  if (replayCurrent && catalogRevision > 0) {
+    listener();
+  }
   return () => catalogListeners.delete(listener);
 }

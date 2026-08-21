@@ -125,6 +125,7 @@ test("skill catalog changes recount context after active runs finish", () => {
     runtimeSource,
     /subscribeSkillCatalogChanges\(\(\) => \{\s*catalogRecountPending\.current = true;\s*setCatalogRevision/,
   );
+  assert.match(runtimeSource, /setCatalogRevision[\s\S]{0,100}\}, true\);/);
   assert.match(
     runtimeSource,
     /runActive[\s\S]{0,300}catalogRecountPending\.current[\s\S]{0,240}supersedeInFlight: true[\s\S]{0,80}!activeThreadId/,

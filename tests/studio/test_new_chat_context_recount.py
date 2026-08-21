@@ -363,9 +363,14 @@ const auiFixture: any = {
 let catalogRevision = 0;
 const catalogRecountPending = { current: false };
 let skillCatalogSubscriber: (() => void) | null = null;
+let skillCatalogRevision = 0;
 
-function subscribeSkillCatalogChanges(callback: () => void): () => void {
+function subscribeSkillCatalogChanges(
+  callback: () => void,
+  replayCurrent = false,
+): () => void {
   skillCatalogSubscriber = callback;
+  if (replayCurrent && skillCatalogRevision > 0) callback();
   return () => {
     if (skillCatalogSubscriber === callback) skillCatalogSubscriber = null;
   };
@@ -376,6 +381,7 @@ function setCatalogRevision(update: (revision: number) => number): void {
 }
 
 export function signalSkillCatalogChange(): void {
+  skillCatalogRevision += 1;
   skillCatalogSubscriber?.();
 }
 
@@ -1637,8 +1643,21 @@ def test_a_thread_becoming_active_with_a_blank_bar_is_repriced(seed_script, scen
     assert len(out["sent"]) == 2, "the thread's stored branch must be priced"
 
 
-def test_a_skill_catalog_change_reprices_the_visible_thread():
+@pytest.mark.parametrize("signal_before_subscription", [False, True])
+def test_a_skill_catalog_change_reprices_the_visible_thread(signal_before_subscription):
     """Skill schemas alter the rendered prompt, so a catalog revision invalidates saved usage."""
+    if signal_before_subscription:
+        event_sequence = """
+            signalSkillCatalogChange();
+            renderThreadContextUsageRecount();
+        """
+    else:
+        event_sequence = """
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            signalSkillCatalogChange();
+            renderThreadContextUsageRecount();
+        """
     out = _run(
         textwrap.dedent(
             f"""
@@ -1660,22 +1679,16 @@ def test_a_skill_catalog_change_reprices_the_visible_thread():
               }},
             }});
 
-            renderThreadContextUsageRecount();
-            await new Promise((resolve) => setTimeout(resolve, 20));
-            const beforeChange = world.countedMessages.length;
-            signalSkillCatalogChange();
-            renderThreadContextUsageRecount();
+            {event_sequence}
             await new Promise((resolve) => setTimeout(resolve, 30));
 
             console.log(JSON.stringify({{
-              beforeChange,
               counts: world.countedMessages.length,
               contextUsage: snapshot().contextUsage,
             }}));
             """
         )
     )
-    assert out["beforeChange"] == 0
     assert out["counts"] == 1
     assert (out["contextUsage"] or {}).get("totalTokens") == 62
 

@@ -1957,7 +1957,7 @@ function ThreadContextUsageRecount({
     return subscribeSkillCatalogChanges(() => {
       catalogRecountPending.current = true;
       setCatalogRevision((revision) => revision + 1);
-    });
+    }, true);
   }, [enabled]);
 
   useEffect(() => {
