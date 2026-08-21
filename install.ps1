@@ -4816,21 +4816,8 @@ exit 0
         }
     }
 
-    # Both ROCm routes above (auto-reroute and pinned index) land here, so this is the only
-    # spot that sees every ROCm install -- the auto-reroute block is skipped outright when
-    # UNSLOTH_TORCH_INDEX_URL/_FAMILY pins a gfx*/rocm* index.
-    # ROCm torch hides its AOTriton flash / mem-efficient SDPA kernels behind this variable.
-    # Unset, every sub-quadratic backend declines and SDPA falls to MATH, whose score matrix
-    # grows with the SQUARE of the context -- on a 16 GB card that is a 4-8k context instead
-    # of 32k. Measured on gfx1200: flash 17.3 ms / 0.18 GiB against math 387.2 ms / 12.14 GiB,
-    # agreeing to fp16 rounding.
-    # Persisted to User scope, not just this process, because the desktop shell and every
-    # training child are launched long after the installer exits. unsloth's own __init__ sets
-    # it too, but only for code that reaches `import unsloth` -- a plain `import torch` script
-    # never does, and this covers it.
-    # Any pre-existing value wins, including "0": that is the opt-out for someone who hits an
-    # AOTriton bug and wants the math fallback. Mirrors
-    # unsloth/_rocm_attention.py::enable_rocm_aotriton_attention.
+    # Both automatic and pinned ROCm routes set $ROCmIndexUrl. Persist the AOTriton gate for
+    # future torch processes while preserving any existing value, including the "0" opt-out.
     if ($ROCmIndexUrl) {
         $aotritonVar = "TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL"
         $aotritonSet = $null -ne [Environment]::GetEnvironmentVariable($aotritonVar, "User") `
@@ -4838,16 +4825,13 @@ exit 0
         if ($aotritonSet) {
             substep "$aotritonVar already set -- leaving it alone" "DarkGray"
         } else {
-            # Process copy FIRST. SetEnvironmentVariable(..., "User") throws when policy or a
-            # locked-down HKCU\Environment blocks the write, and the catch below promises this
-            # run still has the gate -- which is only true if it was already set by then.
+            # Set process scope first because the User-scope write can fail under policy.
             Set-Item -Path "Env:$aotritonVar" -Value "1"
             try {
                 [Environment]::SetEnvironmentVariable($aotritonVar, "1", "User")
                 substep "$aotritonVar=1 (AOTriton attention; unset it to fall back to MATH)" "Cyan"
             } catch {
-                # Advisory: a blocked User-scope write must not fail the install. The process
-                # copy above still helps this run, and unsloth's __init__ remains.
+                # The process copy still enables AOTriton for this run.
                 substep "could not persist $aotritonVar : $($_.Exception.Message)" "Yellow"
             }
         }

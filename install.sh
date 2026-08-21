@@ -4151,21 +4151,10 @@ _persist_rocm_wsl_dropin() {
     fi
 }
 
-# Open torch's AOTriton SDPA gate for EVERY ROCm install, not just the WSL Strix Halo
-# drop-in above. Unset, torch's flash and mem-efficient backends both decline and SDPA falls
-# to MATH, whose score matrix grows with the SQUARE of the context -- on a 16 GB card that is
-# a 4-8k context instead of 32k. Measured on gfx1200: flash 17.3 ms / 0.18 GiB against math
-# 387.2 ms / 12.14 GiB, agreeing to fp16 rounding.
-# unsloth/__init__.py sets it too, but only for code that reaches `import unsloth`; a plain
-# `import torch` script never does, so persist it for the whole host as well.
-# Any pre-existing value wins, including "0": that is the opt-out for someone who hits an
-# AOTriton bug and wants the math fallback. /etc/profile.d is root-owned, so sudo-tee when not
-# root. Best-effort throughout -- ALWAYS returns 0, never aborts the installer.
+# Persist torch's AOTriton SDPA gate for ROCm processes that do not import unsloth.
+# Preserve existing values, including the "0" opt-out, and never fail the installer.
 _persist_rocm_aotriton_env() {
-    # --no-torch installs no ROCm torch, so there is nothing here to unlock and no reason to
-    # write a root-owned file that changes every future ROCm process on the host. Same gate
-    # every other _torch_index_is_rocm_family side effect uses, and the same one install.ps1
-    # gets for free from $ROCmIndexUrl, which only resolves when -SkipTorch is off.
+    # --no-torch must not change future ROCm processes on the host.
     [ "${SKIP_TORCH:-false}" = "false" ] || return 0
     if [ -n "${TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL:-}" ]; then
         return 0
@@ -4436,7 +4425,7 @@ esac
 # merely STARTING with "rocm" isn't force-repaired from the wrong path.
 if _is_pip_rocm_family_leaf "$_torch_index_leaf"; then
     _torch_index_is_rocm_family=true
-    # Confirmed ROCm wheels: open the AOTriton SDPA gate host-wide (see the helper).
+    # Persist the gate for confirmed ROCm wheels.
     _persist_rocm_aotriton_env || true
 else
     _torch_index_is_rocm_family=false

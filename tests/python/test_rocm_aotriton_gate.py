@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The AOTriton gate: opened by default, never argued with when already set, and opened
-before anything can import torch."""
+"""Tests for ROCm AOTriton environment setup."""
 
 import os
 import re
@@ -39,7 +38,6 @@ def test_opens_the_gate_when_unset():
 
 
 def test_zero_is_the_opt_out_and_survives():
-    """ "0" is a deliberate choice by someone who hit an AOTriton bug, not an empty slot."""
     env = {AOTRITON_ENV: "0"}
     assert enable_rocm_aotriton_attention(env) is False
     assert env[AOTRITON_ENV] == "0"
@@ -67,10 +65,7 @@ def test_defaults_to_the_real_environment(monkeypatch):
 
 
 def test_init_opens_the_gate_before_importing_torch():
-    """Torch reads the variable when it picks an SDPA backend, not at extension load, so a
-    later set would still work today. Pin the order anyway: the read point is a torch
-    implementation detail, and a build that moved it earlier would silently cost a user
-    their context length. See unsloth/_rocm_attention.py."""
+    """Keep the gate before imports that can load torch."""
     source = _INIT.read_text(encoding = "utf-8")
     gate = source.index("_enable_rocm_aotriton_attention()")
     before = source[:gate]
@@ -83,43 +78,35 @@ def test_init_opens_the_gate_before_importing_torch():
 
 
 def test_init_imports_the_helper_from_the_package():
-    """Guards the import line itself: a refactor that drops it would silently reinstate
-    the O(N^2) path with every test above still green."""
     source = _INIT.read_text(encoding = "utf-8")
     assert "from ._rocm_attention import enable_rocm_aotriton_attention" in source
 
 
 def test_install_ps1_persists_the_gate_for_pinned_rocm_indexes_too():
-    """UNSLOTH_TORCH_INDEX_URL/_FAMILY pinned to a gfx*/rocm* index skips the auto-reroute
-    block entirely and resolves $ROCmIndexUrl in the pinned branch below it. Persisting from
-    inside the auto-reroute would leave those installs on the MATH path."""
+    """Persist after both automatic and pinned ROCm routing."""
     source = _INSTALL_PS1.read_text(encoding = "utf-8")
     persist = source.index('[Environment]::SetEnvironmentVariable($aotritonVar, "1", "User")')
     pinned_route = source.index(
         "if ($TorchIndexPinned -and -not $ROCmIndexUrl -and -not $SkipTorch) {"
     )
     assert pinned_route < persist, "the AOTriton persistence must follow the pinned-index routing"
-    # And it only fires once a ROCm index actually won, not on every install.
+    # Only persist when a ROCm index won.
     guard = source.rindex("if ($ROCmIndexUrl) {", 0, persist)
     assert guard > pinned_route
 
 
 def test_install_ps1_sets_the_process_copy_before_the_user_scope_write():
-    """SetEnvironmentVariable(..., "User") throws on a policy-blocked or ACL-locked
-    HKCU\\Environment, and the catch tells the user the process copy carried this run. Order
-    it the other way and that is a lie: the installer and every child it spawns lose the gate
-    on exactly the machines where the write fails."""
+    """Set process scope before a User-scope write that may fail."""
     source = _INSTALL_PS1.read_text(encoding = "utf-8")
     process_copy = source.index('Set-Item -Path "Env:$aotritonVar" -Value "1"')
     user_write = source.index('[Environment]::SetEnvironmentVariable($aotritonVar, "1", "User")')
     assert process_copy < user_write, "the process copy must precede the User-scope write"
-    # And the try must open between the two, so the process copy is outside it: inside, a
-    # throw from an earlier statement could still skip it.
+    # Keep the process write outside the fallible block.
     assert "try {" in source[process_copy:user_write]
 
 
 def _extract_sh_function(source, name):
-    """The function body verbatim, from its opening line to the closing brace in column 0."""
+    """Extract a shell function whose closing brace is in column zero."""
     lines = source.splitlines()
     start = next(i for i, ln in enumerate(lines) if ln.startswith(name + "() {"))
     end = next(i for i in range(start + 1, len(lines)) if lines[i] == "}")
@@ -131,8 +118,7 @@ def _run_persist_helper(
     skip_torch,
     env = None,
 ):
-    """Run _persist_rocm_aotriton_env for real, with its drop-in target redirected into
-    tmp_path so the test never touches /etc. Returns (exported_value, dropin_written)."""
+    """Run the helper with its profile directory redirected to tmp_path."""
     body = _extract_sh_function(
         _INSTALL_SH.read_text(encoding = "utf-8"), "_persist_rocm_aotriton_env"
     )
@@ -141,9 +127,7 @@ def _run_persist_helper(
     body = body.replace("/etc/profile.d", str(profile_d))
     script = tmp_path / "harness.sh"
     script.write_text(
-        # Shadow id(1) so the helper takes its root branch and writes the redirected path
-        # directly. Otherwise the result depends on whether the test host has passwordless
-        # sudo, and the sudo-tee arm swallows its own failure by design.
+        # Take the root branch so the result does not depend on passwordless sudo.
         "id() { echo 0; }\n" + body + "\n"
         "_persist_rocm_aotriton_env\n"
         'printf "%s" "${TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL-<unset>}"\n',
@@ -165,11 +149,7 @@ def _run_persist_helper(
     reason = "needs a POSIX shell to execute the installer helper",
 )
 def test_install_sh_skips_persistence_under_no_torch(tmp_path):
-    """--no-torch installs no ROCm torch, so writing a root-owned /etc/profile.d file that
-    re-points every future ROCm process on the host is out of scope. A pinned or probed
-    gfx*/rocm* index still classifies as the ROCm family under --no-torch, so the leaf test
-    alone does not cover this; install.ps1 is guarded already, via a $ROCmIndexUrl that only
-    resolves when -SkipTorch is off."""
+    """Do not change the host when torch is not installed."""
     value, wrote = _run_persist_helper(tmp_path, "true")
     assert value == "<unset>", "--no-torch must not export the gate"
     assert not wrote, "--no-torch must not write the host-wide drop-in"
@@ -180,7 +160,6 @@ def test_install_sh_skips_persistence_under_no_torch(tmp_path):
     reason = "needs a POSIX shell to execute the installer helper",
 )
 def test_install_sh_persists_when_torch_is_being_installed(tmp_path):
-    """The other half: with torch going in, the helper still does its job."""
     value, wrote = _run_persist_helper(tmp_path, "false")
     assert value == "1"
     assert wrote
@@ -191,7 +170,6 @@ def test_install_sh_persists_when_torch_is_being_installed(tmp_path):
     reason = "needs a POSIX shell to execute the installer helper",
 )
 def test_install_sh_leaves_an_existing_opinion_alone(tmp_path):
-    """ "0" is somebody who hit an AOTriton bug, not an empty slot."""
     value, wrote = _run_persist_helper(
         tmp_path, "false", env = {"TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL": "0"}
     )
@@ -200,8 +178,7 @@ def test_install_sh_leaves_an_existing_opinion_alone(tmp_path):
 
 
 def test_install_sh_persists_the_gate_off_the_resolved_index_leaf():
-    """The shell side classifies the FINAL resolved TORCH_INDEX_URL, so a pinned index is
-    already covered; keep the call there rather than in any one reroute arm."""
+    """Persist after the final torch index is resolved."""
     source = _INSTALL_SH.read_text(encoding = "utf-8")
     classify = source.index('if _is_pip_rocm_family_leaf "$_torch_index_leaf"; then')
     call = source.index("_persist_rocm_aotriton_env ||", classify)
