@@ -6021,3 +6021,58 @@ def test_active_cache_repo_with_a_serving_ref_keeps_its_bare_id(tmp_path):
     # Half-fetched ref, but no complete sibling exists: nothing better to pin.
     nothing_better = _build("Bare", "meta", {"meta": ["config.json"]})
     assert models_route._repo_model_load_id(nothing_better, active.resolve()) is None
+
+
+def test_cached_model_rows_ignores_a_training_args_bin_when_pinning(monkeypatch, tmp_path):
+    """A ``.bin`` is only weights when its name says so.
+
+    Trainer writes ``training_args.bin`` beside every fine-tune, and it is small enough to
+    land first when a newer revision is fetched. Counting any ``.bin`` as a payload let
+    that decoy shadow the complete snapshot beside it and pinned a directory whose load
+    raises "no file named model.safetensors". ``_WEIGHT_BIN_PREFIXES`` exists so every
+    weight check in this file agrees; the pin has to use it too.
+    """
+    active = tmp_path / "active"
+    active.mkdir()
+    repo_dir = tmp_path / "legacy" / "models--Org--Tuned"
+
+    complete = repo_dir / "snapshots" / "complete"
+    complete.mkdir(parents = True)
+    (complete / "config.json").write_text("{}")
+    (complete / "model.safetensors").write_bytes(b"\0" * 64)
+
+    # config.json + the Trainer artefact landed; the shards are still coming.
+    decoy = repo_dir / "snapshots" / "decoy"
+    decoy.mkdir(parents = True)
+    (decoy / "config.json").write_text("{}")
+    (decoy / "training_args.bin").write_bytes(b"\0" * 64)
+
+    os.utime(complete, (1_000_000, 1_000_000))
+    os.utime(decoy, (2_000_000, 2_000_000))
+
+    repo = _repo(
+        "Org/Tuned",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(files = [_file("model.safetensors", 5_000)], snapshot_path = complete),
+            SimpleNamespace(files = [_file("training_args.bin", 64)], snapshot_path = decoy),
+        ],
+    )
+
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(
+        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = {row["repo_id"]: row for row in models_route.cached_model_rows()}
+
+    assert rows["Org/Tuned"]["load_id"] == str(complete)
+    # A real weight .bin still counts, or every pre-safetensors checkpoint would be dropped.
+    assert models_route._snapshot_can_serve_a_load(decoy) is False
+    (decoy / "pytorch_model.bin").write_bytes(b"\0" * 64)
+    assert models_route._snapshot_can_serve_a_load(decoy) is True

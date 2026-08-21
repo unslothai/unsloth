@@ -4788,32 +4788,29 @@ async def list_cached_models(
         return {"cached": []}
 
 
-# The weight payload that makes a non-GGUF snapshot loadable. Shared by the row gate and
-# the load-id pin so the two cannot disagree about which copy actually holds weights.
+# What the ROW gate lists a repo on. Deliberately broader than the pin's test below: a
+# legacy diffusers pipeline ships ``diffusion_pytorch_model.bin``, which no weight-prefix
+# rule accepts, and the Images picker still has to see that repo.
 _NON_GGUF_WEIGHT_EXTENSIONS = (".safetensors", ".bin")
-# Mirrors _MODEL_SNAPSHOT_METADATA in core/training/training.py.
-_NON_GGUF_METADATA_NAMES = ("config.json", "adapter_config.json")
 
 
 def _snapshot_can_serve_a_load(snapshot: Path) -> bool:
-    """Whether this snapshot dir can be loaded on its own: metadata AND weights.
+    """Whether this snapshot dir can be loaded on its own: metadata AND real weights.
+
+    ``_is_model_directory`` is already that question, answered once for the local
+    scanners: a config beside a weight file, with ``.bin`` held to the weight prefixes so
+    a ``training_args.bin`` left behind by Trainer is not read as a checkpoint. Reusing it
+    is what ``_WEIGHT_BIN_PREFIXES`` says it exists for, that every weight check agrees.
+    Its ``.gguf`` arm cannot fire here: ``cached_model_rows`` skips a repo carrying GGUF
+    files before any pin is computed.
 
     huggingface_hub keeps one snapshot per commit holding only the files resolved at that
     commit, so a partial fetch leaves an unloadable dir with a newer mtime than the
     complete snapshot beside it. Both halves happen: a metadata-only fetch (AutoConfig or
     AutoTokenizer against a newer revision) and a weights-only one (Unsloth's own base
     model pre-warm passes allow_patterns of the shards plus the index, no config.json).
-    Weights alone raise "Unrecognized model ... should have a model_type key", metadata
-    alone raises "no file named model.safetensors", so requiring both is what
-    latest_snapshot_from_cache_path already means by loadable.
     """
-    try:
-        names = [entry.name for entry in snapshot.iterdir() if entry.is_file()]
-    except OSError:
-        return False
-    return any(name.endswith(_NON_GGUF_WEIGHT_EXTENSIONS) for name in names) and any(
-        name in _NON_GGUF_METADATA_NAMES for name in names
-    )
+    return _is_model_directory(snapshot)
 
 
 def _default_ref_model_snapshot(repo_cache_dir: Path) -> Optional[Path]:
