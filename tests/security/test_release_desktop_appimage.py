@@ -2,6 +2,7 @@
 
 import json
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from xml.etree import ElementTree
@@ -477,10 +478,10 @@ def test_complete_appimage_verifier_rejects_global_library_path_and_missing_orig
     assert "$ORIGIN-relative RUNPATH" in result.stderr
 
 
-def test_apprun_hands_an_inherited_library_path_to_children_only(tmp_path):
-    """The loader reads LD_LIBRARY_PATH before the bundle's own $ORIGIN RUNPATHs."""
+def _apprun_mount(tmp_path: Path, name: str = "AppDir") -> Path:
+    """An AppDir holding just what AppRun itself touches."""
 
-    appdir = tmp_path / "AppDir"
+    appdir = tmp_path / name
     binary = appdir / "usr/bin/unsloth-studio"
     binary.parent.mkdir(parents = True)
     binary.write_text("#!/bin/sh\nexec /usr/bin/env\n", encoding = "utf-8")
@@ -491,6 +492,15 @@ def test_apprun_hands_an_inherited_library_path_to_children_only(tmp_path):
     template = appdir / "usr/etc/fonts/unsloth-appimage.conf"
     template.parent.mkdir(parents = True)
     template.write_bytes(FONTCONFIG.read_bytes())
+    return appdir
+
+
+def test_apprun_hands_an_inherited_library_path_to_children_only(tmp_path):
+    """The loader reads LD_LIBRARY_PATH before the bundle's own $ORIGIN RUNPATHs."""
+
+    appdir = _apprun_mount(tmp_path)
+    apprun = appdir / "AppRun"
+    template = appdir / "usr/etc/fonts/unsloth-appimage.conf"
     state = tmp_path / "state"
 
     result = subprocess.run(
@@ -518,20 +528,44 @@ def test_apprun_hands_an_inherited_library_path_to_children_only(tmp_path):
     assert "@APPDIR@" not in materialized.read_text(encoding = "utf-8")
 
 
+def test_apprun_retires_only_the_font_policies_whose_mount_is_gone(tmp_path):
+    """A second launch must not pull the policy out from under a running one.
+
+    The survivor's next WebKit helper would start with an unreadable
+    FONTCONFIG_FILE, fall back to the host config, and pick the COLRv1 font
+    the policy exists to keep away from Jammy's Skia.
+    """
+
+    state = tmp_path / "state"
+    env = {"PATH": "/usr/bin:/bin", "XDG_RUNTIME_DIR": str(state)}
+    live = _apprun_mount(tmp_path, "mount-live")
+    subprocess.run([live / "AppRun"], check = True, capture_output = True, env = env)
+    live_policy = state / "unsloth-studio/fonts-mount-live.conf"
+    assert live_policy.is_file()
+
+    # A mount that exited: same shape, but its AppDir is no longer on disk.
+    dead = _apprun_mount(tmp_path, "mount-dead")
+    subprocess.run([dead / "AppRun"], check = True, capture_output = True, env = env)
+    dead_policy = state / "unsloth-studio/fonts-mount-dead.conf"
+    assert dead_policy.is_file()
+    shutil.rmtree(dead)
+
+    later = _apprun_mount(tmp_path, "mount-later")
+    result = subprocess.run([later / "AppRun"], check = True, capture_output = True, text = True, env = env)
+
+    assert live_policy.is_file(), "a running instance lost its font policy"
+    assert not dead_policy.exists(), "a departed mount's font policy was kept"
+    later_policy = state / "unsloth-studio/fonts-mount-later.conf"
+    assert f"FONTCONFIG_FILE={later_policy}" in result.stdout.splitlines()
+    assert later_policy.is_file()
+
+
 def test_apprun_falls_back_to_the_shipped_font_policy_when_it_cannot_write(tmp_path):
     """A policy that rejects host color fonts still beats no policy at all."""
 
-    appdir = tmp_path / "AppDir"
-    binary = appdir / "usr/bin/unsloth-studio"
-    binary.parent.mkdir(parents = True)
-    binary.write_text("#!/bin/sh\nexec /usr/bin/env\n", encoding = "utf-8")
-    binary.chmod(0o755)
+    appdir = _apprun_mount(tmp_path)
     apprun = appdir / "AppRun"
-    apprun.write_bytes(APPRUN.read_bytes())
-    apprun.chmod(0o755)
     template = appdir / "usr/etc/fonts/unsloth-appimage.conf"
-    template.parent.mkdir(parents = True)
-    template.write_bytes(FONTCONFIG.read_bytes())
     unwritable = tmp_path / "unwritable"
     unwritable.mkdir(mode = 0o500)
 

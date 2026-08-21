@@ -24,10 +24,19 @@ if [ -r "$unsloth_fonts_template" ] &&
   sed "s|@APPDIR@|$APPDIR|g" "$unsloth_fonts_template" \
     >"$unsloth_fonts_state/fonts-${APPDIR##*/}.conf" 2>/dev/null; then
   FONTCONFIG_FILE="$unsloth_fonts_state/fonts-${APPDIR##*/}.conf"
-  # Each mount gets its own name, so a second AppImage cannot repoint the first
-  # one's policy mid-run. Yesterday's mounts are gone; their copies can go too.
-  find "$unsloth_fonts_state" -maxdepth 1 -name 'fonts-*.conf' -mtime +1 \
-    ! -name "fonts-${APPDIR##*/}.conf" -delete 2>/dev/null || true
+  # Each mount gets its own name, so a second instance cannot repoint the first
+  # one's policy mid-run. Drop only the copies whose mount is gone: an age-based
+  # sweep would delete a live instance's copy out from under it, and its next
+  # WebKit helper would start with an unreadable FONTCONFIG_FILE, back on the
+  # host's COLRv1 font and back to the crash this file exists to prevent.
+  for unsloth_stale in "$unsloth_fonts_state"/fonts-*.conf; do
+    [ -f "$unsloth_stale" ] || continue
+    [ "$unsloth_stale" != "$FONTCONFIG_FILE" ] || continue
+    unsloth_stale_mount="$(sed -n 's|^[[:space:]]*<dir>\(.*\)/usr/share/unsloth/fonts</dir>.*|\1|p' \
+      "$unsloth_stale" 2>/dev/null | head -1)"
+    [ -n "$unsloth_stale_mount" ] && [ -d "$unsloth_stale_mount" ] || rm -f "$unsloth_stale"
+  done
+  unset unsloth_stale unsloth_stale_mount
 fi
 export FONTCONFIG_FILE
 unset unsloth_fonts_template unsloth_fonts_state
