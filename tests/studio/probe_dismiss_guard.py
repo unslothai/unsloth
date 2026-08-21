@@ -379,6 +379,24 @@ async def one_case(
         await page.mouse.click(x, y)
         await page.wait_for_timeout(300)
         await page.keyboard.press("Space")
+    elif case in ("drag_then_space", "blur_then_space"):
+        # The pointerdown focuses Delete, but a drag can retarget the compatibility click to a
+        # common ancestor. Cleanup based on that click target therefore misses the focused
+        # button. The blur variant retires the guard before any click and pins the same cleanup
+        # requirement on the production window-blur handler. It dispatches the exact event
+        # directly because Playwright cannot reliably make a headless page lose OS focus.
+        spot = await page.evaluate(WATCH_NEUTRAL_JS, False)
+        if not spot:
+            return {"case": case, "error": "no qualifying neutral spot in the viewport"}
+        await page.mouse.move(x, y)
+        await page.mouse.down()
+        await page.wait_for_timeout(120)
+        if case == "blur_then_space":
+            await page.evaluate("() => window.dispatchEvent(new Event('blur'))")
+        await page.mouse.move(spot["x"], spot["y"])
+        await page.mouse.up()
+        await page.wait_for_timeout(700)
+        await page.keyboard.press("Space")
     elif case == "dismiss_on_composer":
         # The other half of releasing the focus a swallowed press took: dismissing a menu by
         # clicking INTO the composer must leave the caret there, or the guard has answered one
@@ -660,7 +678,7 @@ def main() -> int:
     ap.add_argument("--engine", default = "chromium", choices = ("chromium", "webkit", "firefox"))
     ap.add_argument(
         "--cases",
-        default = "quick,held,busy,held_modifier,held_enter,held_space,held_space_then_space,dismiss_then_space,dismiss_on_composer,touch,touch_hold_second_pointer,touch_hold_second_pointer_grace,select,select_then_quick_click,second_click,rightclick_then_click,dragoff_then_click,touch_neutral,touch_trigger",
+        default = "quick,held,busy,held_modifier,held_enter,held_space,held_space_then_space,dismiss_then_space,drag_then_space,blur_then_space,dismiss_on_composer,touch,touch_hold_second_pointer,touch_hold_second_pointer_grace,select,select_then_quick_click,second_click,rightclick_then_click,dragoff_then_click,touch_neutral,touch_trigger",
     )
     args = ap.parse_args()
     cases = [c.strip() for c in args.cases.split(",") if c.strip()]

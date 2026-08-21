@@ -44,24 +44,43 @@ class FakeNode {}
 /** `closest` answers the one selector the guard uses: is this inside a menu surface. */
 class FakeElement extends FakeNode {
   inMenu: boolean;
-  constructor(inMenu: boolean) {
+  readonly parent?: FakeElement;
+  readonly textEntry: boolean;
+  constructor(inMenu: boolean, parent?: FakeElement, textEntry = false) {
     super();
     this.inMenu = inMenu;
+    this.parent = parent;
+    this.textEntry = textEntry;
   }
   closest(): FakeElement | null {
-    return this.inMenu ? this : null;
+    if (this.inMenu) return this;
+    for (let node = this.parent; node; node = node.parent) {
+      if (node.inMenu) return node;
+    }
+    return null;
   }
-  contains(): boolean {
+  contains(candidate: unknown): boolean {
+    for (
+      let node = candidate instanceof FakeElement ? candidate : undefined;
+      node;
+      node = node.parent
+    ) {
+      if (node === this) return true;
+    }
     return false;
   }
   matches(): boolean {
-    return false;
+    return this.textEntry;
   }
 }
 
 class FakeHTMLElement extends FakeElement {
   isContentEditable = false;
-  blur(): void {}
+  blurCount = 0;
+  blur(): void {
+    this.blurCount += 1;
+    if (fakeDocument.activeElement === this) fakeDocument.activeElement = null;
+  }
 }
 
 class FakeMouseEvent implements FakeEvent {
@@ -137,6 +156,9 @@ class FakeWindow {
     if (!list) return;
     const at = list.indexOf(fn);
     if (at >= 0) list.splice(at, 1);
+  }
+  dispatchEvent(event: FakeEvent): void {
+    for (const fn of [...(this.windowListeners.get(event.type) ?? [])]) fn(event);
   }
   advance(ms: number): void {
     this.now += ms;
@@ -317,5 +339,117 @@ test("the armed pointer's own cancel still disarms", () => {
       true,
       "a cancelled gesture produces no click of its own, so the guard must not survive it",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Focus acquired by a guarded press
+// ---------------------------------------------------------------------------
+
+test("a drag-retargeted click releases the control focused by the guarded press", () => {
+  withOpenMenu(() => {
+    const clickAncestor = new FakeHTMLElement(false);
+    const button = new FakeHTMLElement(false, clickAncestor);
+    const icon = new FakeElement(false, button);
+    fakeDocument.activeElement = INSIDE_MENU;
+
+    down(11, "mouse", icon);
+    // Pointerdown's default action runs after the capture listener and focuses the button.
+    fakeDocument.activeElement = button;
+    up(11, "mouse");
+
+    assert.equal(
+      clickReachedTheControl(clickAncestor),
+      false,
+      "the drag-retargeted click must still be swallowed",
+    );
+    assert.equal(
+      button.blurCount,
+      1,
+      "focus cleanup must use the original press target, not the retargeted click ancestor",
+    );
+  });
+});
+
+test("focus moved elsewhere during the gesture is preserved", () => {
+  withOpenMenu(() => {
+    const clickAncestor = new FakeHTMLElement(false);
+    const pressedButton = new FakeHTMLElement(false, clickAncestor);
+    const icon = new FakeElement(false, pressedButton);
+    const appFocusedControl = new FakeHTMLElement(false);
+    fakeDocument.activeElement = INSIDE_MENU;
+
+    down(11, "mouse", icon);
+    fakeDocument.activeElement = appFocusedControl;
+    up(11, "mouse");
+    clickReachedTheControl(clickAncestor);
+
+    assert.equal(
+      appFocusedControl.blurCount,
+      0,
+      "the guard must not blur focus the app moved away from the pressed control",
+    );
+  });
+});
+
+test("a control focused before the guarded press is preserved", () => {
+  withOpenMenu(() => {
+    const button = new FakeHTMLElement(false);
+    fakeDocument.activeElement = button;
+
+    down(11, "mouse", button);
+    up(11, "mouse");
+    assert.equal(clickReachedTheControl(button), false);
+
+    assert.equal(button.blurCount, 0, "the press did not acquire this existing focus");
+    assert.equal(fakeDocument.activeElement, button);
+  });
+});
+
+test("window blur retires the guard and releases press-acquired focus", () => {
+  withOpenMenu(() => {
+    const button = new FakeHTMLElement(false);
+    fakeDocument.activeElement = INSIDE_MENU;
+
+    down(11, "mouse", button);
+    fakeDocument.activeElement = button;
+    fakeWindow.dispatchEvent({ type: "blur" });
+
+    assert.equal(button.blurCount, 1);
+    assert.equal(
+      clickReachedTheControl(button),
+      true,
+      "a guard retired on window blur must not swallow a later click",
+    );
+  });
+});
+
+test("a no-click grace timeout also releases press-acquired focus", () => {
+  withOpenMenu(() => {
+    const button = new FakeHTMLElement(false);
+    fakeDocument.activeElement = INSIDE_MENU;
+
+    down(11, "mouse", button);
+    fakeDocument.activeElement = button;
+    up(11, "mouse");
+    fakeWindow.advance(900);
+
+    assert.equal(button.blurCount, 1);
+    assert.equal(clickReachedTheControl(button), true);
+  });
+});
+
+test("text-entry focus acquired by the guarded press is preserved", () => {
+  withOpenMenu(() => {
+    const input = new FakeHTMLElement(false, undefined, true);
+    fakeDocument.activeElement = INSIDE_MENU;
+
+    down(11, "mouse", input);
+    fakeDocument.activeElement = input;
+    up(11, "mouse");
+    assert.equal(clickReachedTheControl(input), false);
+
+    assert.equal(input.blurCount, 0, "typing focus must keep its caret");
+    assert.equal(fakeDocument.activeElement, input);
   });
 });

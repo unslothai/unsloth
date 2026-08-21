@@ -141,6 +141,13 @@ let activationKeyIsDown = false;
  * click in this state is a new gesture and must land.
  */
 let keyboardOnly = false;
+/**
+ * The node hit by the pointerdown that armed the guard, and the element focused before that
+ * press. Browsers may retarget the eventual click to a common ancestor after a drag, so the
+ * click target cannot identify which control the swallowed press focused.
+ */
+let armedPressTarget: Node | undefined;
+let focusBeforePress: Element | null = null;
 
 /** How long after the pointer is RELEASED a click may still arrive. */
 const CLICK_GRACE_MS = 500;
@@ -161,7 +168,7 @@ const disarmOnKey = (event: KeyboardEvent): void => {
   // is still held meant a press on the unconfirmed "Delete message" button, then a modifier, then
   // a release, deleted the message: measured on chromium, and safe once this returns early.
   if (pointerIsDown) return;
-  disarm();
+  disarmAndReleaseFocus();
 };
 
 const disarmOnActivationKeyUp = (event: KeyboardEvent): void => {
@@ -173,7 +180,7 @@ const disarmOnActivationKeyUp = (event: KeyboardEvent): void => {
   // zero-delay timeout runs; anything later than that is not this gesture's. Capture phase runs
   // ahead of the default action, which is why the timeout is scheduled here rather than after.
   if (graceTimer !== undefined) window.clearTimeout(graceTimer);
-  graceTimer = window.setTimeout(disarm, 0);
+  graceTimer = window.setTimeout(disarmAndReleaseFocus, 0);
 };
 
 const disarm = (): void => {
@@ -187,12 +194,14 @@ const disarm = (): void => {
   armedPointerId = undefined;
   activationKeyIsDown = false;
   keyboardOnly = false;
+  armedPressTarget = undefined;
+  focusBeforePress = null;
   document.removeEventListener("click", swallowClick, true);
   document.removeEventListener("pointerup", startGrace, true);
   document.removeEventListener("pointercancel", disarmOnPointerCancel, true);
   document.removeEventListener("keydown", disarmOnKey, true);
   document.removeEventListener("keyup", disarmOnActivationKeyUp, true);
-  window.removeEventListener("blur", disarm);
+  window.removeEventListener("blur", disarmAndReleaseFocus);
 };
 
 /** The release or cancel of a pointer that is not the one the guard armed for. */
@@ -204,7 +213,7 @@ const disarmOnPointerCancel = (event: PointerEvent): void => {
   // gesture ending, and disarming on it leaves the click the guarded pointer still owes to
   // land on whatever it was pressing.
   if (isAnotherPointer(event)) return;
-  disarm();
+  disarmAndReleaseFocus();
 };
 
 function startGrace(event: PointerEvent): void {
@@ -225,13 +234,13 @@ function startGrace(event: PointerEvent): void {
     graceTimer = undefined;
     return;
   }
-  graceTimer = window.setTimeout(disarm, CLICK_GRACE_MS);
+  graceTimer = window.setTimeout(disarmAndReleaseFocus, CLICK_GRACE_MS);
 }
 
 /** Anything the user types into. Dismissing a menu by clicking into it must leave the caret. */
 const TEXT_ENTRY = "input,textarea,select";
 
-function releaseFocusTakenByTheSwallowedPress(event: Event): void {
+function releaseFocusTakenByTheGuardedPress(): void {
   // Throwing the click away is only half of undoing the press. The press also FOCUSED what it
   // landed on, and a focused button is one Space away from firing: measured on chromium, firefox
   // and webkit, click the unconfirmed "Delete message" button to dismiss the menu, then press
@@ -244,12 +253,19 @@ function releaseFocusTakenByTheSwallowedPress(event: Event): void {
   // dismissal has already unmounted it. Body is where the modal shape left focus anyway.
   const active = document.activeElement;
   if (!(active instanceof HTMLElement)) return;
+  if (active === focusBeforePress) return;
   if (active.isContentEditable || active.matches(TEXT_ENTRY)) return;
   // Only focus the swallowed press itself moved. Anything else is the app's own, and taking it
   // would be a second unasked-for effect in place of the first.
-  if (!(event.target instanceof Node)) return;
-  if (!active.contains(event.target)) return;
+  if (!(armedPressTarget instanceof Node)) return;
+  if (!active.contains(armedPressTarget)) return;
   active.blur();
+}
+
+/** Retire a gesture that produced no click without leaving its pressed control focused. */
+function disarmAndReleaseFocus(): void {
+  releaseFocusTakenByTheGuardedPress();
+  disarm();
 }
 
 function swallowClick(event: Event): void {
@@ -292,14 +308,14 @@ function swallowClick(event: Event): void {
     // source on Gecko, whose keyup handler returns early when the element is no longer the
     // focused one (`nsGenericHTMLElement::HandleKeyboardActivation`), so the swallow below is
     // belt and braces on the engines that would still fire one.
-    releaseFocusTakenByTheSwallowedPress(event);
+    releaseFocusTakenByTheGuardedPress();
     return;
   }
   const touch = armedByTouch;
-  disarm();
   event.stopPropagation();
   event.preventDefault();
-  releaseFocusTakenByTheSwallowedPress(event);
+  releaseFocusTakenByTheGuardedPress();
+  disarm();
   if (!touch) return;
   // On touch, Radix's dismissal is a `once` CLICK listener on `document` in the bubble phase,
   // and the `stopPropagation` above is what it would otherwise have been woken by. Measured:
@@ -321,7 +337,7 @@ function swallowClick(event: Event): void {
   document.dispatchEvent(new MouseEvent("click", { bubbles: false }));
 }
 
-const arm = (touch: boolean, pointerId: number): void => {
+const arm = (touch: boolean, pointerId: number, pressTarget: Node): void => {
   if (armed) return;
   armed = true;
   armedByTouch = touch;
@@ -329,15 +345,17 @@ const arm = (touch: boolean, pointerId: number): void => {
   armedPointerId = pointerId;
   activationKeyIsDown = false;
   keyboardOnly = false;
+  armedPressTarget = pressTarget;
+  focusBeforePress = document.activeElement;
   // Capture, so this runs before React's root-container delegation reaches any control.
   document.addEventListener("click", swallowClick, true);
   // A gesture that never becomes a click must not leave the swallower waiting for an unrelated
-  // one: bound it at release, and drop it outright on a cancel, a key, or losing the window.
+  // one: bound it at release, and retire it on a cancel, a key, or losing the window.
   document.addEventListener("pointerup", startGrace, true);
   document.addEventListener("pointercancel", disarmOnPointerCancel, true);
   document.addEventListener("keydown", disarmOnKey, true);
   document.addEventListener("keyup", disarmOnActivationKeyUp, true);
-  window.addEventListener("blur", disarm);
+  window.addEventListener("blur", disarmAndReleaseFocus);
 };
 
 /**
@@ -358,7 +376,7 @@ export function installDismissingClickGuard(): () => void {
     if (armed && pointerIsDown && event.pointerId !== armedPointerId) return;
     // A new gesture always supersedes the last one, so a press that never produced a click
     // cannot leave the swallower armed.
-    disarm();
+    disarmAndReleaseFocus();
     // Only the primary button ever synthesises the click this exists to eat. A right or
     // middle press raises `contextmenu` or `auxclick` instead, so arming for one can only eat
     // the user's NEXT left click: measured on all three engines, the click after a right-click
@@ -374,7 +392,7 @@ export function installDismissingClickGuard(): () => void {
     const target = event.target;
     if (!(target instanceof Element)) return;
     if (target.closest(MENU_SURFACE)) return;
-    arm(event.pointerType === "touch", event.pointerId);
+    arm(event.pointerType === "touch", event.pointerId, target);
   };
   document.addEventListener("pointerdown", onPointerDown, true);
   return () => {
