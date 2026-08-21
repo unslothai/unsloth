@@ -2680,6 +2680,22 @@ def _generation_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str
     }
 
 
+def _references_tombstoned_generation(conn: sqlite3.Connection, message: dict) -> bool:
+    metadata = message.get("metadata")
+    if not isinstance(metadata, dict) or metadata.get("serverManaged") is not True:
+        return False
+    run_id = metadata.get("generationRunId")
+    if not isinstance(run_id, str) or not run_id:
+        return False
+    return (
+        conn.execute(
+            "SELECT 1 FROM app_settings WHERE key=?",
+            (f"chat-generation-run-tombstone:{run_id}",),
+        ).fetchone()
+        is not None
+    )
+
+
 def _server_managed_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
     return _research_message_ids(conn, thread_id) | _generation_message_ids(conn, thread_id)
 
@@ -3162,6 +3178,10 @@ def upsert_chat_message(message: dict, *, allow_research_update: bool = False) -
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
+        if _references_tombstoned_generation(conn, message):
+            raise ChatMessageProtectedError(
+                "deleted server-managed generation messages cannot be restored"
+            )
         _guard_server_managed_messages(
             conn,
             message["threadId"],
@@ -3248,6 +3268,11 @@ def sync_chat_messages(
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
+        messages = [
+            message
+            for message in messages
+            if not _references_tombstoned_generation(conn, message)
+        ]
         # Generation-linked messages are server-managed: keep the record rather than reject the
         # batch on client drift. No _guard_research_messages call here as a result -- these ids
         # never reach it. upsert_chat_message still guards, so the single-message route keeps

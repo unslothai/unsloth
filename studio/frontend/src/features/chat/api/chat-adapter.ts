@@ -199,7 +199,10 @@ import {
   rejectsAssistantPrefill,
   resumesExactly,
 } from "../utils/continuation";
-import { generationIsSettled } from "../utils/chat-generation-recovery";
+import {
+  generationChunkHasSubstantiveDelta,
+  generationIsSettled,
+} from "../utils/chat-generation-recovery";
 import {
   generateAudio,
   GenerationLengthError,
@@ -5856,7 +5859,11 @@ export function createOpenAIStreamAdapter(
                   generationSeq = Math.max(generationSeq, update.event.seq);
                   if (update.event.type === "chunk") {
                     generationChunkCount += 1;
-                    generationFirstChunkAt ??= update.event.createdAt;
+                    if (
+                      generationChunkHasSubstantiveDelta(update.event.payload)
+                    ) {
+                      generationFirstChunkAt ??= update.event.createdAt;
+                    }
                     yield update.event.payload as OpenAIChatChunk;
                   }
                 }

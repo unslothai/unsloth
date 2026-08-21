@@ -114,6 +114,7 @@ def test_create_is_owner_scoped_idempotent_and_binds_placeholder(chat_home):
 
 def test_explicit_prune_deletes_terminal_generation_messages(chat_home):
     _create()
+    stale_assistant = studio_db.get_chat_message("thread-1", "assistant-1")
     active = studio_db.sync_chat_messages("thread-1", [], prune_missing = True)
     assert {message["id"] for message in active} == {"user-1", "assistant-1"}
 
@@ -135,6 +136,14 @@ def test_explicit_prune_deletes_terminal_generation_messages(chat_home):
     assert [message["id"] for message in deleted] == ["user-1"]
     assert studio_db.get_chat_message("thread-1", "assistant-1") is None
     assert runs_db.get_run("run-1", "alice") is None
+
+    stale_sync = studio_db.sync_chat_messages(
+        "thread-1", [user, stale_assistant], prune_missing = True
+    )
+    assert [message["id"] for message in stale_sync] == ["user-1"]
+    assert studio_db.get_chat_message("thread-1", "assistant-1") is None
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message(stale_assistant)
 
 
 def test_generation_message_writes_are_run_bound_and_monotonic(chat_home):

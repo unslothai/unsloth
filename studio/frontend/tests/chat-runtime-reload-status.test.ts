@@ -12,6 +12,7 @@ const { readIncompleteInfo, restoredAssistantStatus } = await import(
   "../src/features/chat/utils/continuation.ts"
 );
 const {
+  generationChunkHasSubstantiveDelta,
   generationIsSettled,
   generationNeedsRecovery,
   loadGenerationOverlaySnapshot,
@@ -20,6 +21,40 @@ const {
   shouldPreserveGenerationMetadata,
   subscribeGenerationRecoveryTriggers,
 } = await import("../src/features/chat/utils/chat-generation-recovery.ts");
+
+test("first-token recovery ignores role and control chunks", () => {
+  assert.equal(
+    generationChunkHasSubstantiveDelta({
+      choices: [{ delta: { role: "assistant" } }],
+    }),
+    false,
+  );
+  assert.equal(
+    generationChunkHasSubstantiveDelta({
+      choices: [],
+      usage: { completion_tokens: 1 },
+    }),
+    false,
+  );
+  assert.equal(
+    generationChunkHasSubstantiveDelta({
+      choices: [{ delta: { content: "token" } }],
+    }),
+    true,
+  );
+  assert.equal(
+    generationChunkHasSubstantiveDelta({
+      choices: [{ delta: { reasoning_content: "thought" } }],
+    }),
+    true,
+  );
+  assert.equal(
+    generationChunkHasSubstantiveDelta({
+      choices: [{ delta: { reasoning_details: [{ text: "thought" }] } }],
+    }),
+    true,
+  );
+});
 
 test("stored assistant status remains truthful after reload", () => {
   for (const reason of ["interrupted", "length"] as const) {

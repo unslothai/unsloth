@@ -11,7 +11,7 @@ import secrets
 import sqlite3
 import threading
 import time
-from typing import Any, Iterable
+from typing import Any, Iterable, Union
 
 from storage.studio_db import get_connection
 
@@ -20,7 +20,7 @@ TERMINAL_STATUSES = frozenset({"cancelled", "completed", "failed"})
 ALL_STATUSES = ACTIVE_STATUSES | TERMINAL_STATUSES
 _EVENTS_CHANGED = threading.Condition()
 _RUN_TOMBSTONE_PREFIX = "chat-generation-run-tombstone:"
-ChatGenerationEventInput = tuple[str, dict[str, Any]] | tuple[str, dict[str, Any], int]
+ChatGenerationEventInput = Union[tuple[str, dict[str, Any]], tuple[str, dict[str, Any], int]]
 
 
 class ChatGenerationConflictError(RuntimeError):

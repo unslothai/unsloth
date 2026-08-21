@@ -128,7 +128,7 @@ def test_research_metadata_and_server_merge_are_persisted() -> None:
     runtime = source("features/chat/runtime-provider.tsx")
     assert "researchRunId: run.id" in adapter
     assert "serverManaged: true" in adapter
-    assert "getResearchThreadState(remoteId)" in runtime
+    assert re.search(r"getResearchThreadState\(\s*remoteId,?\s*\)", runtime)
     assert "preserveServerManaged" in runtime
     assert "sameResearchRun" in runtime
     assert "existingRevision > incomingRevision" in runtime

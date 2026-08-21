@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { extractDeltaText } from "./parse-assistant-content";
+
 export type StoredGenerationStatus =
   | "queued"
   | "running"
@@ -14,6 +16,34 @@ const TERMINAL = new Set<StoredGenerationStatus>([
   "completed",
   "failed",
 ]);
+
+export function generationChunkHasSubstantiveDelta(payload: unknown): boolean {
+  const delta = (
+    payload as {
+      choices?: Array<{
+        delta?: {
+          content?: unknown;
+          reasoning_content?: unknown;
+          reasoning_details?: unknown;
+        };
+      }>;
+    }
+  )?.choices?.[0]?.delta;
+  const reasoning =
+    typeof delta?.reasoning_content === "string" ? delta.reasoning_content : "";
+  const reasoningDetails = Array.isArray(delta?.reasoning_details)
+    ? delta.reasoning_details.some(
+        (part) =>
+          part !== null &&
+          typeof part === "object" &&
+          typeof (part as { text?: unknown }).text === "string" &&
+          Boolean((part as { text: string }).text),
+      )
+    : false;
+  return Boolean(
+    reasoning || reasoningDetails || extractDeltaText(delta?.content).text,
+  );
+}
 
 export function generationIsSettled(
   status: StoredGenerationStatus | null,

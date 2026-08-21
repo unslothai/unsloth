@@ -97,6 +97,7 @@ import {
   restoredAssistantStatus,
 } from "./utils/continuation";
 import {
+  generationChunkHasSubstantiveDelta,
   generationNeedsRecovery,
   loadGenerationOverlaySnapshot,
   recoveredGenerationFinalMetadata,
@@ -933,7 +934,9 @@ function scheduleGenerationRecovery(
               context_truncated?: OpenAIChatChunk["context_truncated"];
             };
             totalChunks += 1;
-            firstChunkAt ??= update.event.createdAt;
+            if (generationChunkHasSubstantiveDelta(chunk)) {
+              firstChunkAt ??= update.event.createdAt;
+            }
             if (chunk.context_truncated) {
               currentMetadata = {
                 ...currentMetadata,
