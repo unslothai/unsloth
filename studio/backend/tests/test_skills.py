@@ -224,6 +224,12 @@ def test_create_skill_allows_a_symlinked_studio_root_parent(
         ("unsloth", SKILL_MD, [{"path": "/tmp/out", "content": "x"}], "unsafe path"),
         ("unsloth", SKILL_MD, [{"path": ".", "content": "x"}], "unsafe path"),
         ("unsloth", SKILL_MD, [{"path": "./", "content": "x"}], "unsafe path"),
+        (
+            "unsloth",
+            SKILL_MD,
+            [{"path": "/".join(["d"] * 256 + ["file.txt"]), "content": "x"}],
+            "cannot exceed 256 components",
+        ),
         ("unsloth", SKILL_MD, [{"path": "SKILL.md", "content": "x"}], "one SKILL.md"),
         (
             "unsloth",
@@ -931,6 +937,13 @@ def test_replacement_reports_cleanup_failure_and_uses_a_fresh_backup(
         (
             {"different/SKILL.md": SKILL_MD},
             "must match its parent directory",
+        ),
+        (
+            {
+                "unsloth/SKILL.md": SKILL_MD,
+                f"unsloth/{'/'.join(['d'] * 256 + ['file.txt'])}": "x",
+            },
+            "cannot exceed 256 components",
         ),
     ],
 )

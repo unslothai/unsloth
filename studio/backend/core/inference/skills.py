@@ -32,6 +32,7 @@ MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
 MAX_ARCHIVE_ENTRIES = 20_000
 MAX_EXTRACTED_BYTES = 100 * 1024 * 1024
 MAX_ARCHIVE_FILES = 1_000
+MAX_SKILL_PATH_COMPONENTS = 256
 MAX_SKILL_FILE_BYTES = 2 * 1024 * 1024
 MAX_SKILL_MD_BYTES = 512 * 1024
 MAX_SKILL_PAGE_CHARS = 8_000
@@ -273,6 +274,10 @@ def _validate_bundle_layout(
 ) -> None:
     if len(files) > MAX_ARCHIVE_FILES:
         raise SkillError(f"Skill bundle exceeds the {MAX_ARCHIVE_FILES}-file limit.")
+    if any(len(path.parts) > MAX_SKILL_PATH_COMPONENTS for path, _ in files):
+        raise SkillError(
+            f"Skill resource paths cannot exceed {MAX_SKILL_PATH_COMPONENTS} components."
+        )
     oversized = next(
         (path for path, size in files if path.name != "SKILL.md" and size > MAX_SKILL_FILE_BYTES),
         None,
