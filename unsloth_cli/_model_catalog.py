@@ -148,6 +148,39 @@ def cached_entries() -> List[ModelEntry]:
     return entries
 
 
+def _local_dir_holds_a_payload(path: Path) -> bool:
+    """Whether a scanned local directory holds something a load can actually read.
+
+    ``_scan_models_dir`` lists a child on a config alone, so a weights-less config dir
+    arrives with ``partial`` False and the picker would offer a folder that fails on
+    selection. Anything that is not a readable directory fails open: a single-file GGUF
+    is a file, not a dir.
+    """
+    try:
+        if not path.is_dir():
+            return True
+    except OSError:
+        return True
+    # Fail open on an import problem too: _safe() turns any raise here into an empty
+    # "Local folders" source, which is how one bad row once hid every local model.
+    try:
+        from routes.models import (
+            _is_model_directory,
+            _local_pipeline_index,
+            _servable_gguf_names,
+        )
+    except ImportError:
+        return True
+
+    # A GGUF folder carries no config, and a diffusers pipeline keeps its weights in
+    # component subdirs, so neither answers to _is_model_directory alone.
+    return (
+        bool(_servable_gguf_names(path))
+        or _is_model_directory(path)
+        or _local_pipeline_index(path)
+    )
+
+
 def local_folder_entries() -> List[ModelEntry]:
     from routes.models import _local_model_can_chat, _local_model_task, collect_local_models
 
@@ -162,6 +195,8 @@ def local_folder_entries() -> List[ModelEntry]:
             continue
         # No format gate, so embedding and CLIP exports get through; only this stops them.
         if _local_model_can_chat(model) is False:
+            continue
+        if not _local_dir_holds_a_payload(Path(model.path)):
             continue
         entries.append(
             ModelEntry(

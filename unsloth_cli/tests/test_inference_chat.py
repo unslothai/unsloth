@@ -1627,3 +1627,67 @@ def test_load_chat_backend_forwards_mlx_distributed_options(monkeypatch):
 
     assert calls[0]["tensor_parallel"] is True
     assert calls[0]["mlx_distributed"] is True
+
+
+def test_catalog_local_folder_entries_drop_a_weightless_config_dir(monkeypatch, tmp_path):
+    """_scan_models_dir lists a child on a config alone, so a weights-less config dir
+    reaches the picker unflagged and fails on selection. Every other local shape stays:
+    a GGUF folder carries no config, a pipeline keeps weights in component subdirs, and a
+    single-file GGUF is not a directory at all."""
+    from unsloth_cli import _model_catalog as cat
+
+    class _LocalModelInfo:
+        def __init__(self, id, display_name, path, source, model_format = None, partial = False):
+            self.id = id
+            self.display_name = display_name
+            self.path = path
+            self.source = source
+            self.model_format = model_format
+            self.partial = partial
+
+    def _dir(name, files):
+        d = tmp_path / name
+        d.mkdir()
+        for file in files:
+            (d / file).write_bytes(b"\0" * 8)
+        return d
+
+    config_only = _dir("ConfigOnly", ["config.json"])
+    real = _dir("Real", ["config.json", "model.safetensors"])
+    gguf_folder = _dir("GgufFolder", ["Qwen3-0.6B-Q4_K_M.gguf"])
+    pipeline = _dir("Pipeline", ["model_index.json"])
+    (pipeline / "unet").mkdir()
+    single_file = tmp_path / "Tiny.gguf"
+    single_file.write_bytes(b"\0" * 8)
+
+    rows = [
+        _LocalModelInfo(str(real), "Real", str(real), "models_dir"),
+        _LocalModelInfo(str(config_only), "ConfigOnly", str(config_only), "models_dir"),
+        _LocalModelInfo(str(gguf_folder), "GgufFolder", str(gguf_folder), "models_dir",
+                        model_format = "gguf"),
+        _LocalModelInfo(str(pipeline), "Pipeline", str(pipeline), "custom"),
+        _LocalModelInfo(str(single_file), "Tiny", str(single_file), "lmstudio",
+                        model_format = "gguf"),
+    ]
+
+    fake_routes = types.ModuleType("routes.models")
+    fake_routes.collect_local_models = lambda root: rows
+    fake_routes._local_model_task = lambda model: None
+    fake_routes._local_model_can_chat = lambda model: None
+    # Mirror the real predicates: config beside a weight file, servable .gguf names, and a
+    # diffusers pipeline index. The real ones are covered by the backend suite.
+    fake_routes._is_model_directory = lambda d: (d / "config.json").is_file() and any(
+        f.suffix == ".safetensors" for f in d.iterdir() if f.is_file()
+    )
+    fake_routes._servable_gguf_names = lambda d: [
+        f.name for f in d.iterdir() if f.is_file() and f.suffix.lower() == ".gguf"
+    ]
+    fake_routes._local_pipeline_index = lambda d: (d / "model_index.json").is_file()
+    monkeypatch.setitem(sys.modules, "routes.models", fake_routes)
+
+    assert [e.name for e in cat.local_folder_entries()] == [
+        "Real",
+        "GgufFolder",
+        "Pipeline",
+        "Tiny",
+    ]
