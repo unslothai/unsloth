@@ -343,17 +343,46 @@ function RootLayout() {
       useSettingsDialogStore.getState().openDialog("keyboard-shortcuts"),
     { enabled: !isAuthFlowRoute },
   );
-  useShortcut("newChat", () => {
+  /** Every "new chat" chord lands here. `incognito` skips history,
+   *  `standalone` leaves the open project. */
+  const startNewChat = (options?: {
+    incognito?: boolean;
+    standalone?: boolean;
+  }) => {
     clearNewChatDraft(); // fresh chat starts empty, no bleed from the last one
     const chatRuntime = useChatRuntimeStore.getState();
+    // Inherit the open project, like the sidebar's New chat button.
+    const projectId = options?.standalone ? null : chatRuntime.activeProjectId;
     chatRuntime.setActiveThreadId(null);
-    chatRuntime.setActiveProjectId(null);
-    chatRuntime.setIncognito(false);
+    chatRuntime.setActiveProjectId(projectId);
+    chatRuntime.setIncognito(Boolean(options?.incognito));
     void navigate({
       to: "/chat",
-      search: { new: crypto.randomUUID() },
+      search: projectId ? { project: projectId } : { new: crypto.randomUUID() },
     });
+  };
+
+  useShortcut("newChat", () => startNewChat());
+  useShortcut("newTemporaryChat", () =>
+    startNewChat({ incognito: true, standalone: true }),
+  );
+  useShortcut("newStandaloneChat", () => startNewChat({ standalone: true }));
+
+  // Workspaces. The shell is mounted on every route, so the chords live here.
+  const goTo = (to: string) => () => void navigate({ to });
+  useShortcut("switchToChat", goTo("/chat"), { enabled: !isAuthFlowRoute });
+  useShortcut("switchToProjects", goTo("/projects"), {
+    enabled: !isAuthFlowRoute,
   });
+  useShortcut("switchToHub", goTo("/hub"), { enabled: !isAuthFlowRoute });
+  useShortcut("switchToTrain", goTo("/studio"), { enabled: !isAuthFlowRoute });
+  useShortcut("switchToRecipes", goTo("/data-recipes"), {
+    enabled: !isAuthFlowRoute,
+  });
+  useShortcut("switchToImages", goTo("/images"), { enabled: !isAuthFlowRoute });
+  useShortcut("switchToVideo", goTo("/video"), { enabled: !isAuthFlowRoute });
+  useShortcut("switchToAudio", goTo("/audio"), { enabled: !isAuthFlowRoute });
+  useShortcut("switchToExport", goTo("/export"), { enabled: !isAuthFlowRoute });
 
   useEffect(() => {
     if (isChatRoute) return;

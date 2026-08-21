@@ -10,6 +10,7 @@ import {
   useFloatingPanelOrderStore,
   useFloatingPanelZIndex,
 } from "@/lib/floating-panel-order";
+import { useShortcut } from "@/features/settings";
 import { cn } from "@/lib/utils";
 import {
   ArrowExpand01Icon,
@@ -126,6 +127,18 @@ export function ApiMonitorOverlay(): ReactElement | null {
   const [data, setData] = useState<Awaited<
     ReturnType<typeof getApiMonitor>
   > | null>(null);
+
+  // The chord lives with the panel: reaching this store from the shell would
+  // pull the whole feature index into the root chunk. The full page has
+  // nothing to toggle, being the panel's contents already.
+  useShortcut(
+    "toggleApiMonitor",
+    () => {
+      if (isOpen) close();
+      else open();
+    },
+    { enabled: !onFullPage },
+  );
 
   // What this session has already shown, and when it started watching.
   const watchRef = useRef<ApiMonitorWatch>(createWatch(0));

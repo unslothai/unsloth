@@ -69,6 +69,7 @@ import {
 import { WORKFLOW_TABS, type WorkflowId } from "@/features/images/workflows";
 /* eslint-enable no-restricted-imports */
 import { cn } from "@/lib/utils";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import {
@@ -168,6 +169,13 @@ import {
   CONVERSATION_MARKDOWN_LABEL,
   type ProjectRecord,
   type SidebarItem,
+  type ChatNavigationState,
+  adjacentChatItem,
+  nextAttentionChatItem,
+  openChatItemById,
+  recentChatItemAtSlot,
+  recentlyViewedChatItem,
+  useChatNavigationStore,
 } from "@/features/chat";
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
 import {
@@ -179,6 +187,9 @@ import {
   useAppearanceCustomStore,
   useSettingsDialogStore,
   useShortcutLabel,
+  Shortcut,
+  type ShortcutId,
+  useShortcut,
 } from "@/features/settings";
 import type { SidebarNavItemId } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
@@ -214,6 +225,9 @@ import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { translate, useT, type TranslationKey } from "@/i18n";
+
+/** The ⌥⌘1-6 Recents slots, as a constant so the list below is fixed-length. */
+const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
 
 const EMPHASIS_MARKER = "__UNSLOTH_I18N_EMPHASIS_MARKER__";
 
@@ -1108,9 +1122,14 @@ export function AppSidebar() {
       undefined
     : undefined;
   const queueByThreadId = usePromptQueueUI((s) => s.byThreadId);
-  const [unreadThreadIds, setUnreadThreadIds] = useState<Set<string>>(
-    () => new Set(),
+  // In the navigation store, not local state: the unread chords register
+  // outside this tree.
+  const unreadThreadIds = useChatNavigationStore((s) => s.unreadThreadIds);
+  const markThreadsUnread = useChatNavigationStore((s) => s.markThreadsUnread);
+  const clearThreadsUnread = useChatNavigationStore(
+    (s) => s.clearThreadsUnread,
   );
+  const noteViewed = useChatNavigationStore((s) => s.noteViewed);
   const previousRunningByThreadIdRef = useRef<Record<string, boolean>>({});
   const activeVisibleThreadIds = useMemo(() => {
     if (!activeThreadId) {
@@ -1163,6 +1182,40 @@ export function AppSidebar() {
     () => sortChatItems(pinnedChatItems, PINNED_ORDER_SCOPE, pinnedSort),
     [pinnedChatItems, sortChatItems, pinnedSort],
   );
+  // Rows wanting attention, most urgent first. Same rule the Priority sort uses.
+  const attentionItemIds = useMemo(
+    () =>
+      [...sortedPinnedChatItems, ...sortedRecentChatItems]
+        .filter((item) => chatPriorityRank(item) < 3)
+        .sort(
+          (a, b) =>
+            chatPriorityRank(a) - chatPriorityRank(b) ||
+            b.updatedAt - a.updatedAt,
+        )
+        .map((item) => item.id),
+    [sortedPinnedChatItems, sortedRecentChatItems, chatPriorityRank],
+  );
+  // Publish the finished order, so the chords cannot disagree with the screen.
+  const publishLists = useChatNavigationStore((s) => s.publishLists);
+  useEffect(() => {
+    publishLists({
+      pinnedItems: sortedPinnedChatItems,
+      recentItems: sortedRecentChatItems,
+      attentionItemIds,
+      activeItemId: activeThreadId ?? null,
+    });
+  }, [
+    publishLists,
+    sortedPinnedChatItems,
+    sortedRecentChatItems,
+    attentionItemIds,
+    activeThreadId,
+  ]);
+  // The open chat heads the ⌃Tab stack, however it was opened.
+  useEffect(() => {
+    if (activeThreadId) noteViewed(activeThreadId);
+  }, [activeThreadId, noteViewed]);
+
   const sortedChatsByProjectId = useMemo(() => {
     const map = new Map<string, SidebarItem[]>();
     for (const [projectId, items] of chatsByProjectId) {
@@ -1378,11 +1431,7 @@ export function AppSidebar() {
   function markSelectedUnread() {
     const threadIds = selectedChatItems.flatMap(getSidebarItemThreadIds);
     clearSelection();
-    setUnreadThreadIds((current) => {
-      const next = new Set(current);
-      for (const threadId of threadIds) next.add(threadId);
-      return next;
-    });
+    markThreadsUnread(threadIds);
   }
 
   async function archiveSelected() {
@@ -1555,31 +1604,18 @@ export function AppSidebar() {
 
     if (completedThreadIds.length > 0 || activeVisibleThreadIdSet.size > 0) {
       queueMicrotask(() => {
-        setUnreadThreadIds((current) => {
-          let next: Set<string> | null = null;
-          const mutable = () => {
-            next ??= new Set(current);
-            return next;
-          };
-
-          for (const threadId of completedThreadIds) {
-            if (!current.has(threadId)) {
-              mutable().add(threadId);
-            }
-          }
-
-          for (const threadId of activeVisibleThreadIdSet) {
-            if (current.has(threadId)) {
-              mutable().delete(threadId);
-            }
-          }
-
-          return next ?? current;
-        });
+        // A run that finished in the open chat is read, so clear after mark.
+        markThreadsUnread(completedThreadIds);
+        clearThreadsUnread([...activeVisibleThreadIdSet]);
       });
     }
     previousRunningByThreadIdRef.current = runningByThreadId;
-  }, [activeVisibleThreadIdKey, runningByThreadId]);
+  }, [
+    activeVisibleThreadIdKey,
+    runningByThreadId,
+    markThreadsUnread,
+    clearThreadsUnread,
+  ]);
 
   // Training runs surface as sidebar "Recents" on Train/Recipes/Export, else chat recents.
   const trainingRecentsRoute = isStudioRoute || isRecipesRoute || isExportRoute;
@@ -2211,18 +2247,158 @@ export function AppSidebar() {
   }
 
   function clearChatNotifications(item: SidebarItem) {
-    const threadIds = getSidebarItemThreadIds(item);
-    setUnreadThreadIds((current) => {
-      if (!threadIds.some((threadId) => current.has(threadId))) {
-        return current;
-      }
-      const next = new Set(current);
-      for (const threadId of threadIds) {
-        next.delete(threadId);
-      }
-      return next;
-    });
+    clearThreadsUnread(getSidebarItemThreadIds(item));
   }
+
+  /** The chat as markdown, on the clipboard rather than in a download. */
+  async function copyChatItemAsMarkdown(item: SidebarItem) {
+    const threadIds = getSidebarItemThreadIds(item);
+    const { buildConversationMarkdownForThread } = await import(
+      "@/features/chat/prompt-storage/prompt-storage-dialog"
+    );
+    // A compare row is two threads: keep both, labelled.
+    const parts: string[] = [];
+    for (const threadId of threadIds) {
+      const markdown = await buildConversationMarkdownForThread(threadId);
+      if (markdown) parts.push(markdown);
+    }
+    if (parts.length === 0) {
+      toast.info("No exportable content.");
+      return;
+    }
+    if (await copyToClipboard(parts.join("\n---\n\n"))) {
+      toast.success("Chat copied as Markdown");
+    }
+  }
+
+  /** The sandbox session this chat's tool calls write into. */
+  async function copyChatSessionId(item: SidebarItem) {
+    const threadIds = getSidebarItemThreadIds(item);
+    // As the row's "Show files": a compare row spans two sandboxes.
+    const sessionId =
+      item.type === "single" || item.projectId
+        ? sandboxSessionIdFor(threadIds[0] ?? item.id, item.projectId)
+        : undefined;
+    if (!sessionId) {
+      toast.info("This chat has no single session id");
+      return;
+    }
+    if (await copyToClipboard(sessionId)) {
+      toast.success("Session id copied");
+    }
+  }
+
+  /** Open a chat row. Shared by the row and the navigation chords. */
+  function openChatItem(item: SidebarItem) {
+    clearChatNotifications(item);
+    noteViewed(item.id);
+    navigate({
+      to: "/chat",
+      search:
+        item.type === "single"
+          ? {
+              thread: item.id,
+              ...(item.projectId ? { project: item.projectId } : {}),
+            }
+          : {
+              compare: item.id,
+              ...(item.projectId ? { project: item.projectId } : {}),
+            },
+    });
+    closeMobileIfOpen();
+  }
+  // Through a ref: openChatItem is render-scoped, so registering it directly
+  // would rewrite the store every render.
+  const openChatItemRef = useRef(openChatItem);
+  useEffect(() => {
+    openChatItemRef.current = openChatItem;
+  });
+  useEffect(() => {
+    const setOpenChatItem = useChatNavigationStore.getState().setOpenChatItem;
+    setOpenChatItem((item) => openChatItemRef.current(item));
+    return () => setOpenChatItem(null);
+  }, []);
+
+  // --- Chat shortcuts ----------------------------------------------------
+  // The sidebar is on every shell route and holds the list, the handlers and
+  // the router, so the chat chords register here.
+  const activeChatItem = useMemo(
+    () => allChatItems.find((item) => item.id === activeThreadId) ?? null,
+    [allChatItems, activeThreadId],
+  );
+  /** Run `fn` on the open chat, or say why nothing happened. */
+  const withActiveChat = (fn: (item: SidebarItem) => void) => {
+    if (!activeChatItem) {
+      toast.info("Open a chat first");
+      return;
+    }
+    fn(activeChatItem);
+  };
+  const goToChat = (pick: (state: ChatNavigationState) => SidebarItem | null) =>
+    openChatItemById(pick(useChatNavigationStore.getState()));
+
+  useShortcut("archiveChat", () =>
+    withActiveChat((item) => void handleArchiveThread(item)),
+  );
+  useShortcut("markChatUnread", () =>
+    withActiveChat((item) => markThreadsUnread(getSidebarItemThreadIds(item))),
+  );
+  useShortcut("togglePinChat", () =>
+    withActiveChat((item) => togglePinnedChat(item.id)),
+  );
+  useShortcut("renameChat", () => withActiveChat(openRenameChat));
+  useShortcut("copyChatAsMarkdown", () =>
+    withActiveChat((item) => void copyChatItemAsMarkdown(item)),
+  );
+  useShortcut("copySessionId", () =>
+    withActiveChat((item) => void copyChatSessionId(item)),
+  );
+
+  useShortcut("nextChat", () => goToChat((s) => adjacentChatItem(s, 1)));
+  useShortcut("previousChat", () => goToChat((s) => adjacentChatItem(s, -1)));
+  useShortcut("nextRecentlyViewedChat", () =>
+    goToChat((s) => recentlyViewedChatItem(s, 1)),
+  );
+  useShortcut("previousRecentlyViewedChat", () =>
+    goToChat((s) => recentlyViewedChatItem(s, -1)),
+  );
+  useShortcut("nextChatNeedingAttention", () =>
+    goToChat(nextAttentionChatItem),
+  );
+  useShortcut("clearAllUnreads", () =>
+    useChatNavigationStore.getState().clearAllUnreads(),
+  );
+
+  // The six slots register as <Shortcut> elements: a loop of hooks would
+  // break the rules of hooks.
+  const slotShortcuts = (
+    <>
+      {RECENT_SLOT_NUMBERS.map((slot) => (
+        <Shortcut
+          key={`recent-${slot}`}
+          id={`goToRecentChat${slot}` as ShortcutId}
+          onTrigger={() => goToChat((s) => recentChatItemAtSlot(s, slot))}
+        />
+      ))}
+    </>
+  );
+
+  useShortcut(
+    "logOut",
+    () => {
+      // Desktop signs out through the OS account menu, not here.
+      if (isTauri) return;
+      void (async () => {
+        try {
+          await logout();
+        } catch {
+          clearAuthTokens();
+        }
+        void navigate({ to: "/login" });
+      })();
+    },
+    { enabled: !isTauri },
+  );
 
   // The "..." every list header carries. Only chat lists regroup, so that half
   // is opt-in; Pinned takes the sort half alone.
@@ -2498,21 +2674,7 @@ export function AppSidebar() {
               onClick={(event) => {
                 if (list && handleSelectionClick(event, item, list)) return;
                 clearSelection();
-                clearChatNotifications(item);
-                navigate({
-                  to: "/chat",
-                  search:
-                    item.type === "single"
-                      ? {
-                          thread: item.id,
-                          ...(item.projectId ? { project: item.projectId } : {}),
-                        }
-                      : {
-                          compare: item.id,
-                          ...(item.projectId ? { project: item.projectId } : {}),
-                        },
-                });
-                closeMobileIfOpen();
+                openChatItem(item);
               }}
             >
               {isPinned && variant !== "project" && (
@@ -2813,6 +2975,7 @@ export function AppSidebar() {
 
   return (
     <>
+      {slotShortcuts}
     <Sidebar
       collapsible="icon"
       collapseToZero={isTauri}

@@ -59,7 +59,10 @@ import { notifyChatHistoryUpdated } from "../api/chat-api";
 import { toolResultModelText } from "../api/chat-adapter";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
-import { createConversationMarkdownExporter } from "../utils/conversation-markdown-export";
+import {
+  createConversationMarkdownBuilder,
+  createConversationMarkdownExporter,
+} from "../utils/conversation-markdown-export";
 import { parseCsv } from "../utils/csv-parse";
 import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
 import {
@@ -448,6 +451,13 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
     "text/csv",
   );
 }
+
+/** Same markdown the download produces, for the "Copy as Markdown" shortcut. */
+export const buildConversationMarkdownForThread =
+  createConversationMarkdownBuilder({
+    loadMessages: loadConversationMessages,
+    renderMessage: messageToMarkdown,
+  });
 
 export const exportConversationMarkdown = createConversationMarkdownExporter({
   loadMessages: loadConversationMessages,

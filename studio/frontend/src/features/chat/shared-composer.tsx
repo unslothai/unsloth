@@ -36,6 +36,7 @@ import {
   notifyStudioDictationUnavailable,
 } from "@/features/chat/adapters/studio-dictation-adapter";
 import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
+import { useShortcut } from "@/features/settings";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import {
   AUDIO_ACCEPT,
@@ -1889,6 +1890,23 @@ export function SharedComposer({
     !busy &&
     !isComposing &&
     !isDictating;
+
+  // Compare mode swaps this composer in for the single-chat one, and only one
+  // of the two is ever on screen, so the chords register in both.
+  useShortcut("startDictation", () => {
+    if (isDictating) stopDictation();
+    else startDictation();
+  });
+  // Through the existing sendRef: `send` is render-scoped, which the React
+  // compiler will not let a hook outlive.
+  useShortcut(
+    "sendMessage",
+    () => {
+      sendRef.current?.();
+    },
+    { enabled: canSend },
+  );
+  useShortcut("attachFiles", () => fileInputRef.current?.click());
 
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top
   // level; the rest fall into the "More" overflow submenu. Core items (photos,

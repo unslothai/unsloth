@@ -21,6 +21,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useShortcut } from "@/features/settings";
 
 import {
   type McpServerConfig,
@@ -111,6 +112,9 @@ export function McpComposerButton({
   // Grey out only when a loaded model lacks tool support; with no model yet,
   // MCP can still be pre-selected, like the other composer tools.
   const usable = !modelLoaded || supportsTools;
+
+  // The dialog is this button's, so the chord that opens it is too.
+  useShortcut("openMcpServers", () => setDialogOpen(true), { enabled: usable });
 
   const refresh = useCallback(async () => {
     try {

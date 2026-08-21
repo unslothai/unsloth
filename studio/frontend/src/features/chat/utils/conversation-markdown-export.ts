@@ -28,6 +28,32 @@ type ConversationMarkdownExportDependencies<
   readonly notifyNoContent: () => void;
 };
 
+/** The markdown for one thread: null when it could not be loaded, empty when
+ *  it holds nothing exportable. Shared by the download and the copy shortcut. */
+export function createConversationMarkdownBuilder<
+  Message extends StoredConversationMessage,
+>({
+  loadMessages,
+  renderMessage,
+}: Pick<
+  ConversationMarkdownExportDependencies<Message>,
+  "loadMessages" | "renderMessage"
+>): (threadId: string) => Promise<string | null> {
+  return async (threadId) => {
+    const messages = await loadMessages(threadId);
+    if (!messages) {
+      return null;
+    }
+    const normalizedMessages: ConversationMarkdownMessage[] = messages.map(
+      (message) => ({
+        role: String(message.role ?? ""),
+        content: renderMessage(message),
+      }),
+    );
+    return buildConversationMarkdown(normalizedMessages);
+  };
+}
+
 export function createConversationMarkdownExporter<
   Message extends StoredConversationMessage,
 >({
@@ -39,18 +65,14 @@ export function createConversationMarkdownExporter<
 }: ConversationMarkdownExportDependencies<Message>): (
   threadId: string,
 ) => Promise<void> {
+  const build = createConversationMarkdownBuilder({
+    loadMessages,
+    renderMessage,
+  });
   return async (threadId) => {
-    const messages = await loadMessages(threadId);
-    if (!messages) {
-      return;
-    }
-    const normalizedMessages: ConversationMarkdownMessage[] = messages.map(
-      (message) => ({
-        role: String(message.role ?? ""),
-        content: renderMessage(message),
-      }),
-    );
-    const markdown = buildConversationMarkdown(normalizedMessages);
+    const markdown = await build(threadId);
+    // null already reported itself.
+    if (markdown === null) return;
     if (!markdown) {
       notifyNoContent();
       return;

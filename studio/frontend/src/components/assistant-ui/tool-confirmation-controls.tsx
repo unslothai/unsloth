@@ -6,6 +6,7 @@
 import { Button } from "@/components/ui/button";
 import { resolveToolConfirmation } from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useShortcut } from "@/features/settings";
 import type {
   ToolCallMessagePartComponent,
   ToolCallMessagePartStatus,
@@ -97,6 +98,20 @@ export function ToolConfirmationControls({
       void resolve("allow");
     }
   }, [showControls, autoAllowed, pending, failed, resolve]);
+
+  // ⏎ / Esc, only while this card is asking: an auto-approved one answers
+  // itself. With two cards parked, preventDefault keeps it to one decision.
+  const keyboardReady =
+    showControls && pending === null && !(autoAllowed && !failed);
+  useShortcut("approveToolRequest", () => void resolve("allow"), {
+    enabled: keyboardReady,
+    // Enter belongs to the composer while it has focus.
+    skipInTextFields: true,
+  });
+  useShortcut("declineToolRequest", () => void resolve("deny"), {
+    enabled: keyboardReady,
+    skipInTextFields: true,
+  });
 
   if (!showControls) return null;
   // Auto-approved tools resolve silently unless the post fails.

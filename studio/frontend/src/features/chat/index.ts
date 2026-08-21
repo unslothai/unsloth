@@ -75,6 +75,16 @@ export {
 export { useToolAwaitingApproval } from "./tool-approval";
 export { PermissionModeDropdown } from "./permission-mode-select";
 export { useChatSearchStore } from "./stores/chat-search-store";
+export type { ChatNavigationState } from "./stores/chat-navigation-store";
+export {
+  adjacentChatItem,
+  nextAttentionChatItem,
+  openChatItemById,
+  recentChatItemAtSlot,
+  recentlyViewedChatItem,
+  useChatNavigationStore,
+  visibleChatItems,
+} from "./stores/chat-navigation-store";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export {

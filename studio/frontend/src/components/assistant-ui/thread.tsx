@@ -139,6 +139,7 @@ import {
   shouldAutoContinueMessage,
 } from "@/features/chat/utils/continuation";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
+import { useShortcut } from "@/features/settings";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-menu-item";
@@ -5540,6 +5541,10 @@ const ComposerToolsMenu: FC<{
     };
     input.click();
   }, [aui, audioAttachmentsEnabled]);
+  // Straight to the picker, skipping the "+" menu the item lives in.
+  useShortcut("attachFiles", () => pickAttachment(), {
+    enabled: composerCanAddAttachments,
+  });
   // Exports are storage-backed; temporary chats intentionally never write there.
   const messageCount = useAuiState(({ thread }) => thread.messages.length);
   const exportDisabled = incognito || !activeThreadId || messageCount === 0;
@@ -6246,6 +6251,21 @@ const ComposerRightControls: FC<{
       notifyStudioDictationUnavailable();
     }
   };
+  // One chord for both halves, like the mic button while recording.
+  const composerIsDictating = useAuiState((s) => s.composer.dictation != null);
+  useShortcut("startDictation", () => {
+    if (composerIsDictating) aui.composer().stopDictation();
+    else startDictation();
+  });
+  // Through the form: the same send the button uses, with its checks.
+  useShortcut(
+    "sendMessage",
+    () => {
+      if (disabled || pendingSend) return;
+      aui.composer().send();
+    },
+    { enabled: !disabled },
+  );
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
@@ -7222,6 +7242,11 @@ const useForkMessageAction = () => {
 
 const ForkMessageButton: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
+  // Only the last message answers: any other would fork mid-thread.
+  const isLast = useAuiState(({ message }) => message.isLast);
+  useShortcut("forkChat", () => void forkMessage(), {
+    enabled: isLast && !forkDisabled,
+  });
 
   return (
     <TooltipIconButton

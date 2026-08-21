@@ -176,7 +176,9 @@ import {
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
+  providerSupportsFastMode,
 } from "./provider-capabilities";
+import { useShortcut } from "@/features/settings";
 import {
   ChatActiveContext,
   ChatRuntimeProvider,
@@ -2028,6 +2030,8 @@ export function ChatPage({
   }, [active, navigate, search.thread]);
 
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
+  // Controlled, so the chord can open the switcher and not just its trigger.
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
   // Latest non-compare view, so exiting compare can restore it even when
@@ -3101,6 +3105,62 @@ export function ChatPage({
     () => setSettingsOpen(false),
     [setSettingsOpen],
   );
+
+  // --- Chat page shortcuts ----------------------------------------------
+  // The controls these drive are owned by this page.
+  useShortcut(
+    "openModelPicker",
+    () => (modelSelectorOpen ? closeModelSelector() : openModelSelector()),
+    { enabled: active },
+  );
+  useShortcut("openProjectPicker", () => setProjectPickerOpen(true), {
+    enabled: active && Boolean(currentProjectId),
+  });
+
+  /** Step the effort level, clamped at both ends unless we are cycling. */
+  const shiftReasoningEffort = useCallback(
+    (delta: number, wrap: boolean) => {
+      const state = useChatRuntimeStore.getState();
+      const levels = state.reasoningEffortLevels;
+      if (!state.supportsReasoning || levels.length === 0) {
+        toast.info("This model has no reasoning effort setting");
+        return;
+      }
+      const current = levels.indexOf(state.reasoningEffort);
+      // An effort the model does not list steps from the bottom.
+      const from = current === -1 ? 0 : current;
+      const next = wrap
+        ? (from + delta + levels.length) % levels.length
+        : Math.min(Math.max(from + delta, 0), levels.length - 1);
+      if (levels[next] === state.reasoningEffort) return;
+      state.setReasoningEffort(levels[next]);
+    },
+    [],
+  );
+  useShortcut("cycleReasoningEffort", () => shiftReasoningEffort(1, true), {
+    enabled: active,
+  });
+  useShortcut("increaseReasoningEffort", () => shiftReasoningEffort(1, false), {
+    enabled: active,
+  });
+  useShortcut("decreaseReasoningEffort", () => shiftReasoningEffort(-1, false), {
+    enabled: active,
+  });
+
+  const fastModeSupported = providerSupportsFastMode(
+    activeExternalProviderType,
+    parseExternalModelId(inferenceParams.checkpoint)?.modelId ?? null,
+  );
+  useShortcut(
+    "toggleFastMode",
+    () => {
+      const state = useChatRuntimeStore.getState();
+      const next = !state.params.fastMode;
+      state.setParams({ ...state.params, fastMode: next });
+      toast.success(next ? "Fast mode on" : "Fast mode off");
+    },
+    { enabled: active && fastModeSupported },
+  );
   const { isMobile, pinned } = useSidebar();
 
   const enterCompare = useCallback(() => {
@@ -3580,6 +3640,8 @@ export function ChatPage({
                   isLoading={projectsLoading}
                   onSelectProject={openProjectLanding}
                   onViewAllProjects={openProjectsList}
+                  open={projectPickerOpen}
+                  onOpenChange={setProjectPickerOpen}
                 />
                 {currentProject && activeThreadId ? (
                   <>
