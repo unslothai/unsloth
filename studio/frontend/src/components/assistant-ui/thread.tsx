@@ -1754,6 +1754,7 @@ export const Thread: FC<{
             <ThreadPrimitive.Messages>
               {renderThreadMessage}
             </ThreadPrimitive.Messages>
+            <ChatLiveRegion />
 
             {/* Bottom slack so the last message has room above the sticky
             scroll-to-bottom button (and floating composer in single mode),
@@ -6407,7 +6408,15 @@ const GeneratingIndicator: FC = () => {
   if (!show) {
     return null;
   }
-  return <span className="text-sm text-muted-foreground">Generating...</span>;
+  return (
+    <span
+      role="status"
+      aria-live="polite"
+      className="text-sm text-muted-foreground"
+    >
+      Generating...
+    </span>
+  );
 };
 
 // Placeholder when stop fires before any visible content (e.g. mid-think).
@@ -6422,9 +6431,44 @@ const CancelledIndicator: FC = () => {
     return null;
   }
   return (
-    <span className="aui-cancelled-indicator text-sm italic text-muted-foreground">
+    <span
+      role="status"
+      aria-live="polite"
+      className="aui-cancelled-indicator text-sm italic text-muted-foreground"
+    >
       Cancelled.
     </span>
+  );
+};
+
+const ChatLiveRegion: FC = () => {
+  const [announcement, setAnnouncement] = useState("");
+  const timeoutRef = useRef<number | null>(null);
+  const announce = (message: string) => {
+    if (timeoutRef.current != null) window.clearTimeout(timeoutRef.current);
+    setAnnouncement("");
+    timeoutRef.current = window.setTimeout(() => {
+      setAnnouncement(message);
+      timeoutRef.current = null;
+    }, 0);
+  };
+  useEffect(
+    () => () => {
+      if (timeoutRef.current != null) window.clearTimeout(timeoutRef.current);
+    },
+    [],
+  );
+  useAuiEvent("thread.runStart", () => announce("Generating response..."));
+  useAuiEvent("thread.runEnd", () => announce("Response complete."));
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      className="sr-only"
+    >
+      {announcement}
+    </div>
   );
 };
 
@@ -7013,6 +7057,7 @@ const AssistantMessage: FC = () => {
       onBlur={focusReveal.onBlur}
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
+        <h6 className="sr-only">Response:</h6>
         {contextTruncation && showsNotice && !isEditing && (
           <CompactionNotice truncation={contextTruncation} />
         )}
@@ -7020,6 +7065,7 @@ const AssistantMessage: FC = () => {
           <div className="flex flex-col gap-2 w-full">
             <textarea
               ref={textareaRef}
+              aria-label="Edit message"
               defaultValue={extractTaggedText(messageContent)}
               className="w-full p-3 rounded-xl bg-muted border border-border text-foreground focus:ring-1 focus:ring-ring outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70dvh]"
               autoFocus
@@ -7637,6 +7683,7 @@ const UserMessage: FC = () => {
       className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150"
       data-role="user"
     >
+      <h5 className="sr-only">You said:</h5>
       <UserMessageAttachments />
       <UserMessageAudio />
 
