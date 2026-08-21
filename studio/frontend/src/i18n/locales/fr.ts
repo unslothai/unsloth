@@ -186,6 +186,8 @@ export const fr = {
       closeAriaLabel: "Fermer les paramètres",
       searchPlaceholder: "Rechercher dans les paramètres…",
       searchNoResults: "Aucun paramètre trouvé.",
+      panelFailed: "Cette section n'a pas pu être chargée.",
+      panelReload: "Recharger",
     },
     tabs: {
       general: "Général",
@@ -195,11 +197,56 @@ export const fr = {
       chat: "Discussion",
       connections: "Connexions",
       apiKeys: "API",
+      remoteLan: "Accès distant et LAN",
       about: "À propos",
       data: "Données",
       agents: "Agents",
       debugging: "Journaux",
       voice: "Voix",
+      keyboardShortcuts: "Raccourcis",
+    },
+    keyboardShortcuts: {
+      title: "Raccourcis clavier",
+      description:
+        "Modifiez un raccourci, ou effacez-le pour libérer la combinaison pour le navigateur ou le système.",
+      searchPlaceholder: "Rechercher des raccourcis…",
+      noResults: "Aucun raccourci ne correspond à cette recherche.",
+      unassigned: "Non attribué",
+      recording: "Appuyez sur les touches…",
+      recordingHint: "Appuyez sur la nouvelle combinaison, ou Échap pour annuler.",
+      needsModifier: "Ajoutez ⌘, Ctrl ou Alt. Une touche seule avalerait la saisie.",
+      conflict: "Également utilisé par un autre raccourci",
+      conflictShadowed: "Un autre raccourci utilise cette combinaison et s'exécute à sa place",
+      edit: "Modifier le raccourci",
+      clear: "Supprimer le raccourci",
+      reset: "Rétablir la valeur par défaut",
+      resetAll: "Tout réinitialiser",
+      groups: {
+        general: "Général",
+        chat: "Discussion",
+      },
+      actions: {
+        newChat: {
+          label: "Nouvelle discussion",
+          description: "Démarrer une nouvelle discussion",
+        },
+        searchChats: {
+          label: "Rechercher dans les discussions",
+          description: "Ouvrir la recherche de discussions",
+        },
+        toggleSidebar: {
+          label: "Afficher/masquer la barre latérale",
+          description: "Afficher ou masquer la barre latérale",
+        },
+        openSettings: {
+          label: "Ouvrir les paramètres",
+          description: "Ouvrir la fenêtre des paramètres",
+        },
+        openKeyboardShortcuts: {
+          label: "Raccourcis clavier",
+          description: "Ouvrir cette liste de raccourcis",
+        },
+      },
     },
     debugging: {
       logSection: "Fichier journal",
@@ -237,6 +284,17 @@ export const fr = {
         engineModel: "Transcription locale",
         engineModelDescription:
           "Exécute un modèle de reconnaissance vocale (STT) en local et fonctionne hors ligne. Téléchargez-le, chargez-le ; il se décharge après une période d'inactivité.",
+        engineCustom: "Point de terminaison personnalisé",
+        engineCustomDescription:
+          "Envoie l'audio enregistré à un serveur STT compatible avec OpenAI depuis vos connexions.",
+        connectionLabel: "Connexion",
+        connectionDescription:
+          "Ajoutez un serveur compatible avec OpenAI et éventuellement une clé API dans Connexions.",
+        connectionPlaceholder: "Sélectionner une connexion",
+        connectionEmpty: "Aucune connexion disponible",
+        customModelLabel: "Modèle",
+        customModelDescription:
+          "Nom du modèle envoyé à /v1/audio/transcriptions.",
         sttModelLabel: "Modèle de reconnaissance vocale",
         sttModelDescription:
           "Choisissez ou recherchez un modèle STT à exécuter en local.",
@@ -290,6 +348,8 @@ export const fr = {
         allowMicrophone: "Autoriser l’accès au microphone",
         micAccessBlocked:
           "L'accès au microphone a été bloqué. Autorisez l'accès au microphone pour cette page Unsloth, puis réessayez.",
+        micAccessBlockedDesktop:
+          "L'accès au microphone a été bloqué. Réessayez et choisissez Autoriser, ou activez le microphone dans les paramètres de confidentialité du système.",
         micAccessUnsupported:
           "L'accès au microphone n'est pas pris en charge dans ce navigateur ou ce contexte.",
         systemDefault: "Par défaut du système",
@@ -297,6 +357,7 @@ export const fr = {
         languageLabel: "Langue de la dictée",
         languageDescription: "Langue à reconnaître",
         languageAuto: "Auto (langue du navigateur)",
+        languageAutoDetect: "Auto (détecter la langue)",
       },
       dictionary: {
         sectionTitle: "Dictionnaire de dictée",
@@ -364,6 +425,7 @@ export const fr = {
         modelLabel: "Modèle TTS",
         modelDescription:
           "Chargez un modèle audio depuis le sélecteur de modèles (par exemple Orpheus TTS)",
+        openAudioAction: "Ouvrir Audio",
         voiceLabel: "Voix",
         voiceDescription: "Meilleures voix sur cet appareil",
         speedLabel: "Vitesse",
@@ -373,6 +435,7 @@ export const fr = {
         previewDescription: "Lire un court extrait",
         previewFailed: "Échec de l’aperçu de la synthèse vocale",
         previewAction: "Écouter",
+        preparingAction: "Génération…",
         stopAction: "Arrêter",
         ttsLabel: "Synthèse vocale",
         notSupported: "Indisponible dans ce navigateur",
@@ -835,6 +898,24 @@ export const fr = {
         switchFailed: "Impossible de changer le backend llama.cpp.",
         switchInterrupted: "Le changement a été interrompu avant d’être terminé.",
         envLocked: "Fixé à {backend} par la variable d'environnement UNSLOTH_LLAMA_CPP_BACKEND, qui prévaut sur ce réglage.",
+        customPath: {
+          label: "Dossier llama.cpp personnalisé",
+          description: "Utilisez votre propre build de llama-server.",
+          hint: "Choisissez le dossier llama.cpp contenant llama-server, ou un build où il se trouve sous build/bin. Le runtime personnalisé est utilisé pour le chat GGUF, les embeddings et les modèles vocaux compatibles. Les variables d'environnement restent prioritaires.",
+          automatic: "Automatique (fourni)",
+          bundled: "Utilise le runtime llama.cpp installé par Unsloth.",
+          active: "Votre llama-server personnalisé sera utilisé au prochain chargement de modèle.",
+          environmentManaged: "Géré par la variable d'environnement {variable}.",
+          missingBinary: "llama-server n'est plus disponible dans ce dossier. Choisissez un autre dossier ou utilisez le runtime fourni.",
+          reloadRequired: "Rechargez le modèle pour utiliser le llama-server sélectionné.",
+          change: "Modifier",
+          saving: "Enregistrement...",
+          useBundled: "Utiliser la version fournie",
+          chooseTitle: "Choisir le dossier llama.cpp",
+          chooseAction: "Utiliser ce dossier",
+          saved: "Dossier llama.cpp mis à jour",
+          saveError: "Impossible de mettre à jour le dossier llama.cpp",
+        },
         backends: {
           auto: "Automatique",
           cpu: "CPU",
@@ -847,6 +928,7 @@ export const fr = {
           notInstalled: "Aucune installation llama.cpp gérée n'a été trouvée, il n'y a donc pas de backend à changer.",
           localLink: "llama.cpp est un dossier local que vous avez lié vous-même ; Unsloth ne le remplacera pas.",
           sourceBuild: "Ce llama.cpp a été compilé depuis les sources, son backend ne peut pas être changé ici.",
+          customPath: "Un dossier llama.cpp personnalisé est sélectionné. Son build détermine le backend de calcul.",
           unresolved: "Impossible de vérifier les backends disponibles. Vérifiez votre connexion et réessayez.",
         },
         // Non affiché : termes supplémentaires pour la recherche dans les réglages.
@@ -1144,6 +1226,9 @@ export const fr = {
       archivedVideos: "Vidéos archivées",
       archivedVideosDescription: "Consultez et gérez les vidéos que vous avez archivées.",
       manageAction: "Gérer",
+      manageChats: "Gérer les discussions",
+      manageChatsDescription:
+        "Sélectionnez plusieurs discussions pour les déplacer, les épingler, les archiver, les exporter ou les supprimer.",
       exportArchivedChats: "Exporter",
       exportingArchivedChats: "Exportation...",
       exportedOneArchivedChat: "1 discussion archivée a été exportée",
@@ -1193,6 +1278,11 @@ export const fr = {
     connections: {
       title: "Connexions",
       description: "Gérez les fournisseurs et les connexions externes.",
+    },
+    remoteLan: {
+      title: "Accès distant et LAN",
+      description:
+        "Accédez à cet Unsloth depuis vos autres appareils, via votre réseau local ou une URL publique temporaire.",
     },
     apiKeys: {
       title: "API",

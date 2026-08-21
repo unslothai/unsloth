@@ -56,11 +56,17 @@ pub const IMAGE_ATTACHMENT_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif"
 /// Chat audio attachments; keep in sync with `audio-attachment-adapter.ts` `accept`.
 pub const AUDIO_ATTACHMENT_EXTS: &[&str] = &["wav", "mp3", "m4a", "ogg", "oga", "flac"];
 
+/// Chat video attachments; keep in sync with `drop-paths.ts`
+/// `CHAT_VIDEO_DROP_ACCEPT`. llama-server decodes with ffmpeg, so this is what
+/// ffmpeg reads, not what the webview can play.
+pub const VIDEO_ATTACHMENT_EXTS: &[&str] = &["mp4", "mov", "webm", "mkv", "avi"];
+
 fn accepted_attachment_exts() -> impl Iterator<Item = &'static &'static str> {
     ATTACHMENT_EXTS
         .iter()
         .chain(IMAGE_ATTACHMENT_EXTS.iter())
         .chain(AUDIO_ATTACHMENT_EXTS.iter())
+        .chain(VIDEO_ATTACHMENT_EXTS.iter())
 }
 
 pub fn classify_native_attachment_path(path: &Path) -> Result<ClassifiedPath, String> {

@@ -278,3 +278,69 @@ def test_set_no_torch_marker_clears_itself_and_never_raises(install_root):
 
     # Absent directory: must degrade quietly, it runs mid-install.
     im.set_no_torch_marker(True, root = install_root / "does" / "not" / "exist")
+
+
+def _fake_venv(root, files):
+    """A venv-shaped tree whose installed package ships its own requirements."""
+    site = root / "lib" / "python3.12" / "site-packages"
+    reqs = site / "studio" / "backend" / "requirements"
+    (reqs / "single-env").mkdir(parents = True, exist_ok = True)
+    for name, body in files.items():
+        (reqs / name).write_text(body, encoding = "utf-8")
+    return reqs
+
+
+def test_the_manifest_records_the_venvs_own_requirements_not_the_installers(install_root, req_root):
+    """
+    The regression that broke every fresh desktop install on 2026-08-19.
+
+    A desktop bundle carries its own `studio/install_python_stack.py`, so the
+    digests used to come from whatever that bundle shipped. Verification reads
+    the *installed* package's copy. v0.1.800-beta (2026-08-14) installed unsloth
+    2026.8.18, #9148 had pinned openai in extras.txt in between, and the two
+    trees disagreed: every install came up `studio_install_requirements_changed`
+    and repaired itself before it would run.
+
+    So the two roots are made deliberately different here, and the manifest must
+    describe the one the verifier will read.
+    """
+    installed = _fake_venv(
+        install_root, {"studio.txt": "pytest\n", "extras.txt": "openai==3.2.0\n"}
+    )
+    # The installer's tree, as an older bundle would carry it.
+    (req_root / "studio.txt").write_text("pytest\n", encoding = "utf-8")
+    (req_root / "extras.txt").write_text("openai>=2.7.2\n", encoding = "utf-8")
+
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+
+    recorded = json.loads((install_root / im.MANIFEST_NAME).read_text(encoding = "utf-8"))
+    assert recorded["requirement_files"] == im.requirement_digests(installed), (
+        "the manifest recorded the installer's requirement digests; verification "
+        "reads the installed package's, so a bundle even one commit behind marks "
+        "every install it performs as stale"
+    )
+
+    # And the whole point: the install it just described reads as finished.
+    state = im.verify_install(root = install_root, req_root = installed, package_name = "pytest")
+    assert state["manifest_ok"] is True, state["reason"]
+
+
+def test_a_source_install_still_uses_the_root_it_was_given(install_root, req_root):
+    """
+    An editable / `--local` install has no copy under site-packages, and there the
+    caller's root is already the tree both sides read. Falling back to it is what
+    keeps test_edited_requirements_invalidate_the_manifest meaningful.
+    """
+    assert im.installed_requirements_root(install_root) is None
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    recorded = json.loads((install_root / im.MANIFEST_NAME).read_text(encoding = "utf-8"))
+    assert recorded["requirement_files"] == im.requirement_digests(req_root)
+
+
+def test_the_venv_resolver_finds_both_layouts(tmp_path):
+    """posix `lib/python3.x/site-packages` and Windows `Lib/site-packages`."""
+    for layout in ("lib/python3.12/site-packages", "Lib/site-packages"):
+        root = tmp_path / layout.replace("/", "_")
+        reqs = root / layout / "studio" / "backend" / "requirements"
+        reqs.mkdir(parents = True)
+        assert im.installed_requirements_root(root) == reqs
