@@ -6068,9 +6068,7 @@ def test_cached_model_rows_ignores_a_training_args_bin_when_pinning(monkeypatch,
     assert models_route._snapshot_can_serve_a_load(decoy) is True
 
 
-def test_cached_model_rows_classifies_the_selected_revision_not_the_history(
-    monkeypatch, tmp_path
-):
+def test_cached_model_rows_classifies_the_selected_revision_not_the_history(monkeypatch, tmp_path):
     """push_to_hub_merged reuses the repo id, so one repo holds a LoRA revision and later a
     merge. Classifying every snapshot lets the stale adapter_config.json label the whole
     repo an adapter, and cached_entries drops the merged checkpoint it should offer."""
@@ -6097,9 +6095,7 @@ def test_cached_model_rows_classifies_the_selected_revision_not_the_history(
         [],
         repo_dir,
         revisions = [
-            SimpleNamespace(
-                files = [_file("adapter_model.safetensors", 512)], snapshot_path = adapter
-            ),
+            SimpleNamespace(files = [_file("adapter_model.safetensors", 512)], snapshot_path = adapter),
             SimpleNamespace(files = [_file("model.safetensors", 9_000)], snapshot_path = merged),
         ],
     )
