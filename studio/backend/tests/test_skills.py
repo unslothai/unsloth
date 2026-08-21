@@ -266,7 +266,10 @@ def test_create_skill_rejects_recursive_yaml_frontmatter():
         skills.create_skill("unsloth", manifest)
 
 
-@pytest.mark.parametrize("tagged_value", ["!!bool nope", "!!timestamp nope"])
+@pytest.mark.parametrize(
+    "tagged_value",
+    ["!!bool nope", "!!timestamp nope", '!!int ""', '!!float ""'],
+)
 def test_create_skill_rejects_invalid_yaml_tags(tagged_value: str):
     manifest = f"---\nname: unsloth\ndescription: {tagged_value}\n---\n"
 

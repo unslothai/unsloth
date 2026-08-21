@@ -174,7 +174,7 @@ def _parse_skill_markdown(raw: bytes, parent_name: Optional[str] = None) -> dict
         raise SkillError("SKILL.md YAML frontmatter is not closed.")
     try:
         frontmatter = yaml.safe_load("\n".join(lines[1:closing]))
-    except (yaml.YAMLError, AttributeError, KeyError, RecursionError, ValueError) as exc:
+    except (yaml.YAMLError, AttributeError, IndexError, KeyError, RecursionError, ValueError) as exc:
         raise SkillError("SKILL.md contains invalid YAML frontmatter.") from exc
     if not isinstance(frontmatter, dict):
         raise SkillError("SKILL.md frontmatter must be a mapping.")
