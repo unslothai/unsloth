@@ -6,17 +6,8 @@ import type { FC } from "react";
 import { useDismissingClickGuard } from "@/lib/menu-dismiss";
 
 /**
- * Renders nothing; its only job is to be mounted for exactly as long as a non-modal menu's
- * content is. Radix mounts content on open and unmounts it on close, so a child of the content
- * is the cheapest correct signal for "a menu is open", and it needs no `onOpenChange` wiring at
- * the call sites.
- *
- * See menu-dismiss.ts for why the guard has to watch `pointerdown` rather than take Radix's
- * `onPointerDownOutside`.
- *
- * The lifetime is the content's MOUNT, not its open state, so a content that animates out keeps
- * the guard armed for the length of that animation, when no menu is open to dismiss. The menus
- * mounting this today unmount on close; one with an exit animation needs an open check first.
+ * Marker mounted inside non-modal menu content. The lifetime is mount-scoped: exit-animated
+ * content can outlive the open state, so animated menus must add explicit open-state gating.
  */
 export const MenuDismissGuard: FC = () => {
   useDismissingClickGuard();

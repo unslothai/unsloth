@@ -1,23 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A modal Radix menu absorbs the press that dismisses it, because `pointer-events: none` on
-// <body> takes everything underneath out of the hit test. `modal={false}` removes that write --
-// which is the point, since it is an inherited property and invalidates style for the whole
-// thread -- and it removes the absorption with it. Radix's outside handler dismisses the menu
-// but never cancels the event, so one press on a control beside the menu both closes it and
-// fires that control. In the assistant action bar that control is an unconfirmed
-// "Delete message" two buttons from the trigger: measured on the heavy-thread smoke page,
-// eleven separate dismissal gestures each removed a message on chromium and nine on webkit.
-//
-// lib/menu-dismiss.ts restores the absorption by swallowing exactly that click. It only helps a
-// menu that mounts it, so this sweeps the tree for every layer that opts OUT of the modal one
-// with `modal={false}`, and one added tomorrow has to be decided about rather than defaulting to
-// unguarded. Radix Popover is non-modal by DEFAULT and carries no such prop, so it is outside
-// this sweep and outside this change.
-//
-// tests/studio/probe_dismiss_guard.py carries the same question against a real engine with real
-// input, and is the gate in CI.
+// Verify that every explicit non-modal menu is guarded or documented as exempt.
 
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -30,10 +14,7 @@ const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 const TAG_NAME = /^<([A-Za-z0-9_.]+)/;
 const GUARD = /<MenuDismissGuard\s*\/>/;
 
-/**
- * Non-modal menus that deliberately do not swallow their dismissing click, and why. Swallowing
- * costs the user a click, so a menu that can open without being asked for cannot afford it.
- */
+/** Explicit non-modal menus that intentionally remain unguarded. */
 const UNGUARDED = new Map<string, string>([
   [
     "components/app-sidebar.tsx <DropdownMenu>",
@@ -44,7 +25,7 @@ const UNGUARDED = new Map<string, string>([
   ],
 ]);
 
-/** Every .tsx under src/, so a new non-modal menu anywhere is covered without a list. */
+/** Find all TSX sources. */
 function sources(dir: string, found: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
     const full = path.join(dir, entry);
@@ -57,12 +38,7 @@ function sources(dir: string, found: string[] = []): string[] {
   return found;
 }
 
-/**
- * Where `<tag` opens an element of exactly that name rather than one whose name merely starts
- * with it. `<DropdownMenu` is a prefix of `<DropdownMenuTrigger`, which never closes as
- * `</DropdownMenu>`, so counting prefixes leaves the depth permanently unbalanced and the body
- * below runs to end of file.
- */
+/** Find an opening tag with an exact name. */
 function openingTagAt(source: string, tag: string, from: number): number {
   let at = source.indexOf(`<${tag}`, from);
   while (at !== -1) {
@@ -73,10 +49,7 @@ function openingTagAt(source: string, tag: string, from: number): number {
   return -1;
 }
 
-/**
- * The JSX element that carries `modal={false}` at `at`, by counting its own opening and closing
- * tags. A file-level "as many guards as menus" count would pass a file where one menu mounts two.
- */
+/** Return the element carrying `modal={false}`. */
 function element(source: string, at: number): { tag: string; body: string } {
   const open = source.lastIndexOf("<", at);
   if (open === -1) {
@@ -108,11 +81,11 @@ function element(source: string, at: number): { tag: string; body: string } {
   throw new Error(`unbalanced <${tag}> around the menu at offset ${at}`);
 }
 
-/** Posix separators whatever the host uses, so the UNGUARDED keys match on Windows too. */
+/** Normalize separators for stable exemption keys. */
 const relativeId = (file: string): string =>
   path.relative(SRC, file).split(path.sep).join("/");
 
-/** Every `modal={false}` menu in the tree, as `relative/path.tsx <Tag>`, with its own body. */
+/** Collect each explicit non-modal menu and its body. */
 function nonModalMenus(): { id: string; body: string }[] {
   const menus: { id: string; body: string }[] = [];
   for (const file of sources(SRC)) {
@@ -129,7 +102,7 @@ function nonModalMenus(): { id: string; body: string }[] {
 
 test("every non-modal menu either mounts MenuDismissGuard or is a listed exception", () => {
   const menus = nonModalMenus();
-  // A sweep that resolves nothing would pass without checking anything.
+  // Require at least one menu so an empty sweep cannot pass.
   assert.ok(
     menus.length >= 2,
     `only found ${menus.length} non-modal menus; the sweep is not reaching the tree`,
@@ -155,8 +128,7 @@ test("the exception list does not outlive the menus it excuses", () => {
 });
 
 test("the element scan does not confuse a tag with one that merely starts the same", () => {
-  // `<DropdownMenu>` against `<DropdownMenuTrigger>`: the real shape in app-sidebar.tsx, and the
-  // one that silently returned the rest of the file as the menu's body.
+  // Exact tag matching prevents trigger prefixes from unbalancing the scan.
   const source = [
     "<DropdownMenu modal={false}>",
     "  <DropdownMenuTrigger />",
@@ -172,8 +144,7 @@ test("the element scan does not confuse a tag with one that merely starts the sa
 });
 
 test("menu ids are separator-independent", () => {
-  // `path.relative` yields backslashes on Windows, and an id built from those matches no
-  // UNGUARDED key, so every listed exception reads as an offender on that runner alone.
+  // Normalize Windows paths before matching exemptions.
   for (const { id } of nonModalMenus()) {
     assert.ok(!id.includes("\\"), `${id} carries a host separator`);
   }

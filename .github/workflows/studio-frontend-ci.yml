@@ -260,7 +260,7 @@ jobs:
           PW_ART_DIR: logs/playwright_heavy_thread
         run: python3 tests/studio/playwright_heavy_thread.py
 
-      # a failure here means one dismissal of a non-modal menu deleted a message without confirming
+      # A failure means dismissal triggered an unconfirmed delete.
       - name: Browser check for non-modal menu dismissal
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/probe_dismiss_guard.py --label ci --engine chromium
@@ -303,9 +303,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: studio-frontend-smoke-artifacts
-          # Most smokes write logs/playwright-<name>; the settings smoke writes a JSON report
-          # under its own name and the dismissal probe writes logs/pw/, so a bare playwright-*
-          # glob uploaded everything EXCEPT the report of the smoke that had just failed.
+          # Include the settings and dismissal probe reports as well as playwright-* logs.
           path: |
             logs/playwright-*
             logs/settings_tabs_report.json

@@ -111,8 +111,7 @@ from playwright_heavy_thread import (  # noqa: E402
 
 CHARS = int(os.environ.get("PROBE_CHARS", "25000"))
 HOLD_MS = int(os.environ.get("PROBE_HOLD_MS", "600"))
-# Past CLICK_GRACE_MS (500) in src/lib/menu-dismiss.ts, deliberately: the bound is the thing
-# `touch_hold_second_pointer_grace` is waiting out.
+# Deliberately beyond CLICK_GRACE_MS (500).
 GRACE_HOLD_MS = int(os.environ.get("PROBE_GRACE_HOLD_MS", "900"))
 
 OPEN_MENU_JS = """
@@ -149,16 +148,12 @@ FACTS_JS = """
 }
 """
 
-# Occupy the main thread so the guard's 300 ms timer expires between pointerdown and the
-# click the browser will synthesise on release. This is a stand-in for the style recalc
-# and React commit a real heavy thread does on the same press.
+# Simulate main-thread work between pointerdown and the synthesized click.
 BLOCK_JS = """
 (ms) => { const end = Date.now() + ms; while (Date.now() < end) {} }
 """
 
-# A guard that swallows too much is as broken as one that swallows too little, and the two
-# failures look identical from the outside (the menu closes either way). These two watch the
-# clicks that MUST still land.
+# Watch clicks that must still land.
 WATCH_ITEM_JS = """
 () => {
   // The first item forks into a new chat, so a fast runner can navigate before this probe reads
@@ -174,11 +169,7 @@ WATCH_ITEM_JS = """
 }
 """
 
-# Somewhere in the thread that is neither the menu nor the action bar. The listener goes on
-# whatever is ACTUALLY at the point, via elementFromPoint, rather than on an element chosen by
-# selector: the first `[data-role="user"]` in a seeded thread is scrolled far above the
-# viewport, so a rect-derived point lands somewhere else entirely and the probe reports zero
-# clicks on every tree, fixed or broken, which is a false alarm rather than a measurement.
+# Find a real neutral target in the visible thread.
 WATCH_NEUTRAL_JS = """
 (wantUnfocusable) => {
   const v = window.__heavyThread.viewport();
@@ -208,10 +199,7 @@ WATCH_NEUTRAL_JS = """
 """
 
 
-# Two pointers alive at once is the whole premise of `touch_hold_second_pointer`, and a run that
-# silently delivered only one would report a confident false negative. This records every
-# pointerdown the document sees, so the case can assert the overlap happened before it trusts a
-# verdict, and it counts the clicks the SECOND pointer's press must still deliver.
+# Record concurrent pointers and clicks for multi-pointer cases.
 MULTI_POINTER_INIT = """
 (() => {
   const st = { live: [], maxLive: 0, concurrentTypes: [], downs: [] };
@@ -247,10 +235,7 @@ MULTI_POINTER_INIT = """
 })()
 """
 
-# A point INSIDE the guard's own MENU_SURFACE that is not a selectable item, so the second
-# pointer's press is "inside the menu" and changes nothing by itself. Grid-searched rather than
-# guessed, and null rather than a fallback if the menu has no such point, so a run that could not
-# set the case up says so instead of testing something else.
+# Find a non-item point inside the menu for the second pointer.
 MENU_BLANK_JS = """
 () => {
   const menu = document.querySelector('[role="menu"]');
@@ -316,14 +301,11 @@ async def one_case(
     elif case == "busy":
         await page.mouse.move(x, y)
         await page.mouse.down()
-        # Not `wait_for_timeout`: the point is that the page is BUSY, not idle, so the
-        # press itself is a normal length and only the main thread is late.
+        # Keep the press normal-length while blocking the page.
         await page.evaluate(BLOCK_JS, HOLD_MS)
         await page.mouse.up()
     elif case == "held_modifier":
-        # Press, then press a modifier while still held, then release. Modifiers get pressed
-        # mid-gesture constantly. A guard that treats any keydown as "the user moved on" disarms
-        # here, and the release still synthesises the click, so the press lands on Delete.
+        # Modifiers may be pressed during a held gesture.
         await page.mouse.move(x, y)
         await page.mouse.down()
         await page.wait_for_timeout(120)
@@ -332,10 +314,7 @@ async def one_case(
         await page.mouse.up()
         await page.keyboard.up("Shift")
     elif case == "held_enter":
-        # Press and hold, then press Enter. A press on a button focuses it on Linux and Windows,
-        # so Enter activates the focused control and the browser fires a KEYBOARD-generated click
-        # while the pointer is still down. A guard that treats any click as the one it was armed
-        # for disarms on that, and the click the RELEASE synthesises then lands on Delete.
+        # Enter activates the focused button while the pointer remains down.
         await page.mouse.move(x, y)
         await page.mouse.down()
         await page.wait_for_timeout(120)
@@ -343,12 +322,7 @@ async def one_case(
         await page.wait_for_timeout(120)
         await page.mouse.up()
     elif case == "held_space":
-        # The same shape as `held_enter` with the one key that activates on KEYUP rather than
-        # keydown. Press and hold, hold Space down, RELEASE THE POINTER, then release Space. The
-        # pointer's own click arrives with the pointer already up, so a guard keyed on
-        # `pointerIsDown` spends itself on it, and the activation click Space fires on its keyup
-        # lands afterwards on a disarmed document. HTML spec: Space activates a button on keyup,
-        # Enter on keydown, which is why `held_enter` cannot cover this ordering.
+        # Space activates on keyup, after the pointer click.
         await page.mouse.move(x, y)
         await page.mouse.down()
         await page.wait_for_timeout(120)
@@ -358,12 +332,7 @@ async def one_case(
         await page.wait_for_timeout(120)
         await page.keyboard.up("Space")
     elif case == "held_space_then_space":
-        # `held_space` leaves the guard correct about the CLICK and wrong about the FOCUS. The
-        # press focuses the button; the held-Space branch swallows the pointer click and returns
-        # early, so nothing releases that focus. The gesture then ends with the button still
-        # focused, and the next ordinary Space -- the key a reader uses to scroll -- activates it
-        # and deletes the message. Same failure as `dismiss_then_space`, reached down the one
-        # path that skipped the blur.
+        # Ensure the swallowed press does not leave the button focused.
         await page.mouse.move(x, y)
         await page.mouse.down()
         await page.wait_for_timeout(120)
@@ -375,20 +344,12 @@ async def one_case(
         await page.wait_for_timeout(300)
         await page.keyboard.press("Space")
     elif case == "dismiss_then_space":
-        # Dismiss the menu with an ordinary click on the unconfirmed "Delete message" button, which
-        # the guard swallows, and then press Space -- the key a reader uses to scroll a thread. The
-        # press that was thrown away still FOCUSED that button, so the keystroke activates it. The
-        # modal shield never left this behind: with `pointer-events: none` on the body the press
-        # landed on `HTML` and the button was never focused.
+        # A swallowed dismissal must not leave Delete focused for Space activation.
         await page.mouse.click(x, y)
         await page.wait_for_timeout(300)
         await page.keyboard.press("Space")
     elif case in ("drag_then_space", "blur_then_space"):
-        # The pointerdown focuses Delete, but a drag can retarget the compatibility click to a
-        # common ancestor. Cleanup based on that click target therefore misses the focused
-        # button. The blur variant retires the guard before any click and pins the same cleanup
-        # requirement on the production window-blur handler. It dispatches the exact event
-        # directly because Playwright cannot reliably make a headless page lose OS focus.
+        # A drag may retarget the click; blur exercises the no-click cleanup path.
         spot = await page.evaluate(WATCH_NEUTRAL_JS, False)
         if not spot:
             return {"case": case, "error": "no qualifying neutral spot in the viewport"}
@@ -402,9 +363,7 @@ async def one_case(
         await page.wait_for_timeout(700)
         await page.keyboard.press("Space")
     elif case == "dismiss_on_composer":
-        # The other half of releasing the focus a swallowed press took: dismissing a menu by
-        # clicking INTO the composer must leave the caret there, or the guard has answered one
-        # unasked-for effect with another. Typing is the only honest test of that.
+        # Dismissing into the composer must preserve its caret.
         spot = await page.evaluate(
             "() => { const c = window.__heavyThread.composer(); if (!c) return null;"
             "const r = c.getBoundingClientRect();"
@@ -430,12 +389,7 @@ async def one_case(
     elif case == "touch":
         await page.touchscreen.tap(x, y)
     elif case in ("touch_hold_second_pointer", "touch_hold_second_pointer_grace"):
-        # A finger holds the unconfirmed "Delete message" button with the menu open, a MOUSE
-        # press lands inside the menu, then the finger lifts. Radix defers a touch dismissal to
-        # the resulting click, so the menu is still open under the second pointer, and a guard
-        # that lets any pointerdown disarm it has nothing left for the click the finger's release
-        # synthesises. Playwright's Touchscreen only exposes an atomic `tap()`, so holding a
-        # finger down needs CDP and this case runs on chromium alone.
+        # Hold touch while a mouse interacts with the open menu.
         if engine != "chromium" or context is None:
             return {
                 "case": case,
@@ -454,12 +408,6 @@ async def one_case(
         await page.wait_for_timeout(80)
         live = await page.evaluate("() => window.__multiPointer.live.length")
         await page.mouse.up()
-        # The _grace variant waits out the release-anchored bound with the FINGER STILL DOWN.
-        # `startGrace` is reached by the second pointer's own `pointerup`, and if it cannot tell
-        # that release from the guarded one it retires a gesture nobody has let go of; 500 ms
-        # later the guard is gone and the finger's own compatibility click lands on Delete.
-        # Measured on chromium: message deleted. The plain variant lifts INSIDE the window and
-        # therefore cannot see this at all, which is why both are kept.
         await page.wait_for_timeout(GRACE_HOLD_MS if case.endswith("_grace") else 150)
         if case.endswith("_grace"):
             still_down = await page.evaluate("() => window.__multiPointer.live.length")
@@ -473,10 +421,6 @@ async def one_case(
         await page.wait_for_timeout(1500)
         after = await page.evaluate(FACTS_JS)
         state = await page.evaluate("() => window.__multiPointer")
-        # Every one of these is a way the case could look green while having tested nothing: the
-        # finger's press never reaching the document, the menu closing on the touch after all, or
-        # only one of the two pointers ever being alive. An unmet premise is a FAILURE here, not
-        # a pass, because a probe that cannot tell you it missed is worse than no probe.
         if not held["menuOpen"]:
             return {
                 "case": case,
@@ -501,13 +445,9 @@ async def one_case(
             "menuClosed": not after["menuOpen"],
             "clicksSeen": state["clicks"],
             "clicksDelivered": state["delivered"],
-            # Recorded, not asserted on. The second pointer's own press produces no `click` at
-            # all while a touch point is live -- measured as zero on the fixed AND the unfixed
-            # tree -- so a "the menu press must still land" assertion here would fail on both and
-            # would be measuring the engine rather than the guard.
         }
     elif case == "select":
-        # Not a dismissal at all: a click INSIDE the menu, which must still reach its item.
+        # Selection inside the menu must reach its item.
         spot = await page.evaluate(WATCH_ITEM_JS)
         if not spot:
             return {"case": case, "error": "no menu item to select"}
@@ -521,11 +461,7 @@ async def one_case(
             ),
         }
     elif case == "touch_neutral":
-        # A touch tap on a spot that CANNOT take focus. Radix defers its touch dismissal to the
-        # resulting click, and this guard swallows that click in the capture phase, so the
-        # deferred handler never runs. When the tapped element is focusable, `useFocusOutside`
-        # dismisses instead and the menu closes anyway. Plain thread background is not focusable,
-        # so this is the case where nothing else can cover for it.
+        # A non-focusable touch target exercises Radix's deferred dismissal.
         spot = await page.evaluate(WATCH_NEUTRAL_JS, case == "touch_neutral")
         if not spot:
             return {"case": case, "error": "no qualifying neutral spot in the viewport"}
@@ -539,9 +475,7 @@ async def one_case(
             "deleted": after["assistantMessages"] < before["assistantMessages"],
         }
     elif case == "touch_trigger":
-        # Tap the trigger itself to close. The trigger is OUTSIDE the content, so the guard arms
-        # for it and swallows its click; if that were the only thing closing the menu, a touch
-        # user would be unable to cancel one of these menus without picking an item.
+        # Tapping the trigger must still close the menu.
         trigger = await page.evaluate(
             "() => { const t = window.__heavyThread.actionButton('More');"
             "if (!t) return null; const r = t.getBoundingClientRect();"
@@ -558,17 +492,12 @@ async def one_case(
             "deleted": after["assistantMessages"] < before["assistantMessages"],
         }
     elif case in ("rightclick_then_click", "dragoff_then_click"):
-        # Two ways a dismissing gesture produces NO click at all: a right click raises
-        # contextmenu instead, and a press that leaves the window is released elsewhere. Either
-        # one leaves a guard with no upper bound armed indefinitely, so the user's next real
-        # click is eaten with nothing to associate it with.
+        # These dismissing gestures may produce no click.
         spot = await page.evaluate(WATCH_NEUTRAL_JS, False)
         if not spot:
             return {"case": case, "error": "no qualifying neutral spot in the viewport"}
         if case == "rightclick_then_click":
-            # Keep WebKit's native context-menu UI from consuming the next automated mouse input.
-            # The contextmenu event still fires, so this isolates the page-level guard behavior
-            # the case is meant to test instead of mistaking browser chrome for a swallowed click.
+            # Prevent browser chrome from consuming the next automated click.
             await page.evaluate(
                 """() => document.addEventListener(
                     "contextmenu", (event) => event.preventDefault(),
@@ -595,11 +524,7 @@ async def one_case(
             "swallowedLaterClick": clicks < 1,
         }
     elif case == "select_then_quick_click":
-        # The guard is mounted INSIDE the menu content, and Radix Presence keeps that content
-        # mounted for the 100ms `data-closed:animate-out` exit. So for that window after the menu
-        # has visibly closed, the document pointerdown listener is still installed and can arm on
-        # a press that has nothing to do with any menu. `second_click` cannot see this: it waits
-        # 200ms between clicks, which is outside the window. This one lands inside it.
+        # Exercise a click during the menu's exit animation.
         item = await page.evaluate(WATCH_ITEM_JS)
         if not item:
             return {"case": case, "error": "no menu item to select"}
@@ -608,9 +533,6 @@ async def one_case(
             return {"case": case, "error": "no qualifying neutral spot in the viewport"}
         await page.evaluate("() => { window.__dismissProbe.neutralClicks = 0; }")
         await page.mouse.click(item["x"], item["y"])
-        # Inside the exit animation, deliberately. The content and its guard stay mounted
-        # for ~126ms after the item click, measured, so this press happens while the document
-        # listener is still installed. Sweepable to show the whole window, not one point.
         await page.wait_for_timeout(int(os.environ.get("PROBE_EXIT_DELAY_MS", "40")))
         await page.mouse.click(spot["x"], spot["y"])
         await page.wait_for_timeout(600)
@@ -621,8 +543,7 @@ async def one_case(
             "swallowedLaterClick": clicks == 0,
         }
     elif case == "second_click":
-        # Dismiss on neutral ground, then click a real control. Only the FIRST click is the
-        # menu's to eat; a guard that stays armed would eat this one too.
+        # Only the dismissing click may be swallowed.
         spot = await page.evaluate(WATCH_NEUTRAL_JS, False)
         if not spot:
             return {"case": case, "error": "no qualifying neutral spot in the viewport"}
@@ -634,7 +555,6 @@ async def one_case(
         return {
             "case": case,
             "neutralClicks": clicks,
-            # One swallowed (the dismissal) and one delivered is the whole contract.
             "swallowedSecondClick": clicks < 1,
         }
     else:
@@ -647,7 +567,6 @@ async def one_case(
         "bodyPointerEvents": before["bodyPointerEvents"],
         "assistantMessagesBefore": before["assistantMessages"],
         "assistantMessagesAfter": after["assistantMessages"],
-        # The whole question: did one dismissing interaction also delete a message.
         "deleted": after["assistantMessages"] < before["assistantMessages"],
         "menuClosed": not after["menuOpen"],
     }
@@ -660,8 +579,6 @@ async def run(engine: str, cases: list[str]) -> dict:
     async with async_playwright() as pw:
         browser = await getattr(pw, engine).launch(headless = True)
         for case in cases:
-            # A fresh context per case: a deleted message stays deleted, and a guard left
-            # armed by one case must not be inherited by the next.
             context = await browser.new_context(
                 viewport = {"width": 1280, "height": 900},
                 has_touch = case.startswith("touch"),
@@ -712,21 +629,13 @@ def main() -> int:
     out = Path("logs/pw") / f"dismiss_guard_{args.label}_{args.engine}.json"
     out.parent.mkdir(parents = True, exist_ok = True)
     out.write_text(json.dumps(result, indent = 2), encoding = "utf-8")
-    print(json.dumps(result, indent = 2))
+    print(json.dumps(result, indent=2))
     print(f"[probe] wrote {out}", flush = True)
 
-    # A verdict nobody reads is not a gate. Deleting a message is the failure this exists to
-    # catch, and a case that could not run is a failure too, or a broken fixture would report
-    # a clean sheet.
-    # A case the engine cannot present is reported rather than counted either way. Reading it as
-    # a pass would let an engine with no multi-pointer input silently certify a guard nobody
-    # tested there.
     skipped = [(c["case"], c["skipped"]) for c in result["cases"] if c.get("skipped")]
     for case, why in skipped:
         print(f"[probe] SKIPPED {case}: {why}", flush = True)
     deleted = [c["case"] for c in result["cases"] if c.get("deleted")]
-    # A guard that swallows the dismissing click so thoroughly that Radix never sees it would
-    # leave the menu OPEN, which is its own bug and one this probe used to record and ignore.
     stuck = [c["case"] for c in result["cases"] if "menuClosed" in c and not c["menuClosed"]]
     broken = [c["case"] for c in result["cases"] if c.get("error")]
     over = [
