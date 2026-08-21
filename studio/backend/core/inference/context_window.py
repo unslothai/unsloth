@@ -316,12 +316,14 @@ def fit_rolling_context(
 
     if current_tokens > prompt_target:
         # Missing the prompt target only loses reserved reply room. Keep the original if
-        # it fits the physical window; otherwise use an eviction that does. `fits` stays
-        # false because the target was not reached.
+        # it fits the physical window; otherwise use an eviction that does. Strictly
+        # under it on both sides: llama-server refuses at `n_ctx` exactly, since the
+        # first generated token needs a KV cell of its own. `fits` stays false because
+        # the target was not reached.
         rescued = (
             dropped_total > 0
-            and initial_tokens > context_length
-            and current_tokens <= context_length
+            and initial_tokens >= context_length
+            and current_tokens < context_length
         )
         return (fitted if rescued else messages), {
             "fits": False,
