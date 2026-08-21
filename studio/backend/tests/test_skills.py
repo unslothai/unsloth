@@ -60,6 +60,7 @@ def _corrupt_compressed_member(
     entries: dict[str, str],
     member: str,
     compression: int = zipfile.ZIP_DEFLATED,
+    corruption_offset: int = 0,
 ) -> Path:
     with zipfile.ZipFile(path, "w", compression = compression) as archive:
         for name, content in entries.items():
@@ -70,7 +71,9 @@ def _corrupt_compressed_member(
             handle.seek(entry.header_offset)
             header = handle.read(30)
             filename_length, extra_length = struct.unpack_from("<HH", header, 26)
-            handle.seek(entry.header_offset + 30 + filename_length + extra_length)
+            handle.seek(
+                entry.header_offset + 30 + filename_length + extra_length + corruption_offset
+            )
             handle.write(b"\x07")
     return path
 
@@ -444,6 +447,27 @@ def test_translates_a_corrupt_bzip2_resource(tmp_path: Path):
     assert not (tmp_path / "skills/unsloth").exists()
 
 
+@pytest.mark.parametrize(
+    "member",
+    ["unsloth/SKILL.md", "unsloth/references/config-reference.md"],
+)
+def test_translates_corrupt_lzma_streams(tmp_path: Path, member: str):
+    archive = _corrupt_compressed_member(
+        tmp_path / "corrupt-lzma.zip",
+        {
+            "unsloth/SKILL.md": SKILL_MD,
+            "unsloth/references/config-reference.md": "Use bf16.\n",
+        },
+        member,
+        zipfile.ZIP_LZMA,
+        9,
+    )
+
+    with pytest.raises(skills.SkillError, match = "SKILL.md|valid ZIP"):
+        skills.import_skill_archive(archive)
+    assert not (tmp_path / "skills/unsloth").exists()
+
+
 def test_rejects_case_insensitive_archive_collisions(tmp_path: Path):
     archive = _bundle(
         tmp_path / "collision.zip",
@@ -498,16 +522,19 @@ def test_progressively_reads_enabled_skill_resources(tmp_path: Path):
         {
             "unsloth/SKILL.md": SKILL_MD,
             "unsloth/references/config-reference.md": "Config\nUse bf16.\n",
+            "unsloth/ references/leading.md": "Leading space\n",
         },
     )
     skills.import_skill_archive(archive)
 
     manifest = skills.read_skill_resource("unsloth")
     reference = skills.read_skill_resource("unsloth", "references/config-reference.md")
+    leading = skills.read_skill_resource("unsloth", " references/leading.md")
 
     assert "Resource: SKILL.md" in manifest
     assert "Read [the configuration reference]" in manifest
     assert reference.endswith("Config\nUse bf16.\n")
+    assert leading.endswith("Leading space\n")
     skills.set_skill_enabled("unsloth", False)
     assert not any(skill["enabled"] for skill in skills.list_skills())
     with pytest.raises(skills.SkillError, match = "disabled"):

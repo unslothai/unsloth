@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import errno
 import json
+import lzma
 import os
 import shutil
 import stat
@@ -307,7 +308,7 @@ def _archive_source(
         raise SkillError("SKILL.md exceeds the 512 KB limit.")
     try:
         manifest_raw = archive.read(manifest_entry)
-    except (OSError, RuntimeError, zipfile.BadZipFile, zlib.error) as exc:
+    except (OSError, RuntimeError, zipfile.BadZipFile, lzma.LZMAError, zlib.error) as exc:
         raise SkillError("Could not read SKILL.md from the archive.") from exc
     provisional_name = source_root.name if source_root.parts else ""
     if provisional_name:
@@ -428,7 +429,7 @@ def import_skill_archive(archive_path: Path, *, replace: bool = False) -> dict:
                             raise
                         mode = entry.external_attr >> 16
                         destination.chmod(0o755 if mode & 0o111 else 0o644)
-            except (zipfile.BadZipFile, zlib.error) as exc:
+            except (zipfile.BadZipFile, lzma.LZMAError, zlib.error) as exc:
                 raise SkillError("Skill bundle must be a valid ZIP archive.") from exc
             except NotImplementedError as exc:
                 raise SkillError("Skill archive uses unsupported compression.") from exc
@@ -598,7 +599,9 @@ def read_skill_resource(
         if not skill["enabled"]:
             raise SkillError(f"Skill '{name}' is disabled.")
 
-        normalized = resource.replace("\\", "/").strip() or "SKILL.md"
+        normalized = resource.replace("\\", "/")
+        if not normalized.strip():
+            normalized = "SKILL.md"
         path = PurePosixPath(normalized)
         if (
             "\x00" in normalized
