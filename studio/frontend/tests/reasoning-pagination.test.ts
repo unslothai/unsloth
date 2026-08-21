@@ -153,6 +153,58 @@ test("a page inside a raw pre block stays literal Markdown", () => {
 
   assert.deepEqual(page.canonicalCodeSources, []);
 });
+test("opaque and block HTML keep inner Markdown inert across cuts", () => {
+  const body = `$$\n${"literal html line\n".repeat(1_000)}~~~js\n`;
+  const pages = [
+    {
+      close: "-->",
+      markdown: `<!--\n${body}-->`,
+      open: "<!--\n",
+    },
+    {
+      close: "</div>\n",
+      markdown: `<div>\n${body}</div>`,
+      open: "<div>\n",
+    },
+  ].map(({ close, markdown, open }) => ({
+    close,
+    open,
+    page: selectReasoningMarkdownPage(markdown, {
+      enabled: true,
+      maxCharacters: 2_048,
+    }),
+  }));
+
+  for (const { close, open, page } of pages) {
+    assert.equal(page.markdown.startsWith(open), true);
+    assert.equal(page.markdown.endsWith(close), true);
+    assert.deepEqual(page.canonicalCodeSources, []);
+  }
+});
+
+test("containerized code and math retain wrappers across cuts", () => {
+  const code = Array.from({ length: 1_500 }, () => "print(1)").join("\n");
+  const quotedFence = `> \`\`\`python\n> ${code.replaceAll("\n", "\n> ")}\n> \`\`\`\n`;
+  const codePage = selectReasoningMarkdownPage(quotedFence, {
+    enabled: true,
+    maxCharacters: 2_048,
+  });
+  assert.equal(codePage.markdown.startsWith("> ```python\n"), true);
+  assert.equal(codePage.markdown.endsWith("\n> ```\n"), true);
+  assert.deepEqual(codePage.canonicalCodeSources, [code]);
+
+  const math = Array.from(
+    { length: 1_500 },
+    (_, index) => `x_{${index}} = ${index}`,
+  ).join("\n  ");
+  const listMath = `- $$$\n  ${math}\n  $$$\n`;
+  const mathPage = selectReasoningMarkdownPage(listMath, {
+    enabled: true,
+    maxCharacters: 2_048,
+  });
+  assert.equal(mathPage.markdown.startsWith("- $$$\n"), true);
+  assert.equal(mathPage.markdown.endsWith("\n  $$$\n"), true);
+});
 
 test("pages preserve display math across cuts", () => {
   const markdown = `$$$\n${Array.from(
