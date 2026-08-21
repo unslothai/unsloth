@@ -82,12 +82,29 @@ def _runs_by_output_dir() -> dict:
     return by_dir
 
 
+def _path_can_chat(path: str) -> Optional[bool]:
+    """``False`` only for a locally identifiable non-chat checkpoint, else ``None``.
+
+    The outputs and exports scanners classify nothing, and Studio trains Whisper and other
+    audio models, so a user's own folders legitimately hold a checkpoint that cannot answer
+    a text turn. Fails open on anything inconclusive, including a GGUF export, whose path is
+    a file rather than a directory.
+    """
+    try:
+        from hub.services.models.common import _local_transformers_can_chat
+    except ImportError:
+        return None
+    return _local_transformers_can_chat(Path(path))
+
+
 def trained_entries() -> List[ModelEntry]:
     from utils.models import scan_trained_models
 
     runs = _runs_by_output_dir()
     entries = []
     for folder, path, model_type in scan_trained_models():
+        if _path_can_chat(path) is False:
+            continue
         run = runs.get(os.path.normpath(path))
         name = (_run_title(run) if run else "") or _folder_title(folder)
         entries.append(ModelEntry("Fine-tunes", name, _run_detail(model_type, path, run), path))
@@ -99,6 +116,7 @@ def exported_entries() -> List[ModelEntry]:
     return [
         ModelEntry("Exports", name, export_type, path)
         for name, path, export_type, _base in scan_exported_models()
+        if _path_can_chat(path) is not False
     ]
 
 
@@ -183,6 +201,20 @@ def _local_dir_holds_a_payload(path: Path) -> bool:
     )
 
 
+def _local_is_a_diffusers_pipeline(model) -> bool:
+    """Whether a local row is a diffusers pipeline, which never answers a chat turn.
+
+    An unrecognised pipeline gets no task and no root config for can_chat to read, so both
+    gates pass it while the payload check accepts its pipeline index. The cached path says
+    this with the row's ``diffusers`` flag; this is the local twin.
+    """
+    try:
+        from routes.models import _local_is_diffusers
+    except ImportError:
+        return False
+    return bool(_local_is_diffusers(model))
+
+
 def local_folder_entries() -> List[ModelEntry]:
     from routes.models import _local_model_can_chat, _local_model_task, collect_local_models
 
@@ -199,6 +231,8 @@ def local_folder_entries() -> List[ModelEntry]:
         if _local_model_can_chat(model) is False:
             continue
         if not _local_dir_holds_a_payload(Path(model.path)):
+            continue
+        if _local_is_a_diffusers_pipeline(model):
             continue
         entries.append(
             ModelEntry(

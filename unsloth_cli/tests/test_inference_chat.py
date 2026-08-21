@@ -1696,11 +1696,72 @@ def test_catalog_local_folder_entries_drop_a_weightless_config_dir(monkeypatch, 
         f.name for f in d.iterdir() if f.is_file() and f.suffix.lower() == ".gguf"
     ]
     fake_routes._local_pipeline_index = lambda d: (d / "model_index.json").is_file()
+    fake_routes._local_is_diffusers = lambda model: (
+        Path(model.path) / "model_index.json"
+    ).is_file()
     monkeypatch.setitem(sys.modules, "routes.models", fake_routes)
+
+    # The pipeline still HOLDS a payload; it is excluded from the chat picker for the
+    # separate reason that a diffusers pipeline cannot answer a text turn.
+    assert cat._local_dir_holds_a_payload(pipeline) is True
 
     assert [e.name for e in cat.local_folder_entries()] == [
         "Real",
         "GgufFolder",
-        "Pipeline",
         "Tiny",
     ]
+
+
+def test_catalog_trained_and_exported_entries_drop_non_chat_checkpoints(monkeypatch, tmp_path):
+    """Studio trains Whisper and other audio models, so an outputs or exports folder
+    legitimately holds a checkpoint that cannot answer a text turn. Neither builder
+    classified anything, so both offered it for chat. A GGUF export is a file, not a
+    directory, so it fails open and stays."""
+    from unsloth_cli import _model_catalog as cat
+
+    def _ckpt(parent, name, config):
+        d = parent / name
+        d.mkdir(parents = True)
+        (d / "config.json").write_text(json.dumps(config))
+        (d / "model.safetensors").write_bytes(b"\0" * 8)
+        return d
+
+    whisper = {"model_type": "whisper", "architectures": ["WhisperForConditionalGeneration"]}
+    causal = {"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]}
+    trained_whisper = _ckpt(tmp_path / "outputs", "whisper-finetune", whisper)
+    trained_chat = _ckpt(tmp_path / "outputs", "qwen-finetune", causal)
+    exported_whisper = _ckpt(tmp_path / "exports", "checkpoint-whisper", whisper)
+    exported_chat = _ckpt(tmp_path / "exports", "checkpoint-qwen", causal)
+    exported_gguf = tmp_path / "exports" / "run-gguf" / "model-Q4_K_M.gguf"
+    exported_gguf.parent.mkdir(parents = True)
+    exported_gguf.write_bytes(b"\0" * 8)
+
+    fake_models = types.ModuleType("utils.models")
+    fake_models.scan_trained_models = lambda: [
+        (trained_whisper.name, str(trained_whisper), "merged"),
+        (trained_chat.name, str(trained_chat), "merged"),
+    ]
+    fake_models.scan_exported_models = lambda: [
+        ("whisper-export", str(exported_whisper), "merged", None),
+        ("qwen-export", str(exported_chat), "merged", None),
+        ("gguf-export", str(exported_gguf), "gguf", None),
+    ]
+    monkeypatch.setitem(sys.modules, "utils.models", fake_models)
+    monkeypatch.setattr(cat, "_runs_by_output_dir", lambda: {})
+
+    # Mirrors the shared predicate's contract: False only for a locally identifiable
+    # non-chat architecture, None when it cannot tell. The real one is covered by the
+    # backend suite (hub/tests/test_model_services.py).
+    def _can_chat(path):
+        try:
+            config = json.loads((Path(path) / "config.json").read_text())
+        except (OSError, ValueError):
+            return None
+        return False if config.get("model_type") == "whisper" else None
+
+    fake_common = types.ModuleType("hub.services.models.common")
+    fake_common._local_transformers_can_chat = _can_chat
+    monkeypatch.setitem(sys.modules, "hub.services.models.common", fake_common)
+
+    assert [e.name for e in cat.trained_entries()] == ["qwen-finetune"]
+    assert [e.name for e in cat.exported_entries()] == ["qwen-export", "gguf-export"]

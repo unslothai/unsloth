@@ -4810,6 +4810,16 @@ def _snapshot_can_serve_a_load(snapshot: Path) -> bool:
     return _is_model_directory(snapshot)
 
 
+def _snapshot_payload_is_torn(snapshot: Optional[Path]) -> bool:
+    """See hub.utils.inventory_scan; True when a snapshot's own files prove it cannot serve.
+
+    Finer than ``_snapshot_can_serve_a_load``, which only asks for a config beside some
+    weight: a shard naming its own total proves the set is short one.
+    """
+    from hub.utils.inventory_scan import _snapshot_cannot_serve_its_payload
+    return _snapshot_cannot_serve_its_payload(snapshot)
+
+
 def _default_ref_model_snapshot(repo_cache_dir: Path) -> Optional[Path]:
     """See hub.utils.inventory_scan; the snapshot dir ``refs/main`` names, or ``None``."""
     from hub.utils.inventory_scan import default_ref_snapshot
@@ -4847,8 +4857,11 @@ def _repo_is_reachable_by_id(repo_path: Path, active_root: Path, loadable: Optio
         return False
     if loadable is None:
         return True
+    # No refs/main at all is not "fine", it is unresolvable: huggingface_hub writes
+    # refs/<revision> only when revision != commit_hash, so a commit-pinned fetch writes
+    # none and a tag-pinned one writes refs/<tag>. Offline the bare id then finds nothing.
     ref_snapshot = _default_ref_model_snapshot(repo_path)
-    return ref_snapshot is None or _snapshot_can_serve_a_load(ref_snapshot)
+    return ref_snapshot is not None and _snapshot_can_serve_a_load(ref_snapshot)
 
 
 def _repo_model_selection(
@@ -4955,18 +4968,29 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                 # Pass the snapshot path too so the config check also hides custom Whisper checkpoints.
                 if _is_hidden_model(repo_id, str(repo_info.repo_path)):
                     continue
-                # No partial or load id here, so a snapshot-path-only repo would read as ready.
                 if _recovered_repo_is_unusable_by_repo_id(repo_info):
-                    try:
-                        if (
-                            active_root is not None
-                            and Path(repo_info.repo_path).parent.resolve(strict = False)
-                            == active_root
-                        ):
-                            unusable_active.add(repo_id.lower())
-                    except (OSError, RuntimeError, ValueError):
-                        pass
-                    continue
+                    # That guard withheld these because this schema could describe neither a
+                    # partial nor a path; it now carries load_id, so a recovery holding a
+                    # snapshot that serves a load is listed pinned to it instead of dropped.
+                    recovered, recovered_pin = _repo_model_selection(repo_info, active_root)
+                    if not (
+                        recovered_pin is not None
+                        and recovered is not None
+                        and _snapshot_can_serve_a_load(recovered)
+                        # A shard short of its own stated total still has a config beside a
+                        # .safetensors, so the coarse check alone would advertise a torn set.
+                        and not _snapshot_payload_is_torn(recovered)
+                    ):
+                        try:
+                            if (
+                                active_root is not None
+                                and Path(repo_info.repo_path).parent.resolve(strict = False)
+                                == active_root
+                            ):
+                                unusable_active.add(repo_id.lower())
+                        except (OSError, RuntimeError, ValueError):
+                            pass
+                        continue
                 if _repo_has_gguf_files(repo_info):
                     continue
                 total_size = sum(

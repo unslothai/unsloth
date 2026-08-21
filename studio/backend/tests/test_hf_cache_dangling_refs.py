@@ -4037,8 +4037,13 @@ def test_the_judged_weight_family_follows_the_row_format(files, cannot_serve, tm
 
 
 def _compat_cached_models(cache_root: Path, monkeypatch) -> list[str]:
-    """GET /api/models/cached-models. Its schema has no partial and no load_id, so it can only
-    describe a repo that loads by id."""
+    """Repo ids from GET /api/models/cached-models."""
+    return [row["repo_id"] for row in _compat_cached_rows(cache_root, monkeypatch)]
+
+
+def _compat_cached_rows(cache_root: Path, monkeypatch) -> list[dict]:
+    """GET /api/models/cached-models. Its schema carries partial and load_id, so it can describe
+    a repo pinned to a snapshot as well as one that loads by id."""
     import asyncio
     from types import SimpleNamespace
 
@@ -4056,25 +4061,33 @@ def _compat_cached_models(cache_root: Path, monkeypatch) -> list[str]:
         )
     finally:
         inventory_scan.invalidate_hf_cache_scans()
-    return [row["repo_id"] for row in response["cached"]]
+    return list(response["cached"])
 
 
 @pytest.mark.parametrize(
-    "snapshot_files",
+    "snapshot_files, listed",
     [
-        {"config.json": b"{}", "model-00001-of-00002.safetensors": b"\0" * 256},
-        {"config.json": b"{}", "model.safetensors": b"\0" * 256},
+        ({"config.json": b"{}", "model-00001-of-00002.safetensors": b"\0" * 256}, False),
+        ({"config.json": b"{}", "model.safetensors": b"\0" * 256}, True),
     ],
     ids = ["short-a-shard", "whole-but-only-loadable-by-path"],
 )
 def test_the_compatibility_route_withholds_a_recovery_it_cannot_describe(
-    snapshot_files, tmp_path, monkeypatch
+    snapshot_files, listed, tmp_path, monkeypatch
 ):
-    """Un-hiding a repo must not smuggle it into a response that cannot say what is wrong with it:
-    with neither partial nor a load id, a torn recovery reads as a plain cached model and a whole
-    one is offered under a repo id that does not resolve."""
+    """Un-hiding a repo must not smuggle it into a response that cannot say what is wrong with it.
+
+    A torn recovery stays withheld: nothing in the schema says "short a shard", so it would read
+    as a plain cached model. The whole one is no longer withheld, because the premise changed --
+    this schema now carries ``load_id``, so the row can name the snapshot to load instead of an
+    id that does not resolve. Withholding it hid a model whose weights are on disk and loadable.
+    """
     _repo_with(tmp_path, snapshots = {SNAPSHOT: snapshot_files}, refs = {"main": UPSTREAM_HEAD})
-    assert _compat_cached_models(tmp_path, monkeypatch) == []
+    rows = _compat_cached_rows(tmp_path, monkeypatch)
+    assert [row["repo_id"] for row in rows] == (["Org/Model"] if listed else [])
+    if listed:
+        # Pinned, since the dangling ref is exactly what the bare id cannot follow.
+        assert rows[0]["load_id"].endswith(SNAPSHOT)
     # The Hub inventory still lists it, with the fields to describe it.
     assert [row["repo_id"] for row in _autoload_rows(tmp_path, monkeypatch)] == ["Org/Model"]
 

@@ -6198,3 +6198,101 @@ def test_cached_model_rows_flag_a_diffusion_repo_this_backend_cannot_load(monkey
     assert row["diffusers"] is True
     # The trust rule leaves task None on purpose, which is why the flag is needed.
     assert row.get("task") is None
+
+
+def test_cached_model_rows_pins_a_commit_pinned_repo_with_no_default_ref(monkeypatch, tmp_path):
+    """A commit-pinned fetch writes no refs/main, so the bare id resolves nowhere.
+
+    huggingface_hub writes refs/<revision> only when revision != commit_hash, so pinning a
+    revision leaves the repo with snapshots and no ref at all. repo_id_will_not_resolve
+    reads that as fine (it only catches a ref naming a missing dir), so the row has to be
+    pinned on the absence of the ref rather than on its contents.
+    """
+    active = tmp_path / "active"
+    active.mkdir()
+    repo_dir = active / "models--Org--Pinned"
+
+    commit = "a" * 40
+    complete = repo_dir / "snapshots" / commit
+    complete.mkdir(parents = True)
+    (complete / "config.json").write_text("{}")
+    (complete / "model.safetensors").write_bytes(b"\0" * 64)
+    # No refs/ directory at all: the shape a revision=<sha> fetch leaves behind.
+
+    repo = _repo(
+        "Org/Pinned",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(files = [_file("model.safetensors", 5_000)], snapshot_path = complete),
+        ],
+    )
+
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(
+        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = {row["repo_id"]: row for row in models_route.cached_model_rows()}
+
+    assert rows["Org/Pinned"].get("load_id") == str(complete)
+
+
+def test_cached_model_rows_keeps_a_recovered_repo_that_can_serve_a_load(monkeypatch, tmp_path):
+    """A recovery holding a self-contained snapshot is listed, pinned to it.
+
+    recovered_repo_is_unusable_by_repo_id withheld these because this schema could describe
+    neither a partial nor a path. It carries load_id now, so the row can say honestly which
+    copy to load. A recovery whose only snapshot is metadata-only stays dropped: there is
+    nothing to pin it to.
+    """
+    active = tmp_path / "active"
+    active.mkdir()
+
+    def _recovered(name, files):
+        repo_dir = active / f"models--Org--{name}"
+        snapshot = repo_dir / "snapshots" / ("b" * 40)
+        snapshot.mkdir(parents = True)
+        for filename, blob in files.items():
+            (snapshot / filename).write_bytes(blob)
+        (repo_dir / "refs").mkdir(parents = True)
+        # Dangling: names a commit with no directory, which is what recovery fires on.
+        (repo_dir / "refs" / "main").write_text("d" * 40)
+        return snapshot, _repo(
+            f"Org/{name}",
+            [],
+            repo_dir,
+            revisions = [
+                SimpleNamespace(
+                    files = [_file("model.safetensors", 5_000)], snapshot_path = snapshot
+                ),
+            ],
+        )
+
+    complete_snapshot, complete = _recovered(
+        "Whole", {"config.json": b"{}", "model.safetensors": b"\0" * 64}
+    )
+    _, metadata_only = _recovered("Half", {"config.json": b"{}"})
+
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(
+        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
+    )
+    monkeypatch.setattr(
+        models_route, "_recovered_repo_is_unusable_by_repo_id", lambda repo_info: True
+    )
+    monkeypatch.setattr(
+        models_route,
+        "_all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [complete, metadata_only])],
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = {row["repo_id"]: row for row in models_route.cached_model_rows()}
+
+    assert rows["Org/Whole"]["load_id"] == str(complete_snapshot)
+    assert "Org/Half" not in rows
