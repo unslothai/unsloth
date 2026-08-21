@@ -264,9 +264,7 @@ def _normalize_archive_name(name: str) -> PurePosixPath:
 
 
 def _portable_archive_parts(path: PurePosixPath) -> tuple[str, ...]:
-    return tuple(
-        unicodedata.normalize("NFKC", part).rstrip(" .").casefold() for part in path.parts
-    )
+    return tuple(unicodedata.normalize("NFKC", part).rstrip(" .").casefold() for part in path.parts)
 
 
 def _portable_archive_key(path: PurePosixPath) -> str:
