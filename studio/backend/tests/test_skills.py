@@ -339,6 +339,8 @@ def test_imports_pr_style_nested_agent_skill_bundle(tmp_path: Path):
             "unsloth-pr/skills/unsloth/references/config-reference.md": "Config reference\n",
             "unsloth-pr/skills/unsloth/assets/train.yaml": "model: llama\n",
             "unsloth-pr/README.md": "repository file outside the skill bundle",
+            "unsloth-pr/docs/Guide.md": "first",
+            "unsloth-pr/docs/guide.md": "second",
         },
         symlink = "unsloth-pr/vendor/link.md",
     )

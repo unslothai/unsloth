@@ -284,7 +284,10 @@ def _validate_bundle_layout(
     )
     if oversized is not None:
         raise SkillError(f"{oversized.name} exceeds the {MAX_SKILL_FILE_BYTES // 1024} KB limit.")
-    keys = {_portable_archive_key(path) for path, _ in files}
+    portable_keys = [_portable_archive_key(path) for path, _ in files]
+    if len(portable_keys) != len(set(portable_keys)):
+        raise SkillError(f"{conflict_source} contains duplicate paths.")
+    keys = set(portable_keys)
     if any(
         any("/".join(parts[:index]) in keys for index in range(1, len(parts)))
         for parts in (key.split("/") for key in keys)
@@ -309,17 +312,12 @@ def _archive_source(
     archive: zipfile.ZipFile,
 ) -> tuple[dict, list[tuple[zipfile.ZipInfo, PurePosixPath]]]:
     files: list[tuple[zipfile.ZipInfo, PurePosixPath]] = []
-    seen: set[str] = set()
     manifests: list[tuple[zipfile.ZipInfo, PurePosixPath]] = []
     entries = archive.infolist()
     if len(entries) > MAX_ARCHIVE_ENTRIES:
         raise SkillError(f"Skill archive exceeds the {MAX_ARCHIVE_ENTRIES}-entry limit.")
     for entry in entries:
         path = _normalize_archive_name(entry.filename)
-        portable_key = _portable_archive_key(path)
-        if portable_key in seen:
-            raise SkillError(f"Archive contains duplicate path '{entry.filename}'.")
-        seen.add(portable_key)
         mode = entry.external_attr >> 16
         if stat.S_ISLNK(mode) and path.name == "SKILL.md":
             raise SkillError("Skill archives cannot contain symbolic links.")
