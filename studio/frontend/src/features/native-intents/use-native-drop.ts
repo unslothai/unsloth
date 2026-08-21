@@ -152,6 +152,7 @@ function dropStateForPaths(
 
 interface RegisteredDrop {
   docs: NativeIntent[];
+  openDocuments: NativeIntent[];
   images: NativeIntent[];
   audio: NativeIntent[];
   video: NativeIntent[];
@@ -196,6 +197,10 @@ async function registerDroppedAttachments(
       : dropped.kind === "attach"
         ? dropped.docs
         : [];
+  const openDocumentPaths = docPaths.filter(isOpenDocumentAttachmentName);
+  const ragDocumentPaths = docPaths.filter(
+    (path) => !isOpenDocumentAttachmentName(path),
+  );
   const imagePaths =
     dropped.kind === "images"
       ? dropped.paths
@@ -214,22 +219,29 @@ async function registerDroppedAttachments(
       : dropped.kind === "attach"
         ? dropped.video
         : [];
-  const [docs, images, audio, video] = await Promise.all([
-    registerEach(docPaths),
+  const [docs, openDocuments, images, audio, video] = await Promise.all([
+    registerEach(ragDocumentPaths),
+    registerEach(openDocumentPaths),
     registerEach(imagePaths),
     registerEach(audioPaths),
     registerEach(videoPaths),
   ]);
   return {
     docs: docs.intents,
+    openDocuments: openDocuments.intents,
     images: images.intents,
     audio: audio.intents,
     video: video.intents,
-    docsFailed: docs.failed,
+    docsFailed: docs.failed + openDocuments.failed,
     imagesFailed: images.failed,
     audioFailed: audio.failed,
     videoFailed: video.failed,
-    error: docs.error ?? images.error ?? audio.error ?? video.error,
+    error:
+      docs.error ??
+      openDocuments.error ??
+      images.error ??
+      audio.error ??
+      video.error,
   };
 }
 
@@ -373,18 +385,12 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
               latestOptions.attachmentScope === currentOptions.attachmentScope
                 ? latestOptions
                 : currentOptions;
-            const openDocuments = registered.docs.filter((intent) =>
-              isOpenDocumentAttachmentName(intent.displayLabel),
-            );
-            const ragDocuments = registered.docs.filter(
-              (intent) => !isOpenDocumentAttachmentName(intent.displayLabel),
-            );
-            if (ragDocuments.length > 0) {
-              await attachOptions.onAttach?.(ragDocuments);
+            if (registered.docs.length > 0) {
+              await attachOptions.onAttach?.(registered.docs);
             }
             const composerAttachments = [
               ...registered.images,
-              ...openDocuments,
+              ...registered.openDocuments,
             ];
             if (composerAttachments.length > 0) {
               await attachOptions.onAttachImages?.(composerAttachments);

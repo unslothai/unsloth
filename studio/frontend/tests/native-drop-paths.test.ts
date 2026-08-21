@@ -54,7 +54,9 @@ const OPEN_DOCUMENT_EXTENSION_RE = /\.ods/;
 const OPEN_DOCUMENT_ADAPTER_ACCEPT_RE =
   /class OpenDocumentAttachmentAdapter[^{]*\{[\s\S]*?accept = OPEN_DOCUMENT_ATTACHMENT_ACCEPT;/;
 const OPEN_DOCUMENT_DROP_TO_COMPOSER_RE =
-  /const openDocuments = registered\.docs\.filter[\s\S]*?const composerAttachments = \[[\s\S]*?\.\.\.registered\.images,[\s\S]*?\.\.\.openDocuments,[\s\S]*?await attachOptions\.onAttachImages\?\.\(composerAttachments\)/;
+  /const composerAttachments = \[[\s\S]*?\.\.\.registered\.images,[\s\S]*?\.\.\.registered\.openDocuments,[\s\S]*?await attachOptions\.onAttachImages\?\.\(composerAttachments\)/;
+const OPEN_DOCUMENT_REGISTRATION_CLASS_RE =
+  /const openDocumentPaths = docPaths\.filter\(isOpenDocumentAttachmentName\);[\s\S]*?const ragDocumentPaths = docPaths\.filter[\s\S]*?registerEach\(ragDocumentPaths\),[\s\S]*?registerEach\(openDocumentPaths\),[\s\S]*?openDocuments: openDocuments\.intents/;
 const OPEN_DOCUMENT_IMAGE_REGISTRATION_RE =
   /const needsOpenDocuments = openDocumentPaths\.length > 0;[\s\S]*?const needsComposerAttachments = needsImages \|\| needsOpenDocuments;[\s\S]*?if \(needsComposerAttachments\) store\.beginImageDropRegistration\(\);[\s\S]*?finally \{[\s\S]*?if \(needsComposerAttachments\) store\.endImageDropRegistration\(\)/;
 const OPEN_DOCUMENT_BACKEND_GATE_RE =
@@ -117,6 +119,7 @@ test("OpenDocument picker types are accepted by native drops", () => {
     "utf8",
   );
   assert.match(nativeDropSource, OPEN_DOCUMENT_DROP_TO_COMPOSER_RE);
+  assert.match(nativeDropSource, OPEN_DOCUMENT_REGISTRATION_CLASS_RE);
   assert.match(nativeDropSource, OPEN_DOCUMENT_IMAGE_REGISTRATION_RE);
   assert.match(nativeDropSource, OPEN_DOCUMENT_BACKEND_GATE_RE);
 
