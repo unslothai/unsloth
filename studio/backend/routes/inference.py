@@ -12120,7 +12120,9 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
     api_key = resolve_provider_api_key_or_400(
-        body.provider_id, None, allow_saved_key = not _request_has_api_key(request)
+        body.provider_id,
+        body.encrypted_api_key,
+        allow_saved_key = not _request_has_api_key(request),
     )
     client = ExternalProviderClient(
         provider_type = config["provider_type"],

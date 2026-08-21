@@ -5,6 +5,8 @@ import { authFetch } from "@/features/auth";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { toast } from "@/lib/toast";
 import type { SpeechSynthesisAdapter } from "@assistant-ui/react";
+import { encryptProviderApiKey } from "../api/providers-api";
+import { getExternalProviderApiKey } from "../external-providers";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 
 /** Voice for a stored voiceURI. "default" resolves to the voice the platform
@@ -258,7 +260,8 @@ export async function generateCustomTtsAudio(
   text: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  if (!useExternalProvidersStore.getState().connectionsEnabled) {
+  const providersState = useExternalProvidersStore.getState();
+  if (!providersState.connectionsEnabled) {
     throw new Error(
       "Connections are disabled. Turn on Enable connections in Settings → Connections to use a custom TTS endpoint.",
     );
@@ -272,6 +275,15 @@ export async function generateCustomTtsAudio(
       "Custom TTS is not configured. Pick a connection and model in Settings → Voice.",
     );
   }
+  // A browser whose backend key migration failed keeps the connection selectable
+  // on the strength of a retained legacy key, so send it the way chat and custom
+  // STT do or this path alone calls the endpoint unauthenticated.
+  const provider = providersState.providers.find(
+    (candidate) => candidate.id === ttsProviderId,
+  );
+  const legacyApiKey = provider?.hasApiKey
+    ? ""
+    : getExternalProviderApiKey(ttsProviderId).trim();
   const response = await authFetch("/api/inference/audio/speech", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -280,6 +292,9 @@ export async function generateCustomTtsAudio(
       provider_id: ttsProviderId,
       model,
       ...(voice ? { voice } : {}),
+      ...(legacyApiKey
+        ? { encrypted_api_key: await encryptProviderApiKey(legacyApiKey) }
+        : {}),
     }),
     signal,
   });

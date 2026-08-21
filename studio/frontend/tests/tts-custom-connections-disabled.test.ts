@@ -15,7 +15,13 @@ type Adapter = {
 };
 
 /** The adapter with both stores faked and a fetch that only logs. */
-function load(connectionsEnabled: boolean): {
+function load(
+  connectionsEnabled: boolean,
+  {
+    providers = [{ id: "conn-1", hasApiKey: true }],
+    legacyKey = "",
+  }: { providers?: { id: string; hasApiKey: boolean }[]; legacyKey?: string } = {},
+): {
   adapter: Adapter;
   posted: string[];
 } {
@@ -36,7 +42,15 @@ function load(connectionsEnabled: boolean): {
         },
       },
       "../stores/external-providers-store": {
-        useExternalProvidersStore: { getState: () => ({ connectionsEnabled }) },
+        useExternalProvidersStore: {
+          getState: () => ({ connectionsEnabled, providers }),
+        },
+      },
+      "../api/providers-api": {
+        encryptProviderApiKey: async (key: string) => `enc(${key})`,
+      },
+      "../external-providers": {
+        getExternalProviderApiKey: () => legacyKey,
       },
       "@/features/settings/stores/voice-settings-store": {
         useVoiceSettingsStore: {
@@ -76,4 +90,24 @@ test("custom TTS still reaches the saved connection while connections are on", a
     model: "kokoro",
     voice: "af_sky",
   });
+});
+
+// #9214: a browser whose backend key migration failed keeps the connection
+// selectable on its retained key, so this path must send it like chat and STT.
+test("custom TTS forwards a retained legacy key when the connection has none saved", async () => {
+  const { adapter, posted } = load(true, {
+    providers: [{ id: "conn-1", hasApiKey: false }],
+    legacyKey: "sk-legacy",
+  });
+  await adapter.generateCustomTtsAudio("hello");
+  assert.equal(JSON.parse(posted[0]).encrypted_api_key, "enc(sk-legacy)");
+});
+
+test("custom TTS sends no key when the connection already has one saved", async () => {
+  const { adapter, posted } = load(true, {
+    providers: [{ id: "conn-1", hasApiKey: true }],
+    legacyKey: "sk-legacy",
+  });
+  await adapter.generateCustomTtsAudio("hello");
+  assert.equal("encrypted_api_key" in JSON.parse(posted[0]), false);
 });

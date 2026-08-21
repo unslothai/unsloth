@@ -3801,6 +3801,11 @@ class AudioSpeechRequest(BaseModel):
         description = "[x-unsloth] Saved connection ID. When set, synthesis is proxied to that "
         "provider's /audio/speech and model/voice/speed are forwarded as sent.",
     )
+    encrypted_api_key: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Per-request key for a browser still holding a legacy "
+        "provider key, used when the connection has none saved server side.",
+    )
 
     @field_validator("response_format", mode = "before")
     @classmethod

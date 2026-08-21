@@ -482,3 +482,28 @@ def test_external_disconnect_cancels_the_upstream_request(monkeypatch):
 
     asyncio.run(_run())
     assert upstream_cancelled.is_set()
+
+
+def test_external_forwards_a_legacy_browser_key(monkeypatch):
+    cli, _calls, _saved = _make_client(monkeypatch)
+    created, _speech_calls = _install_external(monkeypatch)
+    seen = {}
+
+    def _resolve(provider_id, encrypted_api_key, **_kwargs):
+        seen["provider_id"] = provider_id
+        seen["encrypted_api_key"] = encrypted_api_key
+        return "sk-from-legacy"
+
+    monkeypatch.setattr(routes_module, "resolve_provider_api_key_or_400", _resolve)
+    resp = cli.post(
+        "/v1/audio/speech",
+        json = {
+            "input": "hi",
+            "provider_id": "conn-1",
+            "model": "kokoro",
+            "encrypted_api_key": "enc-legacy",
+        },
+    )
+    assert resp.status_code == 200
+    assert seen["encrypted_api_key"] == "enc-legacy"
+    assert created[0]["api_key"] == "sk-from-legacy"
