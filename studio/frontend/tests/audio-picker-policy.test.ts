@@ -594,3 +594,71 @@ test("a local Whisper checkpoint is not advertised as a routable ASR row", () =>
   );
   assert.match(source, /pipelineTag: audioPipelineTagFor\(adapter\.audioType, true\)/);
 });
+
+test("an arch-tasked speech GGUF is rejected however its path or repo id is named", () => {
+  // The backend tags text-to-speech on a GGUF only after reading a llama-csm arch
+  // (routes/models._SPEECH_GGUF_ARCHS). The family heuristic re-infers from the NAME, so a
+  // CSM file parked under a runnable-looking directory used to clear the gate, route to
+  // Audio, and evict the chat model for a row the page cannot show.
+  const parkedUnderOrpheus = {
+    id: "/models/orpheus/custom.gguf",
+    task: "text-to-speech",
+    isGguf: true,
+    isCurated: false,
+  };
+  assert.equal(audioPickIsRoutable(parkedUnderOrpheus), true);
+  assert.equal(
+    audioPickIsRoutable({ ...parkedUnderOrpheus, taskFromGgufArch: true }),
+    false,
+  );
+  // The arch read outranks a curated name match too: llama.cpp has no CSM decoder, so
+  // the file is undecodable no matter which catalog id its folder happens to echo.
+  assert.equal(
+    audioPickIsRoutable({
+      ...parkedUnderOrpheus,
+      isCurated: true,
+      taskFromGgufArch: true,
+    }),
+    false,
+  );
+  // Same rule on the cached-repo side, where the task comes off the arch as well.
+  assert.equal(
+    audioPickIsRoutable({
+      id: "someone/orpheus-3b-custom-GGUF",
+      task: "text-to-speech",
+      isGguf: true,
+      isCurated: false,
+      taskFromGgufArch: true,
+    }),
+    false,
+  );
+  // Orpheus GGUFs report a plain `llama` arch, so they arrive tagged text-generation and
+  // the gate must leave them alone; a non-GGUF CSM still runs on the Transformers path.
+  assert.equal(
+    audioPickIsRoutable({
+      id: "/models/orpheus/custom.gguf",
+      task: "text-generation",
+      isGguf: true,
+      isCurated: false,
+      taskFromGgufArch: true,
+    }),
+    true,
+  );
+  assert.equal(
+    audioPickIsRoutable({
+      id: "unsloth/csm-1b",
+      task: "text-to-speech",
+      isGguf: false,
+      isCurated: true,
+      taskFromGgufArch: true,
+    }),
+    true,
+  );
+});
+
+test("every filesystem list passes the arch-tasked flag, not just the policy call", () => {
+  // The policy is only as good as its call sites: a list that asks without the flag gets
+  // the name heuristic back and re-opens the hole this gate exists to close.
+  const callSites = pickerSource.match(/taskFromGgufArch: true/g) ?? [];
+  assert.equal(callSites.length, 4);
+});

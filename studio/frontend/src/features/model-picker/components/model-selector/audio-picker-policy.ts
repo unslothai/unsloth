@@ -97,6 +97,7 @@ export function audioPickIsRoutable({
   isGguf,
   isCurated,
   isLocalCheckpoint = false,
+  taskFromGgufArch = false,
   baseModel,
   tags,
   libraryName,
@@ -107,10 +108,20 @@ export function audioPickIsRoutable({
   isCurated: boolean;
   /** Trained or exported here, so its codec was read off the checkpoint itself. */
   isLocalCheckpoint?: boolean;
+  /** Filesystem inventory row: its task came from reading the GGUF's own architecture. */
+  taskFromGgufArch?: boolean;
   baseModel?: string | null;
   tags?: readonly string[] | null;
   libraryName?: string | null;
 }): boolean {
+  // A filesystem GGUF row's task is read off the file's architecture, and the backend
+  // tags text-to-speech ONLY for llama-csm (routes/models._SPEECH_GGUF_ARCHS), the one
+  // arch llama.cpp has no decoder for. That read outranks both the curated name match
+  // and the family heuristic below, which re-infers the family from the PATH and so
+  // clears a CSM file parked under a runnable-looking name like
+  // /models/orpheus/custom.gguf -- it finds "orpheus", never sees "csm", and routes an
+  // undecodable file to Audio after the handoff has already evicted the chat model.
+  if (taskFromGgufArch && isGguf && task === "text-to-speech") return false;
   if (isCurated) return true;
   // A checkpoint from outputs/ has no Hub identity for communityAudioRowIsRunnable to
   // judge, and the family-name heuristic it applies would reject it on its directory
