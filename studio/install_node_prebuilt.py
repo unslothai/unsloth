@@ -590,6 +590,34 @@ def npm_cli_path(install_dir: Path, host: HostInfo) -> Path:
     return install_dir / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
 
 
+def isolated_node_layout_complete(install_dir: Path, host: HostInfo) -> bool:
+    """True iff *install_dir* looks like an official Node prefix, not a leftover stub.
+
+    Unix tarballs ship ``bin/node`` and ``lib/node_modules/npm/bin/npm-cli.js``.
+    Windows zips ship ``node.exe`` and ``node_modules/npm/bin/npm-cli.js``.
+
+    A leftover from a partial or sudo install often has ``bin/npm`` as npm's own
+    wrapper (``require('../lib/cli.js')``) with ``lib/`` missing. ``npm -v`` then
+    dies with ``Cannot find module '../lib/cli.js'``. setup.sh must not prepend
+    that ``bin/`` to PATH.
+    """
+    if not node_binary_path(install_dir, host).is_file():
+        return False
+    if not npm_cli_path(install_dir, host).is_file():
+        return False
+    if host.is_windows:
+        return True
+    npm_shim = install_dir / "bin" / "npm"
+    if npm_shim.is_file() and not npm_shim.is_symlink():
+        try:
+            text = npm_shim.read_text(encoding = "utf-8", errors = "replace")
+        except OSError:
+            text = ""
+        if "require('../lib/cli.js')" in text and not (install_dir / "lib" / "cli.js").is_file():
+            return False
+    return True
+
+
 def _windows_hidden_kwargs() -> dict[str, object]:
     if sys.platform != "win32":
         return {}
@@ -686,6 +714,8 @@ def existing_install_matches(
     """True iff the on-disk install is exactly this version, runs, and (when
     expected_sha is given) was recorded with that digest, so a non-pinned or
     tampered artifact is not kept just because its version string matches."""
+    if not isolated_node_layout_complete(install_dir, host):
+        return False
     meta = load_metadata(install_dir)
     if not meta or meta.get("version") != version:
         return False
@@ -699,6 +729,8 @@ def existing_install_matches(
 
 def existing_install_usable(install_dir: Path, host: HostInfo) -> bool:
     """True iff the on-disk install runs and clears the npm floor, ignoring version."""
+    if not isolated_node_layout_complete(install_dir, host):
+        return False
     if not load_metadata(install_dir):
         return False
     if installed_node_version(install_dir, host) is None:
@@ -775,6 +807,8 @@ def _ensure_npm_floor(install_dir: Path, host: HostInfo) -> None:
 def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: bool) -> int:
     host = detect_host()
     pins = load_pins()
+    if install_dir.exists() and not isolated_node_layout_complete(install_dir, host):
+        log("isolated Node layout is incomplete; reinstalling")
 
     if channel in {"", "pinned", "default"}:
         # Default path: the committed pin, no index.json round-trip.
