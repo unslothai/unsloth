@@ -195,6 +195,7 @@ export const ja = {
       chat: "チャット",
       connections: "接続",
       apiKeys: "API",
+      remoteLan: "リモートとLAN",
       about: "情報",
       voice: "音声",
       data: "データ",
@@ -281,6 +282,17 @@ export const ja = {
         engineModel: "ローカル文字起こし",
         engineModelDescription:
           "音声認識 (STT) モデルをローカルで実行し、オフラインでも動作します。ダウンロードして読み込むと、一定時間使わなければアンロードされます。",
+        engineCustom: "カスタムエンドポイント",
+        engineCustomDescription:
+          "接続に登録した OpenAI 互換 STT サーバーへ録音音声を送信します。",
+        connectionLabel: "接続",
+        connectionDescription:
+          "接続で OpenAI 互換サーバーと任意の API キーを追加してください。",
+        connectionPlaceholder: "接続を選択",
+        connectionEmpty: "利用可能な接続はありません",
+        customModelLabel: "モデル",
+        customModelDescription:
+          "/v1/audio/transcriptions に送信するモデル名です。",
         sttModelLabel: "音声認識モデル",
         sttModelDescription:
           "ローカルで実行する STT モデルを選択または検索します。",
@@ -340,6 +352,7 @@ export const ja = {
         languageLabel: "音声入力の言語",
         languageDescription: "認識する言語",
         languageAuto: "自動 (ブラウザーの言語)",
+        languageAutoDetect: "自動 (言語を検出)",
       },
       dictionary: {
         sectionTitle: "音声入力辞書",
@@ -1205,6 +1218,11 @@ export const ja = {
     connections: {
       title: "接続",
       description: "プロバイダーと外部接続を管理します。",
+    },
+    remoteLan: {
+      title: "リモートとLAN",
+      description:
+        "ローカルネットワークまたは一時的な公開URLを介して、他のデバイスからこのUnslothにアクセスできます。",
     },
     apiKeys: {
       title: "API",

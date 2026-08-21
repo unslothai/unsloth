@@ -193,6 +193,7 @@ export const ar = {
       chat: "المحادثة",
       connections: "الاتصالات",
       apiKeys: "API",
+      remoteLan: "الوصول عن بُعد والشبكة المحلية",
       about: "حول",
       data: "البيانات",
       agents: "الوكلاء",
@@ -279,6 +280,16 @@ export const ar = {
         engineModel: "التفريغ النصي المحلي",
         engineModelDescription:
           "يشغّل نموذج تحويل الكلام إلى نص (STT) محليًا ويعمل دون اتصال. نزّله ثم حمّله، ويُفرَغ من الذاكرة بعد فترة من عدم الاستخدام.",
+        engineCustom: "نقطة نهاية مخصصة",
+        engineCustomDescription:
+          "يرسل الصوت المسجّل إلى خادم STT متوافق مع OpenAI من الاتصالات.",
+        connectionLabel: "الاتصال",
+        connectionDescription:
+          "أضف خادمًا متوافقًا مع OpenAI ومفتاح API اختياريًا في الاتصالات.",
+        connectionPlaceholder: "اختر اتصالًا",
+        connectionEmpty: "لا توجد اتصالات متاحة",
+        customModelLabel: "النموذج",
+        customModelDescription: "اسم النموذج المرسل إلى /v1/audio/transcriptions.",
         sttModelLabel: "نموذج التعرّف على الكلام",
         sttModelDescription: "اختر نموذج STT أو ابحث عنه لتشغيله محليًا.",
         sttModelSearchPlaceholder: "ابحث عن نموذج",
@@ -337,6 +348,7 @@ export const ar = {
         languageLabel: "لغة الإملاء",
         languageDescription: "اللغة المراد التعرّف عليها",
         languageAuto: "تلقائي (لغة المتصفح)",
+        languageAutoDetect: "تلقائي (اكتشاف اللغة)",
       },
       dictionary: {
         sectionTitle: "قاموس الإملاء",
@@ -1226,6 +1238,11 @@ export const ar = {
     connections: {
       title: "الاتصالات",
       description: "إدارة المزوّدين والاتصالات الخارجية.",
+    },
+    remoteLan: {
+      title: "الوصول عن بُعد والشبكة المحلية",
+      description:
+        "الوصول إلى Unsloth من أجهزتك الأخرى عبر شبكتك المحلية أو عنوان URL عام مؤقت.",
     },
     apiKeys: {
       title: "API",

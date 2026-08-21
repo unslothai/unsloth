@@ -690,7 +690,17 @@ def _raw_config_has_vision_config(
             config_path = Path(normalize_path(model_name)).expanduser() / "config.json"
         else:
             from huggingface_hub import hf_hub_download
+            from utils.hf_probe import hf_file_definitely_absent
 
+            # Avoid caching the expected 404 for GGUF repos without config.json.
+            if not local_files_only and hf_file_definitely_absent(
+                model_name,
+                "config.json",
+                revision = revision,
+                token = hf_token,
+            ):
+                logger.debug("'%s' has no config.json on the Hub", model_name)
+                return None
             download_kwargs = {
                 "repo_id": model_name,
                 "filename": "config.json",
@@ -1464,6 +1474,25 @@ def _is_mmproj(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
+# Mirrors hub.utils.gguf._IMATRIX_TOKEN_RE (utils cannot import hub).
+_IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
+
+
+def _is_imatrix_path(path: str) -> bool:
+    """True for a calibration imatrix published beside the weights
+    (``imatrix_unsloth.gguf``, ``imatrix.gguf``, ``<model>.imatrix``).
+
+    Activation statistics for llama-quantize, not a model, so it is excluded
+    everywhere mmproj is: a GGUF-suffixed one is a valid container that a
+    size-ranked scan would otherwise hand to llama-server.
+
+    Mirrors hub.utils.gguf.is_imatrix_filename.
+    """
+    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    return bool(_IMATRIX_TOKEN_RE.search(stem)) or name.lower().endswith(".imatrix")
+
+
 # Mirrors hub.utils.gguf._DRAFTER_KINDS. dflash/ holds real weights, so it is a drafter by prefix only.
 _DRAFTER_KINDS = ("mtp", "dspark", "dflash")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
@@ -2197,6 +2226,7 @@ def detect_gguf_model(path: str, model_root: Optional[str] = None) -> Optional[s
         if (
             _is_mmproj(p.name)
             or _is_local_mtp_drafter(p, root, rel)
+            or _is_imatrix_path(p.name)
             or _is_big_endian_gguf_path(rel, quant)
             # Pointed at directly, a sidecar bypasses the scan that would have skipped it.
             # Identified positively so an unreadable file still reaches the lock window below.
@@ -2221,6 +2251,7 @@ def detect_gguf_model(path: str, model_root: Optional[str] = None) -> Optional[s
             if (
                 _is_mmproj(f.name)
                 or _is_local_mtp_drafter(f, root, context_rel)
+                or _is_imatrix_path(f.name)
                 or _is_big_endian_gguf_path(context_rel, quant)
             ):
                 continue
@@ -2724,6 +2755,10 @@ def list_gguf_variants(
         # MTP drafters are speculative-decoding companions, not quants.
         if _is_mtp_drafter(fname):
             continue
+        # An imatrix is calibration data, not a quant: listed, it becomes an
+        # unlabelled ~13 MB row (unsloth/Qwen3.8-27B-GGUF ships imatrix_unsloth.gguf).
+        if _is_imatrix_path(fname):
+            continue
 
         label = _extract_quant_label(fname)
         if _is_big_endian_gguf_path(fname, label):
@@ -2815,6 +2850,8 @@ def list_local_gguf_variants(
     # Recurse so variant-specific subdirs (``BF16/...gguf``) are picked up. Result filenames
     # keep the relative subpath so ``_find_local_gguf_by_variant`` can locate the file again.
     for f in sorted(_iter_gguf_files(p, recursive = True)):
+        if _is_imatrix_path(f.name):
+            continue
         if _is_mmproj(f.name):
             has_vision = True
             continue
@@ -2914,7 +2951,7 @@ def _find_local_gguf_by_variant(
     owned = []
     for f in _iter_gguf_files(p, recursive = True):
         rel = f.relative_to(p).as_posix()
-        if _is_mmproj(f.name) or _is_local_mtp_drafter(f, root, rel):
+        if _is_mmproj(f.name) or _is_local_mtp_drafter(f, root, rel) or _is_imatrix_path(f.name):
             continue
         quant = _extract_quant_label(rel)
         fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", rel.rsplit(".", 1)[0])
@@ -2956,7 +2993,12 @@ def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
         for f in _iter_gguf_files(snap, recursive = True):
             rel = f.relative_to(snap).as_posix()
             quant = _extract_quant_label(rel)
-            if _is_mmproj(f.name) or _is_mtp_drafter(rel) or _is_big_endian_gguf_path(rel, quant):
+            if (
+                _is_mmproj(f.name)
+                or _is_mtp_drafter(rel)
+                or _is_imatrix_path(f.name)
+                or _is_big_endian_gguf_path(rel, quant)
+            ):
                 continue
             rel_files.append(rel)
         if rel_files:
@@ -2990,6 +3032,7 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
                 if (
                     _is_mmproj(fname)
                     or _is_mtp_drafter(fname)
+                    or _is_imatrix_path(fname)
                     or _is_big_endian_gguf_path(fname, quant)
                 ):
                     continue
@@ -3239,8 +3282,13 @@ def scan_exported_models(
             if not run_dir.is_dir():
                 continue
 
-            # Flat GGUF export (exports/...-gguf/); mmproj files aren't loadable as main models.
-            gguf_files = [f for f in _iter_gguf_files(run_dir) if not _is_mmproj(f.name)]
+            # Flat GGUF export (exports/...-gguf/); neither mmproj files nor the imatrix an
+            # imatrix export leaves beside the weights are loadable as main models.
+            gguf_files = [
+                f
+                for f in _iter_gguf_files(run_dir)
+                if not _is_mmproj(f.name) and not _is_imatrix_path(f.name)
+            ]
             if gguf_files:
                 base_model = None
                 export_meta = run_dir / "export_metadata.json"
@@ -3454,6 +3502,15 @@ def get_base_model_from_lora_identifier(
     # Remote repo id: read base_model_name_or_path from adapter_config.json only.
     from huggingface_hub import hf_hub_download
     from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
+    from utils.hf_probe import hf_file_definitely_absent
+
+    # Plain model repos normally lack adapter_config.json, so probe without caching its 404.
+    if hf_file_definitely_absent(
+        identifier,
+        "adapter_config.json",
+        token = hf_token if hf_token else None,
+    ):
+        return None
 
     last_exc = None
     for _attempt in range(2):  # one retry: a transient blip must not skip the base

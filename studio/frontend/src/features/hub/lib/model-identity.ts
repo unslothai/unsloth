@@ -194,12 +194,18 @@ export function residentModelIdMatches(
 }
 
 // Ollama's blobs reach the picker through a symlink dir that local_model_resolver.py refuses
-// to index, so mirroring their settings would advertise a load that cannot happen.
+// to index, so mirroring their settings would advertise a load that cannot happen. The
+// inventory's opaque `ollama-manifest:` references resolve to those same skipped links, so
+// they carry the same non-promise.
 const OLLAMA_LINK_SEGMENTS = new Set([".studio_links", "ollama_links"]);
+const OLLAMA_MANIFEST_REF_PREFIX = "ollama-manifest:";
 
 export function isOllamaLinkPath(modelId: string | null | undefined): boolean {
   if (!modelId) {
     return false;
+  }
+  if (modelId.startsWith(OLLAMA_MANIFEST_REF_PREFIX)) {
+    return true;
   }
   return modelId
     .replace(BACKSLASHES_RE, "/")
