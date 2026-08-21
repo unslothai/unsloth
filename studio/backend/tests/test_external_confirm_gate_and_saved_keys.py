@@ -231,12 +231,14 @@ def test_the_external_loop_is_told_which_model_the_usage_belongs_to(monkeypatch)
     assert entered["run"].model == "gpt-5.4"
 
 
-def test_the_codex_loop_keeps_reporting_its_own_model(monkeypatch):
-    """A regression guard, not a new feature.
+def test_the_codex_loop_keeps_its_model_and_nudge_policy(monkeypatch):
+    """The Codex adapter must preserve shared-loop policy and accounting inputs.
 
     Before the shared loop, the Codex path relayed the provider's usage chunks
     untouched and they named the Codex model. The shared loop replaces them, so
-    the model has to be carried across or Codex metadata moves.
+    the model has to be carried across or Codex metadata moves. The request's
+    nudge setting must likewise survive the adapter instead of reverting to the
+    process default.
     """
     from core.inference import openai_codex_tool_loop as loop_mod
 
@@ -270,11 +272,13 @@ def test_the_codex_loop_keeps_reporting_its_own_model(monkeypatch):
         confirm_calls = False,
         bypass_permissions = False,
         rag_scope = None,
+        nudge_tool_calls = False,
     )
     loop_mod.stream_codex_with_studio_tools(
         object(), run = run, policy = policy, cancel_event = threading.Event()
     )
     assert entered["run"].model == "gpt-5.4-codex"
+    assert entered["policy"].nudge_tool_calls is False
 
 
 def test_the_usage_chunk_falls_back_only_when_no_model_is_known():
