@@ -157,22 +157,6 @@ _ROCM_GFX_TORCH211_LEAVES: frozenset[str] = frozenset(
     {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152"}
 )
 
-# Exact repo.amd.com per-architecture index leaves. A suffixed leaf is a custom
-# index and must stay on the verbatim path rather than inherit official package
-# constraints or reconciliation behavior.
-_ROCM_GFX_FAMILY_LEAVES: frozenset[str] = frozenset(
-    {
-        "gfx120x-all",
-        "gfx1151",
-        "gfx1150",
-        "gfx1152",
-        "gfx110x-all",
-        "gfx103x-all",
-        "gfx90a",
-        "gfx908",
-    }
-)
-
 # pytorch.org rocmX.Y indexes KNOWN to ship torch 2.11 (rocm7.2 only today); don't
 # floor an unknown newer rocm speculatively. Match install.sh / setup.ps1 / install.ps1.
 _ROCM_KNOWN_TORCH211_VERSIONS: frozenset[tuple[int, int]] = frozenset({(7, 2)})
@@ -537,6 +521,16 @@ _GFX_TO_AMD_INDEX_ARCH: dict[str, str] = {
     "gfx90a": "gfx90a",
     "gfx908": "gfx908",  # MI200/MI100
 }
+
+# The index leaves that map names, lowercased. Derived rather than hand-listed: this is
+# the "is this an official ROCm family?" gate, and a family the map can route to but the
+# gate does not recognise would be treated as a custom pin and left verbatim. A leaf that
+# is not exactly one of these (gfx1151-private) IS a custom index and must stay verbatim.
+# install.sh, studio/setup.sh, install.ps1 and setup.ps1 each hand-copy this list;
+# tests/studio/install/test_rocm_support.py holds them to it.
+_ROCM_GFX_FAMILY_LEAVES: frozenset[str] = frozenset(
+    arch.lower() for arch in _GFX_TO_AMD_INDEX_ARCH.values()
+)
 
 # bitsandbytes continuous-release_main wheels with the ROCm 4-bit GEMV fix
 # (bnb #1887, post-0.49.2). bnb <= 0.49.2 NaNs at decode shape on every AMD GPU;
@@ -2976,23 +2970,14 @@ def _ensure_cpu_torch() -> None:
 
 
 def _selected_linux_strix_gfx(
-    inferred_linux_gfx: "str | None",
-    *,
-    gfx_devices: "list[str] | None" = None,
-    probe_kind: "str | None" = None,
+    inferred_linux_gfx: "str | None", gfx_devices: "list[str]", probe_kind: "str | None"
 ) -> "tuple[str | None, str | None, str | None, set[str]]":
     """The visible Strix target and its probe context, without changing the install.
 
-    setup.sh can pass the rocminfo/amd-smi result it already collected, while the full
-    dependency pass lets this helper probe for itself. Keeping the ordinal and HSA-spoof
-    rules here makes the fast-path decision and the repair select the same GPU.
+    Takes the probe result its caller already collected, so the fast-path decision and
+    the repair apply the same ordinal and HSA-spoof rules to the same GPU list.
     """
-    if gfx_devices is None:
-        gfx_devices = _detect_amd_gfx_codes(dedup = False)
-        probe_kind = _LAST_AMD_GFX_PROBE
-    else:
-        gfx_devices = list(gfx_devices)
-
+    gfx_devices = list(gfx_devices)
     physical_gfx = _hsa_spoofed_physical_gfx(inferred_linux_gfx, gfx_devices)
     if physical_gfx is not None:
         gfx_devices = [physical_gfx]
@@ -3081,31 +3066,6 @@ def _rocm_repair_key(index_url: str, installed_version: str, torch_importable: b
     return hashlib.sha256(state.encode("utf-8", errors = "replace")).hexdigest()[:32]
 
 
-def _rocm_reinstall_blocked(
-    installed_version: str,
-    torch_importable: bool,
-    repair_key: str,
-    has_rocm_torch: bool = False,
-    runtime_cuda: str = "",
-) -> "str | None":
-    """Why this ROCm reinstall must not run, or None to proceed.
-
-    Two cases, each of which force-reinstalls several GB on EVERY update while fixing
-    nothing:
-
-    1. The same repair already ran and left torch in the same state. An unimportable
-       torch reads as a wrong wheel rather than a broken one, so the repair re-arms
-       itself forever; and under setup.sh's `set -euo pipefail` a repair that cannot
-       reach download.pytorch.org turns `studio update` into a guaranteed abort.
-    2. The host owns an NVIDIA GPU that CUDA_VISIBLE_DEVICES merely hides, and torch
-       is a working CUDA build. The mask picks a card; it is not consent to replace
-       the wheels.
-    """
-    return _rocm_cuda_wheel_preserved(
-        installed_version, has_rocm_torch, torch_importable, runtime_cuda
-    ) or _rocm_repair_already_attempted(repair_key, installed_version, torch_importable)
-
-
 def _rocm_cuda_wheel_preserved(
     installed_version: str,
     has_rocm_torch: bool = False,
@@ -3114,9 +3074,10 @@ def _rocm_cuda_wheel_preserved(
 ) -> "str | None":
     """Why a working CUDA wheel is kept instead of replaced, or None.
 
-    Split out for the same reason as _rocm_repair_already_attempted: the caller has to
-    tell the two suppressions apart. This one leaves a CUDA venv in place, which is not
-    a ROCm-ready one, so the AMD bitsandbytes wheel must not be paired with it.
+    The host owns an NVIDIA GPU that CUDA_VISIBLE_DEVICES merely hides, and torch is a
+    working CUDA build: the mask picks a card, it is not consent to replace the wheels.
+    A CUDA venv is not a ROCm-ready one, so the AMD bitsandbytes wheel must not be
+    paired with it.
 
     A CUDA build is recognised two ways because neither clue is always present.
     The +cuXXX local tag in torch.__version__ is authoritative when it exists, and
@@ -3156,9 +3117,10 @@ def _rocm_repair_already_attempted(
 ) -> "str | None":
     """Why this exact repair must not be repeated, or None.
 
-    Split out because the two suppressions in _rocm_reinstall_blocked mean opposite
-    things to the caller: declining to touch a working CUDA wheel is a final answer,
-    while a suppressed repeat is a repair still owed.
+    The same repair already ran and left torch in the same state. An unimportable torch
+    reads as a wrong wheel rather than a broken one, so the repair re-arms itself
+    forever; and under setup.sh's `set -euo pipefail` a repair that cannot reach
+    download.pytorch.org turns `studio update` into a guaranteed abort.
     """
     if not repair_key or install_manifest.recorded_rocm_repair_attempt() != repair_key:
         return None
@@ -3224,7 +3186,8 @@ def _linux_rocm_torch_plan() -> "tuple[_LinuxRocmTorchPlan | None, bool, bool]":
     gfx_probe = _LAST_AMD_GFX_PROBE
     gfx_override = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower()
     gfx906_override = gfx_override.split(":")[0] == "gfx906"
-    runtime_is_gfx906 = gfx906_override or _runtime_target_is_gfx906(gfx_devices)
+    # The helper reads the same override first, so it already answers for gfx906_override.
+    runtime_is_gfx906 = _runtime_target_is_gfx906(gfx_devices)
 
     desired_url = pin
     label = f"ROCm torch ({_torch_index_leaf(pin)})" if pin else ""
@@ -3232,19 +3195,21 @@ def _linux_rocm_torch_plan() -> "tuple[_LinuxRocmTorchPlan | None, bool, bool]":
     clear_spoof = None
     selected_strix = False
 
-    if pin is None and inferred_gfx and not has_rocm_torch and (gfx_override or not amd_visible):
+    # Each arm below claims desired_url only if no earlier one did. desired_url starts at
+    # pin, so "not chosen yet" also means "no explicit pin", which is authoritative.
+    if (
+        desired_url is None
+        and inferred_gfx
+        and not has_rocm_torch
+        and (gfx_override or not amd_visible)
+    ):
         desired_url = _amd_arch_index_url(inferred_gfx)
         label = f"ROCm torch (inferred {inferred_gfx})"
         reason = f"{inferred_gfx} inferred while the ROCm runtime is not visible"
 
-    if (
-        pin is None
-        and desired_url is None
-        and _strix_needs_amd_arch_index(rocm_version)
-        and not gfx906_override
-    ):
+    if desired_url is None and _strix_needs_amd_arch_index(rocm_version) and not gfx906_override:
         selected, runtime_gfx, physical_gfx, detected = _selected_linux_strix_gfx(
-            inferred_gfx, gfx_devices = gfx_devices, probe_kind = gfx_probe
+            inferred_gfx, gfx_devices, gfx_probe
         )
         if selected is not None:
             desired_url = _amd_arch_index_url(selected)
@@ -3259,17 +3224,12 @@ def _linux_rocm_torch_plan() -> "tuple[_LinuxRocmTorchPlan | None, bool, bool]":
                 f"   skipping AMD per-gfx index override.\n"
             )
 
-    if (
-        pin is None
-        and desired_url is None
-        and runtime_is_gfx906
-        and _gfx906_needs_legacy_index(rocm_version)
-    ):
+    if desired_url is None and runtime_is_gfx906 and _gfx906_needs_legacy_index(rocm_version):
         desired_url = f"{_PYTORCH_WHL_BASE}/{_GFX906_LEGACY_TAG}"
         label = f"ROCm torch (gfx906, {_GFX906_LEGACY_TAG})"
         reason = "gfx906 requires the last wheel family that still ships its BLAS kernels"
 
-    if pin is None and desired_url is None:
+    if desired_url is None:
         tag = _generic_pytorch_rocm_tag(rocm_version)
         if tag is not None:
             desired_url = f"{_PYTORCH_WHL_BASE}/{tag}"
@@ -3293,22 +3253,18 @@ def _linux_rocm_torch_plan() -> "tuple[_LinuxRocmTorchPlan | None, bool, bool]":
     repair_blocked = False
     cuda_wheel_kept = False
     if reinstall and pin is None:
-        blocked = _rocm_reinstall_blocked(
-            installed_version, torch_importable, repair_key, has_rocm_torch, runtime_cuda
+        # Two reasons to suppress a reinstall that would move several GB on every update
+        # while fixing nothing. Both are asked, because they mean opposite things below:
+        # a kept CUDA wheel is a final answer, a suppressed repeat is a repair still owed.
+        kept = _rocm_cuda_wheel_preserved(
+            installed_version, has_rocm_torch, torch_importable, runtime_cuda
         )
-        if blocked is not None:
-            _safe_print(blocked)
+        repeated = _rocm_repair_already_attempted(repair_key, installed_version, torch_importable)
+        if kept or repeated:
+            _safe_print(kept or repeated)
             reinstall = False
-            repair_blocked = (
-                _rocm_repair_already_attempted(repair_key, installed_version, torch_importable)
-                is not None
-            )
-            cuda_wheel_kept = (
-                _rocm_cuda_wheel_preserved(
-                    installed_version, has_rocm_torch, torch_importable, runtime_cuda
-                )
-                is not None
-            )
+            cuda_wheel_kept = kept is not None
+            repair_blocked = repeated is not None
 
     if repair_blocked:
         # Suppressed, not satisfied. Reported as an explicit no-op plan so the caller
@@ -3665,6 +3621,7 @@ try:
     _RECORDED_TORCH_INDEX_URL = install_manifest.recorded_torch_index_url()
 except Exception:
     _RECORDED_TORCH_INDEX_URL = None
+
 
 def _infer_torch_backend() -> str:
     """The torch family this run is building against, or "" to probe the GPU.

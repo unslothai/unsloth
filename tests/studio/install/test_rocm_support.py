@@ -1434,10 +1434,32 @@ Agent 4
         assert _classify(suffixed_gfx, rocm_fn) is None
         assert _classify(suffixed_gfx, unk_fn) == suffixed_gfx
 
-    def test_supported_gfx_family_leaves_match_the_arch_index_map(self):
-        assert stack_mod._ROCM_GFX_FAMILY_LEAVES == {
-            family.lower() for family in stack_mod._GFX_TO_AMD_INDEX_ARCH.values()
+    def test_every_installer_lists_the_same_supported_gfx_families(self):
+        """The Python set is derived from _GFX_TO_AMD_INDEX_ARCH; the four installers
+        hand-copy it. A family missing from one of them is read there as a custom pin
+        and left verbatim, so that installer alone stops repairing an AMD wheel."""
+        expected = set(stack_mod._ROCM_GFX_FAMILY_LEAVES)
+        copies = {
+            "install.sh": (PACKAGE_ROOT / "install.sh", r"^\s*(gfx120x-all\|[^)]+)\)"),
+            "studio/setup.sh": (
+                PACKAGE_ROOT / "studio" / "setup.sh",
+                r"^\s*cpu\|(gfx120x-all\|[^)]+)\)",
+            ),
+            "install.ps1": (PACKAGE_ROOT / "install.ps1", r"\$gfxFamilies = @\(([^)]*)\)"),
+            "studio/setup.ps1": (
+                PACKAGE_ROOT / "studio" / "setup.ps1",
+                r"\$gfxFamilies = @\(([^)]*)\)",
+            ),
         }
+        for name, (path, pattern) in copies.items():
+            match = re.search(pattern, path.read_text(encoding = "utf-8"), re.MULTILINE)
+            assert match is not None, f"{name}: could not find the gfx family list"
+            listed = {
+                leaf.strip().strip("'\"").lower()
+                for leaf in re.split(r"[|,]", match.group(1))
+                if leaf.strip()
+            }
+            assert listed == expected, f"{name} lists {sorted(listed)}, expected {sorted(expected)}"
 
     @patch.object(stack_mod, "pip_install")
     def test_ensure_cpu_torch_broken_probe_reinstalls(self, mock_pip):

@@ -20,6 +20,9 @@ trap 'rm -rf "$WORK"' EXIT
 # The supported table lives at top level; the report block calls it as its peer guard, so a
 # run without it would let a covered card fall into the unsupported arm.
 awk '/^_setup_supported_gfx_from_name\(\) \{/, /^\}$/' "$SETUP_SH" > "$WORK/blk.sh"
+# The backend arm asks this parser for the pinned index leaf, and it is defined above the
+# block. Without it the chain runs with the lookup failing silently.
+awk '/^_setup_torch_index_leaf\(\) \{/, /^\}$/' "$SETUP_SH" >> "$WORK/blk.sh"
 # The report chain: the two unsupported helpers, the single lookup, the torch probe and every
 # arm, ending just before the ROCm path lines that follow the chain.
 awk '/^    # GPU name -> gfx arch for AMD generations/, /^    _setup_rocm_root=/' "$SETUP_SH" \
@@ -28,6 +31,7 @@ awk '/^    # GPU name -> gfx arch for AMD generations/, /^    _setup_rocm_root=/
 # An extraction that lost any of these would make the cases below pass vacuously.
 for _need in \
     '_setup_supported_gfx_from_name() {' \
+    '_setup_torch_index_leaf() {' \
     '_setup_unsupported_gfx_any() {' \
     '_setup_unsup_gfx=$(_setup_unsupported_gfx_any' \
     'no ROCm PyTorch wheels Unsloth installs' \

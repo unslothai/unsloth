@@ -1833,6 +1833,19 @@ _setup_apply_rocm_hsa_clear() {
     fi
 }
 
+# The final path/family segment of a torch index pin, lowercased. Query and fragment go
+# first (an authenticated mirror .../whl/xpu?token=... is a supported pin shape, and
+# missing that reads as "no pin"), then ALL trailing slashes, since a single %/ leaves
+# ".../xpu/" behind. Exact and lowercased like every other leaf parser in the stack: a
+# suffix match (.../private-xpu) or an uncased one would disagree with them about the
+# same pin, and UNSLOTH_TORCH_INDEX_FAMILY=XPU is one they accept.
+_setup_torch_index_leaf() {
+    local url="${1%%\#*}"
+    url="${url%%\?*}"
+    while [ "${url%/}" != "$url" ]; do url="${url%/}"; done
+    printf '%s' "${url##*/}" | tr '[:upper:]' '[:lower:]'
+}
+
 _SKIP_PYTHON_DEPS=false
 _SKIP_VERSION_CHECK=false
 if [ "$_COLAB_NO_VENV" = true ]; then
@@ -1889,17 +1902,10 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         # (install_python_stack's _ensure_xpu_torch), so without this escape a CPU install
         # switched to UNSLOTH_TORCH_INDEX_FAMILY=xpu keeps its CPU wheel forever: the package
         # version is current, so the fast path calls it up to date. Mirrors setup.ps1.
-        _setup_pin="${UNSLOTH_TORCH_INDEX_URL:-${UNSLOTH_TORCH_INDEX_FAMILY:-}}"
-        # Strip query/fragment first: an authenticated mirror (…/whl/xpu?token=...) is a
-        # supported pin shape, and missing it reads as "no XPU pin" and skips the repair.
-        _setup_pin="${_setup_pin%%\#*}"
-        _setup_pin="${_setup_pin%%\?*}"
-        # ALL trailing slashes, like the shared leaf parsers: a single %/ leaves "…/xpu/" behind.
-        while [ "${_setup_pin%/}" != "$_setup_pin" ]; do _setup_pin="${_setup_pin%/}"; done
-        # Exact, lowercased leaf, like every other leaf parser: a *xpu suffix match (…/private-xpu)
-        # would force a pass every update that _ensure_xpu_torch then declines to act on, and an
-        # uncased match would miss UNSLOTH_TORCH_INDEX_FAMILY=XPU that those parsers do accept.
-        _setup_pin_leaf=$(printf '%s' "${_setup_pin##*/}" | tr '[:upper:]' '[:lower:]')
+        # A *xpu suffix match (…/private-xpu) would force a pass every update that
+        # _ensure_xpu_torch then declines to act on, so take the exact leaf.
+        _setup_pin_leaf=$(_setup_torch_index_leaf \
+            "${UNSLOTH_TORCH_INDEX_URL:-${UNSLOTH_TORCH_INDEX_FAMILY:-}}")
         # Disk first, no interpreter: version.py carries the local label, so a wedged Intel
         # driver cannot hang `studio update` inside `import torch`. Read unconditionally, not
         # only under a pin: the pin is one-shot, so the installed wheel is the only durable
@@ -2391,13 +2397,8 @@ EOF
     _setup_non_rocm_backend=$(printf '%s' "${UNSLOTH_TORCH_BACKEND:-}" | tr '[:upper:]' '[:lower:]')
     case "$_setup_non_rocm_backend" in cpu|cuda|xpu) ;; *) _setup_non_rocm_backend="" ;; esac
     if [ -z "$_setup_non_rocm_backend" ]; then
-        _setup_backend_pin="${UNSLOTH_TORCH_INDEX_URL:-${UNSLOTH_TORCH_INDEX_FAMILY:-}}"
-        _setup_backend_pin="${_setup_backend_pin%%\#*}"
-        _setup_backend_pin="${_setup_backend_pin%%\?*}"
-        while [ "${_setup_backend_pin%/}" != "$_setup_backend_pin" ]; do
-            _setup_backend_pin="${_setup_backend_pin%/}"
-        done
-        _setup_backend_leaf=$(printf '%s' "${_setup_backend_pin##*/}" | tr '[:upper:]' '[:lower:]')
+        _setup_backend_leaf=$(_setup_torch_index_leaf \
+            "${UNSLOTH_TORCH_INDEX_URL:-${UNSLOTH_TORCH_INDEX_FAMILY:-}}")
         case "$_setup_backend_leaf" in
             cpu|xpu) _setup_non_rocm_backend="$_setup_backend_leaf" ;;
             cu[0-9]*)
@@ -2468,7 +2469,7 @@ EOF
         # honours for any arch, so a pinned run says what it is doing instead.
         # Whitespace-trimmed, as get_torch_index_url trims them: a blank value is unset
         # there, so treating it as a pin would drop the CPU warning for nothing.
-        # Distinct name: _setup_pin is the XPU block's, and these are globals in POSIX sh.
+        # Distinct name: shell variables here are globals, so a reused one would leak.
         _setup_unsup_pin="${UNSLOTH_TORCH_INDEX_URL:-}${UNSLOTH_TORCH_INDEX_FAMILY:-}"
         _setup_unsup_pin=$(printf '%s' "$_setup_unsup_pin" | tr -d '[:space:]')
         if [ -n "$_setup_unsup_pin" ]; then

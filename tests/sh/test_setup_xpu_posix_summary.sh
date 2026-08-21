@@ -170,15 +170,23 @@ check "escape forces the dependency pass" \
     "$(awk -v a="$_esc" 'NR>=a && NR<=a+2 && /_SKIP_PYTHON_DEPS=false/{f=1} END{print (f?"yes":"no")}' "$SETUP_SH")" "yes"
 
 # An authenticated or fragmented mirror is a supported pin shape; a raw suffix test reads it as
-# "no XPU pin" and skips the repair.
+# "no XPU pin" and skips the repair. Run against the shipped parser instead of matched in the
+# source, so a rewrite that still classifies correctly is not a failure and one that does not is.
+sed -n '/^_setup_torch_index_leaf() {/,/^}/p' "$SETUP_SH" > "$WORK/leaf.sh"
+[ -s "$WORK/leaf.sh" ] || { echo "FATAL: _setup_torch_index_leaf not found in $SETUP_SH" >&2; exit 1; }
+# shellcheck source=/dev/null
+. "$WORK/leaf.sh"
 check "pin match strips the query" \
-    "$(grep -q '_setup_pin="\${_setup_pin%%\\?\*}"' "$SETUP_SH" && echo yes || echo no)" "yes"
+    "$(_setup_torch_index_leaf 'https://mirror.invalid/whl/xpu?token=t')" "xpu"
 check "pin match strips the fragment" \
-    "$(grep -q '_setup_pin="\${_setup_pin%%\\#\*}"' "$SETUP_SH" && echo yes || echo no)" "yes"
+    "$(_setup_torch_index_leaf 'https://mirror.invalid/whl/xpu#frag')" "xpu"
+check "pin match is case-insensitive" "$(_setup_torch_index_leaf 'XPU')" "xpu"
+check "a suffixed leaf is not the family" \
+    "$(_setup_torch_index_leaf 'https://mirror.invalid/whl/private-xpu')" "private-xpu"
 # The escape must not launch an interpreter: a wedged driver hangs inside `import torch`, and
 # this runs before the bounded probes. Bounded by the acting chain, not a line offset, so a new
 # check inside cannot move the window. What it DECIDES is test_setup_xpu_fastpath_escape.sh.
-_blk=$(awk '/_setup_pin="\$\{UNSLOTH_TORCH_INDEX_URL/{on=1} on{print} on && /_SKIP_PYTHON_DEPS=false$/{n++} n==2{exit}' "$SETUP_SH")
+_blk=$(awk '/_setup_pin_leaf=\$\(_setup_torch_index_leaf/{on=1} on{print} on && /_SKIP_PYTHON_DEPS=false$/{n++} n==2{exit}' "$SETUP_SH")
 check "escape block was found" "$([ -n "$_blk" ] && echo yes || echo no)" "yes"
 check "escape reads the flavour off disk" \
     "$(printf '%s' "$_blk" | grep -q 'site-packages/torch/version.py' && echo yes || echo no)" "yes"
@@ -186,7 +194,7 @@ check "escape launches no interpreter" \
     "$(printf '%s' "$_blk" | grep -q '\$VENV_DIR/bin/python' && echo no || echo yes)" "yes"
 # One %/ leaves a slash on ".../xpu//", which reads as "no XPU pin".
 check "pin match strips every trailing slash" \
-    "$(printf '%s' "$_blk" | grep -q 'while \[ "\${_setup_pin%/}" != "\$_setup_pin" \]' && echo yes || echo no)" "yes"
+    "$(_setup_torch_index_leaf 'https://mirror.invalid/whl/xpu//')" "xpu"
 
 echo "an installed +xpu wheel whose runtime is dead gets its own arm"
 # is_available() false on a real +xpu install means the compute DRIVER is missing or too old;

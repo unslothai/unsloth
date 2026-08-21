@@ -29,7 +29,7 @@ trap 'rm -rf "$WORK"' EXIT
 awk '/^_setup_rocm_fast_path_probe\(\) \{/{on=1} on && /^_SKIP_PYTHON_DEPS=false$/{exit} on{print}' \
     "$SETUP_SH" > "$WORK/helpers.sh"
 for _need in _setup_rocm_fast_path_probe _setup_run_rocm_fast_path_probe \
-             _setup_apply_rocm_hsa_clear; do
+             _setup_apply_rocm_hsa_clear _setup_torch_index_leaf; do
     grep -q "^$_need() {" "$WORK/helpers.sh" || {
         echo "FATAL: helper $_need not extracted" >&2; exit 1; }
 done
@@ -38,7 +38,7 @@ bash -n "$WORK/helpers.sh" || { echo "FATAL: extracted helpers do not parse" >&2
 # From the pin read to the end of the acting if/elif chain.
 # Stop at the `fi` that closes the escape chain, NOT after the Nth _SKIP_PYTHON_DEPS=false:
 # counting assignments truncates the block as soon as an arm is added, silently.
-awk '/_setup_pin="\$\{UNSLOTH_TORCH_INDEX_URL/{on=1} on && /^    elif \[ -n "\$INSTALLED_VER"/{exit} on{print}' \
+awk '/_setup_pin_leaf=\$\(_setup_torch_index_leaf/{on=1} on && /^    elif \[ -n "\$INSTALLED_VER"/{exit} on{print}' \
     "$SETUP_SH" > "$WORK/blk.sh"
 [ -s "$WORK/blk.sh" ] || { echo "FATAL: escape block not found in $SETUP_SH" >&2; exit 1; }
 # Require all three XPU arms and the delegated AMD arm so extraction cannot pass vacuously.
