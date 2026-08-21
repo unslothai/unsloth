@@ -107,6 +107,7 @@ def register_images(
     from .web_access_policy import check_url_access
 
     public: list[dict[str, str]] = []
+    persist: list[tuple[str, dict[str, Any]]] = []
     now = time.monotonic()
     with _registry_lock:
         _prune_registry_locked(now)
@@ -143,20 +144,33 @@ def register_images(
             if subject:
                 entry["subject"] = _clean_text(subject, 80)
             public.append(entry)
+            persist.append((image_id, _registry[image_id]))
+    # Outside the lock: one small write per image, and nothing here needs the registry.
+    for image_id, stored in persist:
+        _persist_entry(image_id, stored)
+    if persist:
+        # Here too, not only after a thumbnail write: a user who never opens a picture
+        # would otherwise accumulate sidecars with nothing ever bounding them.
+        _evict_cache()
     return public
+
+
+def _lookup_locked(image_id: str) -> dict[str, Any] | None:
+    """Registry read with the TTL applied. The caller holds ``_registry_lock``."""
+    entry = _registry.get(image_id)
+    if entry is None:
+        return None
+    if time.monotonic() - entry["created"] > _REGISTRY_TTL_S:
+        _registry.pop(image_id, None)
+        return None
+    return dict(entry)
 
 
 def lookup_image(image_id: str) -> dict[str, Any] | None:
     if not IMAGE_ID_RE.fullmatch(image_id or ""):
         return None
     with _registry_lock:
-        entry = _registry.get(image_id)
-        if entry is None:
-            return None
-        if time.monotonic() - entry["created"] > _REGISTRY_TTL_S:
-            _registry.pop(image_id, None)
-            return None
-        return dict(entry)
+        return _lookup_locked(image_id)
 
 
 def format_images_for_model(entries: list[dict[str, str]]) -> str:
@@ -225,16 +239,78 @@ def _cache_path(image_id: str) -> Path:
     return _cache_dir() / f"{image_id}.jpg"
 
 
-def _evict_cache() -> None:
+def _meta_path(image_id: str) -> Path:
+    return _cache_dir() / f"{image_id}.json"
+
+
+def _persist_entry(image_id: str, entry: dict[str, Any]) -> None:
+    """Keep an id resolvable across a restart.
+
+    The envelope in saved chat history carries ids, not URLs, and the browser only
+    asks for a thumbnail once it nears the viewport -- so a picture that was never
+    scrolled to has no bytes on disk, and the in-memory registry does not survive the
+    process. Reopening that chat used to 404 forever. This is the same information the
+    cached JPEG already reveals, and `clear_cache` removes both together.
+    """
     try:
-        files = sorted(_cache_dir().glob("*.jpg"), key = lambda p: p.stat().st_mtime)
-    except OSError:
-        return
-    for path in files[: max(0, len(files) - _CACHE_MAX_FILES)]:
+        payload = json.dumps(
+            {
+                "thumbnail": entry["thumbnail"],
+                "source": entry["source"],
+                "policy": entry.get("policy"),
+            },
+            ensure_ascii = True,
+        )
+        # Writer-unique, like the JPEG: a torn read must not be possible.
+        tmp = _meta_path(image_id).with_suffix(f".{secrets.token_hex(4)}.tmp")
+        tmp.write_text(payload)
+        tmp.replace(_meta_path(image_id))
+    except (OSError, TypeError, ValueError) as exc:
+        # Best effort: losing this costs a 404 on an unseen picture, never the search.
+        logger.debug("search image metadata write failed: %s", exc)
+
+
+def _load_persisted_entry(image_id: str) -> dict[str, Any] | None:
+    try:
+        raw = json.loads(_meta_path(image_id).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    thumbnail = raw.get("thumbnail")
+    source = raw.get("source")
+    if not isinstance(thumbnail, str) or not isinstance(source, str):
+        return None
+    # Re-checked on the way back in: what was public when it was written is not
+    # necessarily public now, and this bypasses register_images' own gate.
+    if not (_names_public_host(thumbnail) and _names_public_host(source)):
+        return None
+    policy = raw.get("policy")
+    return {
+        "thumbnail": thumbnail,
+        "source": source,
+        # No TTL: a disk entry follows the cache beside it, which is capped by file
+        # count rather than age. time.monotonic() from a previous process is meaningless.
+        "created": time.monotonic(),
+        "policy": policy if isinstance(policy, dict) else None,
+    }
+
+
+def _evict_cache() -> None:
+    # Capped per kind. Metadata is written for every registered image but bytes only
+    # for the ones actually viewed, so the sidecars outnumber the JPEGs and need their
+    # own bound; and an evicted JPEG keeps its sidecar, which is what lets it be
+    # fetched again rather than 404.
+    for pattern in ("*.jpg", "*.json"):
         try:
-            path.unlink()
+            files = sorted(_cache_dir().glob(pattern), key = lambda p: p.stat().st_mtime)
         except OSError:
-            pass
+            continue
+        for path in files[: max(0, len(files) - _CACHE_MAX_FILES)]:
+            try:
+                path.unlink()
+            except OSError:
+                pass
     try:
         for stale in _cache_dir().glob("*.tmp"):
             if time.time() - stale.stat().st_mtime > 300:
@@ -299,11 +375,20 @@ def thumbnail_bytes(image_id: str) -> bytes | None:
             return path.read_bytes()
     except OSError:
         pass
-    entry = lookup_image(image_id)
-    if entry is None:
-        return None
+    # Generation and entry in ONE acquisition, generation first. Taking them
+    # separately let a clear land in the gap: this call would then read the POST-clear
+    # generation, the check before the write would match, and the thumbnail the clear
+    # had just deleted would be written back. Reading it first is the safe order --
+    # a clear after this point leaves us holding a stale value, which fails the check.
     with _registry_lock:
         generation = _cache_generation
+        entry = _lookup_locked(image_id)
+    if entry is None:
+        # Not in memory: the process may have restarted since the search. The metadata
+        # on disk outlives it, the same way the cached bytes do.
+        entry = _load_persisted_entry(image_id)
+        if entry is None:
+            return None
 
     with _inflight_lock:
         gate = _inflight.setdefault(image_id, threading.Lock())
@@ -356,7 +441,7 @@ def clear_cache() -> None:
         _registry.clear()
         _cache_generation += 1
         try:
-            for pattern in ("*.jpg", "*.tmp"):
+            for pattern in ("*.jpg", "*.json", "*.tmp"):
                 for path in _cache_dir().glob(pattern):
                     path.unlink(missing_ok = True)
         except OSError:

@@ -6793,9 +6793,14 @@ export function createOpenAIStreamAdapter(
         // missing ones and record the web_search call they should have made.
         // Local tool loop only (a hosted provider would be replayed a tool it never
         // saw), never over the user's own documents, never behind an approval prompt.
-        const answerUsedPrivateDocs = toolCallParts.some(
-          (part) => part.toolName === "search_knowledge_base",
-        );
+        // The SCOPE, not just this turn's calls. A follow-up answers from a
+        // search_knowledge_base result replayed in context without retrieving again,
+        // so gating on current-turn tool calls let subjects lifted from private
+        // documents reach the image engines on the very next message.
+        const answerUsedPrivateDocs =
+          ragEnabled ||
+          projectRagEnabled ||
+          toolCallParts.some((part) => part.toolName === "search_knowledge_base");
         const toolCallsNeedApproval =
           useChatRuntimeStore.getState().confirmToolCalls &&
           useChatRuntimeStore.getState().permissionMode === "ask";

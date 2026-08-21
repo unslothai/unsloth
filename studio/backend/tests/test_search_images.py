@@ -438,6 +438,68 @@ def test_clear_all_chats_beats_a_thumbnail_write_already_in_flight(monkeypatch, 
     assert (tmp_path / f"{fresh['id']}.jpg").is_file()
 
 
+def test_a_clear_between_the_two_registry_reads_still_wins(monkeypatch, tmp_path):
+    # The exact interleaving the first fix missed: the entry and the cache generation
+    # were read under SEPARATE acquisitions, so a clear landing in the gap handed this
+    # call the post-clear generation, the check before the write matched, and the
+    # thumbnail the clear had just deleted was written straight back.
+    entry = search_images.register_images(RAW_IMAGES)[0]
+    real_lookup = search_images._lookup_locked
+
+    def clearing_lookup(image_id):
+        found = real_lookup(image_id)
+        # Inline rather than clear_cache(): the caller already holds _registry_lock.
+        search_images._registry.clear()
+        search_images._cache_generation += 1
+        for stale in tmp_path.glob("*"):
+            stale.unlink()
+        return found
+
+    monkeypatch.setattr(search_images, "_lookup_locked", clearing_lookup)
+    monkeypatch.setattr(
+        tools, "_fetch_url_raw", lambda url, **kw: (None, _png_bytes((40, 30)), "image/png")
+    )
+    assert search_images.thumbnail_bytes(entry["id"]) is None
+    assert list(tmp_path.glob("*.jpg")) == []
+
+
+def test_an_id_still_resolves_after_a_restart_that_never_cached_it(monkeypatch, tmp_path):
+    # Chat history keeps ids, not URLs, and the browser only asks for a thumbnail once
+    # it nears the viewport -- so a picture nobody scrolled to has no bytes on disk. The
+    # in-memory registry does not survive the process, and reopening used to 404 forever.
+    entry = search_images.register_images(RAW_IMAGES)[0]
+    assert (tmp_path / f"{entry['id']}.json").is_file()
+    assert not (tmp_path / f"{entry['id']}.jpg").exists(), "never materialized"
+
+    search_images._registry.clear()  # the restart
+    monkeypatch.setattr(
+        tools, "_fetch_url_raw", lambda url, **kw: (None, _png_bytes((40, 30)), "image/png")
+    )
+    data = search_images.thumbnail_bytes(entry["id"])
+    assert data is not None and data[:3] == b"\xff\xd8\xff"
+
+    # Clear all chats takes the metadata with the bytes, so nothing resolves afterwards.
+    search_images.clear_cache()
+    assert list(tmp_path.glob("*.json")) == [] and list(tmp_path.glob("*.jpg")) == []
+    assert search_images.thumbnail_bytes(entry["id"]) is None
+
+
+def test_persisted_metadata_is_re_checked_on_the_way_back_in(monkeypatch, tmp_path):
+    entry = search_images.register_images(RAW_IMAGES)[0]
+    search_images._registry.clear()
+    # A host that is no longer public must not be fetched just because it once was.
+    (tmp_path / f"{entry['id']}.json").write_text(
+        json.dumps({"thumbnail": "http://127.0.0.1/secret.png", "source": "http://127.0.0.1/x"})
+    )
+    monkeypatch.setattr(
+        tools, "_fetch_url_raw", lambda url, **kw: pytest.fail("must not fetch a private host")
+    )
+    assert search_images.thumbnail_bytes(entry["id"]) is None
+    # Corrupt or truncated metadata is a miss, never an error.
+    (tmp_path / f"{entry['id']}.json").write_text("{not json")
+    assert search_images.thumbnail_bytes(entry["id"]) is None
+
+
 def test_web_search_tool_with_images_adds_the_field_without_touching_the_base():
     with_images = tools.web_search_tool_with_images()
     props = with_images["function"]["parameters"]["properties"]
