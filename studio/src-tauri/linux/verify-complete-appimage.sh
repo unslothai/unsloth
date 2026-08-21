@@ -109,10 +109,46 @@ grep -Fq 'Unsloth Safe Emoji' "$fontconfig_file" || {
   echo "Complete AppImage fontconfig does not prefer its safe emoji family" >&2
   exit 1
 }
-grep -Fq 'FONTCONFIG_FILE="$APPDIR/usr/etc/fonts/unsloth-appimage.conf"' "${launchers[@]}" || {
+grep -Fq '@APPDIR@/usr/share/unsloth/fonts' "$fontconfig_file" || {
+  echo "Complete AppImage fontconfig does not name its font directory absolutely" >&2
+  exit 1
+}
+grep -Fq 'sed "s|@APPDIR@|$APPDIR|g" "$unsloth_fonts_template"' "${launchers[@]}" || {
   echo "Complete AppImage does not pin fontconfig to its safe emoji policy" >&2
   exit 1
 }
+
+# Prove the policy under the fontconfig this machine runs, not by reading it.
+# The Jammy build host and the portability images span 2.13 to 2.15, and the
+# 2.13 behavior above is invisible to any text search of the config.
+if command -v fc-match >/dev/null && command -v fc-query >/dev/null &&
+  fc-query "$safe_emoji_font" >/dev/null 2>&1; then
+  fc_root="$(mktemp -d "${RUNNER_TEMP:-/tmp}/unsloth-appimage-fc.XXXXXX")"
+  sed "s|@APPDIR@|$appdir|g" "$fontconfig_file" >"$fc_root/fonts.conf"
+  selected="$(FONTCONFIG_FILE="$fc_root/fonts.conf" XDG_CACHE_HOME="$fc_root" \
+    fc-match -f '%{file}' 'sans-serif:charset=1f680')"
+  if [[ "$selected" != "$safe_emoji_font" ]]; then
+    echo "Complete AppImage fontconfig picks ${selected:-nothing} for U+1F680," \
+      "not its bundled safe emoji font" >&2
+    rm -rf -- "$fc_root"
+    exit 1
+  fi
+  # Emoji coverage must not cost the host's text fonts their own requests.
+  text_font="$(FONTCONFIG_FILE="$fc_root/fonts.conf" XDG_CACHE_HOME="$fc_root" \
+    fc-match -f '%{file}' 'sans-serif:charset=41')"
+  if [[ -n "$text_font" && "$text_font" != "$safe_emoji_font" ]]; then
+    for family in sans-serif serif monospace; do
+      chosen="$(FONTCONFIG_FILE="$fc_root/fonts.conf" XDG_CACHE_HOME="$fc_root" \
+        fc-match -f '%{file}' "$family")"
+      [[ "$chosen" != "$safe_emoji_font" ]] || {
+        echo "Complete AppImage fontconfig hands $family to the emoji font" >&2
+        rm -rf -- "$fc_root"
+        exit 1
+      }
+    done
+  fi
+  rm -rf -- "$fc_root"
+fi
 
 if ! grep -Rqs 'GIO_MODULE_DIR=' \
   "$appdir/AppRun" "$appdir/apprun-hooks" "$appdir/usr/lib" 2>/dev/null; then

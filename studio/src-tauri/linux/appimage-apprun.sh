@@ -11,8 +11,26 @@ export APPDIR PATH
 
 # Keep WebKitGTK on the bundled CBDT emoji font. Jammy's Skia can abort when a
 # newer host FreeType selects a COLRv1 font, while host text fonts remain usable.
-FONTCONFIG_FILE="$APPDIR/usr/etc/fonts/unsloth-appimage.conf"
+# The policy carries this mount's AppDir because Fontconfig has no portable way
+# to name a directory relative to the config file: prefix="relative" arrived in
+# 2.14, and 2.13 hosts such as Ubuntu 22.04 anchor such a path at the host root.
+# Materialize it in a directory this user owns; a shared /tmp path would let
+# anyone else on the machine choose what this process treats as a font policy.
+unsloth_fonts_template="$APPDIR/usr/etc/fonts/unsloth-appimage.conf"
+unsloth_fonts_state="${XDG_RUNTIME_DIR:-${XDG_CACHE_HOME:-${HOME:-}/.cache}}/unsloth-studio"
+FONTCONFIG_FILE="$unsloth_fonts_template"
+if [ -r "$unsloth_fonts_template" ] &&
+  mkdir -p "$unsloth_fonts_state" 2>/dev/null &&
+  sed "s|@APPDIR@|$APPDIR|g" "$unsloth_fonts_template" \
+    >"$unsloth_fonts_state/fonts-${APPDIR##*/}.conf" 2>/dev/null; then
+  FONTCONFIG_FILE="$unsloth_fonts_state/fonts-${APPDIR##*/}.conf"
+  # Each mount gets its own name, so a second AppImage cannot repoint the first
+  # one's policy mid-run. Yesterday's mounts are gone; their copies can go too.
+  find "$unsloth_fonts_state" -maxdepth 1 -name 'fonts-*.conf' -mtime +1 \
+    ! -name "fonts-${APPDIR##*/}.conf" -delete 2>/dev/null || true
+fi
 export FONTCONFIG_FILE
+unset unsloth_fonts_template unsloth_fonts_state
 
 # The loader reads LD_LIBRARY_PATH before those RUNPATHs, so an inherited value would put
 # host GLib, GTK, WebKit or GStreamer in front of the bundle. Managed children still get it;

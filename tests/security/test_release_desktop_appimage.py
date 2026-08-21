@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 from pathlib import Path
+from xml.etree import ElementTree
 
 import yaml
 
@@ -224,14 +225,40 @@ def test_release_preseeds_every_tauri_appimage_tool_with_a_digest():
         assert asset in tool_script
         assert asset in finalizer_source
     fontconfig_source = FONTCONFIG.read_text(encoding = "utf-8")
-    assert 'prefix="relative">../../share/unsloth/fonts' in fontconfig_source
+    # Fontconfig skips a malformed file wholesale and logs to stderr the app
+    # never shows, which reads exactly like the policy not applying.
+    ElementTree.fromstring(fontconfig_source)
+    # Fontconfig 2.13, which Ubuntu 22.04 still ships, ignores prefix="relative"
+    # and anchors the path at the host root, so AppRun fills in the real AppDir.
+    assert "<dir>@APPDIR@/usr/share/unsloth/fonts</dir>" in fontconfig_source
+    assert "<dir prefix=" not in fontconfig_source
     assert '<match target="scan">' in fontconfig_source
     assert "Unsloth Safe Emoji" in fontconfig_source
 
-    assert '<edit name="color" mode="assign">' in fontconfig_source
     assert "<selectfont>" in fontconfig_source
     assert "<rejectfont>" in fontconfig_source
     assert '<patelt name="color"><bool>true</bool></patelt>' in fontconfig_source
+    # The bundled font keeps its real color=true, so the color-emoji queries
+    # WebKitGTK makes still reach it; acceptfont is what spares it the filter.
+    assert "<acceptfont>" in fontconfig_source
+    assert '<patelt name="family"><string>Unsloth Safe Emoji</string></patelt>' in fontconfig_source
+    assert fontconfig_source.index("<acceptfont>") < fontconfig_source.index("<rejectfont>")
+
+    # Every pattern rule must be guarded by what it answers for. An unguarded
+    # prepend wins FcFontMatch outright, and WebKitGTK then draws spaces and
+    # digits, which a CBDT emoji font covers, out of that font.
+    pattern_rules = re.findall(
+        r'<match target="pattern">(.*?)</match>', fontconfig_source, re.DOTALL
+    )
+    assert pattern_rules
+    for rule in pattern_rules:
+        assert '<test name="family">' in rule or '<test name="lang">' in rule
+        if 'mode="prepend"' in rule:
+            assert "<string>emoji</string>" in rule or "<string>und-zsye</string>" in rule
+        else:
+            assert 'mode="append" binding="weak"' in rule
+    for guard in ("und-zsye", "emoji", "sans-serif", "serif", "monospace"):
+        assert any(f"<string>{guard}</string>" in rule for rule in pattern_rules)
     assert 'case "${APPDIR:-}" in' in tool_script
     assert 'APPDIR="$(dirname "$(realpath "$0")")"' in tool_script
     for host_library in (
@@ -286,7 +313,7 @@ def _fake_complete_appdir(tmp_path: Path) -> Path:
         "#!/bin/sh\n"
         '. "$APPDIR/apprun-hooks/linuxdeploy-plugin-gtk.sh"\n'
         "unset LD_LIBRARY_PATH\n"
-        'FONTCONFIG_FILE="$APPDIR/usr/etc/fonts/unsloth-appimage.conf"\n'
+        'sed "s|@APPDIR@|$APPDIR|g" "$unsloth_fonts_template"\n'
         "exit 0\n",
         encoding = "utf-8",
     )
@@ -348,7 +375,10 @@ def _fake_complete_appdir(tmp_path: Path) -> Path:
     safe_license.write_text("fixture OFL license\n", encoding = "utf-8")
     fontconfig = appdir / "usr/etc/fonts/unsloth-appimage.conf"
     fontconfig.parent.mkdir(parents = True)
-    fontconfig.write_text("Unsloth Safe Emoji\n", encoding = "utf-8")
+    fontconfig.write_text(
+        "Unsloth Safe Emoji\n<dir>@APPDIR@/usr/share/unsloth/fonts</dir>\n",
+        encoding = "utf-8",
+    )
 
     return appdir
 
@@ -458,19 +488,61 @@ def test_apprun_hands_an_inherited_library_path_to_children_only(tmp_path):
     apprun = appdir / "AppRun"
     apprun.write_bytes(APPRUN.read_bytes())
     apprun.chmod(0o755)
+    template = appdir / "usr/etc/fonts/unsloth-appimage.conf"
+    template.parent.mkdir(parents = True)
+    template.write_bytes(FONTCONFIG.read_bytes())
+    state = tmp_path / "state"
 
     result = subprocess.run(
         [apprun],
         check = True,
         capture_output = True,
         text = True,
-        env = {"PATH": "/usr/bin:/bin", "LD_LIBRARY_PATH": "/opt/conda/lib:/opt/rocm/lib"},
+        env = {
+            "PATH": "/usr/bin:/bin",
+            "LD_LIBRARY_PATH": "/opt/conda/lib:/opt/rocm/lib",
+            "XDG_RUNTIME_DIR": str(state),
+        },
     )
     printed = result.stdout.splitlines()
     assert not [line for line in printed if line.startswith("LD_LIBRARY_PATH=")]
     assert "UNSLOTH_HOST_LD_LIBRARY_PATH=/opt/conda/lib:/opt/rocm/lib" in printed
 
-    assert f"FONTCONFIG_FILE={appdir}/usr/etc/fonts/unsloth-appimage.conf" in printed
+    # The shipped policy names its font directory as @APPDIR@; a mount-specific
+    # copy is what fontconfig actually reads, on every version.
+    materialized = state / "unsloth-studio/fonts-AppDir.conf"
+    assert f"FONTCONFIG_FILE={materialized}" in printed
+    assert f"<dir>{appdir}/usr/share/unsloth/fonts</dir>" in materialized.read_text(
+        encoding = "utf-8"
+    )
+    assert "@APPDIR@" not in materialized.read_text(encoding = "utf-8")
+
+
+def test_apprun_falls_back_to_the_shipped_font_policy_when_it_cannot_write(tmp_path):
+    """A policy that rejects host color fonts still beats no policy at all."""
+
+    appdir = tmp_path / "AppDir"
+    binary = appdir / "usr/bin/unsloth-studio"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("#!/bin/sh\nexec /usr/bin/env\n", encoding = "utf-8")
+    binary.chmod(0o755)
+    apprun = appdir / "AppRun"
+    apprun.write_bytes(APPRUN.read_bytes())
+    apprun.chmod(0o755)
+    template = appdir / "usr/etc/fonts/unsloth-appimage.conf"
+    template.parent.mkdir(parents = True)
+    template.write_bytes(FONTCONFIG.read_bytes())
+    unwritable = tmp_path / "unwritable"
+    unwritable.mkdir(mode = 0o500)
+
+    result = subprocess.run(
+        [apprun],
+        check = True,
+        capture_output = True,
+        text = True,
+        env = {"PATH": "/usr/bin:/bin", "XDG_RUNTIME_DIR": str(unwritable / "state")},
+    )
+    assert f"FONTCONFIG_FILE={template}" in result.stdout.splitlines()
 
 
 def test_complete_appimage_verifier_rejects_a_launcher_that_keeps_the_host_library_path(tmp_path):
