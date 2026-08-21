@@ -366,8 +366,16 @@ def flux2_pick_mismatch(
 # GGUF ``general.architecture`` values nothing in Studio can decode. Beside the FLUX.2 check
 # because both ask whether the pick is loadable, off the same prefix.
 _SPEECH_GGUF_ARCHS = frozenset({"llama-csm"})
-_SPEECH_ARCH_CACHE: dict[tuple[str, str, str, Optional[tuple]], Optional[str]] = {}
+_SPEECH_ARCH_CACHE: dict[
+    tuple[str, str, str, Optional[tuple]], tuple[Optional[str], Optional[float]]
+] = {}
 _SPEECH_ARCH_CACHE_MAX = 256
+# An uncached remote verdict is keyed on a local identity of None, so a republish under the same
+# filename changes nothing about the key and a cached-forever answer would keep refusing a
+# checkpoint that is runnable now. Snapshot-backed entries need no TTL: their key carries the
+# file identity, and _revalidated_speech_arch asks the Hub for them. Matches the variant
+# listing's own freshness window for moved revisions.
+_SPEECH_REMOTE_TTL_SECONDS = 60.0
 
 
 def _arch_from_prefix(prefix: bytes, gguf_filename: str) -> Optional[str]:
@@ -437,8 +445,12 @@ def _speech_probe_architecture(
     local = _local_gguf_path(repo_id, gguf_filename)
     key = (repo_id, gguf_filename, _token_fingerprint(token), _file_identity(local))
     with _CACHE_LOCK:
-        if key in _SPEECH_ARCH_CACHE:
-            return _SPEECH_ARCH_CACHE[key]
+        memo = _SPEECH_ARCH_CACHE.get(key)
+        if memo is not None:
+            arch, expires_at = memo
+            if expires_at is None or time.monotonic() < expires_at:
+                return arch
+            del _SPEECH_ARCH_CACHE[key]
     if local is None and not allow_network:
         # Memo or local header only, as the size pairing does. Nothing is memoised, so the next
         # caller that CAN wait still gets a real answer instead of this one's silence.
@@ -457,7 +469,10 @@ def _speech_probe_architecture(
     with _CACHE_LOCK:
         if len(_SPEECH_ARCH_CACHE) >= _SPEECH_ARCH_CACHE_MAX:
             _SPEECH_ARCH_CACHE.clear()
-        _SPEECH_ARCH_CACHE[key] = arch
+        _SPEECH_ARCH_CACHE[key] = (
+            arch,
+            None if local else time.monotonic() + _SPEECH_REMOTE_TTL_SECONDS,
+        )
     return arch
 
 

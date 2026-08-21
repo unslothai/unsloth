@@ -1321,3 +1321,69 @@ def test_a_cache_only_probe_does_not_memoise_a_skipped_revision_check(monkeypatc
     # The next caller that can reach the Hub must still catch the republish.
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
     assert len(heads) == 1
+
+
+def test_an_uncached_remote_verdict_is_not_memoised_forever(monkeypatch):
+    """An uncached remote pick keys on a local identity of None, so a republish under the same
+    filename changes nothing about the key. Without a TTL the first verdict would outlive the
+    process and keep refusing a checkpoint that is runnable now."""
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: None)
+    bodies = {CSM_FILE: _arch_header("llama-csm")}
+    _stub_range_reads(monkeypatch, bodies)
+    # Driven, not real: the entry expires relative to whatever monotonic said when it was written.
+    clock = [1000.0]
+    monkeypatch.setattr(diffusion_compat.time, "monotonic", lambda: clock[0])
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    # Inside the window: the memo answers and the Hub is not asked again.
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+
+    # The repo republishes it as a runnable denoiser and the window lapses.
+    bodies[CSM_FILE] = _arch_header("flux")
+    clock[0] += diffusion_compat._SPEECH_REMOTE_TTL_SECONDS + 1.0
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is None
+
+
+def test_a_snapshot_backed_verdict_keeps_its_entry_across_the_window(monkeypatch, tmp_path):
+    """A cached entry needs no TTL: its key carries the file identity and the revision check asks
+    the Hub. Expiring it too would spend a range read per pick for nothing."""
+    snapshot = tmp_path / "models--someone--mixed-media-GGUF" / "snapshots" / "samesha"
+    snapshot.mkdir(parents = True)
+    cached = snapshot / CSM_FILE
+    cached.write_bytes(_arch_header("llama-csm"))
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: str(cached))
+    monkeypatch.setattr(diffusion_compat, "_hub_revision", lambda *a, **k: "samesha")
+    requests = _stub_range_reads(monkeypatch, {})
+
+    clock = [1000.0]
+    monkeypatch.setattr(diffusion_compat.time, "monotonic", lambda: clock[0])
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    clock[0] += diffusion_compat._SPEECH_REMOTE_TTL_SECONDS * 10
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert requests == []
+
+
+def test_both_media_routes_refuse_a_speech_pick_before_taking_the_gpu():
+    """The backends assert this too, but on the load worker, which is INSIDE acquire_for. A
+    refusal raised there arrives having already evicted the chat model the gate exists to
+    preserve, and on the image route after an engine switch unloaded the resident pipeline. Both
+    routes must refuse before they reach the arbiter."""
+    import inspect
+
+    from routes import inference as inference_route
+    from routes import video as video_route
+
+    # The CALL, not the import line at the top of each route, which names acquire_for far earlier.
+    for source, acquire, label in (
+        (inspect.getsource(video_route.load_video_model_gated), "acquire_for(VIDEO", "video"),
+        (
+            inspect.getsource(inference_route.load_diffusion_model_gated),
+            "acquire_for(DIFFUSION",
+            "images",
+        ),
+    ):
+        assert "assert_pick_is_not_speech" in source, label
+        assert acquire in source, label
+        assert source.index("assert_pick_is_not_speech") < source.index(acquire), label
