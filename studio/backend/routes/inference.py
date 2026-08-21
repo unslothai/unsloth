@@ -21498,9 +21498,13 @@ async def anthropic_messages(
         # An explicit confirm_tool_calls=False opts out of the gate entirely (it
         # wins over the mode, mirroring _permission_mode_confirm and the GGUF path),
         # so it never rejects -- not even under ask.
-        if not _confirm_opt_out_pre and (
-            _perm_mode_pre == "ask"
-            or (_perm_mode_pre in ("auto", None) and _gated_tool_selected_pre)
+        if (
+            _selected_server_tools_pre
+            and not _confirm_opt_out_pre
+            and (
+                _perm_mode_pre == "ask"
+                or (_perm_mode_pre in ("auto", None) and _gated_tool_selected_pre)
+            )
         ):
             raise HTTPException(
                 status_code = 400,

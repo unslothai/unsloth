@@ -2828,6 +2828,18 @@ class TestAnthropicMessagesToolRouting:
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
             assert backend.calls[0][0] == "tools"
 
+    def test_ask_allows_an_empty_filtered_server_tool_selection(self, monkeypatch):
+        backend = _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            enable_tools = True,
+            enabled_tools = ["read_skill"],
+            permission_mode = "ask",
+        )
+
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+        assert backend.calls[0][0] == "plain"
+
     def test_the_process_tool_default_alone_is_not_a_server_tool_selection(self, monkeypatch):
         """`unsloth studio run` resolves the policy to on unless --disable-tools. Reading that
         as "this request selected server tools" rejected every plain Messages request on a

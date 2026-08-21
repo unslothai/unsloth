@@ -343,12 +343,18 @@ def _archive_source(
         except (UnicodeDecodeError, StopIteration, yaml.YAMLError, RecursionError, ValueError):
             root_name = ""
         metadata = _parse_skill_markdown(manifest_raw, root_name)
-    if source_root.parts and any(path == source_root for _, path in files):
+    source_root_key = _portable_archive_key(source_root)
+    if source_root.parts and any(
+        _portable_archive_key(path) == source_root_key for _, path in files
+    ):
         raise SkillError("Archive contains conflicting file paths.")
     selected_files = [
-        (entry, path.relative_to(source_root) if source_root.parts else path)
+        (
+            entry,
+            PurePosixPath(*path.parts[len(source_root.parts) :]) if source_root.parts else path,
+        )
         for entry, path in files
-        if not source_root.parts or source_root in path.parents
+        if not source_root.parts or _portable_archive_key(path).startswith(f"{source_root_key}/")
     ]
     if len(selected_files) > MAX_ARCHIVE_FILES:
         raise SkillError(f"Skill bundle exceeds the {MAX_ARCHIVE_FILES}-file limit.")

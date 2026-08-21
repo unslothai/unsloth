@@ -324,12 +324,16 @@ def test_imports_nfkc_normalized_unicode_skill_names(tmp_path: Path):
             f"{composed_name}/SKILL.md": SKILL_MD.replace(
                 "name: unsloth", f"name: {decomposed_name}"
             ),
+            f"{decomposed_name}/references/guide.md": "Unicode guide\n",
         },
     )
 
     imported = skills.import_skill_archive(archive)
 
     assert imported["name"] == composed_name
+    assert skills.read_skill_resource(composed_name, "references/guide.md").endswith(
+        "Unicode guide\n"
+    )
     assert skills.set_skill_enabled(decomposed_name, False)["enabled"] is False
     assert skills.list_skills()[0]["name"] == composed_name
     skills.delete_skill(decomposed_name)
