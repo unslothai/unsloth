@@ -41,7 +41,13 @@ def auth():
     return module
 
 
-def _spoof_auth_globals(monkeypatch, auth, *, os_name = None, executable = None) -> None:
+def _spoof_auth_globals(
+    monkeypatch,
+    auth,
+    *,
+    os_name = None,
+    executable = None,
+) -> None:
     """Give routes/auth.py private copies of ``os`` and ``sys``.
 
     The command builder branches on ``os.name`` and reads ``sys.executable``,
@@ -77,7 +83,9 @@ def test_a_venv_install_gets_the_isolated_module_route(auth, monkeypatch, window
     managed one.
     """
     _spoof_auth_globals(
-        monkeypatch, auth, executable = r"C:\Users\dan\.unsloth\studio\unsloth_studio\Scripts\python.exe"
+        monkeypatch,
+        auth,
+        executable = r"C:\Users\dan\.unsloth\studio\unsloth_studio\Scripts\python.exe",
     )
     monkeypatch.setattr(auth, "_cli_is_inside", lambda _prefix: True)
 

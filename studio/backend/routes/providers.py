@@ -310,10 +310,7 @@ async def update_provider_config(
 
 @serialize_provider_config
 async def _apply_provider_update(
-    provider_id: str,
-    payload: ProviderUpdate,
-    credential: tuple,
-    via_api_key: bool,
+    provider_id: str, payload: ProviderUpdate, credential: tuple, via_api_key: bool
 ):
     """Serialize and commit one provider mutation; the caller records the catalog proof."""
 
