@@ -41,6 +41,13 @@ class ModelCheckpoints(BaseModel):
         False,
         description = "Whether the model uses BNB quantization (e.g. bnb-4bit)",
     )
+    adapter_features: Optional[Dict[str, Optional[bool]]] = Field(
+        None,
+        description = "Compact adapter capabilities parsed from the adapter "
+        "config (dora / full_state / moe_target_parameters / non_uniform); "
+        "None for non-adapter runs. A None VALUE means unverified (e.g. "
+        "full_state without a weight-header probe).",
+    )
 
 
 class CheckpointListResponse(BaseModel):
@@ -131,6 +138,13 @@ class LoRAInfo(BaseModel):
             "The Audio page needs this to offer a trained checkpoint: a scan row "
             "carries no modality otherwise, so an audio adapter reads as a text one."
         ),
+    )
+    adapter_features: Optional[Dict[str, Optional[bool]]] = Field(
+        None,
+        description = "Compact adapter capabilities parsed from the adapter "
+        "config (dora / full_state / moe_target_parameters / non_uniform); "
+        "None when no adapter config was found. A None VALUE means "
+        "unverified.",
     )
 
 
