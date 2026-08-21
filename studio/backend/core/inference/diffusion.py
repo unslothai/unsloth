@@ -1183,7 +1183,6 @@ class DiffusionBackend:
                 self._transition_owns_slot = False
                 self._generate_lock.release()
 
-
     @contextmanager
     def _generation_slot(self, cancel: threading.Event):
         """Hold the generation lock, yielding to teardown and remaining cancellable.

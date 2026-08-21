@@ -7768,9 +7768,7 @@ def test_cancel_spares_a_serialized_request_during_slot_handoff(
         return real_call(self, **kwargs)
 
     monkeypatch.setattr(_FakePipe, "__call__", _call)
-    backend._generate_lock = _SlotHandoffLock(
-        backend._generate_lock, handed_off, admit_waiter
-    )
+    backend._generate_lock = _SlotHandoffLock(backend._generate_lock, handed_off, admit_waiter)
 
     outcomes: dict = {}
 
@@ -7815,7 +7813,6 @@ def test_cancel_spares_a_serialized_request_during_slot_handoff(
     assert isinstance(outcomes["active"], dict), outcomes["active"]
     assert isinstance(outcomes["serialized"], dict), outcomes["serialized"]
     assert outcomes["serialized"]["images"]
-
 
 
 class _SlotContentionLock:
