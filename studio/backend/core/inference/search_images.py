@@ -263,7 +263,7 @@ def _persist_entry(image_id: str, entry: dict[str, Any]) -> None:
         )
         # Writer-unique, like the JPEG: a torn read must not be possible.
         tmp = _meta_path(image_id).with_suffix(f".{secrets.token_hex(4)}.tmp")
-        tmp.write_text(payload)
+        tmp.write_text(payload, encoding = "utf-8")
         tmp.replace(_meta_path(image_id))
     except (OSError, TypeError, ValueError) as exc:
         # Best effort: losing this costs a 404 on an unseen picture, never the search.
@@ -272,7 +272,7 @@ def _persist_entry(image_id: str, entry: dict[str, Any]) -> None:
 
 def _load_persisted_entry(image_id: str) -> dict[str, Any] | None:
     try:
-        raw = json.loads(_meta_path(image_id).read_text())
+        raw = json.loads(_meta_path(image_id).read_text(encoding = "utf-8"))
     except (OSError, ValueError):
         return None
     if not isinstance(raw, dict):
