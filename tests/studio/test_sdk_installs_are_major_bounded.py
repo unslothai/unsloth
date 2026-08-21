@@ -48,24 +48,20 @@ GUARDED = {
     "playwright": (2,),
 }
 
-# One `pip install` argument: name, optional [extras], optional specifier. The specifier
-# is optional on purpose -- a bare `pip install openai` resolves whatever major is current,
-# which is the exact thing this file exists to prevent, and a pattern that required a
-# specifier could not see it at all.
+# One `pip install` argument: name, optional [extras], optional specifier. Optional on
+# purpose: a bare `pip install openai` resolves whatever major is current, and a pattern
+# that required a specifier could not see it at all.
 _REQUIREMENT = re.compile(r"""^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?(?P<spec>.*)$""")
 
-# `pip install`, but also `pip3 install` and `"$VENV/bin/pip" install`, which
-# mlx-ci.yml:439 already uses. Matching the literal text `pip install` missed both.
 # pip, pip3, pip3.12, pip.exe, and any of those behind a path with either separator,
-# quoted or not. mlx-ci.yml:439 uses "$STUDIO_VENV/bin/pip"; the Windows workflows can
-# use pip.exe, which neither a `/`-only separator nor a digits-only suffix would match.
+# quoted or not. mlx-ci.yml:439 uses "$STUDIO_VENV/bin/pip", and the Windows workflows
+# can use pip.exe; matching the literal text `pip install` saw neither.
 _PIP_INSTALL = re.compile(
     r"""(?:^|[\s"'/\\])pip[0-9]*(?:\.[0-9]+)*(?:\.exe)?["']?\s+install(?:\s|$)"""
 )
 
-# The whole version token, suffix included. Capturing only the numeric prefix silently
-# turned `<4.post1` into `<4`, and a post-release or local-version bound is LOOSER than
-# its numeric prefix: `<4.post1` admits 4.0.
+# The whole version token, suffix included. Capturing only the numeric prefix turned
+# `<4.post1` into `<4`, and such a bound is LOOSER than its digits: `<4.post1` admits 4.0.
 _UPPER = re.compile(r"(?P<op><=|<)(?P<version>[^,\s'\"]+)")
 _NUMERIC = re.compile(r"^[0-9][0-9.]*$")
 _EXACT = re.compile(r"===?(?P<version>[0-9][0-9.]*)")
