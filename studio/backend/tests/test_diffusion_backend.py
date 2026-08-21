@@ -632,11 +632,19 @@ class _FakeImg2ImgPipe:
 class _FakeImg2ImgPipeline:
     built_from: object = None
     from_pipe_kwargs: dict = {}
+    recast_dtype: object = None
+
+    def to(self, *args, **kwargs):
+        _FakeImg2ImgPipeline.recast_dtype = kwargs.get("dtype")
+        return self
 
     @classmethod
     def from_pipe(cls, base_pipe, **kwargs):
         _FakeImg2ImgPipeline.built_from = base_pipe
         _FakeImg2ImgPipeline.from_pipe_kwargs = kwargs
+        _FakeImg2ImgPipeline.recast_dtype = None
+        # from_pipe's terminal cast, which is what makes the call site's class choice observable.
+        cls().to(dtype = kwargs.get("dtype") or kwargs.get("torch_dtype") or "float32")
         return _FakeImg2ImgPipe()
 
 
@@ -673,10 +681,17 @@ class _FakeInpaintPipe:
 
 class _FakeInpaintPipeline:
     built_from: object = None
+    recast_dtype: object = None
+
+    def to(self, *args, **kwargs):
+        _FakeInpaintPipeline.recast_dtype = kwargs.get("dtype")
+        return self
 
     @classmethod
     def from_pipe(cls, base_pipe, **kwargs):
         _FakeInpaintPipeline.built_from = base_pipe
+        _FakeInpaintPipeline.recast_dtype = None
+        cls().to(dtype = kwargs.get("dtype") or kwargs.get("torch_dtype") or "float32")
         return _FakeInpaintPipe()
 
 
@@ -1116,8 +1131,11 @@ def test_generate_img2img_uses_from_pipe(fake_runtime, tmp_path):
     assert len(out["images"]) == 1
     # from_pipe was handed the loaded text-to-image pipe (component reuse, no reload).
     assert _FakeImg2ImgPipeline.built_from is loaded_pipe
-    # ...with torch_dtype=None so from_pipe skips the float32 recast that crashes on torchao weights.
-    assert _FakeImg2ImgPipeline.from_pipe_kwargs.get("torch_dtype", "MISSING") is None
+    # ...naming no dtype, and built through a class that drops from_pipe's terminal cast --
+    # which is what actually protects the resident modules (#9186).
+    assert "torch_dtype" not in _FakeImg2ImgPipeline.from_pipe_kwargs
+    assert "dtype" not in _FakeImg2ImgPipeline.from_pipe_kwargs
+    assert _FakeImg2ImgPipeline.recast_dtype is None
     call = _FakeImg2ImgPipe.last_kwargs
     assert call["image"] is not None  # decoded source image passed through
     assert call["strength"] == 0.5
@@ -1126,6 +1144,186 @@ def test_generate_img2img_uses_from_pipe(fake_runtime, tmp_path):
     # A txt2img call after it still uses the base pipe (no image kwarg).
     backend.generate(prompt = "plain", steps = 4, seed = 1)
     assert backend._state.pipe.last_kwargs.get("image") is None
+
+
+# ── from_pipe never recasts a reused component (#9186) ──────────────────────
+
+
+class _Component:
+    """Records the dtype it is left at; a quantized one refuses a cast, as ModelMixin does."""
+
+    def __init__(
+        self,
+        dtype,
+        quantized = False,
+    ):
+        self.dtype = dtype
+        self.is_quantized = quantized
+
+    def to(
+        self,
+        device = None,
+        dtype = None,
+    ):
+        if dtype is not None:
+            if self.is_quantized:
+                raise ValueError("Casting a quantized model to a new `dtype` is unsupported.")
+            self.dtype = dtype
+        return self
+
+
+class _Resident:
+    """The loaded text-to-image pipeline the workflow pipes are built from."""
+
+    def __init__(self, *, quantized_transformer):
+        self.components = {
+            "text_encoder": _Component("bfloat16"),
+            "transformer": _Component("bfloat16", quantized = quantized_transformer),
+            "vae": _Component("bfloat16"),
+        }
+
+    def dtypes(self):
+        return {name: c.dtype for name, c in self.components.items()}
+
+
+class _RecastingPipeline:
+    """``from_pipe`` as every diffusers Studio can install implements it: reuse the resident
+    components, then cast them in name order to float32 unless the caller named a dtype."""
+
+    seen: dict = {}
+    recasts = True
+
+    def __init__(self, **components):
+        self.components = components
+        for name, component in components.items():
+            setattr(self, name, component)
+
+    def to(self, *args, **kwargs):
+        dtype = kwargs.get("dtype")
+        for name in sorted(self.components):
+            component = self.components[name]
+            if hasattr(component, "to"):
+                component.to(dtype = dtype)
+        return self
+
+    @classmethod
+    def from_pipe(cls, base_pipe, **kwargs):
+        _RecastingPipeline.seen = dict(kwargs)
+        new = cls(**dict(base_pipe.components, **kwargs))
+        if cls.recasts:
+            new.to(dtype = kwargs.get("dtype") or kwargs.get("torch_dtype") or "float32")
+        return new
+
+
+class _PreservingPipeline(_RecastingPipeline):
+    """``from_pipe`` once upstream keeps the loaded dtype instead of defaulting to float32."""
+
+    recasts = False
+
+
+def _torch_with_dtype(monkeypatch):
+    """A torch stub whose ``dtype`` is a real class, so ``isinstance`` means something."""
+    torch = types.ModuleType("torch")
+
+    class dtype:  # noqa: N801 -- mirrors torch.dtype
+        pass
+
+    torch.dtype = dtype
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    return torch
+
+
+def test_no_recast_class_drops_every_shape_of_dtype_cast(monkeypatch):
+    """Every form of dtype ``.to()`` accepts is ignored; every form of device is forwarded."""
+    from core.inference.diffusion import _no_recast_pipeline_class
+
+    torch = _torch_with_dtype(monkeypatch)
+    fp32 = torch.dtype()
+
+    class _Recorder:
+        def __init__(self):
+            self.calls = []
+
+        def to(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return self
+
+    pipe = _no_recast_pipeline_class(_Recorder)()
+
+    assert pipe.to(fp32) is pipe  # positional dtype
+    assert pipe.to(dtype = fp32) is pipe  # keyword dtype
+    assert pipe.calls == []  # neither of them reached the parent
+
+    pipe.to("cuda")
+    pipe.to("cuda", fp32)
+    pipe.to(device = "cuda", dtype = fp32)
+    assert pipe.calls == [(("cuda",), {}), (("cuda",), {}), ((), {"device": "cuda"})]
+
+
+def test_no_recast_class_is_cached_and_keeps_identity():
+    """One subclass per pipeline class, and it still passes as the family's own class --
+    which the rest of the backend and the diffusers internals go on assuming."""
+    from core.inference.diffusion import _no_recast_pipeline_class
+
+    cls = _no_recast_pipeline_class(_RecastingPipeline)
+    assert _no_recast_pipeline_class(_RecastingPipeline) is cls
+    assert issubclass(cls, _RecastingPipeline)
+    assert cls.__name__ == _RecastingPipeline.__name__
+
+
+@pytest.mark.parametrize("pipeline_cls", [_RecastingPipeline, _PreservingPipeline])
+@pytest.mark.parametrize("quantized_transformer", [True, False])
+def test_from_pipe_no_recast_leaves_every_component_at_its_loaded_dtype(
+    pipeline_cls, quantized_transformer
+):
+    """The build succeeds and no component moves off bfloat16.
+
+    The two quantization cases fail differently against a recasting from_pipe: a quantized
+    denoiser makes the cast raise, and since components are cast in name order the text
+    encoder is float32 already by then, so catching the error is not a fix; unquantized
+    raises nothing at all and the whole pipeline is silently doubled in place. The two
+    pipeline classes cover a from_pipe that recasts and one that has stopped, so an upstream
+    fix landing under Studio cannot change the outcome."""
+    from core.inference.diffusion import DiffusionBackend
+
+    resident = _Resident(quantized_transformer = quantized_transformer)
+    before = resident.dtypes()
+
+    pipe = DiffusionBackend._from_pipe_no_recast(resident, pipeline_cls)
+
+    assert resident.dtypes() == before == {n: "bfloat16" for n in before}
+    assert pipe.transformer is resident.components["transformer"]
+    assert pipe.vae is resident.components["vae"]
+
+
+def test_from_pipe_no_recast_names_no_dtype_and_forwards_extras():
+    """The helper names no dtype, and passes a ControlNet along."""
+    from core.inference.diffusion import DiffusionBackend
+
+    resident = _Resident(quantized_transformer = True)
+    DiffusionBackend._from_pipe_no_recast(resident, _RecastingPipeline)
+    assert _RecastingPipeline.seen == {}  # neither torch_dtype nor dtype
+
+    controlnet = _Component("bfloat16")
+    pipe = DiffusionBackend._from_pipe_no_recast(
+        resident, _RecastingPipeline, controlnet = controlnet
+    )
+    assert _RecastingPipeline.seen == {"controlnet": controlnet}
+    assert pipe.controlnet is controlnet
+
+
+def test_from_pipe_no_recast_does_not_swallow_errors():
+    """A real assembly failure must surface: catching the quantized-cast error would hide
+    that from_pipe had already cast every component ahead of the one that refused."""
+    from core.inference.diffusion import DiffusionBackend
+
+    class _Broken:
+        @classmethod
+        def from_pipe(cls, base_pipe, **kwargs):
+            raise ValueError("Casting a quantized model to a new `dtype` is unsupported")
+
+    with pytest.raises(ValueError, match = "Casting a quantized model"):
+        DiffusionBackend._from_pipe_no_recast(_Resident(quantized_transformer = True), _Broken)
 
 
 def test_generate_img2img_unsupported_family_raises(fake_runtime, tmp_path, monkeypatch):
@@ -1431,6 +1629,7 @@ def test_generate_inpaint_uses_from_pipe(fake_runtime, tmp_path):
     assert len(out["images"]) == 1
     # The inpaint pipe (not img2img) was selected and built from the loaded pipe.
     assert _FakeInpaintPipeline.built_from is loaded_pipe
+    assert _FakeInpaintPipeline.recast_dtype is None  # reused modules, never recast (#9186)
     assert _FakeImg2ImgPipeline.built_from is None
     call = _FakeInpaintPipe.last_kwargs
     assert call["image"] is not None and call["mask_image"] is not None
@@ -3572,6 +3771,25 @@ def test_begin_load_never_refuses_auto(fake_runtime, tmp_path, monkeypatch):
     # The same CPU host with `auto` must sail through: delegating the choice is not a contract.
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
+
+    # Hold the worker thread at its first instruction, so `loaded` CANNOT be True yet.
+    # begin_load documents "Returns at once", and the assertion below used to race the
+    # daemon thread for it: on an idle host the caller wins and it passes, on a busy one
+    # the thread finishes first and it fails with `assert True is False`. Blocking the
+    # worker makes the same claim unraceable. The refusal this test is named for happens
+    # in begin_load's validation, before the thread is spawned, so stubbing the body
+    # costs no coverage.
+    release = threading.Event()
+    entered = threading.Event()
+    worker: dict = {}
+
+    def _blocked_run_load(self, **kwargs):
+        worker["thread"] = threading.current_thread()
+        entered.set()
+        release.wait(30)
+
+    monkeypatch.setattr(DiffusionBackend, "_run_load", _blocked_run_load)
+
     started = backend.begin_load(
         str(tmp_path),
         gguf_filename = "m.gguf",
@@ -3579,7 +3797,15 @@ def test_begin_load_never_refuses_auto(fake_runtime, tmp_path, monkeypatch):
         model_kind = "gguf",
         transformer_quant = "auto",
     )
-    assert started["loaded"] is False  # returns immediately; the load runs on a thread
+    assert started["loaded"] is False  # returned without waiting on the load
+    assert entered.wait(30), "begin_load never started the load thread"
+    # The load is still in flight, which is the whole claim. Checked from the caller,
+    # not with an assert inside the worker: an assertion that fails on a non-main
+    # thread does not fail the test, so that version reported a pass against a
+    # begin_load mutated to join its own thread.
+    assert worker["thread"].is_alive(), "begin_load waited for the load instead of returning"
+    release.set()
+    worker["thread"].join(30)
 
 
 def test_transformer_quant_falls_back_to_gguf_on_failure(
@@ -4132,9 +4358,14 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
         hf_token = None,
         transformer = None,
         text_encoder = None,
+        # Spelled out rather than swallowed by a **kwargs: this double exists to pin the exact
+        # production signature, and this branch never sees the guarded pipe_kwargs, so the keyword
+        # that keeps the no-download promise has to be one _assemble_pipe really passes.
+        local_files_only = False,
     ):
         calls["base"] = base
         calls["transformer"] = transformer
+        calls["local_files_only"] = local_files_only
         return Pipe()
 
     monkeypatch.setattr(dmod, "load_krea2_pipeline", fake_loader)
@@ -4158,7 +4389,14 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
     )
     assert isinstance(pipe, Pipe)
     # _assemble_pipe reads base only to FETCH, so the loader gets the ungated mirror.
-    assert calls == {"base": "unsloth/Krea-2-Turbo", "transformer": marker, "device": "cuda:0"}
+    assert calls == {
+        "base": "unsloth/Krea-2-Turbo",
+        "transformer": marker,
+        "device": "cuda:0",
+        # Default here (a direct call), but PASSED rather than left to the loader's own default:
+        # the parameter this test binds is what an API-initiated load flips.
+        "local_files_only": False,
+    }
 
 
 def test_dense_quant_unusable_prequant_path_runs_dense_refit(

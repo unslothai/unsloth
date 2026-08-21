@@ -34,6 +34,7 @@ export {
   type ScanFolderInfo,
 } from "./api/chat-api";
 export type {
+  ApiMonitorEntry,
   BackendModelDetails,
   GgufVariantDetail,
   InferenceStatusResponse,
@@ -76,6 +77,23 @@ export { PermissionModeDropdown } from "./permission-mode-select";
 export { useChatSearchStore } from "./stores/chat-search-store";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
+export {
+  applyManualOrder,
+  dropEdgeFor,
+  moveIdBy,
+  showsInRecents,
+  PINNED_ORDER_SCOPE,
+  PROJECT_ORDER_SCOPE,
+  projectOrderScope,
+  RECENTS_ORDER_SCOPE,
+  reorderIds,
+  SIDEBAR_ORGANIZATION_STORAGE_KEY,
+  useSidebarOrganizationStore,
+} from "./stores/sidebar-organization-store";
+export type {
+  SidebarChatSort,
+  SidebarOrganizeBy,
+} from "./stores/sidebar-organization-store";
 export { useChatPreferencesStore } from "./stores/chat-preferences-store";
 export {
   usePromptQueueUI,
@@ -94,6 +112,7 @@ export {
 } from "./utils/prompt-queue-boundary";
 export {
   adoptPreStreamRunReservation,
+  cancelPreStreamRunReservations,
   findPreStreamRunReservation,
   hasPreStreamRunReservation,
   preStreamRunThreadIdsForAdapter,
@@ -102,6 +121,22 @@ export {
   releasePreStreamRunReservation,
   reservePreStreamRun,
 } from "./utils/pre-stream-run-reservation";
+// Audio swaps the same llama-server Chat decodes on, so it needs the same confirmation.
+export {
+  confirmStopRunningChatsIfNeeded,
+  type StopRunningChatsDecision,
+} from "./utils/confirm-stop-running-chats";
+export {
+  promptQueueActiveItemChanged,
+  reorderPromptQueueItems,
+} from "./utils/prompt-queue-reorder";
+export {
+  PROMPT_QUEUE_DRAG_TYPE,
+  hasPendingPromptQueueStart,
+  isPromptQueueChord,
+  isPromptQueueDragTypes,
+  pastedTextQueueKey,
+} from "./utils/prompt-queue-input";
 export {
   localPromptQueueModelBoundary,
   planLocalPromptQueueStop,
@@ -109,6 +144,7 @@ export {
   shouldAbortPendingQueueForSettingsChange,
 } from "./utils/prompt-queue-model-boundary";
 export { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
+export { rangeBetween, toggleSelected } from "./utils/row-selection";
 export {
   addQueuedChatRunSettingsThreadIds,
   consumeQueuedChatRunSettings,
@@ -127,6 +163,7 @@ export {
   useChatModelRuntime,
   resyncInferenceStatusAfterServerModelChange,
 } from "./hooks/use-chat-model-runtime";
+export { compareModelDisplayName } from "./lib/external-model-label";
 export { chatModelLoaded } from "./lib/chat-model-loaded";
 export type { ChatModelLoadedInput } from "./lib/chat-model-loaded";
 export {
@@ -137,6 +174,7 @@ export {
 } from "./external-providers";
 export { ApiProviderLogo } from "./api-provider-logo";
 export { useExternalProvidersStore } from "./stores/external-providers-store";
+export { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
 export { ChatSearchDialog } from "./components/chat-search-dialog";
 export { StopRunningChatsDialog } from "./components/stop-running-chats-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
@@ -144,6 +182,12 @@ export type { ProjectRecord } from "./types";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
+export { extractYoutubeVideoId } from "./utils/youtube-url";
+export { YoutubeTranscriptPrompt } from "./components/youtube-transcript-prompt";
+export {
+  formatMcpToolName,
+  mcpServerFromProvenance,
+} from "./utils/mcp-tool-name";
 export {
   PASTED_TEXT_PREVIEW_MAX_CHARS,
   attachmentContentText,
@@ -161,15 +205,22 @@ export {
 export {
   deleteStoredChatThreads,
   ensureStoredChatThread,
+  getStoredChatThread,
   isThreadIncognito,
+  listStoredChatMessages,
   listStoredChatThreads,
   markThreadIncognito,
 } from "./utils/chat-history-storage";
+export { recordedSandboxSessionId } from "./utils/recorded-sandbox-session";
 export {
   markChatThreadDeleted,
   removeChatThreadTombstones,
 } from "./utils/chat-thread-tombstones";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
+export {
+  forkCountFor,
+  subscribeForkCounts,
+} from "./utils/fork-count-store";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
   reasoningAutoOpensWhileStreaming,
@@ -208,7 +259,10 @@ export {
   EXPORT_FORMATS_LIST,
   buildFineTuneJsonl,
   bulkExportConversationsByScope,
+  exportBulkConversationsMerged,
+  exportBulkConversationsSeparate,
   exportFineTuneJsonl,
+  type ConvExportFormat,
   type FineTuneFormat,
 } from "./prompt-storage/prompt-storage-dialog";
 export {
@@ -223,7 +277,9 @@ export {
 export {
   archiveAllChatItems,
   archiveChatItem,
+  archiveChatItems,
   deleteChatItem,
+  deleteChatItems,
   renameChatItem,
   unarchiveChatItem,
   useChatSidebarItems,

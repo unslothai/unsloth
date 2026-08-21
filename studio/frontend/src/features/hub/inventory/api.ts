@@ -12,6 +12,7 @@ import { localPathCacheKey } from "@/features/hub/lib/local-path";
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
 import { bumpInventoryVersion } from "@/features/hub/stores/inventory-events";
+import type { ScanFolderStatus } from "../lib/scan-folder-status";
 import type { LocalSource } from "./constants";
 import { bumpGgufVariantsCacheVersion } from "./gguf-variants-cache-events";
 
@@ -51,6 +52,8 @@ export interface CachedGgufRepo {
   last_modified?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partial_resumable?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
   tags?: string[];
@@ -70,6 +73,8 @@ export interface CachedModelRepo {
   last_modified?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partial_resumable?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
   tags?: string[];
@@ -98,6 +103,8 @@ export interface LocalModelInfo {
   updated_at?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partial_resumable?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
   tags?: string[];
@@ -120,6 +127,8 @@ export interface CachedDatasetRepo {
   load_cache_path?: string;
   partial?: boolean;
   partial_transport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partial_resumable?: boolean;
 }
 
 export type LocalDatasetInfo = {
@@ -146,6 +155,8 @@ export interface ScanFolderInfo {
   id: number;
   path: string;
   created_at: string;
+  /** Result of the last scan. Absent on older backends, which means "ok". */
+  status?: ScanFolderStatus;
 }
 
 export interface GgufVariantDetail {
@@ -154,10 +165,14 @@ export interface GgufVariantDetail {
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
+  /** Bytes a resume still has to fetch. Set only on a partial variant. */
+  download_remaining_bytes?: number | null;
   downloaded?: boolean;
   update_available?: boolean;
   partial?: boolean;
   partial_transport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partial_resumable?: boolean;
   /** Variants sharing this key share one companion download footprint, so a
    *  footprint resolved for one of them is correct for all of them. */
   dependency_key?: string | null;

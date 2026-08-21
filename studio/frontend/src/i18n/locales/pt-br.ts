@@ -96,6 +96,8 @@ export const ptBR = {
       export: "Exportar",
       recents: "Recentes",
       noChatsYet: "Nenhum chat ainda",
+      showMore: "Mostrar mais",
+      showLess: "Mostrar menos",
       settings: "Configurações",
       api: "API",
       lightMode: "Modo claro",
@@ -109,6 +111,44 @@ export const ptBR = {
       title: "Página não encontrada",
       description: "{path} não existe.",
       backToChat: "Voltar para o chat",
+    },
+    selection: {
+      pinProjects: "Fixar projetos",
+      unpinProjects: "Desafixar projetos",
+      deleteProjects: "Excluir projetos",
+      deleteProjectsTitle: "Excluir projetos",
+      deleteProjectsDescription:
+        "Excluir {count} projetos? As conversas deles são excluídas permanentemente.",
+      deleteProjectsFilesDescription:
+        "A pasta do espaço de trabalho de cada projeto é removida do disco.",
+      countSelected: "{count} selecionadas",
+      pinChats: "Fixar conversas",
+      unpinChats: "Desafixar conversas",
+      archiveChats: "Arquivar conversas",
+      markUnread: "Marcar como não lida",
+      deleteChats: "Excluir conversas",
+      deleteTitle: "Excluir conversas",
+      deleteDescription: "Excluir {count} conversas? Esta ação não pode ser desfeita.",
+      deleteFilesDescription:
+        "A pasta de sandbox de cada conversa é removida do disco. Os arquivos escritos dentro de um projeto permanecem no espaço de trabalho desse projeto.",
+      deleteFilesLabel: "Excluir arquivos e pasta de sandbox",
+      deleteChatFilesDescription:
+        "A pasta de sandbox deste chat é removida do disco. Os arquivos que ele gravou dentro de um projeto permanecem no espaço de trabalho do projeto.",
+    },
+    organize: {
+      sidebarHeading: "Organizar a barra lateral",
+      byProject: "Por projeto",
+      inOneList: "Em uma lista",
+      sortChatsBy: "Ordenar conversas por",
+      sortPinnedBy: "Ordenar fixadas por",
+      priority: "Prioridade",
+      lastUpdated: "Última atualização",
+      manualOrder: "Ordem manual",
+      moveUp: "Mover para cima",
+      moveDown: "Mover para baixo",
+      organizeChats: "Organizar conversas",
+      organizeProjects: "Organizar projetos",
+      sortPinnedChats: "Ordenar conversas fixadas",
     },
     dialog: {
       deleteChat: {
@@ -144,6 +184,8 @@ export const ptBR = {
       closeAriaLabel: "Fechar configurações",
       searchPlaceholder: "Pesquisar configurações…",
       searchNoResults: "Nenhuma configuração encontrada.",
+      panelFailed: "Não foi possível carregar esta seção.",
+      panelReload: "Recarregar",
     },
     tabs: {
       general: "Geral",
@@ -153,10 +195,80 @@ export const ptBR = {
       chat: "Chat",
       connections: "Conexões",
       apiKeys: "API",
+      remoteLan: "Remoto e LAN",
       about: "Sobre",
       voice: "Voz",
       data: "Dados",
       agents: "Agentes",
+      debugging: "Registros",
+      keyboardShortcuts: "Atalhos",
+    },
+    keyboardShortcuts: {
+      title: "Atalhos de teclado",
+      description:
+        "Altere qualquer atalho, ou apague um para liberar a combinação para o navegador ou o sistema.",
+      searchPlaceholder: "Pesquisar atalhos…",
+      noResults: "Nenhum atalho corresponde a essa pesquisa.",
+      unassigned: "Não atribuído",
+      recording: "Pressione as teclas…",
+      recordingHint: "Pressione a nova combinação, ou Esc para cancelar.",
+      needsModifier: "Adicione ⌘, Ctrl ou Alt. Uma tecla sozinha engoliria a digitação.",
+      conflict: "Também usado por outro atalho",
+      conflictShadowed: "Outro atalho tem essa combinação e é executado no lugar dele",
+      edit: "Alterar atalho",
+      clear: "Remover atalho",
+      reset: "Restaurar o padrão",
+      resetAll: "Redefinir tudo para o padrão",
+      groups: {
+        general: "Geral",
+        chat: "Chat",
+      },
+      actions: {
+        newChat: {
+          label: "Novo chat",
+          description: "Iniciar um novo chat",
+        },
+        searchChats: {
+          label: "Pesquisar chats",
+          description: "Abrir a busca de chats",
+        },
+        toggleSidebar: {
+          label: "Alternar barra lateral",
+          description: "Mostrar ou ocultar a barra lateral",
+        },
+        openSettings: {
+          label: "Abrir configurações",
+          description: "Abrir a janela de configurações",
+        },
+        openKeyboardShortcuts: {
+          label: "Atalhos de teclado",
+          description: "Abrir esta lista de atalhos",
+        },
+      },
+    },
+    debugging: {
+      logSection: "Arquivo de log",
+      source: "Arquivo de log",
+      sourceHint: "Os executores de modelos gravam os próprios logs, então uma falha ao carregar ou ao gerar costuma ser explicada ali, e não no log do servidor.",
+      path: "Local",
+      pathCopy: "Copiar caminho",
+      refreshSection: "Atualização",
+      mode: "Modo",
+      modeLive: "Ao vivo",
+      modeInterval: "A cada 3 segundos",
+      modeManual: "Manual",
+      refreshNow: "Atualizar agora",
+      privacyNote: "As credenciais são mascaradas nesta visualização. No arquivo em disco elas não são mascaradas.",
+      copyVisible: "Copiar log visível",
+      empty: "Nada foi registrado ainda.",
+      disabled: "O log em arquivo está desativado (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
+      missing: "Nenhum arquivo de log foi encontrado.",
+      unreadable: "Não foi possível ler o arquivo de log.",
+      timeout: "A solicitacao do registro expirou. O servidor pode estar inacessivel.",
+      droppedNotice: "Algumas linhas foram ignoradas: o log foi gravado mais rápido do que era possível ler.",
+      morePending: "Mais linhas ainda estao sendo lidas; elas chegam na proxima atualizacao.",
+      staleSession: "O registro em arquivo esta desativado, portanto esta e uma sessao anterior e nao sera atualizada.",
+      keywords: "depuracao depurar registro registros log logs erro erros falha rastreamento diagnostico solucao de problemas debug",
     },
     voice: {
       title: "Voz",
@@ -170,6 +282,17 @@ export const ptBR = {
         engineModel: "Transcrição local",
         engineModelDescription:
           "Executa um modelo de conversão de fala em texto (STT) localmente e funciona offline. Baixe e carregue o modelo; ele é descarregado após um período sem uso.",
+        engineCustom: "Endpoint personalizado",
+        engineCustomDescription:
+          "Envia o áudio gravado a um servidor STT compatível com OpenAI das suas conexões.",
+        connectionLabel: "Conexão",
+        connectionDescription:
+          "Adicione um servidor compatível com OpenAI e uma chave de API opcional em Conexões.",
+        connectionPlaceholder: "Selecione uma conexão",
+        connectionEmpty: "Nenhuma conexão disponível",
+        customModelLabel: "Modelo",
+        customModelDescription:
+          "Nome do modelo enviado para /v1/audio/transcriptions.",
         sttModelLabel: "Modelo de reconhecimento de fala",
         sttModelDescription:
           "Escolha ou busque um modelo STT para executar localmente.",
@@ -221,6 +344,8 @@ export const ptBR = {
         allowMicrophone: "Permitir acesso ao microfone",
         micAccessBlocked:
           "O acesso ao microfone foi bloqueado. Permita o acesso ao microfone nesta página do Unsloth e tente novamente.",
+        micAccessBlockedDesktop:
+          "O acesso ao microfone foi bloqueado. Tente novamente e escolha Permitir, ou ative o microfone nas configurações de privacidade do sistema.",
         micAccessUnsupported:
           "O acesso ao microfone não é suportado neste navegador ou contexto.",
         systemDefault: "Padrão do sistema",
@@ -228,6 +353,7 @@ export const ptBR = {
         languageLabel: "Idioma do ditado",
         languageDescription: "Idioma a ser reconhecido",
         languageAuto: "Automático (idioma do navegador)",
+        languageAutoDetect: "Automático (detectar idioma)",
       },
       dictionary: {
         sectionTitle: "Dicionário de ditado",
@@ -295,6 +421,7 @@ export const ptBR = {
         modelLabel: "Modelo de TTS",
         modelDescription:
           "Carregue um modelo de áudio pelo seletor de modelos (por exemplo, Orpheus TTS)",
+        openAudioAction: "Abrir Áudio",
         voiceLabel: "Voz",
         voiceDescription: "As melhores vozes deste dispositivo",
         speedLabel: "Velocidade",
@@ -303,6 +430,7 @@ export const ptBR = {
         previewLabel: "Ouvir a voz",
         previewDescription: "Reproduz uma amostra curta",
         previewAction: "Ouvir",
+        preparingAction: "Gerando…",
         previewFailed: "Não foi possível reproduzir a prévia de TTS",
         stopAction: "Parar",
         ttsLabel: "Conversão de texto em fala",
@@ -374,6 +502,17 @@ export const ptBR = {
           "Libera a VRAM após esta quantidade de segundos de inatividade. 0 mantém o modelo carregado; o mínimo é 60.",
         idleSecondsAriaLabel:
           "Segundos até o descarregamento automático por inatividade",
+        mediaEnable: "Trocar de modelo de imagem e vídeo por requisição",
+        mediaEnableDescription:
+          "Carrega, antes de gerar, um modelo de imagem ou vídeo baixado indicado em uma requisição da API. É uma configuração própria: a de cima vale apenas para o modelo de chat. Desativado por padrão.",
+        mediaIdleUnload:
+          "Descarregamento automático por inatividade de imagem e vídeo",
+        mediaIdleUnloadDescription:
+          "Libera a VRAM descarregando os modelos de imagem e vídeo após esta quantidade de segundos de inatividade. É uma configuração própria: a de cima cobre apenas o modelo de chat. 0 os mantém carregados; o mínimo é 60.",
+        mediaIdleSecondsAriaLabel:
+          "Segundos até o descarregamento automático por inatividade de imagem e vídeo",
+        mediaIdlePaused:
+          "Pausado enquanto “Manter o modelo na memória da GPU” estiver ativado.",
         idleNeedsEnable: "Primeiro, ative Trocar de modelo por requisição.",
         idleActiveViaEnv: "Ativo por meio de UNSLOTH_MODEL_IDLE_TTL.",
         loadError: "Falha ao carregar as configurações de troca automática de modelo.",
@@ -743,6 +882,24 @@ export const ptBR = {
         switchFailed: "Could not change the llama.cpp backend.",
         switchInterrupted: "The switch was interrupted before completion.",
         envLocked: "Set to {backend} by the UNSLOTH_LLAMA_CPP_BACKEND environment variable, which overrides this setting.",
+        customPath: {
+          label: "Pasta personalizada do llama.cpp",
+          description: "Use sua própria compilação do llama-server.",
+          hint: "Escolha a pasta do llama.cpp que contém o llama-server ou uma compilação em que ele esteja em build/bin. O runtime personalizado é usado no chat GGUF, em embeddings e nos modelos de voz compatíveis. Variáveis de ambiente continuam tendo prioridade.",
+          automatic: "Automático (incluído)",
+          bundled: "Usa o runtime llama.cpp instalado pelo Unsloth.",
+          active: "Seu llama-server personalizado será usado no próximo carregamento de modelo.",
+          environmentManaged: "Gerenciado pela variável de ambiente {variable}.",
+          missingBinary: "O llama-server não está mais disponível nesta pasta. Escolha outra pasta ou use o runtime incluído.",
+          reloadRequired: "Recarregue o modelo para usar o llama-server selecionado.",
+          change: "Alterar",
+          saving: "Salvando...",
+          useBundled: "Usar incluído",
+          chooseTitle: "Escolher pasta do llama.cpp",
+          chooseAction: "Usar esta pasta",
+          saved: "Pasta do llama.cpp atualizada",
+          saveError: "Não foi possível atualizar a pasta do llama.cpp",
+        },
         backends: {
           auto: "Automatic",
           cpu: "CPU",
@@ -755,6 +912,7 @@ export const ptBR = {
           notInstalled: "No managed llama.cpp install was found, so there is no backend to switch.",
           localLink: "llama.cpp is a local directory you linked yourself, so Unsloth will not replace it.",
           sourceBuild: "This llama.cpp was built from source, so its backend cannot be switched from here.",
+          customPath: "Uma pasta personalizada do llama.cpp está selecionada. A compilação dela determina o backend de computação.",
           unresolved: "The available backends could not be checked. Check your connection and try again.",
         },
         // Not rendered: extra terms the settings search matches these rows on.
@@ -917,6 +1075,9 @@ export const ptBR = {
       },
     },
     chat: {
+      projectsSection: "Mostrar a seção Projetos",
+      projectsSectionDescription:
+        "Agrupa as conversas de projeto sob um título Projetos. Desative para listá-las em Recentes.",
       title: "Chat",
       description: "Personalize o funcionamento do chat neste dispositivo.",
       modelSelection: {
@@ -938,12 +1099,21 @@ export const ptBR = {
         compareChat: "Comparar chats",
         exportChat: "Exportar chat",
       },
+      pastedTextThreshold: "Condensar colagens longas",
+      pastedTextThresholdDescription: "Texto colado maior que isso vira um anexo .txt em vez de encher a caixa de mensagem.",
+      pastedTextThresholdOff: "Desativado",
       showResponseModel: "Mostrar o modelo da resposta",
       showResponseModelDescription:
         "Mostra os metadados do modelo nas respostas do assistente.",
       modelDisclaimer: "Mostrar aviso do modelo",
       modelDisclaimerDescription:
         'Mostra "LLMs podem cometer erros" abaixo da caixa de chat.',
+      projectAttachments: "Compartilhar arquivos em todo o projeto",
+      projectAttachmentsDescription:
+        "Padrao para arquivos anexados em um chat que pertence a um projeto: indexa-los para o projeto inteiro para que qualquer chat possa usa-los. Cada chat pode alterar isso pelo menu de anexos.",
+      rememberParamsPerModel: "Lembrar as configurações por modelo",
+      rememberParamsPerModelDescription:
+        "Ao trocar de modelo, a temperatura, o prompt e as demais configurações usadas por último com aquele modelo são restauradas. Desativado, um único conjunto de configurações vale para todos os modelos.",
       thinking: {
         collapseByDefault: "Recolher o raciocínio por padrão",
         collapseByDefaultDescription:
@@ -1033,6 +1203,9 @@ export const ptBR = {
       archivedVideos: "Vídeos arquivados",
       archivedVideosDescription: "Veja e gerencie os vídeos que você arquivou.",
       manageAction: "Gerenciar",
+      manageChats: "Gerenciar chats",
+      manageChatsDescription:
+        "Selecione vários chats para mover, fixar, arquivar, exportar ou excluir.",
       exportArchivedChats: "Exportar",
       exportingArchivedChats: "Exportando...",
       exportedOneArchivedChat: "1 chat arquivado exportado",
@@ -1055,6 +1228,9 @@ export const ptBR = {
       confirmBeforeDeleting: "Confirmar antes de excluir",
       confirmBeforeDeletingDescription:
         "Pede confirmação antes de excluir um chat. Desative para excluir imediatamente.",
+      alwaysDeleteFiles: "Sempre excluir os arquivos",
+      alwaysDeleteFilesDescription:
+        "Excluir uma conversa também remove do disco a pasta de sandbox dela. Os arquivos escritos dentro de um projeto permanecem no espaço de trabalho desse projeto.",
       filesSection: "Arquivos",
       uploadedFiles: "Arquivos enviados",
       uploadedFilesDescription:
@@ -1076,6 +1252,11 @@ export const ptBR = {
     connections: {
       title: "Conexões",
       description: "Gerencie provedores e conexões externas.",
+    },
+    remoteLan: {
+      title: "Remoto e LAN",
+      description:
+        "Acesse este Unsloth dos seus outros dispositivos, pela rede local ou por uma URL pública temporária.",
     },
     apiKeys: {
       title: "API",
@@ -1311,6 +1492,12 @@ export const ptBR = {
         "Este dataset ainda não está no dispositivo. Ele será baixado automaticamente quando o treinamento começar.",
       noticeDatasetPartial:
         "O download incompleto do dataset será concluído antes da leitura.",
+      noticeTransformersUpgrade:
+        "Nenhuma versão instalada do transformers suporta esta arquitetura ainda. Ao iniciar a execução, será oferecida a instalação do transformers {version} antes.",
+      noticeSixteenBitOnly:
+        "Esta arquitetura treina em LoRA de 16 bits: 4 bits não está disponível, então a execução precisa de muito mais VRAM que QLoRA.",
+      noticeInstallSwitchesSixteenBit:
+        "Instalar essa versão em vez de manter o código do próprio modelo muda esta execução para LoRA de 16 bits, que precisa de muito mais VRAM que QLoRA.",
       advancedSettings: "Configurações avançadas",
       defaultAdvancedSettings: "Padrões",
       nonDefaultAdvancedSettings: "{count} fora do padrão",

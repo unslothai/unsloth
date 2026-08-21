@@ -194,7 +194,12 @@ run_timed() {  # $1=outfile, rest=command
     echo "[$AGENT] last 40 lines before timeout:"; tail -40 "$out" 2>/dev/null || true
     [ -s "$out" ] || guide_fail "invoke timed out after ${TIMEOUT}s having printed nothing (headless-TTY hang -- the recipe likely needs a non-interactive/print flag)"
     TIMED_OUT=1
-    echo "::warning::[$AGENT] the CLI printed a transcript but did not exit within ${TIMEOUT}s; judging the turn on its assertions instead of calling it guide drift."
+    # State the fact, not the verdict. Three callers (connection, resume,
+    # attribution-ab) have no assertion that can rescue a partial turn and treat
+    # a cap as fatal on purpose, so promising that the turn will be judged on its
+    # assertions was wrong for exactly the cases most likely to hit it -- and it
+    # is what a reader sees immediately above the error that contradicts it.
+    echo "::warning::[$AGENT] the CLI printed a transcript but did not exit within ${TIMEOUT}s; whether that is fatal is the caller's call."
   fi
   return "$rc"
 }
@@ -391,6 +396,12 @@ invoke_via_connect() {  # $1=outfile, rest=extra args appended to the command
   # CONNECT_ENV_EXTRA / CONNECT_CMD_OVERRIDE let a caller (attribution-ab) flip a
   # session knob without editing the user's config; empty -> use what start.py emitted.
   local cmd="${CONNECT_CMD_OVERRIDE:-$CONNECT_CMD}"
+  # A bare V2 recipe ends in --standalone for the TUI. Once this driver adds the
+  # run subcommand, V2 requires that option after run instead of before it.
+  if [ "$AGENT" = opencode ] && [[ "$cmd" == *" --standalone" ]] && [ "${1:-}" = run ]; then
+    cmd="${cmd% --standalone}"
+    set -- run --standalone "${@:2}"
+  fi
   {
     echo "set -uo pipefail"
     echo "$CONNECT_ENV"
@@ -450,6 +461,17 @@ case "$MODE" in
     # report "connection OK" for a recipe that printed a banner and then blocked
     # on a headless prompt -- the exact failure this job exists to catch.
     rc=$?
+    # Two different failures, and pointing both at start.py costs an
+    # investigation. A cap means the launch command was fine and the turn never
+    # came back: on 2026-08-19 codex printed a correct banner (right provider,
+    # right model) and then sat on `ERROR: Reconnecting... 1/5` for the whole
+    # 600s. Nothing about the documented flow had drifted, and guide_fail said it
+    # had. It is still fatal -- see the note above on why a cap cannot be waived
+    # here -- but it is reported as what it is.
+    if [ "${TIMED_OUT:-0}" = 1 ]; then
+      echo "::error::[$AGENT] the documented launch command started but never completed a turn within ${TIMEOUT}s. The recipe in ${CONNECT_REF} is not implicated: the transcript above shows what the CLI was doing when the cap hit. A connection or model-server failure looks like this; so does a headless prompt, which prints nothing at all." >&2
+      exit 1
+    fi
     [ "$rc" -eq 0 ] || guide_fail "the documented launch command exited non-zero (rc=$rc) -- see the transcript above"
     assert_reply "$OUT"
     echo "[$AGENT] connection OK"

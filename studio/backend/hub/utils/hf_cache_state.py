@@ -260,14 +260,43 @@ def blob_bytes_present(path: Path) -> int:
     ``st_blocks``, falling back to ``st_size`` where it is unreported (Windows,
     some network filesystems)."""
     st = path.stat()
-    blocks = getattr(st, "st_blocks", 0)
-    if blocks > 0:
+    blocks = getattr(st, "st_blocks", None)
+    if blocks is not None and blocks > 0:
         return min(blocks * 512, st.st_size)
+    # A present zero is not a missing field. A parallel writer that sets the partial to its
+    # final length before its first chunk lands sits exactly here, and reading st_size then
+    # says "0 B left" on a download that has transferred nothing. The zero alone is not enough
+    # to act on -- a mount that never populates st_blocks looks the same -- so confirm the
+    # emptiness directly before believing it.
+    if blocks == 0 and _holds_no_data(path):
+        return 0
     if sys.platform == "win32":
         allocated = _windows_allocated_size(path)
         if allocated is not None:
             return min(allocated, st.st_size)
     return st.st_size
+
+
+def _holds_no_data(path: Path) -> bool:
+    """Whether the file has no allocated extent anywhere, asked of the kernel rather than
+    inferred. ``SEEK_DATA`` past the end of the last extent is ENXIO, so a file with nothing
+    written raises on the very first seek. Every other answer -- an unsupported seek, an
+    unreadable path -- leaves the caller's size fallback in charge.
+    """
+    seek_data = getattr(os, "SEEK_DATA", None)
+    if seek_data is None:
+        return False
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        os.lseek(fd, 0, seek_data)
+    except OSError as exc:
+        return exc.errno == errno.ENXIO
+    finally:
+        os.close(fd)
+    return False
 
 
 def _windows_allocated_size(path: Path) -> Optional[int]:
