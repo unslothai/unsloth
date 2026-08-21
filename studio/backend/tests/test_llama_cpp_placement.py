@@ -1590,13 +1590,22 @@ def test_free_vram_offsets_the_charge(tmp_path, monkeypatch):
     assert "--fit" in _launch(backend, gguf)["cmd"]
 
 
-def test_vulkan_igpu_shared_memory_is_not_counted_twice(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "memory",
+    [
+        [(0, 12 * 1024, 0)],
+        [(0, 12 * 1024, 0), (1, 12 * 1024, 0)],
+    ],
+    ids = ["one-shared-device", "two-shared-devices"],
+)
+def test_vulkan_igpu_shared_memory_is_not_counted_twice(tmp_path, monkeypatch, memory):
     """A Vulkan iGPU's free memory and MemAvailable describe the same unified pool.
-    Crediting both let a 20 GiB model through on a 14 GiB host (12 + 14 on paper)."""
+    Crediting host RAM or another iGPU again would let a 20 GiB model through on a
+    14 GiB host (12 + 14 or 12 + 12 on paper)."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
-        memory = [(0, 12 * 1024, 0)],
+        memory = memory,
     )
     _restore_host_guard(backend)
     backend._get_gguf_size_bytes = lambda _path: 20 * 1024**3
@@ -1604,8 +1613,55 @@ def test_vulkan_igpu_shared_memory_is_not_counted_twice(tmp_path, monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 14 * 1024)
     )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None)
+    )
 
     with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf)
+
+
+def test_vulkan_igpu_heap_can_hold_weights_missing_from_host_available(tmp_path, monkeypatch):
+    """Windows can reserve most UMA for the Vulkan heap, leaving psutil with a much
+    smaller host-available figure. The heap is not added to host RAM, but it remains a
+    valid place for the weights themselves (#9454)."""
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        # The device reported 108 GiB free; the iGPU host reserve leaves 107 GiB.
+        memory = [(0, 107 * 1024, 0)],
+    )
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(16.5 * 1024**3)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 13 * 1024)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None)
+    )
+
+    assert _launch(backend, gguf)["cmd"]
+
+
+def test_vulkan_igpu_heap_does_not_bypass_a_cgroup_limit(tmp_path, monkeypatch):
+    """A shared Vulkan heap remains host-backed inside a constrained container, so
+    its host-wide free reading cannot override the process's cgroup ceiling."""
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 64 * 1024, 0)],
+    )
+    _restore_host_guard(backend)
+    backend._apu_ram_shortfall_message = LlamaCppBackend._apu_ram_shortfall_message
+    backend._get_gguf_size_bytes = lambda _path: 20 * 1024**3
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 64 * 1024)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: 8 * 1024)
+    )
+
+    with pytest.raises(RuntimeError, match = "unified-memory APU"):
         _launch(backend, gguf)
 
 

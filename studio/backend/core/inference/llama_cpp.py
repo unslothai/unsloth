@@ -8346,8 +8346,8 @@ class LlamaCppBackend:
 
         ``avail_mib`` overrides the host figure for a caller that runs before the resident
         owners are released; the launch reads what is available now. ``shared_gpu_ids``
-        names Vulkan iGPUs whose reported free memory is the same host pool, so it must
-        not also be credited as dedicated VRAM.
+        names Vulkan iGPUs whose reported free memory overlaps the host pool. Either
+        reading can hold the remaining weights, but they must never be added together.
         """
         argv = [str(a) for a in cmd or ()]
         if not argv:
@@ -8380,8 +8380,22 @@ class LlamaCppBackend:
             return None
         shared = set(shared_gpu_ids or ())
         free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
+        shared_free_mib = max(
+            (max(0, row[1]) for row in gpus if row[0] in shared),
+            default = 0,
+        )
+        offload_bytes = model_bytes - free_vram_mib * 1024 * 1024
+        # A carved-out UMA heap may be absent from psutil's host availability even
+        # though Vulkan can hold the weights. Count that heap once, never again as RAM.
+        if offload_bytes <= shared_free_mib * 1024 * 1024:
+            # A finite cgroup remains an independent ceiling on host-backed GPU
+            # allocations. Reuse the RAM check so its system headroom still applies.
+            cgroup_mib = self._cgroup_available_memory_mib()
+            if cgroup_mib is None:
+                return None
+            return self._apu_ram_shortfall_message(offload_bytes, cgroup_mib)
         return self._host_offload_shortfall_message(
-            model_bytes - free_vram_mib * 1024 * 1024,
+            offload_bytes,
             self._available_system_memory_mib() if avail_mib is None else avail_mib,
         )
 
