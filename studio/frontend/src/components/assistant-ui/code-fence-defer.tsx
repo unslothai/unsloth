@@ -3,7 +3,13 @@
 
 "use client";
 
-import { memo, type RefObject, useEffect, useState } from "react";
+import {
+  memo,
+  type RefObject,
+  useEffect,
+  useLayoutEffect,
+  useState,
+} from "react";
 import { flushSync } from "react-dom";
 
 /*
@@ -199,6 +205,44 @@ export function useFenceReached(
       printListeners.delete(notify);
     };
   }, [reached]);
+
+  /*
+   * THE FIRST FRAME, which the observer cannot cover.
+   *
+   * An IntersectionObserver delivers its first record asynchronously, one or more frames after
+   * `observe()`. For a fence that is ALREADY on screen when the thread mounts, those frames are
+   * plain code inside the viewport: measured at 2 to 3 frames, 30 to 190 ms. That is a visible
+   * difference, not an off-screen one, so it is closed here rather than argued about.
+   *
+   * `useLayoutEffect` runs after mutation and BEFORE paint, so a fence that is on screen latches
+   * and re-renders within the same frame and the plain shell is never painted. One
+   * `getBoundingClientRect` per unreached fence, all of them inside a single commit with no DOM
+   * mutation in between, so the layout is forced once for the whole thread rather than once per
+   * fence.
+   *
+   * Still one-way: this can only ever latch true.
+   */
+  useLayoutEffect(() => {
+    if (reached) return;
+    const node = host.current;
+    if (!node) return;
+    const scroller = node.closest<HTMLElement>("[data-slot='thread-viewport']")
+      ?? node.closest<HTMLElement>(".aui-thread-viewport");
+    const bounds = scroller?.getBoundingClientRect();
+    const top = bounds ? bounds.top : 0;
+    const height = bounds ? bounds.height : window.innerHeight;
+    // The same one-viewport slack the observer's rootMargin uses, so the two doors agree on what
+    // "reached" means and a fence cannot latch through one and not the other.
+    const rect = node.getBoundingClientRect();
+    if (rect.bottom > top - height && rect.top < top + height * 2) {
+      // The cascading render this warns about is the POINT: it is what keeps the plain shell off
+      // the screen. It happens at most once per fence, only for the one or two fences that are
+      // already on screen at mount, and the alternative is the 2 to 3 painted frames of
+      // unhighlighted code this replaced.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setLatched(true);
+    }
+  }, [reached, host]);
 
   // The one-way edge. Once `reached` is true this effect re-runs, takes the
   // early return, and never observes anything again, so a fence that has been
