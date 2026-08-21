@@ -938,9 +938,7 @@ def test_reset_enabled_for_explicit_context_pin_at_native():
     """An explicit customContextLength that equals the native ceiling is still a user
     override, so contextAtDefault must require customContextLength == null."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert (
-        "const contextAtDefault = !target.isGguf || config.customContextLength == null;" in src
-    )
+    assert "const contextAtDefault = !target.isGguf || config.customContextLength == null;" in src
     # The old form that ignored an explicit pin equal to native must not return.
     assert (
         "(nativeContextLength == null ? config.customContextLength == null : "

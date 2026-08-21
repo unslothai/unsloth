@@ -235,9 +235,7 @@ def _drive(
         gpu_indices, use_fit = inst._select_gpus(model_size, gpus)
         if use_fit and not explicit_ctx:
             effective_ctx = (
-                min(_AUTO_OFFLOAD_CTX, effective_ctx)
-                if effective_ctx > 0
-                else _AUTO_OFFLOAD_CTX
+                min(_AUTO_OFFLOAD_CTX, effective_ctx) if effective_ctx > 0 else _AUTO_OFFLOAD_CTX
             )
     elif apple_budget_mib > 0 and effective_ctx > 0:
         # Mirrors the Apple unified-memory branch in load_model: flat MTP reserve
