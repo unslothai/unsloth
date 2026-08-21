@@ -128,8 +128,7 @@ def _row(
 
 
 def _host_memory(monkeypatch, *, available_mib, total_mib):
-    """Pin the host figures the iGPU reading is bounded against, so these cases
-    describe a machine instead of whatever the runner happens to have free."""
+    """Set deterministic host-memory bounds for iGPU tests."""
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: available_mib)
     )
@@ -150,10 +149,7 @@ def test_integrated_gpu_leaves_host_margin(tmp_path, monkeypatch):
 
 
 def test_integrated_gpu_free_is_bounded_by_what_the_host_can_back(tmp_path, monkeypatch):
-    """A stock APU's pool is all system RAM, and the driver prices it against its
-    own GTT ceiling: measured on a gfx1151 under RADV, the reading sat at 97277 MiB
-    while MemAvailable fell to 662 MiB. With nothing beyond MemTotal to credit, the
-    reading is worth no more than the RAM the host actually has."""
+    """Host-backed iGPU memory cannot exceed MemAvailable."""
     binary = _make_vulkan_install(tmp_path)
     _host_memory(monkeypatch, available_mib = 4000, total_mib = 31000)
     # 512 MiB of UMA plus a GTT heap half the size of RAM
@@ -164,10 +160,7 @@ def test_integrated_gpu_free_is_bounded_by_what_the_host_can_back(tmp_path, monk
 
 
 def test_integrated_gpu_keeps_a_heap_the_os_cannot_see(tmp_path, monkeypatch):
-    """#9454: Variable Graphics Memory carves 96 GiB out before Windows boots, so
-    psutil sees 31 GiB total and 13 GiB available while Vulkan reports 108 GiB free.
-    Whatever that free reading holds beyond MemTotal is memory the host figure cannot
-    know about, and the weights do fit there."""
+    """Free memory above MemTotal is a conservative carve-out floor."""
     binary = _make_vulkan_install(tmp_path)
     _host_memory(monkeypatch, available_mib = 13312, total_mib = 32154)
     rows = [_row(0, 108782 * MIB, is_igpu = 1, total_bytes = 114507 * MIB)]
@@ -177,13 +170,10 @@ def test_integrated_gpu_keeps_a_heap_the_os_cannot_see(tmp_path, monkeypatch):
 
 
 def test_a_carve_out_another_process_holds_is_not_credited(tmp_path, monkeypatch):
-    """The floor is read from the FREE figure, so a carve-out most of which another
-    Vulkan process already holds credits what is left of it, not its capacity. Sized
-    from the device total instead, this promised 21 GiB on a host with 4 GiB free."""
+    """Use free, not total, to exclude carve-out memory held elsewhere."""
     binary = _make_vulkan_install(tmp_path)
     _host_memory(monkeypatch, available_mib = 4096, total_mib = 32768)
-    # a 96 GiB carve-out plus a 16 GiB GTT heap, with all but 6 GiB of the carve-out
-    # resident in someone else: nothing is left above MemTotal to credit
+    # The free reading does not exceed MemTotal, so no carve-out is credited.
     rows = [_row(0, 22528 * MIB, is_igpu = 1, total_bytes = 114688 * MIB)]
     with _mock_probe(rows):
         gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
@@ -191,9 +181,7 @@ def test_a_carve_out_another_process_holds_is_not_credited(tmp_path, monkeypatch
 
 
 def test_wsl_credits_no_heap_beyond_its_own_memtotal(tmp_path, monkeypatch):
-    """.wslconfig hands the VM a slice of the host's RAM while the adapter still
-    reports a pool sized from the whole machine, so 'bigger than MemTotal' proves
-    nothing there. The VM cap stays the ceiling."""
+    """WSL MemTotal does not describe the adapter's host pool."""
     binary = _make_vulkan_install(tmp_path)
     _host_memory(monkeypatch, available_mib = 6000, total_mib = 8192)
     monkeypatch.setattr(_llama_mod, "_is_wsl", lambda: True)
@@ -204,8 +192,7 @@ def test_wsl_credits_no_heap_beyond_its_own_memtotal(tmp_path, monkeypatch):
 
 
 def test_unreadable_host_memory_leaves_the_integrated_reading_alone(tmp_path, monkeypatch):
-    """No psutil and no /proc/meminfo is not evidence of a small host, so the bound
-    abstains rather than guessing the device down to nothing."""
+    """Missing host readings leave the Vulkan value unchanged."""
     binary = _make_vulkan_install(tmp_path)
     _host_memory(monkeypatch, available_mib = None, total_mib = None)
     rows = [_row(0, 30 * GIB, is_igpu = 1, total_bytes = 32 * GIB)]

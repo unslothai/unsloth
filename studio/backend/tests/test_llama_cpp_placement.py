@@ -1599,9 +1599,7 @@ def test_free_vram_offsets_the_charge(tmp_path, monkeypatch):
     ids = ["one-shared-device", "two-shared-devices"],
 )
 def test_vulkan_igpu_shared_memory_is_not_counted_twice(tmp_path, monkeypatch, memory):
-    """A Vulkan iGPU's free memory and MemAvailable describe the same unified pool.
-    Crediting host RAM or another iGPU again would let a 20 GiB model through on a
-    14 GiB host (12 + 14 or 12 + 12 on paper)."""
+    """Shared Vulkan rows and host RAM describe one pool."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -1620,14 +1618,10 @@ def test_vulkan_igpu_shared_memory_is_not_counted_twice(tmp_path, monkeypatch, m
 
 
 def test_vulkan_igpu_heap_can_hold_weights_missing_from_host_available(tmp_path, monkeypatch):
-    """Windows can reserve most UMA for the Vulkan heap, leaving psutil with a much
-    smaller host-available figure. The heap is not added to host RAM, but it remains a
-    valid place for the weights themselves (#9454)."""
+    """A firmware carve-out remains usable when host-available RAM is low."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
-        # What the reader hands over once it has bounded the device's own reading
-        # against the host (_igpu_backed_free_mib) and taken the iGPU host reserve.
         memory = [(0, 107 * 1024, 0)],
     )
     _restore_host_guard(backend)
@@ -1653,10 +1647,7 @@ def test_vulkan_igpu_heap_can_hold_weights_missing_from_host_available(tmp_path,
 def test_vulkan_igpu_heap_is_not_credited_to_a_host_resident_launch(
     tmp_path, monkeypatch, placement
 ):
-    """The heap holds only the weights the finished command sends there. A zero
-    layer count, a partial pin and a --device naming no GPU each leave the model in
-    the 13 GiB the host has, so the GGUF the full offload above admits stays
-    refused: crediting the heap for these let a 16.5 GiB model onto a 13 GiB host."""
+    """Only a full GPU offload may credit the shared heap."""
     backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 107 * 1024, 0)])
     _restore_host_guard(backend)
     backend._get_gguf_size_bytes = lambda _path: int(16.5 * 1024**3)
@@ -1670,10 +1661,7 @@ def test_vulkan_igpu_heap_is_not_credited_to_a_host_resident_launch(
 
 
 def test_a_device_pin_decides_whether_the_shared_heap_is_reachable(tmp_path, monkeypatch):
-    """Vulkan0 is a small discrete card here and Vulkan1 the carved-out iGPU heap. A
-    pin naming only Vulkan0 cannot place one weight in that heap, yet crediting it
-    admitted a 30 GiB model onto a 13 GiB host. The same launch pinned to the heap
-    reaches it and still loads."""
+    """Only a selected shared device contributes its heap."""
 
     def _mixed():
         backend, gguf = _backend(
@@ -1681,8 +1669,7 @@ def test_a_device_pin_decides_whether_the_shared_heap_is_reachable(tmp_path, mon
         )
         _restore_host_guard(backend)
         backend._get_gguf_size_bytes = lambda _path: 30 * 1024**3
-        # the block count the launch reads from the header, so gpu_layers 33 is a
-        # full offload rather than an unknown one
+        # gpu_layers=33 fully offloads this 32-layer model.
         backend._n_layers = 32
         return backend, gguf
 
@@ -1701,9 +1688,7 @@ def test_a_device_pin_decides_whether_the_shared_heap_is_reachable(tmp_path, mon
 
 
 def test_an_unselected_card_does_not_shrink_what_the_shared_heap_must_hold(tmp_path, monkeypatch):
-    """Vulkan0 is a 24 GiB discrete card the pin leaves out, Vulkan1 the 10 GiB iGPU
-    heap it selects. Subtracting the unselected card first made a 30 GiB model read
-    as a 6 GiB remainder the heap could 'hold', admitting it on a 4 GiB host."""
+    """Only selected cards reduce the bytes assigned to the shared heap."""
     backend, gguf = _backend(
         tmp_path, vulkan = True, memory = [(0, 24 * 1024, 24 * 1024), (1, 10 * 1024, 0)]
     )
@@ -1731,9 +1716,7 @@ def test_an_unselected_card_does_not_shrink_what_the_shared_heap_must_hold(tmp_p
     ids = ["picker-share", "user-flag"],
 )
 def test_an_explicit_tensor_split_leaves_the_shared_heap_uncredited(tmp_path, monkeypatch, split):
-    """A ratio is positional in llama.cpp's enumeration, so this cannot tell which
-    device a share belongs to, and 1,0 puts nothing in the iGPU's heap at all.
-    Crediting it anyway admitted a 30 GiB model that has to land on a 6 GiB card."""
+    """An ambiguous tensor split must not credit a shared heap."""
     backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 6 * 1024, 8 * 1024), (1, 94641, 0)])
     _restore_host_guard(backend)
     backend._get_gguf_size_bytes = lambda _path: 30 * 1024**3
@@ -1773,9 +1756,7 @@ def _mixed_vulkan(tmp_path, monkeypatch, memory):
     ids = ["with-main-gpu", "bare"],
 )
 def test_split_mode_none_leaves_a_second_device_heap_uncredited(tmp_path, monkeypatch, extras):
-    """``none`` sends the whole model to one --main-gpu index, in llama.cpp's own
-    enumeration, so beside a 6 GiB Vulkan0 this cannot claim the 94 GiB Vulkan1 heap
-    receives it. Crediting it admitted a 30 GiB model onto the 6 GiB card."""
+    """Split mode none cannot select a shared heap among multiple devices."""
     backend, gguf = _mixed_vulkan(tmp_path, monkeypatch, [(0, 6 * 1024, 8 * 1024), (1, 94641, 0)])
 
     with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
@@ -1783,8 +1764,7 @@ def test_split_mode_none_leaves_a_second_device_heap_uncredited(tmp_path, monkey
 
 
 def test_split_mode_none_still_credits_a_lone_shared_device(tmp_path, monkeypatch):
-    """One device leaves ``none`` nothing to exclude, so #9454's own shape keeps
-    loading rather than being priced against the 4 GiB the host has."""
+    """A lone shared device remains reachable under split mode none."""
     backend, gguf = _mixed_vulkan(tmp_path, monkeypatch, [(0, 94641, 0)])
 
     assert _launch(
@@ -1797,8 +1777,7 @@ def test_split_mode_none_still_credits_a_lone_shared_device(tmp_path, monkeypatc
 
 
 def test_vulkan_igpu_heap_does_not_bypass_a_cgroup_limit(tmp_path, monkeypatch):
-    """A shared Vulkan heap remains host-backed inside a constrained container, so
-    its host-wide free reading cannot override the process's cgroup ceiling."""
+    """A shared Vulkan heap remains subject to the process cgroup limit."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -1819,10 +1798,7 @@ def test_vulkan_igpu_heap_does_not_bypass_a_cgroup_limit(tmp_path, monkeypatch):
 
 
 def test_a_card_resident_model_is_not_refused_by_a_container_ceiling(tmp_path, monkeypatch):
-    """Nothing is left to place, so no host memory is at stake and the cgroup has no
-    say. Routing this through the APU check priced a NEGATIVE need against the
-    remaining budget and refused a 23.4 GiB model on a 24 GiB card with 'needs about
-    -1 GB', on a discrete NVIDIA card at that."""
+    """A card-resident model is independent of the cgroup memory budget."""
     backend, gguf = _offload_backend(
         tmp_path,
         gguf_gb = 23.4,

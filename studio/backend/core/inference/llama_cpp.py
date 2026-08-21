@@ -4067,12 +4067,7 @@ def _device_selection_is_cpu(
 def _split_mode_confines_to_one_device(
     args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
-    """True when the effective split mode puts the whole model on a single device.
-
-    ``--split-mode none`` sends every weight to ``--main-gpu``, an index into
-    llama.cpp's own device enumeration. argv wins over the env twin, and an
-    unreadable value answers False like the rest of the unknowns here.
-    """
+    """Whether the effective split mode confines all weights to one device."""
     try:
         mode = parse_split_mode_override(args)
     except ValueError:
@@ -8156,37 +8151,12 @@ class LlamaCppBackend:
 
     @staticmethod
     def _igpu_backed_free_mib(free_mib: int) -> int:
-        """An integrated device's free reading, bounded by what the host can back.
+        """Bound iGPU free memory by host RAM plus any firmware carve-out.
 
-        ggml sums EVERY heap for an integrated device (ggml-vulkan.cpp skips the
-        device-local test when ``is_integrated_gpu``), so one number covers two
-        unlike pools. Part of it can be a firmware carve-out the OS never sees:
-        96 GiB of AMD Variable Graphics Memory on a Strix Halo laptop, leaving
-        Windows 31 GiB and ``MemAvailable`` around 13 GiB while Vulkan reports
-        108 GiB free (#9454). The rest is ordinary system RAM lent to the GPU,
-        and the driver prices that against its own GTT ceiling rather than
-        against what the machine has free: measured on a gfx1151 under RADV, the
-        reading sat at 97277 MiB unchanged while MemAvailable fell from 49908 to
-        662 MiB.
-
-        The split is not readable, but every heap that IS system RAM is bounded
-        by ``MemTotal``, so whatever the FREE reading has beyond ``MemTotal`` is
-        free memory the OS cannot see -- a floor on the carve-out still going
-        spare. Read from the free figure and not the device total: a total
-        derives the carve-out's CAPACITY, which credits the part another Vulkan
-        process is already holding, and since the driver's GTT figure stays high
-        while ``MemAvailable`` falls, the pair would then promise memory neither
-        pool can supply. Credit that floor, plus the RAM that is actually
-        available, and never the reading itself. Only ever reduces, and an
-        unreadable host figure leaves the reading alone rather than guessing it
-        down.
-
-        That inference needs ``MemTotal`` to describe the machine the heaps live
-        on, which is exactly what WSL breaks: .wslconfig hands the VM a slice of
-        the host's RAM, and the adapter still reports a shared pool sized from
-        the whole host, so a free pool larger than ``MemTotal`` there is ordinary
-        Windows RAM the VM cannot reach. No carve-out is credited under WSL, so
-        the VM cap stays the ceiling it is today.
+        Vulkan combines OS-visible RAM with carve-outs. Memory above ``MemTotal``
+        is a conservative floor for the free carve-out; add ``MemAvailable`` for
+        the host-backed share. WSL cannot use this inference because the VM and
+        adapter report different memory scopes.
         """
         available = LlamaCppBackend._available_system_memory_mib()
         total_ram = LlamaCppBackend._total_system_memory_mib()
@@ -8390,22 +8360,17 @@ class LlamaCppBackend:
         argv: Iterable[str],
         env: Optional[Mapping[str, str]] = None,
     ) -> bool:
-        """Whether the finished command puts every weight on the GPU.
+        """Whether the final command puts every model layer on a GPU.
 
-        The argv-side twin of ``_offloads_every_layer``, which answers for the
-        request. ``--device none``, a zero layer count, a CPU tensor placement and
-        llama.cpp's own fitter each leave some or all of the model in host RAM, so
-        none of them reads as a full offload. Every unknown answers False too, so
-        an unreadable block count keeps the weights priced against RAM instead of
-        crediting a device pool they may never reach.
+        Unknown placement is treated as partial offload so unverified GPU memory
+        is never credited.
         """
         args = [str(a) for a in argv or ()]
         if _device_selection_is_cpu(args, env):
             return False
         if _args_place_tensors_on_cpu(args) or _env_places_tensors_on_cpu(env):
             return False
-        # The fitter owns placement while it runs and offloads whatever it cannot
-        # fit, so only an explicit "off" leaves the layer count as the last word.
+        # The fitter owns placement unless it is explicitly disabled.
         if fit_is_effectively_on(args, env):
             return False
         try:
@@ -8414,8 +8379,7 @@ class LlamaCppBackend:
             return False
         if requested is None:
             return False
-        # -1 is llama.cpp's "every layer"; a concrete count has to clear the block
-        # count, which is what the picker's maximum (block_count + 1) sends.
+        # -1 means every layer; otherwise the count must exceed the block count.
         n_layers = self.n_layers
         return requested == -1 or (bool(n_layers) and requested > n_layers)
 
@@ -8427,19 +8391,11 @@ class LlamaCppBackend:
         argv: list[str],
         env: Optional[Mapping[str, str]] = None,
     ) -> tuple[int, int]:
-        """The shared Vulkan pool this launch can use, and the bytes it must hold.
+        """Return reachable shared Vulkan memory and the bytes it must hold.
 
-        Every shared row reads the same host-backed pool, so the largest row IS the
-        pool and summing them would count it twice. It counts at all only when the
-        command is going to put weights there: a full offload, onto a device its
-        ``--device`` pin still reaches, with no per-device ratio making the share
-        unknowable. Otherwise llama.cpp spills them to host RAM instead.
-
-        The pin decides the second figure too. A card it leaves out takes none of
-        the model, so the pool must cover what the SELECTED cards cannot: crediting
-        an unselected 24 GiB card left a 30 GiB model reading as a 6 GiB remainder
-        that a 10 GiB heap "held". A pool of 0 hands the remainder back to the
-        host-RAM arm below, which is what main charged for a shared device.
+        Shared iGPU rows overlap, so only the largest pool is credited. The pool
+        must be reachable by an unambiguous full offload, and only selected
+        discrete cards reduce the bytes assigned to it.
         """
         rows = [(row[0], max(0, row[1])) for row in gpus]
         pinned = _extra_args_main_device(argv)
@@ -8448,23 +8404,17 @@ class LlamaCppBackend:
         if pinned is None:
             reachable = {idx for idx, _free in rows}
         else:
-            # ggml registry names, the spelling _vulkan_pin_args emits; a shared id
-            # is only ever a Vulkan iGPU, so no other backend prefix can appear.
+            # Match the ggml registry names emitted by _vulkan_pin_args.
             names = {device.strip().lower() for device in str(pinned).split(",")}
             reachable = {idx for idx, _free in rows if f"vulkan{idx}" in names}
         pool = 0
         if (
             shared_gpu_ids
             and self._argv_offloads_every_layer(argv, env)
-            # Shares are positional, in llama.cpp's own enumeration order, which this
-            # cannot map onto probe indices -- the same reason --fit-target is broadcast
-            # rather than listed -- so no share is verifiable here, a zero one included.
+            # Tensor-split positions cannot be mapped reliably to probe indices.
             and not _extra_args_set_any_flag(argv, _TENSOR_SPLIT_FLAGS)
             and not str((env or {}).get("LLAMA_ARG_TENSOR_SPLIT") or "").strip()
-            # --split-mode none sends the whole model to one --main-gpu index in that
-            # same enumeration, so with more than one device in play this cannot say the
-            # heap is the one receiving it. It cannot exclude a lone device, which is the
-            # #9454 shape, where the ratio above can still zero one out.
+            # With multiple devices, split-mode none does not identify the recipient.
             and not (len(reachable) > 1 and _split_mode_confines_to_one_device(argv, env))
         ):
             pool = max(
@@ -8540,14 +8490,10 @@ class LlamaCppBackend:
         free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
         heap_free_mib, heap_bytes = self._shared_heap_budget(gpus, shared, model_bytes, argv, _env)
         offload_bytes = model_bytes - free_vram_mib * 1024 * 1024
-        # A carved-out UMA heap may be absent from psutil's host availability even
-        # though Vulkan can hold the weights. Count that heap once, never again as RAM.
-        # A load with nothing left to place (offload <= 0) is not that case and takes
-        # the arm below, which abstains on it: routing it here would price a negative
-        # need against a container's remaining budget and refuse a resident model.
+        # A carve-out can satisfy the dedicated-VRAM shortfall. Skip card-resident
+        # loads so a cgroup budget is never applied to a nonpositive need.
         if 0 < offload_bytes and heap_bytes <= heap_free_mib * 1024 * 1024:
-            # A finite cgroup remains an independent ceiling on host-backed GPU
-            # allocations. Reuse the RAM check so its system headroom still applies.
+            # A finite cgroup still limits host-backed GPU allocations.
             cgroup_mib = self._cgroup_available_memory_mib()
             if cgroup_mib is None:
                 return None
