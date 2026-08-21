@@ -4,6 +4,7 @@
 "use client";
 
 import { memo, type RefObject, useEffect, useState } from "react";
+import { flushSync } from "react-dom";
 
 /*
  * MONOTONIC fence highlighting: a fence is rendered as a plain shell until the
@@ -144,6 +145,41 @@ const CAN_OBSERVE =
   typeof IntersectionObserver !== "undefined" &&
   typeof globalThis !== "undefined";
 
+/*
+ * PRINT. A print or a PDF export renders the WHOLE document at once, so every fence is on the
+ * page whether or not the reader ever scrolled to it, and a fence that prints without its
+ * colours is a defect the reader can see and keep. Selection, clipboard and find-in-page all
+ * survive deferral on their own because the text is a live text node; colour does not.
+ *
+ * `beforeprint` fires before the print snapshot is taken, but a React state update scheduled
+ * from it lands after. `flushSync` is what makes the upgrade part of the same task, so the
+ * document the printer serialises is the upgraded one.
+ *
+ * Still one-way: `printed` never goes back to false, so a print permanently upgrades the thread
+ * rather than putting it back afterwards. Reverting on `afterprint` would be exactly the
+ * bidirectional edge this whole design exists to avoid.
+ */
+let printed = false;
+const printListeners = new Set<() => void>();
+
+const upgradeEverythingForPrint = (): void => {
+  if (printed) return;
+  printed = true;
+  flushSync(() => {
+    for (const notify of printListeners) notify();
+  });
+};
+
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener("beforeprint", upgradeEverythingForPrint);
+  // Headless Chromium's `page.pdf()` and DevTools' print emulation change the media query
+  // without ever firing `beforeprint`, and a PDF export is exactly the path a reader uses to
+  // keep a copy. Both doors are covered.
+  window.matchMedia?.("print")?.addEventListener?.("change", (event) => {
+    if (event.matches) upgradeEverythingForPrint();
+  });
+}
+
 export function useFenceReached(
   host: RefObject<HTMLElement | null>,
   immediate: boolean,
@@ -153,7 +189,16 @@ export function useFenceReached(
   // and its block re-renders as settled; deriving means that transition needs
   // no effect and no extra render, and it can only ever go cheap -> expensive
   // because `latched` never goes back to false.
-  const reached = immediate || !CAN_OBSERVE || latched;
+  const reached = immediate || !CAN_OBSERVE || latched || printed;
+
+  useEffect(() => {
+    if (reached) return;
+    const notify = () => setLatched(true);
+    printListeners.add(notify);
+    return () => {
+      printListeners.delete(notify);
+    };
+  }, [reached]);
 
   // The one-way edge. Once `reached` is true this effect re-runs, takes the
   // early return, and never observes anything again, so a fence that has been
