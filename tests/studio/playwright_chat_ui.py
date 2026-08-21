@@ -55,7 +55,28 @@ TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
 RAPID_FIRST_TURN_HOLD_S = 3.0
 
 # Wall-clock cap for the whole script (healthy run is 5-9 min).
-WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
+#
+# Derived from TURN_TIMEOUT_MS rather than pinned, because the watchdog has to
+# outlast the longest single wait in the script or it fires first: the process is
+# hard-exited mid-wait, so the wait never raises, the step that would have named
+# itself never does, and the failure screenshot below it is never taken. The run
+# then reports only "wedged somewhere", which is unlocalisable.
+#
+# The longest single wait is the rapid-submit completion check at 2x the turn
+# timeout. studio-windows-ui-smoke.yml and studio-mac-ui-smoke.yml both set
+# STUDIO_UI_TURN_TIMEOUT_MS to 540000 for their slower CPU inference, which makes
+# that wait 1080s on its own, while nothing set STUDIO_UI_WALL_TIMEOUT_S anywhere,
+# so it stayed at 720s. On those two runners the wait provably could not reach its
+# own timeout. The Linux default is unaffected: 2 x 180s + margin is 480s, under
+# the 720s floor, so that path keeps the budget it already had.
+_WALL_FLOOR_S = 720.0
+_LONGEST_WAIT_S = (TURN_TIMEOUT_MS / 1000) * 2
+WALL_TIMEOUT_S = float(
+    os.environ.get(
+        "STUDIO_UI_WALL_TIMEOUT_S",
+        max(_WALL_FLOOR_S, _LONGEST_WAIT_S + 120),
+    )
+)
 
 # Run only bootstrap plus permission controls for fast cross-browser checks.
 PERMISSION_ONLY = os.environ.get("STUDIO_UI_PERMISSION_ONLY", "0") == "1"
