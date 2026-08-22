@@ -432,6 +432,13 @@ jobs:
       # a failure -- it is the reading.
       - name: The null control's own score
         run: |
+          # `set +e` is not redundant. GitHub runs every `run:` block under
+          # `bash -e {0}`, so a non-zero exit aborts the step before the line
+          # that was going to read it -- and ui_parity exits non-zero as its
+          # normal way of REPORTING a difference. Without this the step dies
+          # having printed nothing, which reads as a broken job on a run whose
+          # measurement was fine.
+          set +e
           set -uo pipefail
           # NOT `set -e`, and the exit code is swallowed on purpose. ui_parity
           # exits 1 when a stable action differed, and here that is the READING
@@ -469,6 +476,13 @@ jobs:
       # as `action@rung` and declared entries as a bare name.
       - name: The null measured a set, rather than only attempting one
         run: |
+          # `set +e` is not redundant. GitHub runs every `run:` block under
+          # `bash -e {0}`, so a non-zero exit aborts the step before the line
+          # that was going to read it -- and ui_parity exits non-zero as its
+          # normal way of REPORTING a difference. Without this the step dies
+          # having printed nothing, which reads as a broken job on a run whose
+          # measurement was fine.
+          set +e
           set -uo pipefail
           python -m tests.studio.studiobench.sweep.ui_parity \
             --null outputs/parity-null-control outputs/parity-null-control \
@@ -500,6 +514,13 @@ jobs:
       # this fails silently in.
       - name: The verdict
         run: |
+          # `set +e` is not redundant. GitHub runs every `run:` block under
+          # `bash -e {0}`, so a non-zero exit aborts the step before the line
+          # that was going to read it -- and ui_parity exits non-zero as its
+          # normal way of REPORTING a difference. Without this the step dies
+          # having printed nothing, which reads as a broken job on a run whose
+          # measurement was fine.
+          set +e
           set -uo pipefail
           python -m tests.studio.studiobench.sweep.ui_parity \
             --null outputs/parity-null-control \
