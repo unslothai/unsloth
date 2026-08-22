@@ -58,36 +58,35 @@ function stripMcpImageSuffix(value: string): string {
   return value;
 }
 
-// Drop a trailing __MCP_UI__ envelope on the same terms: only when the line
-// parses and names a resource. The scan stops at the line end; images follow.
-function stripMcpUiSuffix(value: string): string {
-  const marker = "\n__MCP_UI__:";
-  const idx = value.lastIndexOf(marker);
-  if (idx === -1) return value;
-  const payloadStart = idx + marker.length;
-  const lineEnd = value.indexOf("\n", payloadStart);
-  const end = lineEnd === -1 ? value.length : lineEnd;
-  try {
-    const payload: unknown = JSON.parse(value.slice(payloadStart, end));
-    if (
-      typeof payload === "object" &&
-      payload !== null &&
-      typeof (payload as Record<string, unknown>).resourceUri === "string"
-    ) {
-      return value.slice(0, idx) + value.slice(end);
-    }
-  } catch {
-    // Not a valid envelope; leave the text intact.
-  }
-  return value;
+// What was on screen for an MCP Apps result, or null when this is not one.
+//
+// The adapter never persists the __MCP_UI__ line: it parses the envelope off and
+// stores { text, ui: { content, structuredContent, _meta } }. `text` is the part
+// the model and the card showed; `ui` is seed data for the frame, bounded at
+// MAX_UI_STRUCTURED_CHARS -- a megabyte per result, walked key by key on every
+// rebuild across every thread, to index strings nobody ever saw.
+//
+// Keyed on the tool name as well as the shape, like the adapter's own guard: an
+// imported conversation carries whatever object its host stored, and reducing
+// someone else's result to `.text` would drop the rest from the index.
+function mcpWidgetText(value: object, toolName: string | undefined): string | null {
+  if (!toolName?.startsWith("mcp__")) return null;
+  const v = value as { text?: unknown; ui?: unknown };
+  const ui = v.ui as { resourceUri?: unknown } | undefined;
+  const isWidget =
+    typeof v.text === "string" &&
+    typeof ui === "object" &&
+    ui !== null &&
+    typeof ui.resourceUri === "string";
+  return isWidget ? (v.text as string) : null;
 }
 
 // Readable text from tool args/results, dropping base64 image/audio blobs so
 // they never bloat the index (object fields by key, plus data URLs / long
 // base64 runs and the "__IMAGES__" suffix inside strings).
-function searchableText(value: unknown, depth = 0): string {
+function searchableText(value: unknown, depth = 0, toolName?: string): string {
   if (typeof value === "string") {
-    let text = stripMcpUiSuffix(stripMcpImageSuffix(value));
+    let text = stripMcpImageSuffix(value);
     const cut = text.indexOf("\n__IMAGES__:");
     if (cut !== -1) text = text.slice(0, cut);
     return text
@@ -99,6 +98,11 @@ function searchableText(value: unknown, depth = 0): string {
     return value.map((v) => searchableText(v, depth + 1)).join(" ");
   }
   if (typeof value === "object") {
+    // Only at the top of a tool result, which is where the adapter puts the wrapper.
+    if (depth === 0) {
+      const widgetText = mcpWidgetText(value, toolName);
+      if (widgetText !== null) return searchableText(widgetText, depth + 1);
+    }
     const out: string[] = [];
     for (const [k, v] of Object.entries(value)) {
       if (!BINARY_KEY.test(k)) out.push(searchableText(v, depth + 1));
@@ -136,7 +140,11 @@ function extractText(message: MessageRecord): string {
       }
       const args = searchableText(typeof p.argsText === "string" ? p.argsText : p.args);
       if (args) parts.push(args);
-      const result = searchableText(p.result);
+      const result = searchableText(
+        p.result,
+        0,
+        typeof p.toolName === "string" ? p.toolName : undefined,
+      );
       if (result) parts.push(result);
     } else if (p.type === "source") {
       for (const v of [p.title, p.url]) if (typeof v === "string") parts.push(v);
