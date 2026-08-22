@@ -231,6 +231,35 @@ function wrappersAround(tag: string): string[][] {
 
 const INNER_BOUNDARY = "MarkdownRendererBoundary";
 
+test("no Block renders outside the renderer boundary", () => {
+  /*
+   * The test that was missing, and its absence shipped a boundary that never
+   * fired on the path it was written for.
+   *
+   * `Block` is the only thing that loads a chunk at render time, so EVERY place
+   * it is rendered has to be inside the narrower boundary. Checking only the
+   * places that have controls beside them is not enough: `getCodeFence` needs
+   * the CLOSING fence, so a fence that is still streaming falls past the fence
+   * branch to the bare `Block` at the end of `StreamdownBlockContent`, and that
+   * is precisely when the highlighter is first requested and fails. Leaving that
+   * one unguarded let the whole-block boundary catch and LATCH, so the block
+   * never re-entered `FenceBlock` when its closing fence arrived and the copy
+   * and download bar never mounted.
+   *
+   * Measured before this assertion existed: a streamed abort produced a document
+   * identical to the commit before the inner boundary was added, 1350 elements
+   * and 0 copy buttons on both.
+   */
+  const sites = wrappersAround("Block");
+  assert.ok(sites.length > 0, "no <Block> is rendered at all");
+  const unguarded = sites.filter((open) => !open.includes(INNER_BOUNDARY));
+  assert.deepEqual(
+    unguarded,
+    [],
+    `a <Block> renders outside ${INNER_BOUNDARY}, so a rejected chunk there escapes to the whole-block boundary and latches it for the rest of the stream`,
+  );
+});
+
 test("a failed renderer does not take the block's controls with it", () => {
   /*
    * The whole point, asserted as a RELATIONSHIP so it cannot pass vacuously: a

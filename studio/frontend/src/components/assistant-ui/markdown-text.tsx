@@ -49,6 +49,7 @@ import {
 import { createCodePlugin } from "./code-plugin";
 import {
   MarkdownBlockBoundary,
+  MarkdownBlockFallbackView,
   MarkdownRendererBoundary,
 } from "./markdown-block-boundary";
 import "katex/dist/katex.min.css";
@@ -426,7 +427,29 @@ function StreamdownBlockContent(props: BlockProps) {
     );
   }
 
-  return <Block {...blockProps} />;
+  /*
+   * THE STREAMING ROUTE, and the one that actually fires.
+   *
+   * `getCodeFence` needs the CLOSING fence, so a fence that is still arriving
+   * has no `codeFence` and falls all the way through to here rather than to
+   * `FenceBlock`. This bare `Block` is therefore what first asks for the
+   * highlighter chunk on a streamed reply, which is exactly when it fails.
+   *
+   * Left unguarded, the whole-block boundary catches that and latches with no
+   * reset, so the block never re-enters `FenceBlock` when its closing fence
+   * finally lands and the copy and download bar never mounts at all. Measured:
+   * with this unguarded, a streamed abort produced an identical document to the
+   * commit before the inner boundary existed, 0 copy and 0 download buttons on
+   * both. Guarding it keeps the failure inside the renderer boundary, so the
+   * completed block mounts `FenceBlock` normally and keeps its controls.
+   */
+  return (
+    <MarkdownRendererBoundary
+      fallback={<MarkdownBlockFallbackView content={props.content} />}
+    >
+      <Block {...blockProps} />
+    </MarkdownRendererBoundary>
+  );
 }
 
 /*

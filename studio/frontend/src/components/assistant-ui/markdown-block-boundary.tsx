@@ -109,27 +109,39 @@ export class MarkdownBlockBoundary extends Component<Props, State> {
     if (!this.state.failed) {
       return this.props.children;
     }
-    const fallback = markdownBlockFallback(this.props.content);
-    if (fallback.fenced) {
-      return (
-        <div className="my-4 w-full overflow-x-auto rounded-xl border border-border bg-sidebar p-2">
-          {fallback.language && (
-            <div className="flex h-8 items-center text-muted-foreground text-xs">
-              <span className="ml-1 font-mono lowercase">
-                {fallback.language}
-              </span>
-            </div>
-          )}
-          <pre className="overflow-x-auto rounded-md border border-border bg-background p-4 text-sm">
-            <code>{fallback.text}</code>
-          </pre>
-        </div>
-      );
-    }
+    return <MarkdownBlockFallbackView content={this.props.content} />;
+  }
+}
+
+/**
+ * A block shown as its own source.
+ *
+ * Extracted so that the whole-block boundary and the narrower renderer boundary
+ * degrade a block to exactly the same thing. They are reached by different
+ * routes: a fence that is still STREAMING has no closing fence yet, so
+ * `getCodeFence` does not match it and it renders through the plain `Block`
+ * rather than through `FenceBlock`, which is the route that carries the
+ * controls. Both routes have to land the reader in the same place.
+ */
+export function MarkdownBlockFallbackView({ content }: { content: string }) {
+  const fallback = markdownBlockFallback(content);
+  if (fallback.fenced) {
     return (
-      <div className="my-4 whitespace-pre-wrap break-words">
-        {fallback.text}
+      <div className="my-4 w-full overflow-x-auto rounded-xl border border-border bg-sidebar p-2">
+        {fallback.language && (
+          <div className="flex h-8 items-center text-muted-foreground text-xs">
+            <span className="ml-1 font-mono lowercase">
+              {fallback.language}
+            </span>
+          </div>
+        )}
+        <pre className="overflow-x-auto rounded-md border border-border bg-background p-4 text-sm">
+          <code>{fallback.text}</code>
+        </pre>
       </div>
     );
   }
+  return (
+    <div className="my-4 whitespace-pre-wrap break-words">{fallback.text}</div>
+  );
 }
