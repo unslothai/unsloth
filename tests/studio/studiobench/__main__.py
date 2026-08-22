@@ -296,6 +296,21 @@ def is_null_control(sides: list) -> bool:
     Two ATTACHED Studios are a different matter: the refs are whatever the caller typed and the
     harness cannot see what is deployed at either URL, so those are only a null control when both
     sides are the same URL.
+
+    AND A REF IS A POINTER, which is the rule `commit_problems` already states for `--resume` and
+    this decision did not apply. The two owned sides are cloned into separate repos and fetched one
+    after the other, with a whole clone, build and launch between them; `install_studio` alone
+    budgets 45 minutes. A push to `main` inside that window leaves `--branch main --ab main` with
+    two DIFFERENT builds under one ref name, and calling that a null control does not merely
+    mislabel it: `scoring.ab.compare` voids the run and empties `regressions`, and
+    `noise_floor_from_null_control` hands the delta back as THIS MACHINE'S NOISE FLOOR for the next
+    A/B to be judged against. Measured on a 12% regression between two commits: the regression is
+    erased and 12% is published as the floor, which would then hide every real effect under 12% on
+    that machine. That is a control that could not have detected the effect it was clearing.
+
+    So the BUILDS are compared, not their names. An empty commit on either side is not a
+    difference, the same rule `commit_problems` applies: an attached side has none to declare, and
+    neither does a payload written before commits were recorded.
     """
     if len(sides) < 2:
         return False
@@ -304,7 +319,33 @@ def is_null_control(sides: list) -> bool:
         return False
     if base.get("base_url") == treatment.get("base_url"):
         return True
-    return bool(base.get("owns") and treatment.get("owns"))
+    if not (base.get("owns") and treatment.get("owns")):
+        return False
+    base_commit = str(base.get("commit") or "")
+    treatment_commit = str(treatment.get("commit") or "")
+    if base_commit and treatment_commit:
+        return base_commit == treatment_commit
+    return True
+
+
+def _ab_label(sides: list, is_null: bool) -> str:
+    """The title on the A/B table, naming the BUILDS whenever the ref alone would mislead.
+
+    A null control states the commit it compared with itself, so a reader can tell which build the
+    machine's noise floor was measured on. And the case this exists for: two installs of one ref
+    that resolved to two different commits are NOT a null control, and printing "main -> main" over
+    them would read as one. Naming both commits is the only honest title for that table.
+    """
+    if len(sides) < 2:
+        return sides[0]["ref"] if sides else ""
+    base_commit = str(sides[0].get("commit") or "")
+    treatment_commit = str(sides[1].get("commit") or "")
+    if is_null:
+        at = f" @ {base_commit[:12]}" if base_commit else ""
+        return f"null control: {sides[0]['ref']}{at} vs itself"
+    if sides[0]["ref"] == sides[1]["ref"] and base_commit and treatment_commit:
+        return f"{sides[0]['ref']} {base_commit[:12]} -> {treatment_commit[:12]}"
+    return f"{sides[0]['ref']} -> {sides[1]['ref']}"
 
 
 def stop_owned_sides(
@@ -808,11 +849,7 @@ def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
     # a null control that renders as an ordinary A/B invites somebody to quote "7.7% faster" from a
     # build compared with itself. See `is_null_control`.
     is_null = is_null_control(sides)
-    label = (
-        f"null control: {sides[0]['ref']} vs itself"
-        if is_null
-        else f"{sides[0]['ref']} -> {sides[1]['ref']}"
-    )
+    label = _ab_label(sides, is_null)
 
     try:
         result = compare_arms(
