@@ -172,7 +172,11 @@ def cached_entries() -> List[ModelEntry]:
     gguf_rows, model_rows = _cached_catalog_rows()
     entries = []
     for row in gguf_rows:
-        if row.get("partial") or row.get("task") in NON_CHAT_TASKS:
+        if (
+            row.get("partial")
+            or row.get("task") in NON_CHAT_TASKS
+            or row.get("capabilities", {}).get("can_chat") is False
+        ):
             continue
         entries.append(
             ModelEntry(

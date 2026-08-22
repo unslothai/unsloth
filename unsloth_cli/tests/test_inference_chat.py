@@ -417,6 +417,12 @@ def test_catalog_cached_entries_filter_non_chat_rows(monkeypatch, tmp_path):
             "partial": True,
         },
         {"repo_id": "org/Flux-GGUF", "cache_path": str(repo), "task": "text-to-image"},
+        {
+            "repo_id": "unsloth/Qwen3-ASR-GGUF",
+            "cache_path": str(repo),
+            "task": "text-generation",
+            "capabilities": {"can_chat": False},
+        },
     ]
     model_rows = [
         {"repo_id": "org/Chat", "task": None},
