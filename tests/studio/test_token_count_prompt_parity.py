@@ -46,6 +46,15 @@ def _canvas_constants() -> str:
     )
 
 
+def _prune_helpers() -> str:
+    """isAbandonedAssistantTurn + pruneOutboundHistory, which the outbound builder calls."""
+    return slice_between(
+        read(ADAPTER),
+        "/** A Stop that landed before the turn produced anything",
+        "function extractImageBase64(",
+    )
+
+
 def _outbound_builder() -> str:
     return slice_between(
         read(ADAPTER),
@@ -157,6 +166,7 @@ def _harness_source() -> str:
     return (
         HARNESS
         + _canvas_constants()
+        + _prune_helpers()
         + _outbound_builder()
         + _reasoning_builder()
         + _extras_builder()
