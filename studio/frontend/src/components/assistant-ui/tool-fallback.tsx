@@ -299,7 +299,12 @@ interface McpUiResult {
   images?: { data: string; mimeType: string }[];
 }
 
-function isMcpUiResult(val: unknown): val is McpUiResult {
+function isMcpUiResult(val: unknown, toolName?: string): val is McpUiResult {
+  // Only an MCP result can be carrying the wrapper the backend writes; an
+  // imported conversation stores whatever object its own host kept.
+  if (toolName !== undefined && mcpServerIdFromToolName(toolName) === null) {
+    return false;
+  }
   if (typeof val !== "object" || val === null) return false;
   const v = val as { text?: unknown; ui?: unknown };
   return (
@@ -327,7 +332,7 @@ function ToolFallbackMcpApp({
     ({ threadListItem }) => threadListItem.remoteId,
   );
   const projectId = useChatRuntimeStore((state) => state.activeProjectId);
-  if (!isMcpUiResult(result)) return null;
+  if (!isMcpUiResult(result, toolName)) return null;
   const serverId = mcpServerIdFromToolName(toolName);
   if (!serverId) return null;
   let toolArgs: Record<string, unknown> | undefined;
@@ -358,28 +363,31 @@ function ToolFallbackMcpApp({
 
 function ToolFallbackResult({
   result,
+  toolName,
   className,
   ...props
 }: ComponentProps<"div"> & {
   result?: unknown;
+  toolName?: string;
 }) {
   if (result === undefined) {
     return null;
   }
 
+  const uiResult = isMcpUiResult(result, toolName) ? result : null;
   // A widget result may carry images too; both panes read the same shape.
   const imageResult = isMcpImageResult(result)
     ? result
-    : isMcpUiResult(result) && result.images?.length
-      ? { text: result.text, images: result.images }
+    : uiResult?.images?.length
+      ? { text: uiResult.text, images: uiResult.images }
       : null;
   // Colourised CLIs (ls --color, grep --color, npm, cargo, pytest) emit SGR
   // escapes that a plain <pre> cannot style; strip them so the pane stays
   // readable (#7962).
   const resultText = imageResult
     ? null
-    : isMcpUiResult(result)
-      ? stripAnsi(result.text)
+    : uiResult
+      ? stripAnsi(uiResult.text)
       : stringifyToolResult(result);
 
   return (
@@ -494,7 +502,9 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
           argsText={argsText}
           className={cn(isCancelled && "opacity-60")}
         />
-        {!isCancelled && <ToolFallbackResult result={result} />}
+        {!isCancelled && (
+          <ToolFallbackResult result={result} toolName={toolName} />
+        )}
       </ToolFallbackContent>
     </ToolFallbackRoot>
   );

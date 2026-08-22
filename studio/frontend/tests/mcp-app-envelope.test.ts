@@ -35,7 +35,7 @@ if (!prefixLine) {
   throw new Error("MCP_UI_TOOL_PREFIX is no longer defined in chat-adapter.ts");
 }
 
-function lift<T>(signature: string, name: string): T {
+function lift<T>(signature: string, name: string, prelude = ""): T {
   const start = source.indexOf(signature);
   assert.ok(start >= 0, `${name} is no longer defined in chat-adapter.ts`);
   // "\n}\n", not "\n}": a multi-line return type closes with "} {" and would
@@ -47,9 +47,12 @@ function lift<T>(signature: string, name: string): T {
   const declaration = source.slice(start, end + 3).replace(/^export /, "");
   return new Function(
     `${
-      ts.transpileModule(`${markerLine}\n${prefixLine}\n${declaration}`, {
-        compilerOptions: { target: ts.ScriptTarget.ES2020 },
-      }).outputText
+      ts.transpileModule(
+        `${markerLine}\n${prefixLine}\n${prelude}\n${declaration}`,
+        {
+          compilerOptions: { target: ts.ScriptTarget.ES2020 },
+        },
+      ).outputText
     }; return ${name};`,
   )() as T;
 }
@@ -66,7 +69,7 @@ const extractMcpUiEnvelope = lift<
     ui: { resourceUri: string; structuredContent?: unknown } | null;
   }
 >("export function extractMcpUiEnvelope(", "extractMcpUiEnvelope");
-const isMcpUiToolResult = lift<(val: unknown) => boolean>(
+const isMcpUiToolResult = lift<(val: unknown, toolName?: string) => boolean>(
   "export function isMcpUiToolResult(",
   "isMcpUiToolResult",
 );
@@ -135,6 +138,40 @@ test("the widget guard needs both the text and a named resource", () => {
   assert.ok(!isMcpUiToolResult({ ui: { resourceUri: "ui://a/b" } }));
   assert.ok(!isMcpUiToolResult("a string"));
   assert.ok(!isMcpUiToolResult(null));
+});
+
+test("someone else's result is not unwrapped as Studio's own wrapper", () => {
+  // openwebui-import.ts parses a stored tool result with parseJsonLoose, so an
+  // imported conversation can carry any object under any tool name. Unwrapping
+  // one to .text drops every other field it had, from exports and from the next
+  // model turn alike.
+  const imported = {
+    text: "Q3 summary",
+    ui: { resourceUri: "ui://reports/q3" },
+    rows: [1, 2, 3],
+    total: 42,
+  };
+  assert.ok(!isMcpUiToolResult(imported, "get_report"));
+  assert.ok(!isMcpUiToolResult(imported, ""));
+  assert.ok(isMcpUiToolResult(imported, MCP_TOOL));
+  // No name at all stays permissive, as isSandboxWrapper is.
+  assert.ok(isMcpUiToolResult(imported));
+
+  // Lifted with the real UI guard and stubs for its two siblings: this is about
+  // which results the UI guard claims, not about the sandbox/image shapes.
+  const uiGuardSource = source.slice(
+    source.indexOf("export function isMcpUiToolResult("),
+    source.indexOf("\n}\n", source.indexOf("export function isMcpUiToolResult(")) + 3,
+  ).replace(/^export /, "");
+  const toolResultModelText = lift<(result: unknown, toolName?: string) => unknown>(
+    "export function toolResultModelText(",
+    "toolResultModelText",
+    `${uiGuardSource}
+     const isMcpImageToolResult = () => false;
+     const isSandboxWrapper = () => false;`,
+  );
+  assert.deepEqual(toolResultModelText(imported, "get_report"), imported);
+  assert.equal(toolResultModelText(imported, MCP_TOOL), "Q3 summary");
 });
 
 test("the image guard refuses a widget result that also carries images", () => {

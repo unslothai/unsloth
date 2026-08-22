@@ -1073,7 +1073,16 @@ export function extractMcpUiEnvelope(
   };
 }
 
-export function isMcpUiToolResult(val: unknown): val is McpUiToolResult {
+export function isMcpUiToolResult(
+  val: unknown,
+  toolName?: string,
+): val is McpUiToolResult {
+  // Shape alone is not proof, like isSandboxWrapper below: an imported
+  // conversation carries whatever object the other host stored, and unwrapping
+  // someone else's result to .text drops every other field it had.
+  if (toolName !== undefined && !toolName.startsWith(MCP_UI_TOOL_PREFIX)) {
+    return false;
+  }
   if (typeof val !== "object" || val === null) return false;
   const v = val as { text?: unknown; ui?: unknown };
   return (
@@ -1096,7 +1105,7 @@ export function toolResultModelText(
   toolName?: string,
 ): unknown {
   if (
-    isMcpUiToolResult(result) ||
+    isMcpUiToolResult(result, toolName) ||
     isMcpImageToolResult(result) ||
     isSandboxWrapper(result, toolName)
   ) {
@@ -1169,7 +1178,7 @@ function serializeToolResultPart(
     // outputs still round-trip the follow-up turn to the provider.
     content = result.length > 0 ? result : JSON.stringify({ result: "" });
   } else if (
-    isMcpUiToolResult(result) ||
+    isMcpUiToolResult(result, tc.toolName ?? "") ||
     isMcpImageToolResult(result) ||
     isSandboxWrapper(result, tc.toolName ?? "")
   ) {
