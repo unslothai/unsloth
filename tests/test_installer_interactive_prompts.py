@@ -53,6 +53,8 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "studio/install_whisper_prebuilt.py",
     # install_python_stack runs this one with sys.executable.
     "studio/backend/requirements/single-env/patch_metadata.py",
+    # install.sh resolves and shells out to this for the optional systemd unit (#9258).
+    "studio/systemd/install_user_service.sh",
 )
 
 # Every question these scripts may ask, keyed by (script, normalised
@@ -64,6 +66,11 @@ APPROVED_PROMPTS: dict[tuple[str, str], str] = {
     ),
     ("install.ps1", "start unsloth studio now?"): (
         "Windows half of the sanctioned launch prompt above."
+    ),
+    ("install.sh", "install a systemd user service for auto-start on boot and crash recovery?"): (
+        "Linux-only opt-in for a managed user unit (#9258). Non-interactive installs "
+        "use UNSLOTH_INSTALL_SYSTEMD / UNSLOTH_SKIP_SYSTEMD; the prompt only runs on a TTY "
+        "and defaults to no so curl|sh never stalls."
     ),
     ("install.sh", "accept?"): (
         "Consent before `sudo apt-get install` of missing system packages, "
