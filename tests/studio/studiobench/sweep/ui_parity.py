@@ -80,12 +80,24 @@ def rung_of(cell_id: str) -> str:
 
 
 def collect(paths: list[Path]) -> dict:
-    """{(shard, rung, rep, action): {arm: action row}} plus a tally of what was captured at all.
+    """{(shard, rung, rep, session, action): {arm: action row}} plus a tally of what was captured.
 
     THE RUNG IS PART OF THE IDENTITY. A standard-tier run walks 1K, 10K and 100K inside one
     repetition, so keying on the repetition alone makes every action collide two rungs deep and
     only the last one read survives. A stable action that rendered differently at 1K was then
     overwritten by the matching 100K row and the gate reported success.
+
+    THE SESSION IS PART OF IT FOR THE SAME REASON, and one shard is not one session. `--resume`
+    skips the arm that COMPLETED and re-runs the arm that died, under a new session id, appending
+    into the same shard directory -- so the payload holds the completed partner under the old
+    session and the retry under the new one. Keyed on the repetition alone those two arms pair, and
+    the comparison is then across sessions: `sweep/floor_table.paired` and `scoring/ab.py` both
+    refuse exactly that, the first for the ~8% session-to-session drift it charges to whichever arm
+    was re-run, and this one because the digests are of two different browser sessions. A pair that
+    differs only for that reason is counted by `derive_unstable` as evidence that the action is
+    unstable, and two of them at one rung silence a real DOM regression at that rung for good.
+
+    A payload recorded before session ids existed has `""` on both arms and pairs exactly as before.
 
     A row whose parity is missing or failed is KEPT, as the failed capture it is. Dropping it here
     would delete the evidence that the surface went unmeasured, and the comparison layer needs to
@@ -108,7 +120,8 @@ def collect(paths: list[Path]) -> dict:
                 missing += 1
             cid = r.get("cell_id") or ""
             rep = cid.rsplit(".", 1)[-1]
-            out[(shard, rung_of(cid), rep, r.get("action"))][arm_of(cid)] = r
+            sid = str(r.get("session_id") or "")
+            out[(shard, rung_of(cid), rep, sid, r.get("action"))][arm_of(cid)] = r
     return {"pairs": out, "attempted": attempted, "missing": missing}
 
 
@@ -119,11 +132,15 @@ def compare_all(paths: list[Path]) -> tuple[list[tuple], dict]:
     """
     got = collect(paths)
     results = []
-    for (shard, rung, rep, action), sides in sorted(got["pairs"].items()):
+    for (shard, rung, rep, sid, action), sides in sorted(got["pairs"].items()):
         cell = f"{rung} {rep}"
         if "base" not in sides or "treatment" not in sides:
             # One arm never produced this row at all. Recorded rather than skipped: an action that
             # ran on one arm and not the other is itself a difference between the arms.
+            #
+            # A resumed run lands here too, with the two arms under two session ids, and the
+            # session is named so the reader can tell that case from a surface one build never
+            # rendered. Both carry NOT_COMPARABLE, which is the honest verdict for either.
             results.append(
                 (
                     action,
@@ -132,7 +149,8 @@ def compare_all(paths: list[Path]) -> tuple[list[tuple], dict]:
                     {
                         "verdict": P.NOT_COMPARABLE,
                         "moved": [],
-                        "reason": f"only the {next(iter(sides))} arm recorded this action",
+                        "reason": f"only the {next(iter(sides))} arm recorded this action"
+                        + (f" in session {sid}" if sid else ""),
                         "style_verdict": P.NOT_COMPARABLE,
                         "style_reason": "",
                     },
