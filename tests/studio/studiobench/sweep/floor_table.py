@@ -114,8 +114,7 @@ def cell_metrics(records: list[dict]) -> dict[str, dict[str, float]]:
         windows = [
             w
             for w in own
-            if w.get("row_type") == "window"
-            and str(w.get("kind") or "") not in IDLE_WINDOW_KINDS
+            if w.get("row_type") == "window" and str(w.get("kind") or "") not in IDLE_WINDOW_KINDS
         ]
         for key, m in _frame_measures(windows).items():
             if m.value is not None:
