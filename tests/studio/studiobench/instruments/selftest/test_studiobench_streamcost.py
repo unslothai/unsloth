@@ -109,6 +109,70 @@ if (readWhilePending) {
 """
 
 
+#: The same file again, driven through ONE `decode()` of a whole batched read. `payload` decides
+#: what that read carries: a burst of the pacer's own frames larger than the decoder's scan bound,
+#: the same burst small enough to sit under it, or a blob of the size that bound exists to keep out.
+#: The burn after the decode stands in for the SSE parse, the delta accumulation and the render --
+#: the task chain `delta_task_ms` is supposed to be charging.
+BATCH_HARNESS_JS = r"""
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[2], "utf8");
+const mode = process.argv[3];
+const burnMs = Number(process.argv[4]);
+
+const window = {};
+const document = { querySelectorAll: () => [] };
+(new Function("window", "document", src))(window, document);
+window.__sb.frames = { clamp: () => ({ clampMs: 1.0 }) };
+const sc = window.__sb.streamcost;
+
+// pacer.py's own framing: `data: ` + the chunk object + a blank line, carrying 64 characters at
+// fast cadence. Built here rather than imported so the harness stays a single node process.
+const frame = (i) =>
+  "data: " +
+  JSON.stringify({
+    id: "chatcmpl-0123456789abcdef0123",
+    object: "chat.completion.chunk",
+    created: 1780000000,
+    model: "studiobench-pacer",
+    choices: [{ index: 0, delta: { content: String.fromCharCode(97 + (i % 26)).repeat(64) },
+                finish_reason: null }],
+  }) +
+  "\n\n";
+
+let payload = "";
+if (mode === "blob") {
+  // A bundle, a blob or a paste: over the bound and with no relay framing anywhere in it.
+  payload = "z".repeat(100000);
+} else {
+  // A BATCH ABOVE THE BOUND. Everything the browser buffered while the main thread was stalled,
+  // handed to the app as one read, exactly as chromium does after a stall past about two seconds.
+  let i = 0;
+  const want = mode === "batch-over" ? 65537 : 40000;
+  while (payload.length < want) payload += frame(i++);
+}
+
+// THROUGH THE REAL HOOK. `TextDecoder.prototype.decode` is what the instrument wraps and what the
+// app reaches with the bytes of one `reader.read()`, so the batch is decoded in a single call.
+const decoded = new TextDecoder().decode(
+  new Uint8Array(Buffer.from(payload, "utf8")), { stream: true }
+);
+
+// The chain that decode started, still on the same task.
+const started = performance.now();
+while (performance.now() - started < burnMs) { /* spin */ }
+
+setTimeout(() => {
+  console.log(JSON.stringify({
+    payload_chars: payload.length,
+    decoded_chars: decoded.length,
+    read: sc.read(null),
+  }));
+  process.exit(0);
+}, 60);
+"""
+
+
 def _node() -> str:
     exe = shutil.which("node") or shutil.which("nodejs")
     if exe is None:
@@ -148,6 +212,22 @@ def burst_across_a_window_close(burn_ms: float, *, read_while_pending: bool) -> 
                 str(burn_ms),
                 "pending" if read_while_pending else "settled",
             ],
+            capture_output = True,
+            text = True,
+            timeout = 120,
+        )
+    if got.returncode != 0:
+        raise AssertionError(f"the streamcost.js harness failed: {got.stderr.strip()[-800:]}")
+    return json.loads(got.stdout)
+
+
+def one_decoded_batch(mode: str, burn_ms: float) -> dict:
+    exe = _node()
+    with tempfile.TemporaryDirectory() as tmp:
+        harness = Path(tmp) / "batch.js"
+        harness.write_text(BATCH_HARNESS_JS, encoding = "utf-8")
+        got = subprocess.run(
+            [exe, str(harness), str(STREAMCOST_JS), mode, str(burn_ms)],
             capture_output = True,
             text = True,
             timeout = 120,
@@ -205,6 +285,63 @@ def test_a_burst_whose_chain_has_already_closed_is_charged_once():
 
     assert out["first"]["delta_task_ms"] >= BURST_CHAIN_MS * 0.9, out
     assert out["second"]["delta_task_ms"] < BURST_CHAIN_MS * 0.1, out
+
+
+#: `MAX_SSE_CHUNK_CHARS` in the instrument. A single decode above it is the case that used to be
+#: discarded whole.
+MAX_SSE_CHUNK_CHARS = 65536
+
+
+def test_a_batched_sse_read_above_the_decoder_scan_bound_is_still_detected():
+    """REGRESSION. The detector read `out.length <= MAX_SSE_CHUNK_CHARS` and skipped anything
+    longer, on the premise that a decode that large is not relay traffic.
+
+    A read does not carry one cadence gap of the stream, it carries everything the browser buffered
+    since the last one, so its size is the arrival rate times the stall in front of it. Measured
+    against real chromium reading the real pacer through the app's own `getReader()` loop, the
+    largest read of a stream is 32.5 characters per millisecond of stall at fast cadence: a 3,000 ms
+    stall lands one well-formed 97,500 character read of 470 `data:` frames, and the guard dropped
+    it entirely -- `sseChunks`, `sseBursts`, `lastSseAt` and the `deltaTaskMs` numerator all missed
+    the largest burst of the stream, at the moment a stall makes it largest.
+    """
+    out = one_decoded_batch("batch-over", BURST_CHAIN_MS)
+
+    assert out["decoded_chars"] > MAX_SSE_CHUNK_CHARS, out
+    # The decode was seen either way; what used to be lost is everything downstream of it.
+    assert out["read"]["decode_calls"] == 1, out
+    assert out["read"]["sse_chunks"] == 1, out
+    assert out["read"]["sse_bursts"] == 1, out
+    assert out["read"]["streaming_observed"] is True, out
+    # ONE chain for the batch, charged once: a burst delivered in one task is one task chain.
+    assert out["read"]["delta_task_ms"] >= BURST_CHAIN_MS * 0.9, out
+
+
+def test_a_batched_sse_read_below_the_decoder_scan_bound_is_detected_too():
+    """THE CONTROL, and it passes with or without the fix: the same batch, built to sit under the
+    bound, is the path that always worked and may not be broken by widening the one above it."""
+
+    out = one_decoded_batch("batch-under", BURST_CHAIN_MS)
+
+    assert out["decoded_chars"] < MAX_SSE_CHUNK_CHARS, out
+    assert out["read"]["sse_chunks"] == 1, out
+    assert out["read"]["delta_task_ms"] >= BURST_CHAIN_MS * 0.9, out
+
+
+def test_a_decoded_blob_above_the_scan_bound_is_still_kept_out_of_the_detector():
+    """THE OTHER CONTROL, and it also passes with or without the fix: the bound still has a job.
+
+    A bundle, a blob or a paste reaches the same wrapper, and counting one as a stream would set
+    `lastSseAt`, open a chain and charge that chain's cost to a window with no stream in it -- an
+    error in the other direction, which the bound exists to prevent. Widening the guard from a
+    rejection to a bounded scan may not turn it into no guard at all.
+    """
+    out = one_decoded_batch("blob", BURST_CHAIN_MS)
+
+    assert out["decoded_chars"] > MAX_SSE_CHUNK_CHARS, out
+    assert out["read"]["decode_calls"] == 1, out
+    assert out["read"]["sse_chunks"] == 0, out
+    assert out["read"]["streaming_observed"] is False, out
+    assert out["read"]["delta_task_ms"] == 0, out
 
 
 def test_a_stall_longer_than_the_idle_gap_is_still_charged_to_the_stream():
