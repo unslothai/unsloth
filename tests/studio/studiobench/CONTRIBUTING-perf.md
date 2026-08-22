@@ -150,6 +150,50 @@ Virtualization, windowing and progressive mount all change what is mounted by de
 reports differences everywhere and proves nothing. For those changes parity means screenshots at
 matched scroll positions plus the behavioural invariants below.
 
+### When the equivalence is proved by a differential, the fixture is the claim
+
+Some optimisations are not "the DOM still matches" but "this cheaper path returns the same bytes as
+the expensive one it replaces". You prove those with a randomized differential: generate inputs,
+run both paths, compare. The number of frames it clears is then quoted as the evidence, so the
+generator, not the run, is what the claim actually rests on.
+
+Two ways that goes wrong, both paid for on unslothai/unsloth#9517, where the cheap path repaired a
+bounded window of an open code fence instead of the whole tail:
+
+- **A fixture that generates only short lines cannot find a bug about long ones.** The first sweep
+  reported byte-identical output on 17,436 adversarial open-fence frames and was quoted in the pull
+  request. Every generated piece was a short line, so the window never elided a whole line, and the
+  bug lived exactly there: a whitespace-only line longer than the window moved the cut past it, and
+  the repair then appended a zero-width space into code that the copy button would put on the
+  clipboard. A reviewer found it by reading. Adding lines longer than the window, whitespace-only
+  and not, immediately produced 60 divergences, and then a second, unrelated family of 57.
+- **A clean result from a fixture you built yourself is weaker evidence than a clean result from one
+  designed to break you.** The two are not the same measurement and should not carry the same
+  weight in a pull request. Before quoting a differential, write down the dimension your generator
+  varies and the dimension it holds constant, and go looking for a bug in the constant one.
+
+A corollary about hunting the second bug: **a check that comes back clean against code you believe
+is broken is usually a hole in the check.** The first probe for that second family reported the
+production code unaffected, and the reason was that its head set contained no stray backtick before
+the fence. It was reachable. Prove reachability against the real code path with the real input
+before deciding a class of bug does not apply.
+
+### Getting a guard backwards costs a sweep, so state its direction in words first
+
+The same round produced two guards that were written the wrong way round and only caught by
+re-sweeping:
+
+- The refusal gated the cut **from below** when the risk is a cut landing **past** the marker.
+  The condition and its inverse both read plausibly at the call site.
+- It then tracked the **last** marker in the body when the one that matters is the **first**: a
+  marker sitting in the retained window masks an earlier one sitting in the elided middle, which is
+  the half that gets dropped. First is also monotone, so it is the cheaper thing to carry anyway.
+
+Write the invariant as a sentence about which region must be clean before writing the comparison,
+and keep the shrunk reproducers verbatim in the test with a comment saying so. Both of these needed
+a stray backtick before the fence, a longer opener and an escaped fence inside it; a tidier-looking
+case stops covering the bug.
+
 ## 5. Invariant counts: the metrics whose sign means the opposite
 
 Rows named `action.count.key` are correctness invariants, not timings, and the table scores them
