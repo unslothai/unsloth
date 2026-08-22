@@ -487,6 +487,7 @@ type FakeText = {
   readonly nodeType: 3;
   readonly data: string;
   parentNode: FakeElement | null;
+  readonly ownerDocument: typeof fakeDocument;
 };
 
 type FakeNode = FakeText | FakeElement;
@@ -508,7 +509,7 @@ type FakeElement = {
     setProperty(name: string, value: string, priority?: string): void;
     removeProperty(name: string): void;
   };
-  readonly ownerDocument: { createElement(tag: string): FakeElement };
+  readonly ownerDocument: typeof fakeDocument;
   textContent: string;
   getAttribute(name: string): string | null;
   setAttribute(name: string, value: string): void;
@@ -534,7 +535,9 @@ Object.defineProperty(globalThis, "HTMLElement", {
 });
 
 function text(data: string): FakeText {
-  return { nodeType: 3, data, parentNode: null };
+  // Text nodes carry an ownerDocument too, because a selection endpoint is usually one of
+  // these and that is where `captureDirection` reaches for `createRange`.
+  return { nodeType: 3, data, parentNode: null, ownerDocument: fakeDocument };
 }
 
 /** Only the selectors this module actually uses. Anything else is a hole in the fake, not a pass. */
@@ -664,7 +667,7 @@ function el(
         syncStyleAttribute();
       },
     },
-    ownerDocument: { createElement: (tag: string) => el(tag) },
+    ownerDocument: fakeDocument,
     get textContent() {
       return childNodes.map(renderSource).join("");
     },
@@ -795,17 +798,33 @@ function snapshot(node: FakeNode): unknown {
 type FakeRange = {
   readonly id: number;
   readonly commonAncestorContainer: FakeElement | null;
+  readonly startContainer: FakeNode | null;
+  readonly startOffset: number;
+  readonly endContainer: FakeNode | null;
+  readonly endOffset: number;
   cloneRange(): FakeRange;
 };
 
 function fakeRange(
   id: number,
   container: FakeElement | null = null,
+  bounds: {
+    startContainer?: FakeNode | null;
+    startOffset?: number;
+    endContainer?: FakeNode | null;
+    endOffset?: number;
+  } = {},
 ): FakeRange {
+  // A real Range is LIVE: its boundaries move as the DOM around them changes, which is why the
+  // restore reads them instead of the raw offsets captured before the patch ran.
   return {
     id,
     commonAncestorContainer: container,
-    cloneRange: () => fakeRange(id, container),
+    startContainer: bounds.startContainer ?? container,
+    startOffset: bounds.startOffset ?? 0,
+    endContainer: bounds.endContainer ?? container,
+    endOffset: bounds.endOffset ?? 0,
+    cloneRange: () => fakeRange(id, container, bounds),
   };
 }
 
@@ -824,9 +843,17 @@ function fakeSelection(
     anchorOffset?: number;
     focusNode?: FakeNode;
     focusOffset?: number;
+    /** The LIVE range boundaries, which the restore reads instead of the raw offsets. */
+    bounds?: {
+      startContainer?: FakeNode | null;
+      startOffset?: number;
+      endContainer?: FakeNode | null;
+      endOffset?: number;
+    };
   } = {},
 ) {
   const { ids = [1], probeText = "a" } = options;
+  const bounds = options.bounds ?? {};
   // A selection's DIRECTION lives in its anchor/focus pair and nowhere else. A cloned Range
   // carries ordered boundaries only, so a restore that rebuilds from ranges silently flips a
   // backward selection forward. Recording the calls is how a test can tell which API was used.
@@ -842,7 +869,7 @@ function fakeSelection(
   let anchorOffset = options.anchorOffset ?? 0;
   let focusNode: FakeNode | null = options.focusNode ?? null;
   let focusOffset = options.focusOffset ?? 0;
-  let ranges = ids.map((id) => fakeRange(id, root));
+  let ranges = ids.map((id) => fakeRange(id, root, bounds));
   let probing = false;
   let collapsedByMutation = false;
   mutationListeners.push((parent) => {
@@ -906,7 +933,7 @@ function fakeSelection(
       focusNode = newFocus;
       focusOffset = newFocusOffset;
       // The boundaries are restored too, so the selection is usable afterwards.
-      ranges = ids.map((id) => fakeRange(id, root));
+      ranges = ids.map((id) => fakeRange(id, root, bounds));
       calls.setBaseAndExtent.push({
         anchorNode: newAnchor,
         anchorOffset: newAnchorOffset,
@@ -924,6 +951,60 @@ function fakeSelection(
     },
   };
 }
+
+/**
+ * `captureDirection` asks a throwaway Range whether the focus lies before the anchor, so the
+ * stub needs `ownerDocument.createRange()` on every node. Document order is computed from the
+ * parent chains, which is what `comparePoint` reports and needs no knowledge of a root.
+ */
+function chain(node: FakeNode): FakeNode[] {
+  const path: FakeNode[] = [];
+  for (let at: FakeNode | null = node; at !== null; at = at.parentNode)
+    path.unshift(at);
+  return path;
+}
+
+/** -1 if `b` precedes `a` in document order, 1 if it follows, 0 if they are the same point. */
+function documentOrder(
+  a: FakeNode,
+  aOffset: number,
+  b: FakeNode,
+  bOffset: number,
+): number {
+  const pa = chain(a);
+  const pb = chain(b);
+  let depth = 0;
+  while (depth < pa.length && depth < pb.length && pa[depth] === pb[depth]) {
+    depth += 1;
+  }
+  if (depth === pa.length && depth === pb.length) {
+    return bOffset === aOffset ? 0 : bOffset < aOffset ? -1 : 1;
+  }
+  const parent = pa[depth - 1];
+  if (!parent || parent.nodeType !== 1) return 0;
+  const kids = parent.childNodes;
+  const ia = depth < pa.length ? kids.indexOf(pa[depth]) : aOffset;
+  const ib = depth < pb.length ? kids.indexOf(pb[depth]) : bOffset;
+  if (ib === ia) return 0;
+  return ib < ia ? -1 : 1;
+}
+
+const fakeDocument = {
+  createElement: (tag: string) => el(tag),
+  createRange: () => {
+    let anchor: FakeNode | null = null;
+    let anchorAt = 0;
+    return {
+      setStart(node: FakeNode, offset: number) {
+        anchor = node;
+        anchorAt = offset;
+      },
+      setEnd() {},
+      comparePoint: (node: FakeNode, offset: number) =>
+        anchor === null ? 0 : documentOrder(anchor, anchorAt, node, offset),
+    };
+  },
+};
 
 /** The module reads the bare global, not `view.getComputedStyle`. */
 Object.defineProperty(globalThis, "getComputedStyle", {
@@ -1528,6 +1609,11 @@ test("a backward selection comes back backward", () => {
   // A cloned Range carries ordered boundaries and no direction, so rebuilding with `addRange`
   // turned a selection dragged upwards into a forward one and the user's next Shift+Arrow moved
   // the opposite edge. Only the patched path rebuilds, hence the image.
+  //
+  // The restore reads the range's LIVE boundaries rather than the offsets captured before the
+  // patch, because the alt holders are inserted before their images and an element/child offset
+  // would then point at the wrong child. So what is asserted here is that the live boundaries
+  // came back SWAPPED, which is direction and nothing else.
   const first = text("first paragraph");
   const second = text("second paragraph");
   const root = el("div", {
@@ -1541,6 +1627,12 @@ test("a backward selection comes back backward", () => {
     anchorOffset: 16,
     focusNode: first,
     focusOffset: 0,
+    bounds: {
+      startContainer: first,
+      startOffset: 0,
+      endContainer: second,
+      endOffset: 16,
+    },
   });
 
   faithfulSelectionText(
@@ -1548,11 +1640,47 @@ test("a backward selection comes back backward", () => {
     root as unknown as Element,
   );
 
-  // Restored through setBaseAndExtent, which is the only API that carries direction.
   assert.deepEqual(calls.setBaseAndExtent.at(-1), {
     anchorNode: second,
     anchorOffset: 16,
     focusNode: first,
     focusOffset: 0,
+  });
+});
+
+test("a forward selection is restored from the live boundaries in order", () => {
+  // The other half of the same rule: forward stays forward, and both ends come from the range
+  // rather than from the pre-patch offsets.
+  const first = text("first paragraph");
+  const second = text("second paragraph");
+  const root = el("div", {
+    children: [
+      el("p", { children: [first] }),
+      el("p", { children: [second, el("img", { alt: "a cat" })] }),
+    ],
+  });
+  const { selection, calls } = fakeSelection(root, {
+    anchorNode: first,
+    anchorOffset: 0,
+    focusNode: second,
+    focusOffset: 16,
+    bounds: {
+      startContainer: first,
+      startOffset: 0,
+      endContainer: second,
+      endOffset: 16,
+    },
+  });
+
+  faithfulSelectionText(
+    selection as unknown as Selection,
+    root as unknown as Element,
+  );
+
+  assert.deepEqual(calls.setBaseAndExtent.at(-1), {
+    anchorNode: first,
+    anchorOffset: 0,
+    focusNode: second,
+    focusOffset: 16,
   });
 });

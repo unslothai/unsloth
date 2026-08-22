@@ -332,21 +332,35 @@ function patchClipboardDeltas(root: Element): Array<() => void> {
  * The selection is restored whatever happens, because a copy that quietly moved the user's
  * highlight would be a worse bug than the one being fixed.
  */
-/** Where the selection's anchor and focus were, which a cloned Range does not carry. */
-type SelectionDirection = {
-  readonly anchorNode: Node | null;
-  readonly anchorOffset: number;
-  readonly focusNode: Node | null;
-  readonly focusOffset: number;
-};
+/**
+ * A selection's DIRECTION, and only its direction.
+ *
+ * Deliberately not the endpoints. Capturing raw offsets and restoring them was wrong: the alt
+ * holders are inserted BEFORE their images, so an endpoint expressed as an element/child offset
+ * in the same parent points at a different child afterwards. Measured, with two images and a
+ * trailing text node selected by parent offsets 0..3: the clipboard carried
+ * `first catsecond cattail text` and we produced `first catsecond cat`, silently dropping the
+ * tail -- and because that is non-empty, the listener took the copy rather than handing it back.
+ *
+ * A cloned `Range` is live and its boundaries move with the DOM, so the ranges already hold the
+ * correct positions. All that is missing from them is which end the user dragged from.
+ */
+type SelectionDirection = { readonly backward: boolean };
 
 function captureDirection(selection: Selection): SelectionDirection {
-  return {
-    anchorNode: selection.anchorNode,
-    anchorOffset: selection.anchorOffset,
-    focusNode: selection.focusNode,
-    focusOffset: selection.focusOffset,
-  };
+  const { anchorNode, anchorOffset, focusNode, focusOffset } = selection;
+  if (!anchorNode || !focusNode) return { backward: false };
+  try {
+    const probe = anchorNode.ownerDocument?.createRange();
+    if (!probe) return { backward: false };
+    probe.setStart(anchorNode, anchorOffset);
+    probe.setEnd(anchorNode, anchorOffset);
+    // -1 means the focus lies before the anchor, which is a selection dragged upwards.
+    return { backward: probe.comparePoint(focusNode, focusOffset) < 0 };
+  } catch {
+    // Different trees, or a detached node. Forward is the safe assumption.
+    return { backward: false };
+  }
 }
 
 /**
@@ -367,14 +381,26 @@ function restoreSelection(
   direction: SelectionDirection,
 ): void {
   selection.removeAllRanges();
-  if (saved.length === 1 && direction.anchorNode && direction.focusNode) {
+  if (saved.length === 1) {
+    // The LIVE range's boundaries, which the holder insertions have already adjusted, ordered
+    // by the direction the user dragged in.
+    const range = saved[0];
     try {
-      selection.setBaseAndExtent(
-        direction.anchorNode,
-        direction.anchorOffset,
-        direction.focusNode,
-        direction.focusOffset,
-      );
+      if (direction.backward) {
+        selection.setBaseAndExtent(
+          range.endContainer,
+          range.endOffset,
+          range.startContainer,
+          range.startOffset,
+        );
+      } else {
+        selection.setBaseAndExtent(
+          range.startContainer,
+          range.startOffset,
+          range.endContainer,
+          range.endOffset,
+        );
+      }
       return;
     } catch {
       // A detached node is better answered with the range than with nothing at all.
