@@ -199,11 +199,14 @@ LOCALES = FRONTEND / "src/i18n/locales"
 # server* a user points this app at, which genuinely is an Unsloth Studio. Every other
 # entry -- window chrome, About labels, shutdown text -- is this app's own display name
 # and stays swept, so a translation cannot quietly restore the prohibited branding.
+#
+# modelAutoSwitch.apiOnlyDescription does NOT belong here. It renders as a settings-row
+# description and describes a model you loaded from this UI, not from a remote server, so
+# exempting it would let the display name back in on a rendered surface.
 LOCALE_REMOTE_SERVER_KEYS = frozenset(
     {
         "settings.agents.remote.title",
         "settings.agents.remote.description",
-        "settings.general.modelAutoSwitch.apiOnlyDescription",
     }
 )
 
