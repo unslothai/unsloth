@@ -103,6 +103,36 @@ def paint_floor_ms(page, samples: int = 9) -> float | None:
 # ── 1. keystroke to paint ───────────────────────────────────────────
 
 
+#: How long the keystroke drain will wait for the last paint before giving up on it. Not a "wait
+#: a bit longer" constant: the wait ENDS when nothing is in flight, and this is only the bound that
+#: stops a wedged renderer from eating the slot. Reaching it means a sample was lost, which the
+#: coverage check then fails on rather than quietly publishing the rest.
+KEYSTROKE_SETTLE_TIMEOUT_MS = 3000
+KEYSTROKE_SETTLE_POLL_MS = 25
+
+
+def _settle_keystrokes(ctx: ActionContext, inst: Any) -> None:
+    """Wait until no keystroke's paint is still in flight, bounded.
+
+    The fixed 200 ms wait this replaces dropped whichever sample had not painted when it expired,
+    which is systematically the slowest one. A bigger constant has the same defect on a slower
+    machine or a heavier rung, so the wait is on the WORK rather than on the clock.
+    """
+    deadline = time.monotonic() + KEYSTROKE_SETTLE_TIMEOUT_MS / 1000
+    settled = getattr(inst, "settled", None)
+    if settled is None:
+        ctx.page.wait_for_timeout(200)
+        return
+    while time.monotonic() < deadline:
+        state = settled()
+        # The page could not answer: polling on it would spin to the bound and tell us nothing.
+        if not isinstance(state, dict):
+            break
+        if not state.get("pending"):
+            return
+        ctx.page.wait_for_timeout(KEYSTROKE_SETTLE_POLL_MS)
+
+
 @register_action(name = "keystroke", default_budget_ms = 6000)
 def keystroke(ctx: ActionContext) -> ActionResult:
     """Type with REAL key events and measure keystroke-to-paint from the page side.
@@ -133,23 +163,48 @@ def keystroke(ctx: ActionContext) -> ActionResult:
     # message, which the renderer coalesces into a single input event and a single paint, so the
     # measurement collapses to one sample no matter how many characters were sent.
     ctx.page.keyboard.type("a" * count, delay = 60)
-    ctx.page.wait_for_timeout(200)
+    _settle_keystrokes(ctx, inst)
     got = inst.collect(count)
     elapsed_ms = (time.monotonic() - started) * 1000
 
     grew = got.get("grew_by")
     if not got.get("samples"):
         return not_run(f"no keystroke reached the composer ({got.get('reason', 'no samples')})")
+    seen = got.get("inputs_seen")
+    accounted = (got.get("samples") or 0) + (got.get("coalesced") or 0)
     expect = {
         "commanded_chars": count,
         "measured_keystrokes": got.get("samples"),
         "coalesced": got.get("coalesced"),
+        "inputs_seen": seen,
+        "pending_at_collect": got.get("pending_at_collect"),
         "composer_grew_by": grew,
         "composer_text_length": got.get("text_length"),
     }
-    # The composer's VALUE grew, which proves the characters reached the controlled component and
-    # not merely the DOM node.
-    ok = grew is not None and grew >= count
+    # EVERY KEYSTROKE ACCOUNTED FOR, not merely a composer that grew.
+    #
+    # `grew_by` alone was the whole check, and it is satisfied by a textarea whose value is right
+    # while the timings describe a subset of the typing. Two ways that happened, and the first
+    # INVERTS the metric: a keystroke whose paint had not resolved when the drain ran was simply
+    # absent, and the keystroke that has not painted yet is the slowest one -- measured here, a
+    # 500 ms keystroke vanished from a reading whose max was 20 ms, on the highest-weight metric in
+    # the table. A build that made typing worse read faster, and that reading feeds the null
+    # control's noise floor, so it would also tighten the floor every later comparison is judged
+    # against. The other way is quieter: a keystroke that never reached the instrument at all is
+    # missing from both `samples` and `coalesced`.
+    #
+    # So the reading stands only when nothing was left in flight and `samples + coalesced` covers
+    # every input the instrument saw, and every input the driver commanded arrived. A LOW sample
+    # count is not itself a failure -- on a jammed page most keystrokes coalesce behind a slow
+    # paint, and that is the finding, not a fault -- which is why this counts coverage rather than
+    # demanding a sample per character.
+    covered = (
+        seen is not None
+        and seen >= count
+        and accounted >= seen
+        and not got.get("pending_at_collect")
+    )
+    ok = grew is not None and grew >= count and covered
     return ActionResult(
         ran = True,
         expect_ok = ok,
@@ -161,7 +216,21 @@ def keystroke(ctx: ActionContext) -> ActionResult:
             "first_ms": got.get("first_ms"),
             "total_ms": round(elapsed_ms, 1),
         },
-        reason = None if ok else f"typed {count} characters but the composer value grew by {grew}",
+        reason = None
+        if ok
+        else (
+            f"typed {count} characters but the composer value grew by {grew}"
+            if grew is None or grew < count
+            else (
+                f"typed {count} characters and the reading covers {accounted} of {seen} that "
+                f"reached the instrument"
+                + (
+                    ", with one still unpainted at the drain"
+                    if got.get("pending_at_collect")
+                    else ""
+                )
+            )
+        ),
     )
 
 
