@@ -51,6 +51,7 @@ BOUND_NAMES = {
     "runActive",
     "modelLoading",
     "nonce",
+    "paused",
 }
 
 
@@ -144,6 +145,7 @@ export const world: any = {
   countedMessages: [] as any[][],
   countedModel: undefined as string | undefined,
   switchedToNewThread: 0,
+  clearedAttachments: 0,
   promptQueueStops: 0,
   // Set to { value: x } to stand in for a non-conforming 200 on the count path. Wrapped
   // so that { value: undefined } means "the reply omits input_tokens" rather than "no
@@ -357,6 +359,14 @@ const auiFixture: any = {
       world.switchedToNewThread += 1;
     },
   }),
+  // The switch clears a staged attachment before moving on, so the composer has to
+  // exist here: a missing one throws inside the effect and the recount below it
+  // never runs, which reads as a pricing bug rather than a missing stub.
+  composer: () => ({
+    clearAttachments: async () => {
+      world.clearedAttachments += 1;
+    },
+  }),
 };
 
 // ---- PRELUDE ENDS: verbatim studio source follows ----
@@ -407,11 +417,16 @@ __RECOUNT_EFFECTS__
 }
 
 const renderedDeps: any[] = [];
+// useRef, so it has to outlive a render.
+const switchedNonceRef: any = { current: null };
 
 export function renderNewChatSwitch(props: any): void {
   const aui = auiFixture;
   const isLoading = props.isLoading;
   const nonce = props.nonce;
+  // Compare keeps the shared provider mounted but stood down; the recount tests are
+  // all about the view the user is looking at, so it defaults to on screen.
+  const paused = props.paused ?? false;
   // The component reads these through useChatRuntimeStore selectors, so a
   // re-render sees whatever the store holds right now.
   const checkpoint = state.params.checkpoint;
@@ -422,6 +437,7 @@ export function renderNewChatSwitch(props: any): void {
     aui,
     isLoading,
     nonce,
+    paused,
     checkpoint,
     ggufContextLength,
     modelLoading,
@@ -674,6 +690,107 @@ def test_a_new_chat_prices_its_empty_prompt_against_a_resident_gguf(
     assert out["contextUsage"].get("completionTokens") == 0
     assert out["switched"] == 1, "hydration must not open a second thread"
     assert out["promptQueueStops"] == 1, "hydration must not re-stop the prompt queue"
+
+
+def test_a_backgrounded_new_chat_view_neither_opens_a_thread_nor_prices_one():
+    """#8908: compare keeps this provider mounted so a project run stays attached.
+
+    Mounted is not on screen. While it is paused the switch must leave the shared
+    single-chat state to the view the user is actually looking at -- no new thread,
+    no blanked active thread, no count -- and must do all of it once the pause lifts,
+    not skip it as already done.
+    """
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ renderNewChatSwitch, seed, snapshot, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            seed({{ activeThreadId: "thread-on-screen" }});
+
+            renderNewChatSwitch({{ isLoading: false, nonce: "n1", paused: true }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            const paused = {{
+              switched: world.switchedToNewThread,
+              counts: world.countedMessages.length,
+              activeThreadId: snapshot().activeThreadId,
+              contextUsage: snapshot().contextUsage,
+            }};
+
+            // Compare closes: the view is back on screen and owes both.
+            renderNewChatSwitch({{ isLoading: false, nonce: "n1", paused: false }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({{
+              paused,
+              switched: world.switchedToNewThread,
+              counts: world.countedMessages.length,
+              activeThreadId: snapshot().activeThreadId,
+              contextUsage: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    assert out["paused"]["switched"] == 0, "a paused switch must not open a thread"
+    assert out["paused"]["counts"] == 0, "a paused switch must not price a prompt"
+    assert (
+        out["paused"]["activeThreadId"] == "thread-on-screen"
+    ), "a paused switch must not blank the active thread the visible view is using"
+    assert out["paused"]["contextUsage"] is None
+    assert out["switched"] == 1, "releasing the pause must open the new thread"
+    assert out["activeThreadId"] is None
+    assert out["counts"] == 1, "releasing the pause must price the empty prompt once"
+    assert out["contextUsage"] is not None
+
+
+def test_a_staged_attachment_is_cleared_only_when_the_switch_moves_on():
+    """switchToNewThread() reuses the uninitialized new thread, so its composer is the
+    same one the last New Chat used. With one provider shared across the project and
+    single views, an unsent attachment would otherwise follow the user into the next
+    view and be filed with the chat created there. The first switch has nothing to
+    carry, so it must not clear a composer the user is still filling."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ renderNewChatSwitch, seed, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            const first = {{
+              switched: world.switchedToNewThread,
+              cleared: world.clearedAttachments,
+            }};
+
+            // A re-render that changes nothing must not clear anything either.
+            renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            const again = {{
+              switched: world.switchedToNewThread,
+              cleared: world.clearedAttachments,
+            }};
+
+            // New Chat, or the next project's landing: a different nonce.
+            renderNewChatSwitch({{ isLoading: false, nonce: "n2" }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({{
+              first,
+              again,
+              switched: world.switchedToNewThread,
+              cleared: world.clearedAttachments,
+            }}));
+            """
+        )
+    )
+    assert out["first"] == {
+        "switched": 1,
+        "cleared": 0,
+    }, "the first switch has no outgoing composer to clear"
+    assert out["again"] == {
+        "switched": 1,
+        "cleared": 0,
+    }, "a re-render at the same nonce must not switch or clear again"
+    assert out["switched"] == 2
+    assert out["cleared"] == 1, "moving to another nonce must not carry the attachment"
 
 
 @pytest.mark.parametrize(
