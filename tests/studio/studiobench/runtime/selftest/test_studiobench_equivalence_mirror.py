@@ -26,9 +26,7 @@ from studiobench.runtime.session import CellRunner  # noqa: E402
 
 
 def _unit(text):
-    return Unit(
-        index = 0, kind = "code", reasoning = "", content = text, chars = len(text), sha256 = "0" * 8
-    )
+    return Unit(index = 0, kind = "code", reasoning = "", content = text, chars = len(text), sha256 = "0" * 8)
 
 
 def _plan(follow_ups):

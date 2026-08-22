@@ -181,9 +181,9 @@ def paired(records: list[dict], shard: str = "") -> dict[str, list[tuple[float, 
     """
     cells = cell_metrics(records)
     sessions = cell_sessions(records)
-    by_key: dict[
-        tuple[str, str, str, str], dict[str, dict[str, float]]
-    ] = collections.defaultdict(dict)
+    by_key: dict[tuple[str, str, str, str], dict[str, dict[str, float]]] = collections.defaultdict(
+        dict
+    )
     for cid, vals in cells.items():
         rung = cid.split(".", 1)[0]
         by_key[(shard, rung, rep_of(cid), sessions.get(cid, ""))][arm_of(cid)] = vals
