@@ -5005,6 +5005,21 @@ async def _monitored_media_request(
     api_monitor.finish(monitor_id)
 
 
+def _external_transcript_preview(response: Response) -> str:
+    """The transcript out of a proxied STT response, for the monitor row's reply.
+
+    The provider echoes the requested response_format, so json carries the text under a
+    key and srt/vtt/text are already the text. A preview is never worth raising over.
+    """
+    try:
+        body = bytes(response.body or b"")
+        if "json" in (response.media_type or ""):
+            return str(json.loads(body.decode("utf-8", "replace")).get("text", ""))
+        return body.decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
 def _validate_native_gguf_companion(
     companion_path: str | None,
     gguf_path: str | None,
@@ -12309,17 +12324,27 @@ async def openai_audio_transcriptions(
     # memory before the shared size check. One byte past the limit is enough to reject it.
     raw = await file.read(_MAX_AUDIO_RAW_BYTES + 1)
     if isinstance(provider_id, str):
-        return await _external_stt_transcription(
-            provider_id = provider_id,
-            raw = raw,
-            filename = file.filename or "audio",
-            content_type = file.content_type or "application/octet-stream",
-            model = model,
-            language = language,
-            response_format = fmt,
-            encrypted_api_key = encrypted_api_key,
-            request = request,
-        )
+        # The proxied path is traffic through this server too, so it opens the same row the
+        # sidecar path does; without this a saved STT connection is still invisible.
+        async with _monitored_media_request(
+            request,
+            model = (model or "").strip(),
+            prompt = file.filename or "audio",
+            subject = current_subject,
+        ) as monitor_id:
+            response = await _external_stt_transcription(
+                provider_id = provider_id,
+                raw = raw,
+                filename = file.filename or "audio",
+                content_type = file.content_type or "application/octet-stream",
+                model = model,
+                language = language,
+                response_format = fmt,
+                encrypted_api_key = encrypted_api_key,
+                request = request,
+            )
+            api_monitor.set_reply(monitor_id, _external_transcript_preview(response))
+        return response
     # openai's whisper-1 placeholder means the default transcription model, not a sidecar id
     sidecar_model = None if model in (None, "", "whisper-1") else model
     async with _monitored_media_request(

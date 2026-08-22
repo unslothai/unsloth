@@ -546,3 +546,54 @@ def test_external_client_sends_openai_compatible_multipart(monkeypatch):
         "response_format": "json",
         "language": "en",
     }
+
+
+def test_external_transcription_opens_a_monitor_row(monkeypatch):
+    cli, sidecar_calls = _make_client(monkeypatch)
+    _install_external(monkeypatch)
+    api_monitor.clear()
+    resp = _post(
+        cli,
+        data = {"provider_id": "conn-1", "model": "Systran/faster-distil-whisper-large-v3"},
+        filename = "dictation.webm",
+    )
+    assert resp.status_code == 200
+    rows = api_monitor.snapshot(include_details = False)
+    assert len(rows) == 1
+    assert rows[0]["endpoint"] == "/v1/audio/transcriptions"
+    assert rows[0]["status"] == "completed"
+    assert rows[0]["model"] == "Systran/faster-distil-whisper-large-v3"
+    assert rows[0]["prompt_preview"] == "dictation.webm"
+    assert rows[0]["reply_preview"] == "remote words"
+
+
+def test_external_transcription_reply_preview_for_plain_text(monkeypatch):
+    cli, sidecar_calls = _make_client(monkeypatch)
+    _install_external(monkeypatch, media_type = "text/plain")
+    api_monitor.clear()
+    resp = _post(
+        cli,
+        data = {
+            "provider_id": "conn-1",
+            "model": "Systran/faster-distil-whisper-large-v3",
+            "response_format": "text",
+        },
+    )
+    assert resp.status_code == 200
+    assert api_monitor.snapshot(include_details = False)[0]["reply_preview"] == "remote words"
+
+
+def test_external_transcription_failure_records_an_error_row(monkeypatch):
+    # A disabled connection is rejected before the proxy call; the row still closes.
+    cli, sidecar_calls = _make_client(monkeypatch)
+    _install_external(monkeypatch, enabled = False)
+    api_monitor.clear()
+    resp = _post(
+        cli,
+        data = {"provider_id": "conn-1", "model": "Systran/faster-distil-whisper-large-v3"},
+    )
+    assert resp.status_code >= 400
+    rows = api_monitor.snapshot(include_details = False)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "error"
+    assert rows[0]["error"]
