@@ -2443,7 +2443,7 @@ def _normalize_mlx_studio_scheduler(value):
 
 def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
     """Resolve CLI paths and Unsloth local dataset uploads without importing the GPU trainer."""
-    from utils.paths import resolve_dataset_path
+    from utils.paths import dataset_files_in_dir, resolve_dataset_path
 
     all_files: list[str] = []
     for dataset_file in file_paths or []:
@@ -2457,24 +2457,8 @@ def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
         file_path_obj = Path(file_path)
 
         if file_path_obj.is_dir():
-            parquet_dir = (
-                file_path_obj / "parquet-files"
-                if (file_path_obj / "parquet-files").exists()
-                else file_path_obj
-            )
-            parquet_files = sorted(parquet_dir.glob("*.parquet"))
-            if parquet_files:
-                all_files.extend(str(p) for p in parquet_files)
-                continue
-
-            candidates: list[Path] = []
-            for ext in (".json", ".jsonl", ".csv", ".parquet"):
-                candidates.extend(sorted(file_path_obj.glob(f"*{ext}")))
-            if candidates:
-                all_files.extend(str(c) for c in candidates)
-                continue
-
-            raise ValueError(f"No supported data files in directory: {file_path_obj}")
+            all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
+            continue
 
         all_files.append(str(file_path_obj))
 
@@ -5174,6 +5158,8 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         local_datasets = config.get("local_datasets") or []
 
         def _load_local_embedding_dataset(dataset_paths: list[str]):
+            from utils.paths import dataset_files_in_dir
+
             all_files: list[str] = []
             for dataset_file in dataset_paths:
                 file_path = (
@@ -5186,22 +5172,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
                 if os.path.isdir(file_path):
                     file_path_obj = Path(file_path)
-                    parquet_dir = (
-                        file_path_obj / "parquet-files"
-                        if (file_path_obj / "parquet-files").exists()
-                        else file_path_obj
-                    )
-                    parquet_files = sorted(parquet_dir.glob("*.parquet"))
-                    if parquet_files:
-                        all_files.extend(str(p) for p in parquet_files)
-                        continue
-                    candidates: list[Path] = []
-                    for ext in (".json", ".jsonl", ".csv", ".parquet"):
-                        candidates.extend(sorted(file_path_obj.glob(f"*{ext}")))
-                    if candidates:
-                        all_files.extend(str(c) for c in candidates)
-                        continue
-                    raise ValueError(f"No supported data files in directory: {file_path_obj}")
+                    all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
                 else:
                     all_files.append(file_path)
 

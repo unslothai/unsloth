@@ -76,6 +76,7 @@ from utils.datasets.completion_masking import apply_completion_masking
 from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
 from utils.paths import (
+    dataset_files_in_dir,
     ensure_dir,
     resolve_dataset_path,
     resolve_output_dir,
@@ -1082,6 +1083,7 @@ class UnslothTrainer:
                     model_name = llm_path,
                     max_seq_length = max_seq_length,
                     dtype = torch.float32,  # Spark-TTS requires float32
+                    attn_implementation = "sdpa",  # Flash Attention cannot run float32
                     load_in_4bit = False,
                     device_map = device_map,
                     full_finetuning = full_finetuning,
@@ -2522,22 +2524,7 @@ class UnslothTrainer:
             file_path_obj = Path(file_path)
 
             if file_path_obj.is_dir():
-                parquet_dir = (
-                    file_path_obj / "parquet-files"
-                    if (file_path_obj / "parquet-files").exists()
-                    else file_path_obj
-                )
-                parquet_files = sorted(parquet_dir.glob("*.parquet"))
-                if parquet_files:
-                    all_files.extend(str(p) for p in parquet_files)
-                    continue
-                candidates: list[Path] = []
-                for ext in (".json", ".jsonl", ".csv", ".parquet"):
-                    candidates.extend(sorted(file_path_obj.glob(f"*{ext}")))
-                if candidates:
-                    all_files.extend(str(c) for c in candidates)
-                    continue
-                raise ValueError(f"No supported data files in directory: {file_path_obj}")
+                all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
             else:
                 all_files.append(str(file_path_obj))
         return all_files

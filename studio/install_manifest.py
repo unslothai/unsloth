@@ -77,6 +77,32 @@ def _sha256(path: Path) -> Optional[str]:
         return None
 
 
+def installed_requirements_root(root: Optional[Path] = None) -> Optional[Path]:
+    """The requirements the venv's *installed* package ships, if it has them.
+
+    The digests must describe the files `verify_install` will later read, and
+    that is always the installed package's copy: at verify time this module is
+    imported out of the venv, so `requirements_root()` resolves there, and
+    unsloth_cli/_studio_deps.py looks in the same place for a foreign venv.
+
+    The installer is a different tree. A desktop bundle carries its own
+    `studio/install_python_stack.py`, and its requirements are whatever they were
+    when that bundle was cut -- so recording the installer's digests makes every
+    install stale the moment a tracked requirement file changes upstream. That is
+    not hypothetical: v0.1.800-beta (2026-08-14) installed unsloth 2026.8.18,
+    #9148 had pinned openai in extras.txt in between, and every fresh Linux and
+    macOS desktop install came up `studio_install_requirements_changed` and paid
+    an immediate repair pass before it would run.
+    """
+    prefix = root or venv_root()
+    for pattern in ("lib/python*/site-packages", "Lib/site-packages"):
+        for site in sorted(prefix.glob(pattern)):
+            reqs = site / "studio" / "backend" / "requirements"
+            if reqs.is_dir():
+                return reqs
+    return None
+
+
 def requirement_digests(req_root: Optional[Path] = None) -> Dict[str, str]:
     """sha256 of every tracked requirement file that exists."""
     root = req_root or requirements_root()
@@ -139,7 +165,12 @@ def write_manifest(
         "platform": f"{sys.platform}-{platform.machine()}",
         "prefix": str(venv_root()),
         "steps_total": steps_total,
-        "requirement_files": requirement_digests(req_root),
+        # The venv's own copy wins over the caller's. `verify_install` reads the
+        # installed package's requirements, so recording the installer's would
+        # compare two different trees and call a finished install stale. An
+        # editable / source install has no copy under site-packages, and there
+        # the caller's root is already the tree both sides read.
+        "requirement_files": requirement_digests(installed_requirements_root(root) or req_root),
     }
     # Additive, so MANIFEST_SCHEMA does not move and every existing manifest stays
     # valid. Absent means "unknown", which is NOT False: only a manifest written by

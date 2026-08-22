@@ -195,11 +195,56 @@ export const ja = {
       chat: "チャット",
       connections: "接続",
       apiKeys: "API",
+      remoteLan: "リモートとLAN",
       about: "情報",
       voice: "音声",
       data: "データ",
       agents: "エージェント",
       debugging: "ログ",
+      keyboardShortcuts: "ショートカット",
+    },
+    keyboardShortcuts: {
+      title: "キーボードショートカット",
+      description:
+        "ショートカットを変更したり、消してブラウザや OS にそのキーを譲ったりできます。",
+      searchPlaceholder: "ショートカットを検索…",
+      noResults: "該当するショートカットはありません。",
+      unassigned: "未割り当て",
+      recording: "キーを押してください…",
+      recordingHint: "新しいキーの組み合わせを押すか、Esc でキャンセルします。",
+      needsModifier: "⌘、Ctrl、Alt のいずれかを加えてください。単独のキーでは入力を奪ってしまいます。",
+      conflict: "別のショートカットでも使われています",
+      conflictShadowed: "この組み合わせは別のショートカットのもので、そちらが実行されます",
+      edit: "ショートカットを変更",
+      clear: "ショートカットを削除",
+      reset: "既定値に戻す",
+      resetAll: "すべて既定値に戻す",
+      groups: {
+        general: "一般",
+        chat: "チャット",
+      },
+      actions: {
+        newChat: {
+          label: "新しいチャット",
+          description: "新しいチャットを開始します",
+        },
+        searchChats: {
+          label: "チャットを検索",
+          description: "チャット検索ダイアログを開きます",
+        },
+        toggleSidebar: {
+          label: "サイドバーの表示切り替え",
+          description: "サイドバーを表示または非表示にします",
+        },
+        openSettings: {
+          label: "設定を開く",
+          description: "設定ダイアログを開きます",
+        },
+        openKeyboardShortcuts: {
+          label: "キーボードショートカット",
+          description: "このショートカット一覧を開きます",
+        },
+      },
     },
     debugging: {
       logSection: "ログファイル",
@@ -237,6 +282,17 @@ export const ja = {
         engineModel: "ローカル文字起こし",
         engineModelDescription:
           "音声認識 (STT) モデルをローカルで実行し、オフラインでも動作します。ダウンロードして読み込むと、一定時間使わなければアンロードされます。",
+        engineCustom: "カスタムエンドポイント",
+        engineCustomDescription:
+          "接続に登録した OpenAI 互換 STT サーバーへ録音音声を送信します。",
+        connectionLabel: "接続",
+        connectionDescription:
+          "接続で OpenAI 互換サーバーと任意の API キーを追加してください。",
+        connectionPlaceholder: "接続を選択",
+        connectionEmpty: "利用可能な接続はありません",
+        customModelLabel: "モデル",
+        customModelDescription:
+          "/v1/audio/transcriptions に送信するモデル名です。",
         sttModelLabel: "音声認識モデル",
         sttModelDescription:
           "ローカルで実行する STT モデルを選択または検索します。",
@@ -296,6 +352,7 @@ export const ja = {
         languageLabel: "音声入力の言語",
         languageDescription: "認識する言語",
         languageAuto: "自動 (ブラウザーの言語)",
+        languageAutoDetect: "自動 (言語を検出)",
       },
       dictionary: {
         sectionTitle: "音声入力辞書",
@@ -362,6 +419,7 @@ export const ja = {
         modelLabel: "TTS モデル",
         modelDescription:
           "モデルセレクターから音声モデルを読み込んでください (例: Orpheus TTS)",
+        openAudioAction: "音声を開く",
         voiceLabel: "音声",
         voiceDescription: "このデバイスで最適な音声",
         speedLabel: "速度",
@@ -370,6 +428,7 @@ export const ja = {
         previewLabel: "音声を試聴",
         previewDescription: "短いサンプルを再生します",
         previewAction: "試聴",
+        preparingAction: "生成中…",
         previewFailed: "TTS のプレビューに失敗しました",
         stopAction: "停止",
         ttsLabel: "音声合成",
@@ -797,6 +856,24 @@ export const ja = {
         switchFailed: "llama.cpp のバックエンドを変更できませんでした。",
         switchInterrupted: "切り替えは完了する前に中断されました。",
         envLocked: "環境変数 UNSLOTH_LLAMA_CPP_BACKEND により {backend} に固定されています。この設定より優先されます。",
+        customPath: {
+          label: "カスタム llama.cpp フォルダー",
+          description: "独自の llama-server ビルドを使用します。",
+          hint: "llama-server を含む llama.cpp フォルダー、または build/bin 配下にあるビルドを選択します。カスタムランタイムは GGUF チャット、埋め込み、対応する音声モデルで使用されます。環境変数が引き続き優先されます。",
+          automatic: "自動（同梱）",
+          bundled: "Unsloth がインストールした llama.cpp ランタイムを使用します。",
+          active: "次回のモデル読み込みからカスタム llama-server が使用されます。",
+          environmentManaged: "環境変数 {variable} によって管理されています。",
+          missingBinary: "このフォルダーでは llama-server を利用できなくなりました。別のフォルダーを選ぶか、同梱ランタイムを使用してください。",
+          reloadRequired: "選択した llama-server を使用するにはモデルを再読み込みしてください。",
+          change: "変更",
+          saving: "保存中...",
+          useBundled: "同梱版を使用",
+          chooseTitle: "llama.cpp フォルダーを選択",
+          chooseAction: "このフォルダーを使用",
+          saved: "llama.cpp フォルダーを更新しました",
+          saveError: "llama.cpp フォルダーを更新できませんでした",
+        },
         backends: {
           auto: "自動",
           cpu: "CPU",
@@ -809,6 +886,7 @@ export const ja = {
           notInstalled: "管理対象の llama.cpp インストールが見つからないため、切り替えるバックエンドがありません。",
           localLink: "llama.cpp は自分でリンクしたローカルディレクトリのため、Unsloth は置き換えません。",
           sourceBuild: "この llama.cpp はソースからビルドされているため、ここではバックエンドを切り替えられません。",
+          customPath: "カスタム llama.cpp フォルダーが選択されています。そのビルドによって計算バックエンドが決まります。",
           unresolved: "利用可能なバックエンドを確認できませんでした。接続を確認して再試行してください。",
         },
         // 非表示: 設定検索用の追加キーワード。
@@ -1140,6 +1218,11 @@ export const ja = {
     connections: {
       title: "接続",
       description: "プロバイダーと外部接続を管理します。",
+    },
+    remoteLan: {
+      title: "リモートとLAN",
+      description:
+        "ローカルネットワークまたは一時的な公開URLを介して、他のデバイスからこのUnslothにアクセスできます。",
     },
     apiKeys: {
       title: "API",
