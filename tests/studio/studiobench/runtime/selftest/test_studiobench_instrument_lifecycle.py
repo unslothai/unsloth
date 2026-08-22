@@ -39,7 +39,12 @@ class _Ctx:
 class _Instrument:
     """Records which lifecycle hooks it was actually given."""
 
-    def __init__(self, name, *, raises=False):
+    def __init__(
+        self,
+        name,
+        *,
+        raises = False,
+    ):
         self.name = name
         self.raises = raises
         self.started = []
@@ -65,7 +70,7 @@ def _session(instruments):
 def test_an_instrument_after_a_failing_one_still_gets_its_hook():
     frames, heap, keys, rss = (
         _Instrument("frames"),
-        _Instrument("heap", raises=True),
+        _Instrument("heap", raises = True),
         _Instrument("input"),
         _Instrument("rss"),
     )
@@ -82,7 +87,7 @@ def test_an_instrument_after_a_failing_one_still_gets_its_hook():
 
 def test_the_failing_instrument_is_still_dropped():
     """The control: the fix must not cost `_safe` its whole reason for existing."""
-    heap, keys = _Instrument("heap", raises=True), _Instrument("input")
+    heap, keys = _Instrument("heap", raises = True), _Instrument("input")
     s = _session([heap, keys])
 
     s.each_instrument("start_cell", "c1")
@@ -93,8 +98,8 @@ def test_the_failing_instrument_is_still_dropped():
 
 def test_two_failures_in_a_row_drop_both_and_skip_neither():
     a, b, keys = (
-        _Instrument("heap", raises=True),
-        _Instrument("tracing", raises=True),
+        _Instrument("heap", raises = True),
+        _Instrument("tracing", raises = True),
         _Instrument("input"),
     )
     s = _session([a, b, keys])
