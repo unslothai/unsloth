@@ -99,7 +99,7 @@ def ensure_calibration_data() -> bool:
             try:
                 url = base + filename
                 dest = os.path.join(data_dir, filename)
-                with urllib.request.urlopen(url, timeout=timeout) as resp:
+                with urllib.request.urlopen(url, timeout = timeout) as resp:
                     data = resp.read()
                 with open(dest, "wb") as f:
                     f.write(data)

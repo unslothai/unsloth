@@ -67,12 +67,15 @@ def _version_at_least(have: str, want: str) -> bool:
     """Return True if version string ``have`` >= ``want`` (numeric, dotted)."""
     try:
         from packaging.version import Version
-
         return Version(str(have)) >= Version(str(want))
     except Exception:
+
         def _parts(v):
-            return [int("".join(c for c in ch if c.isdigit()) or 0)
-                    for ch in str(v).split("+")[0].split(".")]
+            return [
+                int("".join(c for c in ch if c.isdigit()) or 0)
+                for ch in str(v).split("+")[0].split(".")
+            ]
+
         a, b = _parts(have), _parts(want)
         n = max(len(a), len(b))
         a += [0] * (n - len(a))

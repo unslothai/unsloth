@@ -115,7 +115,7 @@ class TestLoraDequantizeDispatchContract(unittest.TestCase):
         n = 6
         qs = _make_quant_state(n, n)
         W = torch.zeros((n, 1), dtype = torch.float16)
-        w = self.dequantize(W, qs)        # [out, in]
+        w = self.dequantize(W, qs)  # [out, in]
         w_t = self.dequantize(W, qs, transpose = True)  # [in, out]
         self.assertEqual(tuple(w.shape), (n, n))
         self.assertEqual(tuple(w_t.shape), (n, n))

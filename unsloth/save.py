@@ -38,6 +38,7 @@ except ImportError:
 try:
     from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 except Exception:
+
     class Bnb_Linear4bit:  # noqa: N801 - matches the imported name
         pass
 
@@ -49,6 +50,7 @@ from peft.tuners.lora import Linear as Peft_Linear
 try:
     from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 except Exception:
+
     class Peft_Linear4bit:  # noqa: N801 - matches the imported name
         pass
 

@@ -248,22 +248,24 @@ class TestNonExl3QuantOptOut(unittest.TestCase):
     """Existing non-EXL3 quant configs / checkpoints / adapter repos opt out."""
 
     def _mkdir(self, files):
-        d = tempfile.mkdtemp(prefix="exl3_optout_")
+        d = tempfile.mkdtemp(prefix = "exl3_optout_")
         for name, content in files.items():
-            with open(os.path.join(d, name), "w", encoding="utf-8") as f:
+            with open(os.path.join(d, name), "w", encoding = "utf-8") as f:
                 json.dump(content, f)
         return d
 
     def _route(self, model_name, **kw):
-        with patch.object(EL, "is_exllama_available", lambda: True), patch.object(
-            EL, "_cuda_available", lambda: True
-        ), patch.dict(os.environ, {}, clear=False):
+        with (
+            patch.object(EL, "is_exllama_available", lambda: True),
+            patch.object(EL, "_cuda_available", lambda: True),
+            patch.dict(os.environ, {}, clear = False),
+        ):
             os.environ.pop("UNSLOTH_QUANT_BACKEND", None)
-            return EL.should_use_exl3(model_name, load_in_4bit=True, **kw)
+            return EL.should_use_exl3(model_name, load_in_4bit = True, **kw)
 
     def test_gptq_awq_hqq_configs_opt_out(self):
         for method in ("gptq", "awq", "hqq", "bitsandbytes"):
-            self.assertFalse(self._route("m", quantization_config={"quant_method": method}))
+            self.assertFalse(self._route("m", quantization_config = {"quant_method": method}))
 
     def test_existing_bnb_checkpoint_not_hijacked(self):
         d = self._mkdir({"config.json": {"quantization_config": {"quant_method": "bitsandbytes"}}})
