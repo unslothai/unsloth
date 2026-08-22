@@ -11,6 +11,7 @@ dropped, and an unset mode normalizes to the "auto" default for the loop gate
 (an unknown mode falls back to "ask").
 """
 
+import asyncio
 import os
 import uuid
 
@@ -1507,6 +1508,7 @@ def test_high_risk_dispatcher_non_terminal():
     # Always-safe tools never prompt; unknown tools fail closed (prompt).
     assert is_high_risk_tool_call("web_search", {"query": "hi"}) is False
     assert is_high_risk_tool_call("search_knowledge_base", {}) is False
+    assert is_high_risk_tool_call("create_skill", {}) is True
     assert is_high_risk_tool_call("mystery_tool", {}) is True
     # render_html only prompts when its canvas reaches the network.
     assert is_high_risk_tool_call("render_html", {"code": "<h1>hi</h1>"}) is False
@@ -2656,10 +2658,11 @@ def _drive(turns, decisions, **loop_kwargs):
     # A per-call session id so a leaked pending approval from another test can
     # never collide with this run's approval registry entries.
     session = f"{_SESSION}-{uuid.uuid4().hex}"
+    tools = loop_kwargs.pop("tools", _DEFAULT_TOOLS)
     gen = run_safetensors_tool_loop(
         single_turn = _multi_turn(turns),
         messages = [{"role": "user", "content": "hi"}],
-        tools = _DEFAULT_TOOLS,
+        tools = tools,
         execute_tool = exec_fn,
         session_id = session,
         **loop_kwargs,
@@ -2781,6 +2784,33 @@ def test_full_mode_never_gates_and_drops_sandbox():
     starts = _tool_starts(events)
     assert starts and starts[0]["awaiting_confirmation"] is False, _diag(events, exec_fn)
     assert exec_fn.disable_sandbox_seen == [True], _diag(events, exec_fn)
+
+
+@pytest.mark.parametrize(
+    ("permission_mode", "awaiting_confirmation", "disable_sandbox"),
+    [
+        ("ask", True, False),
+        ("auto", True, False),
+        ("off", False, False),
+        ("full", False, True),
+    ],
+)
+def test_create_skill_uses_the_standard_permission_gate(
+    permission_mode, awaiting_confirmation, disable_sandbox
+):
+    decisions = ["allow"] if awaiting_confirmation else []
+    events, exec_fn = _drive(
+        [_tool_call("create_skill", '{"name":"demo","skill_markdown":"text"}'), "final"],
+        decisions,
+        confirm_tool_calls = True,
+        permission_mode = permission_mode,
+        tools = [{"type": "function", "function": {"name": "create_skill"}}],
+    )
+
+    starts = _tool_starts(events)
+    assert starts[0]["awaiting_confirmation"] is awaiting_confirmation
+    assert exec_fn.calls == [("create_skill", {"name": "demo", "skill_markdown": "text"})]
+    assert exec_fn.disable_sandbox_seen == [disable_sandbox]
 
 
 def test_bypass_flag_implies_full_mode():
@@ -2983,6 +3013,10 @@ def test_confirm_gate_needs_stream():
         )
         is False
     )
+    assert (
+        _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = ["create_skill"]))
+        is True
+    )
     # web_search prompts once the model supplies a ``url``, so it needs a stream to deliver
     # that prompt, else the request is admitted then blocks out the decision timeout.
     assert (
@@ -3029,10 +3063,39 @@ def test_confirm_gate_needs_stream():
     )
     # ask prompts for every call, so even a safe-only selection needs streaming.
     assert _confirm_gate_needs_stream(req(permission_mode = "ask", enabled_tools = safe)) is True
+    assert (
+        _confirm_gate_needs_stream(req(permission_mode = "ask", enabled_tools = ["create_skill"]))
+        is True
+    )
     # off/full never prompt; unset non-streaming keeps the legacy run-without-gate.
     assert _confirm_gate_needs_stream(req(permission_mode = "off", enabled_tools = safe)) is False
     assert _confirm_gate_needs_stream(req(permission_mode = "full", enabled_tools = safe)) is False
     assert _confirm_gate_needs_stream(req(enabled_tools = safe, stream = False)) is False
+
+
+@pytest.mark.parametrize(
+    ("request_kwargs", "create_skill_available"),
+    [
+        ({"stream": False}, False),
+        ({"stream": True}, True),
+        ({"stream": False, "permission_mode": "off"}, True),
+        ({"stream": False, "permission_mode": "full"}, True),
+    ],
+)
+def test_legacy_nonstream_tool_selection_withholds_create_skill(
+    request_kwargs, create_skill_available
+):
+    from routes.inference import _select_request_tools
+
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hi"}],
+        enable_tools = True,
+        **request_kwargs,
+    )
+    selected = asyncio.run(_select_request_tools(payload, tools_on = True, mcp_allowed = False))
+
+    names = {tool["function"]["name"] for tool in selected}
+    assert ("create_skill" in names) is create_skill_available
 
 
 # --------------------------------------------------------------------------

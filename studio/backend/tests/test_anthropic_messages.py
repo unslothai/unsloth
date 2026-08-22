@@ -45,6 +45,7 @@ from routes.inference import (
     _anthropic_plain_non_streaming,
     _anthropic_tool_non_streaming,
     _monitor_anthropic_sse_line,
+    anthropic_count_tokens,
     anthropic_messages,
 )
 from state.tool_policy import reset_tool_policy, set_tool_policy
@@ -993,6 +994,17 @@ class TestAnthropicToolsToOpenAI:
         )
 
         assert [tool["function"]["name"] for tool in result] == ["web_search", "python"]
+
+    def test_server_tool_selection_keeps_create_skill(self):
+        create_skill = {"type": "function", "function": {"name": "create_skill"}}
+
+        result = _select_anthropic_server_tools(
+            [create_skill],
+            requested_studio_tools = set(),
+            enabled_tools = ["create_skill"],
+        )
+
+        assert result == [create_skill]
 
     def test_pydantic_model_input(self):
         tool = AnthropicTool(name = "test", description = "desc", input_schema = {"type": "object"})
@@ -2302,6 +2314,45 @@ class TestAnthropicMessagesToolRouting:
         assert entry["context_length"] == 2048
         assert monitor.active_count() == 0
 
+    def test_count_tokens_includes_selected_skill_schema_and_catalog(self, monkeypatch):
+        import core.inference.skills as skills_mod
+        import core.inference.tools as tools_mod
+
+        captured = {}
+
+        def count_tokens(_messages, _system, tools, **_kwargs):
+            captured["tools"] = tools
+            return 17
+
+        _mock_backend(monkeypatch, count_chat_tokens = count_tokens)
+        monkeypatch.setattr(
+            skills_mod,
+            "list_skills",
+            lambda: [
+                {
+                    "name": "review-helper",
+                    "description": "Review pull requests.",
+                    "enabled": True,
+                }
+            ],
+        )
+        read_skill = next(
+            tool for tool in tools_mod.ALL_TOOLS if tool["function"]["name"] == "read_skill"
+        )
+        monkeypatch.setattr(tools_mod, "ALL_TOOLS", [read_skill])
+        payload = _basic_payload(enable_tools = True, enabled_tools = ["read_skill"])
+
+        response = _drive(
+            anthropic_count_tokens(payload, request = self._Request(), current_subject = "t")
+        )
+
+        assert json.loads(response.body) == {"input_tokens": 17}
+        assert [tool["function"]["name"] for tool in captured["tools"]] == ["read_skill"]
+        assert (
+            "Enabled skills:\n- review-helper: Review pull requests."
+            in captured["tools"][0]["function"]["description"]
+        )
+
     @pytest.mark.parametrize("stream", [False, True])
     @pytest.mark.parametrize("with_tools", [False, True])
     def test_reasoning_only_output_is_not_duplicated(self, monkeypatch, stream, with_tools):
@@ -2755,6 +2806,18 @@ class TestAnthropicMessagesToolRouting:
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
             assert backend.calls[0][0] == "tools"
 
+        for extra in ({"permission_mode": "auto"}, {}):
+            backend = _mock_backend(monkeypatch)
+            payload = _basic_payload(
+                enable_tools = True,
+                enabled_tools = ["create_skill"],
+                **extra,
+            )
+            with pytest.raises(HTTPException) as exc:
+                _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+            assert exc.value.status_code == 400
+            assert backend.calls == []
+
         # Reading this conversation's own archive is as read-only as the other two, and
         # is_potentially_unsafe_tool_call says so, so selecting it must not trip the gate.
         # Adding the schema to ALL_TOOLS without adding the name here made the Anthropic
@@ -2804,6 +2867,18 @@ class TestAnthropicMessagesToolRouting:
             payload = _basic_payload(**extra)
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
             assert backend.calls[0][0] == "tools"
+
+    def test_ask_allows_an_empty_filtered_server_tool_selection(self, monkeypatch):
+        backend = _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            enable_tools = True,
+            enabled_tools = ["read_skill"],
+            permission_mode = "ask",
+        )
+
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+        assert backend.calls[0][0] == "plain"
 
     def test_the_process_tool_default_alone_is_not_a_server_tool_selection(self, monkeypatch):
         """`unsloth studio run` resolves the policy to on unless --disable-tools. Reading that

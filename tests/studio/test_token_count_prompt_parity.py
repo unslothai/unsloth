@@ -105,6 +105,7 @@ const state: any = {
 };
 
 const useChatRuntimeStore: any = { getState: () => state };
+const STUDIO_SKILL_TOOL_NAMES = ["create_skill", "read_skill"];
 
 export function seed(patch: any): void {
   Object.assign(state, patch);
