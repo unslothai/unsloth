@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 /**
@@ -325,7 +325,17 @@ test("token coalescing was measured at zero and is not carried as code", () => {
     );
   }
   assert.ok(
-    CODE_PLUGIN.includes("72550 -> merged 72550"),
+    CODE_PLUGIN.includes("537013 -> merged 537013"),
     "the null belongs in the file it was measured on, so nobody repeats it",
+  );
+  assert.ok(
+    CODE_PLUGIN.includes("scripts/coal-span-census.mjs"),
+    "and it must name a reproducer, so the number can be checked rather than trusted",
+  );
+  // The reproducer has to BE here. The first version of that comment pointed at a script that
+  // only existed on the machine the census was run on, which makes the citation worth nothing.
+  assert.ok(
+    existsSync(new URL("../scripts/coal-span-census.mjs", import.meta.url)),
+    "the cited reproducer must exist in this repository",
   );
 });

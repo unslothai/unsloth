@@ -157,21 +157,23 @@ const shiftLine = (line: TokenLine, offset: number): TokenLine =>
 // viewport state machine, nothing a reader could do to push a fence back into a
 // more expensive shape.
 //
-// It buys exactly nothing. Running the 100K rung's 99 real fences (180,902 code
-// characters) through this component's own Shiki configuration:
+// It buys exactly nothing. Running the whole studiobench corpus, 728 fences and
+// 1,335,897 code characters, through this component's own Shiki configuration:
 //
-//   dual        tokens 72550 -> merged 72550   0.0% fewer
-//   darkonly    tokens 72408 -> merged 72408   0.0% fewer
-//   lightonly   tokens 62098 -> merged 62098   0.0% fewer
+//   dual        tokens 537013 -> merged 537013   0.0% fewer
+//   darkonly    tokens 535981 -> merged 535981   0.0% fewer
 //
-// Not one adjacent pair in 72,550 shares a rendered style, in any theme mode.
-// Shiki already emits maximally coalesced tokens. No timing was run on it,
-// because a mechanism that removes no spans cannot make anything faster.
+// and the 100K rung's 99 assembled fences, 180,902 characters, 72550 -> 72550
+// dual, 72408 -> 72408 dark only, 62098 -> 62098 light only. Not one adjacent
+// pair in half a million shares a rendered style, in any theme mode. Shiki
+// already emits maximally coalesced tokens. No timing was run on it, because a
+// mechanism that removes no spans cannot make anything faster.
 //
 // The implementation is not kept. Carrying a runtime-flippable flag through the
 // fence cache for a measured-zero benefit only adds a way for a cached result
-// to disagree with the flag that produced it. `scripts/coal_span_census.mjs`
-// reproduces the census standalone.
+// to disagree with the flag that produced it. Run
+// `node scripts/coal-span-census.mjs <markdown>` from studio/frontend to check
+// the census on any thread rather than taking these numbers on trust.
 
 // Markdown reports a closing fence as body until it recognizes it, so that
 // line is all a fence can lose: up to three spaces, one run of backticks or
