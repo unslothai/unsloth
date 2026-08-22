@@ -21,6 +21,7 @@ from routes.providers import router as providers_router
 from routes.openai_codex_auth import router as openai_codex_auth_router
 from routes.mcp_servers import router as mcp_servers_router
 from routes.rag import router as rag_router
+from routes.notebooks import router as notebooks_router
 from routes.research_runs import router as research_runs_router
 from routes.youtube import router as youtube_router
 
@@ -34,6 +35,7 @@ __all__ = [
     "auth_router",
     "data_recipe_router",
     "export_router",
+    "notebooks_router",
     "training_history_router",
     "chat_history_router",
     "providers_router",

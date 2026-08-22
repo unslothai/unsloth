@@ -1,0 +1,55 @@
+{
+  "overrides": {
+    "Gemma4_(E2B)-Vision.ipynb": {
+      "title": "Gemma 4 (E2B) Vision",
+      "category": "vision",
+      "featured": true,
+      "studio_model": "unsloth/gemma-4-E2B-it"
+    },
+    "Qwen3_5_(4B)_Vision.ipynb": {
+      "title": "Qwen3.5 (4B) Vision",
+      "category": "vision",
+      "featured": true
+    },
+    "gpt-oss-(20B)-Fine-tuning.ipynb": {
+      "featured": true
+    },
+    "Qwen3_5_(4B)_Vision_GRPO.ipynb": {
+      "title": "Qwen3.5 (4B) Vision GRPO",
+      "category": "grpo",
+      "featured": true
+    },
+    "gpt-oss-(20B)-GRPO.ipynb": {
+      "title": "gpt-oss (20B) GRPO",
+      "category": "grpo",
+      "featured": true,
+      "studio_model": "unsloth/gpt-oss-20b"
+    },
+    "Qwen3_(4B)-GRPO.ipynb": {
+      "title": "Qwen3 (4B) GRPO",
+      "category": "grpo",
+      "featured": true,
+      "studio_model": "unsloth/Qwen3-4B-Instruct-2507"
+    },
+    "EmbeddingGemma_(300M).ipynb": {
+      "featured": true
+    },
+    "Ministral_3_VL_(3B)_Vision.ipynb": {
+      "featured": true
+    },
+    "Llama3.1_(8B)-Alpaca.ipynb": {
+      "featured": true
+    },
+    "Llama3.2_(1B_and_3B)-Conversational.ipynb": {
+      "featured": true
+    },
+    "Orpheus_(3B)-TTS.ipynb": {
+      "featured": true
+    },
+    "Deepseek_OCR_(3B).ipynb": {
+      "title": "DeepSeek OCR (3B)",
+      "category": "vision",
+      "featured": true
+    }
+  }
+}
