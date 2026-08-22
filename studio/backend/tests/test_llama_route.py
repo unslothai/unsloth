@@ -70,10 +70,15 @@ def test_status_response_exposes_source_build():
         "installed_at_utc": None,
         "age_days": None,
         "source_build": True,
-        "job": {"state": "idle", "reload_required": False},
+        "job": {
+            "job_id": "a" * 32,
+            "state": "idle",
+            "reload_required": False,
+        },
     }
     model = rl.LlamaUpdateStatusResponse(**payload)
     assert model.model_dump()["source_build"] is True
+    assert model.model_dump()["job"]["job_id"] == "a" * 32
     assert model.model_dump()["job"]["reload_required"] is False
     # Extra/unknown keys must not crash the response model.
     rl.LlamaUpdateStatusResponse(**{**payload, "unexpected": 1})
@@ -141,14 +146,38 @@ def test_status_handler_runs_off_event_loop(monkeypatch):
     assert seen["thread"] is not threading.main_thread()
 
 
+def test_job_status_handler_uses_lightweight_snapshot(monkeypatch):
+    seen = {}
+
+    def fake_job():
+        seen["thread"] = threading.current_thread()
+        return {
+            "job_id": "c" * 32,
+            "state": "running",
+            "operation": "update",
+            "progress": 0.5,
+        }
+
+    monkeypatch.setattr(rl, "get_update_job", fake_job)
+    out = asyncio.run(rl.llama_update_job_status(current_subject = "t"))
+    assert out.job_id == "c" * 32
+    assert out.progress == 0.5
+    assert seen["thread"] is threading.main_thread()
+
+
 def test_update_handler_runs_off_event_loop(monkeypatch):
     seen = {}
 
     def fake_start():
         seen["thread"] = threading.current_thread()
-        return {"started": True, "reason": None, "job": {"state": "running"}}
+        return {
+            "started": True,
+            "reason": None,
+            "job": {"job_id": "b" * 32, "state": "running"},
+        }
 
     monkeypatch.setattr(rl, "start_update", fake_start)
     out = asyncio.run(rl.llama_update(current_subject = "t"))
     assert out.started is True
+    assert out.job.job_id == "b" * 32
     assert seen["thread"] is not threading.main_thread()

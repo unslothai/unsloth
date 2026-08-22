@@ -372,6 +372,17 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     return _merge_whisper_status(status, force_refresh = force_refresh)
 
 
+def get_update_job() -> dict:
+    """Return only the shared updater job without running availability probes.
+
+    Active frontend polling needs progress and terminal state, not release or
+    host compatibility discovery. Keeping that path local prevents a slow
+    resolver from hiding a completed job behind its subprocess timeout.
+    """
+    with _job_lock:
+        return dict(_job)
+
+
 def _llama_only_status(
     *, force_refresh: bool = False, allow_source_probe_while_running: bool = False
 ) -> dict:
@@ -1046,6 +1057,7 @@ def _claim_operation(backend_request: Optional[str]) -> bool:
             return False
         _job.update(_flow.new_job())
         _job.update(
+            job_id = _flow.new_job_id(),
             state = _JOB_RUNNING,
             operation = "switch" if backend_request is not None else "update",
             requested_backend = backend_request,

@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -66,6 +67,7 @@ PHASE_ERROR = "error"
 PHASE_SKIPPED = "skipped"
 
 _IDLE_JOB_FIELDS = dict(
+    job_id = None,
     state = JOB_IDLE,
     operation = None,
     requested_backend = None,
@@ -84,6 +86,11 @@ _IDLE_JOB_FIELDS = dict(
 def new_job() -> dict:
     """A fresh idle job-state dict (one per component module)."""
     return dict(_IDLE_JOB_FIELDS)
+
+
+def new_job_id() -> str:
+    """Return an opaque identity that remains unique across same-second jobs."""
+    return uuid.uuid4().hex
 
 
 def reset_job(job: dict, job_lock: threading.Lock) -> None:

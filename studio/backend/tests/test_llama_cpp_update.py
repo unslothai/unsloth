@@ -136,6 +136,23 @@ def _clean_state(monkeypatch, tmp_path):
     upd._resolve_memo.clear()
 
 
+def test_job_snapshot_is_lightweight_and_detached(monkeypatch):
+    monkeypatch.setattr(
+        upd,
+        "get_update_status",
+        lambda **kwargs: pytest.fail("job polling must not run availability probes"),
+    )
+    with upd._job_lock:
+        upd._job.update(job_id = "job-1", state = upd._JOB_RUNNING, progress = 0.25)
+
+    snapshot = upd.get_update_job()
+
+    assert snapshot["job_id"] == "job-1"
+    assert snapshot["state"] == upd._JOB_RUNNING
+    snapshot["state"] = "mutated"
+    assert upd.get_update_job()["state"] == upd._JOB_RUNNING
+
+
 def _no_prebuilt(monkeypatch):
     """Stub the host prebuilt probe to 'none available' (no source-build offer)."""
     monkeypatch.setattr(upd, "_resolve_prebuilt_for_host", lambda *, force_refresh = False: None)
@@ -452,6 +469,7 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
 
     res = upd.start_update()
     assert res["started"] is True
+    assert len(res["job"]["job_id"]) == 32
     assert res["job"]["from_tag"] == "b9493"
     assert res["job"]["progress"] == 0.0
 
@@ -462,6 +480,7 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
             break
         time.sleep(0.05)
     assert job["state"] == "success", job
+    assert job["job_id"] == res["job"]["job_id"]
     assert job["to_tag"] == "b9518"
     assert job["reload_required"] is False
     assert "--install-dir" in captured["cmd"]

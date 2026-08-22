@@ -8,6 +8,8 @@ import {
   subscribeToLlamaJobStarted,
 } from "@/lib/llama-job-events";
 import {
+  boundedLlamaStatusRequest,
+  llamaStatusRequestIsStale,
   llamaUpdateAdoptsRunningJob,
   llamaUpdatePresentation,
 } from "@/lib/llama-job-lifecycle";
@@ -22,6 +24,7 @@ const SNOOZE_DELAY_MS = 15 * 60 * 1000; // ~15 minutes
 const JOB_POLL_INTERVAL_MS = 500;
 
 export interface LlamaUpdateJob {
+  job_id: string | null;
   state: "idle" | "running" | "success" | "error";
   operation: "update" | "switch" | null;
   requested_backend: "auto" | "cpu" | "cuda" | "rocm" | "vulkan" | null;
@@ -53,6 +56,7 @@ export interface LlamaUpdateStatus {
 function parseJob(value: unknown): LlamaUpdateJob {
   const job = (value ?? {}) as Record<string, unknown>;
   return {
+    job_id: typeof job.job_id === "string" ? job.job_id : null,
     state: (job.state as LlamaUpdateJob["state"]) ?? "idle",
     operation:
       job.operation === "update" || job.operation === "switch"
@@ -76,6 +80,21 @@ function parseJob(value: unknown): LlamaUpdateJob {
     started_at: typeof job.started_at === "string" ? job.started_at : null,
     finished_at: typeof job.finished_at === "string" ? job.finished_at : null,
   };
+}
+
+function llamaJobMarker(job: LlamaUpdateJob): string {
+  // Fall back for backends predating job_id.
+  return (
+    job.job_id ??
+    JSON.stringify([
+      job.operation,
+      job.requested_backend,
+      job.started_at,
+      job.finished_at,
+      job.from_tag,
+      job.to_tag,
+    ])
+  );
 }
 
 function parseStatus(value: unknown): LlamaUpdateStatus | null {
@@ -133,21 +152,25 @@ function setHandledReloadAt(finishedAt: string | null): void {
 
 async function fetchStatus(
   forceRefresh = false,
+  signal?: AbortSignal,
 ): Promise<LlamaUpdateStatus | null> {
   if (!getAuthToken()) return null;
-  try {
-    const res = await authFetch(
-      `/api/llama/update-status${forceRefresh ? "?force_refresh=true" : ""}`,
-    );
-    if (!res.ok) return null;
-    return parseStatus(await res.json());
-  } catch {
-    return null;
-  }
+  const res = await authFetch(
+    `/api/llama/update-status${forceRefresh ? "?force_refresh=true" : ""}`,
+    { signal },
+  );
+  if (!res.ok) return null;
+  return parseStatus(await res.json());
 }
 
-// Manual checks bypass the 24h release cache; job polls read local state.
-const recheckStatus = () => fetchStatus(true);
+async function fetchJobStatus(
+  signal?: AbortSignal,
+): Promise<LlamaUpdateJob | null> {
+  if (!getAuthToken()) return null;
+  const res = await authFetch("/api/llama/update-job-status", { signal });
+  if (!res.ok) return null;
+  return parseJob(await res.json());
+}
 
 interface UseLlamaUpdateCheckOptions {
   enabled?: boolean;
@@ -168,6 +191,16 @@ export interface LlamaApplyResult {
   error?: string | null;
 }
 
+interface SequencedLlamaUpdateStatus {
+  requestId: number;
+  status: LlamaUpdateStatus | null;
+}
+
+interface SequencedLlamaUpdateJob {
+  requestId: number;
+  job: LlamaUpdateJob | null;
+}
+
 /** Tracks llama.cpp update visibility and apply progress. */
 export function useLlamaUpdateCheck({
   enabled = true,
@@ -178,6 +211,15 @@ export function useLlamaUpdateCheck({
   const [applying, setApplying] = useState(false);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const snoozeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Serialize job polls within the active generation.
+  const pollInFlightGeneration = useRef<number | null>(null);
+  const pollGeneration = useRef(0);
+  const terminalRecheckJob = useRef<string | null>(null);
+  const statusRequestSequence = useRef(0);
+  const latestAppliedStatusRequest = useRef(0);
+  const surfaceIfAvailableRef = useRef<
+    ((next: SequencedLlamaUpdateStatus) => void) | null
+  >(null);
   // Read through a ref so startJobPoll stays stable (apply/surfaceIfAvailable
   // depend on it) while still calling the latest callback.
   const onReloadRequiredRef = useRef(onReloadRequired);
@@ -196,6 +238,24 @@ export function useLlamaUpdateCheck({
       clearInterval(pollTimer.current);
       pollTimer.current = null;
     }
+  }, []);
+
+  // Sequence all reads so older responses cannot overwrite newer ones.
+  const requestStatus = useCallback(
+    async (forceRefresh = false): Promise<SequencedLlamaUpdateStatus> => {
+      const requestId = ++statusRequestSequence.current;
+      const status = await fetchStatus(forceRefresh).catch(() => null);
+      return { requestId, status };
+    },
+    [],
+  );
+
+  const requestJob = useCallback(async (): Promise<SequencedLlamaUpdateJob> => {
+    const requestId = ++statusRequestSequence.current;
+    const job = await boundedLlamaStatusRequest((signal) =>
+      fetchJobStatus(signal),
+    );
+    return { requestId, job };
   }, []);
 
   // Shared by the poll path (this tab watched the job run), the surface path
@@ -227,48 +287,114 @@ export function useLlamaUpdateCheck({
   const startJobPoll = useCallback(
     (onDone?: (result: LlamaApplyResult) => void) => {
       clearPollTimer();
+      const generation = ++pollGeneration.current;
+      terminalRecheckJob.current = null;
       pollTimer.current = setInterval(async () => {
-        const s = await fetchStatus();
-        if (!s) return;
-        setStatus(s);
-        const presentation = llamaUpdatePresentation(s.update_available, s.job);
-        setApplying(presentation.applying);
-        setVisible(presentation.visible);
-        if (presentation.running) return;
-        clearPollTimer();
-        if (s.job.state === "success") {
-          void refreshHardwareInfo();
-          // The update unloads the running model server-side, so the chat
-          // runtime still points at a model that now 400s on send. Let the
-          // consumer drop the selector to "select model" instead of waiting for
-          // a page reload. Fires here (not just from apply's onDone) so a
-          // cross-tab update mirrored through this poll is covered too.
-          notifyReloadIfNeeded(s.job);
-          onDone?.({
-            ok: true,
-            tag: s.job.to_tag,
-            reloadRequired: s.job.reload_required,
-          });
-        } else if (s.job.state === "error") {
-          // Keep the banner visible so retry is available. A partial chained
-          // update can still have unloaded the llama server before failing.
-          notifyReloadIfNeeded(s.job);
-          onDone?.({ ok: false, error: s.job.error });
-        } else {
-          onDone?.({ ok: false, error: "update did not complete" });
+        if (pollInFlightGeneration.current === generation) return;
+        pollInFlightGeneration.current = generation;
+        try {
+          const next = await requestJob();
+          if (
+            !next.job ||
+            generation !== pollGeneration.current ||
+            llamaStatusRequestIsStale(
+              latestAppliedStatusRequest.current,
+              next.requestId,
+            )
+          ) {
+            return;
+          }
+          latestAppliedStatusRequest.current = next.requestId;
+          const job = next.job;
+          setStatus((current) => (current ? { ...current, job } : current));
+          if (job.state === "running") {
+            const switching = job.operation === "switch";
+            setApplying(!switching);
+            setVisible(!switching);
+            terminalRecheckJob.current = null;
+            return;
+          }
+          setApplying(false);
+          if (job.state === "error") setVisible(true);
+          const terminalJob = llamaJobMarker(job);
+          const terminalAlreadyHandled =
+            terminalRecheckJob.current === terminalJob;
+          terminalRecheckJob.current = terminalJob;
+          if (!terminalAlreadyHandled && job.state === "success") {
+            void refreshHardwareInfo();
+            // Resync chat after this or another tab unloads the active model.
+            notifyReloadIfNeeded(job);
+            onDone?.({
+              ok: true,
+              tag: job.to_tag,
+              reloadRequired: job.reload_required,
+            });
+          } else if (!terminalAlreadyHandled && job.state === "error") {
+            // Keep retry visible if a partial update unloaded the server.
+            notifyReloadIfNeeded(job);
+            onDone?.({ ok: false, error: job.error });
+          } else if (!terminalAlreadyHandled) {
+            onDone?.({ ok: false, error: "update did not complete" });
+          }
+          // Recompute availability; keep polling if reconciliation fails.
+          const reconciled = await requestStatus();
+          const surfaceReconciled = surfaceIfAvailableRef.current;
+          if (
+            !reconciled.status ||
+            !surfaceReconciled ||
+            generation !== pollGeneration.current ||
+            llamaStatusRequestIsStale(
+              latestAppliedStatusRequest.current,
+              reconciled.requestId,
+            )
+          ) {
+            return;
+          }
+          const reconciledPresentation = llamaUpdatePresentation(
+            reconciled.status.update_available,
+            reconciled.status.job,
+          );
+          surfaceReconciled(reconciled);
+          if (generation !== pollGeneration.current) return;
+          if (reconciledPresentation.running) {
+            terminalRecheckJob.current = null;
+            return;
+          }
+          if (
+            llamaJobMarker(reconciled.status.job) !== terminalRecheckJob.current
+          ) {
+            // Let the next tick process a different terminal job.
+            return;
+          }
+          pollGeneration.current += 1;
+          clearPollTimer();
+        } finally {
+          if (pollInFlightGeneration.current === generation) {
+            pollInFlightGeneration.current = null;
+          }
         }
       }, JOB_POLL_INTERVAL_MS);
     },
-    [clearPollTimer, notifyReloadIfNeeded],
+    [clearPollTimer, notifyReloadIfNeeded, requestJob, requestStatus],
   );
 
   const surfaceIfAvailable = useCallback(
-    (next: LlamaUpdateStatus | null) => {
-      if (!next) return;
-      setStatus(next);
+    (next: SequencedLlamaUpdateStatus) => {
+      if (
+        !next.status ||
+        llamaStatusRequestIsStale(
+          latestAppliedStatusRequest.current,
+          next.requestId,
+        )
+      ) {
+        return;
+      }
+      latestAppliedStatusRequest.current = next.requestId;
+      const status = next.status;
+      setStatus(status);
       const presentation = llamaUpdatePresentation(
-        next.update_available,
-        next.job,
+        status.update_available,
+        status.job,
       );
       setApplying(presentation.applying);
       setVisible(presentation.visible);
@@ -280,10 +406,14 @@ export function useLlamaUpdateCheck({
       // a tab that missed the running window entirely (mounted, or only checks
       // hourly and misses both the running and just-finished moments) still
       // needs to resync here, not just from the poll path above.
-      notifyReloadIfNeeded(next.job);
+      notifyReloadIfNeeded(status.job);
     },
     [startJobPoll, notifyReloadIfNeeded],
   );
+
+  useEffect(() => {
+    surfaceIfAvailableRef.current = surfaceIfAvailable;
+  }, [surfaceIfAvailable]);
 
   useEffect(() => {
     if (!enabled) {
@@ -293,13 +423,13 @@ export function useLlamaUpdateCheck({
     let canceled = false;
 
     const firstTimer = setTimeout(() => {
-      recheckStatus().then((s) => {
+      requestStatus(true).then((s) => {
         if (!canceled) surfaceIfAvailable(s);
       });
     }, FIRST_CHECK_DELAY_MS);
 
     const reminder = setInterval(() => {
-      recheckStatus().then((s) => {
+      requestStatus(true).then((s) => {
         if (!canceled) surfaceIfAvailable(s);
       });
     }, REMINDER_INTERVAL_MS);
@@ -314,7 +444,7 @@ export function useLlamaUpdateCheck({
         snoozeTimer.current = null;
       }
     };
-  }, [enabled, surfaceIfAvailable, clearPollTimer]);
+  }, [enabled, surfaceIfAvailable, clearPollTimer, requestStatus]);
 
   // Cross-tab nudge: a tab that only checks hourly would otherwise stay
   // pointed at a server-unloaded model for up to an hour after a DIFFERENT
@@ -329,19 +459,19 @@ export function useLlamaUpdateCheck({
         event.newValue &&
         event.newValue !== reloadNotifiedForRef.current
       ) {
-        recheckStatus().then(surfaceIfAvailable);
+        requestStatus(true).then(surfaceIfAvailable);
       }
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  }, [enabled, surfaceIfAvailable]);
+  }, [enabled, surfaceIfAvailable, requestStatus]);
 
   useEffect(() => {
     if (!enabled) return;
     return subscribeToLlamaJobStarted(() => {
-      fetchStatus().then(surfaceIfAvailable);
+      requestStatus().then(surfaceIfAvailable);
     });
-  }, [enabled, surfaceIfAvailable]);
+  }, [enabled, surfaceIfAvailable, requestStatus]);
 
   const dismiss = useCallback(() => {
     setVisible(false);
@@ -352,9 +482,9 @@ export function useLlamaUpdateCheck({
     if (snoozeTimer.current) clearTimeout(snoozeTimer.current);
     snoozeTimer.current = setTimeout(() => {
       snoozeTimer.current = null;
-      recheckStatus().then(surfaceIfAvailable);
+      requestStatus(true).then(surfaceIfAvailable);
     }, SNOOZE_DELAY_MS);
-  }, [surfaceIfAvailable]);
+  }, [surfaceIfAvailable, requestStatus]);
 
   const apply = useCallback(async (): Promise<LlamaApplyResult> => {
     if (applying) return { ok: false, error: "already running" };
