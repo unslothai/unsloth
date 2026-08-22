@@ -199,11 +199,13 @@ LOCALES = FRONTEND / "src/i18n/locales"
 # server* a user points this app at, which genuinely is an Unsloth Studio. Every other
 # entry -- window chrome, About labels, shutdown text -- is this app's own display name
 # and stays swept, so a translation cannot quietly restore the prohibited branding.
-LOCALE_REMOTE_SERVER_KEYS = frozenset({
-    "settings.agents.remote.title",
-    "settings.agents.remote.description",
-    "settings.general.modelAutoSwitch.apiOnlyDescription",
-})
+LOCALE_REMOTE_SERVER_KEYS = frozenset(
+    {
+        "settings.agents.remote.title",
+        "settings.agents.remote.description",
+        "settings.general.modelAutoSwitch.apiOnlyDescription",
+    }
+)
 
 LOCALE_KEY = re.compile(r"^(\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:")
 
@@ -227,7 +229,7 @@ def locale_entries(text: str) -> list[tuple[str, str]]:
             while stack and stack[-1][0] >= indent:
                 stack.pop()
             path = ".".join([held for _, held in stack] + [name])
-            buf = line[match.end():]
+            buf = line[match.end() :]
             if line.rstrip().endswith(("{", "[")):
                 stack.append((indent, name))
                 path, buf = None, ""
@@ -306,14 +308,18 @@ def test_the_branding_sweep_still_covers_the_frontend() -> None:
     for path in locales:
         entries = dict(locale_entries(read(path)))
         assert len(entries) > 500, f"{path.name} parsed to {len(entries)} entries"
-        for key in ("shell.product", "settings.about.shutDownStudio",
-                    "settings.about.studioVersion", "settings.about.license.studioLabel"):
+        for key in (
+            "shell.product",
+            "settings.about.shutDownStudio",
+            "settings.about.studioVersion",
+            "settings.about.license.studioLabel",
+        ):
             assert key in entries, f"{path.name} lost {key}, so the sweep no longer sees it"
 
     # The allowlist is prose-level, not a blanket: it spares three of the ~1,500 entries a
     # catalog holds, and every exempt key has to be one the catalogs actually define.
     english = dict(locale_entries(read(LOCALES / "en.ts")))
-    assert LOCALE_REMOTE_SERVER_KEYS <= set(english), (
-        f"exempt keys missing from en.ts: {sorted(LOCALE_REMOTE_SERVER_KEYS - set(english))}"
-    )
+    assert LOCALE_REMOTE_SERVER_KEYS <= set(
+        english
+    ), f"exempt keys missing from en.ts: {sorted(LOCALE_REMOTE_SERVER_KEYS - set(english))}"
     assert len(LOCALE_REMOTE_SERVER_KEYS) < len(english) / 100
