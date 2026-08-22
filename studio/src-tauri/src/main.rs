@@ -1702,9 +1702,7 @@ fn set_tray_server_status(app: tauri::AppHandle, status: String) {
 
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let open = MenuItemBuilder::with_id("open", "Open Unsloth").build(app)?;
-    let toggle = MenuItemBuilder::with_id("toggle", "Starting\u{2026}")
-        .enabled(false)
-        .build(app)?;
+    let toggle = MenuItemBuilder::with_id("toggle", "Start/Stop Server").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
     let menu = MenuBuilder::new(app)
         .items(&[&open, &toggle, &quit])
