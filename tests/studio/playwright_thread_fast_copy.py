@@ -340,6 +340,11 @@ def check(engine: str, candidate: str) -> Tally:
           const a = document.getElementById('pa').firstChild;
           const b = document.getElementById('pb').firstChild;
           window.getSelection().setBaseAndExtent(b, b.length, a, 0);
+          // The engine probe caches its answer on the window, and `set_content` does not replace
+          // the window, so by here it has already run against some earlier construct. Clearing it
+          // makes THIS selection the one the probe takes away and rebuilds -- which is a second
+          // place the direction can be lost, and the only one a user meets on their first copy.
+          delete window.__sbFastCopyMapped;
         }""")
         backward = page.evaluate("() => window.__fastCopy()")
         still = page.evaluate("""() => {

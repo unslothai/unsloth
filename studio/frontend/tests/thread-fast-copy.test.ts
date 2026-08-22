@@ -890,19 +890,37 @@ function fakeSelection(
       sync();
       return ranges[index];
     },
+    // ANCHOR AND FOCUS MOVE WITH THE RANGES, as they do in a real engine. A stub that left
+    // them where the test set them would report the ORIGINAL direction no matter what the code
+    // did to the selection, so a restore that flips a backward selection forward would pass.
     removeAllRanges() {
       sync();
       ranges = [];
       probing = false;
+      anchorNode = null;
+      anchorOffset = 0;
+      focusNode = null;
+      focusOffset = 0;
     },
     addRange(range: FakeRange) {
       sync();
       ranges.push(range);
+      // Per the spec: the anchor is the range's START and the focus its END, which is exactly
+      // why rebuilding this way can only ever produce a forward selection.
+      anchorNode = range.startContainer;
+      anchorOffset = range.startOffset;
+      focusNode = range.endContainer;
+      focusOffset = range.endOffset;
     },
     selectAllChildren() {
       sync();
       ranges = [];
       probing = true;
+      // Whatever the engine puts here, it is the probe's node and not the user's selection.
+      anchorNode = null;
+      anchorOffset = 0;
+      focusNode = null;
+      focusOffset = 0;
     },
     toString: () => {
       sync();
@@ -1048,11 +1066,27 @@ function fakeView(options: {
   probeText?: string;
   root?: FakeElement;
   selectionIds?: number[];
+  /** The user's own selection, when a test cares which way round it is. */
+  anchorNode?: FakeNode;
+  anchorOffset?: number;
+  focusNode?: FakeNode;
+  focusOffset?: number;
+  bounds?: {
+    startContainer?: FakeNode | null;
+    startOffset?: number;
+    endContainer?: FakeNode | null;
+    endOffset?: number;
+  };
 }) {
   const root = options.root ?? el("div", { children: ["thread text"] });
-  const { selection, currentIds } = fakeSelection(root, {
+  const { selection, currentIds, calls } = fakeSelection(root, {
     ids: options.selectionIds ?? [1],
     probeText: options.probeText ?? "a",
+    anchorNode: options.anchorNode,
+    anchorOffset: options.anchorOffset,
+    focusNode: options.focusNode,
+    focusOffset: options.focusOffset,
+    bounds: options.bounds,
   });
   const body = el("body");
   // A counter rather than a throwing getter: engineClipboardIsMapped swallows everything it
@@ -1077,6 +1111,7 @@ function fakeView(options: {
     root,
     selection,
     currentIds,
+    calls,
     body,
     documentReads: () => documentReads,
   };
@@ -1130,6 +1165,79 @@ test("the probe's answer is cached on the view", () => {
   );
 });
 
+test("the probe puts a backward selection back backward", () => {
+  // The probe takes the selection away and rebuilds it, so it has the serialiser's problem and
+  // needs the serialiser's answer. Rebuilding from the saved ranges alone always produces a
+  // forward selection, so a user who dragged right to left had their highlight silently reversed
+  // by the first copy in the document, and their next Shift+Arrow moved the opposite end.
+  //
+  // Asserted on the anchor/focus PAIR, not on the copied text, which is identical either way.
+  const first = text("first paragraph");
+  const second = text("second paragraph");
+  const root = el("div", {
+    children: [
+      el("p", { children: [first] }),
+      el("p", { children: [second] }),
+    ],
+  });
+  const world = fakeView({
+    userAgent: CHROMIUM_UA,
+    probeText: "a",
+    root,
+    anchorNode: second,
+    anchorOffset: 16,
+    focusNode: first,
+    focusOffset: 0,
+    bounds: {
+      startContainer: first,
+      startOffset: 0,
+      endContainer: second,
+      endOffset: 16,
+    },
+  });
+
+  engineClipboardIsMapped(asWindow(world.view));
+
+  assert.equal(world.selection.anchorNode, second);
+  assert.equal(world.selection.anchorOffset, 16);
+  assert.equal(world.selection.focusNode, first);
+  assert.equal(world.selection.focusOffset, 0);
+});
+
+test("the probe leaves a forward selection forward", () => {
+  // The other half of the rule, so the fix cannot be "always swap".
+  const first = text("first paragraph");
+  const second = text("second paragraph");
+  const root = el("div", {
+    children: [
+      el("p", { children: [first] }),
+      el("p", { children: [second] }),
+    ],
+  });
+  const world = fakeView({
+    userAgent: CHROMIUM_UA,
+    probeText: "a",
+    root,
+    anchorNode: first,
+    anchorOffset: 0,
+    focusNode: second,
+    focusOffset: 16,
+    bounds: {
+      startContainer: first,
+      startOffset: 0,
+      endContainer: second,
+      endOffset: 16,
+    },
+  });
+
+  engineClipboardIsMapped(asWindow(world.view));
+
+  assert.equal(world.selection.anchorNode, first);
+  assert.equal(world.selection.anchorOffset, 0);
+  assert.equal(world.selection.focusNode, second);
+  assert.equal(world.selection.focusOffset, 16);
+});
+
 test("the probe puts the user's selection back", () => {
   const world = fakeView({
     userAgent: CHROMIUM_UA,
@@ -1140,6 +1248,10 @@ test("the probe puts the user's selection back", () => {
   engineClipboardIsMapped(asWindow(world.view));
 
   assert.deepEqual(world.currentIds(), [7, 8]);
+  // And by `addRange`, not `setBaseAndExtent`, which takes ONE anchor/focus pair and so cannot
+  // express two ranges. Firefox is the only engine that produces them, and this fast path does
+  // not run there, but dropping a range would be worse than losing its direction.
+  assert.deepEqual(world.calls.setBaseAndExtent, []);
 });
 
 // --- the serialiser ----------------------------------------------------------------------------

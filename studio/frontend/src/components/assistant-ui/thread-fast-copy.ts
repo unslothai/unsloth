@@ -173,6 +173,13 @@ function scopeOf(
  * A hidden paragraph is selected and `toString()` asked whether it appends one. Chromium says
  * "a"; WebKit says "a\n\n". Cached, because the answer cannot change within a document, and run
  * with the user's own selection saved and restored around it.
+ *
+ * The restore goes through `restoreSelection`, the serialiser's, and for the same reason: this
+ * path also takes the selection away and rebuilds it, so rebuilding from ranges alone would flip
+ * a selection the user dragged upwards. The text copied would still be right and their highlight
+ * would silently reverse, which is the more annoying half of the bug -- the next Shift+Arrow then
+ * moves the far end. Reached on a plain drag right-to-left, and on the FIRST copy of a document,
+ * since the answer is cached afterwards.
  */
 export function engineClipboardIsMapped(
   view: Window & typeof globalThis,
@@ -201,10 +208,11 @@ export function engineClipboardIsMapped(
         for (let index = 0; index < selection.rangeCount; index += 1) {
           saved.push(selection.getRangeAt(index).cloneRange());
         }
+        // Before the probe replaces it, because that is the only moment the direction exists.
+        const direction = captureDirection(selection);
         selection.selectAllChildren(probe);
         mapped = selection.toString() === "a";
-        selection.removeAllRanges();
-        for (const range of saved) selection.addRange(range);
+        restoreSelection(selection, saved, direction);
       }
       probe.remove();
     }
