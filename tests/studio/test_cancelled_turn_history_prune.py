@@ -212,9 +212,7 @@ def test_a_stop_during_reasoning_is_abandoned_on_both_serialisations():
         ' status: { type: "incomplete" } }'
     )
     for include_reasoning in ("true", "false"):
-        out = _run(
-            _script(f"[{_user('first')}, {thinking}, {_user('second')}]", include_reasoning)
-        )
+        out = _run(_script(f"[{_user('first')}, {thinking}, {_user('second')}]", include_reasoning))
         assert out["kept"] == ["user"], f"includeReasoningContent={include_reasoning}"
         assert out["keptText"] == ["second"]
 
@@ -235,7 +233,7 @@ def test_refusals_are_still_pruned_with_their_prompt():
     """The behaviour the prune already had; the abandoned-turn rule shares its loop now."""
     refused = (
         '{ role: "assistant", content: [{ type: "text", text: "I cannot help with that." }],'
-        ' metadata: { custom: { anthropicRefusal: true } } }'
+        " metadata: { custom: { anthropicRefusal: true } } }"
     )
     out = _run(_script(f"[{_user('first')}, {refused}, {_user('second')}]"))
     assert out["kept"] == ["user"]
@@ -244,9 +242,7 @@ def test_refusals_are_still_pruned_with_their_prompt():
 
 def test_back_to_back_stops_collapse_to_the_live_prompt():
     """Stop twice and both abandoned pairs go, rather than one prune uncovering the next."""
-    history = (
-        f"[{_user('first')}, {CANCELLED}, {_user('second')}, {CANCELLED}, {_user('third')}]"
-    )
+    history = f"[{_user('first')}, {CANCELLED}, {_user('second')}, {CANCELLED}, {_user('third')}]"
     out = _run(_script(history))
     assert out["kept"] == ["user"]
     assert out["keptText"] == ["third"]
