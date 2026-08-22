@@ -420,9 +420,16 @@ def test_the_coexistence_estimate_charges_the_requested_checkpoints():
         in inspect.signature(inference_routes._estimate_gguf_required_gb).parameters
     )
     assert "ctx_checkpoints" in inspect.signature(inference_routes._estimate_gguf_kv_gb).parameters
+    assert "ctx_checkpoints" in inspect.signature(inference_routes._gguf_runtime_bytes).parameters
     source = inspect.getsource(inference_routes._guard_chat_load_against_training)
     assert 'ctx_checkpoints = getattr(request, "ctx_checkpoints", None)' in source
-    kv_source = inspect.getsource(inference_routes._estimate_gguf_kv_gb)
+    # _estimate_gguf_kv_gb is the guard's summing wrapper; the arithmetic lives in
+    # _gguf_runtime_bytes, which the memory-estimate endpoint reads itemized. Both
+    # links are asserted, so dropping the field in either place still fails here.
+    assert "ctx_checkpoints = ctx_checkpoints" in inspect.getsource(
+        inference_routes._estimate_gguf_kv_gb
+    )
+    kv_source = inspect.getsource(inference_routes._gguf_runtime_bytes)
     # priced on what the launch runs, so a typed --ctx-checkpoints wins here too
     assert "resolve_ctx_checkpoints(llama_extra_args, ctx_checkpoints)" in kv_source
 

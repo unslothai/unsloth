@@ -703,6 +703,115 @@ class ValidateModelResponse(BaseModel):
     )
 
 
+class EstimateMemoryRequest(BaseModel):
+    """Settings a Load-Model panel is about to submit, priced before it submits them.
+
+    Every field mirrors the load request it previews, so the estimate answers for the
+    command that would actually run. Header-only: nothing is read, touched or loaded.
+    """
+
+    model_path: str = Field(..., description = "Model identifier or local path")
+    gguf_variant: Optional[str] = Field(
+        None, description = "GGUF quantization to price (e.g. Q4_K_M); the picked variant."
+    )
+    hf_token: Optional[str] = Field(None, description = "Token for gated repositories")
+    native_path_lease: Optional[str] = Field(
+        None,
+        description = "Lease for a picked / drag-dropped .gguf, as /validate takes one.",
+    )
+    n_ctx: Optional[int] = Field(
+        None,
+        ge = 0,
+        description = "Context length to price (--ctx-size). 0 or omitted prices the "
+        "model's native context, which is what an Auto load asks for.",
+    )
+    cache_type_kv: Optional[str] = Field(
+        None,
+        description = "KV cache dtype to price. The biggest lever on this estimate at "
+        "long contexts, so omitting it prices a load nobody asked for.",
+    )
+    n_parallel: Optional[int] = Field(
+        None,
+        ge = PARALLEL_MIN,
+        le = PARALLEL_MAX,
+        description = "Serving slots (--parallel); scales both the cache and the buffers.",
+    )
+    n_batch: Optional[int] = Field(None, ge = BATCH_MIN, le = BATCH_MAX)
+    n_ubatch: Optional[int] = Field(None, ge = BATCH_MIN, le = BATCH_MAX)
+    ctx_checkpoints: Optional[int] = Field(None, ge = 0, le = CTX_CHECKPOINTS_MAX)
+    speculative_type: Optional[str] = Field(
+        None, description = "Speculative mode; decides which drafter's weights are charged."
+    )
+    tensor_parallel: bool = Field(False, description = "Whether tensor mode is requested")
+    disable_vision: bool = Field(
+        False, description = "Vision off, so an image projector's bytes are not charged."
+    )
+    gpu_memory_mode: Optional[str] = Field(
+        None, description = "'auto' or 'manual'; manual splits the weights by gpu_layers."
+    )
+    gpu_layers: Optional[int] = Field(
+        None, ge = 0, description = "Layers pinned to the GPU under manual placement."
+    )
+    n_cpu_moe: Optional[int] = Field(
+        None,
+        ge = 0,
+        description = "Expert layers held on the CPU (--n-cpu-moe). Not priced; echoed "
+        "back so the panel can say the GPU figure reads high.",
+    )
+    llama_extra_args: Optional[List[str]] = Field(
+        None,
+        description = "Pass-through llama-server flags. Read, not just carried: -c, "
+        "-nkvo, --swa-full and the cache-type flags all move this estimate.",
+    )
+
+    _no_booleans = field_validator("n_batch", "n_ubatch", "ctx_checkpoints", "n_ctx", mode = "before")(
+        LoadRequest._no_booleans.__func__
+    )
+
+
+class EstimateMemoryResponse(BaseModel):
+    """Itemized memory an inference load would occupy, or why it could not be sized."""
+
+    available: bool = Field(
+        ..., description = "Whether a breakdown could be produced at all."
+    )
+    reason: Optional[str] = Field(
+        None,
+        description = "Cause when available is false: 'not_gguf', 'not_downloaded', "
+        "'unsupported_source' or 'unsizable'.",
+    )
+    weights_bytes: int = Field(0, description = "Resident model files: weights, projector, drafter")
+    kv_bytes: int = Field(0, description = "KV cache at the requested context and slots")
+    compute_bytes: int = Field(0, description = "Compute / graph buffers, flat plus context-linear")
+    total_bytes: int = Field(0, description = "Weights + KV + compute, wherever they land")
+    gpu_bytes: int = Field(
+        0, description = "The share of total_bytes that lands on the GPU under this offload"
+    )
+    kv_estimable: bool = Field(
+        True,
+        description = "False when the GGUF header lacks the attention dims needed to "
+        "size the cache. kv_bytes is then 0 meaning UNKNOWN and total_bytes is a lower "
+        "bound; rendering it as a confident total is what this flag exists to prevent.",
+    )
+    kv_on_gpu: bool = Field(
+        True, description = "False under --no-kv-offload, which moves the cache to host RAM"
+    )
+    n_ctx: int = Field(0, description = "Context length the estimate actually priced")
+    cache_type_kv: Optional[str] = Field(
+        None, description = "KV dtype the estimate priced, after flags and fallbacks resolve"
+    )
+    n_parallel: int = Field(1, description = "Slots the estimate priced, after the launch clamps")
+    layer_count: Optional[int] = Field(None, description = "GGUF block_count, when readable")
+    gpu_layers: Optional[int] = Field(
+        None, description = "Layers charged to the GPU; null under automatic placement"
+    )
+    moe_offload_unmodelled: bool = Field(
+        False,
+        description = "True when --n-cpu-moe is set: experts move per-tensor, not "
+        "per-block, so the GPU/host split above ignores it and reads high.",
+    )
+
+
 class InstallLatestTransformersRequest(BaseModel):
     """Consented request to install the latest transformers release into a sidecar."""
 

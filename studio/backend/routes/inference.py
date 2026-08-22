@@ -2439,6 +2439,8 @@ from models.inference import (
     CompletionUsage,
     ValidateModelRequest,
     ValidateModelResponse,
+    EstimateMemoryRequest,
+    EstimateMemoryResponse,
     TransformersUpgradeInfo,
     TransformersUpgradeCheckRequest,
     TransformersUpgradeCheckResponse,
@@ -6996,7 +6998,30 @@ def _cached_repo_gguf_bytes(repo: str, hint: str = "") -> int:
 _ASSUMED_MAX_VOCAB = 262144
 
 
-def _estimate_gguf_kv_gb(
+class _GgufRuntimeBytes(NamedTuple):
+    """The context-dependent half of a GGUF's footprint, itemized.
+
+    ``_estimate_gguf_kv_gb`` sums this into the single number the training guard
+    needs; the Load-Model estimate shows the items separately.
+    """
+
+    kv_bytes: int
+    compute_bytes: int
+    # False when the header lacks the dims _can_estimate_kv() needs: kv_bytes is
+    # then "unknown", not "none". The guard treats them alike; the UI must not.
+    kv_estimable: bool
+    # What was actually priced, after the ctx override and the slot/cache clamps.
+    n_ctx: int
+    cache_type_kv: Optional[str]
+    n_parallel: int
+    # GGUF block_count, carried out of the header walk this already paid for.
+    layer_count: Optional[int] = None
+
+
+_GGUF_RUNTIME_UNKNOWN = _GgufRuntimeBytes(0, 0, False, 0, None, 1)
+
+
+def _gguf_runtime_bytes(
     gguf_path: str,
     max_seq_length: int,
     llama_extra_args: Optional[list[str]] = None,
@@ -7008,14 +7033,15 @@ def _estimate_gguf_kv_gb(
     ctx_checkpoints: Optional[int] = None,
     n_devices: int = 1,
     is_diffusion: bool = False,
-) -> float:
-    """KV-cache plus compute-buffer VRAM (GB) at the larger of max_seq_length and
+) -> _GgufRuntimeBytes:
+    """KV-cache and compute-buffer VRAM (bytes) at the larger of max_seq_length and
     any `--ctx-size`/`-c` override, over n_parallel slots at the effective
     micro-batch, using the effective cache settings and managed launcher
     defaults. Compute buffers scale with the split the loader budgets: tensor
     mode reserves them on every device, a multi-GPU layer split replicates the
     context-linear term; ``is_diffusion`` skips them, since the diffusion
-    runner ignores the llama-server batch flags. 0 if metadata is unreadable."""
+    runner ignores the llama-server batch flags. All-zero and not estimable if
+    metadata is unreadable."""
     try:
         from core.inference.llama_server_args import (
             parse_ctx_override,
@@ -7025,14 +7051,14 @@ def _estimate_gguf_kv_gb(
         probe = LlamaCppBackend()
         probe._read_gguf_metadata(gguf_path)
         if not probe._can_estimate_kv():
-            return 0.0
+            return _GGUF_RUNTIME_UNKNOWN
         try:
             ctx_override = parse_ctx_override(llama_extra_args) or 0
         except Exception:
             ctx_override = 0  # malformed extras are rejected upstream; fall back
         ctx = max(max_seq_length or 0, ctx_override) or (probe._context_length or 0)
         if ctx <= 0:
-            return 0.0
+            return _GGUF_RUNTIME_UNKNOWN
         slots = max(1, n_parallel or 1)
         planned_cache_types = _planned_main_cache_types(
             cache_type_kv,
@@ -7105,9 +7131,16 @@ def _estimate_gguf_kv_gb(
             ctx_checkpoints = resolve_ctx_checkpoints(llama_extra_args, ctx_checkpoints),
             flash_attn = False,
         )
+        _resolved = dict(
+            kv_estimable = True,
+            n_ctx = ctx,
+            cache_type_kv = cache_type_for_budget,
+            n_parallel = slots,
+            layer_count = getattr(probe, "_n_layers", None) or None,
+        )
         # the load reserves ubatch-scaled compute buffers, so they count against training too
         if is_diffusion:
-            return kv / (1024**3)
+            return _GgufRuntimeBytes(kv_bytes = int(kv), compute_bytes = 0, **_resolved)
         devices = max(1, int(n_devices))
 
         def _flat_buffer(per_device_tensor: bool) -> int:
@@ -7174,10 +7207,44 @@ def _estimate_gguf_kv_gb(
             # reserves buffers. Floor at the loader's flat reserve, charged once: it is an
             # invented number, and scaling an invention per device has no basis.
             compute = int(getattr(probe, "_TENSOR_PARALLEL_BUFFER_RESERVE_MIB", 0)) * 1024**2
-        return (kv + compute) / (1024**3)
+        return _GgufRuntimeBytes(kv_bytes = int(kv), compute_bytes = int(compute), **_resolved)
     except Exception as e:
         logger.warning(f"Could not size GGUF KV cache for training guard: {e}")
-        return 0.0
+        return _GGUF_RUNTIME_UNKNOWN
+
+
+def _estimate_gguf_kv_gb(
+    gguf_path: str,
+    max_seq_length: int,
+    llama_extra_args: Optional[list[str]] = None,
+    n_parallel: int = 1,
+    cache_type_kv: Optional[str] = None,
+    tensor_parallel: bool = False,
+    n_batch: Optional[int] = None,
+    n_ubatch: Optional[int] = None,
+    ctx_checkpoints: Optional[int] = None,
+    n_devices: int = 1,
+    is_diffusion: bool = False,
+) -> float:
+    """``_gguf_runtime_bytes`` summed into GB, for the training guard.
+
+    An unreadable header is 0 GB, as it always was: a cache the guard cannot size
+    must not become a refusal on its own.
+    """
+    runtime = _gguf_runtime_bytes(
+        gguf_path,
+        max_seq_length,
+        llama_extra_args,
+        n_parallel,
+        cache_type_kv,
+        tensor_parallel,
+        n_batch,
+        n_ubatch,
+        ctx_checkpoints = ctx_checkpoints,
+        n_devices = n_devices,
+        is_diffusion = is_diffusion,
+    )
+    return (runtime.kv_bytes + runtime.compute_bytes) / (1024**3)
 
 
 def _remote_gguf_compute_reserve_gb(
@@ -7623,6 +7690,253 @@ def _estimate_gguf_required_gb(
     except Exception as e:
         logger.warning(f"Could not size GGUF model for training guard: {e}")
         return None
+
+
+class _GgufMemoryBreakdown(NamedTuple):
+    """What a prospective GGUF load would occupy, itemized for the Load-Model panel.
+
+    ``weights_bytes`` is the files that become resident (weights plus whichever
+    projector and drafter this launch opens) and is the one term that does not move
+    with the settings above it.
+    """
+
+    weights_bytes: int
+    kv_bytes: int
+    compute_bytes: int
+    # Weights + KV + compute, wherever they sit: GPU, host RAM, or a unified pool.
+    total_bytes: int
+    # The part that lands on the GPU under the requested offload.
+    gpu_bytes: int
+    kv_estimable: bool
+    kv_on_gpu: bool
+    n_ctx: int
+    cache_type_kv: Optional[str]
+    n_parallel: int
+    layer_count: Optional[int]
+    gpu_layers: Optional[int]
+
+
+def _gguf_offloaded_layer_fraction(
+    gpu_memory_mode: Optional[str],
+    gpu_layers: Optional[int],
+    layer_count: Optional[int],
+) -> float:
+    """Share of the weights the requested offload keeps on the GPU, in [0, 1].
+
+    Auto is 1.0: it asks llama.cpp to fit the whole model, so the useful number to
+    show is what a successful load costs.
+
+    Manual scales by ``--gpu-layers`` over ``block_count + 1``, the ceiling the
+    slider uses (the extra one is the output layer). ``--n-cpu-moe`` is NOT modelled
+    -- it moves individual expert tensors, not whole blocks -- so a manual MoE
+    offload reads high here, which the panel says out loud.
+    """
+    if gpu_memory_mode != "manual" or gpu_layers is None or gpu_layers < 0:
+        return 1.0
+    if not layer_count or layer_count <= 0:
+        # No dims to scale against; 1.0 keeps it consistent with Auto.
+        return 1.0
+    return max(0.0, min(1.0, gpu_layers / float(layer_count + 1)))
+
+
+def _estimate_token_fingerprint(hf_token: Optional[str]) -> str:
+    """Short non-reversible stand-in for an HF token, for cache keys only.
+
+    A token is a credential; it does not belong in a dict key verbatim.
+    """
+    if not hf_token:
+        return ""
+    return _hashlib.sha256(hf_token.encode("utf-8")).hexdigest()[:16]
+
+
+# Resident-file totals, keyed by what decides WHICH files a launch opens. Not by
+# context or cache type: dragging the slider must not re-list a repository.
+_ESTIMATE_FILES_TTL_SECONDS = 30.0
+_ESTIMATE_FILES_CACHE_MAX = 16
+_estimate_files_cache: "dict[tuple, tuple[float, Optional[float]]]" = {}
+
+
+def _localized_estimate_config(config: ModelConfig, gguf_path: str) -> ModelConfig:
+    """A copy of ``config`` whose GGUF paths name the files already on this disk.
+
+    ``from_identifier`` leaves ``gguf_file`` unset for anything it resolved as a
+    repository, even when the weights are in the HF cache. ``_estimate_gguf_required_gb``
+    branches on that field, so a cached repo was priced from a ``paths-info`` call:
+    a network round trip behind a slider, and nothing at all offline.
+
+    Copied, never mutated: the original lives in a TTL cache.
+
+    Returned unchanged when ``gguf_file`` already names a real file (local-folder and
+    native-pick configs), which keeps a native grant's directory boundary intact.
+    """
+    main = getattr(config, "gguf_file", None)
+    if main and Path(main).is_file():
+        return config
+    from utils.models.model_config import (
+        detect_dflash_file,
+        detect_dspark_file,
+        detect_mmproj_file,
+        detect_mtp_file,
+    )
+
+    local = replace(config, gguf_file = gguf_path)
+    # Companions sit beside the weight, or one level up in the quant-subdir layout.
+    search_root = str(Path(gguf_path).parent)
+    try:
+        if getattr(local, "is_vision", False) and not local.gguf_mmproj_file:
+            local.gguf_mmproj_file = detect_mmproj_file(gguf_path, search_root)
+        if not local.gguf_mtp_file:
+            local.gguf_mtp_file = detect_mtp_file(gguf_path, search_root)
+        if not local.gguf_dspark_file:
+            local.gguf_dspark_file = detect_dspark_file(gguf_path, search_root)
+        if not local.gguf_dflash_file:
+            local.gguf_dflash_file = detect_dflash_file(gguf_path, search_root)
+    except Exception as exc:
+        # An uncounted sidecar is a smaller error than no estimate at all.
+        logger.debug("Companion detection failed for the memory estimate: %s", exc)
+    return local
+
+
+def _gguf_resident_file_gb(
+    config: ModelConfig,
+    *,
+    hf_token: Optional[str] = None,
+    llama_extra_args: Optional[list[str]] = None,
+    speculative_type: Optional[str] = None,
+    disable_vision: bool = False,
+) -> Optional[float]:
+    """GB of files a launch would make resident: weights, projector, drafter.
+
+    Derived from ``_estimate_gguf_required_gb`` by subtracting the context term it
+    adds, rather than re-deriving the files. Which files a launch opens is two
+    hundred lines of resolution in that function; a second copy would drift from it.
+
+    It has two arms that add different terms, so subtract the matching one: a local
+    ``gguf_file`` gets ``_estimate_gguf_kv_gb``, a repository gets
+    ``_remote_gguf_compute_reserve_gb``. Both are exact, since each arm returns files
+    plus that term. Branching on the same condition is what keeps them paired.
+
+    Zero-context throughout, so the same value is added and taken away. Nothing
+    about the files depends on it.
+    """
+    main = getattr(config, "gguf_file", None)
+    local_arm = bool(main and Path(main).is_file())
+    key = (
+        getattr(config, "identifier", None),
+        getattr(config, "gguf_variant", None),
+        str(main or ""),
+        bool(disable_vision),
+        speculative_type or "",
+        tuple(llama_extra_args or ()),
+        # A gated repo resolves per token, so entries must not cross subjects.
+        _estimate_token_fingerprint(hf_token),
+    )
+    now = time.monotonic()
+    hit = _estimate_files_cache.get(key)
+    if hit is not None and now - hit[0] < _ESTIMATE_FILES_TTL_SECONDS:
+        return hit[1]
+
+    priced = dict(
+        llama_extra_args = llama_extra_args,
+        speculative_type = speculative_type,
+        disable_vision = disable_vision,
+        hf_token = hf_token,
+    )
+    required_gb = _estimate_gguf_required_gb(config, max_seq_length = 0, **priced)
+    if required_gb is None:
+        return None  # deliberately not cached: usually a download still in flight
+    if local_arm:
+        context_term_gb = _estimate_gguf_kv_gb(str(main), 0, llama_extra_args)
+    else:
+        context_term_gb = _remote_gguf_compute_reserve_gb(
+            llama_extra_args = llama_extra_args,
+            max_seq_length = 0,
+        )
+    files_gb = max(0.0, required_gb - context_term_gb)
+    if len(_estimate_files_cache) >= _ESTIMATE_FILES_CACHE_MAX:
+        oldest = min(_estimate_files_cache, key = lambda k: _estimate_files_cache[k][0])
+        _estimate_files_cache.pop(oldest, None)
+    _estimate_files_cache[key] = (now, files_gb)
+    return files_gb
+
+
+def _gguf_memory_breakdown(
+    config: ModelConfig,
+    gguf_path: str,
+    *,
+    hf_token: Optional[str] = None,
+    n_ctx: int = 0,
+    llama_extra_args: Optional[list[str]] = None,
+    speculative_type: Optional[str] = None,
+    n_parallel: int = 1,
+    cache_type_kv: Optional[str] = None,
+    tensor_parallel: bool = False,
+    n_batch: Optional[int] = None,
+    n_ubatch: Optional[int] = None,
+    ctx_checkpoints: Optional[int] = None,
+    n_devices: int = 1,
+    is_diffusion: bool = False,
+    disable_vision: bool = False,
+    gpu_memory_mode: Optional[str] = None,
+    gpu_layers: Optional[int] = None,
+) -> Optional[_GgufMemoryBreakdown]:
+    """Itemize what loading this GGUF at ``n_ctx`` would cost. None if nothing sizes.
+
+    Two terms, both from functions the training guard already uses: the files, cached
+    since they do not move while the panel is open, and the KV cache plus compute
+    buffers, re-derived every call because that is the half that does.
+    """
+    runtime = _gguf_runtime_bytes(
+        gguf_path,
+        n_ctx,
+        llama_extra_args = llama_extra_args,
+        n_parallel = n_parallel,
+        cache_type_kv = cache_type_kv,
+        tensor_parallel = tensor_parallel,
+        n_batch = n_batch,
+        n_ubatch = n_ubatch,
+        ctx_checkpoints = ctx_checkpoints,
+        n_devices = n_devices,
+        is_diffusion = is_diffusion,
+    )
+    files_gb = _gguf_resident_file_gb(
+        config,
+        hf_token = hf_token,
+        llama_extra_args = llama_extra_args,
+        speculative_type = speculative_type,
+        disable_vision = disable_vision,
+    )
+    if files_gb is None:
+        return None
+    runtime_bytes = runtime.kv_bytes + runtime.compute_bytes
+    weights_bytes = int(round(files_gb * (1024**3)))
+
+    layer_count = runtime.layer_count
+    gpu_fraction = _gguf_offloaded_layer_fraction(gpu_memory_mode, gpu_layers, layer_count)
+    gpu_weights = int(weights_bytes * gpu_fraction)
+    from core.inference.llama_cpp import _kv_offload_from_args
+
+    # -nkvo puts the cache in host RAM. At a long context that is most of the
+    # footprint, so ignoring it would report VRAM pressure the load never creates.
+    kv_on_gpu = _kv_offload_from_args(llama_extra_args) and gpu_fraction > 0.0
+    gpu_bytes = gpu_weights + (runtime.kv_bytes if kv_on_gpu else 0)
+    if gpu_fraction > 0.0:
+        # Compute buffers land on the devices running layers.
+        gpu_bytes += runtime.compute_bytes
+    return _GgufMemoryBreakdown(
+        weights_bytes = weights_bytes,
+        kv_bytes = runtime.kv_bytes,
+        compute_bytes = runtime.compute_bytes,
+        total_bytes = weights_bytes + runtime_bytes,
+        gpu_bytes = gpu_bytes,
+        kv_estimable = runtime.kv_estimable,
+        kv_on_gpu = kv_on_gpu,
+        n_ctx = runtime.n_ctx,
+        cache_type_kv = runtime.cache_type_kv,
+        n_parallel = runtime.n_parallel,
+        layer_count = layer_count,
+        gpu_layers = gpu_layers if gpu_memory_mode == "manual" else None,
+    )
 
 
 def _guard_device_count(
@@ -11064,6 +11378,157 @@ async def install_latest_transformers_route(
             return InstallLatestTransformersResponse(**result, model_unloaded = True)
         raise HTTPException(status_code = 400, detail = result["message"])
     return InstallLatestTransformersResponse(**result, model_unloaded = unloaded_chat["v"])
+
+
+# A resolved ModelConfig, kept briefly so dragging the context slider re-runs only the
+# arithmetic. from_identifier builds the detection registry and can reach Hugging Face;
+# at one call per slider tick that is the whole cost of this endpoint. Short TTL because
+# the thing it caches goes stale for a real reason -- a download finishing mid-panel --
+# and 30s is under the time it takes to notice.
+_ESTIMATE_CONFIG_TTL_SECONDS = 30.0
+_ESTIMATE_CONFIG_CACHE_MAX = 8
+_estimate_config_cache: "dict[tuple, tuple[float, Any]]" = {}
+
+
+def _cached_estimate_config(
+    model_identifier: str,
+    gguf_variant: Optional[str],
+    hf_token: Optional[str],
+    native_grant_backed: bool,
+):
+    """``ModelConfig.from_identifier`` behind a small TTL cache. None if it fails.
+
+    A failure is not cached: the common one is a download still in flight, and the
+    next tick of the slider is when that answer changes.
+    """
+    key = (
+        model_identifier,
+        gguf_variant,
+        native_grant_backed,
+        # Same reason as the file cache: a gated repo resolves per token.
+        _estimate_token_fingerprint(hf_token),
+    )
+    now = time.monotonic()
+    hit = _estimate_config_cache.get(key)
+    if hit is not None and now - hit[0] < _ESTIMATE_CONFIG_TTL_SECONDS:
+        return hit[1]
+    from core.inference.llama_cpp import _hf_offline_if_unreachable_for
+
+    try:
+        with _hf_offline_if_unreachable_for(model_identifier):
+            config = ModelConfig.from_identifier(
+                model_id = model_identifier,
+                hf_token = hf_token,
+                gguf_variant = gguf_variant,
+                drafter_accept = _native_drafter_accept if native_grant_backed else None,
+            )
+    except Exception as exc:
+        logger.debug("Memory estimate could not resolve %s: %s", model_identifier, exc)
+        return None
+    if config is None:
+        return None
+    if len(_estimate_config_cache) >= _ESTIMATE_CONFIG_CACHE_MAX:
+        # Oldest first; the panel works one model at a time, so this is housekeeping.
+        oldest = min(_estimate_config_cache, key = lambda k: _estimate_config_cache[k][0])
+        _estimate_config_cache.pop(oldest, None)
+    _estimate_config_cache[key] = (now, config)
+    return config
+
+
+@router.post("/estimate-memory", response_model = EstimateMemoryResponse)
+async def estimate_memory(
+    request: EstimateMemoryRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Price a prospective GGUF load from its header, before anything is allocated.
+
+    Reads only GGUF metadata and file sizes, so it is safe to call on every settings
+    change: no model is loaded, no device is touched, nothing is downloaded. A model
+    that is not on this disk answers ``not_downloaded``.
+
+    The arithmetic is the loader's own KV, compute-buffer and companion sizing, which
+    is the point. Weights times a constant is fine until the KV cache stops being a
+    rounding error: at 262k tokens the cache can outweigh the weights, and it swings
+    fourfold on the cache dtype alone. Where the header cannot supply the dims this
+    answers ``kv_estimable = false`` rather than quoting an assumed total.
+    """
+    if is_ollama_manifest_ref(request.model_path):
+        # Resolving one writes a .gguf link to disk; that belongs to the load path.
+        return EstimateMemoryResponse(available = False, reason = "unsupported_source")
+    try:
+        model_identifier, _model_log_label, native_grant_backed = (
+            _resolve_model_identifier_for_request(request, operation = "estimate-memory")
+        )
+    except HTTPException:
+        # An expired lease is not worth a red error under a settings panel.
+        return EstimateMemoryResponse(available = False, reason = "unsupported_source")
+
+    def _estimate() -> EstimateMemoryResponse:
+        config = _cached_estimate_config(
+            model_identifier,
+            request.gguf_variant,
+            request.hf_token,
+            native_grant_backed,
+        )
+        if config is None:
+            return EstimateMemoryResponse(available = False, reason = "unsizable")
+        if not getattr(config, "is_gguf", False):
+            # Safetensors / MLX allocate on a different plan; the GGUF arithmetic
+            # would be a made-up number in a confident box.
+            return EstimateMemoryResponse(available = False, reason = "not_gguf")
+        gguf_path = _local_gguf_main_path(config)
+        if not gguf_path:
+            return EstimateMemoryResponse(available = False, reason = "not_downloaded")
+        # Price the files on this disk, not the repository they came from.
+        config = _localized_estimate_config(config, gguf_path)
+
+        breakdown = _gguf_memory_breakdown(
+            config,
+            gguf_path,
+            hf_token = request.hf_token,
+            n_ctx = request.n_ctx or 0,
+            llama_extra_args = request.llama_extra_args,
+            speculative_type = request.speculative_type,
+            n_parallel = max(1, request.n_parallel or 1),
+            cache_type_kv = request.cache_type_kv,
+            tensor_parallel = bool(request.tensor_parallel),
+            n_batch = request.n_batch,
+            n_ubatch = request.n_ubatch,
+            ctx_checkpoints = request.ctx_checkpoints,
+            # Only tensor mode spreads the buffers, and only it is worth the probe.
+            n_devices = (
+                _guard_device_count(None, None, tensor_parallel = True)
+                if request.tensor_parallel
+                else 1
+            ),
+            disable_vision = bool(request.disable_vision),
+            gpu_memory_mode = request.gpu_memory_mode,
+            gpu_layers = request.gpu_layers,
+        )
+        if breakdown is None:
+            return EstimateMemoryResponse(available = False, reason = "unsizable")
+        return EstimateMemoryResponse(
+            available = True,
+            weights_bytes = breakdown.weights_bytes,
+            kv_bytes = breakdown.kv_bytes,
+            compute_bytes = breakdown.compute_bytes,
+            total_bytes = breakdown.total_bytes,
+            gpu_bytes = breakdown.gpu_bytes,
+            kv_estimable = breakdown.kv_estimable,
+            kv_on_gpu = breakdown.kv_on_gpu,
+            n_ctx = breakdown.n_ctx,
+            cache_type_kv = breakdown.cache_type_kv,
+            n_parallel = breakdown.n_parallel,
+            layer_count = breakdown.layer_count,
+            gpu_layers = breakdown.gpu_layers,
+            moe_offload_unmodelled = bool(
+                request.gpu_memory_mode == "manual" and (request.n_cpu_moe or 0) > 0
+            ),
+        )
+
+    # Header walks and file stats are blocking; keep them off the event loop so a
+    # slider drag cannot stall streaming chats.
+    return await asyncio.to_thread(_estimate)
 
 
 @router.post("/unload", response_model = UnloadResponse)

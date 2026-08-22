@@ -42,6 +42,7 @@ import {
   pinnableGpuContext,
   reconcileGpuSelection,
   useGpuDevices,
+  useInferenceGpuInfo,
 } from "@/hooks/use-gpu-info";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
@@ -67,6 +68,11 @@ import {
   loadManagedLlamaFlags,
   subscribeLlamaFlagCatalog,
 } from "../api/llama-flags";
+import {
+  type MemoryEstimate,
+  formatMemoryGb,
+} from "../api/memory-estimate";
+import { useMemoryEstimate } from "../hooks/use-memory-estimate";
 import {
   fetchLoadExtraArgs,
   modelOverrideKey,
@@ -882,6 +888,229 @@ function AdvancedSettingsToggle({
         onCheckedChange={onCheckedChange}
         aria-label="Show advanced settings"
       />
+    </div>
+  );
+}
+
+/** How an estimated footprint sits against the memory available to hold it. */
+type MemoryFitVerdict = "fits" | "tight" | "exceeds" | "unknown";
+
+const MEMORY_FIT_TIGHT_RATIO = 0.85;
+
+function classifyMemoryFit(
+  bytes: number,
+  capacityGb: number,
+): MemoryFitVerdict {
+  // Nothing probed or nothing to weigh: no verdict rather than a false "fits".
+  if (capacityGb <= 0 || bytes <= 0) {
+    return "unknown";
+  }
+  const ratio = bytes / (capacityGb * 1024 ** 3);
+  if (ratio > 1) {
+    return "exceeds";
+  }
+  if (ratio > MEMORY_FIT_TIGHT_RATIO) {
+    return "tight";
+  }
+  return "fits";
+}
+
+const MEMORY_VALUE_TONE: Record<MemoryFitVerdict, string> = {
+  fits: "text-nav-fg",
+  tight: "text-amber-500",
+  exceeds: "text-red-500",
+  unknown: "text-nav-fg",
+};
+
+/** One "GPU 29.41 GB" pill: dim caption, figure on the shared control surface. */
+function MemoryFigure({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: string;
+}) {
+  return (
+    <div className="flex shrink-0 items-center gap-1.5">
+      <span className="text-ui-11 font-medium leading-none tracking-nav text-muted-foreground">
+        {label}
+      </span>
+      <span
+        className={`inline-flex h-6 items-center ${CONTROL_SURFACE} px-2 text-ui-12 font-medium tabular-nums ${tone ?? "text-nav-fg"}`}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function MemoryBreakdownLine({
+  label,
+  value,
+  note,
+  muted,
+}: {
+  label: string;
+  value: string;
+  note?: string;
+  muted?: boolean;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <span className="min-w-0 text-ui-11 leading-relaxed text-muted-foreground">
+        {label}
+        {note ? (
+          <span className="ml-1 text-muted-foreground/70">{note}</span>
+        ) : null}
+      </span>
+      <span
+        className={`shrink-0 text-ui-11 tabular-nums ${muted ? "text-muted-foreground" : "text-nav-fg"}`}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * "Estimated Memory Usage": what the settings above would cost, before they are run.
+ *
+ * Figures come from the loader's own sizing, not a weights-times-a-constant rule of
+ * thumb, which stops working the moment the KV cache is no longer a rounding error.
+ * So KV gets its own line, and when the header cannot size it the row quotes a floor
+ * instead of a confident total.
+ */
+function MemoryEstimateRow({
+  estimate,
+  loading,
+  stale,
+  gpuCapacityGb,
+  totalCapacityGb,
+  isUnifiedMemory,
+  expanded,
+  onExpandedChange,
+}: {
+  estimate: MemoryEstimate | null;
+  loading: boolean;
+  stale: boolean;
+  /** VRAM available, or the unified pool on Apple Silicon. 0 when unknown. */
+  gpuCapacityGb: number;
+  /** GPU plus host RAM, the ceiling an offloaded load works against. 0 when unknown. */
+  totalCapacityGb: number;
+  isUnifiedMemory: boolean;
+  expanded: boolean;
+  onExpandedChange: (next: boolean) => void;
+}) {
+  const contentId = useId();
+  if (!estimate?.available) {
+    // Nothing honest to show. Silent while loading too, so the row does not flicker.
+    return null;
+  }
+  const gpuFit = classifyMemoryFit(estimate.gpuBytes, gpuCapacityGb);
+  const totalFit = classifyMemoryFit(estimate.totalBytes, totalCapacityGb);
+  // Lower bound, not an estimate: no attention dims, so the cache is missing.
+  const bounded = !estimate.kvEstimable;
+  const prefix = bounded ? "≥ " : "";
+  const kvNote = [
+    estimate.cacheTypeKv ?? "f16",
+    `${estimate.nCtx.toLocaleString()} tokens`,
+    estimate.nParallel > 1 ? `${estimate.nParallel} slots` : null,
+    estimate.kvOnGpu ? null : "host RAM",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  // At most one note, most actionable first. An unsizable cache outranks any verdict
+  // drawn from the figures, since it says they are incomplete.
+  const advisory = bounded
+    ? {
+        tone: "warn",
+        text: "This GGUF's header doesn't carry the attention dimensions, so the KV cache can't be sized. The figures above are a floor, and the cache is usually the term that grows fastest with context.",
+      }
+    : estimate.moeOffloadUnmodelled
+      ? {
+          tone: "muted",
+          text: "Expert layers held on the CPU aren't modelled here, so the GPU figure reads high.",
+        }
+      : gpuFit === "exceeds"
+        ? {
+            tone: "warn",
+            text: isUnifiedMemory
+              ? "More than this machine's unified memory. The GPU and the rest of the system share one pool here, so there is nothing to offload to."
+              : "More than this GPU holds. Layers will spill to system RAM, or the context will be fitted down to what fits.",
+          }
+        : null;
+  return (
+    <div className="space-y-2">
+      <div className={ROW_CLASS}>
+        <button
+          type="button"
+          onClick={() => onExpandedChange(!expanded)}
+          aria-expanded={expanded}
+          aria-controls={contentId}
+          className="flex min-w-0 items-center gap-1.5 rounded-sm text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <span className={LABEL_CLASS}>Estimated Memory Usage</span>
+          <span className="shrink-0 rounded-full bg-black/[0.06] px-1.5 py-px text-ui-10 font-medium uppercase leading-[1.4] tracking-wider text-muted-foreground dark:bg-white/[0.08]">
+            Beta
+          </span>
+          <HugeiconsIcon
+            icon={ChevronDownStandardIcon}
+            className={`size-3 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`}
+            strokeWidth={1.75}
+          />
+        </button>
+        <div
+          className={`flex shrink-0 items-center gap-3 transition-opacity ${stale || loading ? "opacity-50" : ""}`}
+        >
+          <MemoryFigure
+            label={isUnifiedMemory ? "Unified" : "GPU"}
+            value={`${prefix}${formatMemoryGb(estimate.gpuBytes)}`}
+            tone={MEMORY_VALUE_TONE[gpuFit]}
+          />
+          {/* One shared pool means the same number twice. */}
+          {isUnifiedMemory ? null : (
+            <MemoryFigure
+              label="Total"
+              value={`${prefix}${formatMemoryGb(estimate.totalBytes)}`}
+              tone={MEMORY_VALUE_TONE[totalFit]}
+            />
+          )}
+        </div>
+      </div>
+      {expanded && (
+        <div id={contentId} className="space-y-1 pl-0.5">
+          <MemoryBreakdownLine
+            label="Weights"
+            value={formatMemoryGb(estimate.weightsBytes)}
+            note={
+              estimate.gpuLayers != null && estimate.layerCount != null
+                ? `${estimate.gpuLayers} of ${estimate.layerCount + 1} layers on GPU`
+                : undefined
+            }
+          />
+          <MemoryBreakdownLine
+            label="KV cache"
+            value={
+              estimate.kvEstimable ? formatMemoryGb(estimate.kvBytes) : "unknown"
+            }
+            note={estimate.kvEstimable ? kvNote : undefined}
+            muted={!estimate.kvEstimable}
+          />
+          <MemoryBreakdownLine
+            label="Compute buffers"
+            value={formatMemoryGb(estimate.computeBytes)}
+          />
+        </div>
+      )}
+      {advisory && (
+        <p
+          className={`text-ui-11 leading-relaxed ${advisory.tone === "warn" ? "text-amber-500" : "text-muted-foreground"}`}
+        >
+          {advisory.text}
+        </p>
+      )}
     </div>
   );
 }
@@ -2362,6 +2591,46 @@ export function ModelConfigPage({
       ? { ...loadableConfig, customContextLength: activeLoadedContext }
       : loadableConfig
     : loadableConfig;
+  // Priced against the config that would actually load, at the context on screen, so
+  // the figures answer for what the Load button will do. Diffusion stands down: its
+  // runner allocates on a different plan than llama-server's.
+  const memoryEstimateRequest =
+    target.isGguf && !resolvedIsDiffusion
+      ? {
+          modelPath: target.id,
+          ggufVariant: target.ggufVariant ?? null,
+          hfToken: hfToken || null,
+          nativePathToken,
+          nCtx: contextValue,
+          cacheTypeKv: runtimeConfig.kvCacheDtype,
+          nParallel: runtimeConfig.nParallel,
+          nBatch: runtimeConfig.nBatch,
+          nUbatch: runtimeConfig.nUbatch,
+          ctxCheckpoints: runtimeConfig.ctxCheckpoints ?? null,
+          speculativeType: runtimeConfig.speculativeType,
+          tensorParallel: runtimeConfig.tensorParallel,
+          disableVision: runtimeConfig.disableVision,
+          gpuMemoryMode: runtimeConfig.gpuMemoryMode ?? null,
+          gpuLayers:
+            runtimeConfig.gpuLayers != null &&
+            runtimeConfig.gpuLayers !== GPU_LAYERS_AUTO
+              ? runtimeConfig.gpuLayers
+              : null,
+          nCpuMoe: runtimeConfig.nCpuMoe ?? null,
+          llamaExtraArgs: runtimeConfig.llamaExtraArgs ?? null,
+        }
+      : null;
+  const memoryEstimate = useMemoryEstimate(memoryEstimateRequest);
+  const [memoryBreakdownOpen, setMemoryBreakdownOpen] = useState(false);
+  const inferenceGpu = useInferenceGpuInfo();
+  // The pool a layer split spreads over, and the ceiling once layers spill to host
+  // RAM. Both 0 when the probe found nothing, which reads as "no verdict".
+  const memoryGpuCapacityGb = inferenceGpu.memoryTotalGb;
+  const memoryTotalCapacityGb = isUnifiedMemory
+    ? // One pool, so adding system RAM to VRAM would count the same bytes twice.
+      inferenceGpu.memoryTotalGb
+    : inferenceGpu.memoryTotalGb + inferenceGpu.systemRamTotalGb;
+
   const rememberChanged = remember !== savedRemember;
   const persistenceOnly = isActiveModel && atBaseline && rememberChanged;
   const primaryActionLabel = persistenceOnly
@@ -2579,6 +2848,18 @@ export function ModelConfigPage({
       <div className="space-y-3.5">
         {target.isGguf && (
           <>
+            {/* Above Context Length on purpose: that is the control moving this
+                number most, and a readout below it is one you go looking for. */}
+            <MemoryEstimateRow
+              estimate={memoryEstimate.estimate}
+              loading={memoryEstimate.loading}
+              stale={memoryEstimate.stale}
+              gpuCapacityGb={memoryGpuCapacityGb}
+              totalCapacityGb={memoryTotalCapacityGb}
+              isUnifiedMemory={isUnifiedMemory}
+              expanded={memoryBreakdownOpen}
+              onExpandedChange={setMemoryBreakdownOpen}
+            />
             <div className="space-y-3">
               <div className={ROW_CLASS}>
                 <div className="flex min-w-0 items-center gap-1.5">
