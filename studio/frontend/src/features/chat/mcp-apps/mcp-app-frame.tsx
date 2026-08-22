@@ -71,34 +71,49 @@ const RESIZE_FALLBACK = `<script>(()=>{const post=()=>parent.postMessage({mcpApp
 // makes for localStorage. Shadowing top too: a view reaching for either gets the
 // wrapper, and there is no other handle on the host from inside the sandbox.
 export function bridgeShim(token: string): string {
-  const hostOrigin =
-    typeof window === "undefined" ? "" : window.location.origin;
-  return `<script>(()=>{try{
-  const real = window.parent;
-  const post = real.postMessage.bind(real);
-  const proxy = Object.freeze({
-    postMessage: (message, targetOrigin, transfer) =>
-      post({ __unslothMcpApp: ${JSON.stringify(token)}, message }, targetOrigin || "*", transfer),
-  });
-  for (const name of ["parent", "top"]) {
-    try { Object.defineProperty(window, name, { value: proxy, configurable: true }); } catch (e) {}
-  }
-  // Replies come back over a channel owned by THIS document. A page the frame
-  // navigates to keeps the same contentWindow, so a wildcard post would hand it
-  // an in-flight tool result; a port dies with the document that made it, which
-  // is the only thing here that actually distinguishes them.
-  const channel = new MessageChannel();
-  channel.port1.onmessage = (event) => {
-    // Re-dispatched as an ordinary message event so a view listening the usual
-    // way needs to know nothing about any of this. \`source\` is the real host
-    // window and \`origin\` its real origin; what it is NOT is identical to
-    // \`window.parent\`, which is the wrapper above.
-    window.dispatchEvent(new MessageEvent("message", {
-      data: event.data, source: real, origin: ${JSON.stringify(hostOrigin)},
-    }));
-  };
-  post({ __unslothMcpApp: ${JSON.stringify(token)}, __unslothMcpAppPort: true }, "*", [channel.port2]);
-}catch(e){}})();</script>`;
+  const hostOrigin = typeof window === "undefined" ? "" : window.location.origin;
+  // The view's handle on the host is a MessageChannel port, not the frame's
+  // parent window, and everything follows from that:
+  //
+  //   - it is bound to THIS document, so a page the frame navigates to can
+  //     neither send over it nor receive an in-flight reply on it;
+  //   - it IS `window.parent` here, so a view that filters responses on
+  //     `event.source === window.parent` -- the defensive habit, and what a
+  //     postMessage transport does by default -- still matches;
+  //   - `event.source.postMessage(...)` reaches the host for the same reason.
+  //
+  // A Window takes (message, targetOrigin, transfer) and a port takes
+  // (message, transfer), so the port's own postMessage is widened to accept the
+  // call a view actually writes.
+  return `(() => {
+  try {
+    const real = window.parent;
+    const channel = new MessageChannel();
+    const port = channel.port1;
+    const raw = port.postMessage.bind(port);
+    Object.defineProperty(port, "postMessage", {
+      value: (message, a, b) =>
+        raw(message, Array.isArray(a) ? a : Array.isArray(b) ? b : []),
+      configurable: true,
+      writable: true,
+    });
+    port.onmessage = (event) => {
+      window.dispatchEvent(new MessageEvent("message", {
+        data: event.data, source: port, origin: ${JSON.stringify(hostOrigin)},
+      }));
+    };
+    for (const name of ["parent", "top"]) {
+      try {
+        Object.defineProperty(window, name, { value: port, configurable: true });
+      } catch (e) {}
+    }
+    real.postMessage(
+      { __unslothMcpApp: ${JSON.stringify(token)}, __unslothMcpAppPort: true },
+      "*",
+      [channel.port2],
+    );
+  } catch (e) {}
+})();`;
 }
 
 /** A fresh bridge token, or null when nothing here can make an unguessable one.
@@ -106,8 +121,8 @@ export function bridgeShim(token: string): string {
  * crypto.randomUUID needs a secure context and Studio is reachable over plain
  * HTTP on a LAN address (`-H 0.0.0.0`), where it is simply undefined. The other
  * chat call sites fall back to Date.now()+Math.random(), which is fine for an
- * attachment id and not for this: the token is the only thing separating the
- * widget from a page the frame navigated to. getRandomValues is the right
+ * attachment id and not for this: the token is what stops a page the frame
+ * navigated to from installing a port of its own. getRandomValues is the right
  * fallback -- unlike randomUUID it is not secure-context gated.
  */
 export function newBridgeToken(): string | null {
@@ -122,17 +137,23 @@ export function newBridgeToken(): string | null {
   return null;
 }
 
-/** Put `shim` where it runs before any of the view's own script, doctype intact. */
+/** Put `shim` where it runs before any of the view's own script.
+ *
+ * Parsed, not pattern-matched: the first textual `<head>` in a template can sit
+ * inside a comment or a script string (`<!-- template has no <head> -->`), and a
+ * shim inserted there never runs, which reads downstream as a view that simply
+ * never initializes. A parse finds the element the browser will find.
+ */
 export function withBridgeShim(html: string, shim: string): string {
-  for (const opener of [/<head\b[^>]*>/i, /<html\b[^>]*>/i, /<!doctype[^>]*>/i]) {
-    const match = opener.exec(html);
-    if (match) {
-      const at = match.index + match[0].length;
-      return html.slice(0, at) + shim + html.slice(at);
-    }
-  }
-  // A bare fragment: the parser builds html/head around it, so leading is first.
-  return shim + html;
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const script = doc.createElement("script");
+  script.textContent = shim;
+  const parent = doc.head ?? doc.documentElement;
+  parent.insertBefore(script, parent.firstChild);
+  // Rebuilt rather than round-tripped through outerHTML alone: a template with no
+  // doctype is asking for quirks mode, and adding one would change how it lays out.
+  const doctype = doc.doctype ? `<!DOCTYPE ${doc.doctype.name}>\n` : "";
+  return doctype + doc.documentElement.outerHTML;
 }
 
 /** Comma-joined declared domains for one CSP directive, or "" when undeclared. */
@@ -340,33 +361,11 @@ export function McpAppFrame({
     const fail = (id: JsonRpcId, code: number, message: string) =>
       postToView({ jsonrpc: "2.0", id, error: { code, message } });
 
+    // Everything the view says arrives on its port, which only the document the
+    // host seeded holds. Sender identity and the opaque origin both survive a
+    // navigation and so prove nothing; holding the port is the proof.
     const handler = (event: MessageEvent) => {
-      // Every sandboxed frame reports origin "null", so identity is the check.
-      if (event.source !== iframeRef.current?.contentWindow) return;
-      if (event.origin !== "null") return;
-      // Identity survives a navigation and so does the opaque origin, so the
-      // token the shim stamps into the seeded document is what actually names
-      // the sender. A page the frame navigated to has no shim and no token.
-      const envelope = event.data as {
-        __unslothMcpApp?: unknown;
-        __unslothMcpAppPort?: unknown;
-        message?: unknown;
-      };
-      if (
-        !bridgeToken ||
-        typeof envelope !== "object" ||
-        envelope === null ||
-        envelope.__unslothMcpApp !== bridgeToken
-      ) {
-        return;
-      }
-      if (envelope.__unslothMcpAppPort === true) {
-        viewPortRef.current?.close();
-        viewPortRef.current = event.ports[0] ?? null;
-        return;
-      }
-
-      const data = envelope.message as typeof event.data;
+      const data = event.data;
       // The resize fallback, which is not part of the widget protocol.
       if (typeof data?.mcpAppHeight === "number") {
         if (viewOwnsSizeRef.current) return;
@@ -543,8 +542,39 @@ export function McpAppFrame({
       }
     };
 
-    window.addEventListener("message", handler);
-    return () => window.removeEventListener("message", handler);
+    // The handshake is the one thing that cannot come over the port, since it is
+    // what delivers the port. Checked the old way, plus the token, so only the
+    // document the host seeded can install one.
+    const onHandshake = (event: MessageEvent) => {
+      if (event.source !== iframeRef.current?.contentWindow) return;
+      if (event.origin !== "null") return;
+      const envelope = event.data as {
+        __unslothMcpApp?: unknown;
+        __unslothMcpAppPort?: unknown;
+      };
+      if (
+        !bridgeToken ||
+        typeof envelope !== "object" ||
+        envelope === null ||
+        envelope.__unslothMcpApp !== bridgeToken ||
+        envelope.__unslothMcpAppPort !== true
+      ) {
+        return;
+      }
+      const port = event.ports[0];
+      if (!port) return;
+      viewPortRef.current?.close();
+      viewPortRef.current = port;
+      port.onmessage = handler;
+    };
+
+    // A live port keeps the handler it was given, so re-point it whenever this
+    // effect rebuilds one: otherwise a theme change leaves the view answered by
+    // a closure describing the previous theme.
+    if (viewPortRef.current) viewPortRef.current.onmessage = handler;
+
+    window.addEventListener("message", onHandshake);
+    return () => window.removeEventListener("message", onHandshake);
   }, [
     bridgeToken,
     postToView,

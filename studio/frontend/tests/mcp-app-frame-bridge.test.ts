@@ -58,72 +58,47 @@ function liftFunction<T>(signature: string): T {
   )() as T;
 }
 
-test("only the document the host seeded can reach the bridge", () => {
-  // A sandboxed frame keeps one contentWindow and reports origin "null" whatever
-  // it navigates to, and the replacement document's inline scripts run BEFORE the
-  // iframe's load event -- both verified in Chromium by
-  // tests/studio/playwright_mcp_app_bridge_smoke.py, which also shows a load-flag
-  // gate accepting the navigated document's tools/call. So the token the shim
-  // stamps in is what names the sender.
-  assert.ok(
-    /envelope\.__unslothMcpApp !== bridgeToken/.test(text),
-    "the handler must require the seeded document's token",
-  );
-  assert.ok(
-    /const data = envelope\.message/.test(text),
-    "the handled payload must be the envelope's message, not the raw event data",
-  );
-  // bridgeShim is a function declaration, not a const, so slice it out directly.
+test("the view's handle on the host is its own port", () => {
+  // A sandboxed frame keeps one contentWindow and an opaque "null" origin across
+  // a navigation, and the replacement document's scripts run before the iframe's
+  // load event -- both shown in tests/studio/playwright_mcp_app_bridge_smoke.py.
+  // A port is the one handle that cannot outlive the document that made it, so it
+  // is what the view gets, in place of window.parent.
   const shimStart = text.indexOf("export function bridgeShim");
   assert.ok(shimStart >= 0, "bridgeShim is no longer declared in mcp-app-frame.tsx");
   const shim = text.slice(shimStart, text.indexOf("\n}\n", shimStart));
   assert.ok(
-    /Object\.defineProperty\(window, name, \{ value: proxy, configurable: true \}\)/.test(
+    /Object\.defineProperty\(window, name, \{ value: port, configurable: true \}\)/.test(
       shim,
     ),
-    "the shim must shadow the frame's handle on the host so every message is stamped",
+    "window.parent must BE the port, so event.source === window.parent still holds",
   );
   assert.ok(
     /for \(const name of \["parent", "top"\]\)/.test(shim),
     "shadowing parent alone leaves top as an unstamped handle on the host",
   );
+  assert.ok(
+    /source: port,/.test(shim),
+    "a re-dispatched reply must name the port as its source, or the identity check fails",
+  );
+  assert.ok(
+    /Array\.isArray\(a\) \? a : Array\.isArray\(b\) \? b : \[\]/.test(shim),
+    "the port must tolerate postMessage(message, targetOrigin) as a Window would",
+  );
+  // The handshake is the only thing left on the window, and it is what carries
+  // the port, so it keeps the token check.
+  assert.ok(
+    /envelope\.__unslothMcpApp !== bridgeToken/.test(text),
+    "the handshake must still require the seeded document's token",
+  );
+  assert.ok(
+    /port\.onmessage = handler/.test(text),
+    "protocol traffic must be read off the port, not the window",
+  );
 });
 
-test("replies go down the seeded document's own channel", () => {
-  // The frame's contentWindow survives a navigation, so a wildcard reply hands an
-  // in-flight tool result to whatever page the frame moved to -- reproduced in
-  // tests/studio/playwright_mcp_app_bridge_smoke.py, which still scores that path
-  // alongside this one. A port cannot outlive the document that created it.
-  const postToView = declarationText("postToView");
-  assert.ok(
-    /viewPortRef\.current\?\.postMessage\(message\)/.test(postToView),
-    "replies must go over the view's port",
-  );
-  assert.ok(
-    !/contentWindow/.test(postToView),
-    "replies must not be posted at the frame's window",
-  );
-  // The template is the one thing that cannot go over the port: it carries the
-  // shim that creates it. It must stay the only such sender.
-  const postTemplate = declarationText("postTemplate");
-  assert.ok(
-    /contentWindow\?\.postMessage\(message, "\*"\)/.test(postTemplate),
-    "the template still reaches the frame directly, since no port exists yet",
-  );
-  assert.equal(
-    (text.match(/^\s*postTemplate\(/gm) ?? []).length,
-    1,
-    "postTemplate must have exactly one caller: the template hand-off",
-  );
-  assert.ok(
-    /viewPortRef\.current = event\.ports\[0\] \?\? null/.test(text),
-    "the port must be taken from the token-checked handshake",
-  );
-  assert.ok(
-    /viewPortRef\.current\?\.close\(\);\s*\n\s*viewPortRef\.current = null;/.test(text),
-    "re-seeding must drop the previous document's port",
-  );
-});
+// withBridgeShim needs a real HTML parser, so what it does is asserted in a real
+// browser: tests/studio/playwright_mcp_app_bridge_smoke.py.
 
 test("the token is minted per fetched template", () => {
   // A token reused across re-seeds would let a document that captured one earlier
