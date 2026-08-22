@@ -734,8 +734,23 @@ html[data-chat-font] .aui-root {
 
 /* Settings search: brief highlight on the row a result jumped to. */
 .settings-search-hit {
-	animation: settings-search-hit 1.6s ease-out;
+	position: relative;
+	/* Isolate the hit so its negative-z backdrop paints behind the row's own
+	   content while staying above the panel surface. */
+	z-index: 0;
+}
+.settings-search-hit::before {
+	content: "";
+	position: absolute;
+	z-index: -1;
+	/* Overhang into the p-6 gutter so the accent wraps the content with the
+	   same 12px padding the row's py-3 gives vertically, while the gutter
+	   keeps an equal gap outside it. */
+	inset-block: 0;
+	inset-inline: -0.75rem;
 	border-radius: 12px;
+	animation: settings-search-hit 1.6s ease-out;
+	pointer-events: none;
 }
 @keyframes settings-search-hit {
 	0%,
