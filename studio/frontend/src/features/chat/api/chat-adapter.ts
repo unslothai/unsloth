@@ -3765,15 +3765,17 @@ export function createOpenAIStreamAdapter(
       // while the thread's own row is still missing.
       const composerProjectIdAtSend =
         useChatRuntimeStore.getState().activeProjectId ?? null;
-      // Ahead of the hydrate, because the backend reads some settings out of
+      await useChatRuntimeStore.getState().hydratePersistedSettings();
+      // After the hydrate, not before: the backend reads some settings out of
       // SQLite at call time rather than taking them from the request -- Search
       // images picks the web_search schema that way -- and the mirror is a
-      // trailing-edge debounce. Sending inside that window would otherwise run
-      // on the value before the toggle: images fetched for a user who has just
-      // switched them off, or missing for one who has just switched them on. No
-      // wait at all unless a patch is actually queued.
+      // trailing-edge debounce, so sending inside that window would run on the
+      // value from before the toggle. Edits made while the initial GET was still
+      // out are held back and only reach the debounce when hydration replays
+      // them, so a flush ahead of it would find nothing queued and miss exactly
+      // the first message after a startup edit. No wait at all unless something
+      // is actually queued or in flight.
       await flushPendingChatSettings();
-      await useChatRuntimeStore.getState().hydratePersistedSettings();
       // Every run reaches here: the composer, Reload, Continue, and send from the edit
       // composer. Waiting for the open chat's own settings in this one place is what
       // keeps the message-level controls from starting a run on the installation

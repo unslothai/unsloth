@@ -769,30 +769,52 @@ test("a queued settings patch is sent before a run reads it", () => {
   );
   assert.ok(flush.length > 0, "flushPendingChatSettings is gone");
   const body = flush.slice(0, flush.indexOf("\n}\n") + 2);
-  // Nothing queued is the common case and must not cost a send anything.
-  assert.match(
-    body,
-    /pendingTimer === null && Object\.keys\(pendingPatch\)\.length === 0\) return;/,
-  );
+  // Nothing queued and nothing in flight is the common case and must not cost a
+  // send anything.
+  assert.match(body, /if \(!queued && unsettledFlushes === 0\) return;/);
   // The debounce is cut short rather than waited out.
   assert.match(body, /clearTimeout\(pendingTimer\)/);
-  // Chained onto the same queue the debounce uses, so two flushes cannot overlap.
-  assert.match(body, /inflightFlush = inflightFlush/);
   // Bounded: a wedged PATCH must not hold the composer open.
   assert.match(body, /Promise\.race\(/);
   assert.match(storeSource, /const SETTINGS_FLUSH_TIMEOUT_MS = \d+;/);
 });
 
-test("the run flushes those settings before it hydrates and sends", () => {
+test("a patch already handed to the server is waited for too", () => {
+  // Between the debounce firing and the response, pendingPatch and pendingTimer
+  // are both empty while the value the backend reads is still the old one, so
+  // the fast path above cannot be decided from those two alone.
+  const enqueue = storeSource.slice(
+    storeSource.indexOf("function enqueueSettingsFlush("),
+  );
+  const body = enqueue.slice(0, enqueue.indexOf("\n}\n") + 2);
+  assert.match(body, /unsettledFlushes \+= 1;/);
+  assert.match(body, /\.finally\(\(\) => \{\s*unsettledFlushes -= 1;/);
+  // Chained onto the same queue, so two flushes cannot overlap.
+  assert.match(body, /inflightFlush = inflightFlush/);
+  // The debounce goes through it rather than posting its own chain.
+  const schedule = storeSource.slice(
+    storeSource.indexOf("function scheduleSettingsFlush("),
+  );
+  assert.match(
+    schedule.slice(0, schedule.indexOf("\n}\n")),
+    /void enqueueSettingsFlush\(\);/,
+  );
+});
+
+test("the run flushes those settings after it hydrates and before it sends", () => {
   const start = adapterSource.indexOf("await flushPendingChatSettings();");
   assert.ok(start > 0, "the run no longer flushes pending chat settings");
   const hydrate = adapterSource.indexOf(
-    "hydratePersistedSettings()",
-    start,
+    "await useChatRuntimeStore.getState().hydratePersistedSettings();",
   );
-  assert.ok(hydrate > start, "the flush must come before the hydrate");
+  // After, not before: a setting changed while the initial GET was still out is
+  // held back and only reaches the debounce when hydration replays it.
+  assert.ok(hydrate > 0 && hydrate < start, "the flush must follow the hydrate");
   // Awaited, not fired and forgotten, or the run races the patch it just sent.
-  assert.match(adapterSource.slice(start - 6, start + 34), /await flushPendingChatSettings\(\);/);
+  assert.match(
+    adapterSource.slice(start - 6, start + 34),
+    /await flushPendingChatSettings\(\);/,
+  );
 });
 
 test("the automatic lookup reads this run's approval level, not the open chat's", () => {

@@ -462,13 +462,27 @@ async function flushSettingsPatch(keepalive = false): Promise<void> {
   }
 }
 
+// Flushes handed to the network and not yet answered. pendingPatch and
+// pendingTimer are both empty across that window, so they cannot answer "is a
+// settings write still outstanding" on their own.
+let unsettledFlushes = 0;
+
+function enqueueSettingsFlush(): Promise<void> {
+  unsettledFlushes += 1;
+  inflightFlush = inflightFlush
+    .catch(() => undefined)
+    .then(() => flushSettingsPatch())
+    .finally(() => {
+      unsettledFlushes -= 1;
+    });
+  return inflightFlush;
+}
+
 function scheduleSettingsFlush(): void {
   if (pendingTimer !== null) clearTimeout(pendingTimer);
   pendingTimer = setTimeout(() => {
     pendingTimer = null;
-    inflightFlush = inflightFlush
-      .catch(() => undefined)
-      .then(() => flushSettingsPatch());
+    void enqueueSettingsFlush();
   }, SETTINGS_DEBOUNCE_MS);
 }
 
@@ -492,14 +506,16 @@ const SETTINGS_FLUSH_TIMEOUT_MS = 2000;
  * settings change.
  */
 export async function flushPendingChatSettings(): Promise<void> {
-  if (pendingTimer === null && Object.keys(pendingPatch).length === 0) return;
+  const queued = pendingTimer !== null || Object.keys(pendingPatch).length > 0;
+  // Not just what is queued: the debounce may have fired already and handed its
+  // patch to a request the server has not answered, which leaves both of those
+  // empty while the value the backend reads is still the old one.
+  if (!queued && unsettledFlushes === 0) return;
   if (pendingTimer !== null) {
     clearTimeout(pendingTimer);
     pendingTimer = null;
   }
-  inflightFlush = inflightFlush
-    .catch(() => undefined)
-    .then(() => flushSettingsPatch());
+  if (queued) void enqueueSettingsFlush();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
