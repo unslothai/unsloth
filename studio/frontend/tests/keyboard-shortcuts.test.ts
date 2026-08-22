@@ -741,6 +741,30 @@ test("the MCP chord does not live behind the MCP pill", async () => {
   assert.match(button, /open=\{chatActive && open\}/);
 });
 
+test("the copy chords keep their gesture across the read", async () => {
+  const sidebar = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  const clipboard = await readFile(
+    new URL("../src/lib/copy-to-clipboard.ts", import.meta.url),
+    "utf8",
+  );
+  // Both copies read storage first, and a strict engine drops the gesture
+  // across that await, leaving writeText and its execCommand fallback with
+  // nothing to run inside. The write starts with a promised payload instead.
+  assert.match(clipboard, /"text\/plain": payload\.then\(/);
+  for (const fn of ["copyChatItemAsMarkdown", "copyChatSessionId"]) {
+    const at = sidebar.indexOf(`async function ${fn}(`);
+    assert.ok(at !== -1, `${fn} moved`);
+    const body = sidebar.slice(at, sidebar.indexOf("\n  }", at));
+    assert.ok(
+      body.includes("copyToClipboardFrom(async () =>"),
+      `${fn} awaits its read before starting the write`,
+    );
+  }
+});
+
 test("every settings tab survives a reload", () => {
   // The persisted-tab check reads this same list, so a tab added to the union
   // alone can no longer be rejected back to General.

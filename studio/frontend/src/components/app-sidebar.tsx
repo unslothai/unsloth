@@ -69,7 +69,7 @@ import {
 import { WORKFLOW_TABS, type WorkflowId } from "@/features/images/workflows";
 /* eslint-enable no-restricted-imports */
 import { cn } from "@/lib/utils";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import {
@@ -2326,21 +2326,29 @@ export function AppSidebar() {
   /** The chat as markdown, on the clipboard rather than in a download. */
   async function copyChatItemAsMarkdown(item: SidebarItem) {
     const threadIds = getSidebarItemThreadIds(item);
-    const { buildConversationMarkdownForThread } = await import(
-      "@/features/chat/prompt-storage/prompt-storage-dialog"
-    );
-    // A compare row is two threads: keep both, labelled.
-    const parts: string[] = [];
-    for (const threadId of threadIds) {
-      const markdown = await buildConversationMarkdownForThread(threadId);
-      if (markdown) parts.push(markdown);
-    }
-    if (parts.length === 0) {
-      toast.info("No exportable content.");
-      return;
-    }
-    if (await copyToClipboard(parts.join("\n---\n\n"))) {
+    const empty = { value: false };
+    // The read runs inside the write: Safari drops the gesture across an
+    // await, and a chord has no second one to fall back on.
+    const copied = await copyToClipboardFrom(async () => {
+      const { buildConversationMarkdownForThread } = await import(
+        "@/features/chat/prompt-storage/prompt-storage-dialog"
+      );
+      // A compare row is two threads: keep both, labelled.
+      const parts: string[] = [];
+      for (const threadId of threadIds) {
+        const markdown = await buildConversationMarkdownForThread(threadId);
+        if (markdown) parts.push(markdown);
+      }
+      if (parts.length === 0) {
+        empty.value = true;
+        throw new Error("nothing to copy");
+      }
+      return parts.join("\n---\n\n");
+    });
+    if (copied) {
       toast.success("Chat copied as Markdown");
+    } else if (empty.value) {
+      toast.info("No exportable content.");
     }
   }
 
@@ -2365,34 +2373,49 @@ export function AppSidebar() {
     // current membership points once it has moved between projects. Same read
     // as "Open chat folder", and the same answer when a compare row's panes
     // wrote to two.
-    let sessionId: string | undefined;
-    try {
-      const distinct = await recordedSandboxSessionIds(ids);
-      if (distinct.length > 1) {
-        toast.error("This chat wrote to more than one folder.", {
-          description: "Copy the session id from a tool card instead.",
-        });
-        return;
+    const refusal: { value: { title: string; description?: string } | null } = {
+      value: null,
+    };
+    // Read inside the write, for the same reason as the markdown copy above.
+    const copied = await copyToClipboardFrom(async () => {
+      let sessionId: string | undefined;
+      try {
+        const distinct = await recordedSandboxSessionIds(ids);
+        if (distinct.length > 1) {
+          refusal.value = {
+            title: "This chat wrote to more than one folder.",
+            description: "Copy the session id from a tool card instead.",
+          };
+          throw new Error("more than one folder");
+        }
+        sessionId = distinct[0];
+      } catch (error) {
+        refusal.value ??= {
+          title: "Could not read this chat's session id.",
+          description: error instanceof Error ? error.message : String(error),
+        };
+        throw error;
       }
-      sessionId = distinct[0];
-    } catch (error) {
-      toast.error("Could not read this chat's session id.", {
-        description: error instanceof Error ? error.message : String(error),
-      });
-      return;
-    }
-    // Nothing recorded means no tool has run yet, so the id it would get is
-    // the one current membership gives it.
-    sessionId ??=
-      item.type === "single" || item.projectId
-        ? sandboxSessionIdFor(ids[0], item.projectId)
-        : undefined;
-    if (!sessionId) {
-      toast.info("This chat has no single session id");
-      return;
-    }
-    if (await copyToClipboard(sessionId)) {
+      // Nothing recorded means no tool has run yet, so the id it would get is
+      // the one current membership gives it.
+      sessionId ??=
+        item.type === "single" || item.projectId
+          ? sandboxSessionIdFor(ids[0], item.projectId)
+          : undefined;
+      if (!sessionId) {
+        refusal.value = { title: "This chat has no single session id" };
+        throw new Error("no session id");
+      }
+      return sessionId;
+    });
+    if (copied) {
       toast.success("Session id copied");
+      return;
+    }
+    if (refusal.value) {
+      toast.error(refusal.value.title, {
+        description: refusal.value.description,
+      });
     }
   }
 
