@@ -2287,7 +2287,9 @@ def test_the_kaggle_client_is_new_enough_to_read_the_only_credential_we_have():
     no equivalent and sat on 1.7.4.5, so it had never authenticated once.
     """
     packaging_version = pytest.importorskip("packaging.version")
-    pins = re.findall(r"pip install [^\n]*'kaggle==([0-9][^']*)'", WORKFLOW.read_text(encoding = "utf-8"))
+    pins = re.findall(
+        r"pip install [^\n]*'kaggle==([0-9][^']*)'", WORKFLOW.read_text(encoding = "utf-8")
+    )
     assert pins, "no pinned kaggle client in the workflow"
     assert len(set(pins)) == 1, f"jobs disagree on the kaggle client: {pins}"
     assert packaging_version.Version(pins[0]) >= packaging_version.Version("2.2.0"), pins[0]
