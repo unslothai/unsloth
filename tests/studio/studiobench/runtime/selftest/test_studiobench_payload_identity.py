@@ -349,7 +349,9 @@ def test_resuming_under_a_changed_dollar_setting_is_refused(tmp_path):
     on = _fixture_payload(tmp_path, "on", "sess-on", corpus_dollars = True)
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
-            on, requested_identity(_resume_args(), None, CORPUS), resume = True,
+            on,
+            requested_identity(_resume_args(), None, CORPUS),
+            resume = True,
             log = lambda *_a: None,
         )
     assert "corpus_dollars" in str(excinfo.value)
