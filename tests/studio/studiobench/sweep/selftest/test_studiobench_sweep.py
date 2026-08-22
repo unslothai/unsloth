@@ -1042,6 +1042,115 @@ def test_main_returns_two_when_nothing_matches(tmp_path, capsys):
     assert "no payload found" in capsys.readouterr().out
 
 
+# ── a probe payload is not a measurement ─────────────────────────────
+
+
+def probe_payload(tmp_path: Path, name: str, script: str | None) -> Path:
+    """A payload whose run_meta records the external init script that was in the page."""
+    path = payload(tmp_path, name, [(1000.0, 900.0)] * 4)
+    rows = [json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines()]
+    rows[0]["probe_init_script"] = script
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    return path
+
+
+def test_a_payload_recorded_with_a_probe_installed_is_refused(tmp_path):
+    """The instrument was in the shot. There is no flag to override it.
+
+    A probe samples the DOM on its own schedule and forces layout to do it, so the timings are a
+    measurement of the page AND the instrument. Without this the run looks entirely ordinary: it
+    records the same cells and renders the same A/B table, and only the caller's memory stops the
+    numbers being quoted.
+    """
+    path = probe_payload(tmp_path, "probed", "arms/content_visibility_probe.js")
+    with pytest.raises(SystemExit) as excinfo:
+        F.load([path])
+    assert "external init script" in str(excinfo.value)
+    assert "content_visibility_probe.js" in str(excinfo.value)
+
+
+def test_a_probe_named_in_a_later_run_meta_is_still_caught(tmp_path):
+    """`--resume` APPENDS a second run_meta and the remaining cells to the existing file.
+
+    So a payload can carry a clean header above cells that were re-recorded under a probe.
+    Reading only the first run_meta scores those cells.
+    """
+    path = probe_payload(tmp_path, "resumed", None)
+    with path.open("a", encoding = "utf-8") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "row_type": "run_meta",
+                    "tier": "standard",
+                    "corpus_hash": "corpus0000",
+                    "probe_init_script": "late_probe.js",
+                }
+            )
+            + "\n"
+        )
+    with pytest.raises(SystemExit) as excinfo:
+        F.load([path])
+    assert "late_probe.js" in str(excinfo.value)
+
+
+def test_a_failed_probe_free_gate_is_enough_on_its_own(tmp_path):
+    # Two independent records of one fact, so a payload from a version that emits only the gate
+    # is still refused.
+    path = probe_payload(tmp_path, "gated", None)
+    with path.open("a", encoding = "utf-8") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "row_type": "gate",
+                    "name": "probe_free",
+                    "passed": False,
+                    "detail": {"probe_init_script": "gate_only.js"},
+                }
+            )
+            + "\n"
+        )
+    with pytest.raises(SystemExit) as excinfo:
+        F.load([path])
+    assert "gate_only.js" in str(excinfo.value)
+
+
+def test_a_passing_probe_free_gate_scores_normally(tmp_path):
+    path = probe_payload(tmp_path, "clean_gate", None)
+    with path.open("a", encoding = "utf-8") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "row_type": "gate",
+                    "name": "probe_free",
+                    "passed": True,
+                    "detail": {"probe_init_script": None},
+                }
+            )
+            + "\n"
+        )
+    pooled, _ = F.load([path])
+    assert pooled["message_menu.open_close_ms"]
+
+
+def test_the_report_path_refuses_a_probed_payload_too(tmp_path):
+    """floor_table is not the only reader. `--report` scores the same file afterwards."""
+    from tests.studio.studiobench.report.build import score_payload
+
+    path = probe_payload(tmp_path, "probed_report", "arms/content_visibility_probe.js")
+    with pytest.raises(SystemExit) as excinfo:
+        score_payload(path)
+    assert "external init script" in str(excinfo.value)
+
+
+def test_a_null_probe_field_is_the_ordinary_scorable_case(tmp_path):
+    # Explicit null and absent must both score, or every payload written before the field
+    # existed becomes unreadable.
+    pooled, _ = F.load([probe_payload(tmp_path / "explicit", "clean", None)])
+    assert pooled["message_menu.open_close_ms"]
+    pooled, _ = F.load([payload(tmp_path / "absent", "clean", [(1000.0, 900.0)] * 4)])
+    assert pooled["message_menu.open_close_ms"]
+
+
 def test_the_composer_click_does_not_set_the_frame_floor(tmp_path):
     """The floor table pools the cell's windows too. An 11 s `setup:composer_click` -- almost all
     of it Playwright's actionability check running on the page's main thread -- would become this
