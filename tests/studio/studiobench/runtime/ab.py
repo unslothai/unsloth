@@ -100,8 +100,22 @@ def order_is_balanced(plan: list[tuple[Target, Cell, RungPlan]]) -> bool:
     return len(labels) > 1 and len(set(first_counts.values())) == 1
 
 
-def readings_by_arm(records: list[dict]) -> dict[str, dict[int, dict]]:
+def readings_by_arm(records: list[dict], session_id: Optional[str] = None) -> dict[str, dict[int, dict]]:
     """Split one payload's cell rows into `{arm: {rung_tokens: {metric: Measure}}}`.
+
+    A CELL THAT DID NOT COMPLETE IS NOT AN ARM'S READING. The ladder scores an incomplete cell on
+    purpose -- a build that dies at 500K is the most important thing the run has to say -- but a
+    ratio is a different question. An arm that crashed after emitting one action row still carries
+    that row's timings, and pairing them against a completed cell on the other side turns a crash
+    into a win: a treatment cell holding nothing but a 50 ms keystroke, measured against a
+    completed 100 ms base cell, reports IMPROVED. The crash is still in the payload, in the
+    summary and in `excluded_cells`; it is only kept out of the ratios.
+
+    `session_id`, when given, keeps the comparison inside ONE session. `--resume` appends to the
+    payload a previous run wrote, so an interrupted A/B resumed into the same directory otherwise
+    hands `compare_arms` cells from two browser sessions -- the 8% cross-session drift term that
+    `assert_comparable` exists to refuse, arriving through the back door because both sides are
+    labelled with the CURRENT session id.
 
     Deferred import: `scoring` pulls in the anchor table and this module is imported by the CLI
     before a run, where that cost buys nothing.
@@ -112,6 +126,10 @@ def readings_by_arm(records: list[dict]) -> dict[str, dict[int, dict]]:
     cell_ids: dict[str, set[str]] = {}
     for row in records:
         if row.get("row_type") == "cell":
+            if row.get("completed") is not True:
+                continue
+            if session_id is not None and row.get("session_id") not in (None, session_id):
+                continue
             arm = str((row.get("cell") or {}).get("arm") or row.get("arm") or "")
             if arm:
                 cell_ids.setdefault(arm, set()).add(str(row.get("cell_id")))
@@ -144,7 +162,7 @@ def compare_arms(
     from ..scoring.ab import DEFAULT_NOISE_FLOOR_PCT, Pair, RunIdentity, compare
     from ..scoring.anchors import METRIC_BY_KEY, weights_id
 
-    by_arm = readings_by_arm(records)
+    by_arm = readings_by_arm(records, session_id = session_id)
     base = by_arm.get(base_label, {})
     treatment = by_arm.get(treatment_label, {})
 

@@ -257,3 +257,36 @@ def test_measures_by_cell_does_not_mix_readings_between_cells():
     by_cell = measures_by_cell(rows)
     assert by_cell[(10_000, 0)]["menu_open_ms"].value == pytest.approx(10.0)
     assert by_cell[(10_000, 1)]["menu_open_ms"].value == pytest.approx(900.0)
+
+
+# ── ran is not "did what it claimed" ────────────────────────────────────────────────────────
+
+
+def test_an_action_whose_own_assertion_failed_is_not_a_reading():
+    """`report/payload.py` lists this cell under EXCLUDED CELLS with "must not be quoted".
+
+    Before this, the same action was excluded in the report and load-bearing in the headline: the
+    keystroke row reported `ran: true, expect_ok: false` because the composer never accepted the
+    commanded characters, and its p95 still set the rung's highest-weight metric.
+    """
+    recs = [
+        _cell(),
+        {
+            **_action("c1", "keystroke", ran = True, timings = {"p95_ms": 12.0}),
+            "expect_ok": False,
+            "reason": "typed 12 characters but the composer value grew by 0",
+        },
+    ]
+    keystroke = measures_from_records(recs)[10_000]["keystroke_p95_ms"]
+    assert keystroke.attempted is True
+    assert keystroke.value is None
+    assert "its own assertion failed" in keystroke.note
+    assert "grew by 0" in keystroke.note
+
+
+def test_an_action_whose_assertion_passed_is_still_a_reading():
+    recs = [
+        _cell(),
+        {**_action("c1", "keystroke", ran = True, timings = {"p95_ms": 12.0}), "expect_ok": True},
+    ]
+    assert measures_from_records(recs)[10_000]["keystroke_p95_ms"].value == 12.0
