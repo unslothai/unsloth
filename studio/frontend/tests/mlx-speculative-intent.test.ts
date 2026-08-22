@@ -186,28 +186,25 @@ function candidate(over: Record<string, unknown> = {}) {
   } as MlxSpeculativeCandidate;
 }
 
-test("Auto ranks a target's own head first, then by how much each method drafts", () => {
-  // The order the backend resolves in. Predicting it wrong would name one method in the
-  // control and load another.
-  const picked = (cs: MlxSpeculativeCandidate[]) =>
-    selectMlxSpeculativeCandidate(cs, "auto", null)?.repo_id;
+test("Auto names the drafter the backend resolved, rather than ranking the rows again", () => {
+  // Auto's size and requantization rules are invisible in a row, so ranking here misnames.
+  const picked = (cs: MlxSpeculativeCandidate[], resolved: string | null) =>
+    selectMlxSpeculativeCandidate(cs, "auto", null, resolved)?.repo_id;
   const own = candidate({ source: "builtin", repo_id: "builtin://mtp" });
   const dflash = candidate({ method: "dflash", repo_id: "org/f" });
-  const eagle = candidate({ method: "eagle3", repo_id: "org/e" });
-  // Against an external drafter of the same method whose id sorts first, so the head wins
-  // on being the head rather than on either tiebreak.
-  const external = candidate({ repo_id: "a/also-mtp" });
-  assert.equal(picked([eagle, dflash, external, own]), "builtin://mtp");
-  assert.equal(picked([eagle, dflash]), "org/f");
-  assert.equal(picked([eagle]), "org/e");
-  // Only what could actually load: an undownloaded checkpoint is not something Auto runs.
-  assert.equal(picked([candidate({ loadable: false })]), undefined);
-  // Ties break on repository id, so the same inputs always name the same drafter.
-  assert.equal(
-    picked([candidate({ repo_id: "org/b" }), candidate({ repo_id: "org/a" })]),
-    "org/a",
-  );
-  assert.equal(selectMlxSpeculativeCandidate([own], "off", null), null);
+  const rows = [dflash, own, candidate({ repo_id: "a/also-mtp" })];
+
+  assert.equal(picked(rows, "org/f"), "org/f");
+  assert.equal(picked(rows, "builtin://mtp"), "builtin://mtp");
+  // Not the row local ranking would lead with, so a reinstated one cannot pass by agreeing.
+  assert.equal(picked(rows, "a/also-mtp"), "a/also-mtp");
+  // Resolved to no drafter at all, which a list full of loadable rows cannot tell.
+  assert.equal(picked(rows, null), undefined);
+  // Named a drafter this list does not carry, so there is no row to show for it.
+  assert.equal(picked(rows, "org/absent"), undefined);
+  // The same repository however it is spelled.
+  assert.equal(picked(rows, "  ORG/F  "), "org/f");
+  assert.equal(selectMlxSpeculativeCandidate([own], "off", null, "org/f"), null);
 });
 
 test("Off selects nothing, even from a row that claims to be an Off drafter", () => {

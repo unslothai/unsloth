@@ -197,44 +197,57 @@ export interface MlxSpeculativeOptions {
   // biome-ignore lint/style/useNamingConvention: backend API schema
   runtime_reason: string | null;
   candidates: MlxSpeculativeCandidate[];
+  /** What Auto would run for this target, decided by the backend rather than re-derived. */
+  // biome-ignore lint/style/useNamingConvention: backend API schema
+  auto_method: MlxSpeculativeResolvedMode;
+  // biome-ignore lint/style/useNamingConvention: backend API schema
+  auto_draft_model: string | null;
+  // biome-ignore lint/style/useNamingConvention: backend API schema
+  auto_reason: string | null;
 }
 
-/** Auto's order: how much drafting each method does per verified token. */
-const AUTO_METHOD_PRIORITY: Record<MlxSpeculativeMethod, number> = {
+/** Listing order between the methods, cheapest drafting first. Not a depth or a count. */
+const METHOD_ORDER: Record<MlxSpeculativeMethod, number> = {
   mtp: 1,
   dflash: 2,
   eagle3: 3,
 };
 
-function compareAutoCandidates(
+/**
+ * The order companions are listed in. Not Auto's own order, which the backend decides and
+ * additionally ranks by precision, from cache state no candidate row carries. Companions
+ * only: the caller has already dropped the target's own head.
+ */
+function compareListedCandidates(
   a: MlxSpeculativeCandidate,
   b: MlxSpeculativeCandidate,
 ): number {
-  // A target's own head outranks everything: it needs no companion checkpoint.
-  const rank = (c: MlxSpeculativeCandidate) =>
-    c.source === "builtin" ? 0 : AUTO_METHOD_PRIORITY[c.method];
-  if (rank(a) !== rank(b)) {
-    return rank(a) - rank(b);
+  if (METHOD_ORDER[a.method] !== METHOD_ORDER[b.method]) {
+    return METHOD_ORDER[a.method] - METHOD_ORDER[b.method];
   }
   const [left, right] = [a.repo_id.toLowerCase(), b.repo_id.toLowerCase()];
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-/** Predicts the backend's resolution, so the panel can name Auto's pick before a load. */
+/**
+ * The row a mode would draft with, so the panel can name it before a load. Auto's own pick
+ * comes from the backend: two of its rules turn on the target rather than on any one
+ * drafter, and neither is visible in the rows ranked here.
+ */
 export function selectMlxSpeculativeCandidate(
   candidates: readonly MlxSpeculativeCandidate[],
   mode: MlxSpeculativeMode,
   preferredRepo: string | null | undefined,
+  autoDraftModel?: string | null,
 ): MlxSpeculativeCandidate | null {
   if (mode === "off") {
     return null;
   }
   if (mode === "auto") {
-    return (
-      [...candidates]
-        .filter((c) => c.loadable)
-        .sort(compareAutoCandidates)[0] ?? null
-    );
+    const picked = autoDraftModel?.trim().toLowerCase();
+    return picked
+      ? (candidates.find((c) => c.repo_id.toLowerCase() === picked) ?? null)
+      : null;
   }
   const matching = candidates.filter((c) => c.method === mode);
   const preferred = preferredRepo?.trim().toLowerCase();
@@ -300,7 +313,7 @@ export function selectableExternalMlxDraftCandidates(
     .filter((c) => c.source !== "builtin" && isSelectableMlxDraftCandidate(c))
     .sort(
       (a, b) =>
-        Number(b.loadable) - Number(a.loadable) || compareAutoCandidates(a, b),
+        Number(b.loadable) - Number(a.loadable) || compareListedCandidates(a, b),
     );
 }
 
