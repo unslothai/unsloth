@@ -8,28 +8,28 @@ import { fileURLToPath } from "node:url";
 
 import { en } from "../src/i18n/locales/en.ts";
 
-// The component reaches the hub barrel and cannot be imported here, so this
+function read(path: string): string {
+  return readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf-8");
+}
+
+// These reach the hub and chat barrels and cannot be imported here, so this
 // asserts on source, like ~50 sibling tests.
-const COMBOBOX = readFileSync(
-  fileURLToPath(
-    new URL(
-      "../src/features/settings/components/embedding-model-combobox.tsx",
-      import.meta.url,
-    ),
-  ),
-  "utf-8",
+const COMBOBOX = read(
+  "../src/features/settings/components/embedding-model-combobox.tsx",
 );
-const GENERAL_TAB = readFileSync(
-  fileURLToPath(
-    new URL("../src/features/settings/tabs/general-tab.tsx", import.meta.url),
-  ),
-  "utf-8",
+const SECTION = read(
+  "../src/features/settings/components/documents-rag-section.tsx",
 );
+const GENERAL_TAB = read("../src/features/settings/tabs/general-tab.tsx");
+const DATA_TAB = read("../src/features/settings/tabs/data-tab.tsx");
 
 test("only typed text searches the Hub", () => {
   // Searching for the saved model returns that model, so the list held one row
   // and the other embedding models were unreachable without clearing the field.
-  assert.match(COMBOBOX, /const query = typed !== null && typed === value \? typed : ""/);
+  assert.match(
+    COMBOBOX,
+    /const query = typed !== null && typed === value \? typed : ""/,
+  );
   assert.match(COMBOBOX, /useDebouncedValue\(query\)/);
   assert.ok(
     !COMBOBOX.includes("useDebouncedValue(value)"),
@@ -37,23 +37,39 @@ test("only typed text searches the Hub", () => {
   );
 });
 
-test("a selection stops filtering by what was typed to find it", () => {
+test("only a keystroke counts as typing", () => {
   const start = COMBOBOX.indexOf("onInputValueChange");
   const handler = COMBOBOX.slice(start, COMBOBOX.indexOf("}}", start));
-  // The selecting branch runs on pick; leaving the query would reopen the list
-  // still filtered by the old search.
-  assert.ok(handler.includes("selectingRef.current"));
+  // base-ui writes the input for the settings load ("none") and for a pick
+  // ("item-press") too. Treating those as a search collapses the list to the
+  // model already set, which is what the field did before.
+  assert.ok(handler.includes('details.reason !== "input-change"'));
   assert.ok(handler.includes("setTyped(null)"));
   assert.ok(handler.includes("setTyped(next)"));
 });
 
 test("the field says what it does", () => {
   assert.match(
-    GENERAL_TAB,
+    SECTION,
     /placeholder=\{t\("settings.general.rag.searchPlaceholder"\)\}/,
   );
   assert.equal(
     en.settings.general.rag.searchPlaceholder,
     "Search embedding models",
   );
+});
+
+test("General and Data show the same section, not two copies of it", () => {
+  assert.ok(SECTION.includes("export function DocumentsRagSection"));
+  for (const [name, tab] of [
+    ["general", GENERAL_TAB],
+    ["data", DATA_TAB],
+  ] as const) {
+    assert.ok(tab.includes("<DocumentsRagSection />"), `${name} renders it`);
+    // A second copy of the load and save logic would let the two tabs disagree.
+    assert.ok(
+      !tab.includes("loadEmbeddingModelSettings"),
+      `${name} has no embedding logic of its own`,
+    );
+  }
 });
