@@ -1025,16 +1025,28 @@ def assert_liveness(args) -> int:
 
     allowed = {a.strip() for a in (args.allow_not_run or "").split(",") if a.strip()}
     slack = max(0, int(getattr(args, "allow_slot_misses", 0) or 0))
-    cells, problems, missed = 0, [], []
+    rows, problems, missed = [], [], []
     for line in path.read_text(encoding = "utf-8").splitlines():
         line = line.strip()
         if not line:
             continue
         try:
-            row = json.loads(line)
+            rows.append(json.loads(line))
         except ValueError:
             problems.append("a payload line is not valid JSON")
-            continue
+
+    # A CELL THAT WAS RE-RUN IS JUDGED ON THE RUN THAT FINISHED IT, which is the same rule the
+    # report and the A/B already apply and the same helper that applies it. `--resume` appends to
+    # the payload it continues and re-runs the cells that died under the SAME deterministic
+    # `cell_id`, so the dead attempt's `completed: false` and its NOT RUN actions are still in the
+    # file after a resumed run has succeeded. Read raw, this loop found them forever: the resumed
+    # run exited 0 and `--report` scored the retry, while `--assert-liveness` on the same payload
+    # failed permanently on a cell that had already been re-run. A gate that cannot be satisfied
+    # by fixing the run is a gate people learn to pass with `--allow-not-run`.
+    from .scoring.from_payload import latest_attempt_rows
+
+    cells = 0
+    for row in latest_attempt_rows(rows):
         if row.get("row_type") != "cell":
             continue
         cells += 1
