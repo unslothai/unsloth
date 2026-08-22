@@ -75,6 +75,7 @@ on:
       - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
       - 'tests/studio/test_amd_venv_repair_loop.ps1'
       - 'tests/studio/test_amd_name_arch_r9700.ps1'
+      - 'tests/studio/test_torch_gpu_visibility_8473.ps1'
       - 'tests/studio/test_application_control_cli_fallback.ps1'
       # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
       # process.rs's, so a change to either spelling has to run here.
@@ -132,6 +133,7 @@ on:
       - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
       - 'tests/studio/test_amd_venv_repair_loop.ps1'
       - 'tests/studio/test_amd_name_arch_r9700.ps1'
+      - 'tests/studio/test_torch_gpu_visibility_8473.ps1'
       - 'tests/studio/test_application_control_cli_fallback.ps1'
       # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
       # process.rs's, so a change to either spelling has to run here.
@@ -247,6 +249,19 @@ jobs:
       - name: AMD GPU-name arch table tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_amd_name_arch_r9700.ps1
+      # Pulls Get-TorchGpuVisibility / Test-VisibleMaskHidesAll / Test-OneApiSelectorExcludesGpu
+      # and the announcement chain out of setup.ps1 with the AST and drives them against a stubbed
+      # probe, so no venv, no GPU and no Windows needed.
+      - name: torch GPU visibility tests (#8473)
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_torch_gpu_visibility_8473.ps1
+      # The same file under Windows PowerShell 5.1, the shell the CLI actually launches setup.ps1
+      # with. Every other step here is PowerShell 7, and the helpers above read `.Count` off values
+      # that may arrive as scalars, which is exactly where 5.1 and 7 have disagreed before (#8335).
+      - name: torch GPU visibility tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_torch_gpu_visibility_8473.ps1
       # AST-extracted helpers plus a real .cmd written to a temp dir, so no venv and no
       # Windows needed. The 1260 classification is exercised against crafted exceptions:
       # a hosted runner has no Application Control policy to be denied by. The enforced
