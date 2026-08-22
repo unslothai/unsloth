@@ -4,72 +4,68 @@
 """Does a code block flicker through a placeholder height when a stream finalizes?
 
 Streamdown puts `content-visibility: auto` with `contain-intrinsic-size: auto 200px` inline on
-every code-block wrapper. An element carrying those has no LAST REMEMBERED SIZE until it has been
-rendered once, so until then it lays out at the 200px fallback rather than at its content height.
-The re-render at the end of a stream REPLACES the code-block node, and a replaced node is a new
-element with no last remembered size, so it can lay out at 200px for a frame and then snap to its
-real height. That one-frame change is the "reload"-style flicker studio/frontend/src/index.css
-describes, and it is why the override there exists.
+every code-block wrapper. Such an element has no LAST REMEMBERED SIZE until it has rendered once,
+so until then it lays out at the 200px fallback rather than at its content height. The re-render
+at the end of a stream REPLACES the code-block node, and a replaced node is new, so it can lay out
+at 200px for a frame and then snap to its real height. That one-frame change is the "reload"
+flicker studio/frontend/src/index.css describes, and why the override there exists.
 
 WHAT IS MEASURED
 
-Not a timing. Per frame, for every `[data-streamdown="code-block"]` in the thread:
+Not a timing. Per frame, for every `[data-streamdown="code-block"]`:
 
-    collapses          a block that was at least 400px tall rendered at half that or less on a
-                       later frame and then came back. This is the flicker, and one is too many.
-    placeholder frames how many of those frames landed in the 150-260px band, i.e. on the
-                       `contain-intrinsic-size` fallback specifically rather than on some other
-                       height. Reported so a collapse can be attributed rather than just counted.
-    scroll height dips the thread's own scrollHeight falling by 300px or more and recovering.
-                       A block collapsing takes the whole column with it.
-    anchor shift       document-space movement of the last message that existed BEFORE the
-                       stream started. Nothing about that message changes while the stream runs,
-                       so any movement is settled content being relaid out under the user.
+    collapses          a block at least 400px tall rendering at half that or less and coming
+                       back. This is the flicker, and one is too many.
+    placeholder frames how many of those landed in the 150-300px band, i.e. on the
+                       `contain-intrinsic-size` fallback, so a collapse can be attributed.
+    scroll height dips the thread's scrollHeight falling 300px or more and recovering: a
+                       collapsing block takes the whole column with it.
+    anchor shift       DOCUMENT-space movement of the last message that existed BEFORE the
+                       stream. Nothing about it changes while the stream runs, so any movement is
+                       settled content relaid out under the user. Document space is the point:
+                       viewport-relative would count every scroll as a shift.
 
-Then a second phase on the thread the stream left behind: scroll it from the bottom to the top
-and record whether the content moved.
+Then a second phase on the thread the stream left behind: scroll bottom to top and record whether
+the content moved.
 
-    sweep shift        frames in which some block's DOCUMENT-space top moved. A block that was
-                       never rendered is skipped at the 200px fallback rather than at its real
-                       height, and that does not show while the user sits at the bottom. It
-                       shows on the way back up, as every block expands when it is reached and
+    sweep shift        frames in which some block's DOCUMENT-space top moved. A never-rendered
+                       block is skipped at the 200px fallback, not at its real height, which
+                       shows only on the way back up as each block expands when reached and
                        pushes what is below it down.
-    scrollHeight grew  how much the thread's own height changed over the gesture. Zero means the
-                       thread was already the right height before the sweep began.
+    scrollHeight grew  change in the thread's own height over the gesture. Zero means it was
+                       already the right height before the sweep.
 
 VARIANTS, AND WHY THE RUN DRIVES MORE THAN ONE
 
-A flicker check that only ever runs against the tree cannot tell "no flicker" from "the fixture
-reproduces nothing". So the same fixture is driven under stylesheets appended after the tree's
-own, and the run asserts on the SHAPE of the whole set:
+A check that only runs against the tree cannot tell "no flicker" from "the fixture reproduces
+nothing". So the fixture is driven under stylesheets appended after the tree's own, and the run
+asserts on the SHAPE of the whole set:
 
-    streamdown   streamdown's inline defaults, i.e. the tree before any override existed. This
-                 MUST flicker. If it does not, the fixture is measuring nothing and the run
-                 fails, whatever the tree scored.
+    streamdown   streamdown's inline defaults, the tree before any override. Positive control:
+                 this MUST flicker, or the fixture measured nothing and the run fails whatever
+                 the tree scored.
     released     the override released for every block at all times, streaming included: the
-                 shape of the mistake that scoping the override can make. This must flicker too.
-    legacy       the override as it was first written, forcing `content-visibility: visible` and
-                 clobbering `contain-intrinsic-size` to `none`. Must not flicker.
-    tree         whatever src/index.css ships right now. Must not flicker.
-    statusonly   held only while the message part is running, released the instant it is not.
-                 The obvious CSS-only scoping, and it is measured rather than assumed: the node
-                 replacement at fence close can land in the same commit as the status flip, so
-                 this one still flickers, which is why the tree keeps a settle window.
-    lastmessage  held only for the last message in the thread. Survives finalization, and cannot
-                 give an earlier message's blocks the first render they need, so it pays for the
-                 stream phase in the sweep phase instead.
+                 mistake scoping avoids. Second positive control, so it MUST flicker too.
+    legacy       the override as first written: `content-visibility: visible`,
+                 `contain-intrinsic-size: none`. Must not flicker.
+    tree         whatever src/index.css ships now. Must not flicker.
+    statusonly   held only while the part is running. The obvious CSS-only scoping, measured
+                 rather than assumed: node replacement at fence close can land in the same commit
+                 as the status flip, so it still flickers -- hence the tree's settle window.
+    lastmessage  held only for the last message. Survives finalization but cannot give an earlier
+                 message's blocks their first render, so it pays in the sweep phase instead.
 
-Neither of the last two decides the exit code. They are in the table because "the simpler thing
-does not work" is a claim that needs a number next to it.
+Neither of the last two decides the exit code; they are here because "the simpler thing does not
+work" needs a number next to it.
 
 Run:
     python tests/studio/playwright_code_block_flicker.py
     SMOKE_FLICKER_ENGINES=chromium,webkit python tests/studio/playwright_code_block_flicker.py
     SMOKE_FLICKER_VARIANTS=tree,streamdown python tests/studio/playwright_code_block_flicker.py
 
-It starts and stops its own vite dev server; SMOKE_BASE_URL points it at one you already have and
-SMOKE_PORT moves the one it starts. Exits non-zero when a variant that must not flicker did, when
-a variant that must flicker did not, or when the fixture failed to build the thread it claims to.
+It starts and stops its own vite dev server; SMOKE_BASE_URL points it at an existing one and
+SMOKE_PORT moves the one it starts. Exits non-zero when a variant that must not flicker did, one
+that must flicker did not, or the fixture failed to build the thread it claims to.
 """
 
 from __future__ import annotations
@@ -120,19 +116,17 @@ FENCES = int(os.environ.get("SMOKE_FLICKER_FENCES", "3"))
 LINES_PER_FENCE = int(os.environ.get("SMOKE_FLICKER_FENCE_LINES", "22"))
 CHUNK_CHARS = int(os.environ.get("SMOKE_FLICKER_CHUNK", "96"))
 GAP_MS = int(os.environ.get("SMOKE_FLICKER_GAP_MS", "8"))
-# How long to keep sampling after the stream reports done. The flicker is AT finalization, and
-# the re-render that causes it lands a frame or two after the generator returns, so a sampler
-# that stops on `done` stops just before the thing it is looking for.
+# Sampling kept alive past `done`: the re-render that causes the flicker lands a frame or two
+# after the generator returns, so stopping on `done` stops just short of it.
 TAIL_MS = int(os.environ.get("SMOKE_FLICKER_TAIL_MS", "2500"))
 
 
 MUST_FLICKER = {"streamdown", "released"}
 MUST_NOT_FLICKER = {"tree", "legacy"}
 
-# The positive control is what makes a clean run mean anything: without a variant that is
-# REQUIRED to flicker, "no collapses anywhere" is equally consistent with a detector that
-# measured nothing at all. The verdict loop can only check that per variant it actually ran, so
-# a filtered set that drops every control has to be refused here instead.
+# The positive control is what makes a clean run mean anything: without a variant REQUIRED to
+# flicker, "no collapses anywhere" is equally consistent with a detector that measured nothing.
+# The verdict loop only judges variants it ran, so a filtered set with no control is refused here.
 if not MUST_FLICKER & set(VARIANTS):
     raise SystemExit(
         "SMOKE_FLICKER_VARIANTS="
@@ -142,14 +136,11 @@ if not MUST_FLICKER & set(VARIANTS):
         + ", or a run that reports no collapses proves only that nothing was measured."
     )
 
-# What each variant's stylesheet must have actually computed to on a settled block, checked
-# before anything is measured.
-#
-# This guard is here because the absence of it produced a clean-looking run that proved nothing.
-# The tree's override lives inside `@layer utilities`, and for IMPORTANT declarations the cascade
-# REVERSES layer order, so a variant appended as unlayered `!important` CSS silently loses to the
-# tree's rule. All four variants then computed `visible`/`none`, all four reported zero collapses,
-# and the run read as "nothing flickers anywhere" while having measured one stylesheet four times.
+# What each variant must have computed to on a settled block, checked before anything is measured.
+# Without this guard: the tree's override lives in `@layer utilities`, and for IMPORTANT
+# declarations the cascade REVERSES layer order, so an unlayered `!important` variant silently
+# loses to it. All four then computed `visible`/`none`, all reported zero collapses, and the run
+# read as "nothing flickers anywhere" having measured one stylesheet four times.
 EXPECTED_COMPUTED = {
     "streamdown": {"contentVisibility": "auto"},
     "released": {"contentVisibility": "auto"},
@@ -158,12 +149,10 @@ EXPECTED_COMPUTED = {
     "lastmessage": {"contentVisibility": "auto"},
 }
 
-# The same guard, taken WHILE THE STREAM IS RUNNING, on the block being streamed.
-#
-# The settled check above is not enough on its own and that is not hypothetical: the pre-override
-# variant passed it while losing the cascade during streaming, because the tree only holds while
-# the thread is building and both agree once it is quiet. The variant then reported zero flickers
-# and the run read as "there was never anything to fix".
+# The same guard WHILE THE STREAM IS RUNNING, on the block being streamed. The settled check
+# alone is not enough, and that is not hypothetical: the pre-override variant passed it while
+# losing the cascade during streaming (the tree only holds while the thread builds, and both agree
+# once quiet), then reported zero flickers, reading as "there was never anything to fix".
 EXPECTED_COMPUTED_RUNNING = {
     "tree": {"contentVisibility": "visible"},
     "legacy": {"contentVisibility": "visible"},
@@ -184,8 +173,8 @@ def info(message: str) -> None:
 def settle_highlighting(page) -> int:
     """Five stable reads a quarter second apart, the gate PR 9016 had to fix twice.
 
-    Two adjacent reads land inside the lull between two async Shiki batches, which releases the
-    gate on a thread that is still building itself.
+    Two adjacent reads can land in the lull between async Shiki batches and release the gate on a
+    thread that is still building.
     """
     stable = 0
     last = -1
@@ -235,7 +224,7 @@ def run_case(page, variant: str) -> dict:
             "park": PARK,
         },
     )
-    # Mid-stream, on the block being written: the cascade guard that the settled one cannot make.
+    # Mid-stream cascade guard, on the block being written: the check the settled one cannot make.
     page.wait_for_function("window.__flicker.results().streamStartedAt !== null", timeout = 120_000)
     page.wait_for_timeout(400)
     running_computed = page.evaluate(
@@ -260,8 +249,7 @@ def run_case(page, variant: str) -> dict:
         raise RuntimeError(f"variant {variant}: stream failed: {results['error']}")
     stats = analyse_stream(results["frames"])
 
-    # Phase two, on the thread the stream just left behind: scroll it from bottom to top and
-    # record whether the content moved.
+    # Phase two, on the thread the stream left behind: scroll bottom to top, record any movement.
     page.evaluate("window.__flicker.startSampling()")
     sweep_meta = page.evaluate(
         "(a) => window.__flicker.sweepUp(a.steps, a.px)",

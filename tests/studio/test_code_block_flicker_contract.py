@@ -4,18 +4,16 @@
 """What the code-block flicker harness is held to.
 
 `tests/studio/playwright_code_block_flicker.py` decides whether a code block flickered from a
-per-frame log of rendered heights. Two things can go wrong with that and neither shows up as a
-failing run:
+per-frame log of rendered heights. Two failures there never show up as a failing run: the detector
+never fires and every tree looks clean, or it fires on a height change that is not a flicker and
+every tree looks broken.
 
-  * the detector never fires, and every tree looks clean;
-  * the detector fires on a height change that is not a flicker, and every tree looks broken.
+So it is exercised here against hand-written frame logs, including the ones it must NOT report,
+and the harness is held to driving at least one variant known to flicker, so a run reporting "no
+flicker" has said something.
 
-So the detector is exercised here against hand-written frame logs, including the ones it must NOT
-report, and the harness is held to driving at least one variant that is known to flicker, so a
-run that reports "no flicker" has said something.
-
-The analysis lives in `_code_block_flicker_analysis.py` rather than in the harness so this file
-can import it wherever the CPU suite runs: the harness imports playwright, this does not.
+The analysis lives in `_code_block_flicker_analysis.py` so this file can import it wherever the
+CPU suite runs: the harness imports playwright, this does not.
 """
 
 import ast
@@ -79,10 +77,10 @@ def test_a_one_frame_collapse_to_the_placeholder_is_a_collapse() -> None:
 
 
 def test_a_collapse_that_deepens_reports_its_deepest_point() -> None:
-    """A drop that arrives over several frames is one collapse, measured at the floor.
+    """A drop arriving over several frames is one collapse, measured at the floor.
 
-    The reported drop has to agree with the floor recorded for the same event, or a red run
-    understates what it caught: 1700 -> 700 -> 200 is a 1500px collapse, not a 1000px one.
+    The reported drop must agree with the recorded floor, or a red run understates what it caught:
+    1700 -> 700 -> 200 is a 1500px collapse, not a 1000px one.
     """
     frames = [frame([1700.0]), frame([700.0]), frame([200.0]), frame([1700.0])]
     result = analyse_stream(frames)
@@ -103,11 +101,8 @@ def test_each_block_is_counted_separately() -> None:
 
 
 def test_a_collapse_below_the_placeholder_band_still_counts() -> None:
-    """`contain-intrinsic-size: auto none` collapses toward zero rather than to 200px.
-
-    That is a different fallback, not a different bug, so the collapse is counted while the
-    placeholder attribution is not claimed.
-    """
+    """`contain-intrinsic-size: auto none` collapses toward zero, not to 200px: a different
+    fallback, not a different bug, so it counts but claims no placeholder attribution."""
     frames = [frame([1700.0])] * 2 + [frame([2.0])] + [frame([1700.0])] * 2
     result = analyse_stream(frames)
     assert result["collapses"] == 1
@@ -135,10 +130,8 @@ def test_a_still_thread_reports_nothing() -> None:
 
 
 def test_a_block_that_goes_short_and_stays_short_is_not_a_flicker() -> None:
-    """A drop with no recovery is a different bug, and reporting it here would hide this one.
-
-    It is still recorded, with a null recovery frame, so it cannot be silently dropped.
-    """
+    """A drop with no recovery is a different bug, and reporting it here would hide this one. It
+    is still recorded, with a null recovery frame, so it cannot be silently dropped."""
     frames = [frame([1700.0])] * 3 + [frame([226.0])] * (RECOVERY_FRAMES + 5)
     result = analyse_stream(frames)
     assert result["collapses"] == 0
@@ -149,9 +142,9 @@ def test_a_block_that_goes_short_and_stays_short_is_not_a_flicker() -> None:
 def test_a_drop_still_open_when_the_log_ends_is_recorded() -> None:
     """The tail is shorter than RECOVERY_FRAMES, so the realistic case ends mid-drop.
 
-    2500ms of tail is about 150 frames at 60Hz against RECOVERY_FRAMES of 240, so a block that
-    collapses at finalization and stays short never reaches the threshold. It still must not
-    vanish from `detail`, which is the one place a non-recovering drop is promised to appear.
+    2500ms is ~150 frames at 60Hz against RECOVERY_FRAMES of 240, so a block collapsing at
+    finalization and staying short never trips the threshold. It must still appear in `detail`,
+    the one place a non-recovering drop is promised to show up.
     """
     frames = [frame([1700.0])] * 3 + [frame([226.0])] * 150
     result = analyse_stream(frames)
@@ -183,12 +176,9 @@ def test_a_thread_that_simply_gets_shorter_is_not_a_dip() -> None:
 
 
 def test_blocks_appearing_and_disappearing_are_not_collapses() -> None:
-    """The array of heights is not a fixed-width record.
-
-    Blocks are APPENDED while a reply streams, so it grows; and leaving the thread unmounts every
-    one of them, so it empties. A block that is absent from a frame has no height in that frame,
-    which is not the same as a height of zero: reading it as zero turns every teardown into a
-    column of collapses and buries the one this is looking for.
+    """The heights array is not a fixed-width record: it grows as blocks are APPENDED, and empties
+    when the thread unmounts. An absent block has no height, which is not a height of zero:
+    reading it as zero turns every teardown into a column of collapses.
     """
     appearing = [frame([1700.0])] * 3 + [frame([1700.0, 900.0])] * 3
     assert analyse_stream(appearing)["collapses"] == 0
@@ -251,9 +241,8 @@ def harness_source() -> str:
 def module_assignment(source: str, name: str) -> ast.expr | None:
     """The value assigned to a module-level `name`, or None.
 
-    Parsed rather than grepped: a substring check passes on a constant that has been renamed to
-    `NAME_DISABLED` and left unread, which is exactly how one of these guards can be turned off
-    without any test noticing.
+    Parsed rather than grepped: a substring check passes on a constant renamed to `NAME_DISABLED`
+    and left unread, which is how one of these guards gets turned off without a test noticing.
     """
     tree = ast.parse(source)
     for node in tree.body:
@@ -279,11 +268,8 @@ def test_the_run_drives_a_variant_that_is_required_to_flicker() -> None:
 
 
 def test_a_filtered_variant_set_cannot_drop_every_positive_control() -> None:
-    """`SMOKE_FLICKER_VARIANTS=tree` would otherwise pass while proving nothing.
-
-    The verdict loop can only judge variants it actually ran, so a filtered set that keeps no
-    MUST_FLICKER member has to be refused up front rather than exiting clean.
-    """
+    """`SMOKE_FLICKER_VARIANTS=tree` would otherwise pass while proving nothing. The verdict loop
+    only judges variants it ran, so a set keeping no MUST_FLICKER member is refused up front."""
     source = harness_source()
     assert (
         "MUST_FLICKER & set(VARIANTS)" in source
@@ -301,11 +287,9 @@ def test_the_fixture_offers_the_state_the_override_was_added_for() -> None:
 
 
 def test_the_variant_stylesheets_are_checked_to_have_won_the_cascade() -> None:
-    """A variant that loses to the tree measures the tree under another name.
-
-    That happened: every variant computed identically, every variant reported zero collapses,
-    and the run read as "there was never anything to fix".
-    """
+    """A variant that loses to the tree measures the tree under another name. That happened: every
+    variant computed identically, all reported zero collapses, and the run read as "nothing to
+    fix"."""
     source = harness_source()
     settled = module_assignment(source, "EXPECTED_COMPUTED")
     running = module_assignment(source, "EXPECTED_COMPUTED_RUNNING")

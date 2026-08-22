@@ -389,10 +389,10 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_research_freeze.py
 
-      # A gate, not a measurement: the released and streamdown variants are positive controls
-      # that MUST flicker, so a run that reports none of them collapsing means the detector
-      # stopped seeing rather than the flicker stopping. Chromium only on a PR, which is the
-      # engine whose content-visibility fallback the override in index.css exists for.
+      # A gate, not a measurement. The released and streamdown variants are positive controls
+      # that MUST flicker: a run where neither collapses means the detector stopped seeing, not
+      # that the flicker stopped. Chromium only on a PR, the engine whose content-visibility
+      # fallback the index.css override exists for.
       - name: Browser smoke for code block flicker
         working-directory: ${{ github.workspace }}
         env:

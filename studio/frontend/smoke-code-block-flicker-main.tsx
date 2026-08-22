@@ -2,36 +2,27 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Harness page for tests/studio/playwright_code_block_flicker.py: the real Thread, streaming a
-// real reply that ends in code fences, with every code block's rendered HEIGHT sampled on every
-// frame.
+// reply that ends in code fences, sampling every code block's rendered HEIGHT per frame.
 //
-// What it exists to catch. Streamdown sets `content-visibility: auto` with
-// `contain-intrinsic-size: auto 200px` inline on every code-block wrapper. An element with
-// `content-visibility: auto` that has never been rendered has no LAST REMEMBERED SIZE, so it
-// lays out at the 200px fallback until the engine decides it is relevant to the user and renders
-// it. A code block whose DOM node is REPLACED -- which is what the re-render at the end of a
-// stream does -- is a brand new element with no last remembered size, so it can lay out at 200px
-// for a frame before snapping back to its real height. That one-frame height change is the
-// "reload"-style flicker studio/frontend/src/index.css describes.
+// The mechanism it catches: streamdown sets `content-visibility: auto` with
+// `contain-intrinsic-size: auto 200px` inline on every code-block wrapper. Such an element has no
+// LAST REMEMBERED SIZE until it has rendered once, so it lays out at the 200px fallback. The
+// re-render at the end of a stream REPLACES the node, and a replaced node is new, so it can lay
+// out at 200px for a frame before snapping back. That is the "reload" flicker src/index.css
+// describes. So the measurement is not a timing: did a TALL block go SHORT and back, and did the
+// thread's scrollHeight dip with it -- per frame, the resolution a flicker is visible at.
 //
-// So the measurement here is not a timing. It is: did any code block that was TALL become
-// SHORT and then tall again, and did the thread's own scroll height dip while that happened.
-// Both are recorded per frame, and a frame is the resolution a flicker is visible at.
+// Same shape as smoke-heavy-thread.html: vite entry, no backend, auth, GPU or model. Thread is
+// real because `.aui-thread-root` is where the override lives; a bare ThreadPrimitive.Root lacks
+// that class and would report no flicker on every tree.
 //
-// Same shape as smoke-heavy-thread.html and smoke-autoscroll.html: a vite entry, no backend, no
-// auth, no GPU, no model. Thread itself is real on purpose, because `.aui-thread-root` is where
-// the override lives and a bare ThreadPrimitive.Root does not carry that class -- a fixture
-// mounted on the primitive would measure a page the override never applied to and report no
-// flicker on every tree.
-//
-// useLocalRuntime with a generator adapter rather than a seeded import: the flicker is at stream
-// FINALIZATION, so the fixture has to actually finalize a stream. `thread.import` produces
-// finished messages and never passes through the running -> complete transition at all.
+// useLocalRuntime with a generator adapter, not a seeded import: the flicker is at stream
+// FINALIZATION, and `thread.import` never passes through the running -> complete transition.
 
 /* eslint-disable no-restricted-imports -- a measurement entry point, not app code. */
-// This store first, deliberately, for the reason smoke-stream-pacing-main.tsx gives: the
-// renderer's import graph reaches the chat barrel and back, and entering that cycle from the
-// renderer leaves a constant in its temporal dead zone and the harness renders nothing.
+// This store first, per smoke-stream-pacing-main.tsx: the renderer's import graph cycles through
+// the chat barrel, and entering the cycle from the renderer leaves a constant in its temporal
+// dead zone and the harness renders nothing.
 import "@/features/chat/stores/sidebar-organization-store";
 /* eslint-enable no-restricted-imports */
 
@@ -55,9 +46,8 @@ import { type ReactElement, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import "./src/index.css";
 
-// Same reason as smoke-heavy-thread-main.tsx: the fork-count badge fires one GET per assistant
-// message against a backend that is not here. Answering before anything mounts keeps those off
-// the wire rather than putting a round trip inside a sampled region.
+// Per smoke-heavy-thread-main.tsx: the fork-count badge fires one GET per assistant message at a
+// backend that is not here. Answer before mount, so no round trip lands inside a sampled region.
 const realFetch = window.fetch.bind(window);
 window.fetch = (input, init) => {
   const url =
@@ -77,32 +67,29 @@ window.fetch = (input, init) => {
 
 // ── CSS variants ────────────────────────────────────────────────────
 //
-// The point of the harness is to compare what the tree ships against the states either side of
-// it, so every variant is expressed as a stylesheet appended AFTER src/index.css rather than by
-// editing the tree between runs. `?css=tree` measures exactly what the tree ships and is what
-// the pass/fail run uses; the others exist so that "no flicker" can be shown to be a property of
-// the tree rather than of the fixture.
+// Each variant is a stylesheet appended AFTER src/index.css, not an edit to the tree. `?css=tree`
+// is the pass/fail run; the others exist so "no flicker" can be shown to be a property of the
+// tree rather than of the fixture.
 //
-// Every variant selector is written against a deliberately OVERSPECIFIC prefix. The tree's own
-// rules are scoped (`.aui-thread-root[data-status="running"] ...` and friends), so a variant
-// written at the obvious specificity loses to them exactly where it matters and quietly measures
-// the tree under another name: that produced a run in which the pre-override variant reported
-// zero flickers, which reads as "there was never anything to fix".
+// The prefix is deliberately OVERSPECIFIC. The tree's rules are scoped
+// (`.aui-thread-root[data-status="running"] ...`), so a variant at the obvious specificity loses
+// to them exactly where it matters and measures the tree under another name -- that once made
+// the pre-override variant report zero flickers, reading as "nothing to fix".
 const HERE = ".aui-thread-root.aui-thread-root.aui-thread-root";
 const BLOCK = '[data-streamdown="code-block"]';
 
 const CSS_VARIANTS: Record<string, string> = {
   // Whatever src/index.css says, untouched.
   tree: "",
-  // Streamdown's own defaults, i.e. the tree BEFORE the override was added. This is the state
-  // the override exists to prevent, so a run in this mode that reports no flicker means the
-  // fixture is not reproducing anything and nothing measured against it means a thing.
+  // Streamdown's defaults, i.e. the tree BEFORE the override. Positive control: this is the state
+  // the override prevents, so if it reports no flicker the fixture reproduces nothing and no
+  // other row means anything.
   streamdown: `${HERE} ${BLOCK} {
       content-visibility: auto !important;
       contain-intrinsic-size: auto 200px !important;
     }`,
-  // The override released for every block at all times, streaming included. This is the shape
-  // of the mistake the scoping is there to avoid.
+  // The override released for every block at all times, streaming included: the mistake the
+  // scoping avoids, and the second positive control, so it MUST flicker too.
   released: `${HERE} ${BLOCK} {
       content-visibility: auto !important;
       contain-intrinsic-size: auto 200px !important;
@@ -112,9 +99,9 @@ const CSS_VARIANTS: Record<string, string> = {
       content-visibility: visible !important;
       contain-intrinsic-size: none !important;
     }`,
-  // Scoped by the streaming status alone, with NO settle window: held while the message part is
-  // running, released the instant it is not. This is the shape the fix would take if the node
-  // replacement at fence close did not land in the same commit as the status flip.
+  // Streaming status alone, NO settle window: held while the part runs, released the instant it
+  // is not. The fix's shape if node replacement at fence close did not land in the same commit
+  // as the status flip.
   statusonly: `${HERE} ${BLOCK} {
       content-visibility: auto !important;
       contain-intrinsic-size: auto 200px !important;
@@ -122,10 +109,9 @@ const CSS_VARIANTS: Record<string, string> = {
     ${HERE} [data-status="running"] ${BLOCK} {
       content-visibility: visible !important;
     }`,
-  // Scoped to the last message in the thread, the CSS-only alternative: it needs no JavaScript
-  // and it does survive finalization, because the message being finalized is the last one. What
-  // it cannot do is give an earlier message's blocks a first render, so a freshly opened thread
-  // holds every off-screen block at the 200px fallback.
+  // Last message only, the CSS-only alternative: no JavaScript, and it survives finalization
+  // since the message being finalized is the last. It cannot give an EARLIER message's blocks a
+  // first render, so a freshly opened thread holds every off-screen block at the 200px fallback.
   lastmessage: `${HERE} ${BLOCK} {
       content-visibility: auto !important;
       contain-intrinsic-size: auto 200px !important;
@@ -144,12 +130,11 @@ if (variantCss === undefined) {
 if (variantCss) {
   const style = document.createElement("style");
   style.dataset.smokeVariant = CSS_MODE;
-  // Inside `@layer utilities`, and that is not cosmetic. src/index.css puts the override in
-  // that layer, and for IMPORTANT declarations the cascade reverses layer order: a layered
-  // `!important` beats an unlayered one however late it appears. A variant appended as plain
-  // CSS therefore loses to the tree's own rule, every variant computes identically, and the
-  // run reports "no flicker anywhere" while having measured one stylesheet four times.
-  // Same layer, later in document order, so ordinary precedence applies.
+  // `@layer utilities` is not cosmetic: src/index.css puts the override in that layer, and for
+  // IMPORTANT declarations the cascade REVERSES layer order, so a layered `!important` beats an
+  // unlayered one however late. Unlayered variants would all lose to the tree and the run would
+  // report "no flicker anywhere" having measured one stylesheet four times. Same layer, later in
+  // document order, so ordinary precedence applies.
   style.textContent = `@layer utilities { ${variantCss} }`;
   document.head.append(style);
 }
@@ -212,9 +197,8 @@ function history(messages: number): ThreadMessageLike[] {
 }
 
 /**
- * The streamed reply. It ENDS in a fence on purpose: the index.css comment is about "trailing
- * code blocks the moment streaming ends", and a reply whose last block is prose finalizes with
- * the fence already settled several hundred milliseconds earlier.
+ * The streamed reply. It ENDS in a fence on purpose: the flicker is in "trailing code blocks the
+ * moment streaming ends", and a reply ending in prose finalizes with the fence long settled.
  */
 function reply(fences: number, linesPerFence: number): string {
   const parts: string[] = [prose(100, 2)];
@@ -231,7 +215,7 @@ type Frame = {
   t: number;
   /** Height of every [data-streamdown="code-block"] in DOM order. */
   heights: number[];
-  /** Distance of each block's top from the top of the scroll container's content. */
+  /** Document-space top of each block, i.e. offset within the scroll container's content. */
   tops: number[];
   scrollTop: number;
   scrollHeight: number;
@@ -308,6 +292,7 @@ function codeBlocks(): HTMLElement[] {
 /**
  * The last assistant message that existed BEFORE the stream started. Nothing about it changes
  * while the stream runs, so any movement of its top edge is the page shifting under the user.
+ * Read in DOCUMENT space (see the analysis module): scrolling must not count as movement.
  */
 let anchor: HTMLElement | null = null;
 
@@ -343,9 +328,9 @@ function FlickerApi(): null {
     let handle = 0;
     const loop = (now: number) => {
       if (state.sampling) sample(now);
-      // `thread.append` returns void here, so completion is read from the runtime rather than
-      // from a promise. Both halves matter: the generator returning is not the end of the
-      // render, and the runtime clearing isRunning is what flips the message to complete.
+      // `thread.append` returns void, so completion is read from the runtime. Both halves
+      // matter: the generator returning is not the end of the render, and the runtime clearing
+      // isRunning is what flips the message to complete.
       if (
         !state.done &&
         state.streamEndedAt !== null &&
@@ -395,15 +380,12 @@ function FlickerApi(): null {
         return state.frames.length;
       },
       /**
-       * Scroll from the bottom of the thread to the top, a step per frame pair, while the
-       * sampler runs.
+       * Scroll bottom to top, a step per frame pair, while the sampler runs.
        *
-       * This is the half of the question the stream does not answer. A block that has never
-       * been rendered is skipped at the `contain-intrinsic-size` fallback rather than at its
-       * real height, and the difference does not show while the user sits at the bottom: it
-       * shows when they scroll back up, because every block that expands as it is reached
-       * pushes everything below it down. The frame log records each block's DOCUMENT-space top,
-       * so a block whose top moves is content above it having been relaid out.
+       * The half the stream does not answer: a never-rendered block is skipped at the
+       * `contain-intrinsic-size` fallback, not at its real height. That shows only on the way
+       * back up, as each block expands when reached and pushes what is below it down. Tops are
+       * DOCUMENT-space, so a top that moves is content above it being relaid out.
        */
       async sweepUp(
         steps: number,

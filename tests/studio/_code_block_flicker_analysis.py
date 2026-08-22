@@ -3,43 +3,38 @@
 
 """Turning a frame log into "did a code block flicker", separated so it can be tested.
 
-`playwright_code_block_flicker.py` records, on every frame, the rendered height and the
-document-space top of every `[data-streamdown="code-block"]` in the thread. Everything that
-decides whether a run passes is computed here, from those numbers alone, so the decision can be
-exercised against hand-written frame logs without a browser -- including the logs that must NOT
-be read as a flicker.
+`playwright_code_block_flicker.py` records per frame the rendered height and document-space top of
+every `[data-streamdown="code-block"]`. Every pass/fail decision is computed here from those
+numbers alone, so it can be exercised against hand-written frame logs without a browser --
+including the logs that must NOT be read as a flicker.
 
-Kept out of the harness module because the harness imports playwright, and the contract test
-that exercises these rules has to run wherever the repo's CPU suite runs.
+Kept out of the harness because that imports playwright, while the contract test has to run
+wherever the repo's CPU suite runs.
 """
 
 from __future__ import annotations
 
-# A block has to be this tall before a drop counts, so a genuinely short fence is never read as a
-# collapsed tall one.
+# Minimum height before a drop counts, so a genuinely short fence is never read as a collapsed
+# tall one.
 TALL_PX = 400
-# Streamdown's inline `contain-intrinsic-size` fallback is 200px; the wrapper adds padding and a
-# header row on top of it. A drop that lands in this band is the fallback specifically rather
-# than some other height, which is what lets a collapse be attributed instead of merely counted.
+# Streamdown's inline fallback is 200px plus the wrapper's padding and header row. A drop landing
+# in this band is that fallback specifically, which is what lets a collapse be attributed.
 PLACEHOLDER_LO, PLACEHOLDER_HI = 150, 300
-# Frames a drop is given to come back before it is recorded as a drop that never recovered. A
-# block that goes short and STAYS short is a different bug from a block that blinks.
+# Frames a drop may take to come back. Going short and STAYING short is a different bug.
 RECOVERY_FRAMES = 240
-# A block's document-space top moving further than this between two frames of a scroll gesture is
-# content above it having been relaid out under the user.
+# Document-space top movement between two frames of a scroll gesture beyond this is content above
+# being relaid out under the user.
 SHIFT_PX = 8
 
 
 def analyse_stream(frames: list[dict]) -> dict:
     """Collapse-and-recover events over a frame log, per code block.
 
-    Block indices are stable across frames because blocks are only ever APPENDED while a reply
-    streams: a fence that has started keeps its position while the ones after it appear.
+    Block indices are stable across frames: blocks are only ever APPENDED while a reply streams.
 
-    A collapse is a block that was at least TALL_PX tall rendering at half that or less and then
-    coming back. Both halves are required. Requiring the recovery is what keeps a block that is
-    legitimately replaced by something shorter, or a thread that is being torn down, from being
-    reported as a flicker.
+    A collapse is a block at least TALL_PX tall rendering at half that or less and then coming
+    back. The recovery is required, so a block legitimately replaced by something shorter, or a
+    thread being torn down, is not reported as a flicker.
     """
     collapses = 0
     placeholder_frames = 0
@@ -63,10 +58,9 @@ def analyse_stream(frames: list[dict]) -> dict:
                         placeholder_frames += 1
                 continue
             start_frame, before = open_drop
-            # A collapse can deepen after the frame that opened it (1700 -> 700 -> 200), so the
-            # worst drop is tracked for as long as the drop is open rather than once on the way
-            # down. Measuring only the first step reports 1000px for a 1500px collapse, and
-            # disagrees with the heightAtFloor recorded for the same event.
+            # A collapse can deepen after it opens (1700 -> 700 -> 200), so track the worst drop
+            # while it stays open. Measuring only the first step reports 1000px for a 1500px
+            # collapse and disagrees with the heightAtFloor of the same event.
             worst_drop_px = max(worst_drop_px, before - height)
             if PLACEHOLDER_LO <= height <= PLACEHOLDER_HI:
                 placeholder_frames += 1
@@ -98,11 +92,10 @@ def analyse_stream(frames: list[dict]) -> dict:
                 )
                 open_drop = None
 
-        # A drop still open when the log ends is recorded here rather than discarded. The tail is
-        # about 150 frames and RECOVERY_FRAMES is 240, so a block that collapses at finalization
-        # and stays short never reaches the threshold above, and without this it appears in
-        # neither `collapses` nor `detail` -- the one place the contract promises it cannot be
-        # silently dropped. It is still not counted as a collapse: it never came back.
+        # A drop still open when the log ends is recorded, not discarded: the ~150 frame tail is
+        # shorter than RECOVERY_FRAMES, so a block collapsing at finalization and staying short
+        # never trips the branch above and would appear in neither `collapses` nor `detail`.
+        # Still not counted as a collapse: it never came back.
         if open_drop is not None:
             start_frame, before = open_drop
             detail.append(
@@ -153,9 +146,9 @@ def analyse_stream(frames: list[dict]) -> dict:
 def analyse_sweep(frames: list[dict]) -> dict:
     """Layout shift under a scroll gesture, from the same frame log.
 
-    A block's `tops` entry is its distance from the top of the THREAD'S CONTENT, not from the
-    viewport, so scrolling does not move it. Anything that does move it is a block above it
-    changing size, which is what the user sees as the page moving under their finger.
+    `tops` is measured from the top of the THREAD'S CONTENT, not the viewport, so scrolling does
+    not move it. Anything that does is a block above changing size, which the user sees as the
+    page moving under their finger.
     """
     shift_frames = 0
     worst_shift = 0.0
