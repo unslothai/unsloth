@@ -264,3 +264,55 @@ def test_a_failure_before_the_window_does_not_taint_it(page):
     _feed(page, _frame("clean"))
     out = inst.close(_Window())
     assert out["reply_chars_scoreable"] is True, out
+
+
+# ── the OTHER end of a split, which is the window that opens on it ──
+
+
+def test_a_window_that_opens_on_a_half_delivered_frame_is_not_scoreable(page):
+    """THE DEFECT, one window to the right of the one already covered above.
+
+    `reset()` cannot clear `pending` -- it holds half a frame whose other half has not arrived --
+    so a frame the socket cut across a window boundary is still buffered when the NEXT window
+    opens. Its suffix lands inside that window, the parser adds the WHOLE frame's characters
+    there and empties the buffer, and the close reading then sees zero failures and zero residual
+    and calls the window scoreable. Part of its denominator was delivered before it opened, so
+    `reply_chars_delta` is not "characters delivered in this window" and the cost per character
+    above it is wrong in a direction nothing in the row discloses.
+    """
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    head, tail = _halves(_frame("straddles the boundary"), 30)
+    assert "\n\n" not in head, head
+    # The first window closes mid-frame: already refused, by `wire_pending_chars_at_close`.
+    first = _instrument(page)
+    first.open(_Window())
+    _feed(page, head)
+    closed = first.close(_Window())
+    assert closed["reply_chars_scoreable"] is False, closed
+    assert closed["wire_pending_chars_at_close"] > 0, closed
+
+    # The second opens holding that frame, and is handed its whole character count.
+    second = _instrument(page)
+    second.open(_Window())
+    _feed(page, tail)
+    out = second.close(_Window())
+    assert out["wire_parse_failures_in_window"] == 0, out
+    assert out["wire_pending_chars_at_close"] == 0, out
+    assert out["wire_pending_chars_at_open"] > 0, out
+    # The whole frame was charged here, including the part delivered in the window before it.
+    assert out["reply_chars_delta"] == len("straddles the boundary"), out
+    assert out["reply_chars_scoreable"] is False, out
+    assert "already buffered" in out["reply_chars_unscoreable_reason"], out
+
+
+def test_a_window_that_opens_on_an_empty_buffer_is_still_scoreable(page):
+    """The positive control. A refusal that fires on every window measures nothing at all."""
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    _feed(page, _frame("before"))
+    inst = _instrument(page)
+    inst.open(_Window())
+    _feed(page, _frame("during"))
+    out = inst.close(_Window())
+    assert out["wire_pending_chars_at_open"] == 0, out
+    assert out["reply_chars_scoreable"] is True, out
+    assert out["reply_chars_delta"] == len("during"), out

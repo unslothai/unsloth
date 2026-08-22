@@ -114,15 +114,28 @@ class StreamCostInstrument(_PageInstrument):
         integrity = self._eval("() => window.__sb.streamcost.wireIntegrity()") or {}
         failures = (integrity.get("failures") or 0) - (self._integrity_open.get("failures") or 0)
         residual = integrity.get("pending_chars") or 0
+        # AND THE OTHER END OF THE SAME SPLIT. `pending` is not cleared by `reset()` -- it cannot
+        # be, it holds half a frame -- so a frame the socket cut across a window boundary is still
+        # buffered when the NEXT window opens. Its suffix arrives inside that window, the parser
+        # adds the WHOLE frame's characters there and empties the buffer, and the close reading
+        # then sees no failures and no residual and calls the window scoreable. Part of its
+        # denominator was delivered before it opened. The window that closed on the split is
+        # already refused by `residual`; this refuses its partner, and the two together are what
+        # make `reply_chars_delta` mean "characters delivered IN this window" rather than
+        # "characters counted in this window".
+        pending_at_open = self._integrity_open.get("pending_chars") or 0
         out["wire_parse_failures_in_window"] = failures
         out["wire_pending_chars_at_close"] = residual
-        if failures > 0 or residual > 0:
+        out["wire_pending_chars_at_open"] = pending_at_open
+        if failures > 0 or residual > 0 or pending_at_open > 0:
             out["reply_chars_scoreable"] = False
             out["reply_chars_unscoreable_reason"] = (
-                f"{failures} SSE frame(s) failed to parse inside this window and "
-                f"{residual} character(s) of an unterminated frame were still buffered at its "
-                "close, so the wire character count is short by an unknown amount and any "
-                "cost-per-character derived from it would be inflated"
+                f"{failures} SSE frame(s) failed to parse inside this window, "
+                f"{pending_at_open} character(s) of an unterminated frame were already buffered "
+                f"when it opened, and {residual} character(s) were still buffered at its close, "
+                "so the wire character count over this window is short by an unknown amount at "
+                "one end or carries a frame that began before the other, and any cost-per-"
+                "character derived from it would be wrong"
             )
         else:
             out["reply_chars_scoreable"] = True

@@ -1269,3 +1269,129 @@ def test_a_capture_that_saw_no_thread_at_all_falls_back_on_the_declaration(tmp_p
     }
     shard = _declared_windowed_shard(tmp_path, "lost_thread", parity = lost)
     assert all(mode == U.WINDOWED for mode, _why in U.decide_modes([shard]).values())
+
+
+# ── a cell that failed its own completeness gate carries no UI verdict ──
+#
+# `probe_thread_completeness` runs before the film and `record_completeness_gate` writes the
+# verdict against the cell, so a windowed arm that kept its first page and its last one and lost
+# everything between them says so in its own payload. `report/payload.py::excluded_from_rows`
+# drops that cell from the PERFORMANCE score. `ui_parity.py` read no gate row except the windowed
+# declaration, so the same cell's eighteen action rows were still scored for UI parity -- and the
+# visible region is a window on the END of the thread, which such a store still fills, so the
+# pairs matched and `--mode auto` exited 0 over a payload that had already recorded the loss.
+
+
+def _completeness_gate(
+    cell_id,
+    passed,
+    reason = "the head of the thread mounted, but 12 of 18 ordinals never mounted",
+):
+    return {
+        "row_type": "gate",
+        "name": "thread_complete",
+        "passed": passed,
+        "cell_id": cell_id,
+        "detail": {"probe_attempted": True, "head_reached": True, "reason": reason},
+    }
+
+
+def _matching_pair(cell_suffix = "rep0", ordinals = (17, 18)):
+    """One action, both arms, identical inside the viewport: the pair that used to carry the run."""
+    out = []
+    for side in ("base", "treatment"):
+        out.append(
+            _action(
+                "select_text",
+                f"r100K.{side}.{cell_suffix}",
+                parity = _capture(mounted = 6, total = 18),
+                visible = _visible(ordinals, ordinals),
+            )
+        )
+    return out
+
+
+def test_a_cell_that_lost_messages_gets_no_visible_pass(tmp_path, capsys):
+    """THE FALSE GREEN. The arm's own gate says it is missing the middle of the conversation and
+    the visible region matched anyway, because the visible region is the end of the thread."""
+    from studiobench.sweep import ui_parity as U
+
+    rows = [_completeness_gate("r100K.treatment.rep0", False)] + _matching_pair()
+    shard = _write(tmp_path, "lost_middle", rows)
+    code = U.visible_report([shard], "lost middle")
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert "visible region matched:     0" in out, out
+    assert "FAILED its completeness gate" in out, out
+
+
+def _held_invariant_pair(cell_suffix = "rep0"):
+    """A `select_text` pair whose declared invariant HOLDS: the windowed arm selected the same
+    characters and sized its spacers, so `compare_behaviour` returns MATCH. This is the shape a
+    store that kept its first page and its last one still produces."""
+    out = []
+    for side, mounted in (("base", 18), ("treatment", 6)):
+        row = _row(
+            "select_text",
+            _capture(mounted, 18),
+            selected_chars = 100,
+            visible_chars = 100,
+        )
+        row["cell_id"] = f"r100K.{side}.{cell_suffix}"
+        out.append(row)
+    return out
+
+
+def test_a_cell_that_lost_messages_gets_no_behavioural_pass_either(tmp_path, capsys):
+    """The behavioural invariants are what REPLACE the digest on a windowed arm, so a pass here is
+    the whole UI verdict for that pair."""
+    from studiobench.sweep import ui_parity as U
+
+    rows = [_completeness_gate("r100K.treatment.rep0", False)] + _held_invariant_pair()
+    shard = _write(tmp_path, "lost_middle_b", rows)
+    code = U.behaviour_report([shard], "lost middle")
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert "invariants held:            0" in out, out
+    assert "NOTHING WAS COMPARED" in out, out
+
+
+def test_a_complete_cell_still_earns_its_behavioural_pass(tmp_path, capsys):
+    """The positive control for the test above: the same pair, gate passed, still scores."""
+    from studiobench.sweep import ui_parity as U
+
+    rows = [_completeness_gate("r100K.treatment.rep0", True)] + _held_invariant_pair()
+    shard = _write(tmp_path, "complete_b", rows)
+    code = U.behaviour_report([shard], "complete")
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "invariants held:            1" in out, out
+
+
+def test_a_cell_whose_completeness_gate_PASSED_is_scored_exactly_as_before(tmp_path, capsys):
+    """The positive control. A refusal that fires on every cell measures nothing, and the shipped
+    build passes this gate on every cell it runs."""
+    from studiobench.sweep import ui_parity as U
+
+    rows = [_completeness_gate("r100K.treatment.rep0", True)] + _matching_pair()
+    shard = _write(tmp_path, "complete", rows)
+    code = U.visible_report([shard], "complete")
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "visible region matched:     1" in out, out
+
+
+def test_only_the_cell_that_failed_is_refused(tmp_path, capsys):
+    """Attribution. The gate names its cell, so a rep that lost messages must not silence the rep
+    beside it -- that would be the mirror defect, a whole payload lost to one bad cell."""
+    from studiobench.sweep import ui_parity as U
+
+    rows = [_completeness_gate("r100K.treatment.rep0", False)]
+    rows += _matching_pair("rep0")
+    rows += _matching_pair("rep1")
+    shard = _write(tmp_path, "one_bad_rep", rows)
+    code = U.visible_report([shard], "one bad rep")
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "visible region matched:     1" in out, out
+    assert "NOT COMPARABLE:             1" in out, out

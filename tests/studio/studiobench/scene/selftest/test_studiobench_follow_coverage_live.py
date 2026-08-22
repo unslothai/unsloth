@@ -228,3 +228,100 @@ def test_the_coverage_travels_with_the_verdict(page):
         got,
         "this cell was detached for most of its stream and the coverage must say so",
     )
+
+
+# ── the run the user started is a fresh intent to be at the end ─────
+#
+# THE GESTURE ON THE REAL FILM NEVER ENDS AT THE BOTTOM. `scene/actions.py::SCROLL_JS` jumps to
+# the bottom and then steps 14 x 420px away from it, so on any thread taller than 5,880px the
+# gesture ends thousands of pixels up and the `resume()` re-attachment above cannot fire. The film
+# then starts two more runs of its own -- `stop_generation` and `send_turn` both submit a turn --
+# and the app pins to the bottom for them, which `runtime/session.py` already documents as
+# intended rather than a violation.
+#
+# Measured at head over every 100K payload in `outputs/`: attached_fraction_of_stream 0.07 to 0.15
+# with reattachments 0, on the BASE arm as well as the treatment and on pure null controls, so the
+# gate's FOLLOW_MIN_STREAM_COVERAGE of 0.50 failed every 100K cell of every run -- two copies of
+# the shipped build included -- and a failed gate excludes the cell from scoring entirely. It
+# passed only on the 1K smoke film, where the thread is short enough that the gesture's reversal
+# lands back at the bottom by accident: a verdict about the thread's height, not about the app.
+
+
+def _end_run(page) -> None:
+    """The reply finishes: the stop control goes, so `isRunning()` is false."""
+    page.evaluate(
+        "() => { const b = document.querySelector('button[aria-label=\"Stop generating\"]');"
+        " if (b) b.setAttribute('aria-label', 'idle'); }"
+    )
+
+
+def _start_run(page) -> None:
+    """The user submits another turn: a NEW run, which the app pins to the bottom for."""
+    page.evaluate(
+        "() => { const b = document.querySelector('button[aria-label=\"idle\"]');"
+        " if (b) b.setAttribute('aria-label', 'Stop generating'); }"
+    )
+
+
+def test_a_run_the_user_started_reattaches_when_the_app_pins_for_it(page):
+    """THE DEFECT. The verdict covered the first few seconds of the opening stream and nothing
+    else, because every later turn of the film was scored against the yank half of the contract."""
+    _start_at_bottom(page)
+    _settle(page, 400)
+
+    # The harness scrolls away mid-stream and stays away, exactly as SCROLL_JS leaves it.
+    page.evaluate("() => window.__sb.follow.suspend()")
+    _to_top(page)
+    page.evaluate("() => window.__sb.follow.resume()")
+    _settle(page, 500)
+    assert _read(page)["reattachments"] == 0, _read(page)
+
+    # That reply finishes; the user sends another turn and the app pins to the bottom for it.
+    _end_run(page)
+    _settle(page, 300)
+    _start_run(page)
+    _to_bottom(page)
+    _settle(page, 800)
+
+    got = _read(page)
+    assert got["reattachments"] == 1, got
+    assert got["attached_fraction_of_stream"] > 0.5, (
+        got,
+        "the follow-up turn streamed with the thread pinned at the bottom and none of it was "
+        "scored, so the coverage gate fails a build that followed perfectly",
+    )
+
+
+def test_a_pin_inside_the_SAME_run_is_still_a_yank_and_not_a_reattachment(page):
+    """The other half has to survive. No new run started, so the app returning the viewport to the
+    bottom on its own is the behaviour the sampler exists to catch, not the user coming back."""
+    _start_at_bottom(page)
+    _settle(page)
+    page.evaluate("() => window.__sb.follow.suspend()")
+    _to_top(page)
+    page.evaluate("() => window.__sb.follow.resume()")
+    _settle(page, 400)
+    _to_bottom(page)
+    _settle(page)
+    got = _read(page)
+    assert got["reattachments"] == 0, got
+    assert got["yanked_back_samples"] > 0, got
+    assert got["yanked_after_scroll"] is True, got
+
+
+def test_a_new_run_the_app_does_NOT_pin_for_leaves_the_sampler_detached(page):
+    """A run start is not a free pass. The re-attachment needs the viewport to actually BE at the
+    end, so an app that leaves a scrolled-up user where they are is scored exactly as before."""
+    _start_at_bottom(page)
+    _settle(page, 400)
+    page.evaluate("() => window.__sb.follow.suspend()")
+    _to_top(page)
+    page.evaluate("() => window.__sb.follow.resume()")
+    _settle(page, 400)
+    _end_run(page)
+    _settle(page, 300)
+    _start_run(page)
+    _settle(page, 800)
+    got = _read(page)
+    assert got["reattachments"] == 0, got
+    assert got["attached_fraction_of_stream"] < 0.5, got

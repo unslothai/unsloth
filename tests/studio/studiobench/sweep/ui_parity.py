@@ -74,6 +74,19 @@ UNSTABLE_ACTIONS = frozenset(P.UNSTABLE_ACTIONS)
 WINDOWED_GATE = "windowed_readiness:"
 MODE_WINDOWED = "windowed"
 
+#: THE CELL'S OWN VERDICT THAT IT LOST MESSAGES. `runtime/session.py::record_completeness_gate`
+#: writes this row, against the cell, when the traversal to the top of the thread could not
+#: establish that the arm still holds the whole conversation -- the head marker never mounted, or
+#: the ordinals recorded on the way up have a hole in them. `report/payload.py::excluded_from_rows`
+#: reads it as a failed gate and drops the cell from the PERFORMANCE score; this file read no gate
+#: rows at all except the windowed declaration, so the same cell's action rows were still scored
+#: for UI parity. An arm that keeps the first page and the last one and has lost the middle then
+#: retains its first and last visible windows, and its bottom rows, its scroll extent and an
+#: action-specific invariant such as `select_text` can all match: `--mode auto` printed a visible
+#: pass and a behavioural pass and exited 0 over a payload that already recorded the loss.
+#: Matched as a literal string for the same reason `WINDOWED_GATE` is.
+COMPLETENESS_GATE = "thread_complete"
+
 #: How one action pair is scored. PER PAIR, never per payload: the readiness gate deliberately
 #: permits a payload to hold fully mounted small rungs and windowed large ones, so a payload-wide
 #: decision lets one windowed 100K capture suppress the structural digest on every fully mounted 1K
@@ -123,6 +136,48 @@ def rung_of(rep_key: str) -> str:
     return parts[0] if len(parts) >= 2 else ""
 
 
+def incomplete_cells(paths: list[Path]) -> dict[str, str]:
+    """{cell_id: why} for every cell whose `thread_complete` gate FAILED.
+
+    THE PAYLOAD ALREADY KNOWS. `probe_thread_completeness` scrolls the whole thread before the
+    film and `record_completeness_gate` writes the verdict against the cell, so a windowed arm
+    that has really lost part of the conversation says so in its own payload. Nothing in this file
+    read it, and the reports below then scored every action row of that cell: the visible region
+    is a window on the end of the thread and a store that kept its first and last pages still
+    fills it, so the pair matched, `matched` grew, and `--mode auto` exited 0 on a run whose own
+    self-check had recorded conversation loss.
+
+    A gate row with no `cell_id` is ignored here rather than applied run-wide. Only the per-cell
+    writer emits this name, and attributing a nameless one to every cell would let one malformed
+    row silence a whole payload -- the mirror of the defect being fixed.
+    """
+    out: dict[str, str] = {}
+    for path in paths:
+        for r in rows(path):
+            if r.get("row_type") != "gate" or r.get("passed") is not False:
+                continue
+            if str(r.get("name") or "") != COMPLETENESS_GATE:
+                continue
+            cid = str(r.get("cell_id") or "")
+            if not cid:
+                continue
+            detail = r.get("detail") if isinstance(r.get("detail"), dict) else {}
+            out[cid] = (
+                f"cell {cid} FAILED its completeness gate: "
+                f"{detail.get('reason') or detail.get('coverage_reason') or 'the arm is not holding the whole conversation'}"
+            )
+    return out
+
+
+def _refused(sides: dict) -> str:
+    """Why this pair carries no UI verdict, or `""`. See `incomplete_cells`."""
+    for _label, row in sorted(sides.items()):
+        why = row.get("_incomplete")
+        if why:
+            return why
+    return ""
+
+
 def collect(paths: list[Path], select: Optional[set] = None) -> dict:
     """{(shard, rep, action): {arm: action row}} plus a tally of what was captured at all.
 
@@ -141,6 +196,7 @@ def collect(paths: list[Path], select: Optional[set] = None) -> dict:
     attempted = missing = 0
     for path in paths:
         shard = path.parent.name
+        incomplete = incomplete_cells([path])
         for r in rows(path):
             if r.get("row_type") != "action":
                 continue
@@ -153,6 +209,12 @@ def collect(paths: list[Path], select: Optional[set] = None) -> dict:
                 attempted += 1
             else:
                 missing += 1
+            # STAMPED, NOT DROPPED, for the same reason a failed capture is kept: the comparison
+            # layer has to be able to say that this pair carries no verdict, and a row deleted here
+            # would leave the pair looking like an action that simply never ran.
+            if cid in incomplete:
+                r = dict(r)
+                r["_incomplete"] = incomplete[cid]
             out[key][arm_of(cid)] = r
     return {"pairs": out, "attempted": attempted, "missing": missing}
 
@@ -324,6 +386,12 @@ def behaviour_report(
                         "checks": [],
                     },
                 )
+            )
+            continue
+        why = _refused(sides)
+        if why:
+            results.append(
+                (action, shard, rep, {"verdict": P.NOT_COMPARABLE, "reason": why, "checks": []})
             )
             continue
         results.append((action, shard, rep, B.compare_behaviour(sides["base"], sides["treatment"])))
@@ -637,6 +705,17 @@ def compare_all_with(
                 )
             )
             continue
+        why = _refused(sides)
+        if why:
+            results.append(
+                (
+                    action,
+                    shard,
+                    rep,
+                    {"verdict": P.NOT_COMPARABLE, "moved": [], "_ran": True, "reason": why},
+                )
+            )
+            continue
         ran = bool(sides["base"].get("ran")) and bool(sides["treatment"].get("ran"))
         out = compare(sides["base"].get(key), sides["treatment"].get(key))
         out["_ran"] = ran
@@ -661,6 +740,23 @@ def compare_all(paths: list[Path], select: Optional[set] = None) -> tuple[list[t
                         "verdict": P.NOT_COMPARABLE,
                         "moved": [],
                         "reason": f"only the {next(iter(sides))} arm recorded this action",
+                        "style_verdict": P.NOT_COMPARABLE,
+                        "style_reason": "",
+                    },
+                )
+            )
+            continue
+        why = _refused(sides)
+        if why:
+            results.append(
+                (
+                    action,
+                    shard,
+                    rep,
+                    {
+                        "verdict": P.NOT_COMPARABLE,
+                        "moved": [],
+                        "reason": why,
                         "style_verdict": P.NOT_COMPARABLE,
                         "style_reason": "",
                     },

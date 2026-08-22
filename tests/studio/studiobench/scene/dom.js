@@ -402,21 +402,59 @@
   // finding rather than mixed into the fraction.
   let detached = false;
   let suspended = 0;
+  // WHICH RUN THE USER SCROLLED AWAY FROM, and it is the difference between a yank and a return.
+  //
+  // `resume()` below clears `detached` only when the gesture itself ended at the bottom. On the
+  // real films it never does: `SCROLL_JS` jumps to the bottom and then steps 14 x 420px away from
+  // it, so at any rung whose thread is taller than 5,880px the gesture ends thousands of pixels
+  // up and `detached` is latched for the rest of the cell. The film then starts TWO MORE RUNS of
+  // its own -- `stop_generation` and `send_turn` both submit a turn -- and the app pins to the
+  // bottom for them, which session.py already documents as intended behaviour rather than a
+  // violation. Every one of those samples was landing in the detached branch, counted as a yank,
+  // and excluded from `attached_fraction_of_stream`.
+  //
+  // Measured, at head, across every 100K payload in outputs/: attached_fraction 0.07 to 0.15 with
+  // reattachments 0, on the BASE arm as well as the treatment and on pure null controls, so the
+  // `follows_the_stream` gate failed every 100K cell of every run including two copies of the
+  // shipped build. It passed only on the 1K smoke film, where the thread is short enough that the
+  // gesture's reversal happens to land back at the bottom -- i.e. the verdict was a property of
+  // the thread's height, not of the app.
+  //
+  // So a run the user STARTED is a fresh expression of intent to be at the end, exactly as
+  // returning to the bottom is. Re-attachment is granted only when a run that began AFTER the
+  // gesture is also OBSERVED at the bottom: an app that declines to pin stays detached and is
+  // scored as before, and a pin during the SAME run the user scrolled away from is still a yank.
+  let runSeq = 0;
+  let wasRunning = false;
+  let detachedAtRun = 0;
   setInterval(() => {
     F.samples += 1;
+    // Read BEFORE the suspended early-return, or a run that starts and ends inside a deliberate
+    // gesture is never seen and the run after it is mistaken for the one the user scrolled away
+    // from.
+    const running = D.isRunning();
+    if (!running) wasRunning = false;
+    else if (!wasRunning) { wasRunning = true; runSeq += 1; }
     if (suspended > 0) { F.suspended_samples += 1; return; }
-    if (!D.isRunning()) return;
+    if (!running) return;
     const app = D.appSaysAtBottom();
     const distance = D.distanceFromBottom();
+    // "At the bottom" by the app's own answer, with the geometry standing in only when the build
+    // renders no jump control. `app === false` is the app saying no and is never overridden.
+    const atBottom =
+      app === true || (app === null && distance !== null && distance <= FOLLOW_TOLERANCE_PX);
     if (detached) {
-      F.detached_samples += 1;
-      F.stream_samples += 1;
-      // Pinned again, without anybody asking. `distance` corroborates so a build that never
-      // renders the jump control is not scored on a null.
-      if (app === true || (app === null && distance !== null && distance <= FOLLOW_TOLERANCE_PX)) {
-        F.yanked_back_samples += 1;
+      if (runSeq !== detachedAtRun && atBottom) {
+        // A run the user started, found at the end: following again.
+        detached = false;
+        F.reattachments += 1;
+      } else {
+        F.detached_samples += 1;
+        F.stream_samples += 1;
+        // Pinned again, without anybody asking, inside the run they scrolled away from.
+        if (atBottom) F.yanked_back_samples += 1;
+        return;
       }
-      return;
     }
     F.running_samples += 1;
     F.stream_samples += 1;
@@ -442,7 +480,10 @@
     // also latches `detached`: from that moment the user has expressed an intent to be somewhere
     // other than the bottom, and everything after it is scored against the second half of the
     // contract instead of the first.
-    suspend() { suspended += 1; detached = true; },
+    // `detachedAtRun` is stamped on every suspend rather than only the first, so a second gesture
+    // during a later run detaches from THAT run: without it, scrolling away during run 3 would be
+    // compared against run 1 and the very next at-bottom sample would re-attach.
+    suspend() { suspended += 1; detached = true; detachedAtRun = runSeq; },
     resume() {
       suspended = Math.max(0, suspended - 1);
       // RE-ATTACH IF THE GESTURE LEFT US AT THE END, and this is not a nicety.
@@ -474,6 +515,12 @@
         if (app === true || (distance !== null && distance <= FOLLOW_TOLERANCE_PX)) {
           detached = false;
           F.reattachments += 1;
+        } else {
+          // Still away from the end. Re-stamp against the run in flight NOW, not the one that was
+          // in flight when the gesture began: a gesture long enough to span a run boundary would
+          // otherwise look like a scroll away from the previous run and be re-attached by the very
+          // first sample of the current one.
+          detachedAtRun = runSeq;
         }
       }
     },
@@ -525,6 +572,9 @@
       F.ever_fell_behind = false;
       suspended = 0;
       detached = false;
+      runSeq = 0;
+      wasRunning = false;
+      detachedAtRun = 0;
     },
   };
 })();
