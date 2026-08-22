@@ -365,7 +365,10 @@ def _capabilities_for_format(
     return LocalModelCapabilities(
         can_train = can_train,
         can_chat = can_chat and is_complete,
-        can_delete = source == "hf_cache",
+        # Every discovered row can be removed now: an hf_cache one through the cached-model
+        # delete, the rest through the local delete, which also collects the support files
+        # and stale links those sources leave behind.
+        can_delete = True,
         can_download = False,
         requires_variant = requires_variant,
         supports_lora = model_format in {"safetensors", "checkpoint"} and is_complete,

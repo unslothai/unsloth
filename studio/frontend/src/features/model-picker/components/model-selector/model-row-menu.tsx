@@ -17,10 +17,12 @@ import { revealCachedModel } from "@/features/chat";
 import {
   DeleteConfirmDialog,
   DeleteImpactSummary,
+  LocalDeleteImpactSummary,
   UpdateConfirmDialog,
   ggufVariantsMatch,
   subscribeJobListeners,
   useDeleteImpact,
+  useLocalDeleteImpact,
 } from "@/features/hub";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -64,9 +66,14 @@ interface ModelRowMenuUpdate {
 interface ModelRowMenuDelete {
   title: string;
   description: ReactNode;
-  /** Repo (and quant) to preview the delete for, so the dialog can state what it actually
+  /** Repo (and quant) to preview a CACHED delete for, so the dialog can state what it actually
    * reclaims and what shared assets it leaves behind. Omit to keep the plain wording. */
   impact?: { repoId: string; variant?: string | null };
+  /** Load id (and source) to preview a LOCAL delete for -- a model Studio discovered rather
+   * than downloaded. Separate from `impact` because these cost something different: the delete
+   * reaches outside the model folder for the links Studio made, and an Ollama blob a sibling tag
+   * shares survives it. A row supplies one or the other, never both. */
+  localImpact?: { loadId: string; source?: string | null };
   successMessage: string;
   disabled?: boolean;
   onConfirm: () => Promise<void> | void;
@@ -113,6 +120,11 @@ export function ModelRowMenu({
     deleteOpen && Boolean(del?.impact),
     del?.impact?.repoId ?? "",
     del?.impact?.variant,
+  );
+  const localDeleteImpact = useLocalDeleteImpact(
+    deleteOpen && Boolean(del?.localImpact),
+    del?.localImpact?.loadId ?? "",
+    del?.localImpact?.source,
   );
   const [updateOpen, setUpdateOpen] = useState(false);
 
@@ -301,10 +313,15 @@ export function ModelRowMenu({
             <>
               {del.description}
               <DeleteImpactSummary impact={deleteImpact} />
+              <LocalDeleteImpactSummary impact={localDeleteImpact} />
             </>
           }
           deleting={deleting}
-          blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
+          // Whichever preview this row asked for; a blocked one keeps Delete disabled rather
+          // than letting the user buy a 400.
+          blocked={
+            ((deleteImpact ?? localDeleteImpact)?.blocked_by.length ?? 0) > 0
+          }
           onConfirm={() => void handleDeleteConfirm()}
         />
       )}

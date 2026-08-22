@@ -10,6 +10,7 @@ import {
   type GgufVariantDetail,
   deleteCachedDataset,
   deleteCachedModel,
+  deleteLocalModel,
   formatLocalUpdated,
   listGgufVariants,
   useGgufVariantsCacheVersion,
@@ -633,7 +634,15 @@ export const InventoryRow = memo(function InventoryRow({
       : row.source === "hf_cache" && row.repoId
         ? row.repoId
         : null;
-  const canDelete = cacheDeletableRepoId !== null;
+  // A model Studio discovered rather than downloaded -- an Ollama tag, an LM Studio folder,
+  // anything under a scan folder. It has no repo id at all, which is exactly why the row menu
+  // used to offer these nothing: the only delete it knew took one. Models only; a local dataset
+  // goes through the dataset delete, and the local endpoint refuses a path that is not a model.
+  const localDeletable =
+    !isDataset && row.kind === "local" && row.source !== "hf_cache" && row.loadId
+      ? { loadId: row.loadId, source: row.source }
+      : null;
+  const canDelete = cacheDeletableRepoId !== null || localDeletable !== null;
   const partialRepoId = row.partial
     ? row.kind === "cache"
       ? row.repoId
@@ -741,7 +750,7 @@ export const InventoryRow = memo(function InventoryRow({
     !isDataset && onOpenSettings ? { onOpen: () => onOpenSettings(row) } : undefined;
   const deletableRepoId = canDelete ? cacheDeletableRepoId : null;
   const deleteAction =
-    deletableRepoId || settingsAction ? (
+    deletableRepoId || localDeletable || settingsAction ? (
       <ModelRowMenu
         ariaLabel={`More options for ${deletableRepoId ?? rowModelId}`}
         buttonClassName="pointer-events-auto hub-modal-pe-guard size-8 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
@@ -812,6 +821,22 @@ export const InventoryRow = memo(function InventoryRow({
                 }
               }
             }
+          },
+          onDeleted: onChange,
+        } : localDeletable ? {
+          title: "Delete this model?",
+          localImpact: localDeletable,
+          description: (
+            <>
+              This will permanently remove{" "}
+              <span className="font-medium text-foreground">{title}</span> from
+              disk, along with the support files it leaves behind. Unsloth did
+              not download this model, so it cannot re-download it later.
+            </>
+          ),
+          successMessage: `Deleted ${title}`,
+          onConfirm: async () => {
+            await deleteLocalModel(localDeletable.loadId, localDeletable.source);
           },
           onDeleted: onChange,
         } : undefined}

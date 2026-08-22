@@ -36,6 +36,7 @@ import {
   type LocalModelInfo,
   type ModelInventoryFormat,
   deleteCachedModel,
+  deleteLocalModel,
 } from "../inventory";
 import { formatBytes } from "../lib/format";
 
@@ -65,7 +66,12 @@ import {
 } from "./download-card";
 import { PathInfoButton } from "./path-info-button";
 import { TransportConflictDialog } from "./transport-conflict-dialog";
-import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
+import {
+  DeleteImpactSummary,
+  LocalDeleteImpactSummary,
+  useDeleteImpact,
+  useLocalDeleteImpact,
+} from "./delete-impact";
 import { useCardDelete } from "./use-card-delete";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
 
@@ -264,17 +270,39 @@ export function LocalOnDeviceCard({
   // Update availability is derived from the GGUF variant metadata; offline rows
   // keep the button hidden because there is no remote revision to fetch.
   const online = useOnlineStatus();
-  const deleteImpact = useDeleteImpact(deleteOpen && Boolean(repoId), repoId ?? "");
+  // A cached repo is a refcounted blob store and a discovered model is a folder (or an Ollama
+  // manifest) some other tool laid down. They need different guards, different previews, and
+  // different endpoints, so the card picks a lane once and every delete-related value follows.
+  const isCachedRepo = source === "hf_cache";
+  const deleteImpact = useDeleteImpact(
+    deleteOpen && isCachedRepo && Boolean(repoId),
+    repoId ?? "",
+  );
+  const localDeleteImpact = useLocalDeleteImpact(
+    deleteOpen && !isCachedRepo,
+    modelId,
+    source,
+  );
+  // The row's own words for itself, so a folder or an Ollama tag is not announced as `null`.
+  const deleteLabel =
+    (isCachedRepo ? repoId : localDeleteImpact?.display_name) ||
+    path.split(/[\\/]/).filter(Boolean).pop() ||
+    modelId;
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
-      if (!repoId) return;
-      // Delete is only offered for hf_cache rows (see canDelete), so `path` is
-      // the cache snapshot path: pass it so the delete targets the cache this
-      // card shows instead of falling back to the active cache.
-      await deleteCachedModel(repoId, undefined, hfToken || undefined, path);
+      if (isCachedRepo) {
+        if (!repoId) return;
+        // `path` is the cache snapshot path: pass it so the delete targets the cache this
+        // card shows instead of falling back to the active cache.
+        await deleteCachedModel(repoId, undefined, hfToken || undefined, path);
+        return;
+      }
+      // modelId carries the row's load id, which for Ollama is the manifest reference rather
+      // than a path -- the only handle that identifies the tag rather than a shared blob.
+      await deleteLocalModel(modelId, source);
     },
     resourceName: "model",
-    successMessage: () => `Deleted ${repoId}`,
+    successMessage: () => `Deleted ${deleteLabel}`,
     onSuccess: () => {
       setDeleteOpen(false);
       onChange?.();
@@ -309,8 +337,11 @@ export function LocalOnDeviceCard({
     quant: null,
   }));
 
+  // Every On Device row is removable now: a cached repo through the cached-model delete, the
+  // rest through the local one. A loaded or loading model still is not -- unlinking weights out
+  // from under a running backend is what the server refuses anyway.
   const canDelete =
-    source === "hf_cache" && !!repoId && !isActive && !isLoading;
+    (isCachedRepo ? !!repoId : !!modelId) && !isActive && !isLoading;
   const variants = useMemo(() => {
     const localVariants = currentVariantState.variants;
     const remoteVariants = remoteVariantState.variants;
@@ -618,7 +649,7 @@ export function LocalOnDeviceCard({
               )}
               {canDelete && (
                 <CardDeleteButton
-                  label={`Delete ${repoId}`}
+                  label={`Delete ${deleteLabel}`}
                   onClick={() => setDeleteOpen(true)}
                 />
               )}
@@ -719,19 +750,34 @@ export function LocalOnDeviceCard({
         onOpenChange={(o) => {
           if (!o && !deleting) setDeleteOpen(false);
         }}
-        title="Delete cached model?"
+        title={isCachedRepo ? "Delete cached model?" : "Delete this model?"}
         deleting={deleting}
         // Same gate the model row menu applies: when an installed image model still needs these
         // assets the summary says so, and leaving Delete enabled only bought the user a 400.
-        blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
+        // The local preview refuses for its own reasons -- loaded, moved, outside a scanned
+        // folder -- and blocks the button the same way.
+        blocked={
+          ((isCachedRepo ? deleteImpact : localDeleteImpact)?.blocked_by
+            .length ?? 0) > 0
+        }
         onConfirm={() => void runDelete()}
         description={
-          <>
-            This will remove{" "}
-            <span className="font-medium text-foreground">{repoId}</span> and
-            its downloaded files from disk. You can re-download it later.
-            <DeleteImpactSummary impact={deleteImpact} />
-          </>
+          isCachedRepo ? (
+            <>
+              This will remove{" "}
+              <span className="font-medium text-foreground">{repoId}</span> and
+              its downloaded files from disk. You can re-download it later.
+              <DeleteImpactSummary impact={deleteImpact} />
+            </>
+          ) : (
+            <>
+              This will permanently remove{" "}
+              <span className="font-medium text-foreground">{deleteLabel}</span>{" "}
+              from disk, along with the support files it leaves behind. Unsloth
+              did not download this model, so it cannot re-download it later.
+              <LocalDeleteImpactSummary impact={localDeleteImpact} />
+            </>
+          )
         }
       />
       <UpdateConfirmDialog

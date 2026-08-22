@@ -16,11 +16,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from contextlib import contextmanager
 
 import threading
 import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import Iterator, List, Optional, Set
 from urllib.parse import quote, unquote
 
 from loggers import get_logger
@@ -56,6 +57,9 @@ _OLLAMA_LOADABLE_LAYER_MEDIA_TYPES = frozenset(
 
 _OLLAMA_MATERIALIZE_LOCKS: dict[str, threading.Lock] = {}
 _OLLAMA_MATERIALIZE_LOCKS_GUARD = threading.Lock()
+# Long enough to ride out a materialization, short enough that a delete waiting on a live
+# model load answers rather than hangs.
+_WRITE_GUARD_TIMEOUT_SECONDS = 5.0
 
 
 class OllamaModelLease:
@@ -131,8 +135,37 @@ def _contained_link_path(link_dir: Path, link_name: str) -> Optional[Path]:
     return link_path
 
 
+def ollama_links_root_candidates(ollama_dir: Path) -> List[Path]:
+    """Every directory :func:`_ollama_links_dir` could have put this root's ``.gguf`` links in,
+    in the order it tries them: next to the blobs, then Unsloth's cache (read-only system
+    installs), then the temp dir (sandboxed installs).
+
+    Deleting a model walks all three rather than only the one in use now, because which one that
+    is can change between runs -- a root that was read-only when a link was made may be writable
+    today -- and a link stranded in a candidate nothing consults again is exactly the leftover a
+    delete is meant to take with it.
+    """
+    # Namespace by a hash of the ollama_dir so two different Ollama roots
+    # don't collide. This is a cache path, not a security boundary.
+    try:
+        digest = hashlib.sha256(str(ollama_dir.resolve()).encode()).hexdigest()[:12]
+    except (OSError, RuntimeError):
+        digest = "default"
+    return [
+        ollama_dir / ".studio_links",
+        cache_root() / "ollama_links" / digest,
+        tmp_root() / "ollama_links" / digest,
+    ]
+
+
+def ollama_manifest_stem_hash(rel: Path) -> str:
+    """Per-model subdirectory name inside a links root, from the manifest path relative to
+    ``manifests/``. Shared with the delete path so it collects the links a scan created."""
+    return hashlib.sha256(rel.as_posix().encode()).hexdigest()[:10]
+
+
 def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
-    """Writable directory for Ollama ``.gguf`` symlinks. Prefers ``<ollama_dir>/.studio_links/`` next to the blobs; falls back to Unsloth's cache (read-only system installs), then the temp dir (sandboxed installs)."""
+    """The first candidate from :func:`ollama_links_root_candidates` Studio can write to."""
 
     def _ensure_writable_dir(path: Path) -> Optional[Path]:
         try:
@@ -145,24 +178,9 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
             logger.debug("Ollama link dir %s is not writable: %s", path, e)
             return None
 
-    primary = ollama_dir / ".studio_links"
-    if _ensure_writable_dir(primary) is not None:
-        return primary
-
-    # Namespace by a hash of the ollama_dir so two different Ollama roots
-    # don't collide. This is a cache path, not a security boundary.
-    try:
-        digest = hashlib.sha256(str(ollama_dir.resolve()).encode()).hexdigest()[:12]
-    except (OSError, RuntimeError):
-        digest = "default"
-
-    fallback = cache_root() / "ollama_links" / digest
-    if _ensure_writable_dir(fallback) is not None:
-        return fallback
-
-    tmp_fallback = tmp_root() / "ollama_links" / digest
-    if _ensure_writable_dir(tmp_fallback) is not None:
-        return tmp_fallback
+    for candidate in ollama_links_root_candidates(ollama_dir):
+        if _ensure_writable_dir(candidate) is not None:
+            return candidate
 
     logger.warning(
         "Could not create a writable Ollama link directory for %s",
@@ -316,7 +334,7 @@ def _ollama_model_info_from_manifest(
     model_blob: Optional[Path] = None
     projector_blob: Optional[Path] = None
     gguf_link_path: Optional[str] = None
-    stem_hash = hashlib.sha256(rel.as_posix().encode()).hexdigest()[:10]
+    stem_hash = ollama_manifest_stem_hash(rel)
     model_link_dir = links_root / stem_hash if links_root is not None else None
     safe_name = repo_name.replace("/", "-")
 
@@ -476,10 +494,7 @@ def scan_ollama_dir(
         return []
 
     try:
-        for tag_file in manifests_root.rglob("*"):
-            if not _safe_is_file(tag_file):
-                continue
-
+        for tag_file in iter_ollama_manifest_files(manifests_root):
             info = _ollama_model_info_from_manifest(
                 ollama_dir,
                 tag_file,
@@ -494,6 +509,64 @@ def scan_ollama_dir(
     except OSError as e:
         logger.warning("Error scanning Ollama directory %s: %s", ollama_dir, e)
     return found
+
+
+def iter_ollama_manifest_files(manifests_root: Path) -> Iterator[Path]:
+    """Files under *manifests_root* shaped like a tag manifest -- ``host/namespace.../name/tag``,
+    no dotfiles.
+
+    The delete path counts blob references across every manifest in the store and treats a file it
+    cannot parse as one whose blobs must be kept, so it has to iterate exactly the set the scan
+    reads: without the shape filter a stray ``.DS_Store`` reads as an unparseable manifest and
+    pins every blob in the store forever.
+    """
+    try:
+        for candidate in manifests_root.rglob("*"):
+            if candidate.name.startswith("."):
+                continue
+            if not _safe_is_file(candidate):
+                continue
+            try:
+                rel = candidate.relative_to(manifests_root)
+            except ValueError:
+                continue
+            # host / namespace / name / tag, same minimum _ollama_model_info_from_manifest wants.
+            if len(rel.parts) < 3:
+                continue
+            yield candidate
+    except OSError as e:
+        logger.warning("Error walking Ollama manifests under %s: %s", manifests_root, e)
+
+
+def ollama_manifest_blob_digests(tag_file: Path) -> Optional[Set[str]]:
+    """Every blob digest *tag_file* names (its config plus all layers), or None if unreadable.
+
+    None is not "names no blobs": a delete counting references across the store has to tell an
+    empty manifest from one it failed to parse, or it frees a blob a tag it could not read still
+    needs.
+    """
+    try:
+        manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError, ValueError) as e:
+        logger.debug("Unreadable Ollama manifest %s: %s", tag_file, e)
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    digests: Set[str] = set()
+    config = manifest.get("config")
+    if isinstance(config, dict) and isinstance(config.get("digest"), str):
+        digests.add(config["digest"])
+    layers = manifest.get("layers")
+    if isinstance(layers, list):
+        for layer in layers:
+            if isinstance(layer, dict) and isinstance(layer.get("digest"), str):
+                digests.add(layer["digest"])
+    return digests
+
+
+def ollama_blob_path(ollama_dir: Path, digest: str) -> Optional[Path]:
+    """The blob file *digest* names under *ollama_dir*, or None if the digest is unusable."""
+    return _ollama_blob_path(ollama_dir / "blobs", digest)
 
 
 def _ollama_dir_for_manifest(tag_file: Path) -> Optional[Path]:
@@ -535,6 +608,43 @@ def _materialization_lock(tag_file: Path) -> threading.Lock:
     key = os.path.normcase(str(tag_file))
     with _OLLAMA_MATERIALIZE_LOCKS_GUARD:
         return _OLLAMA_MATERIALIZE_LOCKS.setdefault(key, threading.Lock())
+
+
+def resolve_ollama_manifest_ref(ref: str) -> tuple[Path, Path]:
+    """The canonical ``(manifest, Ollama root)`` pair *ref* names, validated against the known
+    roots; raises ``ValueError`` otherwise.
+
+    Public so the delete path resolves a reference by exactly the rule the load path does -- two
+    validations that could disagree about which references are in bounds is the kind of gap that
+    only shows up as a delete somewhere it should never have reached.
+    """
+    return _validated_ollama_manifest_location(ref)
+
+
+@contextmanager
+def ollama_manifest_write_guard(
+    tag_file: Path, *, timeout: Optional[float] = None
+) -> Iterator[bool]:
+    """Hold the per-manifest lock materialization takes, for the length of a delete.
+
+    Materializing a reference and deleting it are the two writers of one model's links and blobs.
+    Without sharing this lock, a load landing mid-delete re-creates the ``.studio_links`` directory
+    the delete just collected, or opens a manifest whose blobs are already unlinked -- and neither
+    side would notice.
+
+    Bounded, and yields whether it got the lock: a load holds its lease for the whole load, which
+    can run for minutes, and a delete that waited that out would read as a hung request. The
+    caller refuses instead, which is a sentence the user can act on.
+    """
+    lock = _materialization_lock(tag_file)
+    # Read here, not bound as a default: a default is evaluated once at import, which would make
+    # the wait unpatchable and silently ignore any later change to the constant.
+    acquired = lock.acquire(timeout = _WRITE_GUARD_TIMEOUT_SECONDS if timeout is None else timeout)
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            lock.release()
 
 
 def _materialize_ollama_model_ref_unlocked(tag_file: Path, ollama_dir: Path) -> str:
