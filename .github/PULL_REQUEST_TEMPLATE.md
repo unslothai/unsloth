@@ -48,4 +48,5 @@ Two things the verdict does not tell you on its own, so say which one you are cl
   use for a windowed or deferred change, since a whole-document digest will report
   differences by design and prove nothing.
 
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for the full rule.
+See [CONTRIBUTING.md](https://github.com/unslothai/unsloth/blob/main/CONTRIBUTING.md) for the
+full rule.
