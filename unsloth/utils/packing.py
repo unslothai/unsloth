@@ -606,11 +606,29 @@ def get_packed_info_from_kwargs(
     return result
 
 
+def _with_padding_segment(lengths: Tuple[int, ...], total_tokens: Optional[int]) -> Tuple[int, ...]:
+    """Cover the pad the collator appended after these lengths were collected.
+
+    TRL flattens a padding-free batch into one row and only then pads it out to
+    ``pad_to_multiple_of``, so the sequence lengths add up to fewer tokens than
+    the kernels are handed. Give that tail its own block rather than leaving it
+    out: a row outside every block is entirely -inf, which turns into NaN in the
+    softmax instead of a size mismatch.
+    """
+    if total_tokens is None:
+        return lengths
+    padding = total_tokens - sum(lengths)
+    if padding <= 0:
+        return lengths
+    return lengths + (padding,)
+
+
 def build_xformers_block_causal_mask(
     seq_info: Optional[Tuple[torch.Tensor, torch.Tensor, int]],
     *,
     sliding_window: Optional[int] = None,
     base_mask: Optional[Any] = None,
+    total_tokens: Optional[int] = None,
 ):
     if _XFormersBlockMask is None:
         return None
@@ -618,7 +636,7 @@ def build_xformers_block_causal_mask(
         seq_lengths, _, _ = seq_info
         # Cache the mask to avoid repeated D2H sync across layers
         device = seq_lengths.device
-        params = (sliding_window,)
+        params = (sliding_window, total_tokens)
         entry = _XFORMERS_BLOCK_MASK_CACHE.get(device)
         if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
             return entry["mask"]
@@ -627,6 +645,7 @@ def build_xformers_block_causal_mask(
         if lengths_tensor.numel() == 0:
             return None
         lengths = tuple(int(x) for x in lengths_tensor.tolist())
+        lengths = _with_padding_segment(lengths, total_tokens)
         mask = _get_cached_block_mask(lengths, sliding_window, device)
 
         _XFORMERS_BLOCK_MASK_CACHE[device] = {
@@ -653,15 +672,20 @@ def build_sdpa_packed_attention_mask(
     dtype: torch.dtype,
     device: torch.device,
     sliding_window: Optional[int] = None,
+    total_tokens: Optional[int] = None,
 ) -> torch.Tensor:
     seq_lengths, _, _ = seq_info
 
-    params = (dtype, sliding_window)
+    params = (dtype, sliding_window, total_tokens)
     entry = _SDPA_MASK_CACHE.get(device)
     if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
         return entry["mask"]
 
-    total_tokens = int(seq_lengths.sum().item())
+    lengths = _with_padding_segment(
+        tuple(int(length) for length in seq_lengths.tolist()),
+        total_tokens,
+    )
+    total_tokens = sum(lengths)
     mask = torch.full(
         (total_tokens, total_tokens),
         float("-inf"),
@@ -669,8 +693,7 @@ def build_sdpa_packed_attention_mask(
         device = device,
     )
     offset = 0
-    for length in seq_lengths.tolist():
-        length = int(length)
+    for length in lengths:
         if length <= 0:
             continue
         block = torch.zeros((length, length), dtype = dtype, device = device)
