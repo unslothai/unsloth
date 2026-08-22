@@ -58,18 +58,26 @@ ceiling hunt. Neither is the loop you work in.
 python -m tests.studio.studiobench --tier fast \
     --attach http://127.0.0.1:5401 \
     --password "$(cat ~/.unsloth/studio/auth/.bootstrap_password)" \
-    --out outputs/mine
+    --out outputs/iterate
 
 # confirm, letting studiobench install and launch its own Studio from a ref
-python -m tests.studio.studiobench --tier standard --branch main --reps 4 --out outputs/mine
+python -m tests.studio.studiobench --tier standard --branch main --reps 4 --out outputs/confirm
 
 # read the payload back as a scored report; writes <out>/summary.md beside it
-python -m tests.studio.studiobench --report outputs/mine/payload.jsonl --tier standard
+python -m tests.studio.studiobench --report outputs/confirm/payload.jsonl --tier standard
 ```
 
 Pass `--out` explicitly. Without it the run invents a `studiobench-<tier>-<timestamp>/` directory
 in whatever your working directory is, which for someone standing in a clone means an untracked
 directory in the repository root.
+
+**One `--out` holds one run.** A fresh run pointed at a directory that already has a
+`payload.jsonl` moves the old one aside to `payload-<timestamp>.jsonl` and starts its own, and says
+so. Nothing is deleted, and nothing is mixed: a cell id is the rung, the arm and the repetition, so
+two runs sharing one file are two builds under two films in one ladder with no way to tell them
+apart. `--resume` is the one reuse that appends, and it refuses a payload recorded under a
+different tier, cadence, instrument level, corpus or ref rather than skipping cells that measured
+something else.
 
 **The fast tier is a screen, not a result.** One rung, a wider detection floor, direction only. It
 exists so that someone trying a fix does not wait 20 minutes to learn they were wrong. Nothing goes

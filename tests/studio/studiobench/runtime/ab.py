@@ -79,6 +79,36 @@ def interleave(
     return out
 
 
+def skippable_cells(work: list[tuple[Any, Cell, RungPlan]], done: set) -> set:
+    """Of the cells `--resume` COULD skip, the ones it may: only whole `(rung, rep)` pairs.
+
+    A PAIR IS THE UNIT OF AN A/B, NOT A CELL. An interruption between the two adjacent cells of one
+    pair is the ordinary way a run stops, and skipping the arm that completed then measured its
+    partner ALONE in the new session. That lone reading can never be used: `readings_by_arm` scopes
+    the comparison to one session on purpose -- cross-session drift measured 8%, larger than most
+    wins anybody argues about -- so the completed arm from the old session is dropped, the new
+    arm has nothing to pair with, and the run pays a full cell for a number no table can contain.
+    What it renders instead is that repetition missing from the table, or NO READING with an exit
+    code of 0 underneath it.
+
+    So a pair is skipped only when EVERY arm of it is already complete, and otherwise both arms are
+    re-run -- adjacent in time, in one session, which is the only arrangement `interleave` exists to
+    produce. The old attempt stays in the payload and `latest_attempt_rows` supersedes it, exactly
+    as it already does for a cell that died.
+
+    Single-target work is a degenerate case of the same rule: each pair holds one cell, so nothing
+    changes for a run without `--ab`.
+    """
+    by_pair: dict[tuple[str, int], list[str]] = {}
+    for _target, cell, _plan in work:
+        by_pair.setdefault((str(cell.rung), int(cell.rep)), []).append(str(cell.cell_id))
+    out: set = set()
+    for cell_ids in by_pair.values():
+        if all(cell_id in done for cell_id in cell_ids):
+            out.update(cell_ids)
+    return out
+
+
 def order_is_balanced(plan: list[tuple[Target, Cell, RungPlan]]) -> bool:
     """True when each side ran first equally often, so linear drift cancels rather than lands.
 
