@@ -3121,6 +3121,12 @@ export function ChatPage({
   useShortcut("openProjectPicker", () => setProjectPickerOpen(true), {
     enabled: headerPickersShown && Boolean(currentProjectId),
   });
+  // This page stays mounted off-route, so a picker left open would come back
+  // on the next visit as a ghost of the last one. Adjusted during render, as
+  // React prescribes for state that has to follow a value it derives from.
+  if (!active && projectPickerOpen) {
+    setProjectPickerOpen(false);
+  }
 
   /** Step the effort level, clamped at both ends unless we are cycling. */
   const shiftReasoningEffort = useCallback(
