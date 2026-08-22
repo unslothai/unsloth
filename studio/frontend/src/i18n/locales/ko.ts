@@ -571,6 +571,7 @@ export const ko = {
         embeddingModel: "임베딩 모델",
         embeddingModelDescription:
           "문서를 색인하고 검색하는 데 사용되는 Hugging Face 모델 또는 로컬 경로입니다. 기본값은 {defaultModel}입니다.",
+        searchPlaceholder: "임베딩 모델 검색",
         reindexWarning:
           "새로 색인되는 문서에만 적용됩니다. 모델을 변경한 후 기존 문서를 다시 업로드하세요.",
         emptyError: "Hugging Face 모델 ID 또는 로컬 경로를 입력하세요.",
@@ -1040,6 +1041,10 @@ export const ko = {
           "상위 에이전트는 현재 모델을 유지하고 Unsloth를 로컬 서브에이전트로 등록합니다(Claude Code, Codex, OpenCode).",
         apiKey:
           "Unsloth API 키를 지정합니다(또는 UNSLOTH_API_KEY 환경 변수를 설정합니다).",
+        reasoning:
+          "채팅에서 추론 사용 여부: on, off, auto. auto는 모델의 채팅 템플릿을 따르며 보통 on입니다.",
+        reasoningEffort:
+          "모델의 채팅 템플릿에 전달하는 추론 강도(예: medium). 사용할 수 있는 값은 모델마다 다르므로 해당 모델이 받는 값을 지정하세요. 지정하지 않으면 템플릿의 값이 유지됩니다.",
         yolo: "승인 확인을 건너뜁니다. 신뢰할 수 있는 환경에서만 사용하세요.",
       },
       remote: {

@@ -563,6 +563,7 @@ export const ja = {
         sectionTitle: "ドキュメントと RAG",
         embeddingModel: "埋め込みモデル",
         embeddingModelDescription: "ドキュメントのインデックス作成と検索に使用する Hugging Face モデルまたはローカルパス。デフォルトは {defaultModel} です。",
+        searchPlaceholder: "埋め込みモデルを検索",
         reindexWarning: "新しくインデックスされるドキュメントにのみ影響します。モデルを変更した後は、既存のドキュメントを再アップロードしてください。",
         emptyError: "Hugging Face モデル ID またはローカルパスを入力してください。",
         loadError: "埋め込みモデル設定の読み込みに失敗しました。",
@@ -1030,6 +1031,10 @@ export const ja = {
           "親エージェントを現在のモデルのままにし、Unsloth をローカルのサブエージェントとして登録します (Claude Code、Codex、OpenCode)。",
         apiKey:
           "Unsloth の API キーを指定します (または UNSLOTH_API_KEY を設定)。",
+        reasoning:
+          "チャットで推論を使うかどうか: on、off、auto。auto はモデルのチャットテンプレートに従い、通常は on になります。",
+        reasoningEffort:
+          "モデルのチャットテンプレートに渡す推論の強さ (例: medium)。指定できる値はモデルごとに異なるため、そのモデルが受け付ける値を渡してください。未指定ならテンプレートの値が使われます。",
         yolo:
           "承認の確認をスキップします。信頼できる環境でのみ使用してください。",
       },
