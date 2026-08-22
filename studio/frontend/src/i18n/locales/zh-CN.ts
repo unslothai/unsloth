@@ -1018,6 +1018,8 @@ export const zhCN = {
         asSubagent:
           "让父智能体保持当前模型，并将 Unsloth 注册为本地子智能体（Claude Code、Codex 和 OpenCode）。",
         apiKey: "提供你的 Unsloth API 密钥（或设置 UNSLOTH_API_KEY）。",
+        reasoning:
+          "设置由该命令启动的服务器的推理模式（off、auto、on）。默认值：off。",
         yolo: "跳过确认提示。请仅在可信环境中使用。",
       },
       remote: {
@@ -1029,6 +1031,11 @@ export const zhCN = {
         title: "向智能体传递参数",
         description:
           "Unsloth 参数之后的参数会转发给智能体本身，因此 resume 之类的原生命令仍然可用：",
+      },
+      reasoning: {
+        title: "推理强度",
+        description:
+          "智能体会话以 reasoning off 提供模型，使工具调用留在结构化的工具通道中。加上 --reasoning auto 或 --reasoning on 可重新开启模型推理。它只对 unsloth start 自己启动的服务器生效：请先用 unsloth studio stop 停止正在运行的 Studio 再重新执行，否则会保留当前模式。",
       },
       dryRun: {
         title: "仅预览，不启动",

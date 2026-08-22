@@ -1041,6 +1041,8 @@ export const ar = {
         asSubagent:
           "يبقي الوكيل الأصلي على نموذجه الحالي ويسجّل Unsloth كوكيل فرعي محلي (Claude Code وCodex وOpenCode).",
         apiKey: "يمرّر مفتاح API الخاص بـ Unsloth (أو اضبط UNSLOTH_API_KEY).",
+        reasoning:
+          "يضبط وضع الاستدلال (off أو auto أو on) لخادم يشغّله هذا الأمر. القيمة الافتراضية: off.",
         yolo: "يتخطى طلبات الموافقة. استخدمه في البيئات الموثوقة فقط.",
       },
       remote: {
@@ -1052,6 +1054,11 @@ export const ar = {
         title: "تمرير وسائط إلى الوكيل",
         description:
           "الوسائط التي تأتي بعد رايات Unsloth تُمرَّر إلى الوكيل نفسه، لذا تظل أوامره الأصلية مثل resume تعمل:",
+      },
+      reasoning: {
+        title: "مستوى الاستدلال",
+        description:
+          "تشغّل جلسات الوكلاء النموذج مع ‎reasoning off، بحيث تبقى استدعاءات الأدوات في قناة الأدوات المنظَّمة. أضف ‎--reasoning auto أو ‎--reasoning on لإعادة تفعيل استدلال النموذج. ولا ينطبق ذلك إلا على خادم يشغّله ‎unsloth start نفسه: أوقف Studio العامل بالأمر ‎unsloth studio stop ثم أعد التشغيل، وإلا بقي الوضع الحالي.",
       },
       dryRun: {
         title: "المعاينة دون تشغيل",

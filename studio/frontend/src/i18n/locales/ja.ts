@@ -1030,6 +1030,8 @@ export const ja = {
           "親エージェントを現在のモデルのままにし、Unsloth をローカルのサブエージェントとして登録します (Claude Code、Codex、OpenCode)。",
         apiKey:
           "Unsloth の API キーを指定します (または UNSLOTH_API_KEY を設定)。",
+        reasoning:
+          "このコマンドが起動するサーバーの推論モード (off、auto、on) を設定します。既定値: off。",
         yolo:
           "承認の確認をスキップします。信頼できる環境でのみ使用してください。",
       },
@@ -1042,6 +1044,11 @@ export const ja = {
         title: "エージェントへの引数の受け渡し",
         description:
           "Unsloth のフラグより後ろの引数はエージェント自身へ転送されるため、resume のようなネイティブコマンドもそのまま使えます:",
+      },
+      reasoning: {
+        title: "推論の強さ",
+        description:
+          "エージェントのセッションでは、ツール呼び出しが構造化されたツールチャネルに留まるよう、モデルを reasoning off で提供します。モデルの推論を有効に戻すには --reasoning auto または --reasoning on を追加してください。これは unsloth start 自身が起動したサーバーにのみ適用されるため、実行中の Studio は unsloth studio stop で停止してから再実行してください。そうしない場合は現在のモードが維持されます。",
       },
       dryRun: {
         title: "起動せずに内容を確認する",

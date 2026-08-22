@@ -1056,6 +1056,8 @@ export const ptBR = {
           "Mantém o agente principal no modelo atual e registra o Unsloth como subagente local (Claude Code, Codex e OpenCode).",
         apiKey:
           "Informa sua chave de API do Unsloth (ou defina UNSLOTH_API_KEY).",
+        reasoning:
+          "Define o modo de raciocínio (off, auto, on) para um servidor iniciado por este comando. Padrão: off.",
         yolo: "Pula os pedidos de aprovação. Use apenas em ambientes confiáveis.",
       },
       remote: {
@@ -1067,6 +1069,11 @@ export const ptBR = {
         title: "Repassar argumentos ao agente",
         description:
           "Os argumentos após as flags do Unsloth são encaminhados ao próprio agente, então comandos nativos como resume continuam funcionando:",
+      },
+      reasoning: {
+        title: "Esforço de raciocínio",
+        description:
+          "As sessões de agente servem o modelo com reasoning off, para que as chamadas de ferramenta fiquem no canal estruturado de ferramentas. Adicione --reasoning auto ou --reasoning on para reativar o raciocínio do modelo. Isso só vale para um servidor iniciado pelo próprio unsloth start: pare um Studio em execução com unsloth studio stop e rode de novo, ou o modo atual é mantido.",
       },
       dryRun: {
         title: "Visualizar sem iniciar",
