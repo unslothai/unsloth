@@ -3648,29 +3648,6 @@ async def get_gguf_variants(
             or repo_id
         )
         local = is_local_path(context_model)
-        # A llama-csm GGUF is unrunnable on every page, so it must not ride along in the listing
-        # of the folder that outranked it (see the helper). The read needs a DIRECTORY: a local
-        # row is one; a cached Hub row is not, since an online listing leaves context_source
-        # empty and context_model falls back to the repo id, so resolve its snapshots instead --
-        # all of them, because listing and loader both span revisions. Absent bytes read as no
-        # architecture and are kept, so an undownloaded quant is never dropped on a guess.
-        # The local root is normalized the way the listing normalized it: get_gguf_variants_answer
-        # works off _loader_normalize_path(repo_id) but reports the ORIGINAL spelling, so a
-        # "C:\\models\\x" root is not absolute off Windows and every header read would miss.
-        speech_roots = (
-            [_speech_normalize_root(context_model)]
-            if local
-            else _cached_snapshot_roots(repo_id, local_path)
-        )
-        listed = await _without_mixed_folder_speech_variants_bounded(
-            speech_roots, list(response.variants)
-        )
-        default_variant = response.default_variant
-        # A default naming a dropped quant would preselect a row the picker no longer offers.
-        if default_variant is not None and all(
-            getattr(v, "quant", None) != default_variant for v in listed
-        ):
-            default_variant = None
 
         return GgufVariantsResponse(
             repo_id = response.repo_id,
@@ -3690,10 +3667,10 @@ async def get_gguf_variants(
                     partial = bool(getattr(v, "partial", False)),
                     cleanable = bool(getattr(v, "cleanable", False)),
                 )
-                for v in listed
+                for v in response.variants
             ],
             has_vision = response.has_vision,
-            default_variant = default_variant,
+            default_variant = response.default_variant,
             context_length = await _read_native_context_length_bounded(context_model, local),
             resolved_locally = bool(getattr(response, "resolved_locally", False)),
             loadable_variants = getattr(response, "loadable_variants", None),
@@ -4400,192 +4377,6 @@ def _repo_gguf_task(repo_info) -> Optional[str]:
         return _gguf_folder_task(Path(repo_info.repo_path), (repo_id,))
     except Exception:
         return None
-
-
-_SPEECH_FILTER_HARD_TIMEOUT_SECONDS = 4.0
-# Reading budget inside the worker, under the hard timeout above. Spending it returns the drops
-# found so far rather than losing the whole pass, which the outer timeout would do.
-_SPEECH_FILTER_READ_SECONDS = 3.0
-# Concurrent speech-filter probes. One stranded on a hung mount holds its slot, so retries wait
-# rather than pile another daemon thread onto the same dead path.
-_SPEECH_FILTER_MAX_CONCURRENT_READS = 4
-_SPEECH_FILTER_SLOTS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
-
-
-def _speech_filter_slots() -> asyncio.Semaphore:
-    """Per running loop, since an asyncio primitive cannot be shared across loops."""
-    loop = asyncio.get_running_loop()
-    slots = _SPEECH_FILTER_SLOTS.get(loop)
-    if slots is None:
-        slots = asyncio.Semaphore(_SPEECH_FILTER_MAX_CONCURRENT_READS)
-        _SPEECH_FILTER_SLOTS[loop] = slots
-    return slots
-
-
-def _settle_speech_filter(slots: asyncio.Semaphore, future: "asyncio.Future", value: list) -> None:
-    slots.release()
-    if not future.done():
-        future.set_result(value)
-
-
-async def _without_mixed_folder_speech_variants_bounded(roots: list, variants: list) -> list:
-    """``_without_mixed_folder_speech_variants`` off the event loop, with a hard bound.
-
-    ``is_file()`` and the header read block indefinitely on an unresponsive network or removable
-    mount, which inline would freeze the loop for every request, not just this expansion. Same
-    shape as the native-context read beside it: a daemon thread so a stranded probe never joins
-    at interpreter exit, a slot cap so a dead mount cannot accumulate threads, and one budget
-    covering the wait and the reads.
-
-    Times out to the UNFILTERED listing, deliberately: the filter only removes a quant it read
-    positively as ``llama-csm``, and a mount too slow to answer is one the loader cannot read
-    either, so failing open matches the absent-bytes case rather than hiding a runnable quant."""
-    if not roots or not variants:
-        return list(variants)
-
-    slots = _speech_filter_slots()
-    began = time.monotonic()
-    try:
-        await asyncio.wait_for(slots.acquire(), timeout = _SPEECH_FILTER_HARD_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError:
-        logger.debug("speech variant filter waited out its slot; listing unfiltered")
-        return list(variants)
-
-    remaining = _SPEECH_FILTER_HARD_TIMEOUT_SECONDS - (time.monotonic() - began)
-    loop = asyncio.get_running_loop()
-    future: "asyncio.Future" = loop.create_future()
-
-    def worker() -> None:
-        try:
-            value = _without_mixed_folder_speech_variants(roots, variants)
-        except Exception:
-            value = list(variants)
-        try:
-            loop.call_soon_threadsafe(_settle_speech_filter, slots, future, value)
-        except RuntimeError:
-            pass  # loop already closed; nothing is waiting on this
-
-    if remaining <= 0:
-        slots.release()
-        return list(variants)
-    try:
-        threading.Thread(target = worker, name = "speech-filter", daemon = True).start()
-    except RuntimeError:
-        slots.release()  # thread never ran, so it will never release
-        return list(variants)
-
-    try:
-        return await asyncio.wait_for(future, timeout = remaining)
-    except asyncio.TimeoutError:
-        logger.debug("speech variant filter did not return; listing unfiltered")
-        return list(variants)
-
-
-def _speech_normalize_root(root: str) -> str:
-    """*root* as the loader spells it, so the filter reads the copy the listing answered from."""
-    try:
-        from utils.paths import normalize_path
-        return normalize_path(root)
-    except Exception:
-        return root
-
-
-def _cached_snapshot_roots(repo_id: str, local_path: Optional[str]) -> list[str]:
-    """Every cached snapshot a Hub row's variants may live in, most-preferred first.
-
-    A cached row hands the route its REPO directory (``models--org--name``), not a snapshot, so
-    the pin resolves to nothing and the filter would skip exactly the rows most likely to hold a
-    downloaded CSM file.
-
-    All snapshots, not just the newest, because the rest of the stack already spans revisions: the
-    online listing counts a quant downloaded across every snapshot and ``cached_gguf_for_load``
-    resolves a load the same way, so reading one revision would leave a CSM quant living only in
-    an older sibling both listed and loadable. A pinned snapshot path stays alone, since that row
-    resolves inside it and nothing else.
-
-    Ordered by ``snapshot_selection_key``, the key every snapshot selector here shares: mtime
-    alone is not a total order, and breaking ties another way could read a different copy than the
-    loader picks -- for a filename replaced between revisions, either retaining the unrunnable
-    quant or hiding the runnable one."""
-    try:
-        if local_path:
-            base = Path(local_path).expanduser()
-            if base.parent.name == "snapshots" and base.is_dir():
-                return [str(base)]
-            # The repo directory this row named: read ITS revisions, not the active cache's, so a
-            # row pointing at another cache root is still answered from the copy it named.
-            snapshots = base / "snapshots"
-            if snapshots.is_dir():
-                from hub.utils.hf_cache_state import snapshot_selection_key
-                return [
-                    str(entry)
-                    for entry in sorted(
-                        (e for e in snapshots.iterdir() if e.is_dir()),
-                        key = snapshot_selection_key,
-                        reverse = True,
-                    )
-                ]
-        if not _is_valid_repo_id(repo_id):
-            return []
-        from hub.utils.gguf import iter_hf_cache_snapshots
-
-        # Already yielded in snapshot_selection_key order; re-sorting would drop its tie-break.
-        return [str(snap) for snap in iter_hf_cache_snapshots(repo_id)]
-    except Exception:
-        return []
-
-
-def _without_mixed_folder_speech_variants(roots: list, variants: list) -> list:
-    """The listed quants minus the speech GGUFs, when a runnable one is listed beside them.
-
-    ``_gguf_folder_task`` ranks speech below a loadable image/video checkpoint, which keeps the
-    ROW -- and the row's expander lists every GGUF in the folder with no per-variant task of its
-    own, so the undecodable ``llama-csm`` file stayed selectable there. The pick then resolves its
-    family from the FOLDER name (``detect_family_for_pick`` falls back to ``<path>/<filename>``),
-    so a CSM file beside a FLUX denoiser answers "flux.1" and reaches the image loader.
-
-    Only when something non-speech survives: a speech-only folder is already filtered at the row
-    level, and emptying its listing would report "no variants" for a folder that plainly has one.
-    Bounded and fails open, like the walk that tags the folder; the header reads are cached by
-    path/mtime/size, so that walk has usually paid for them already."""
-    bases: list[Path] = []
-    for root in roots:
-        try:
-            bases.append(Path(root))
-        except (TypeError, ValueError):
-            continue
-    if not bases:
-        return variants
-    kept: list = []
-    dropped = 0
-    read_deadline = time.monotonic() + _SPEECH_FILTER_READ_SECONDS
-    for index, variant in enumerate(variants):
-        # Bounded by TIME, not position: a positional cap exempted whatever sorted past it from
-        # the architecture gate, so a CSM entry at 65 was copied through unread. The first read
-        # always happens, as in the folder walk, so a spent budget still classifies one file.
-        if index and time.monotonic() >= read_deadline:
-            kept.extend(variants[index:])
-            break
-        filename = getattr(variant, "filename", None)
-        arch = None
-        if filename:
-            # The revision that HOLDS this quant answers for it; the others do not have the file
-            # at all, so an absent copy is skipped rather than read as no architecture.
-            for base in bases:
-                try:
-                    candidate = base / filename
-                    if not candidate.is_file():
-                        continue
-                    arch = (_gguf_architecture(str(candidate)) or "").strip().lower()
-                except Exception:
-                    arch = None
-                if arch:
-                    break
-        if arch in _SPEECH_GGUF_ARCHS:
-            dropped += 1
-            continue
-        kept.append(variant)
-    return kept if dropped and kept else variants
 
 
 def _hf_cache_snapshot_repo_id(path: Optional[str]) -> Optional[str]:
