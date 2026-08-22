@@ -215,6 +215,54 @@ const scrollerOf = (node: HTMLElement): HTMLElement | null => {
   return null;
 };
 
+/*
+ * THE OUTERMOST ONE TOO, and why the nearest is not enough on its own.
+ *
+ * An explicit root is clipped by the ancestors BETWEEN the target and the root, and by NOTHING
+ * above it. Rooting at the reasoning pane therefore asks "is this fence inside the pane's own
+ * window" and never "is the pane itself anywhere near the reader". Two ways that goes wrong, and
+ * the second one undoes the whole change on the pane most likely to hold the spans:
+ *
+ *   1. A pane scrolled far out of the thread still reports the two or three fences inside its
+ *      256 px window as intersecting, so they upgrade where nobody can see them.
+ *   2. `reasoning.tsx` drops `max-h-64` when the stream ends but KEEPS `overflow-y-auto`, so the
+ *      pane stops being scrollable and its box becomes the whole trace. An observer still rooted
+ *      at it from the streaming frames then reports EVERY fence in that trace as intersecting at
+ *      once.
+ *
+ * Rooting at the outermost scroller instead would fix both and cost the lookahead that rooting at
+ * the nearest one bought: measured in Chromium with ten fences in a 256 px inner scroller inside a
+ * 400 px outer one, the inner root reports 5 of 10 with a one-window margin against 3 of 10 for
+ * the outer root, and the difference is exactly the pre-warm that keeps a fence from showing its
+ * plain shell as it scrolls into the pane.
+ *
+ * So when the two differ, both are observed and the latch needs BOTH: the nearest answers "the
+ * reader is about to reach it inside the pane", the outermost answers "the pane is somewhere the
+ * reader can see". When they are the same element, which is every fence outside a nested scroller,
+ * there is exactly one observer and this costs nothing. The AND is also what makes case 2 harmless
+ * without re-resolving anything: a stale inner root can only ever be too permissive, and the outer
+ * observer is not stale, because a pane below it ceasing to scroll does not change which element
+ * is outermost.
+ *
+ * Still one-way. Neither observer can clear a latch; the second can only withhold one.
+ */
+const outermostScrollerOf = (node: HTMLElement): HTMLElement | null => {
+  let found: HTMLElement | null = null;
+  for (let el = node.parentElement; el !== null; el = el.parentElement) {
+    if (isScrollable(el)) found = el;
+  }
+  return found;
+};
+
+/** Is `node` inside `scroller`'s box grown by one of its own heights, the observer's margin? */
+const inBand = (node: HTMLElement, scroller: HTMLElement | null): boolean => {
+  const bounds = scroller?.getBoundingClientRect();
+  const top = bounds ? bounds.top : 0;
+  const height = bounds ? bounds.height : window.innerHeight;
+  const rect = node.getBoundingClientRect();
+  return rect.bottom > top - height && rect.top < top + height * 2;
+};
+
 /**
  * @param enabled  false on the shipped default, where this hook must cost nothing at all: no
  *                 state is ever written, no observer is built and no layout is read.
@@ -266,13 +314,10 @@ export function useFenceReached(
     if (reached) return;
     const node = host.current;
     if (!node) return;
-    const bounds = scrollerOf(node)?.getBoundingClientRect();
-    const top = bounds ? bounds.top : 0;
-    const height = bounds ? bounds.height : window.innerHeight;
-    // The same one-viewport slack the observer's rootMargin uses, so the two doors agree on what
-    // "reached" means and a fence cannot latch through one and not the other.
-    const rect = node.getBoundingClientRect();
-    if (rect.bottom > top - height && rect.top < top + height * 2) {
+    // The nearest scroller and the outermost one both have to say yes, for the same reason the
+    // observers below do: the nearest is the window the reader is looking through, the outermost
+    // is whether that window is itself anywhere on screen.
+    if (inBand(node, scrollerOf(node)) && inBand(node, outermostScrollerOf(node))) {
       // The cascading render this warns about is the POINT: it is what keeps the plain shell off
       // the screen. It happens at most once per fence, only for the one or two fences that are
       // already on screen at mount, and the alternative is the 2 to 3 painted frames of
@@ -298,17 +343,29 @@ export function useFenceReached(
     // the visible band, and the reader would get the plain shell for the frames it takes the
     // observer to deliver and the upgrade to render. Rooting at the scroller is what makes the
     // margin mean one viewport of warning.
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          observer.disconnect();
+    //
+    // See `outermostScrollerOf`: when a nested scroller is in the way, the outermost one is
+    // observed as well and the latch needs both. One observer, not two, whenever they agree.
+    const near = scrollerOf(node);
+    const outer = outermostScrollerOf(node);
+    const roots: (HTMLElement | null)[] = near === outer ? [near] : [near, outer];
+    const seen = roots.map(() => false);
+    const observers = roots.map((root, i) => {
+      const observer = new IntersectionObserver(
+        (entries) => {
+          seen[i] = entries.some((entry) => entry.isIntersecting);
+          if (!seen.every(Boolean)) return;
+          for (const each of observers) each.disconnect();
           setLatched(true);
-        }
-      },
-      { root: scrollerOf(node), rootMargin: REACH_MARGIN },
-    );
-    observer.observe(node);
-    return () => observer.disconnect();
+        },
+        { root, rootMargin: REACH_MARGIN },
+      );
+      return observer;
+    });
+    for (const observer of observers) observer.observe(node);
+    return () => {
+      for (const observer of observers) observer.disconnect();
+    };
   }, [reached, host]);
 
   return reached;

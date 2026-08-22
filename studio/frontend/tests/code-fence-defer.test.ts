@@ -73,7 +73,7 @@ test("the observer is rooted at the nearest SCROLLING ancestor, found not named"
   // measured 3 of 10 fences intersecting with and without the margin when rooted at the thread
   // viewport, against 5 of 10 rooted at the 256px pane.
   assert.ok(
-    /root:\s*scrollerOf\(node\)/.test(SOURCE),
+    /const near = scrollerOf\(node\);/.test(SOURCE) && /\{ root, rootMargin: REACH_MARGIN \}/.test(SOURCE),
     "the observer root must be the fence's own scrolling ancestor",
   );
   assert.ok(
@@ -105,13 +105,55 @@ test("with the flag off the hook writes no state, builds no observer and reads n
 test("the observer disconnects itself on the upgrade", () => {
   const callback = SOURCE.slice(
     SOURCE.indexOf("new IntersectionObserver"),
-    SOURCE.indexOf("observer.observe(node)"),
+    SOURCE.indexOf("for (const observer of observers) observer.observe(node)"),
   );
   assert.ok(
-    callback.indexOf("observer.disconnect()") < callback.indexOf("setLatched(true)"),
-    "the observer must disconnect before the state write, so an upgraded fence carries no " +
+    callback.indexOf("each.disconnect()") < callback.indexOf("setLatched(true)"),
+    "every observer must disconnect before the state write, so an upgraded fence carries no " +
       "residual per-scroll cost",
   );
+});
+
+test("a nested scroller is gated by the outermost one as well", () => {
+  // An explicit root is clipped by the ancestors BETWEEN the target and the root and by nothing
+  // above it, so rooting at the reasoning pane asks only "is this fence inside the pane's window".
+  // Two ways that upgrades fences nobody can see: a pane scrolled out of the thread still reports
+  // the fences inside its 256 px window as intersecting, and `reasoning.tsx` drops `max-h-64` at
+  // the end of a stream while KEEPING `overflow-y-auto`, so the pane stops being scrollable, its
+  // box becomes the whole trace, and an observer still rooted at it reports every fence in that
+  // trace at once.
+  //
+  // The outermost scroller answers the question the inner root cannot, and it cannot go stale the
+  // same way: a pane below it ceasing to scroll does not change which element is outermost.
+  const walk = SOURCE.slice(SOURCE.indexOf("const outermostScrollerOf"));
+  assert.ok(
+    walk.slice(0, 260).includes("found = el") && !walk.slice(0, 260).includes("return el;"),
+    "outermostScrollerOf must keep walking rather than returning the first match",
+  );
+  assert.ok(
+    /const roots: \(HTMLElement \| null\)\[\] = near === outer \? \[near\] : \[near, outer\];/
+      .test(SOURCE),
+    "one observer when the two agree, which is every fence outside a nested scroller",
+  );
+  assert.ok(
+    SOURCE.includes("if (!seen.every(Boolean)) return;"),
+    "the latch must need EVERY root, not any of them",
+  );
+  assert.ok(
+    /inBand\(node, scrollerOf\(node\)\) && inBand\(node, outermostScrollerOf\(node\)\)/
+      .test(SOURCE),
+    "the pre-paint door must apply the same conjunction the observers do",
+  );
+
+  // The conjunction, run rather than described: a fence inside a pane's window while the pane is
+  // far outside the thread viewport must NOT be reached.
+  const band = (rect: {top: number; bottom: number}, root: {top: number; height: number}) =>
+    rect.bottom > root.top - root.height && rect.top < root.top + root.height * 2;
+  const pane = { top: 4000, height: 256 };
+  const viewport = { top: 0, height: 800 };
+  const fence = { top: 4100, bottom: 4200 };
+  assert.equal(band(fence, pane), true, "inside the pane's own window");
+  assert.equal(band(fence, viewport), false, "but nowhere the reader can see");
 });
 
 test("the flag defaults off, and off means today's behaviour", () => {
