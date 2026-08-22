@@ -1362,6 +1362,118 @@ def test_load_model_reaps_worker_after_inactivity_timeout(monkeypatch):
     assert "m" not in o.loading_models
 
 
+def test_failed_load_skips_reap_when_cancel_already_owns_worker(monkeypatch):
+    # Stop during a failing load used to send cancel_load and load_model into
+    # _shutdown_subprocess at once. cancel_load runs off the lifecycle gate and
+    # nulls _cmd_queue at the end of its teardown, so the load thread's later
+    # put() raised AttributeError and replaced the real "load timed out".
+    # cancel_load drops the loading marker before tearing the worker down; if
+    # that marker is already gone, cancel owns the worker and the failed load
+    # must not reap it again.
+    import types
+
+    from utils import transformers_version as tv
+
+    o = _bare_orchestrator()
+    o.active_model_name = None
+    o.models = {}
+    o.loading_models = set()
+    o._proc = None
+
+    monkeypatch.setattr(tv, "needs_transformers_5", lambda name: False)
+    monkeypatch.setattr(orch_mod, "prepare_gpu_selection", lambda *a, **k: ([0], "sel"))
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: False)
+    monkeypatch.setattr(o, "_spawn_subprocess", lambda cfg: None)
+
+    parked = threading.Event()
+    release_timeout = threading.Event()
+    load_done = threading.Event()
+    shutdowns = []
+
+    def blocking_wait_response(expected, timeout = 300.0):
+        parked.set()
+        assert release_timeout.wait(timeout = 5)
+        raise RuntimeError("Timeout waiting for 'loaded' response (no activity for 300.0s)")
+
+    def record_shutdown(timeout = 5):
+        shutdowns.append(timeout)
+        o._cmd_queue = None
+
+    monkeypatch.setattr(o, "_wait_response", blocking_wait_response)
+    monkeypatch.setattr(o, "_shutdown_subprocess", record_shutdown)
+
+    load_result: dict = {}
+
+    def run_load():
+        try:
+            load_result["ok"] = o.load_model(
+                types.SimpleNamespace(identifier = "m", gguf_variant = None)
+            )
+        except Exception as exc:  # noqa: BLE001
+            load_result["exc"] = exc
+        finally:
+            load_done.set()
+
+    loader = threading.Thread(target = run_load)
+    loader.start()
+    assert parked.wait(timeout = 5), "load_model must reach _wait_response"
+
+    assert o.cancel_load("m") is True
+    release_timeout.set()
+    loader.join(timeout = 5)
+    assert load_done.is_set()
+
+    # Fail-without: load_model also entered _shutdown_subprocess after cancel
+    # nulled _cmd_queue, and the AttributeError replaced the timeout.
+    assert isinstance(load_result.get("exc"), RuntimeError), load_result
+    assert "Timeout waiting for 'loaded'" in str(load_result["exc"])
+    assert shutdowns == [0.5], "only cancel_load may tear the worker down"
+    assert o.active_model_name is None
+    assert o.models == {}
+    assert "m" not in o.loading_models
+
+
+def test_failed_load_keeps_the_timeout_when_teardown_raises(monkeypatch):
+    # unload_model already wraps its own teardown this way. A teardown that
+    # raises -- cancel_load already nulled _cmd_queue, or the worker is gone --
+    # must stay a warning, not the exception the caller sees.
+    import types
+
+    from utils import transformers_version as tv
+
+    o = _bare_orchestrator()
+    o.active_model_name = None
+    o.models = {}
+    o.loading_models = set()
+    o._proc = None
+
+    monkeypatch.setattr(tv, "needs_transformers_5", lambda name: False)
+    monkeypatch.setattr(orch_mod, "prepare_gpu_selection", lambda *a, **k: ([0], "sel"))
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: False)
+    monkeypatch.setattr(o, "_spawn_subprocess", lambda cfg: None)
+    monkeypatch.setattr(
+        o,
+        "_shutdown_subprocess",
+        lambda timeout = 5: (_ for _ in ()).throw(
+            AttributeError("'NoneType' object has no attribute 'put'")
+        ),
+    )
+    monkeypatch.setattr(
+        o,
+        "_wait_response",
+        lambda t, timeout = 300.0: (_ for _ in ()).throw(
+            RuntimeError("Timeout waiting for 'loaded' response (no activity for 300.0s)")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match = "Timeout waiting for 'loaded'"):
+        o.load_model(types.SimpleNamespace(identifier = "m", gguf_variant = None))
+
+    assert o.active_model_name is None
+    assert o.models == {}
+    assert "m" not in o.loading_models
+
+
 def test_load_model_aborts_when_cancelled_during_spawn(monkeypatch):
     # Stop-loading can land AFTER the pre-spawn marker recheck but while
     # _spawn_subprocess is still creating the queues/process, so cancel_load's

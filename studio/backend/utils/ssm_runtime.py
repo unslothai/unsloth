@@ -266,11 +266,15 @@ def _heartbeat(status_cb: StatusCb, message: str) -> Iterator[None]:
         while not done.wait(_HEARTBEAT_SECONDS):
             _emit(status_cb, message)
 
-    threading.Thread(target = _beat, daemon = True).start()
+    thread = threading.Thread(target = _beat, daemon = True, name = "ssm-install-heartbeat")
+    thread.start()
     try:
         yield
     finally:
         done.set()
+        # A tick that already left done.wait() must not _emit after this block:
+        # the parent would see a status for work that has already finished.
+        thread.join(timeout = 1)
 
 
 def _run_with_heartbeat(run, cmd, status_cb, display_name, **kwargs):
@@ -323,29 +327,33 @@ def _install_kernel(
             status_cb,
             f"Still installing {display_name} (prebuilt kernel)...",
         ):
-            attempts = install_wheel(
+            # Keep the heartbeat open through the first real torch import
+            # (_is_importable): a cold aarch64 process can spend tens of seconds
+            # loading CUDA libs after the wheel lands, and that silence used to
+            # sit outside the block.
+            for installer, result in install_wheel(
                 wheel_url,
                 python_executable = sys.executable,
                 use_uv = bool(shutil.which("uv")),
                 run = run,
-            )
-        for installer, result in attempts:
-            if getattr(result, "returncode", 1) == 0:
-                # A wheel can install yet fail to import (CUDA/ABI mismatch); verify before
-                # trusting it, else source-build to match the local ABI.
-                if _is_importable(import_name):
-                    logger.info("Installed prebuilt %s wheel", display_name)
-                    return True
+            ):
+                if getattr(result, "returncode", 1) == 0:
+                    # A wheel can install yet fail to import (CUDA/ABI mismatch); verify before
+                    # trusting it, else source-build to match the local ABI.
+                    if _is_importable(import_name):
+                        logger.info("Installed prebuilt %s wheel", display_name)
+                        return True
+                    logger.warning(
+                        "%s wheel installed but not importable; building from source",
+                        display_name,
+                    )
+                    break
                 logger.warning(
-                    "%s wheel installed but not importable; building from source", display_name
+                    "%s could not install %s wheel:\n%s",
+                    installer,
+                    display_name,
+                    getattr(result, "stdout", ""),
                 )
-                break
-            logger.warning(
-                "%s could not install %s wheel:\n%s",
-                installer,
-                display_name,
-                getattr(result, "stdout", ""),
-            )
     else:
         logger.info(
             "No prebuilt %s wheel for this environment (%s); building from source",

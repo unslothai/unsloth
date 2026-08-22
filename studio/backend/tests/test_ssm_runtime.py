@@ -331,6 +331,81 @@ def test_install_kernel_heartbeats_during_prebuilt_wheel(monkeypatch):
     assert any("Installing causal-conv1d (prebuilt kernel)" in s for s in statuses)
 
 
+def test_install_kernel_heartbeats_through_the_import_check(monkeypatch):
+    # The first real torch import after a wheel lands can take tens of seconds
+    # on a cold aarch64 process. The heartbeat with-block used to close after
+    # install_wheel, so _is_importable ran in silence and could trip the 300s
+    # inactivity deadline. Heartbeats must keep coming through that import.
+    import threading
+    import time
+
+    monkeypatch.setattr(ssm_runtime, "_HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(ssm_runtime, "probe_torch_wheel_env", lambda timeout = 30: {})
+    monkeypatch.setattr(
+        ssm_runtime,
+        "direct_wheel_url",
+        lambda **k: "https://example/causal_conv1d-1.6.1.whl",
+    )
+    monkeypatch.setattr(ssm_runtime, "url_exists", lambda u: True)
+    monkeypatch.setattr(
+        ssm_runtime, "install_wheel", lambda url, **k: [("uv", _Result(returncode = 0))]
+    )
+
+    import_started = threading.Event()
+    import_released = threading.Event()
+    seen = {"n": 0}
+
+    def slow_importable(name):
+        seen["n"] += 1
+        if seen["n"] == 1:
+            return False
+        import_started.set()
+        assert import_released.wait(1.0)
+        return True
+
+    monkeypatch.setattr(ssm_runtime, "_is_importable", slow_importable)
+
+    statuses = []
+    thread = threading.Thread(
+        target = lambda: ssm_runtime._install_kernel(
+            import_name = "causal_conv1d",
+            display_name = "causal-conv1d",
+            pypi_name = "causal-conv1d",
+            package_version = "1.6.1",
+            release_tag = "v1.6.1.post4",
+            release_base_url = "x",
+            status_cb = statuses.append,
+            run = lambda *a, **k: _Result(returncode = 1),
+        ),
+        daemon = True,
+    )
+    thread.start()
+    assert import_started.wait(timeout = 2.0), "must reach the post-wheel import check"
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if any("Still installing causal-conv1d (prebuilt kernel)" in s for s in statuses):
+            break
+        time.sleep(0.02)
+    import_released.set()
+    thread.join(timeout = 2.0)
+    assert any("Still installing causal-conv1d (prebuilt kernel)" in s for s in statuses), statuses
+
+
+def test_heartbeat_does_not_emit_after_the_block(monkeypatch):
+    # A tick that already left done.wait() used to _emit after the with-block,
+    # so a stray "still installing" could land after the parent moved on.
+    # join after done.set() waits that tick out.
+    import time
+
+    monkeypatch.setattr(ssm_runtime, "_HEARTBEAT_SECONDS", 0.05)
+    statuses = []
+    with ssm_runtime._heartbeat(statuses.append, "still going"):
+        time.sleep(0.12)
+    n = len(statuses)
+    time.sleep(0.15)
+    assert len(statuses) == n, statuses
+
+
 def test_install_kernel_falls_back_to_source(monkeypatch):
     # no wheel -> source build -> importable after install
     states = iter([False, True])  # before install, after install
