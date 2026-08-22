@@ -2711,6 +2711,69 @@ def test_an_entry_the_upstream_lru_cannot_size_is_not_retainable(monkeypatch):
     assert probe(SimpleNamespace(state = (), nbytes = 128))[3] is True
 
 
+class _SentinelRandomState:
+    """``mx.random.state`` as mlx >= 0.32.1 exposes it: readable, not writable."""
+
+    def __init__(self, words):
+        self._words = list(words)
+
+    def __len__(self):
+        return 1
+
+    def __getitem__(self, index):
+        if index not in (0, -1):
+            raise IndexError("random state index out of range")
+        return SimpleNamespace(tolist = lambda: list(self._words))
+
+    def __iter__(self):
+        return iter([self[0]])
+
+
+def test_kv_quant_probe_rewinds_the_rng_without_assigning_to_the_state(monkeypatch):
+    """mlx 0.32.1 made mx.random.state a sentinel with no __setitem__, so the
+    assignment this used to do raised out of the probe's finally and failed the
+    whole model load.
+    """
+    from core.inference import mlx_inference
+
+    _install_fake_mlx(monkeypatch)
+    mx = sys.modules["mlx.core"]
+    # High word's top bit set, so a rewind that packs the seed as signed is visible.
+    words = (0xFEDCBA98, 0x76543210)
+    events = []
+    mx.random = SimpleNamespace(
+        state = _SentinelRandomState(words),
+        seed = lambda value: events.append(("seed", value)),
+    )
+    mx.array = lambda v: v
+    mx.eval = lambda *a: None
+    mx.clear_cache = lambda: None
+
+    def language_model(*args, **kwargs):
+        events.append(("forward", None))
+
+    def to_quantized(group_size, bits):
+        events.append(("convert", None))
+        return SimpleNamespace(state = (), nbytes = 128)
+
+    entry = SimpleNamespace(
+        to_quantized = to_quantized,
+        max_size = None,
+        window_size = None,
+        state = (),
+    )
+    outcome = mlx_inference._kv_quant_probe(language_model, [entry], 8)
+
+    assert outcome == (1, 0, None, True)
+    # A rewind that ran before the forward pass would leave the probe's own
+    # draws in the stream the caller goes on to sample.
+    assert events == [
+        ("forward", None),
+        ("convert", None),
+        ("seed", (words[0] << 32) | words[1]),
+    ]
+
+
 def test_a_successful_override_does_not_pin_the_tokenizer_past_load(monkeypatch):
     """The restore pairs hold the tokenizer, so unload_model cannot free it.
 
