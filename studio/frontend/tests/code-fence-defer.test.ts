@@ -91,6 +91,30 @@ test("the observer is rooted at the nearest SCROLLING ancestor, found not named"
   }
 });
 
+test("the pre-paint gate re-runs when the roots are rebound", () => {
+  // The ResizeObserver bumps `generation` when the reasoning pane stops scrolling, and the
+  // passive effect rebuilds its observers off that. The PRE-PAINT effect has to re-run on the
+  // same bump, or a fence that the expanding pane has just brought inside the outer viewport
+  // stays on its plain shell through the commit the rebind causes, and the replacement observer
+  // delivers asynchronously, so the shell is painted.
+  //
+  // That is an ON SCREEN difference, which is the one kind this change is not allowed to have.
+  const prepaint = SOURCE.slice(
+    SOURCE.indexOf("THE FIRST FRAME, which the observer cannot cover"),
+    SOURCE.indexOf("// The one-way edge."),
+  );
+  assert.ok(prepaint.length > 200, "the pre-paint effect must still be findable by its comment");
+  assert.ok(
+    /\}, \[reached, host, generation\]\);/.test(prepaint),
+    "the pre-paint gate must depend on the rebind generation, not just on reached and host",
+  );
+  // And it has to be the gate that actually latches, not some other effect in the slice.
+  assert.ok(
+    prepaint.includes("setLatched(true)") && prepaint.includes("useLayoutEffect"),
+    "the effect this pins must be the pre-paint latch itself",
+  );
+});
+
 test("with the flag off the hook writes no state, builds no observer and reads no layout", () => {
   const hook = SOURCE.slice(SOURCE.indexOf("export function useFenceReached"));
   for (const guard of ["if (!enabled || latched || !streaming) return;", "if (reached) return;"]) {

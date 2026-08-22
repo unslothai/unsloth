@@ -343,6 +343,13 @@ export function useFenceReached(
    * mutation in between, so the layout is forced once for the whole thread rather than once per
    * fence.
    *
+   * RE-RUN ON A REBIND. `generation` is a dependency because the ResizeObserver below bumps it
+   * when the reasoning pane stops scrolling, and expanding that pane can bring a fence inside the
+   * outer viewport for the first time. Without it the rebind's own render leaves the plain shell
+   * in place, and the replacement observer is built in a passive effect and delivers
+   * asynchronously, so the shell is PAINTED. That is an on-screen difference, which is the one
+   * kind this change is not allowed to have.
+   *
    * Still one-way: this can only ever latch true.
    */
   useLayoutEffect(() => {
@@ -361,7 +368,7 @@ export function useFenceReached(
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setLatched(true);
     }
-  }, [reached, host]);
+  }, [reached, host, generation]);
 
   // The one-way edge. Once `reached` is true this effect re-runs, takes the
   // early return, and never observes anything again, so a fence that has been
