@@ -236,13 +236,17 @@ const scrollerOf = (node: HTMLElement): HTMLElement | null => {
  * the outer root, and the difference is exactly the pre-warm that keeps a fence from showing its
  * plain shell as it scrolls into the pane.
  *
- * So when the two differ, both are observed and the latch needs BOTH: the nearest answers "the
- * reader is about to reach it inside the pane", the outermost answers "the pane is somewhere the
- * reader can see". When they are the same element, which is every fence outside a nested scroller,
- * there is exactly one observer and this costs nothing. The AND is also what makes case 2 harmless
- * without re-resolving anything: a stale inner root can only ever be too permissive, and the outer
- * observer is not stale, because a pane below it ceasing to scroll does not change which element
- * is outermost.
+ * So when the two differ there are two gates, watching two different elements, and the latch needs
+ * both: the FENCE against the nearest scroller answers "the reader is about to reach it inside the
+ * pane", and the PANE against the outermost scroller answers "the pane is somewhere the reader can
+ * see". Watching the fence through the outer root instead would clip it at the pane on the way and
+ * go false exactly where the inner lookahead was doing its work -- 2 of 10 against 4, measured with
+ * the pane fully in view. When the two scrollers are the same element, which is every fence outside
+ * a nested scroller, there is exactly one observer and this costs nothing.
+ *
+ * The conjunction is also what makes case 2 harmless without re-resolving anything: a stale inner
+ * root can only ever be too permissive, and the outer gate is not stale, because a pane below it
+ * ceasing to scroll does not change which element is outermost.
  *
  * Still one-way. Neither observer can clear a latch; the second can only withhold one.
  */
@@ -314,10 +318,11 @@ export function useFenceReached(
     if (reached) return;
     const node = host.current;
     if (!node) return;
-    // The nearest scroller and the outermost one both have to say yes, for the same reason the
-    // observers below do: the nearest is the window the reader is looking through, the outermost
-    // is whether that window is itself anywhere on screen.
-    if (inBand(node, scrollerOf(node)) && inBand(node, outermostScrollerOf(node))) {
+    // The same two questions the observers below ask, of the same two elements: is the FENCE in
+    // the window the reader is looking through, and is that WINDOW itself on screen.
+    const near = scrollerOf(node);
+    const outer = outermostScrollerOf(node);
+    if (inBand(node, near) && (near === outer || inBand(near as HTMLElement, outer))) {
       // The cascading render this warns about is the POINT: it is what keeps the plain shell off
       // the screen. It happens at most once per fence, only for the one or two fences that are
       // already on screen at mount, and the alternative is the 2 to 3 painted frames of
@@ -348,21 +353,27 @@ export function useFenceReached(
     // observed as well and the latch needs both. One observer, not two, whenever they agree.
     const near = scrollerOf(node);
     const outer = outermostScrollerOf(node);
-    const roots: (HTMLElement | null)[] = near === outer ? [near] : [near, outer];
-    const seen = roots.map(() => false);
-    const observers = roots.map((root, i) => {
-      const observer = new IntersectionObserver(
-        (entries) => {
-          seen[i] = entries.some((entry) => entry.isIntersecting);
-          if (!seen.every(Boolean)) return;
-          for (const each of observers) each.disconnect();
-          setLatched(true);
-        },
-        { root, rootMargin: REACH_MARGIN },
-      );
-      return observer;
-    });
-    for (const observer of observers) observer.observe(node);
+    // WHAT EACH GATE WATCHES, which is not the same element.
+    //
+    // Observing the FENCE against the outer root clips it at the pane on the way, so the outer
+    // gate goes false exactly where the inner lookahead was supposed to be doing its work: 2 of 10
+    // against the inner root's 4, measured, with the pane fully in view. Observing the PANE
+    // against the outer root asks the question the outer gate is for -- is the pane anywhere the
+    // reader can see -- and the inner gate keeps its lookahead untouched at 4 of 10.
+    const gates: [Element, Element | null][] = near === outer
+      ? [[node, near]]
+      : [[node, near], [near as HTMLElement, outer]];
+    const seen = gates.map(() => false);
+    const observers = gates.map(([, root], i) => new IntersectionObserver(
+      (entries) => {
+        seen[i] = entries.some((entry) => entry.isIntersecting);
+        if (!seen.every(Boolean)) return;
+        for (const each of observers) each.disconnect();
+        setLatched(true);
+      },
+      { root, rootMargin: REACH_MARGIN },
+    ));
+    gates.forEach(([target], i) => observers[i].observe(target));
     return () => {
       for (const observer of observers) observer.disconnect();
     };

@@ -131,29 +131,42 @@ test("a nested scroller is gated by the outermost one as well", () => {
     "outermostScrollerOf must keep walking rather than returning the first match",
   );
   assert.ok(
-    /const roots: \(HTMLElement \| null\)\[\] = near === outer \? \[near\] : \[near, outer\];/
-      .test(SOURCE),
-    "one observer when the two agree, which is every fence outside a nested scroller",
+    SOURCE.includes("? [[node, near]]")
+      && SOURCE.includes("[[node, near], [near as HTMLElement, outer]]"),
+    "one gate when the two scrollers agree; otherwise the FENCE against the nearest and the "
+      + "PANE against the outermost",
   );
   assert.ok(
     SOURCE.includes("if (!seen.every(Boolean)) return;"),
-    "the latch must need EVERY root, not any of them",
+    "the latch must need EVERY gate, not any of them",
   );
   assert.ok(
-    /inBand\(node, scrollerOf\(node\)\) && inBand\(node, outermostScrollerOf\(node\)\)/
+    /inBand\(node, near\) && \(near === outer \|\| inBand\(near as HTMLElement, outer\)\)/
       .test(SOURCE),
-    "the pre-paint door must apply the same conjunction the observers do",
+    "the pre-paint door must ask the same two questions of the same two elements",
+  );
+  assert.ok(
+    !/\[\[node, near\], \[node, outer\]\]/.test(SOURCE),
+    "watching the FENCE through the outer root clips it at the pane and cancels the lookahead "
+      + "it was rooted at the pane to get: measured 2 of 10 against 4 with the pane in view",
   );
 
   // The conjunction, run rather than described: a fence inside a pane's window while the pane is
   // far outside the thread viewport must NOT be reached.
   const band = (rect: {top: number; bottom: number}, root: {top: number; height: number}) =>
     rect.bottom > root.top - root.height && rect.top < root.top + root.height * 2;
-  const pane = { top: 4000, height: 256 };
+  const pane = { top: 4000, height: 256, bottom: 4256 };
   const viewport = { top: 0, height: 800 };
   const fence = { top: 4100, bottom: 4200 };
   assert.equal(band(fence, pane), true, "inside the pane's own window");
-  assert.equal(band(fence, viewport), false, "but nowhere the reader can see");
+  assert.equal(band(pane, viewport), false, "but the pane is nowhere the reader can see");
+
+  // And the lookahead survives when the pane IS in view: the outer gate asks about the pane, so
+  // it cannot clip the fence a second time.
+  const onScreen = { top: 100, height: 256, bottom: 356 };
+  const ahead = { top: 500, bottom: 620 };
+  assert.equal(band(onScreen, viewport), true, "the pane is on screen");
+  assert.equal(band(ahead, onScreen), true, "so a fence one window below it still pre-warms");
 });
 
 test("the flag defaults off, and off means today's behaviour", () => {
