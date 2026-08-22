@@ -218,6 +218,46 @@ export function engineClipboardIsMapped(
  * restore runs even if `toString()` throws. Nothing here paints: the whole sequence is one
  * synchronous turn of the copy event, so the user never sees the patched document.
  */
+/**
+ * Put an element's `style` attribute back exactly as it was found, including not being there.
+ *
+ * `style.removeProperty` is not the inverse of `style.setProperty` at the serialisation level,
+ * which is the level a DOM comparison works at.
+ */
+/**
+ * Would the clipboard's own iterator emit this image's alt text?
+ *
+ * `SkipsUnselectableContent` and ordinary rendering rules mean an image that is not displayed,
+ * not visible or not selectable contributes nothing. `visibility` and `user-select` inherit, so
+ * the computed style already answers for an ancestor that set them.
+ */
+function nativeWouldEmitAlt(image: HTMLImageElement): boolean {
+  const computed = getComputedStyle(image);
+  if (computed.display === "none") return false;
+  if (computed.visibility !== "visible") return false;
+  const selectable = computed.userSelect ?? computed.webkitUserSelect;
+  if (selectable === "none") return false;
+  return true;
+}
+
+function restoreStyleAttribute(element: Element, had: string | null): void {
+  if (had !== null) {
+    element.setAttribute("style", had);
+    return;
+  }
+  // `removeAttribute("style")` DOES NOT REMOVE IT once the inline declaration has been touched.
+  // Measured in Chromium: setProperty then removeAttribute leaves `style=""` on the element and
+  // in its serialisation, and calling removeAttribute twice does not help, nor does clearing
+  // `cssText` first. Removing the attribute NODE does work. The residue is invisible to a user
+  // and visible to every DOM comparison, and it is permanent: it survives the copy that caused
+  // it, so a thread accumulates one per element the fast path ever touched.
+  try {
+    element.attributes.removeNamedItem("style");
+  } catch {
+    element.removeAttribute("style");
+  }
+}
+
 function patchClipboardDeltas(root: Element): Array<() => void> {
   const undo: Array<() => void> = [];
 
@@ -237,13 +277,16 @@ function patchClipboardDeltas(root: Element): Array<() => void> {
   for (const element of scoped) {
     const transform = getComputedStyle(element).textTransform;
     if (!TRANSFORMED.has(transform)) continue;
-    const had = element.style.getPropertyValue("text-transform");
-    const priority = element.style.getPropertyPriority("text-transform");
+    // THE RAW ATTRIBUTE, not the property. Going through `style.removeProperty` restores the
+    // computed value and does NOT restore the serialisation: an element that had no `style`
+    // attribute is left carrying `style=""`, and one that had `style="text-transform:uppercase"`
+    // gets it rewritten as `style="text-transform: uppercase;"`. Neither is visible to a user
+    // and both are visible to any DOM comparison, so every copy silently rewrote the document.
+    // Caught by the structural parity digest, which reported six actions differing against a
+    // null that matched fifteen of sixteen.
+    const had = element.getAttribute("style");
     element.style.setProperty("text-transform", "none", "important");
-    undo.push(() => {
-      element.style.removeProperty("text-transform");
-      if (had) element.style.setProperty("text-transform", had, priority);
-    });
+    undo.push(() => restoreStyleAttribute(element, had));
   }
 
   // EmitsImageAltText: the clipboard carries the alt text, which is not in the DOM as text.
@@ -260,16 +303,21 @@ function patchClipboardDeltas(root: Element): Array<() => void> {
   )) {
     const alt = image.getAttribute("alt");
     if (!alt) continue;
-    const had = image.style.getPropertyValue("display");
-    const priority = image.style.getPropertyPriority("display");
+    // ONLY AN IMAGE THE NATIVE ITERATOR WOULD EMIT. Chromium skips an image that is not
+    // rendered or not selectable, so inserting its alt text unconditionally ADDS text the
+    // clipboard never carried. Measured against the real clipboard: `display: none`,
+    // `visibility: hidden` and `user-select: none` all diverge, and so does Studio's own
+    // `ImagePreview`, which carries an `invisible` class until the image loads -- so copying
+    // across a message whose image had not finished loading gained an alt string.
+    if (!nativeWouldEmitAlt(image)) continue;
+    const had = image.getAttribute("style");
     image.style.setProperty("display", "none", "important");
     const holder = image.ownerDocument.createElement("span");
     holder.textContent = alt;
     image.parentNode?.insertBefore(holder, image);
     undo.push(() => {
       holder.remove();
-      image.style.removeProperty("display");
-      if (had) image.style.setProperty("display", had, priority);
+      restoreStyleAttribute(image, had);
     });
   }
 
@@ -284,6 +332,57 @@ function patchClipboardDeltas(root: Element): Array<() => void> {
  * The selection is restored whatever happens, because a copy that quietly moved the user's
  * highlight would be a worse bug than the one being fixed.
  */
+/** Where the selection's anchor and focus were, which a cloned Range does not carry. */
+type SelectionDirection = {
+  readonly anchorNode: Node | null;
+  readonly anchorOffset: number;
+  readonly focusNode: Node | null;
+  readonly focusOffset: number;
+};
+
+function captureDirection(selection: Selection): SelectionDirection {
+  return {
+    anchorNode: selection.anchorNode,
+    anchorOffset: selection.anchorOffset,
+    focusNode: selection.focusNode,
+    focusOffset: selection.focusOffset,
+  };
+}
+
+/**
+ * Put the selection back the way it was, INCLUDING ITS DIRECTION.
+ *
+ * A `Range` carries ordered boundaries and nothing else, so rebuilding with `addRange` always
+ * produces a forward selection. Measured: a selection dragged upwards came back with its anchor
+ * and focus swapped, so the user's next Shift+Arrow would move the opposite edge of it. Only the
+ * patched path ever rebuilds the selection, which is why this never showed on ordinary prose.
+ *
+ * `setBaseAndExtent` preserves direction and takes one anchor/focus pair, so a multi-range
+ * selection still falls back to `addRange`. Firefox is the only engine that produces those, and
+ * it is not an engine this fast path runs on.
+ */
+function restoreSelection(
+  selection: Selection,
+  saved: readonly Range[],
+  direction: SelectionDirection,
+): void {
+  selection.removeAllRanges();
+  if (saved.length === 1 && direction.anchorNode && direction.focusNode) {
+    try {
+      selection.setBaseAndExtent(
+        direction.anchorNode,
+        direction.anchorOffset,
+        direction.focusNode,
+        direction.focusOffset,
+      );
+      return;
+    } catch {
+      // A detached node is better answered with the range than with nothing at all.
+    }
+  }
+  for (const range of saved) selection.addRange(range);
+}
+
 export function faithfulSelectionText(
   selection: Selection,
   root: Element,
@@ -292,20 +391,15 @@ export function faithfulSelectionText(
   for (let index = 0; index < selection.rangeCount; index += 1) {
     saved.push(selection.getRangeAt(index).cloneRange());
   }
+  const direction = captureDirection(selection);
   const undo = patchClipboardDeltas(root);
   let raw: string;
   try {
-    if (undo.length > 0) {
-      selection.removeAllRanges();
-      for (const range of saved) selection.addRange(range);
-    }
+    if (undo.length > 0) restoreSelection(selection, saved, direction);
     raw = selection.toString();
   } finally {
     for (let index = undo.length - 1; index >= 0; index -= 1) undo[index]();
-    if (undo.length > 0) {
-      selection.removeAllRanges();
-      for (const range of saved) selection.addRange(range);
-    }
+    if (undo.length > 0) restoreSelection(selection, saved, direction);
   }
   // Both engines' clipboards fold a no-break space to a plain one; neither `toString()` does.
   return raw.replace(/\u00a0/g, " ");

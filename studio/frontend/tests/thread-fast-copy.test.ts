@@ -500,6 +500,7 @@ type FakeElement = {
   readonly parentElement: FakeElement | null;
   /** What a class rule gives this element. Inherited by descendants, the way CSS does it. */
   readonly ruleTextTransform: string | null;
+  readonly ruleVisibility: string | null;
   readonly styleEntries: Map<string, StyleEntry>;
   readonly style: {
     getPropertyValue(name: string): string;
@@ -511,6 +512,8 @@ type FakeElement = {
   textContent: string;
   getAttribute(name: string): string | null;
   setAttribute(name: string, value: string): void;
+  removeAttribute(name: string): void;
+  readonly attributes: { removeNamedItem(name: string): void };
   querySelector(selectors: string): FakeElement | null;
   querySelectorAll(selectors: string): FakeElement[];
   insertBefore(node: FakeNode, ref: FakeNode | null): FakeNode;
@@ -583,6 +586,8 @@ function el(
   tagName: string,
   options: {
     alt?: string;
+    /** What a class rule gives this element's visibility, e.g. Studio's `invisible`. */
+    ruleVisibility?: string;
     /** [property, value, priority] triples, as an inline style attribute. */
     inline?: ReadonlyArray<readonly [string, string, string?]>;
     /** A stylesheet rule on this element, e.g. Tailwind's `uppercase`. */
@@ -597,6 +602,44 @@ function el(
     styleEntries.set(name, { value, priority: priority ?? "" });
   }
   const childNodes: FakeNode[] = [];
+  // THE COUPLING THE STUB WAS MISSING. On a real element the inline declaration and the `style`
+  // attribute are two views of one thing: touching a property writes the attribute, and emptying
+  // the declaration leaves `style=""` rather than removing it. Keeping them in separate maps is
+  // why "the dom is left exactly as it was found" stayed green while every copy was leaving
+  // residue in the document.
+  const syncStyleAttribute = () => {
+    attrs.set(
+      "style",
+      [...styleEntries]
+        .map(
+          ([name, entry]) =>
+            `${name}: ${entry.value}${entry.priority ? ` !${entry.priority}` : ""};`,
+        )
+        .join(" "),
+    );
+  };
+  const readStyleAttribute = (value: string) => {
+    styleEntries.clear();
+    for (const part of value.split(";")) {
+      const [rawName, ...rest] = part.split(":");
+      if (rest.length === 0) continue;
+      const name = rawName.trim();
+      if (!name) continue;
+      const raw = rest.join(":").trim();
+      const important = raw.endsWith("!important");
+      styleEntries.set(name, {
+        value: important ? raw.slice(0, -"!important".length).trim() : raw,
+        priority: important ? "important" : "",
+      });
+    }
+  };
+
+  // An element built WITH inline styles must carry the matching `style` attribute from the
+  // start, exactly as parsed markup would. Seeding the declaration alone left `getAttribute`
+  // returning null, so a restore saw "there was no style attribute" and removed the element's
+  // own styling.
+  if (styleEntries.size > 0) syncStyleAttribute();
+
   const node: FakeElement = {
     nodeType: 1,
     tagName,
@@ -607,15 +650,18 @@ function el(
       return node.parentNode;
     },
     ruleTextTransform: options.rule ?? null,
+    ruleVisibility: options.ruleVisibility ?? null,
     styleEntries,
     style: {
       getPropertyValue: (name) => styleEntries.get(name)?.value ?? "",
       getPropertyPriority: (name) => styleEntries.get(name)?.priority ?? "",
       setProperty: (name, value, priority = "") => {
         styleEntries.set(name, { value, priority });
+        syncStyleAttribute();
       },
       removeProperty: (name) => {
         styleEntries.delete(name);
+        syncStyleAttribute();
       },
     },
     ownerDocument: { createElement: (tag: string) => el(tag) },
@@ -629,6 +675,23 @@ function el(
     getAttribute: (name) => attrs.get(name) ?? null,
     setAttribute: (name, value) => {
       attrs.set(name, value);
+      if (name === "style") readStyleAttribute(value);
+    },
+    // `removeAttribute` and the attribute NODE removal are different operations on a real
+    // element, and the difference is the bug this stub failed to catch. Both are modelled.
+    removeAttribute: (name) => {
+      attrs.delete(name);
+      if (name === "style") styleEntries.clear();
+    },
+    attributes: {
+      removeNamedItem: (name: string) => {
+        if (!attrs.has(name)) {
+          // The real DOM throws NotFoundError, which the module relies on catching.
+          throw new Error(`NotFoundError: no attribute named ${name}`);
+        }
+        attrs.delete(name);
+        if (name === "style") styleEntries.clear();
+      },
     },
     querySelector: (selectors) =>
       descendants(node).find((child) => matchesSelector(child, selectors)) ??
@@ -754,9 +817,31 @@ function fakeRange(
  */
 function fakeSelection(
   root: FakeElement,
-  options: { ids?: number[]; probeText?: string } = {},
+  options: {
+    ids?: number[];
+    probeText?: string;
+    anchorNode?: FakeNode;
+    anchorOffset?: number;
+    focusNode?: FakeNode;
+    focusOffset?: number;
+  } = {},
 ) {
   const { ids = [1], probeText = "a" } = options;
+  // A selection's DIRECTION lives in its anchor/focus pair and nowhere else. A cloned Range
+  // carries ordered boundaries only, so a restore that rebuilds from ranges silently flips a
+  // backward selection forward. Recording the calls is how a test can tell which API was used.
+  const calls: {
+    setBaseAndExtent: Array<{
+      anchorNode: FakeNode | null;
+      anchorOffset: number;
+      focusNode: FakeNode | null;
+      focusOffset: number;
+    }>;
+  } = { setBaseAndExtent: [] };
+  let anchorNode: FakeNode | null = options.anchorNode ?? null;
+  let anchorOffset = options.anchorOffset ?? 0;
+  let focusNode: FakeNode | null = options.focusNode ?? null;
+  let focusOffset = options.focusOffset ?? 0;
   let ranges = ids.map((id) => fakeRange(id, root));
   let probing = false;
   let collapsedByMutation = false;
@@ -797,9 +882,42 @@ function fakeSelection(
       if (probing) return probeText;
       return ranges.length === 0 ? "" : renderSelected(root);
     },
+    get anchorNode() {
+      return anchorNode;
+    },
+    get anchorOffset() {
+      return anchorOffset;
+    },
+    get focusNode() {
+      return focusNode;
+    },
+    get focusOffset() {
+      return focusOffset;
+    },
+    setBaseAndExtent(
+      newAnchor: FakeNode,
+      newAnchorOffset: number,
+      newFocus: FakeNode,
+      newFocusOffset: number,
+    ) {
+      sync();
+      anchorNode = newAnchor;
+      anchorOffset = newAnchorOffset;
+      focusNode = newFocus;
+      focusOffset = newFocusOffset;
+      // The boundaries are restored too, so the selection is usable afterwards.
+      ranges = ids.map((id) => fakeRange(id, root));
+      calls.setBaseAndExtent.push({
+        anchorNode: newAnchor,
+        anchorOffset: newAnchorOffset,
+        focusNode: newFocus,
+        focusOffset: newFocusOffset,
+      });
+    },
   };
   return {
     selection,
+    calls,
     currentIds: () => {
       sync();
       return ranges.map((range) => range.id);
@@ -813,8 +931,29 @@ Object.defineProperty(globalThis, "getComputedStyle", {
   writable: true,
   value: (node: FakeElement) => ({
     textTransform: computedTextTransform(node),
+    // `display` is not inherited; `visibility` and `user-select` are, which is why the module
+    // can read the computed value and not walk ancestors itself. An image the native iterator
+    // skips must not get an alt-text holder, so these three decide whether it does.
+    display: node.styleEntries.get("display")?.value ?? "inline",
+    visibility: inheritedStyle(node, "visibility", "visible"),
+    userSelect: inheritedStyle(node, "user-select", "auto"),
+    webkitUserSelect: inheritedStyle(node, "-webkit-user-select", "auto"),
   }),
 });
+
+/** An inherited property, resolved the way the cascade does: own inline, own rule, ancestors. */
+function inheritedStyle(
+  node: FakeElement | null,
+  name: string,
+  fallback: string,
+): string {
+  for (let at = node; at !== null; at = at.parentNode) {
+    const inline = at.styleEntries.get(name);
+    if (inline) return inline.value;
+    if (name === "visibility" && at.ruleVisibility) return at.ruleVisibility;
+  }
+  return fallback;
+}
 
 // --- the behavioural probe ---------------------------------------------------------------------
 
@@ -1034,6 +1173,16 @@ test("the dom is left exactly as it was found", () => {
   // A copy that left a stray <span> in the message, or an inline `display: none` on an image,
   // would be a far worse bug than the one being fixed -- and it would persist, because nothing
   // ever re-renders that subtree on its own.
+  //
+  // WHAT THIS TEST CANNOT PROVE, stated because it once passed while the code was wrong. These
+  // run against a hand-rolled stub, so they check that the patch's own bookkeeping balances --
+  // no leftover node, no leftover property. They CANNOT see how a real engine serialises what is
+  // left: Chromium keeps a `style=""` attribute on an element whose inline declaration has been
+  // touched, even after `removeAttribute("style")`, so every copy was permanently rewriting the
+  // document while this test was green. The structural parity digest found it, six actions
+  // differing against a null that matched fifteen of sixteen. The authoritative check is
+  // `scripts/fastcopy/prove.py`, which compares `outerHTML` before and after in a real browser,
+  // per construct.
   const root = el("div", {
     children: [
       el("span", { rule: "uppercase", children: ["stdout"] }),
@@ -1327,4 +1476,83 @@ test("detaching removes the listener", () => {
   const copy = fakeCopyEvent();
   dispatch("copy", copy.event);
   assert.equal(copy.prevented(), 0);
+});
+
+// --- what the native iterator skips ------------------------------------------------------------
+
+test("an image the native iterator skips contributes no alt text", () => {
+  // Raised in review and confirmed against the real clipboard. Chromium's iterator skips an
+  // image that is not rendered or not selectable, so inserting its alt text unconditionally
+  // ADDED text the clipboard never carried: 'before SVG preview after' against 'before after'.
+  for (const inline of [
+    [["display", "none"]],
+    [["visibility", "hidden"]],
+    [["user-select", "none"]],
+  ] as const) {
+    const root = el("p", {
+      children: [
+        "before ",
+        el("img", { alt: "SVG preview", inline: [...inline] }),
+        " after",
+      ],
+    });
+    assert.equal(serialise(root).output, "before  after");
+  }
+});
+
+test("studio's own invisible class suppresses the alt text", () => {
+  // `ImagePreview` carries `invisible` until the image loads, so a copy across a message whose
+  // image had not finished loading gained an alt string. This is the reachable case, not a
+  // hypothetical one.
+  const root = el("p", {
+    children: [
+      "before ",
+      el("img", { alt: "SVG preview", ruleVisibility: "hidden" }),
+      " after",
+    ],
+  });
+
+  assert.equal(serialise(root).output, "before  after");
+});
+
+test("a visible image still contributes its alt text", () => {
+  // The guard must not swallow the case the feature exists for.
+  const root = el("p", {
+    children: ["before ", el("img", { alt: "SVG preview" }), " after"],
+  });
+
+  assert.equal(serialise(root).output, "before SVG preview after");
+});
+
+test("a backward selection comes back backward", () => {
+  // A cloned Range carries ordered boundaries and no direction, so rebuilding with `addRange`
+  // turned a selection dragged upwards into a forward one and the user's next Shift+Arrow moved
+  // the opposite edge. Only the patched path rebuilds, hence the image.
+  const first = text("first paragraph");
+  const second = text("second paragraph");
+  const root = el("div", {
+    children: [
+      el("p", { children: [first] }),
+      el("p", { children: [second, el("img", { alt: "a cat" })] }),
+    ],
+  });
+  const { selection, calls } = fakeSelection(root, {
+    anchorNode: second,
+    anchorOffset: 16,
+    focusNode: first,
+    focusOffset: 0,
+  });
+
+  faithfulSelectionText(
+    selection as unknown as Selection,
+    root as unknown as Element,
+  );
+
+  // Restored through setBaseAndExtent, which is the only API that carries direction.
+  assert.deepEqual(calls.setBaseAndExtent.at(-1), {
+    anchorNode: second,
+    anchorOffset: 16,
+    focusNode: first,
+    focusOffset: 0,
+  });
 });
