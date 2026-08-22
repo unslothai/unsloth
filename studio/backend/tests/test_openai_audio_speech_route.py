@@ -310,3 +310,200 @@ def test_non_latin_prompts_are_not_billed_at_the_latin_rate():
 
     # And CJK, which already worked, is unchanged.
     assert estimate("你好世界" * 50) >= 200
+
+
+# ── External connection proxying (provider_id) ───────────────────
+
+
+def _install_external(
+    monkeypatch,
+    *,
+    enabled = True,
+    media_type = "audio/wav",
+):
+    created = []
+    speech_calls = []
+
+    monkeypatch.setattr(
+        routes_module.providers_db,
+        "get_provider",
+        lambda pid: (
+            {
+                "provider_type": "custom",
+                "display_name": "Kokoro Box",
+                "base_url": "http://tts.local:8880/v1",
+                "is_enabled": enabled,
+            }
+            if pid == "conn-1"
+            else None
+        ),
+    )
+    monkeypatch.setattr(routes_module, "validate_provider_base_url", lambda url: url)
+    monkeypatch.setattr(routes_module, "resolve_provider_api_key_or_400", lambda *a, **k: "sk-test")
+
+    class _FakeClient:
+        def __init__(self, provider_type, base_url, api_key):
+            created.append(
+                {"provider_type": provider_type, "base_url": base_url, "api_key": api_key}
+            )
+
+        async def create_speech(self, **kwargs):
+            speech_calls.append(kwargs)
+            return b"external-audio", media_type
+
+    monkeypatch.setattr(routes_module, "ExternalProviderClient", _FakeClient)
+    return created, speech_calls
+
+
+def test_provider_id_routes_to_external_endpoint(monkeypatch):
+    cli, calls, saved = _make_client(monkeypatch)
+    created, speech_calls = _install_external(monkeypatch)
+    resp = cli.post(
+        "/v1/audio/speech",
+        json = {
+            "input": "hi",
+            "provider_id": "conn-1",
+            "model": "kokoro",
+            "voice": "af_heart",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.content == b"external-audio"
+    assert resp.headers["content-type"].startswith("audio/wav")
+    assert calls == []  # the local TTS core never runs
+    assert saved == []  # external clips skip the gallery
+    assert created[0]["base_url"] == "http://tts.local:8880/v1"
+    assert created[0]["provider_type"] == "custom"
+    assert speech_calls[0]["model"] == "kokoro"
+    assert speech_calls[0]["voice"] == "af_heart"
+
+
+def test_external_passes_response_format_through(monkeypatch):
+    # The wav-only rule is a local-codec limit; an external server may emit mp3.
+    cli, calls, saved = _make_client(monkeypatch)
+    created, speech_calls = _install_external(monkeypatch, media_type = "audio/mpeg")
+    resp = cli.post(
+        "/v1/audio/speech",
+        json = {
+            "input": "hi",
+            "provider_id": "conn-1",
+            "model": "kokoro",
+            "response_format": "mp3",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("audio/mpeg")
+    assert speech_calls[0]["response_format"] == "mp3"
+
+
+def test_external_missing_model_is_400(monkeypatch):
+    cli, calls, saved = _make_client(monkeypatch)
+    _install_external(monkeypatch)
+    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "provider_id": "conn-1"})
+    assert resp.status_code == 400
+
+
+def test_external_unknown_provider_is_404(monkeypatch):
+    cli, calls, saved = _make_client(monkeypatch)
+    _install_external(monkeypatch)
+    resp = cli.post(
+        "/v1/audio/speech",
+        json = {"input": "hi", "provider_id": "missing", "model": "kokoro"},
+    )
+    assert resp.status_code == 404
+
+
+def test_external_disabled_provider_is_400(monkeypatch):
+    cli, calls, saved = _make_client(monkeypatch)
+    _install_external(monkeypatch, enabled = False)
+    resp = cli.post(
+        "/v1/audio/speech",
+        json = {"input": "hi", "provider_id": "conn-1", "model": "kokoro"},
+    )
+    assert resp.status_code == 400
+
+
+def test_external_upstream_error_is_502(monkeypatch):
+    import httpx
+
+    cli, calls, saved = _make_client(monkeypatch)
+    created, speech_calls = _install_external(monkeypatch)
+
+    async def _boom(self, **kwargs):
+        request = httpx.Request("POST", "http://tts.local:8880/v1/audio/speech")
+        raise httpx.HTTPStatusError(
+            "boom",
+            request = request,
+            response = httpx.Response(500, text = "upstream broke", request = request),
+        )
+
+    monkeypatch.setattr(routes_module.ExternalProviderClient, "create_speech", _boom)
+    resp = cli.post(
+        "/v1/audio/speech",
+        json = {"input": "hi", "provider_id": "conn-1", "model": "kokoro"},
+    )
+    assert resp.status_code == 502
+    assert "upstream broke" in resp.json()["error"]["message"]
+
+
+def test_external_disconnect_cancels_the_upstream_request(monkeypatch):
+    import asyncio
+
+    from models.inference import AudioSpeechRequest
+
+    _install_external(monkeypatch)
+    upstream_cancelled = asyncio.Event()
+
+    class _DisconnectingRequest:
+        headers = {}
+
+        async def is_disconnected(self):
+            return True
+
+    class _BlockingClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def create_speech(self, **_kwargs):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                upstream_cancelled.set()
+                raise
+
+    monkeypatch.setattr(routes_module, "ExternalProviderClient", _BlockingClient)
+
+    async def _run():
+        with pytest.raises(asyncio.CancelledError):
+            await routes_module._external_tts_speech(
+                AudioSpeechRequest(input = "hi", provider_id = "conn-1", model = "kokoro"),
+                _DisconnectingRequest(),
+            )
+
+    asyncio.run(_run())
+    assert upstream_cancelled.is_set()
+
+
+def test_external_forwards_a_legacy_browser_key(monkeypatch):
+    cli, _calls, _saved = _make_client(monkeypatch)
+    created, _speech_calls = _install_external(monkeypatch)
+    seen = {}
+
+    def _resolve(provider_id, encrypted_api_key, **_kwargs):
+        seen["provider_id"] = provider_id
+        seen["encrypted_api_key"] = encrypted_api_key
+        return "sk-from-legacy"
+
+    monkeypatch.setattr(routes_module, "resolve_provider_api_key_or_400", _resolve)
+    resp = cli.post(
+        "/v1/audio/speech",
+        json = {
+            "input": "hi",
+            "provider_id": "conn-1",
+            "model": "kokoro",
+            "encrypted_api_key": "enc-legacy",
+        },
+    )
+    assert resp.status_code == 200
+    assert seen["encrypted_api_key"] == "enc-legacy"
+    assert created[0]["api_key"] == "sk-from-legacy"

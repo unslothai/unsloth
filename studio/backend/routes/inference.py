@@ -12094,6 +12094,70 @@ async def generate_audio(
     )
 
 
+async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Response:
+    """Proxy CreateSpeech to a saved connection, so read-aloud skips the local model slot."""
+    config = providers_db.get_provider(body.provider_id)
+    if config is None:
+        raise HTTPException(
+            status_code = 404, detail = f"Provider config not found: {body.provider_id}"
+        )
+    if not config["is_enabled"]:
+        raise HTTPException(
+            status_code = 400, detail = f"Provider '{config['display_name']}' is disabled."
+        )
+    if not body.model:
+        raise HTTPException(
+            status_code = 400, detail = "model is required when using an external TTS connection."
+        )
+    base_url = config["base_url"] or get_base_url(config["provider_type"])
+    if not base_url:
+        raise HTTPException(status_code = 400, detail = "The connection has no base URL.")
+    # Validate the destination before decrypting the key: a refused target sees no credential.
+    try:
+        base_url = validate_provider_base_url(base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+    api_key = resolve_provider_api_key_or_400(
+        body.provider_id,
+        body.encrypted_api_key,
+        allow_saved_key = not _request_has_api_key(request),
+    )
+    client = ExternalProviderClient(
+        provider_type = config["provider_type"],
+        base_url = base_url,
+        api_key = api_key,
+    )
+    # FastAPI does not cancel a non-streaming handler on disconnect, so stopping
+    # read-aloud would leave the paid synthesis running. Same pair as transcription.
+    speech_task = asyncio.create_task(
+        client.create_speech(
+            text = body.input,
+            model = body.model,
+            voice = body.voice,
+            response_format = (body.response_format or "wav").strip().lower(),
+            speed = body.speed,
+        )
+    )
+    disconnect_watcher = asyncio.create_task(
+        _await_disconnect_then_cancel_task(request, speech_task)
+    )
+    try:
+        audio_bytes, media_type = await speech_task
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code = 502,
+            detail = (
+                f"TTS endpoint returned HTTP {exc.response.status_code}: "
+                f"{exc.response.text[:300]}"
+            ),
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code = 502, detail = f"Could not reach the TTS endpoint: {exc}")
+    finally:
+        await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+    return Response(content = audio_bytes, media_type = media_type)
+
+
 # openai-compatible speech api: the router's dual mount also answers /v1/audio/speech
 @router.post("/audio/speech")
 async def openai_audio_speech(
@@ -12103,9 +12167,12 @@ async def openai_audio_speech(
 ) -> Response:
     """OpenAI-compatible text-to-speech (POST /v1/audio/speech).
 
-    ``model`` is informational (the loaded audio model is used); ``voice`` and ``speed``
-    are ignored. Only WAV exists, so another ``response_format`` is a 400 rather than a
-    silent container mismatch."""
+    With ``provider_id`` the request is proxied to that connection, forwarding
+    model/voice/speed. Otherwise the loaded model is used: ``model`` is informational,
+    ``voice``/``speed`` ignored, and only WAV exists, so another ``response_format`` is
+    a 400 rather than a silent container mismatch."""
+    if body.provider_id:
+        return await _external_tts_speech(body, request)
     fmt = (body.response_format or "wav").strip().lower()
     if fmt != "wav":
         raise HTTPException(
