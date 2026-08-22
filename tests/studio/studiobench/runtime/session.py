@@ -551,6 +551,15 @@ class CellRunner:
         # is the page's state and not the operation.
         decay = [settled(lambda: None) for _ in range(5)]
         out: dict[str, Any] = {
+            # The harness layer's attestation, and it is load-bearing rather than decorative.
+            # `scoring/schema._walk_for_bare_zeros` rejects any bare zero that is not covered by a
+            # sibling `*_attempted` flag, and this block has legitimate zeros: a thread with no
+            # mounted code blocks records `code_token_spans: 0`, and `blur_inpage_ms` and
+            # `forced_layout_ms` come from `performance.now()`, which Chromium coarsens to 100 us
+            # outside a cross-origin-isolated context, so an operation shorter than that reads
+            # exactly 0. Without this flag `--report` refuses the whole payload of a completed
+            # probe run.
+            "click_attribution_attempted": True,
             "first_touch_ms": decay[0],
             "settled_touch_ms": min(decay[1:]),
             "touch_decay_ms": [round(v, 1) for v in decay],
@@ -654,14 +663,27 @@ class CellRunner:
         page.wait_for_selector(selector, timeout = 60_000)
         if self.click_probe:
             self._click_attribution_result = self._click_attribution(page, selector)
-        clicked_at = time.monotonic()
         # In a window, so every instrument covers it. At 500K this single click is the largest
         # cost in the whole run by an order of magnitude, and it was the one moment the tool could
         # not see inside: no window, so no frame recorder, no CPU profile, no RSS delta. A cost
         # that big being outside every instrument is how it stayed unattributed.
-        with self.session.window("setup:composer_click", kind = "action"):
+        #
+        # `setup`, NOT `action`. The scoring layer pools every non-excluded window of the cell into
+        # `max_frame_ms`, `jank_index` and `time_in_jank_pct`, and this window is mostly Playwright's
+        # own injected actionability script running ON THE PAGE'S MAIN THREAD -- it blocks frames
+        # exactly as app work would, so the frame recorder cannot tell them apart. Filed as an
+        # `action` it would put an 11 s driver stall into three weighted headline metrics whose
+        # `max_frame_ms` anchor calls 2,000 ms the worst case, on EVERY run including the ones that
+        # never asked for --click-probe. It is measured, reported and kept out of the film.
+        with self.session.window("setup:composer_click", kind = "setup"):
+            # Timed INSIDE the window, like `Window.duration_ms` itself: the session opens every
+            # instrument before this block and closes them after it, and at instrument level 1-3
+            # those hooks stop a CPU profile, collect coverage and write and analyse a trace.
+            # Timed around the `with`, `composer_click_ms` would grow with the instrument level
+            # and stop being the click.
+            clicked_at = time.monotonic()
             page.click(selector, timeout = COMPOSER_CLICK_TIMEOUT_S * 1000)
-        self._composer_click_ms = (time.monotonic() - clicked_at) * 1000.0
+            self._composer_click_ms = (time.monotonic() - clicked_at) * 1000.0
         if self._composer_click_ms > SLOW_COMPOSER_CLICK_MS:
             self.log(
                 f"  page.click on the composer took {self._composer_click_ms / 1000:.1f}s. "

@@ -93,7 +93,20 @@ def cell_metrics(records: list[dict]) -> dict[str, dict[str, float]]:
             continue
         cid = row["cell_id"]
         vals: dict[str, float] = _action_timings(records, cid)
-        windows = [w for w in records if w.get("row_type") == "window" and w.get("cell_id") == cid]
+        # `setup` windows are dropped here as they are in `measures_from_records`. The only one is
+        # the composer click that starts the film, which is mostly Playwright's injected
+        # actionability script blocking the page's own main thread; pooled in, an 11 s driver
+        # stall would set this table's `max_frame_ms` floor and hide every real regression under
+        # it. NOTE: `idle` is NOT dropped here, and it is dropped in `measures_from_records`. That
+        # difference predates the setup window and is left to its owner rather than silently
+        # moving every floor in the table.
+        windows = [
+            w
+            for w in records
+            if w.get("row_type") == "window"
+            and w.get("cell_id") == cid
+            and str(w.get("kind") or "") != "setup"
+        ]
         for key, m in _frame_measures(windows).items():
             if m.value is not None:
                 vals[key] = float(m.value)
