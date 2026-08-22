@@ -481,6 +481,113 @@ def test_rolling_fit_keeps_original_when_protected_messages_still_do_not_fit():
     assert info["prompt_tokens_after"] == info["prompt_tokens_before"]
 
 
+def test_an_irreducible_fit_serves_the_eviction_when_the_original_is_past_the_window():
+    """Use an eviction that fits the window when the original does not."""
+    # 450 chars: past the 400-token target, inside the 500-token window.
+    latest = {"role": "user", "content": "latest" * 75}
+    messages = [
+        {"role": "user", "content": "old" * 100},
+        {"role": "assistant", "content": "answer" * 100},
+        latest,
+    ]
+    counter = lambda candidate: sum(  # noqa: E731
+        len(str(message.get("content", ""))) for message in candidate
+    )
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = counter,
+    )
+
+    assert counter(messages) > 500 >= counter(fitted)
+    assert fitted == [latest]
+    # Still a refusal: the diagnosis is what the client explains the short reply with.
+    assert info is not None and info["fits"] is False
+    assert info["dropped_messages"] == 2
+    assert info["prompt_tokens_after"] == counter(fitted) < info["prompt_tokens_before"]
+    assert info["irreducible_tokens"] == counter(fitted)
+
+
+def test_an_irreducible_fit_keeps_the_original_while_it_still_fits_the_window():
+    """Keep full history when only the reply reserve is exhausted."""
+    messages = [
+        {"role": "user", "content": "old" * 10},
+        {"role": "assistant", "content": "answer" * 5},
+        # 480 chars on its own, so evicting the pair still misses the 450-token target.
+        {"role": "user", "content": "latest" * 80},
+    ]
+    counter = lambda candidate: sum(  # noqa: E731
+        len(str(message.get("content", ""))) for message in candidate
+    )
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 600,
+        max_tokens = 150,
+        count_tokens = counter,
+    )
+
+    assert 450 < counter(messages) <= 600
+    assert fitted is messages
+    assert info is not None and info["fits"] is False
+    assert info["dropped_messages"] == 0
+    assert info["prompt_tokens_after"] == info["prompt_tokens_before"]
+
+
+def test_an_irreducible_fit_refuses_an_eviction_that_fills_the_window():
+    """An eviction landing on `n_ctx` exactly is refused, so it is not a rescue."""
+    # 500 chars in a 500-token window: serving this would drop turns and still fail.
+    messages = [
+        {"role": "user", "content": "o" * 300},
+        {"role": "assistant", "content": "a" * 600},
+        {"role": "user", "content": "x" * 500},
+    ]
+    counter = lambda candidate: sum(  # noqa: E731
+        len(str(message.get("content", ""))) for message in candidate
+    )
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = counter,
+    )
+
+    assert fitted is messages
+    assert info is not None and info["fits"] is False
+    assert info["dropped_messages"] == 0
+    assert info["prompt_tokens_after"] == info["prompt_tokens_before"]
+    assert info["irreducible_tokens"] == 500
+
+
+def test_an_irreducible_fit_serves_the_eviction_when_the_original_fills_the_window():
+    """An original of exactly `n_ctx` is refused too, so an eviction under it wins."""
+    latest = {"role": "user", "content": "x" * 450}
+    messages = [
+        {"role": "user", "content": "o" * 20},
+        {"role": "assistant", "content": "a" * 30},
+        latest,
+    ]
+    counter = lambda candidate: sum(  # noqa: E731
+        len(str(message.get("content", ""))) for message in candidate
+    )
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = counter,
+    )
+
+    assert counter(messages) == 500 > counter(fitted)
+    assert fitted == [latest]
+    assert info is not None and info["fits"] is False
+    assert info["dropped_messages"] == 2
+    assert info["prompt_tokens_after"] == 450
+
+
 def test_an_irreducible_fit_says_WHOSE_turn_does_not_fit():
     """A tool loop refits with the tool result appended.
 

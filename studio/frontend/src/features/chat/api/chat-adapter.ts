@@ -171,7 +171,10 @@ import {
 } from "../utils/last-local-model-load";
 import { createRetryableSharedRead } from "../utils/retryable-shared-read";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
-import { mergeContextTruncation } from "../utils/context-truncation";
+import {
+  mergeContextTruncation,
+  promptWasShortened,
+} from "../utils/context-truncation";
 import {
   createThinkTagTracker,
   extractDeltaText,
@@ -5719,12 +5722,11 @@ export function createOpenAIStreamAdapter(
                   chunk.context_truncated,
                 );
                 const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
-                // fits:false means the fitter could NOT make the request fit and returned
-                // the original messages. Toasting "older turns were removed" is untrue
-                // there, and burns the once-per-thread flag so a real one is silent.
-                const reallyCompacted =
-                  chunk.context_truncated.fits === true &&
-                  (chunk.context_truncated.dropped_messages ?? 0) > 0;
+                // What must stay silent is a fit that returned the ORIGINAL messages:
+                // toasting "older turns were removed" is untrue there, and burns the
+                // once-per-thread flag so a real one is silent. Not gated on `fits`,
+                // which is also false for a shortened prompt that was sent.
+                const reallyCompacted = promptWasShortened(chunk.context_truncated);
                 if (
                   reallyCompacted &&
                   resolvedThreadId &&

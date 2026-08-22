@@ -16,14 +16,29 @@ function spreadSum(
   return { [key]: (a ?? 0) + (b ?? 0) };
 }
 
+/**
+ * Whether the fit removed turns from the prompt that was actually sent.
+ *
+ * Not `fits`, which answers a different question: a fit that lands under the physical
+ * window but misses the reply reserve sends the shortened prompt with `fits: false`, and
+ * those turns are just as gone from the model's view. `dropped_messages` is the signal,
+ * and every path that returned the ORIGINAL messages reports it as zero.
+ */
+export function promptWasShortened(
+  truncation: ContextTruncation | undefined,
+): truncation is ContextTruncation {
+  return (truncation?.dropped_messages ?? 0) > 0;
+}
+
 export function compactionBoundary(
   truncation: ContextTruncation | undefined,
 ): number {
-  if (!truncation?.fits) return 0;
+  if (!promptWasShortened(truncation)) return 0;
   // boundary_messages is where the boundary sits in the saved transcript.
   // dropped_messages accumulates what each fit removed, so a tool-heavy turn reports far
   // more than the boundary moved and a later real advance looks like none. Fallback only,
-  // for turns saved before the boundary was recorded.
+  // for turns saved before the boundary was recorded, and for a shortened refusal, which
+  // records no boundary because it is not one to replay.
   return truncation.boundary_messages ?? truncation.dropped_messages ?? 0;
 }
 
