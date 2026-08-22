@@ -124,7 +124,8 @@ export interface DiffusionGenerateRequest {
   strength?: number;
   // Upscale (hires fix): factor > 1 with an init_image enlarges the source and re-denoises at low strength.
   upscale?: number;
-  // Additional reference images for the FLUX.2 reference workflow, combined with init_image.
+  // Additional images combined with init_image: for the FLUX.2 reference workflow, or extra
+  // source images for an edit-family model (e.g. Qwen-Image-Edit-Plus, FLUX Kontext).
   reference_images?: string[];
   // LoRA adapters for this generation (discovery id + weight, 0..2). Rejected (400) when the loaded model cannot apply LoRA.
   loras?: LoraSpecInput[];

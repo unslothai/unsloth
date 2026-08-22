@@ -186,7 +186,7 @@ const CONDITIONED_WORKFLOW_INPUTS: Record<string, string> = {
   img2img: "the source image",
   inpaint: "the source image and mask",
   upscale: "the source image",
-  edit: "the source image",
+  edit: "the source image(s)",
   reference: "the source and reference images",
   controlnet: "the control image",
 };
@@ -3201,8 +3201,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const extras = referenceImages.filter(Boolean);
         if (extras.length) condRefImages = extras;
       } else if (isEdit) {
-        // Instruction editing: send the source image; the prompt IS the instruction. No mask, no strength.
+        // Instruction editing: send the source image, plus any extra source images; the prompt IS the instruction. No mask, no strength.
+        // FLUX Kontext only supports one source image (its pipeline treats a list as a batch, not multiple conditioning sources).
         condInit = initImage ?? undefined;
+        if (status?.family !== "flux.1-kontext") {
+          const extras = referenceImages.filter(Boolean);
+          if (extras.length) condRefImages = extras;
+        }
       }
     } catch {
       toast.error("Could not prepare the source image");
@@ -3975,12 +3980,58 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             )}
 
             {workflow === "edit" && (
-              <Field
-                label="Source image"
-                hint="The image to edit. Describe the change in the prompt below (e.g. 'make it night', 'add a red hat', 'change the background to a beach')."
-              >
-                <ImageDropzone value={initImage} onChange={handleInitChange} />
-              </Field>
+              <>
+                <Field
+                  label="Source image"
+                  hint="The image to edit. Describe the change in the prompt below (e.g. 'make it night', 'add a red hat', 'change the background to a beach')."
+                >
+                  <ImageDropzone value={initImage} onChange={handleInitChange} />
+                </Field>
+                {/* FLUX Kontext's pipeline treats a list of images as a batch, not multiple
+                    conditioning sources, so it only supports a single source image. */}
+                {status?.family !== "flux.1-kontext" && referenceImages.map((img, i) => (
+                  <Field
+                    key={i}
+                    label={`Source image ${i + 2}`}
+                    hint="An extra image combined with the others (e.g. two photos to merge, or a subject plus a style reference)."
+                  >
+                    <div className="space-y-1.5">
+                      <ImageDropzone
+                        value={img}
+                        onChange={(v) =>
+                          // Keep the slot in place (empty string when cleared) so other slots do not renumber mid-edit; empty slots are dropped at send time.
+                          setReferenceImages((prev) =>
+                            prev.map((p, j) => (j === i ? (v ?? "") : p)),
+                          )
+                        }
+                      />
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="w-full"
+                        onClick={() => setReferenceImages((prev) => prev.filter((_, j) => j !== i))}
+                      >
+                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                        Remove source image {i + 2}
+                      </Button>
+                    </div>
+                  </Field>
+                ))}
+                {status?.family !== "flux.1-kontext" && referenceImages.length < 3 && (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="w-full"
+                    disabled={!initImage}
+                    onClick={() => setReferenceImages((prev) => [...prev, ""])}
+                  >
+                    <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
+                    Add another source image
+                  </Button>
+                )}
+              </>
             )}
 
             <Field label={workflow === "edit" ? "Instruction" : "Prompt"}>

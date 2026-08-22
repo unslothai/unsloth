@@ -722,6 +722,10 @@ def fake_runtime(monkeypatch):
     diffusers.QwenImageInpaintPipeline = _FakeInpaintPipeline
     # Qwen-Image-Edit: its own pipeline is the loaded one.
     diffusers.QwenImageEditPlusPipeline = _FakePipeline
+    # FLUX Kontext: another edit-family pipeline, whose `image` kwarg is a batch not a
+    # multi-conditioning list -- used to exercise the reference_images rejection.
+    diffusers.FluxKontextPipeline = _FakePipeline
+    diffusers.FluxTransformer2DModel = _FakeTransformer
     # Ideogram 4, for its guidance_scale/guidance_schedule pairing. It loads only as a full pipeline (two DiTs), so stub the assembly.
     diffusers.Ideogram4Pipeline = _FakePipeline
     diffusers.Ideogram4Transformer2DModel = _FakeTransformer
@@ -1776,6 +1780,74 @@ def test_edit_family_uses_own_pipeline_and_requires_image(fake_runtime, tmp_path
     # An edit model with no input image fails fast with a clear message.
     with pytest.raises(ValueError, match = "image"):
         backend.generate(prompt = "make it night", steps = 8)
+
+
+def test_edit_family_supports_multiple_images(fake_runtime, tmp_path):
+    """An instruction-editing family whose pipeline treats a list as multiple conditioning
+    sources (Qwen-Image-Edit-Plus) accepts extra source images via ``reference_images`` and
+    passes the primary image plus every extra as a list to the pipeline's ``image`` kwarg."""
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "Qwen/Qwen-Image-Edit-2511",
+        family_override = "qwen-image-edit",
+    )
+    loaded_pipe = backend._state.pipe
+
+    backend.generate(
+        prompt = "combine these into one scene",
+        steps = 8,
+        guidance = 4.0,
+        seed = 1,
+        init_image = _tiny_png_b64(),
+        reference_images = [_tiny_png_b64(), _tiny_png_b64()],
+    )
+    img_arg = loaded_pipe.last_kwargs["image"]
+    assert isinstance(img_arg, list) and len(img_arg) == 3  # primary + 2 extras
+
+    # More than 3 extras is silently capped, same as the reference workflow.
+    backend.generate(
+        prompt = "combine these into one scene",
+        steps = 8,
+        guidance = 4.0,
+        seed = 1,
+        init_image = _tiny_png_b64(),
+        reference_images = [_tiny_png_b64()] * 5,
+    )
+    img_arg = loaded_pipe.last_kwargs["image"]
+    assert isinstance(img_arg, list) and len(img_arg) == 4  # primary + capped 3 extras
+
+    # reference_images still requires an init_image, same as every other conditioned workflow.
+    with pytest.raises(ValueError, match = "reference_images"):
+        backend.generate(
+            prompt = "combine these into one scene",
+            steps = 8,
+            reference_images = [_tiny_png_b64()],
+        )
+
+
+def test_edit_family_rejects_multiple_images_for_kontext(fake_runtime, tmp_path):
+    """FLUX Kontext's pipeline treats `image: list[...]` as an image batch, not multiple
+    conditioning sources, so extra reference_images must be rejected rather than combined."""
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "black-forest-labs/FLUX.1-Kontext-dev",
+        family_override = "flux.1-kontext",
+    )
+    with pytest.raises(ValueError, match = "does not support multiple reference_images"):
+        backend.generate(
+            prompt = "combine these into one scene",
+            steps = 8,
+            guidance = 4.0,
+            seed = 1,
+            init_image = _tiny_png_b64(),
+            reference_images = [_tiny_png_b64(), _tiny_png_b64()],
+        )
 
 
 def test_load_pipeline_kind_uses_from_pretrained(fake_runtime):

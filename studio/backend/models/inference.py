@@ -3344,8 +3344,9 @@ class DiffusionGenerateRequest(BaseModel):
     reference_images: Optional[list[str]] = Field(
         None,
         max_length = 3,
-        description = "Additional reference images (base64/data-URL) for the FLUX.2 reference "
-        "workflow, combined with init_image. Up to 3; ignored by other workflows.",
+        description = "Additional images (base64/data-URL) combined with init_image: for the "
+        "FLUX.2 reference workflow, or extra source images for an edit-family model "
+        "(e.g. Qwen-Image-Edit-Plus, FLUX Kontext). Up to 3; ignored by other workflows.",
     )
     loras: Optional[list[LoraSpec]] = Field(
         None,
