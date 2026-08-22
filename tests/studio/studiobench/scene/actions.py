@@ -919,12 +919,21 @@ def send_turn(ctx: ActionContext) -> ActionResult:
 
     unit = queue[index]
     cursor["i"] = index + 1
-    pacer.reset()
+    # NO `pacer.reset()` HERE. It used to clear the pacer's stats before loading the next turn, and
+    # `CellRunner` records `last_stats()` -- so the opening reply's `StreamStats` were discarded by
+    # the first follow-up and the first follow-up's by the second. An opening reply that
+    # disconnected or delivered 4,624 of its 10,000 characters was then erased by a later turn that
+    # DID finish, and the cell was marked complete and scored against an undersized thread, because
+    # the only other liveness signal is the UI no longer running and the later turn satisfies it.
+    # Every turn is tagged, so keeping them all costs one small record each and lets
+    # `check_planned_streams` verify the cell streamed what it planned. `CellRunner` still resets
+    # once per cell, which is the boundary that reset is for.
+    tag = f"{ctx.args.get('cell_id', 'cell')}#turn{index + 1}"
     pacer.load(
         unit["reasoning"],
         unit["content"],
         cadence = ctx.args.get("cadence", "field"),
-        tag = f"{ctx.args.get('cell_id', 'cell')}#turn{index + 1}",
+        tag = tag,
     )
 
     selector = 'textarea[aria-label="Message input"]'
@@ -961,6 +970,9 @@ def send_turn(ctx: ActionContext) -> ActionResult:
             "turn_index": index + 1,
             "queued_turns": len(queue),
             "streamed_chars": len(unit["reasoning"]) + len(unit["content"]),
+            # The tag this turn's stream carries, so the cell can check the turn against the
+            # pacer's own record of it rather than re-deriving the naming rule from the outside.
+            "pacer_tag": tag,
             "unit_kind": unit.get("kind"),
         },
         timings = {"to_first_token_ms": None if first_ms is None else round(first_ms, 1)},

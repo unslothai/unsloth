@@ -95,20 +95,39 @@ class _Page:
 
 
 class _Pacer:
+    """A pacer that serves, in full, whatever it was asked to load.
+
+    It synthesises one completed `StreamStats` per `load`, which is what a healthy cell produces:
+    the planned-stream check in `_run_inner` reads those, so a stub that recorded nothing would
+    fail every cell here for a reason this file is not about.
+    """
+
     def __init__(self, expected_ms: float) -> None:
         self.expected_ms = expected_ms
+        self.streams: list[dict] = []
 
     def reset(self) -> None:
-        pass
+        self.streams = []
 
-    def load(self, *a, **k) -> None:
-        pass
+    def load(self, reasoning, content, *, cadence = "field", tag = "", **k) -> None:
+        self.streams.append(
+            {
+                "tag": tag,
+                "chars_sent": len(reasoning) + len(content),
+                "completed": True,
+                "disconnected": False,
+                "chunks": 150,
+            }
+        )
 
     def expected_duration_ms(self, reasoning, content, cadence) -> float:
         return self.expected_ms
 
     def last_stats(self) -> dict:
-        return {"chunks": 150}
+        return self.streams[-1] if self.streams else {}
+
+    def all_stats(self) -> list[dict]:
+        return list(self.streams)
 
 
 #: (action name, timing key, value). The three actions `scoring.from_payload.ACTION_SOURCES`
@@ -294,7 +313,8 @@ def test_a_cell_whose_reply_never_finished_does_not_complete(cell_runner):
     # The evidence ships in the same row as the failure: how long was waited, and how much the
     # pacer actually delivered.
     assert row["stream"]["finished"] is False
-    assert row["pacer"] == {"chunks": 150}
+    assert row["pacer"]["last"]["chunks"] == 150
+    assert row["pacer"]["streams"][0]["tag"] == "r1K.A0.rep0"
 
 
 def test_the_rung_scores_incomplete_and_the_run_cannot_exit_zero(cell_runner):

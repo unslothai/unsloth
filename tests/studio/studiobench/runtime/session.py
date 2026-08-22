@@ -33,7 +33,7 @@ from typing import Any, Callable, Optional
 from ..fixture.corpus import Corpus, RungPlan, plan_rung
 from ..instruments import build as build_instruments
 from ..instruments import import_errors
-from ..pacer import Pacer
+from ..pacer import Pacer, check_planned_streams
 from ..scene import schedule as scene_schedule
 from ..scene.actions import paint_floor_ms
 from ..scene.schedule import SceneRunner
@@ -338,7 +338,18 @@ class CellRunner:
             drained = self._drain_stream(page, expected_ms)
             w.note("drained", drained)
         row["stream"] = drained
-        row["pacer"] = self.pacer.last_stats()
+        # EVERY STREAM THE CELL SERVED, not just the last one. `last_stats()` describes whichever
+        # turn finished last, so for a multi-turn cell it says nothing at all about the opening
+        # reply -- and the opening reply is the one the rung is named for. Everything stays under
+        # the `pacer` key because that subtree is exempt from the payload's bare-zero rule: a
+        # pacer counter of 0 is a true reading, not a missing one.
+        streams = self.pacer.all_stats()
+        planned = self._planned_streams(cell, plan, row)
+        row["pacer"] = {
+            "last": self.pacer.last_stats(),
+            "streams": streams,
+            "check": check_planned_streams(streams, planned),
+        }
         # A REPLY THAT NEVER FINISHED IS A FAILED CELL, not a completed one with a note.
         #
         # `_drain_stream` reports rather than raises, and the value it reports was recorded here
@@ -362,6 +373,18 @@ class CellRunner:
                 f"the reply never finished: {drained.get('reason') or 'the run was still going'} "
                 f"({drained.get('drain_ms')}ms waited, {drained.get('expected_ms')}ms expected)"
             )
+        # A CELL THAT DID NOT STREAM WHAT IT PLANNED IS A FAILED CELL, for the same reason.
+        #
+        # The drain check above only asks whether the UI stopped running, and a later turn that
+        # finishes satisfies it on behalf of an earlier one that did not. So an opening reply that
+        # disconnected part way through left a complete-looking cell whose thread was thousands of
+        # characters short of its rung, averaged into the A/B ratio against arms that streamed in
+        # full. Raised here, after the check is on the row, so the reason and the per-turn evidence
+        # ship with the failure and the cell is excluded by name rather than quietly included.
+        check = row["pacer"]["check"]
+        if check["checked"] and not check["ok"]:
+            self.log(f"  the cell did not stream what it planned: {check['reason']}")
+            raise RuntimeError(f"the cell did not stream what it planned: {check['reason']}")
         row["census_after"] = dom_signature(page)
         row["cdp"] = cdp_counters(before_metrics, cdp_metrics(s.ctx.cdp))
 
@@ -438,6 +461,43 @@ class CellRunner:
                         )
         if self.equivalence_failed and plan.seeded_units:
             row["fidelity"] = "seeded_only"
+
+    @staticmethod
+    def _planned_streams(cell: Cell, plan: RungPlan, row: dict) -> list[dict]:
+        """The turns this cell MEANT to stream, each with its tag and its character count.
+
+        The opening reply, plus one entry per `send_turn` that actually ran -- taken from the
+        recorded action rows and from the tag the action itself reports, so a turn that did not run
+        (an exhausted queue at the small rungs, a missed slot on a slow machine) is not demanded of
+        the pacer, and the naming rule lives in one place rather than two.
+        """
+        planned: list[dict] = []
+        unit = plan.streamed_unit
+        if unit is not None:
+            planned.append(
+                {
+                    "tag": cell.cell_id,
+                    "turn": "opening",
+                    "chars": len(unit.reasoning) + len(unit.content),
+                }
+            )
+        for action in row.get("actions") or []:
+            if action.get("action") != "send_turn":
+                continue
+            if not action.get("ran") or action.get("expect_ok") is False:
+                continue
+            expect = action.get("expect") or {}
+            tag = expect.get("pacer_tag")
+            if not tag:
+                continue
+            planned.append(
+                {
+                    "tag": tag,
+                    "turn": f"follow_up{expect.get('turn_index')}",
+                    "chars": int(expect.get("streamed_chars") or 0),
+                }
+            )
+        return planned
 
     @staticmethod
     def _streamed_follow_ups(plan: RungPlan, row: dict) -> list:
