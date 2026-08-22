@@ -314,6 +314,13 @@ def run(args, ab_ref = None) -> int:
     paths = Paths.under(out)
     _log(f"studiobench {TOOL_VERSION}  tier={args.tier}  out={paths.out}")
 
+    # BEFORE anything is installed, launched or emitted. `_resume_set` refuses a fixture change as
+    # well, but it is consulted after this run has already appended its own `run_meta`, and a
+    # refusal there would leave the new fixture's header sitting in the payload it just refused to
+    # touch -- which would then refuse the correctly-flagged resume that follows it.
+    if args.resume:
+        _resume_set(paths, args.stream_tail_chars, args.corpus_dollars)
+
     watchdog = browser_mod.install_wall_clock_watchdog(
         TIER_BUDGET_S[args.tier] * 3, "studiobench", _log
     )
@@ -577,7 +584,9 @@ def run(args, ab_ref = None) -> int:
             f"with the same pair."
         )
 
-    done = _resume_set(paths) if args.resume else set()
+    done = (
+        _resume_set(paths, args.stream_tail_chars, args.corpus_dollars) if args.resume else set()
+    )
     if done:
         _log(f"  resuming: {len(done)} cells already in {paths.payload_jsonl.name}")
 
@@ -764,7 +773,68 @@ def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
         )
 
 
-def _resume_set(paths) -> set:
+def _fixture_axes(row: dict) -> tuple:
+    """The fixture a `run_meta` row declares, normalised so two rows can be compared.
+
+    A payload written before these axes existed carries neither key, and reads back as exactly the
+    defaults an invocation without either flag produces, so an older output resumes as it always
+    did rather than being refused for a difference that is not one.
+    """
+    return (row.get("stream_tail_chars"), bool(row.get("corpus_dollars")))
+
+
+def _recorded_fixtures(payload_path) -> set:
+    """Every fixture the payload's `run_meta` rows declare. The recorder appends, so there can be
+    more than one, and the first-header-wins reading is the one that misses a mixed payload."""
+    seen = set()
+    path = Path(payload_path)
+    if not path.exists():
+        return seen
+    with path.open(encoding = "utf-8") as fh:
+        for line in fh:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("row_type") == "run_meta":
+                seen.add(_fixture_axes(row))
+    return seen
+
+
+def _resume_set(paths, stream_tail_chars, corpus_dollars) -> set:
+    """The completed cells `--resume` may skip, REFUSING outright when the fixture has changed.
+
+    THE FIXTURE IS PART OF THE RESUME IDENTITY, and it is checked here rather than left to the
+    analysis layer because nothing downstream can see it. `--stream-tail-chars` and
+    `--corpus-dollars` change what the last turn STREAMS; neither of them moves `corpus_hash`,
+    which covers the frozen units on disk and the generator's parameters and is untouched by
+    either flag. So `sweep/floor_table.corpus_of` -- the refusal written for exactly this shape, a
+    second `run_meta` appended behind the first run's completed cells -- cannot see this one.
+
+    `cell_id` encodes the rung, the arm and the repetition and neither axis, so a resume under a
+    different pair keeps every cell recorded under the old fixture, fills the missing rungs and
+    repetitions under the new one, and hands back a payload that every reader accepts as one
+    ladder. That is a ladder whose rungs were measured against two different films.
+
+    The fixture arguments are required rather than defaulted so that a caller cannot obtain a
+    resume set without declaring the fixture it is about to resume into.
+    """
+    want = (stream_tail_chars, bool(corpus_dollars))
+    clash = sorted(_recorded_fixtures(paths.payload_jsonl) - {want}, key = repr)
+    if clash:
+
+        def _say(axes):
+            tail, dollars = axes
+            return f"stream tail {tail or 'default'}, dollars {'on' if dollars else 'off'}"
+
+        raise SystemExit(
+            f"refusing to resume {paths.payload_jsonl} under a different fixture: the payload "
+            f"was recorded with {'; '.join(_say(a) for a in clash)} and this run asks for "
+            f"{_say(want)}. Resuming would keep the completed cells from the old fixture and "
+            f"fill the rest with the new one, and nothing downstream can tell the two apart "
+            f"because neither flag moves corpus_hash. Re-run the whole ladder into a fresh "
+            f"--out, or resume with the flags the payload was recorded under."
+        )
     done = set()
     if not paths.payload_jsonl.exists():
         return done
