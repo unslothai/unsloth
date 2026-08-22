@@ -122,7 +122,12 @@ def readings_by_arm(
     Deferred import: `scoring` pulls in the anchor table and this module is imported by the CLI
     before a run, where that cost buys nothing.
     """
-    from ..scoring.from_payload import measures_by_cell
+    from ..scoring.from_payload import latest_attempt_rows, measures_by_cell
+
+    # The session filter below scopes the CELL rows, but `action` and `window` rows are collected
+    # by `cell_id` alone, and a resumed retry reuses the cell id of the attempt that died. Without
+    # this the completed-cell filter admitted the dead attempt's windows into the retry's reading.
+    records = list(latest_attempt_rows(records))
 
     arms: dict[str, list[dict]] = {}
     cell_ids: dict[str, set[str]] = {}
