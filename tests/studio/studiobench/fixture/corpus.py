@@ -45,7 +45,10 @@ UNITS_JSONL = FROZEN_DIR / "units.jsonl"
 MANIFEST_JSON = FROZEN_DIR / "manifest.json"
 
 CORPUS_SEED = 20260819
-CORPUS_VERSION = 1
+# 2 added math. A number taken on v1 and a number taken on v2 are measurements of two different
+# films, so they are not comparable and `floor_table` refuses to pool them. Bump this whenever the
+# generated text changes at all, and never edit the generator without bumping it.
+CORPUS_VERSION = 2
 
 # Span density, calibrated against the field capture. See the module docstring. These are now the
 # MEANS of a jittered distribution rather than fixed sizes -- see `_jitter`.
@@ -198,6 +201,54 @@ _SHORT = (
     "tmp",
 )
 
+# ── math ────────────────────────────────────────────────────────────
+#
+# Corpus v1 contained not one dollar sign across 519,859 characters, which made every math cost in
+# the app unmeasurable by construction. That is not a hypothetical gap: `preprocessLaTeX` was
+# measured as a real cost in isolation and then as an exact NULL in the browser, and the reason was
+# that the fixture gave it nothing to do. A benchmark that cannot see a cost cannot be used to
+# argue the cost is not there.
+#
+# Both delimiter families are here on purpose. `$...$` and `$$...$$` are what remark-math consumes
+# directly; `\(...\)` and `\[...\]` are what `preprocessLaTeX` exists to REWRITE into that form, so
+# a corpus carrying only the first kind exercises the renderer while leaving the preprocessor's
+# actual work uncovered.
+_MATH_OPS = ("+", "-", "\\cdot", "\\times", "\\oplus")
+_MATH_RELS = ("=", "\\le", "\\ge", "\\approx", "\\equiv")
+_MATH_FUNCS = ("\\log", "\\exp", "\\sin", "\\cos", "\\tanh")
+_MATH_GREEK = (
+    "\\alpha",
+    "\\beta",
+    "\\gamma",
+    "\\delta",
+    "\\theta",
+    "\\lambda",
+    "\\mu",
+    "\\sigma",
+    "\\phi",
+    "\\omega",
+)
+
+# Chance that a non-preamble prose BLOCK is a display-math block instead.
+#
+# Math takes prose's slot rather than being appended alongside it, and is drawn from the same
+# jittered size distribution. That keeps the prose/fence alternation exactly as it was: same number
+# of fences, same fence sizes, so the Shiki span density the whole corpus is calibrated to is
+# untouched by construction rather than by a re-tuning nobody would re-check.
+MATH_BLOCK_PROB = 0.16
+
+# Chance that a sentence in a non-preamble prose block carries an inline expression. Inline math is
+# the common case in real chat replies, and it is the one that interleaves with text rather than
+# sitting in its own block, which is a different path through the markdown pipeline.
+#
+# Inline math is spent from the prose block's own character budget, for the same reason as above.
+INLINE_MATH_PROB = 0.22
+
+# The PREAMBLE stays pure prose, deliberately. Its whole job is to be the stretch that builds no
+# spans and holds 60 fps, so the onset of cost has somewhere to be visible against. Putting math in
+# it would give the preamble a rendering cost and destroy the only fence-free, math-free baseline
+# the film has.
+
 
 @dataclass(frozen = True)
 class Unit:
@@ -294,28 +345,114 @@ class Unit:
 # ── generation ──────────────────────────────────────────────────────
 
 
-def _sentence(rng: random.Random, salt: str) -> str:
+def _expression(rng: random.Random, salt: str, terms: int) -> str:
+    """One LaTeX expression body, unique to `salt`.
+
+    Salted in a SUBSCRIPT rather than a comment, for the same reason `_fence` salts identifiers:
+    KaTeX caches nothing today, but Streamdown memoises rendered blocks on their source, and a
+    salt that a later normalisation pass could strip would silently restore the caching and halve a
+    measured cost without changing a number in the report.
+    """
+    parts = [f"{rng.choice(_MATH_GREEK)}_{{{salt}}}", rng.choice(_MATH_RELS)]
+    for i in range(terms):
+        if i:
+            parts.append(rng.choice(_MATH_OPS))
+        shape = rng.random()
+        if shape < 0.30:
+            parts.append(
+                f"\\frac{{{rng.choice(_MATH_GREEK)}^{{{rng.randint(2, 9)}}}}}"
+                f"{{{rng.randint(1, 99)} {rng.choice(_MATH_GREEK)}}}"
+            )
+        elif shape < 0.50:
+            parts.append(
+                f"\\sum_{{{rng.choice(_SHORT)}={rng.randint(0, 3)}}}^{{{rng.randint(4, 99)}}} "
+                f"{rng.choice(_MATH_GREEK)}_{{{rng.choice(_SHORT)}}}"
+            )
+        elif shape < 0.65:
+            parts.append(f"\\sqrt{{{rng.choice(_MATH_GREEK)} {rng.randint(2, 99)}}}")
+        elif shape < 0.80:
+            parts.append(
+                f"{rng.choice(_MATH_FUNCS)}\\left({rng.choice(_MATH_GREEK)}"
+                f"^{{{rng.randint(2, 5)}}}\\right)"
+            )
+        else:
+            parts.append(f"{rng.choice(_MATH_GREEK)}^{{{rng.randint(2, 9)}}}")
+    return " ".join(parts)
+
+
+def _inline_math(rng: random.Random, salt: str) -> str:
+    """One inline expression, in whichever delimiter family this draw lands on.
+
+    `\\(...\\)` is not markdown's own syntax: it reaches the renderer only if `preprocessLaTeX`
+    rewrites it first, so this is the draw that covers the preprocessor rather than the renderer.
+    """
+    body = _expression(rng, salt, rng.randint(1, 2))
+    return f"$ {body} $" if rng.random() < 0.65 else f"\\( {body} \\)"
+
+
+def _sentence(
+    rng: random.Random,
+    salt: str,
+    *,
+    math: bool = False,
+) -> str:
+    tail = f" where {_inline_math(rng, salt)} holds" if math else ""
     return (
         f"The {rng.choice(_ADJS)} {rng.choice(_NOUNS)} {rng.choice(_VERBS)} the "
         f"{rng.choice(_ADJS)} {rng.choice(_NOUNS)}_{salt}, {rng.choice(_CONNECTIVES)} the "
-        f"{rng.choice(_NOUNS)} stays {rng.choice(_ADJS)}."
+        f"{rng.choice(_NOUNS)} stays {rng.choice(_ADJS)}{tail}."
     )
 
 
-def _prose(rng: random.Random, target: int, salt: str) -> str:
-    """`target` characters of fence-free prose. No span will ever be built over any of it."""
+def _prose(
+    rng: random.Random,
+    target: int,
+    salt: str,
+    *,
+    math: bool = False,
+) -> str:
+    """`target` characters of fence-free prose. No Shiki span will be built over any of it.
+
+    With `math`, a share of the sentences carry an inline expression. Those characters are spent
+    from `target` like any other, so a prose block is the same size whether or not it has math in
+    it and the corpus keeps the block-size distribution it was calibrated with.
+    """
     out: list[str] = []
     size = 0
     while size < target:
         para: list[str] = []
         for _ in range(rng.randint(3, 6)):
-            s = _sentence(rng, salt)
+            s = _sentence(rng, salt, math = math and rng.random() < INLINE_MATH_PROB)
             para.append(s)
             size += len(s) + 1
         out.append(" ".join(para))
         size += 2
         if size >= target:
             break
+    return "\n\n".join(out)
+
+
+def _math_block(rng: random.Random, target: int, salt: str) -> str:
+    """`target` characters of display math, as a run of blocks with prose between them.
+
+    Not one enormous equation: a reply with math in it is a handful of displayed lines threaded
+    through explanation, and a single block would measure the cost of one very large KaTeX tree
+    rather than the cost of many, which is the shape that actually accumulates in a long thread.
+    """
+    out: list[str] = []
+    size = 0
+    i = 0
+    while size < target:
+        body = _expression(rng, f"{salt}m{i}", rng.randint(3, 6))
+        block = f"$$\n{body}\n$$" if rng.random() < 0.65 else f"\\[\n{body}\n\\]"
+        out.append(block)
+        size += len(block) + 2
+        i += 1
+        if size >= target:
+            break
+        gloss = _prose(rng, _jitter(rng, 260, floor = 60), f"{salt}g{i}", math = True)
+        out.append(gloss)
+        size += len(gloss) + 2
     return "\n\n".join(out)
 
 
@@ -413,7 +550,14 @@ def _body(rng: random.Random, target: int, salt: str, *, preamble: bool) -> str:
         parts.append(head)
         size += len(head) + 2
     while size < target:
-        p = _prose(rng, _jitter(rng, PROSE_CHARS), f"{salt}{len(parts)}")
+        # Math takes the prose slot rather than being added alongside it, and is drawn from the
+        # same size distribution, so the fence blocks keep their count and their sizes and the
+        # span-density calibration in the module docstring still holds.
+        want = _jitter(rng, PROSE_CHARS)
+        if rng.random() < MATH_BLOCK_PROB:
+            p = _math_block(rng, want, f"{salt}{len(parts)}")
+        else:
+            p = _prose(rng, want, f"{salt}{len(parts)}", math = True)
         parts.append(p)
         size += len(p) + 2
         if size >= target:
@@ -539,6 +683,8 @@ def freeze(
         "prose_chars": PROSE_CHARS,
         "fence_chars": FENCE_CHARS,
         "preamble_fraction": PREAMBLE_FRACTION,
+        "math_block_prob": MATH_BLOCK_PROB,
+        "inline_math_prob": INLINE_MATH_PROB,
         "max_unit_chars": MAX_UNIT_CHARS,
         "shipped_units": len(shipped),
         "shipped_chars": sum(u.chars for u in shipped),
@@ -567,6 +713,8 @@ def corpus_hash(manifest: dict) -> str:
         "prose_chars",
         "fence_chars",
         "preamble_fraction",
+        "math_block_prob",
+        "inline_math_prob",
         "max_unit_chars",
     ):
         h.update(f"{key}={manifest[key]}\x00".encode("utf-8"))
