@@ -533,7 +533,7 @@ export const es = {
           "Guarda la caché KV antes de liberar el modelo por inactividad para que los chats reanudados no vuelvan a leer el historial. Hasta 10 GB en disco.",
         apiOnly: "Liberar solo los modelos cargados por la API",
         apiOnlyDescription:
-          "La liberación por inactividad mantiene en memoria el modelo que cargaste desde Studio y solo libera los que cargó una solicitud a la API.",
+          "La liberación por inactividad mantiene en memoria el modelo que cargaste desde Unsloth Studio y solo libera los que cargó una solicitud a la API.",
       },
       previewSharing: {
         sectionTitle: "Compartir vista previa",
@@ -1031,7 +1031,7 @@ export const es = {
       quickstart: {
         title: "Crear un comando",
         description:
-          "Inicia un agente con el modelo cargado actualmente en Studio. Carga primero un modelo y luego cambia claude por cualquiera de los agentes compatibles que aparecen abajo.",
+          "Inicia un agente con el modelo cargado actualmente en Unsloth. Carga primero un modelo y luego cambia claude por cualquiera de los agentes compatibles que aparecen abajo.",
         noneDetected:
           "No se encontró ninguna CLI de agente compatible en tu PATH.",
         installed: "Instalado",
@@ -1053,7 +1053,7 @@ export const es = {
         description:
           "Primero se procesan las opciones de Unsloth; todo lo que Unsloth no reconoce se pasa directamente al agente.",
         model:
-          "Selecciona un modelo. Sin --model, unsloth start usa el modelo cargado actualmente en Studio y da error si no hay ninguno.",
+          "Selecciona un modelo. Sin --model, unsloth start usa el modelo cargado actualmente en Unsloth y da error si no hay ninguno.",
         contextLength:
           "Define la longitud de contexto solicitada (alias: --max-seq-length).",
         ggufVariant: "Elige la variante de cuantización GGUF.",
@@ -1076,9 +1076,9 @@ export const es = {
           "Omite las solicitudes de aprobación. Úsalo solo en entornos de confianza.",
       },
       remote: {
-        title: "Conectar con un Studio remoto",
+        title: "Conectar con un Unsloth Studio remoto",
         description:
-          "Apunta unsloth start a un Studio que se ejecuta en otro lugar definiendo estas variables antes de iniciar el agente (o pasa --api-key directamente):",
+          "Apunta unsloth start a un Unsloth Studio que se ejecuta en otro lugar definiendo estas variables antes de iniciar el agente (o pasa --api-key directamente):",
       },
       passthrough: {
         title: "Pasar argumentos al agente",
