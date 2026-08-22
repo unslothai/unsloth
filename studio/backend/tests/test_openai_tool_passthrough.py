@@ -6715,6 +6715,75 @@ class TestApiMonitorSafetensorsUsage:
         url = SimpleNamespace(path = "/v1/chat/completions")
         method = "POST"
 
+    def test_non_streaming_safetensors_keeps_event_loop_responsive(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            generation_started = threading.Event()
+            generation_finished = threading.Event()
+            generation_threads = []
+
+            class DummyBackend:
+                active_model_name = "safe-model"
+                models = {"safe-model": {"context_length": 2048}}
+
+                def generate_chat_response(self, **_kwargs):
+                    generation_threads.append(threading.current_thread())
+                    generation_started.set()
+                    try:
+                        time.sleep(0.08)
+                        yield "safe reply"
+                    finally:
+                        generation_finished.set()
+
+                def reset_generation_state(self, caller_cancel_event = None):
+                    pass
+
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = False,
+                    supports_tools = False,
+                    is_vision = False,
+                    context_length = None,
+                ),
+            )
+            monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: DummyBackend())
+            monkeypatch.setattr(
+                inf_mod,
+                "_detect_safetensors_features",
+                lambda *_args, **_kwargs: {"supports_tools": False},
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+            )
+            heartbeat_ticks = 0
+
+            async def _heartbeat():
+                nonlocal heartbeat_ticks
+                while not generation_finished.is_set():
+                    await asyncio.sleep(0.005)
+                    if generation_started.is_set() and not generation_finished.is_set():
+                        heartbeat_ticks += 1
+
+            heartbeat = asyncio.create_task(_heartbeat())
+            response = await openai_chat_completions(
+                payload,
+                request = self._Request(),
+                current_subject = "test",
+            )
+            await heartbeat
+
+            assert response.status_code == 200
+            assert heartbeat_ticks > 0
+            assert len(generation_threads) == 1
+            assert generation_threads[0] is not threading.current_thread()
+
+        asyncio.run(_run())
+
     def test_non_streaming_safetensors_records_usage(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
@@ -6987,6 +7056,57 @@ class TestApiMonitorAudioInput:
             assert entry["status"] == "completed"
             assert entry["reply"] == "hello world"
             assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_audio_input_non_streaming_keeps_event_loop_responsive(self, monkeypatch):
+        async def _run():
+            generation_started = threading.Event()
+            generation_finished = threading.Event()
+            generation_threads = []
+
+            def _chunks():
+                generation_threads.append(threading.current_thread())
+                generation_started.set()
+                try:
+                    time.sleep(0.08)
+                    yield "hello"
+                finally:
+                    generation_finished.set()
+
+            inf_mod = self._patch_audio_backend(monkeypatch, _chunks())
+            monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "describe this audio")],
+                audio_base64 = "ZmFrZQ==",
+            )
+            request = SimpleNamespace(
+                state = SimpleNamespace(),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+            )
+            heartbeat_ticks = 0
+
+            async def _heartbeat():
+                nonlocal heartbeat_ticks
+                while not generation_finished.is_set():
+                    await asyncio.sleep(0.005)
+                    if generation_started.is_set() and not generation_finished.is_set():
+                        heartbeat_ticks += 1
+
+            heartbeat = asyncio.create_task(_heartbeat())
+            response = await openai_chat_completions(
+                payload,
+                request = request,
+                current_subject = "test",
+            )
+            await heartbeat
+
+            assert response.status_code == 200
+            assert heartbeat_ticks > 0
+            assert len(generation_threads) == 1
+            assert generation_threads[0] is not threading.current_thread()
 
         asyncio.run(_run())
 

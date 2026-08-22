@@ -13,10 +13,10 @@ import {
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
-// Direct import, not via the @/features/chat barrel: the barrel is in an import cycle with this
-// file, so this key would still be in its temporal dead zone when the module-scope list below
-// reads it ("Cannot access ... before initialization"), killing the whole module graph.
-import { SIDEBAR_ORGANIZATION_STORAGE_KEY } from "@/features/chat/stores/sidebar-organization-store";
+// From the keys module, not the barrel or the store: both are in an import cycle with this file,
+// so the key was still in its temporal dead zone when the module-scope list below read it, killing
+// the module graph. The keys module imports nothing, so it is always evaluated first.
+import { SIDEBAR_ORGANIZATION_STORAGE_KEY } from "@/features/chat/stores/sidebar-organization-keys";
 import {
   LOADED_MODELS_PREFERENCE_KEYS,
   setShowLoadedModels,
@@ -77,6 +77,7 @@ import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
 import { useDesktopBooleanSetting } from "../hooks/use-desktop-boolean-setting";
+import { KEYBOARD_SHORTCUTS_STORAGE_KEY } from "../stores/keyboard-shortcuts-store";
 import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
 import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "@/features/chat/utils/project-attachment-target";
 
@@ -98,6 +99,10 @@ const PREFS_KEYS: string[] = [
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   "unsloth_settings_active_tab",
   SETTINGS_PANEL_PREFS_STORAGE_KEY,
+  // Rebound chords. Without this a reset leaves the user on shortcuts they
+  // asked to throw away, and a chord bound to something unusable has no
+  // escape hatch from this button.
+  KEYBOARD_SHORTCUTS_STORAGE_KEY,
   // Chat runtime prefs
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
   "unsloth_chat_auto_title",

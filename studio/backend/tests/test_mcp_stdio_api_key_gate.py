@@ -439,7 +439,7 @@ def test_list_hides_stdio_rows_from_api_keys(tmp_path, monkeypatch, stdio_on):
         headers_json = '{"Authorization": "Bearer t"}',
     )
 
-    keyed = asyncio.run(routes_mcp.list_mcp_servers(current_subject = "u", via_api_key = True))
+    keyed = routes_mcp.list_mcp_servers(current_subject = "u", via_api_key = True)
     assert [row.id for row in keyed] == ["http1"]
     serialized = repr([row.model_dump() for row in keyed])
     assert "sk-argv-secret" not in serialized
@@ -458,7 +458,7 @@ def test_list_shows_stdio_rows_to_a_ui_session(tmp_path, monkeypatch, stdio_on):
         url = "npx server --token sk-argv-secret",
         headers_json = '{"API_KEY": "sk-env-secret"}',
     )
-    rows = asyncio.run(routes_mcp.list_mcp_servers(current_subject = "u", via_api_key = False))
+    rows = routes_mcp.list_mcp_servers(current_subject = "u", via_api_key = False)
     assert [row.id for row in rows] == ["stdio1"]
     assert rows[0].url == "npx server --token sk-argv-secret"
     assert rows[0].headers == {"API_KEY": "sk-env-secret"}

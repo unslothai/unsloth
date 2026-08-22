@@ -139,9 +139,13 @@ def _resolve_prebuilt_for_host(*, force_refresh: bool = False) -> Optional[dict]
 
 
 def _installed_build_number(binary: Optional[str]) -> Optional[int]:
-    """Best-effort build number from ``llama-server --version`` (e.g.
-    'version: 9585 (abc)'). None when unparseable or <= 1: a source build with
-    no git tags reports 'version: 1', which we treat as unknown (offer update)."""
+    """Best-effort build number from ``llama-server --version``.
+
+    Current llama.cpp reports a semantic version followed by ``build NNNN``;
+    older binaries put the build directly after ``version:``. None when
+    unparseable or <= 1: a source build with no git tags reports build 1,
+    which we treat as unknown (offer update).
+    """
     if not binary:
         return None
     try:
@@ -155,7 +159,10 @@ def _installed_build_number(binary: Optional[str]) -> Optional[int]:
         )
     except Exception:  # pragma: no cover - defensive
         return None
-    m = re.search(r"version:\s*(\d+)", (proc.stderr or "") + (proc.stdout or ""))
+    output = "\n".join((proc.stderr or "", proc.stdout or ""))
+    m = re.search(r"version:[^\r\n]*\bbuild\s+(\d+)\b", output)
+    if not m:
+        m = re.search(r"version:\s*(\d+)\b(?!\.)", output)
     if not m:
         return None
     n = int(m.group(1))
@@ -215,9 +222,10 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
     res = _resolve_prebuilt_for_host(force_refresh = force_refresh)
     if not res or not res.get("prebuilt_available"):
         return None
-    # llama_tag is the upstream base (bNNNN, what --version reports); release_tag
-    # is the full tag, either a same-base mix (bNNNN-mix-<sha>) or a fork wrapper
-    # (e.g. v1.0). Compare the numeric base against llama_tag.
+    # llama_tag is the upstream bNNNN base whose numeric part matches the build
+    # field in --version; release_tag is the full tag, either a same-base mix
+    # (bNNNN-mix-<sha>) or a fork wrapper (e.g. v1.0). Compare the numeric base
+    # against llama_tag.
     base_tag = res.get("llama_tag") or res.get("release_tag")
     release_tag = res.get("release_tag")
     if not base_tag:
@@ -285,6 +293,15 @@ def _active_install_is_local_link(binary: Optional[str]) -> bool:
     local link at the canonical llama.cpp directory (see
     update_flow.active_install_is_local_link)."""
     return _flow.active_install_is_local_link(binary, dir_name = "llama.cpp")
+
+
+def _studio_custom_path_active() -> bool:
+    """True when Settings, rather than the managed installer, owns the runtime."""
+    try:
+        from utils.llama_cpp_path_settings import custom_llama_cpp_path_source
+        return custom_llama_cpp_path_source() == "studio"
+    except Exception:
+        return False
 
 
 def _local_link_status() -> dict:
@@ -360,6 +377,10 @@ def _llama_only_status(
 ) -> dict:
     """The llama.cpp half of get_update_status (no whisper sub-status)."""
     binary = _find_binary()
+    # A path selected in Settings is user-managed even if its folder happens to
+    # contain an Unsloth prebuilt marker. Never offer to replace that tree.
+    if _studio_custom_path_active():
+        return _local_link_status()
     # A --with-llama-cpp-dir local link is the user's own tree; never offer to
     # replace it. Bail before any network/freshness work.
     if _active_install_is_local_link(binary):
@@ -460,6 +481,8 @@ def _resolve_backends_for_host(
 
 def _switch_support(binary: Optional[str], marker: Optional[dict]) -> Optional[str]:
     """Return why this install cannot be switched, or None if it can."""
+    if _studio_custom_path_active():
+        return "custom_path"
     if binary is None:
         return "not_installed"
     if _active_install_is_local_link(binary):
@@ -771,6 +794,19 @@ _WHISPER_PHASE_WEIGHT = 0.3
 def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
     """Plan the llama phase for an update or backend switch."""
     binary = _find_binary()
+    if _studio_custom_path_active():
+        return {
+            "skip_reason": "custom_path",
+            "refusal": {
+                "started": False,
+                "reason": "custom_path",
+                "message": (
+                    "llama.cpp is using the custom folder selected in Settings; "
+                    "Unsloth won't replace it. Update that build yourself or restore "
+                    "the bundled runtime first."
+                ),
+            },
+        }
     # Refuse to update a --with-llama-cpp-dir local link: installing a prebuilt
     # here would write through the link into the user's own checkout (or fail)
     # and silently drop the link the flag created.
