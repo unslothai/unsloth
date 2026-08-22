@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { installLocalStorageFake, registerBundlerResolver } from "./helpers/kit.ts";
+import {
+  installLocalStorageFake,
+  registerBundlerResolver,
+} from "./helpers/kit.ts";
 
 registerBundlerResolver();
 const { store } = installLocalStorageFake();
@@ -37,6 +40,7 @@ test("a version 0 record hydrates every field", () => {
   const s = useSettingsPanelPrefsStore.getState();
   assert.equal(s.agentsAgent, "codex");
   assert.equal(s.agentsModel, "unsloth/Foo-GGUF");
+  assert.equal(s.agentsOs, null);
   assert.equal(s.agentsVariant, "UD-Q4_K_XL");
   assert.equal(s.apiExampleOs, "windows");
   assert.equal(s.resourcesLiveUpdates, false);
@@ -70,6 +74,22 @@ test("a setter write round-trips through localStorage", () => {
   const raw = store.get(KEY);
   assert.ok(raw, "nothing was written");
   assert.equal(JSON.parse(raw as string).state.fineTuneAction, "export");
+});
+
+test("the Agents command shell override persists and rejects unknown values", () => {
+  useSettingsPanelPrefsStore.getState().setAgentsOs("unix");
+  assert.equal(useSettingsPanelPrefsStore.getState().agentsOs, "unix");
+  const raw = store.get(KEY);
+  assert.ok(raw);
+  assert.equal(JSON.parse(raw as string).state.agentsOs, "unix");
+
+  const merged = useSettingsPanelPrefsStore.persist.getOptions().merge;
+  assert.ok(merged);
+  const out = merged(
+    { agentsOs: "fish" },
+    useSettingsPanelPrefsStore.getState(),
+  ) as { agentsOs: unknown };
+  assert.equal(out.agentsOs, null);
 });
 
 // The reason the sanitiser exists: agentsModel reaches `.toLowerCase()` and the

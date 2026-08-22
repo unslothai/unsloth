@@ -53,7 +53,10 @@ import {
 } from "../components/agent-command";
 import { SettingsSection } from "../components/settings-section";
 import { psSingle, shSingle } from "../components/usage-examples";
-import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
+import {
+  type ExampleOs,
+  useSettingsPanelPrefsStore,
+} from "../stores/settings-panel-prefs-store";
 import { ggufVariantDisplayLabel } from "@/features/hub";
 
 const DOCS_URL = "https://unsloth.ai/docs/integrations/unsloth-start";
@@ -622,7 +625,8 @@ export function AgentsTab() {
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const hfToken = useHfTokenStore((s) => s.token);
   const deviceType = usePlatformStore((s) => s.deviceType);
-  // The remote snippet runs on the client, so use the client platform, not deviceType.
+  // Seed a remote command from the client platform; the shell picker below can
+  // override it for SSH, WSL, containers, or any other paste destination.
   // Anchor the match: a bare includes("win") would also match "darwin".
   const [isWindowsClient] = useState(() => {
     const p = getClientPlatform();
@@ -633,20 +637,31 @@ export function AgentsTab() {
   // the CLI cannot reach, so use the backend URL from /api/health (getApiBase until it
   // lands). The command then runs wherever that CLI is: a loopback base is this Studio's
   // own host, so deviceType decides, and it reports wsl where the browser would claim
-  // Windows; any other base is reached from the viewer's machine, so only the client
-  // platform describes that shell.
+  // Windows. For any other base the client platform is only the initial guess.
   const studioBase = isTauri ? (serverUrl ?? getApiBase()) : origin;
-  const isWindowsShell = isLoopbackBase(studioBase)
-    ? deviceType === "windows"
-    : isWindowsClient;
+  const inferredCommandOs: ExampleOs = (
+    isLoopbackBase(studioBase)
+      ? deviceType === "windows"
+      : isWindowsClient
+  )
+    ? "windows"
+    : "unix";
   const localDetection = canUseLocalAgentDetection(serverUrl ?? origin);
   const setStoredAgent = useSettingsPanelPrefsStore((s) => s.setAgentsAgent);
   const setStoredModel = useSettingsPanelPrefsStore((s) => s.setAgentsModel);
+  const setStoredOs = useSettingsPanelPrefsStore((s) => s.setAgentsOs);
   const setStoredVariant = useSettingsPanelPrefsStore(
     (s) => s.setAgentsVariant,
   );
   // read once: these seed the controls, which write back through the handlers.
   const [storedPrefs] = useState(() => useSettingsPanelPrefsStore.getState());
+  // Detection is only a default: a remote Studio cannot know whether its command
+  // will be pasted into the viewer's local shell, SSH, WSL, or a container.
+  const [commandOsOverride, setCommandOsOverride] = useState<ExampleOs | null>(
+    storedPrefs.agentsOs,
+  );
+  const commandOs = commandOsOverride ?? inferredCommandOs;
+  const isWindowsCommand = commandOs === "windows";
   const [agents, setAgents] = useState<string[]>(
     SUPPORTED_AGENTS.map((agent) => agent.id),
   );
@@ -765,18 +780,17 @@ export function AgentsTab() {
     selectedVariant && suffixVariant
       ? `${modelId}:${selectedVariant}`
       : modelId;
-  const commandModelArg = quoteShellArg(commandModel, isWindowsShell);
+  const commandModelArg = quoteShellArg(commandModel, isWindowsCommand);
   // A bare `unsloth start` attaches to whatever is loaded, which is the only way
   // to reach a native-grant GGUF: naming it would switch the server to another model.
   const attachOnly = selectedModel === attachOnlyModel;
   const modelArgs = attachOnly
     ? ""
     : selectedVariant && !suffixVariant
-      ? `--model ${commandModelArg} --gguf-variant ${quoteShellArg(selectedVariant, isWindowsShell)}`
+      ? `--model ${commandModelArg} --gguf-variant ${quoteShellArg(selectedVariant, isWindowsCommand)}`
       : `--model ${commandModelArg}`;
   // No key is passed: the CLI caches an explicit one per base, overwriting a working
   // saved key. Omitting it replays the saved key; the remote section covers first setup.
-  const commandOs = isWindowsShell ? "windows" : "unix";
   const commandBase = buildAgentCommand(
     studioBase,
     null,
@@ -792,7 +806,8 @@ export function AgentsTab() {
     copy: handleCopy,
     reset: resetCopied,
   } = useCopyButton(command);
-  const remoteCommand = isWindowsClient ? REMOTE_CMD_WINDOWS : REMOTE_CMD_UNIX;
+  const remoteCommand =
+    commandOs === "windows" ? REMOTE_CMD_WINDOWS : REMOTE_CMD_UNIX;
 
   useEffect(() => {
     void fetchDeviceType({ force: true });
@@ -1525,9 +1540,50 @@ export function AgentsTab() {
         ) : null}
 
         <div className="flex min-w-0 flex-col gap-2.5">
-          <span className="text-xs font-medium text-foreground">
-            {t("settings.agents.generatedCommand")}
-          </span>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-medium text-foreground">
+              {t("settings.agents.generatedCommand")}
+            </span>
+            <fieldset className="flex min-w-0 items-center gap-0.5">
+              <legend className="sr-only">
+                {t("settings.agents.generatedCommand")}
+              </legend>
+              <button
+                type="button"
+                onClick={() => {
+                  setCommandOsOverride("unix");
+                  setStoredOs("unix");
+                  resetCopied();
+                }}
+                aria-pressed={commandOs === "unix"}
+                className={cn(
+                  "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  commandOs === "unix"
+                    ? "hub-tab-toggle-pill text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {t("settings.apiKeys.osUnix")}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setCommandOsOverride("windows");
+                  setStoredOs("windows");
+                  resetCopied();
+                }}
+                aria-pressed={commandOs === "windows"}
+                className={cn(
+                  "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  commandOs === "windows"
+                    ? "hub-tab-toggle-pill text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {t("settings.apiKeys.osWindows")}
+              </button>
+            </fieldset>
+          </div>
           <CopyableCode
             value={command}
             copyLabel={t("settings.agents.copyGeneratedCommand")}
