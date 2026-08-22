@@ -682,6 +682,82 @@ def test_a_declared_unstable_action_still_holds_at_every_rung(tmp_path):
     assert U.report([path], "t", U.unstable_set(None)[0]) == 0
 
 
+# ── ui parity: the session is part of a pair's identity too ──────────
+
+
+def in_session(row: dict, sid: str) -> dict:
+    row["session_id"] = sid
+    return row
+
+
+def resumed_parity(tmp_path: Path, name: str, retry_session: str) -> Path:
+    """A null control whose treatment arm died at 100K and was re-run by `--resume`.
+
+    The base arm completed under `s1` and stays there; `--resume` skips it and re-runs only the
+    arm that died, under `retry_session`, appending into the SAME shard directory. The retry's
+    digests carry a session-scoped volatile the normaliser did not catch, so they differ from the
+    base arm's for a reason that has nothing to do with either build.
+
+    `retry_session` is the session the retry was recorded under. The real `--resume` mints a new
+    one; passing `s1` back is the control that shows the refusal keys on the SESSION and not on
+    there being two attempts.
+    """
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "session_id": "s1"}]
+    for rep in ("rep0", "rep1"):
+        rows.append(in_session(parity_action(f"r100K.base.{rep}", "settings", "STABLE"), "s1"))
+    rows.append({"row_type": "run_meta", "tier": "standard", "session_id": retry_session})
+    for rep in ("rep0", "rep1"):
+        rows.append(
+            in_session(
+                parity_action(f"r100K.treatment.{rep}", "settings", f"VOLATILE-{rep}"),
+                retry_session,
+            )
+        )
+    return write(tmp_path, name, rows)
+
+
+def test_a_resumed_arm_is_not_paired_with_its_partner_from_the_old_session(tmp_path):
+    # `--resume` re-runs the arm that died under a NEW session id in the SAME shard, so the
+    # completed partner is left under the old one. Keyed on the repetition alone the two pair, and
+    # every session-scoped volatile the normaliser missed reads as a difference between the arms.
+    # Two of them at one rung are enough for `derive_unstable` to call `settings` unstable AT THAT
+    # RUNG, and a real DOM regression at 100K then prints as expected variation and exits 0.
+    null = resumed_parity(tmp_path, "null_resumed", "s2")
+    unstable, _derived, _checks = U.unstable_set([null])
+    assert ("r100K", "settings") not in unstable
+    assert "settings" not in unstable
+
+    regressed = parity_run(tmp_path, "mine_resumed", [("r100K", "rep0", "X", "REGRESSED")])
+    assert U.report([regressed], "t", unstable) == 1
+
+
+def test_a_cross_session_pair_carries_no_verdict_in_either_direction(tmp_path):
+    # And it is not silently dropped either. Both arms ran, so the reader is told the surface went
+    # unmeasured rather than being shown a pass -- which is the distinction the NOT COMPARABLE
+    # outcome exists to make.
+    null = resumed_parity(tmp_path, "blind_resumed", "s2")
+    verdicts = {r["verdict"] for _a, _s, _c, r in U.compare_all([null])[0]}
+    assert verdicts == {U.P.NOT_COMPARABLE}
+    assert U.report([null], "t", U.UNSTABLE_ACTIONS) == 0
+
+
+def test_an_arm_resumed_inside_the_same_session_still_pairs(tmp_path):
+    # The other direction, so the refusal above cannot pass by rejecting every resumed payload.
+    # Two attempts in ONE session are still one session, the pairs are real, and the instability
+    # they show is derived exactly as before.
+    null = resumed_parity(tmp_path, "same_session", "s1")
+    unstable, _derived, _checks = U.unstable_set([null])
+    assert ("r100K", "settings") in unstable
+
+
+def test_a_parity_payload_with_no_session_ids_pairs_exactly_as_before(tmp_path):
+    # Payloads recorded before session ids existed carry none, so both arms resolve to "" and the
+    # new key term is inert. A refusal that also rejected these would blind the tool to every
+    # older run.
+    path = parity_run(tmp_path, "legacy_parity", [("r1K", "rep0", "A", "B")])
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS) == 1
+
+
 def test_main_prints_a_mixed_unstable_set_without_dying(tmp_path, capsys):
     # The set now holds bare action names and (rung, action) pairs together, and `sorted()` over
     # the two raises TypeError. The one place that formats it is the run header.
