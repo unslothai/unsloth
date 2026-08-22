@@ -64,6 +64,17 @@ class StreamCostInstrument(_PageInstrument):
         self._chars_open: Optional[int] = None
         self._overhead_ms = 0.0
 
+    def start_cell(self, cell: Cell) -> None:
+        # PER CELL, like every other instrument that declares overhead (heap.py, tracing.py,
+        # coverage.py all zero theirs here). One instrument instance serves the whole session, so
+        # an accumulator carried across cells reports cell k's overhead as the sum of cells 1..k.
+        # The rung ladder is run in ascending order, so that sum climbs with the rung and
+        # `overhead_growth_with_length` -- the gate whose entire job is to catch an instrument
+        # whose cost tracks the treatment -- would read manufactured growth off a flat instrument.
+        super().start_cell(cell)
+        self._overhead_ms = 0.0
+        self._chars_open = None
+
     def open(self, window: Window) -> None:
         # Drain first, so the window starts from zero even if the previous close did not run
         # (an instrument that raised is disabled for the rest of the cell, and the accumulator

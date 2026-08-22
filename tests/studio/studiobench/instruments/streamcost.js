@@ -85,7 +85,9 @@
   };
 
   const now = () => performance.now();
-  const streaming = () => S.lastSseAt > 0 && now() - S.lastSseAt < IDLE_GAP_MS;
+  // Takes the instant to judge, rather than reading the clock itself, so a caller that has to
+  // attribute a whole INTERVAL can ask about the instant the interval began. See the timer below.
+  const streamingAt = (t) => S.lastSseAt > 0 && t - S.lastSseAt < IDLE_GAP_MS;
 
   // ── the task-chain timer ──────────────────────────────────────────────────────────────────
   //
@@ -141,8 +143,18 @@
   const tick = () => {
     const t = now();
     const gap = t - lastTick;
+    // Attributed by the state at the START of the interval, never at its end. A timer callback
+    // cannot run while the main thread is blocked -- it is queued when the timer expires and
+    // waits for the stack to empty -- so a stall is only ever observed once it is already over.
+    // Reading `streaming()` here would therefore ask whether the stream is in flight NOW, after
+    // the stall, and a stall longer than IDLE_GAP_MS answers no: the whole interval, which IS
+    // the stall, would be dropped from both accumulators. That discards precisely the worst
+    // stream-induced stalls, and it discards them at exactly the point where a regression grows
+    // past 1.5 s, so a build getting worse would read cheaper. A negative difference (a chunk
+    // that arrived DURING the interval) is below the threshold too, which is the overlap case.
+    const wasStreaming = streamingAt(lastTick);
     lastTick = t;
-    if (streaming()) {
+    if (wasStreaming) {
       const f = window.__sb.frames;
       const clamp = f && f.clamp ? f.clamp().clampMs : null;
       S.streamingMs += gap;
