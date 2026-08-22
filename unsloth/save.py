@@ -1117,10 +1117,7 @@ def unsloth_save_model(
                 # .../hub/models--{org}--{model}/snapshots/{sha}/
                 # Parse this to recover org/model
                 import re as _re
-
-                _hf_match = _re.search(
-                    r"models--([^/\\]+)--([^/\\]+)[/\\]snapshots", _bm
-                )
+                _hf_match = _re.search(r"models--([^/\\]+)--([^/\\]+)[/\\]snapshots", _bm)
                 if _hf_match:
                     _repo_id = f"{_hf_match.group(1)}/{_hf_match.group(2)}"
                     _adapter_cfg["base_model_name_or_path"] = _repo_id
