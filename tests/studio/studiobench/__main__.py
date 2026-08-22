@@ -181,6 +181,26 @@ def doctor(args) -> int:
 # ── the run ─────────────────────────────────────────────────────────
 
 
+def _windowed_arms(spec: str, labels: list) -> set:
+    """The arms `--windowed-arm` names, checked against the arms this run will actually have.
+
+    A PURE ARGUMENT CHECK, WHICH IS WHY IT RUNS BEFORE ANYTHING IS STARTED. It used to run after
+    both Studio installs had been launched, the pacer bound and the browser opened -- and the
+    `SystemExit` it raises for a typo (`--windowed-arm treatments`) left every one of them running,
+    because the cleanup `finally` does not begin until the cell loop much further down. No
+    `bundle.close()`, no `pacer.stop()`, no `stop_studio()`, no watchdog cancellation: a mistyped
+    flag cost a browser and up to two Studio servers, still holding their ports.
+    """
+    names = {name.strip() for name in (spec or "").split(",") if name.strip()}
+    unknown = names - set(labels)
+    if unknown:
+        raise SystemExit(
+            f"--windowed-arm names {sorted(unknown)}, which is not an arm in this run "
+            f"({sorted(labels)})"
+        )
+    return names
+
+
 def run(args, ab_ref = None) -> int:
     from .fixture.corpus import Corpus
     from .instruments import build as build_instruments  # noqa: F401
@@ -199,9 +219,17 @@ def run(args, ab_ref = None) -> int:
         wait_for_healthz,
     )
     from .runtime.seeder import Seeder
+    from .runtime.readiness import MODE_FULL, MODE_WINDOWED
     from .runtime.session import CellRunner, build_cells, ensure_probe_image, make_context
     from .runtime import resources
     from .runtime.types import Paths
+
+    # THE ARM NAMES, BEFORE A SINGLE PROCESS EXISTS. Nothing below this line can be undone without
+    # the cleanup `finally`, and that block is a long way down; see `_windowed_arms`. The labels
+    # are the ones `specs` builds with a few lines further on, and they are decided here so the two
+    # cannot drift into disagreeing about what an arm is called.
+    arm_labels = ["base"] + (["treatment"] if ab_ref else [])
+    windowed = _windowed_arms(getattr(args, "windowed_arm", ""), arm_labels)
 
     out = Path(args.out or f"studiobench-{args.tier}-{int(time.time())}").resolve()
     paths = Paths.under(out)
@@ -215,13 +243,33 @@ def run(args, ab_ref = None) -> int:
     _log(f"  corpus_hash {corpus.corpus_hash}")
 
     # One spec per side. Without --ab there is exactly one and everything below is the old path.
-    specs = [("base", args.branch, args.attach, args.port)]
+    specs = [(arm_labels[0], args.branch, args.attach, args.port)]
     if ab_ref:
-        specs.append(("treatment", ab_ref, args.attach_b, args.port + 1))
+        specs.append((arm_labels[1], ab_ref, args.attach_b, args.port + 1))
         if args.attach and not args.attach_b:
             _log("  --ab with --attach needs --attach-b URL: the second build has to be somewhere.")
             return 2
         _log(f"  A/B: base={args.branch} vs treatment={ab_ref}, interleaved in ONE session")
+        # ONE HOME CANNOT HOLD TWO BUILDS. `install_studio` checks the ref out into a repo
+        # directory derived from the home and installs from it, so two arms sharing a home share
+        # one checkout: the second install overwrites the first and BOTH arms then serve whichever
+        # build was installed last. The A/B compares a build against itself and reports a clean,
+        # confident "no difference" -- which is the same failure mode as a copy timing that is
+        # really a sleep, and just as invisible in the payload.
+        #
+        # Measured, before this refused: two runs of the same pair, one at 716 ms and 718 ms for
+        # base and treatment, the other at 2,583 ms and 2,614 ms. Nearly equal WITHIN each run and
+        # 3.6x apart BETWEEN them, because each run was internally uniform and the two runs were
+        # serving different builds. Read as a within-run comparison it says the change does
+        # nothing; the difference was sitting between the runs the whole time.
+        if not args.attach and args.home:
+            _log(
+                "  --home cannot be used with --ab: both arms would install into that one "
+                "directory, the second install would overwrite the first, and both arms would "
+                "then serve the same build. Drop --home and each arm gets its own "
+                "studio_home_<label> under --out."
+            )
+            return 2
 
     installs = []
     sides = []
@@ -419,6 +467,35 @@ def run(args, ab_ref = None) -> int:
     )
 
     image_path = ensure_probe_image(paths)
+    # WHICH SIDE, IF ANY, IS ALLOWED THE WINDOWED READINESS GATE.
+    #
+    # Per side and never global, so an A/B of the shipped build against a virtualised one runs the
+    # base arm on the strict full-mount gate it has always had. A flag that relaxed both sides
+    # would let a base arm that failed to finish mounting sail through and be compared against a
+    # treatment that did the same, which is the exact "flattering garbage" the gate exists to
+    # refuse -- on both arms at once, so the ratio would still look fine.
+    #
+    # `windowed` was parsed and validated at the top of this function, before the installs, the
+    # pacer and the browser existed. Only the application of it is left here.
+    for side in sides:
+        side["readiness_mode"] = MODE_WINDOWED if side["label"] in windowed else MODE_FULL
+        if side["readiness_mode"] == MODE_WINDOWED:
+            _log(
+                f"  {side['label']}: WINDOWED readiness gate. This arm is permitted to mount fewer "
+                "messages than the thread contains; it must publish aria-setsize matching the "
+                "seeded count, mount the end of the thread, settle, and pass the scroll-to-top "
+                "completeness probe. See runtime/readiness.py."
+            )
+            rec.gate(
+                f"windowed_readiness:{side['label']}",
+                True,
+                {
+                    "arm": side["label"],
+                    "reason": "declared on the command line with --windowed-arm",
+                    "note": "structural UI parity is NOT APPLICABLE to this arm; run "
+                    "sweep/ui_parity.py --mode behaviour",
+                },
+            )
     for side in sides:
         side_seeder = Seeder(
             base_url = side["base_url"], auth = side["auth"], model_id = model_id, log = _log
@@ -430,6 +507,7 @@ def run(args, ab_ref = None) -> int:
             seeder = side_seeder,
             corpus = corpus,
             click_probe = bool(getattr(args, "click_probe", False)),
+            readiness_mode = side["readiness_mode"],
             base_url = side["base_url"],
             model_id = model_id,
             tier = args.tier,
@@ -883,6 +961,24 @@ def main(argv: list) -> int:
         help = "comma-separated action names --assert-liveness may excuse. Use only "
         "for an action a platform genuinely cannot perform, and say which in "
         "the pull request: every name here is a hole in the gate",
+    )
+    ap.add_argument(
+        "--windowed-arm",
+        metavar = "ARMS",
+        dest = "windowed_arm",
+        # An ENV FALLBACK as well as the flag. `scripts/pr_perf_sweep.py` builds studiobench's
+        # command line itself and is shared with other people's in-flight sweeps, so adding an
+        # argument there mid-run is a hazard; this lets the sweep driver select the gate through
+        # the environment without anybody editing the driver.
+        default = os.environ.get("SBENCH_WINDOWED_ARM", ""),
+        help = "comma-separated arm labels (base, treatment) that mount a WINDOW of the thread "
+        "rather than all of it, and are therefore gated on the windowed readiness signal "
+        "instead of on every message being mounted. Not a relaxation: the named arm must "
+        "publish aria-setsize equal to the seeded message count, mount the end of the "
+        "thread, settle, and pass a scroll-to-top completeness probe. Naming an arm that "
+        "does NOT virtualise makes no difference to it beyond the extra conditions. "
+        "Structural UI parity is not applicable to a windowed arm; score it with "
+        "sweep/ui_parity.py --mode behaviour",
     )
     ap.add_argument(
         "--click-probe",

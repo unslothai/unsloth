@@ -39,7 +39,17 @@ from ..scene.actions import paint_floor_ms
 from ..scene.schedule import SceneRunner
 from .browser import cdp_counters, cdp_metrics, dump_diagnostics
 from .lifecycle import StudioAuth
-from .seeder import Seeder, compare_signatures, dom_signature, measure_chars_per_token
+from .readiness import (
+    COVERAGE_STATES_SCOREABLE,
+    MODE_FULL,
+    MODE_WINDOWED,
+    MODES,
+    Readiness,
+    ThreadNotReady,
+    probe_thread_completeness,
+    wait_for_thread_ready,
+)
+from .seeder import Seeder, SeededThread, compare_signatures, dom_signature, measure_chars_per_token
 from .types import BenchContext, Cell, Paths, Recorder, Window, make_cell_id, new_session_id
 
 # A 1x1 PNG, written to disk once per run so the image-upload action has a real file to attach.
@@ -68,6 +78,25 @@ IDLE_CALIBRATION_MS = 1500
 EQUIVALENCE_RUNG = "10K"
 MOUNT_TIMEOUT_S = 180
 
+#: How much of the streaming phase the thread must stay pinned for `follows_the_stream` to pass.
+#: 0.95 rather than 1.0: the sampler ticks four times a second and a legitimate pin lands a tick
+#: or two late after a large append, which is a rendering delay and not a failure to follow. It is
+#: paired with `ever_fell_behind`, which is absolute -- a thread that drifted past the tolerance
+#: even once fails, however quickly it was yanked back, because being yanked back is itself the
+#: other half of the intent contract being broken.
+FOLLOW_PINNED_MIN = 0.95
+
+#: How much of the STREAMING TIME the attached phases must cover before `pinned_fraction` is
+#: allowed to stand as a verdict.
+#:
+#: `pinned_fraction` is computed over attached samples only. With `detached` latching on the first
+#: deliberate scroll and never clearing, the shipped film -- which scrolls 1.5s into an 18s opening
+#: stream and then streams twice more -- produced a verdict from the first ~3s: 11 attached samples
+#: against 72 detached, 13% coverage, reported as 100% pinned and read as "the thread follows the
+#: stream". The latch is fixed, and this makes the coverage a condition rather than a footnote, so
+#: a future regression that strands the sampler cannot produce a confident pass over a sliver.
+FOLLOW_MIN_STREAM_COVERAGE = 0.50
+
 # How long the composer may take to accept the click that starts the film. Not a performance
 # budget: the point is that the cell survives and the number gets recorded. See `_press_send`.
 # 90s because it has to be well clear of the worst real reading and still bounded, since a click
@@ -80,6 +109,58 @@ SLOW_COMPOSER_CLICK_MS = 1_000
 
 class WindowInUse(RuntimeError):
     pass
+
+
+def record_completeness_gate(recorder: Recorder, cell: Cell, completeness: dict) -> bool:
+    """Write the completeness verdict as a gate row AGAINST THE CELL THAT PRODUCED IT.
+
+    WHY THIS IS NOT `recorder.gate(...)`. `Recorder.gate` writes `{row_type, name, passed,
+    detail}` and no cell_id, and `report/payload.py::excluded_from_rows` reads a failed gate as
+    `row.get("cell_id") or "run"`. So a windowed cell that had really lost messages was excluded
+    under the synthetic cell id "run": the report could say a self-check failed somewhere in the
+    run and could not say which arm or which rung lost them, which is the one thing this probe
+    exists to find out. `cell_id` is `r{rung}.{arm}.rep{rep}`, so attributing the row names all
+    three. `Recorder.failure` already takes a cell_id for the same reason.
+
+    THE VERDICT ITSELF is the head marker AND the ordinal coverage, and coverage is three-valued.
+    `False` is a finding. `None` is two different answers wearing one value, and they are told
+    apart by `ordinal_coverage_state`:
+
+      not_applicable  no row published an `aria-posinset` for the traversal to count. A fully
+                      mounted arm publishes none anywhere -- the shipped build publishes none --
+                      so the question does not arise, and failing on it would fail the shipped
+                      build's own completeness gate on every cell.
+      unmeasured      the question arises and the sweep could not answer it: the gesture stopped
+                      short of the top, or its consecutive stops did not overlap so the middle of
+                      the thread was never in view.
+
+    Only the first is a pass. A store that retains the first page and the last one and has lost
+    everything between them is the exact arm this probe was written to catch, and accepting
+    `unmeasured` let it back in through the unknown state: the head marker arrives, the coverage
+    sweep never looks, and the cell stays scoreable. "We could not tell" must not be recorded as
+    "it was fine". The remedy for a coarse sweep is a smaller `step_px`, not a pass.
+
+    A completeness dict carrying no state at all is treated the same way as `unmeasured`, because
+    an undifferentiated `None` is precisely the ambiguity above and resolving it in favour of a
+    pass is the defect.
+    """
+    coverage = completeness.get("ordinal_coverage_complete")
+    state = completeness.get("ordinal_coverage_state")
+    passed = (
+        bool(completeness.get("head_reached"))
+        and coverage is not False
+        and state in COVERAGE_STATES_SCOREABLE
+    )
+    recorder.emit(
+        {
+            "row_type": "gate",
+            "name": "thread_complete",
+            "passed": passed,
+            "detail": completeness,
+            "cell_id": cell.cell_id,
+        }
+    )
+    return passed
 
 
 @dataclass
@@ -161,6 +242,20 @@ class CellRunner:
     # of seconds at small rungs and a great deal at large ones, and it makes the cell's timings
     # incomparable with a cell that did not run it. See `_click_attribution`.
     click_probe: bool = False
+    # WHICH READINESS GATE. `full` is the default and is what every normal arm runs: every seeded
+    # message must be mounted, plus the settle and end-present conditions the gate gained. An arm
+    # that mounts a WINDOW on purpose sets `windowed` and is then held to a different set of
+    # conditions, none of them weaker. See runtime/readiness.py.
+    #
+    # It is a per-TARGET setting, so a base-versus-virtualised A/B runs the base arm on `full` and
+    # only the treatment arm on `windowed`, and the base arm keeps the strict gate it always had.
+    readiness_mode: str = MODE_FULL
+    # Scroll a windowed thread to its top once per cell, before the measured window, to prove the
+    # arm still holds the head of the conversation. Costs a full traversal, so it is off for
+    # `full` (where the whole thread is mounted and there is nothing to prove) and on by default
+    # for `windowed`, where it is the only check that separates a virtualised thread from one that
+    # has lost most of its messages.
+    completeness_probe: Optional[bool] = None
 
     def run(self, cell: Cell, plan: RungPlan) -> dict:
         s = self.session
@@ -195,6 +290,19 @@ class CellRunner:
                 "message": str(exc),
                 "traceback": traceback.format_exc()[-3000:],
             }
+            if isinstance(exc, ThreadNotReady):
+                # WHICH CONDITION, not just that it timed out. The old gate's message was "the
+                # thread mounted 9 of 18 messages", which named a count and left the reader to
+                # guess whether the app was slow, the thread was short or the arm mounts a window
+                # on purpose. The verdict now carries every condition and the last probe reading.
+                row["failure"]["readiness"] = exc.detail
+                row["readiness"] = exc.detail
+                rec.gate(
+                    f"thread_ready:{self.readiness_mode}",
+                    False,
+                    exc.detail,
+                    cell_id = cell.cell_id,
+                )
             self.log(f"  cell FAILED: {type(exc).__name__}: {exc}")
             rec.failure(cell.cell_id, type(exc).__name__, {"message": str(exc)})
             with contextlib.suppress(Exception):
@@ -228,7 +336,39 @@ class CellRunner:
             wait_until = "domcontentloaded",
             timeout = 120_000,
         )
-        self._wait_for_thread(page, seeded.messages)
+        if self.readiness_mode not in MODES:
+            raise ValueError(f"unknown readiness mode {self.readiness_mode!r}")
+        readiness = self._wait_for_thread(page, seeded)
+        row["readiness"] = readiness.as_dict()
+        # RECORDED AS A GATE, so no reader can pick up a windowed cell's frame rate without also
+        # seeing that its readiness was established a different way.
+        rec.gate(
+            f"thread_ready:{self.readiness_mode}",
+            True,
+            readiness.as_dict(),
+            cell_id = cell.cell_id,
+        )
+
+        # THE COMPLETENESS PROBE, before the idle window and therefore before anything is measured.
+        # It scrolls the whole thread, which mounts rows and dirties the page, so it has to be
+        # followed by the idle window rather than preceding a measurement directly.
+        do_probe = (
+            self.completeness_probe
+            if self.completeness_probe is not None
+            else self.readiness_mode == MODE_WINDOWED
+        )
+        if do_probe and seeded.first_marker and seeded.messages > 0:
+            completeness = probe_thread_completeness(
+                page,
+                first_marker = seeded.first_marker,
+                expected_messages = seeded.messages,
+                log = self.log,
+            )
+            row["completeness"] = completeness
+            record_completeness_gate(rec, cell, completeness)
+            # Back to the resting state the gate described, or the idle calibration below runs
+            # against a page that is still settling from the traversal.
+            self._wait_for_thread(page, seeded)
 
         # ── the enforced idle window ────────────────────────────────
         frames = next((i for i in s.instruments if i.name == "frames"), None)
@@ -245,12 +385,12 @@ class CellRunner:
             # so without it busy_pct is null with the reason attached and every other column
             # stands.
             self.log(f"  timer clamp NOT established: {clamp.get('reason')}")
-            rec.gate("timer_clamp", False, clamp)
+            rec.gate("timer_clamp", False, clamp, cell_id = cell.cell_id)
         else:
             self.log(
                 f"  timer clamp {clamp['clampMs']:.2f}ms " f"over {clamp.get('samples')} idle ticks"
             )
-            rec.gate("timer_clamp", True, clamp)
+            rec.gate("timer_clamp", True, clamp, cell_id = cell.cell_id)
 
         row["paint_floor_ms"] = paint_floor_ms(page)
         row["census_before"] = dom_signature(page)
@@ -296,6 +436,16 @@ class CellRunner:
             f"  streaming {len(unit.reasoning):,} reasoning + {len(unit.content):,} "
             f"content chars, cadence {self.cadence}, {expected_ms / 1000:.0f}s expected"
         )
+
+        # RESET THE FOLLOW SAMPLER FOR THIS CELL, immediately before the film starts.
+        #
+        # Necessary because the counters were just made to survive a navigation, by persisting to
+        # sessionStorage -- and a cell boundary IS a navigation, to the next seeded thread on the
+        # same origin. Without this, cell 2 reports cell 1's samples plus its own, cell 3 reports
+        # all three, and a single bad cell early in a session poisons every reading after it while
+        # each one still looks like a per-cell number.
+        with contextlib.suppress(Exception):
+            page.evaluate("() => window.__sb.follow && window.__sb.follow.reset()")
 
         before_metrics = cdp_metrics(s.ctx.cdp)
         self._composer_click_ms = None
@@ -347,6 +497,73 @@ class CellRunner:
             drained = self._drain_stream(page, expected_ms)
             w.note("drained", drained)
         row["stream"] = drained
+        # DID THE THREAD FOLLOW THE STREAM? Read once, here, after the last window of the film has
+        # closed, so the reading is charged to nothing. See the sampler in scene/dom.js.
+        #
+        # This is a GATE, not a column, because of the specific way it fails. A thread that stops
+        # following lets the streamed message leave the viewport; a windowed list then unmounts
+        # it, and the streaming cost collapses because the renderer is no longer rendering the
+        # thing being measured. The frame rate that comes out is excellent and is about nothing.
+        # A number with a caveat attached is still a number people quote without the caveat, so
+        # the caveat is a gate row that a reader has to step over.
+        follow = self._read_follow(page)
+        row["follow"] = follow
+        pinned = follow.get("pinned_fraction")
+        coverage = follow.get("attached_fraction_of_stream")
+        rec.gate(
+            "follows_the_stream",
+            bool(
+                pinned is not None
+                and pinned >= FOLLOW_PINNED_MIN
+                and coverage is not None
+                and coverage >= FOLLOW_MIN_STREAM_COVERAGE
+                and not follow.get("ever_fell_behind")
+            ),
+            follow,
+            cell_id = cell.cell_id,
+        )
+        # THE OTHER HALF OF THE CONTRACT, RECORDED AND DELIBERATELY NOT GATED.
+        #
+        # It was a gate for one run and it failed on BOTH arms at nearly the same rate (32 of 79
+        # on the base, 38 of 85 on the treatment), which is the signature of a reading about the
+        # film rather than about the build. The film re-pins legitimately and often: `send_turn`
+        # and `stop_generation` each START A RUN, and pinning to the bottom on run start is the
+        # intended behaviour, not a violation; `scroll_after` ends its own gesture near the bottom
+        # by design. Separating a legitimate re-pin from a yank requires knowing which pins the
+        # app was ASKED for, which this sampler does not know.
+        #
+        # So it is reported as a per-arm figure to be compared BETWEEN arms, where the confounds
+        # are common to both and cancel, and it carries the reason it is not a verdict. Gating on
+        # it would have failed the shipped build.
+        row["scroll_intent"] = {
+            "detached_samples": follow.get("detached_samples"),
+            "yanked_back_samples": follow.get("yanked_back_samples"),
+            "gated": False,
+            "reason": (
+                "the film starts runs of its own (send_turn, stop_generation) and each start pins "
+                "to the bottom by design, so this counts legitimate re-pins as well as yanks. "
+                "Meaningful only as a difference between two arms of one session"
+            ),
+        }
+        if pinned is None:
+            self.log(f"  follow: NOT MEASURED ({follow.get('pinned_fraction_reason')})")
+        else:
+            cov = follow.get("attached_fraction_of_stream")
+            self.log(
+                f"  follow: pinned for {pinned:.0%} of the samples taken while attached and "
+                f"streaming, over "
+                + ("an unknown share" if cov is None else f"{cov:.0%}")
+                + " of the streaming time"
+                + f", worst drift {follow.get('max_distance_while_running')}px"
+                + (", AND IT FELL BEHIND" if follow.get("ever_fell_behind") else "")
+            )
+        if follow.get("detached_samples"):
+            self.log(
+                f"  scroll intent: {follow.get('yanked_back_samples')} of "
+                f"{follow.get('detached_samples')} samples found the thread back at the bottom "
+                f"after the user scrolled away"
+                + (" -- THE USER WAS YANKED DOWN" if follow.get("yanked_after_scroll") else "")
+            )
         row["pacer"] = self.pacer.last_stats()
         row["census_after"] = dom_signature(page)
         row["cdp"] = cdp_counters(before_metrics, cdp_metrics(s.ctx.cdp))
@@ -388,7 +605,12 @@ class CellRunner:
         if cell.rung == EQUIVALENCE_RUNG and plan.streamed_unit is not None:
             eq = self._check_equivalence(plan, row)
             row["equivalence"] = eq
-            rec.gate("seeded_equals_streamed", bool(eq.get("equivalent")), eq)
+            rec.gate(
+                "seeded_equals_streamed",
+                bool(eq.get("equivalent")),
+                eq,
+                cell_id = cell.cell_id,
+            )
             if not eq.get("equivalent"):
                 # A FINDING, printed, not a bug to hide. It says exactly which of this tool's
                 # numbers are about the streaming path and which are about a thread that was put
@@ -450,7 +672,7 @@ class CellRunner:
                 wait_until = "domcontentloaded",
                 timeout = 120_000,
             )
-            self._wait_for_thread(page, seeded_thread.messages)
+            self._wait_for_thread(page, seeded_thread)
             # Let the highlighter finish, or the span count is a race rather than a comparison.
             page.wait_for_timeout(4000)
             seeded_sig = dom_signature(page)
@@ -463,24 +685,48 @@ class CellRunner:
         out = compare_signatures(streamed, seeded_sig)
         out["streamed_census"] = streamed
         out["seeded_census"] = seeded_sig
+        out["readiness_mode"] = self.readiness_mode
+        if self.readiness_mode == MODE_WINDOWED:
+            # SAID OUT LOUD RATHER THAN SCORED QUIETLY. Both sides of this check are loaded by the
+            # SAME build, so under a windowed arm both censuses count the mounted window and not
+            # the thread. The comparison is still like for like and its pass still means something
+            # -- the two paths render the same window the same way -- but it is no longer evidence
+            # that seeding reproduces the whole streamed thread, because neither side has the whole
+            # thread in the DOM to compare.
+            out["scope"] = "the mounted window only, not the whole thread"
+            out["caveat"] = (
+                "this arm mounts a window, so `assistant_messages`, `content_spans` and "
+                "`content_code_blocks` are counts over what is mounted at the end of the thread. "
+                "A pass is equivalence of the WINDOW, not of the thread."
+            )
         return out
 
-    def _wait_for_thread(self, page, expected_messages: int) -> None:
-        if expected_messages <= 0:
-            page.wait_for_selector('textarea[aria-label="Message input"]', timeout = 60_000)
-            return
-        deadline = time.monotonic() + MOUNT_TIMEOUT_S
-        last = -1
-        while time.monotonic() < deadline:
-            got = page.evaluate("() => window.__sb.dom.messageCount()")
-            if got >= expected_messages:
-                return
-            if got != last:
-                last = got
-                self.log(f"  mounting: {got}/{expected_messages} messages")
-            page.wait_for_timeout(500)
-        raise TimeoutError(
-            f"the thread mounted {last} of {expected_messages} messages in " f"{MOUNT_TIMEOUT_S}s"
+    def _read_follow(self, page) -> dict:
+        """Drain the page-side follow sampler. Never raises: a missing sampler is a reason, not
+        a lost cell, and it must not read as a thread that followed."""
+        try:
+            got = page.evaluate("() => window.__sb.follow && window.__sb.follow.read()")
+        except Exception as exc:  # noqa: BLE001
+            return {"follow_attempted": False, "reason": f"{type(exc).__name__}: {exc}"}
+        if not isinstance(got, dict):
+            return {"follow_attempted": False, "reason": "the follow sampler is not installed"}
+        return got
+
+    def _wait_for_thread(self, page, seeded: SeededThread) -> Readiness:
+        """The readiness gate. See runtime/readiness.py for what it asserts and why.
+
+        The mode is the CELL RUNNER's, not the thread's: an arm declares that it mounts a window
+        and the whole run is then gated that way and labelled that way in every row it writes. A
+        thread cannot be allowed to talk its way past the gate by looking virtualised, because
+        "looks like it mounted fewer nodes on purpose" is indistinguishable from "did not finish".
+        """
+        return wait_for_thread_ready(
+            page,
+            seeded.messages,
+            marker = seeded.last_marker,
+            mode = self.readiness_mode,
+            timeout_s = MOUNT_TIMEOUT_S,
+            log = self.log,
         )
 
     def _click_attribution(self, page, selector: str) -> dict:

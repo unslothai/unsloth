@@ -257,3 +257,28 @@ def test_measures_by_cell_does_not_mix_readings_between_cells():
     by_cell = measures_by_cell(rows)
     assert by_cell[(10_000, 0)]["menu_open_ms"].value == pytest.approx(10.0)
     assert by_cell[(10_000, 1)]["menu_open_ms"].value == pytest.approx(900.0)
+
+
+def test_the_wire_integrity_counters_may_be_zero():
+    """Zero here is the GOOD outcome and the one that makes the denominator trustworthy: no SSE
+    frame failed to parse, and no unterminated frame was left buffered at the window's close. A
+    clean run tripped the bare-zero ban and no report could be built from it at all."""
+    validate_payload(
+        {
+            "excluded_cells": [],
+            "blk": {
+                "wire_parse_failures": 0,
+                "wire_pending_chars": 0,
+                "wire_parse_failures_in_window": 0,
+                "wire_pending_chars_at_close": 0,
+            },
+        }
+    )
+
+
+def test_a_wire_character_count_of_zero_is_still_a_failure():
+    """The exemption is deliberately the counters and not the count. `wireChars` at zero means
+    nothing was ever counted, which is a broken instrument rather than a clean stream, and it must
+    stay loud."""
+    with pytest.raises(PayloadSchemaError):
+        validate_payload({"excluded_cells": [], "blk": {"wire_chars": 0}})

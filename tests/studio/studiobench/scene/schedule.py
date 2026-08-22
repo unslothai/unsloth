@@ -271,6 +271,29 @@ class SceneRunner:
         except Exception as exc:  # noqa: BLE001
             return {"census_attempted": False, "reason": f"{type(exc).__name__}: {exc}"}
 
+    def _watch_visible(self) -> None:
+        """Install the visible-region observer BEFORE the window opens.
+
+        Before, not after, because the compared set is the union of everything the viewport showed
+        during the action. An action that scrolls reveals messages and hides them again, and an
+        observer installed at the close would compare only wherever the scroll happened to stop.
+        """
+        try:
+            self.page.evaluate("() => window.__sb.parityVisible.watch()")
+        except Exception:  # noqa: BLE001
+            # A page that cannot install it still gets a structural digest; the visible-region
+            # capture reports itself absent rather than empty, which the analysis refuses.
+            pass
+
+    def _visible(self) -> dict:
+        """The visible-region capture, taken at the close alongside the census and the digest."""
+        try:
+            got = self.page.evaluate("async () => await window.__sb.parityVisible.capture()")
+            self.page.evaluate("() => window.__sb.parityVisible.stop()")
+            return got
+        except Exception as exc:  # noqa: BLE001
+            return {"visible_attempted": False, "reason": f"{type(exc).__name__}: {exc}"}
+
     def _parity(self) -> dict:
         """A structural digest of what is on screen, for the UI-parity check across arms.
 
@@ -303,11 +326,21 @@ class SceneRunner:
         # payload this tool has already written and in the analysis scripts pointed at them;
         # renaming it would break those silently, which is a worse failure than a misleading name
         # that is now documented in INTERFACES.md and contradicted by the kind beside it.
+        # THE CENSUS IS TAKEN BEFORE THE GAP WINDOW OPENS, not at its close. Same defect as the
+        # action windows (workspace task #102) and the same fix, but the placement is different:
+        # a gap window is the QUIET stretch, and its whole purpose is to measure the page doing
+        # nothing but stream. Nineteen querySelectorAll passes over 195,000 elements at the end of
+        # it is not nothing, and it landed on the frame-rate reading for the idle phase.
+        #
+        # Before rather than after, because the gap ends the instant the next slot is due: taking
+        # it afterwards would push the action's start past its own slot and turn an instrument cost
+        # into a missed slot, which is a worse failure than the one being fixed.
+        census = self._census()
         with self.open_window(name, "gap") as window:
+            window.note("census_before_gap", census)
             while (time.monotonic() - t0) * 1000 < until_ms:
                 time.sleep(min(0.2, max(0.01, (until_ms - (time.monotonic() - t0) * 1000) / 1000)))
             window.note("waited_to_ms", until_ms)
-            window.note("census", self._census())
 
     def _run_slot(self, slot: Slot, t0: float) -> dict:
         entry = get_action(slot.action)
@@ -343,6 +376,7 @@ class SceneRunner:
                 expect = {"t_start_ms": slot.t_start_ms, "reached_at_ms": round(now_ms, 1)},
             ).row(slot.action, window_name, self.cell.cell_id)
 
+        self._watch_visible()
         with self.open_window(window_name, "action") as window:
             ctx = ActionContext(
                 page = self.page,
@@ -361,23 +395,56 @@ class SceneRunner:
                 result = not_run(f"the action raised {type(exc).__name__}: {exc}")
             window.note("action", slot.action)
             window.note("ran", result.ran)
-            # A CENSUS PER ACTION, taken at the close of every window.
-            #
-            # Not a nicety. The end-of-cell census is taken after the film has finished, and the
-            # film ENDS with thread_reopen and delete_message -- so the "final" census of the
-            # first working run read 0 assistant messages and 0 characters, having faithfully
-            # measured a thread the benchmark had just deleted. A census per window gives the
-            # occupancy at the moment each action ran, which is the denominator every per-action
-            # cost needs anyway, and it makes the peak recoverable no matter what the last action
-            # did. Measured cost on a 1,500-element tree: 0.2ms.
-            window.note("census", self._census())
-            window.note("parity", self._parity())
 
-        over_ms = ((time.monotonic() - t0) * 1000) - deadline_ms
+        # THE CENSUS AND THE PARITY DIGEST ARE TAKEN OUTSIDE THE WINDOW. Workspace task #102.
+        #
+        # Both used to run inside the `with`, one line above this comment, on the strength of a
+        # measurement -- "0.2ms on a 1,500-element tree" -- taken on a tree three orders of
+        # magnitude smaller than the one this benchmark exists to study. At 100K+ tokens the
+        # census walks nineteen querySelectorAll passes over ~195,000 elements and the parity
+        # digest serialises 5.6 MB of structure, and every millisecond of it was being charged to
+        # the action that happened to precede it. Measured cost of the mistake:
+        #
+        #   delete_message   reported 14.3 fps, true 49.0 fps
+        #   message_menu     reported 17.1 fps, true 73.8 fps
+        #
+        # That is not a correction at the margin. It inverted the ranking of the actions this
+        # campaign is about, and it did it in the direction that makes the standing DOM look like
+        # a smaller problem than it is, because the instrument's own cost grows with exactly the
+        # quantity under investigation.
+        #
+        # They still run at the same MOMENT -- immediately after the window closes, before the
+        # scheduler starts waiting for the next slot -- so the digest and the occupancy still come
+        # from one reading of one DOM taken at the end of the action. Only the accounting moved.
+        #
+        # The consequence, stated: the emitted `window` row no longer carries them in its notes,
+        # because the row is emitted when the window closes. They live on the ACTION row, which is
+        # where every consumer already reads them from.
+        # THE DEADLINE IS SAMPLED HERE, BEFORE THE OBSERVATIONS. Moving the census and the digest
+        # out of the measured window but leaving `over_ms` to be taken after them would have left
+        # half the defect in place: an action that finished comfortably inside its budget would
+        # still be flagged `over_budget` on the strength of a multi-megabyte serialisation that is
+        # explicitly not its cost. Charging instrument time to the thing being measured is the
+        # whole of task #102, and the budget flag is not exempt from it.
+        window_closed_at = time.monotonic()
+        over_ms = ((window_closed_at - t0) * 1000) - deadline_ms
+
+        census = self._census()
+        parity = self._parity()
+        visible = self._visible()
+        # The observations DO consume wall clock before the next slot, so their cost is recorded
+        # rather than dropped -- it is simply recorded as theirs.
+        observation_ms = (time.monotonic() - window_closed_at) * 1000
         row = result.row(slot.action, window_name, self.cell.cell_id)
         row["window_ms"] = window.duration_ms
-        row["census"] = window.notes.get("census")
-        row["parity"] = window.notes.get("parity")
+        row["census"] = census
+        row["parity"] = parity
+        row["visible"] = visible
+        # The observation cost itself, so it is never invisible again. `census_cost_ms` is the
+        # page's own timing of the walk; if this pair ever comes to dominate the film's wall clock
+        # the number is in the payload rather than in someone's hypothesis.
+        row["observation_outside_window"] = True
+        row["observation_ms"] = round(observation_ms, 1)
         # An action that ran but overran its budget has pushed nothing (the next slot has its own
         # absolute start), but it has overlapped the next one, so it is flagged.
         row["over_budget_ms"] = round(over_ms, 1) if over_ms > 0 else 0.0

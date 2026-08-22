@@ -82,6 +82,55 @@
     overheadMs: 0,
     decodeCalls: 0,
     everStreamed: false,
+    // CUMULATIVE characters of assistant text this page has been SENT, counted off the wire.
+    // Never reset by `reset()`: the denominator a window wants is the growth across it, which is
+    // the difference of two readings of this, and resetting it per window would make every
+    // reading zero.
+    wireChars: 0,
+    wireFrames: 0,
+    wireParseFailures: 0,
+  };
+  // The incremental SSE buffer. A decode() call is a slice of the socket, not an SSE frame: one
+  // call can carry three frames and half of a fourth. Whatever is left after the last blank line
+  // stays here until the rest of it arrives.
+  let pending = "";
+  // A frame is a few hundred bytes. If this ever grows past a sane bound the stream is not what
+  // we think it is, and dropping the buffer is better than growing it without limit inside a hook
+  // that runs fourteen times a second.
+  const MAX_PENDING_CHARS = 262144;
+
+  // ── the frame marker, and the halves of it a split can leave ──────────────────────────────────
+  //
+  // The socket can cut a frame ANYWHERE, including inside these five characters: one decode()
+  // returns "da" and the next "ta: {...}\n\n". Neither chunk contains the marker, so the detector
+  // below saw two unrelated chunks, discarded both, and lost the frame WITHOUT counting a parse
+  // failure -- which left the wire character count short with nothing anywhere to say so, and
+  // `reply_chars_scoreable` reporting the window as sound. The denominator going quietly short
+  // inflates every cost-per-character above it, and it goes short exactly when the renderer is
+  // jammed and chunks arrive ragged, which is the moment the instrument exists to measure.
+  const SSE_MARKER = "data:";
+  // The fragment of the marker the last chunk MIGHT have ended on. At most four characters ("d",
+  // "da", "dat", "data"), so this cannot become the memory hazard MAX_PENDING_CHARS guards
+  // `pending` against: buffering whole unrelated TextDecoder chunks on the chance that one of them
+  // is an SSE frame would be a worse bug than the one being fixed.
+  let markerTail = "";
+
+  //: The longest tail of `s` that is a PROPER PREFIX of the marker, or "".
+  const partialMarkerTail = (s) => {
+    for (let n = Math.min(SSE_MARKER.length - 1, s.length); n > 0; n -= 1) {
+      if (s.endsWith(SSE_MARKER.slice(0, n))) return SSE_MARKER.slice(0, n);
+    }
+    return "";
+  };
+
+  //: Does `s` CONTINUE the marker that `frag` started? This is what keeps a speculative fragment
+  //: harmless. Unrelated traffic ending in "d" would otherwise be glued onto the front of the next
+  //: chunk, and a real frame arriving there would become "ddata: {...}", which does not start with
+  //: the marker and would be skipped in silence -- the same defect one step to the left.
+  const continuesMarker = (frag, s) => {
+    const rest = SSE_MARKER.slice(frag.length);
+    const n = Math.min(rest.length, s.length);
+    return n > 0 && s.slice(0, n) === rest.slice(0, n);
   };
 
   const now = () => performance.now();
@@ -99,6 +148,68 @@
     if (chainStart === null) return;
     S.deltaTaskMs += now() - chainStart;
     chainStart = null;
+  };
+
+  // ── the wire-side character counter ───────────────────────────────────────────────────────
+  //
+  // THIS REPLACES AN O(DOCUMENT) READ THAT BIASED THE COMPARISON, and the bias only became
+  // visible once an arm existed that changes the size of the document.
+  //
+  // The denominator used to be read from the DOM: `querySelectorAll('[data-role="assistant"]')`,
+  // last element, `textContent.length`, at both ends of every window. That is O(the whole
+  // document) regardless of how few elements match, and it measured 3.9 ms per call against
+  // 42,000 elements -- 38.8 ms per cell at 10K and 289.6 ms at 100K. The file's own note said it
+  // "is identical on both arms of an A/B and cancels in a paired ratio". That was true of every
+  // arm this project had ever run, and it is FALSE for a virtualised one: an arm whose entire
+  // purpose is to put a tenth of the elements in the document pays a tenth of this cost, so the
+  // instrument hands the treatment a saving it did not earn, in the direction that flatters
+  // exactly the hypothesis under test. Nothing measured on such an arm could be quoted while that
+  // read was in the paired path.
+  //
+  // Counting off the wire removes it rather than balancing it. Both arms are fed by the SAME
+  // pacer -- that is a design invariant of runtime/ab.py, not a coincidence -- so the bytes are
+  // identical by construction and this counter is identical by construction. It is O(the chunk),
+  // about fourteen chunks a second, and independent of the thread's size, the rung and the arm.
+  //
+  // It is also a BETTER denominator than the one it replaces. The DOM read measured the last
+  // assistant message, so a `send_turn` mid-film made the reading shrink and the window's growth
+  // unmeasurable ("it is a different message"). Characters delivered in the window is the
+  // quantity the cost per character actually wants, and it does not care how many messages they
+  // were spread over.
+  const countDeltaChars = (text) => {
+    pending += text;
+    if (pending.length > MAX_PENDING_CHARS) {
+      S.wireParseFailures += 1;
+      pending = "";
+      return;
+    }
+    // Frames are separated by a blank line. Anything after the last one is incomplete.
+    const parts = pending.split("\n\n");
+    pending = parts.pop();
+    for (const part of parts) {
+      const line = part.trim();
+      if (!line.startsWith("data:")) continue;
+      const body = line.slice(5).trim();
+      if (body === "" || body === "[DONE]") continue;
+      try {
+        const frame = JSON.parse(body);
+        const choices = frame && frame.choices;
+        if (!choices || !choices.length) continue;
+        const delta = choices[0].delta || {};
+        // Both fields, and both are counted. `_gguf_chat_delta_line` emits reasoning as
+        // `reasoning_content` WITH `content: ""` beside it, so summing them is not double
+        // counting; it is the two halves of one turn.
+        const content = typeof delta.content === "string" ? delta.content.length : 0;
+        const reasoning =
+          typeof delta.reasoning_content === "string" ? delta.reasoning_content.length : 0;
+        S.wireChars += content + reasoning;
+        S.wireFrames += 1;
+      } catch (err) {
+        // COUNTED, NOT SWALLOWED. A parse failure means the denominator is short by an unknown
+        // amount, and a silently short denominator inflates every cost-per-character above it.
+        S.wireParseFailures += 1;
+      }
+    }
   };
 
   const noteSse = () => {
@@ -124,7 +235,33 @@
     const t = now();
     S.decodeCalls += 1;
     if (typeof out === "string" && out.length > 0 && out.length <= MAX_SSE_CHUNK_CHARS) {
-      if (out.indexOf("data:") >= 0) noteSse();
+      // The fragment the previous chunk ended on, but only if THIS chunk continues it. A split
+      // inside the marker is repaired here rather than in the buffer, so a fragment that turns out
+      // to be ordinary text ending in "d" is dropped instead of corrupting the frame behind it.
+      // `markerTail` is only ever set when `pending` is empty, so the two can never both hold a
+      // half of the same frame.
+      const chunk = markerTail && continuesMarker(markerTail, out) ? markerTail + out : out;
+      markerTail = "";
+      const looksSse = chunk.indexOf(SSE_MARKER) >= 0;
+      if (looksSse) noteSse();
+      // `looksSse || pending` and not just `looksSse`. THE SECOND HALF OF A SPLIT FRAME CONTAINS
+      // NO "data:" -- it is the tail of a JSON body and a blank line -- so gating the counter on
+      // that marker dropped the whole frame whenever the socket cut one in two. Found by
+      // test_the_counter_survives_a_frame_split_across_two_decode_calls, which is precisely the
+      // condition the instrument exists to measure: chunks arrive ragged when the renderer is
+      // jammed, so the denominator would have gone quietly short exactly where the numerator went
+      // up, and the cost per character would have been overstated at the worst moment.
+      //
+      // Once a partial frame is held, every subsequent chunk is fed until it completes. Unrelated
+      // TextDecoder traffic can therefore land in the buffer; it cannot be counted, because it
+      // will not parse as a frame, and it is bounded by MAX_PENDING_CHARS and reported through
+      // wire_parse_failures rather than absorbed.
+      //
+      // AND THE CHUNK THAT IS NEITHER is kept only as far as it could be the START of a marker.
+      // That is the third case, the one a complete-marker test cannot see: "da" carries no marker
+      // and completes no buffered frame, and discarding it loses the frame that arrives next.
+      if (looksSse || pending.length > 0) countDeltaChars(chunk);
+      else markerTail = partialMarkerTail(chunk);
     }
     S.overheadMs += now() - t;
     return out;
@@ -221,15 +358,48 @@
       return out;
     },
 
-    // Read the streamed reply's length WITHOUT draining anything. Called at window open and
-    // window close, so the denominator is the growth across the window.
-    // `force` is passed at window CLOSE when the window turned out to carry traffic, so a
-    // window whose open-read was skipped is not silently given a null close-read as well.
-    replyChars(force) {
+    // THE DENOMINATOR, read off the wire. O(1): it returns a counter the decode hook maintains.
+    // Called at window open and window close, so the window's growth is the difference.
+    //
+    // Cumulative since page load and monotonic, so unlike the DOM reading it replaces there is no
+    // "the reply shrank, so it is a different message" case to handle: characters delivered only
+    // ever go up.
+    // The two things that can make `wireChars` short by an unknown amount, read at the same O(1)
+    // cost as the counter itself so a window boundary can capture both ends.
+    wireIntegrity() {
+      // The marker fragment counts as buffered, because it is: the frame it begins has not been
+      // counted yet, so a window closing on it has a denominator that is short by that frame. The
+      // cost of being honest here is that a stray one to four characters of unrelated traffic can
+      // mark a window unscoreable, which is the direction to err in -- an unscoreable window is
+      // "we could not tell", and a silently short denominator is "it was fine".
+      return { failures: S.wireParseFailures, pending_chars: pending.length + markerTail.length };
+    },
+    replyChars() {
+      return S.wireChars;
+    },
+
+    // The OLD reading, kept as a cross-check and NEVER called inside a measured window. See
+    // `end_cell` in streamcost.py: it runs once per cell, after the film, where its cost is
+    // charged to nothing.
+    //
+    // Worth keeping rather than deleting, because the two numbers answer different questions and
+    // a disagreement between them is a finding: the wire count is what the app was SENT and the
+    // DOM count is what it RENDERED. On a windowed arm they are expected to disagree, by exactly
+    // the messages that are not mounted.
+    replyCharsDom(force) {
       const t = now();
       const n = replyChars(Boolean(force));
       S.overheadMs += now() - t;
       return n;
+    },
+
+    wireStats() {
+      return {
+        wire_chars: S.wireChars,
+        wire_frames: S.wireFrames,
+        wire_parse_failures: S.wireParseFailures,
+        wire_pending_chars: pending.length + markerTail.length,
+      };
     },
 
     reset() {
