@@ -93,6 +93,8 @@ __all__ = [
     "get_moe_target_modules",
     "warn_if_zoo_cannot_merge_moe_experts",
     "_select_moe_detection_targets",
+    "_redirect_embedding_targets",
+    "_raise_if_fast_inference_modules_to_save",
     "make_fast_generate_wrapper",
     "_mark_unsloth_disable_data_parallel",
     "_patch_transformers_trainer_data_parallel",
@@ -4468,6 +4470,53 @@ def warn_if_zoo_cannot_merge_moe_experts():
         "the expert LoRA. Upgrade unsloth_zoo to merge them; saving the LoRA adapter is "
         "unaffected."
     )
+
+
+def _redirect_embedding_targets(
+    target_modules,
+    modules_to_save,
+    *,
+    allow_redirect = True,
+    preserve_lm_head_target = False,
+    preserve_embedding_target = False,
+    redirect_lm_head = True,
+):
+    """Move embedding targets to modules_to_save while retaining a required LoRA target."""
+    if type(target_modules) not in (list, tuple) or not allow_redirect:
+        return target_modules, modules_to_save, (), False
+
+    target_modules = list(dict.fromkeys(target_modules))
+    embedding_modules = {"embed_tokens"}
+    if redirect_lm_head:
+        embedding_modules.add("lm_head")
+    moved = [module for module in target_modules if module in embedding_modules]
+    remaining = [module for module in target_modules if module not in embedding_modules]
+    preserved_direct_target = False
+    if preserve_lm_head_target and not remaining and "lm_head" in moved:
+        moved.remove("lm_head")
+        remaining = [module for module in target_modules if module not in moved]
+        preserved_direct_target = True
+    elif preserve_embedding_target and not remaining and moved:
+        moved.pop()
+        remaining = [module for module in target_modules if module not in moved]
+        preserved_direct_target = True
+
+    if not moved:
+        adjusted = remaining if preserved_direct_target else target_modules
+        return adjusted, modules_to_save, (), preserved_direct_target
+
+    saved = [] if modules_to_save is None else list(modules_to_save)
+    saved.extend(module for module in moved if module not in saved)
+    return remaining, saved, tuple(moved), preserved_direct_target
+
+
+def _raise_if_fast_inference_modules_to_save(model, modules_to_save):
+    """Reject trainable saved modules that vLLM cannot keep synchronized."""
+    if hasattr(model, "vllm_engine") and modules_to_save is not None:
+        raise NotImplementedError(
+            "Unsloth: Currently fast inference does not work with training "
+            "embeddings or lm_head."
+        )
 
 
 def _select_moe_detection_targets(

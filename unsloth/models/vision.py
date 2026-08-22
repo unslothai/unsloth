@@ -1931,6 +1931,28 @@ class FastBaseModel:
         # only the auto (None / "all-linear") path relies on the regex, whose mlp
         # block is the sole remaining MLP-intent signal on fused-expert models.
         _moe_detect_target = target_modules if type(target_modules) in (list, tuple) else None
+
+        # Embeddings and the lm_head are not under attention/MLP ancestors, so
+        # get_peft_regex would silently drop them when listed in target_modules.
+        # Move them to modules_to_save before scoping, matching the behavior in
+        # FastLanguageModel.get_peft_model.
+        target_modules, modules_to_save, _moved, _direct_lm_head_target = (
+            _redirect_embedding_targets(
+                target_modules,
+                modules_to_save,
+                allow_redirect = finetune_language_layers,
+                preserve_lm_head_target = True,
+                preserve_embedding_target = not hasattr(model, "vllm_engine"),
+                redirect_lm_head = not hasattr(model, "vllm_engine"),
+            )
+        )
+        for m in _moved:
+            logger.warning_once(
+                f"Unsloth: `{m}` should be placed in `modules_to_save`, not "
+                f"`target_modules`. We will move it for you, but update your code."
+            )
+        _raise_if_fast_inference_modules_to_save(model, modules_to_save)
+
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,
@@ -1953,7 +1975,11 @@ class FastBaseModel:
                 or not finetune_attention_modules
                 or not finetune_mlp_modules
             )
-            if type(target_modules) in (list, tuple) and (_scoping or finetune_audio_layers):
+            if (
+                type(target_modules) in (list, tuple)
+                and (_scoping or finetune_audio_layers)
+                and not _direct_lm_head_target
+            ):
                 if _scoping:
                     print(
                         "Unsloth: Explicit target_modules are constrained by the "

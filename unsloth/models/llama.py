@@ -3315,29 +3315,36 @@ class FastLlamaModel:
         train_lm_head = False
         train_embed_tokens = False
         final_modules = []
-        for module in target_modules:
+        # Embeddings and the lm_head are not located under an attention/MLP
+        # ancestor, so Unsloth's fast regex path would silently drop them when
+        # they are listed in `target_modules`. Move them to `modules_to_save`
+        # instead (which is what the official continued-pretraining guide
+        # actually intends) and warn once.
+        target_modules, modules_to_save, _moved_embedding_modules, _ = _redirect_embedding_targets(
+            target_modules,
+            modules_to_save,
+            preserve_lm_head_target = True,
+            redirect_lm_head = not hasattr(model, "vllm_engine"),
+        )
+        for module in _moved_embedding_modules:
             if module == "embed_tokens":
-                # logger.warning_once(
-                #     "Unsloth: `embed_tokens` should be placed in `modules_to_save` and not `target_modules`. "\
-                #     "Luckily, we shall do it for you!"
-                # )
                 train_embed_tokens = True
-                if modules_to_save is None:
-                    modules_to_save = ["embed_tokens"]
-                else:
-                    modules_to_save.append("embed_tokens")
-
             else:
-                try:
-                    assert module in accepted_modules
-                    final_modules.append(module)
-                except AssertionError as e:
-                    final_modules.append(module)
-                    print(
-                        "Unsloth: You added custom modules, but Unsloth hasn't optimized for this.\n"
-                        "Beware - your finetuning might be noticeably slower!"
-                    )
-                pass
+                train_lm_head = True
+            logger.warning_once(
+                f"Unsloth: `{module}` should be placed in `modules_to_save`, not "
+                f"`target_modules`. We will move it for you, but update your code."
+            )
+        for module in target_modules:
+            try:
+                assert module in accepted_modules
+                final_modules.append(module)
+            except AssertionError as e:
+                final_modules.append(module)
+                print(
+                    "Unsloth: You added custom modules, but Unsloth hasn't optimized for this.\n"
+                    "Beware - your finetuning might be noticeably slower!"
+                )
 
         # Check if we added new tokens!
         if hasattr(model, "_need_to_train_embeddings"):
