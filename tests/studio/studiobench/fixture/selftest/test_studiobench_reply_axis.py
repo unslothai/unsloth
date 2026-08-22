@@ -198,3 +198,134 @@ def test_dollarise_does_not_reduce_the_text(corpus: Corpus):
     source = "\n".join(f"line {i}" for i in range(50))
     assert len(dollarise(source, "x")) >= len(source)
     assert dollarise("", "x") == ""
+
+
+# ── the axis has to survive the film, not just the fixture ───────────────────────────────────
+
+
+def test_a_long_tail_really_does_outlast_the_standard_film(corpus: Corpus):
+    """The premise of the test below, taken from the real corpus rather than asserted.
+
+    The films are packed against the DEFAULT tail: `stop_generation` opens at 28 s on the standard
+    film and the pinned 6,000 character tail drains in at most 17.8 s, so nothing of the cell's own
+    is ever running when that slot opens. Raise the tail and the slot lands mid-stream.
+    """
+    from studiobench.scene.schedule import STANDARD
+
+    field_chars_per_sec = 24 / 0.073
+    stop = next(s for s in STANDARD.slots if s.action == "stop_generation")
+
+    default_s = plan_rung(corpus, "100K").streamed_chars / field_chars_per_sec
+    assert default_s < stop.t_start_ms / 1000.0, default_s
+
+    long_s = plan_rung(corpus, "100K", stream_tail_chars = 96_000).streamed_chars / field_chars_per_sec
+    assert long_s > STANDARD.duration_ms / 1000.0, long_s
+    assert long_s > stop.t_start_ms / 1000.0
+
+
+class _FakeKeyboard:
+    def __init__(self, page) -> None:
+        self.pressed: list[str] = []
+        self._page = page
+
+    def press(self, key: str) -> None:
+        self.pressed.append(key)
+        if key == "Enter" and "one more" in self._page.filled:
+            # Sending the throwaway turn starts a generation, which is what the own-turn path
+            # then waits for and stops.
+            self._page.running = True
+
+
+class _FakePage:
+    """The four page calls `stop_generation` makes, and a record of what it reached for."""
+
+    def __init__(self, *, running: bool) -> None:
+        self.running = running
+        self.filled: list[str] = []
+        self.queried: list[str] = []
+        self.clicked = 0
+        self.keyboard = _FakeKeyboard(self)
+
+    def evaluate(self, script, arg = None):
+        if "isRunning" in script:
+            return self.running
+        if "composerText" in script:
+            return ""
+        if "assistantChars" in script:
+            return 9_200
+        return {}
+
+    def fill(self, _selector: str, text: str) -> None:
+        self.filled.append(text)
+
+    def wait_for_timeout(self, _ms) -> None:
+        return None
+
+    def query_selector(self, selector: str):
+        self.queried.append(selector)
+        page = self
+
+        class _Button:
+            def click(self_inner) -> None:
+                page.clicked += 1
+
+        class _Button:
+            def click(self_inner) -> None:
+                page.clicked += 1
+                page.running = False
+
+        return _Button() if "Stop generating" in selector else None
+
+
+def _stop_ctx(page: _FakePage):
+    from studiobench.runtime.types import ActionContext
+
+    return ActionContext(
+        page = page,
+        cdp = None,
+        cell = None,
+        window = None,
+        args = {},
+        budget_ms = 200,
+        dom = None,
+        log = lambda _m: None,
+    )
+
+
+def test_stop_refuses_to_truncate_the_cell_s_own_reply():
+    """REGRESSION, and the failure it pins is a SILENT one.
+
+    `stop_generation` sends and stops a throwaway turn precisely so that it never truncates the
+    reply the rest of the film measures. That guard was written as "if nothing is running, make
+    something to stop", so the moment something WAS running the action fell through and clicked
+    Stop on it. `--stream-tail-chars 96000` is the supported way to make that happen: the reply
+    then streams for 291 s against a 243 s standard film, this slot opens at 28 s, and the reply
+    the flag exists to lengthen is cut at about 9,200 characters. Every later action still runs
+    against a settled thread, the row still says `ran: true`, and `--assert-liveness` -- which the
+    flag's own help text sends the caller to -- still passes, so the reply-length axis reports a
+    clean run having measured a reply a tenth of the requested size.
+    """
+    from studiobench.scene.actions import stop_generation
+
+    page = _FakePage(running = True)
+    result = stop_generation(_stop_ctx(page))
+
+    assert result.ran is False, "a stop that would truncate the measured reply must not run"
+    assert "truncate" in (result.reason or "")
+    assert page.clicked == 0, "the cell's own reply was stopped"
+    assert page.queried == [], "the stop button was not even looked for"
+    assert "one more" not in page.filled, "a second turn must not be started on top of a live one"
+
+
+def test_stop_still_sends_its_own_turn_when_nothing_is_running():
+    """The default path, unchanged: with the pinned tail nothing is ever running at this slot."""
+    from studiobench.scene.actions import stop_generation
+
+    page = _FakePage(running = False)
+    result = stop_generation(_stop_ctx(page))
+
+    assert "one more" in page.filled, "stop must still get its own generation to stop"
+    assert page.keyboard.pressed == ["Enter"]
+    assert page.clicked == 1, "the throwaway turn is what gets stopped"
+    assert result.ran is True
+    assert result.expect["own_generation"] is True

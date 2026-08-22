@@ -136,6 +136,62 @@ def test_stream_drain_after_the_film_is_refused():
     assert picked == []
 
 
+def test_the_drain_is_scored_when_the_reply_outlasts_the_film():
+    """The other half of the drain window, and the half `--stream-tail-chars` creates.
+
+    The test above pins the DEFAULT shape: the tail is pinned at 6,000 characters, the reply is
+    finished forty seconds before the film ends, and the drain window is 7 ms of nothing that
+    `_stream_windows` refuses for having seen no traffic. Raise the tail to 96,000 -- the one
+    supported way to vary reply length -- and the reply streams for 291 s at field cadence against
+    a 243 s standard film, so the last 48 s of it lands in the drain window with nothing scripted
+    running in it.
+
+    That is unaided streaming, and it was dropped: `_unaided` selected `kind == "gap"` and the
+    drain window is `kind = "stream"`. The characters and the cost of the last fifth of the reply
+    -- the part streamed into the largest thread -- left every streaming metric, and the worst
+    frame in that stretch was never seen at all.
+    """
+    gap = _window("stream:gap3", kind = "gap", delta_task_ms = 900.0, chars_close = 3_000)
+    drain = _window(
+        "stream:drain",
+        kind = "stream",
+        duration_ms = 48_000.0,
+        streaming_ms = 47_000.0,
+        delta_task_ms = 2_700.0,
+        blocked_ms = 5_400.0,
+        chars_open = 0,
+        chars_close = 9_000,
+        max_frame_ms = 640.0,
+    )
+    picked, _ = _stream_windows([drain])
+    assert len(picked) == 1, "a drain window that really carried traffic is a streaming window"
+
+    m = _stream_measures([gap, drain])
+    assert "2 unaided streaming window(s)" in m["stream_delta_cost_ms_per_kchar"].note
+    assert "12000 streamed characters" in m["stream_delta_cost_ms_per_kchar"].note
+    # 3,600 ms over 12,000 characters, not 900 ms over 3,000: the drain is in the integral.
+    assert m["stream_delta_cost_ms_per_kchar"].value == pytest.approx(300.0)
+    assert m["stream_cost_ms_per_kchar"].value == pytest.approx(600.0)
+    # A max is not a ratio, so a dropped window is a silently missing worst frame.
+    assert m["stream_max_frame_ms"].value == pytest.approx(640.0)
+
+
+def test_an_action_window_is_still_not_unaided():
+    """The kind filter widened by one QUIET kind, and must not have widened to the action windows.
+
+    This is the property `_unaided` exists for. On a fast-tier 100K null, admitting the action
+    windows put a 1,738 ms scroll frame into `stream_max_frame_ms` against a 286 ms unaided peak.
+    """
+    windows = [
+        _window("stream:gap3", kind = "gap", max_frame_ms = 286.0),
+        _window("stream:drain", kind = "stream", max_frame_ms = 300.0),
+        _window("action:scroll_during_generation", kind = "action", max_frame_ms = 1_738.0),
+    ]
+    m = _stream_measures(windows)
+    assert m["stream_max_frame_ms"].value == pytest.approx(300.0)
+    assert "2 unaided streaming window(s)" in m["stream_delta_cost_ms_per_kchar"].note
+
+
 def test_a_window_whose_reply_shrank_is_refused_rather_than_signed():
     """`send_turn` and `thread_reopen` REPLACE the last assistant message."""
     picked, rejected = _stream_windows(

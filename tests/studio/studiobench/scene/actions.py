@@ -389,23 +389,57 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
     # Sending its own short turn keeps the measured reply intact and means the action has
     # something to stop at EVERY rung, instead of reporting `not_run` at the small ones where the
     # main stream is already over by the time the slot opens.
-    own_generation = False
-    if not _ev(ctx, "() => window.__sb.dom.isRunning()"):
-        ctx.page.fill('textarea[aria-label="Message input"]', "one more")
-        ctx.page.wait_for_timeout(80)
-        ctx.page.keyboard.press("Enter")
-        own_generation = True
-        deadline = time.monotonic() + 8.0
-        while time.monotonic() < deadline:
-            if _ev(ctx, "() => window.__sb.dom.isRunning()"):
+    #
+    # THE GUARD BELOW IS THE OTHER HALF OF THAT, and without it the paragraph above only held for
+    # the default fixture. The own-turn path was entered only when `isRunning()` was FALSE, so the
+    # moment anything WAS running this action fell straight through and clicked Stop on it -- the
+    # exact behaviour the paragraph above says was removed. The supported way to make that happen
+    # is `--stream-tail-chars`, whose entire purpose is a long opening reply: at 96,000 characters
+    # the reply streams for 291 s at field cadence against a 243 s standard film, so this slot
+    # opens at 28 s with the opening turn still in flight and kills it at about 9,200 characters.
+    # The reply-length axis the flag exists to provide is then never exercised, every later action
+    # still runs against a settled thread, `ran` is still true, and `--assert-liveness` -- which
+    # the flag's own help text sends the caller to -- still passes. A silently truncated fixture
+    # reported as a clean run is the most expensive failure shape this harness has.
+    #
+    # So the reply is given the rest of this slot's budget to finish on its own, which is all a
+    # marginally slow drain needs (the fast film opens this slot 0.4 s after the worst-case drain
+    # on the ladder), and if it has not finished, NOTHING IS STOPPED and the row says why. An
+    # honest `not_run` costs a column; stopping the reply costs the whole cell. With the default
+    # tail nothing is ever running when this slot opens -- the packing test in fixture/selftest
+    # holds every film to that -- so this path is unreachable on an unmodified run and the
+    # behaviour there is exactly what it was.
+    if _ev(ctx, "() => window.__sb.dom.isRunning()"):
+        settle_deadline = time.monotonic() + max(0.0, ctx.budget_ms / 1000.0)
+        running: Any = True
+        while time.monotonic() < settle_deadline:
+            ctx.page.wait_for_timeout(100)
+            running = _ev(ctx, "() => window.__sb.dom.isRunning()")
+            if not running:
                 break
-            ctx.page.wait_for_timeout(50)
-        else:
-            return not_run("nothing was generating and a new turn did not start within 8s")
-        if not _ev(ctx, "() => window.__sb.dom.isRunning()"):
-            return not_run("nothing was generating and a new turn did not start within 8s")
-        # Let it get going, so stop is measured against a live stream rather than a starting one.
-        ctx.page.wait_for_timeout(600)
+        if running:
+            return not_run(
+                "the cell's own reply was still streaming when this slot opened and had not "
+                f"drained {ctx.budget_ms}ms later. Stopping it would permanently truncate the "
+                "reply the rest of the film and the final census measure, so nothing was "
+                "stopped. Lower --stream-tail-chars or move this slot past the drain"
+            )
+
+    ctx.page.fill('textarea[aria-label="Message input"]', "one more")
+    ctx.page.wait_for_timeout(80)
+    ctx.page.keyboard.press("Enter")
+    own_generation = True
+    deadline = time.monotonic() + 8.0
+    while time.monotonic() < deadline:
+        if _ev(ctx, "() => window.__sb.dom.isRunning()"):
+            break
+        ctx.page.wait_for_timeout(50)
+    else:
+        return not_run("nothing was generating and a new turn did not start within 8s")
+    if not _ev(ctx, "() => window.__sb.dom.isRunning()"):
+        return not_run("nothing was generating and a new turn did not start within 8s")
+    # Let it get going, so stop is measured against a live stream rather than a starting one.
+    ctx.page.wait_for_timeout(600)
     button = ctx.page.query_selector('button[aria-label="Stop generating"]')
     if button is None:
         queue = ctx.page.query_selector('button[aria-label="Queue message"]')
