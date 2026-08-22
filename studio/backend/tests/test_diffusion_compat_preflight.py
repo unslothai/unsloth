@@ -1387,3 +1387,25 @@ def test_both_media_routes_refuse_a_speech_pick_before_taking_the_gpu():
         assert "assert_pick_is_not_speech" in source, label
         assert acquire in source, label
         assert source.index("assert_pick_is_not_speech") < source.index(acquire), label
+
+
+def test_an_automatic_image_load_keeps_the_pre_eviction_preflight_offline():
+    """The route's own speech check already honours user_initiated, but it then calls
+    preflight_base_access, which reaches the same assertion again. Left network-enabled that
+    second call spends a revision HEAD (or an uncached range request and its 15s bound) on the
+    one path that promised to stay off the Hub."""
+    import inspect
+
+    from core.inference import diffusion, sd_cpp_backend
+    from routes import inference as inference_route
+
+    preflight = inspect.getsource(diffusion.DiffusionBackend.preflight_base_access)
+    assert "assert_pick_is_not_speech(repo_id, gguf_filename, hf_token, allow_network)" in preflight
+
+    # The route hands its own locality flag down rather than letting the default win.
+    route = inspect.getsource(inference_route.load_diffusion_model_gated)
+    assert "allow_network = user_initiated" in route
+
+    # Both engines keep one signature, since the route preflights whichever one it picked.
+    for backend in (diffusion.DiffusionBackend, sd_cpp_backend.SdCppDiffusionBackend):
+        assert "allow_network" in inspect.signature(backend.preflight_base_access).parameters

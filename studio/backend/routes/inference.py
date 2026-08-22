@@ -25782,6 +25782,7 @@ async def load_diffusion_model_gated(
                 model_kind = kind,
                 base_repo = request.base_repo,
                 hf_token = request.hf_token,
+                allow_network = user_initiated,
             )
 
         # Last refusal before anything is torn down: a gated/unreadable companion repo. The download

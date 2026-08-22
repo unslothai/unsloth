@@ -1900,6 +1900,7 @@ class SdCppDiffusionBackend:
         model_kind: Optional[str] = None,
         base_repo: Optional[str] = None,
         hf_token: Optional[str] = None,
+        allow_network: bool = True,  # noqa: ARG002 -- signature parity; no speech probe here
     ) -> None:
         """The companion refusal ``_run_load`` makes, run by the route BEFORE it takes the GPU.
 

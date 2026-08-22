@@ -1921,6 +1921,7 @@ class DiffusionBackend:
         model_kind: Optional[str] = None,
         base_repo: Optional[str] = None,
         hf_token: Optional[str] = None,
+        allow_network: bool = True,
     ) -> None:
         """The gated/unreadable-base and FLUX.2 size-pairing refusals, run by the route BEFORE it
         takes the GPU.
@@ -1949,7 +1950,9 @@ class DiffusionBackend:
         assert_flux2_pick_compatible(fam, repo_id, gguf_filename, base, hf_token)
         # No media backend decodes a speech GGUF, and detect_family_for_pick answers from the
         # folder name, so a csm file beside a denoiser reaches this loader as one of its own.
-        assert_pick_is_not_speech(repo_id, gguf_filename, hf_token)
+        # Cache-only for a load nobody asked for: this probe would otherwise spend a revision HEAD,
+        # or a range request and its bound, on the one path that promised to stay off the Hub.
+        assert_pick_is_not_speech(repo_id, gguf_filename, hf_token, allow_network)
 
     # ── Background load + progress ─────────────────────────────────────────
 
