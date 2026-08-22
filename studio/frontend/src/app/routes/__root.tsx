@@ -366,11 +366,17 @@ function RootLayout() {
     });
   };
 
-  useShortcut("newChat", () => startNewChat());
-  useShortcut("newTemporaryChat", () =>
-    startNewChat({ incognito: true, standalone: true }),
+  // Gated like the workspace chords below: /login has no shell, and /chat
+  // bounces straight back off requireAuth.
+  useShortcut("newChat", () => startNewChat(), { enabled: !isAuthFlowRoute });
+  useShortcut(
+    "newTemporaryChat",
+    () => startNewChat({ incognito: true, standalone: true }),
+    { enabled: !isAuthFlowRoute },
   );
-  useShortcut("newStandaloneChat", () => startNewChat({ standalone: true }));
+  useShortcut("newStandaloneChat", () => startNewChat({ standalone: true }), {
+    enabled: !isAuthFlowRoute,
+  });
 
   // Workspaces. The shell is mounted on every route, so the chords live here.
   const goTo = (to: string) => () => void navigate({ to });

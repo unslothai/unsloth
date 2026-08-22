@@ -3127,7 +3127,12 @@ export function ChatPage({
     (delta: number, wrap: boolean) => {
       const state = useChatRuntimeStore.getState();
       const levels = state.reasoningEffortLevels;
-      if (!state.supportsReasoning || levels.length === 0) {
+      // Levels stay populated for an enable_thinking model, whose request path
+      // drops the effort. Same test as the composer's effort menu.
+      const isEffort =
+        state.reasoningStyle === "reasoning_effort" ||
+        state.reasoningStyle === "enable_thinking_effort";
+      if (!state.supportsReasoning || !isEffort || levels.length === 0) {
         toast.info("This model has no reasoning effort setting");
         return;
       }

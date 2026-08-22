@@ -2421,6 +2421,9 @@ export function AppSidebar() {
 
   /** Open a chat row. Shared by the row and the navigation chords. */
   function openChatItem(item: SidebarItem) {
+    // Archive/pin/unread act on the selection when there is one, so leaving it
+    // behind would point them at rows the user just navigated away from.
+    clearSelection();
     clearChatNotifications(item);
     noteViewed(item.id);
     navigate({
@@ -2824,7 +2827,6 @@ export function AppSidebar() {
               className={buttonClass}
               onClick={(event) => {
                 if (list && handleSelectionClick(event, item, list)) return;
-                clearSelection();
                 openChatItem(item);
               }}
             >

@@ -765,6 +765,52 @@ test("the copy chords keep their gesture across the read", async () => {
   }
 });
 
+test("the new-chat chords stay out of the auth flow", async () => {
+  const root = await readFile(
+    new URL("../src/app/routes/__root.tsx", import.meta.url),
+    "utf8",
+  );
+  // /login has no shell, and requireAuth bounces /chat straight back, so these
+  // are gated like the workspace chords beside them.
+  for (const id of ["newChat", "newTemporaryChat", "newStandaloneChat"]) {
+    // The id, not the whole call: two of the three wrap onto their own line.
+    const at = root.indexOf(`"${id}"`);
+    assert.ok(at !== -1, `${id} is registered`);
+    const call = root.slice(at, root.indexOf("\n  );", at) + 5);
+    assert.match(call, /enabled: !isAuthFlowRoute/, `${id} is gated`);
+  }
+});
+
+test("opening a chat by chord drops the selection, as clicking a row does", async () => {
+  const sidebar = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  // Archive, pin and mark-unread prefer the selection when there is one, so a
+  // stale one sends them to rows that are no longer on screen.
+  const at = sidebar.indexOf("function openChatItem(");
+  const body = sidebar.slice(at, sidebar.indexOf("\n  }", at));
+  assert.ok(body.includes("clearSelection()"), "the shared opener clears it");
+  // One path only: the row reaches it through the same function.
+  assert.ok(
+    !sidebar.includes("clearSelection();\n                openChatItem(item);"),
+    "the row no longer clears it separately",
+  );
+});
+
+test("effort chords only run for a model whose effort is read", async () => {
+  const page = await readFile(
+    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
+    "utf8",
+  );
+  const at = page.indexOf("const shiftReasoningEffort");
+  const body = page.slice(at, page.indexOf("useShortcut(\"cycleReasoningEffort\"", at));
+  // enable_thinking models still list levels, but the request drops the effort.
+  assert.match(body, /state\.reasoningStyle === "reasoning_effort"/);
+  assert.match(body, /state\.reasoningStyle === "enable_thinking_effort"/);
+  assert.match(body, /!state\.supportsReasoning \|\| !isEffort/);
+});
+
 test("New chat inherits the project on screen, not the one still running", async () => {
   const root = await readFile(
     new URL("../src/app/routes/__root.tsx", import.meta.url),
