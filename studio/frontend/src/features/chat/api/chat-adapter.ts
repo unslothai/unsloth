@@ -60,8 +60,6 @@ import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
 import {
-  getExternalProviderApiKey,
-  isCustomProviderType,
   isExternalModelId,
   isPromptCacheTtl,
   loadExternalProviders,
@@ -71,7 +69,6 @@ import {
   providerModelSupportsVision,
   supportsProviderPromptCacheTtl,
   supportsProviderPromptCaching,
-  toExternalBackendProviderType,
 } from "../external-providers";
 
 import {
@@ -96,6 +93,11 @@ import {
 import { buildResearchInferenceRequest } from "../research-inference-request";
 import { pickFriendlyContainerName } from "../lib/friendly-names";
 import {
+  buildExternalRoutingFields,
+  type ExternalRoutingUnavailableReason,
+  resolveExternalRouting,
+} from "../utils/chat-title";
+import {
   reasoningCapsFromLoad,
   resolveInferenceCheckpointId,
   tryAdoptServerActiveModel,
@@ -107,7 +109,6 @@ import {
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
-  isGeminiCustomOpenAICompatBase,
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
@@ -133,7 +134,6 @@ import {
 } from "../stores/chat-runtime-store";
 import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "../presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
-import { useExternalProvidersStore } from "../stores/external-providers-store";
 import {
   shouldPreserveFullOutput,
   toolOutputKey,
@@ -217,10 +217,7 @@ import {
   createOpenAIContainer,
   listOpenAIContainers,
 } from "./openai-containers";
-import {
-  encryptProviderApiKey,
-  isProviderKeyRotationError,
-} from "./providers-api";
+import { isProviderKeyRotationError } from "./providers-api";
 import {
   beginExternalResearchFollow,
   ingestResearchUpdate,
@@ -233,6 +230,30 @@ import { cancelResearchRun, createResearchRun } from "./research-api";
 // Small models (<=9B) answer from memory instead of calling search, so "auto"
 // forces retrieval for them and leaves it to larger ones.
 const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
+
+// A send the user pressed, so every reason a connection cannot serve it is
+// reported. Background callers of resolveExternalRouting choose otherwise.
+const EXTERNAL_ROUTING_REFUSALS: Record<
+  ExternalRoutingUnavailableReason,
+  { title: string; description: string; error: string }
+> = {
+  "connections-disabled": {
+    title: "Connections are disabled.",
+    description:
+      "Turn on Enable connections in Settings → Connections to use hosted models.",
+    error: "Connections disabled.",
+  },
+  "connection-missing": {
+    title: "Connection not found.",
+    description: "Open Settings → Connections and add it again.",
+    error: "Connection not found.",
+  },
+  "missing-api-key": {
+    title: "Missing API key for selected connection.",
+    description: "Open Settings → Connections and set the API key again.",
+    error: "Missing connection API key.",
+  },
+};
 
 type ThreadRecordReader = () => Promise<ThreadRecord | undefined>;
 
@@ -4270,22 +4291,15 @@ export function createOpenAIStreamAdapter(
         : false;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
-      if (
-        isExternalRequest &&
-        !useExternalProvidersStore.getState().connectionsEnabled
-      ) {
-        toast.error("Connections are disabled.", {
-          description:
-            "Turn on Enable connections in Settings → Connections to use hosted models.",
-        });
+      const externalRouting = resolveExternalRouting(params.checkpoint);
+      if (externalRouting.kind === "unavailable") {
+        const refusal = EXTERNAL_ROUTING_REFUSALS[externalRouting.reason];
+        toast.error(refusal.title, { description: refusal.description });
         clearSelectedImageEditReference();
-        throw new Error("Connections disabled.");
+        throw new Error(refusal.error);
       }
-      const externalProvider = isExternalRequest
-        ? loadExternalProviders().find(
-            (provider) => provider.id === externalSelection.providerId,
-          )
-        : null;
+      const externalProvider =
+        externalRouting.kind === "external" ? externalRouting.provider : null;
 
       const externalUsesStudioTools =
         providerModelSupportsStudioTools(
@@ -4300,44 +4314,9 @@ export function createOpenAIStreamAdapter(
         (model) => model.id === params.checkpoint,
       );
       const externalApiKey =
-        externalProvider && !externalProvider.hasApiKey
-          ? getExternalProviderApiKey(externalProvider.id).trim()
-          : "";
-
-      if (isExternalRequest && !externalProvider) {
-        toast.error("Connection not found.", {
-          description: "Open Settings → Connections and add it again.",
-        });
-        clearSelectedImageEditReference();
-        throw new Error("Connection not found.");
-      }
-      // Local providers and custom Gemini bases allow an empty key.
-      const externalProviderIsCustom = externalProvider
-        ? isCustomProviderType(externalProvider.providerType)
-        : false;
-      const externalProviderIsGeminiCustomBase = Boolean(
-        externalProvider &&
-          externalProvider.providerType === "gemini" &&
-          isGeminiCustomOpenAICompatBase(externalProvider.baseUrl),
-      );
-      const externalProviderUsesOAuth =
-        externalProvider?.authKind === "chatgpt_oauth";
-
-      if (
-        isExternalRequest &&
-        !externalApiKey &&
-        !externalProvider?.hasApiKey &&
-
-        !externalProviderUsesOAuth &&
-        !externalProviderIsCustom &&
-        !externalProviderIsGeminiCustomBase
-      ) {
-        toast.error("Missing API key for selected connection.", {
-          description: "Open Settings → Connections and set the API key again.",
-        });
-        clearSelectedImageEditReference();
-        throw new Error("Missing connection API key.");
-      }
+        externalRouting.kind === "external" ? externalRouting.apiKey : "";
+      const externalModelId =
+        externalRouting.kind === "external" ? externalRouting.modelId : "";
 
       // Image-generation flag (OpenAI cloud + Responses-capable model);
       // computed first so Gemini image mode can suppress Search/Code.
@@ -5111,9 +5090,6 @@ export function createOpenAIStreamAdapter(
           supportsPreserveThinking,
           preserveThinking,
         } = runtime;
-        const externalBackendProviderType = toExternalBackendProviderType(
-          externalProvider?.providerType,
-        );
         const buildResponseDetails = (
           finishedAt: number,
         ): ResponseDetailsMetadata => ({
@@ -5483,18 +5459,14 @@ export function createOpenAIStreamAdapter(
                     // server's tools-on default, which would bill provider
                     // server tools.
                     { enable_tools: false }),
-              provider_id: externalProvider.id,
-              provider_type: externalBackendProviderType,
-              external_model: externalSelection.modelId,
-              ...(externalApiKey
-                ? {
-                    encrypted_api_key: await encryptProviderApiKey(
-                      externalApiKey,
-                      forceRefreshPublicKey,
-                    ),
-                  }
-                : {}),
-              provider_base_url: externalProvider.baseUrl || null,
+              ...(await buildExternalRoutingFields(
+                {
+                  provider: externalProvider,
+                  modelId: externalModelId,
+                  apiKey: externalApiKey,
+                },
+                { forceRefreshPublicKey },
+              )),
               ...(openaiCodeExecContainerId
                 ? {
                     openai_code_exec_container_id: openaiCodeExecContainerId,

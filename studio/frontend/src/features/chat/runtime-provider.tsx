@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
 import {
   AssistantRuntimeProvider,
@@ -41,7 +40,17 @@ import {
   ThreadAutosaveHandle,
   createOpenAIStreamAdapter,
 } from "./api/chat-adapter";
-import { CHAT_HISTORY_UPDATED_EVENT } from "./api/chat-api";
+import {
+  CHAT_HISTORY_UPDATED_EVENT,
+  streamChatCompletions,
+} from "./api/chat-api";
+import {
+  answeringCheckpoint,
+  buildTitleRequest,
+  fallbackTitleFromUserText,
+  titleCheckpoint,
+  titleFromStream,
+} from "./utils/chat-title";
 import { getResearchThreadState } from "./api/research-api";
 import { sanitizeThreadScopedSettings } from "./utils/thread-scoped-settings";
 import {
@@ -131,7 +140,6 @@ import {
   markChatThreadDeleted,
 } from "./utils/chat-thread-tombstones";
 import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
-import { fallbackTitleFromUserText } from "./utils/chat-title";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
@@ -143,15 +151,6 @@ const pendingRunStartReadyByMessageId = new Map<
   Promise<string | undefined>
 >();
 const pendingRunStartThreadIdsByMessageId = new Map<string, string[]>();
-
-type TitleResponse = {
-  choices?: Array<{
-    finish_reason?: string | null;
-    message?: {
-      content?: string;
-    };
-  }>;
-};
 
 class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   private readonly delegate: AttachmentAdapter;
@@ -558,11 +557,11 @@ function titleTextOf(m: ThreadMessage | undefined): string {
 }
 
 async function generateTitleWithModel(payload: {
+  checkpoint: string;
   userText: string;
   assistantText?: string;
 }): Promise<string | null> {
-  const params = useChatRuntimeStore.getState().params;
-  if (!params.checkpoint) return null;
+  if (!payload.checkpoint) return null;
 
   const user = clip(payload.userText, 256);
   const assistant = clip(payload.assistantText ?? "", 384);
@@ -571,63 +570,21 @@ async function generateTitleWithModel(payload: {
     parts.push(`Assistant: ${assistant}`);
   }
 
-  function normalizeTitle(raw: string): string | null {
-    let title = raw.split(/\r?\n/, 1)[0] ?? "";
-    title = title.replace(/^\s*title\s*:\s*/i, "");
-    title = title.replace(/[^\x20-\x7E]+/g, " ");
-    title = title.replace(/["'`]+/g, "");
-
-    // Echo fail-safe: reject leading role labels before punctuation strips the ":".
-    if (/^\s*(user|assistant|base|lora)\s*:/i.test(title)) {
-      return null;
-    }
-
-    title = title.replace(/[.!?:;,]+/g, " ");
-    title = title.replace(/\s+/g, " ").trim();
-
-    const words = title.split(" ").filter(Boolean).slice(0, 6);
-    const joined = words.join(" ").trim();
-    if (!joined) return null;
-    return joined.length > 60 ? joined.slice(0, 60).trimEnd() : joined;
+  try {
+    // Inside the boundary: building this encrypts a browser-held key, which
+    // reaches the network too.
+    const request = await buildTitleRequest(
+      payload.checkpoint,
+      parts.join("\n"),
+    );
+    if (!request) return null;
+    return await titleFromStream(
+      streamChatCompletions(request, new AbortController().signal),
+    );
+  } catch {
+    // Background work: every failure leaves the caller its message-text fallback.
+    return null;
   }
-
-  const response = await authFetch("/v1/chat/completions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: params.checkpoint,
-      stream: false,
-      temperature: 0.2,
-      top_p: 0.9,
-      max_tokens: 24,
-      top_k: 20,
-      repetition_penalty: 1.0,
-      enable_thinking: false,
-      reasoning_effort: "none",
-      // Titling is a one-shot summarisation: never let it enter the tool loop.
-      // Omitting the field would inherit the server's tools-on default and put
-      // python/terminal schemas in a 24-token prompt.
-      enable_tools: false,
-      messages: [
-        {
-          role: "system",
-          content:
-            "Write 1 concise chat title summarizing the conversation topic, not the user's exact wording. Use the assistant reply as context when provided. Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.",
-        },
-        { role: "user", content: parts.join("\n") },
-      ],
-    }),
-  });
-
-  const body = (await response
-    .json()
-    .catch(() => null)) as TitleResponse | null;
-  if (!response.ok) return null;
-  const choice = body?.choices?.[0];
-  if (choice?.finish_reason === "length") return null;
-  const raw: string | undefined = choice?.message?.content;
-  if (!raw || /<\/?think>/i.test(raw)) return null;
-  return normalizeTitle(raw);
 }
 
 const inflightTitleByKey = new Set<string>();
@@ -910,6 +867,9 @@ function createStudioDbAdapter(
           : messages.find((m, i) => m.role === "assistant" && i > firstUserIndex);
       const userText = titleTextOf(firstUser) || defaultTitle;
       const assistantText = extractTextParts(firstAssistant);
+      const answeredWith = answeringCheckpoint(
+        firstAssistant?.metadata?.custom,
+      );
 
       if (!autoTitle) {
         const title = fallbackTitleFromUserText(userText);
@@ -946,6 +906,10 @@ function createStudioDbAdapter(
       try {
         const title =
           (await generateTitleWithModel({
+            checkpoint: titleCheckpoint(
+              answeredWith,
+              useChatRuntimeStore.getState().params.checkpoint,
+            ),
             userText,
             assistantText,
           })) || fallbackTitleFromUserText(userText);
