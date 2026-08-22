@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import List, Optional
 
 NON_CHAT_TASKS = frozenset({"text-to-image", "text-to-video", "image-diffusion-unsupported"})
-LOCAL_SOURCES = frozenset({"models_dir", "lmstudio", "ollama", "custom"})
+LOCAL_SOURCES = frozenset({"models_dir", "lmstudio", "custom"})
 
 
 @dataclass

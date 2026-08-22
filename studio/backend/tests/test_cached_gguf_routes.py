@@ -3488,9 +3488,54 @@ def test_hub_cached_rows_carry_the_task_the_pickers_filter_on(monkeypatch, tmp_p
     monkeypatch.setattr(
         catalog_classification,
         "_repo_gguf_task",
-        lambda repo_info: "text-generation",
+        lambda repo_info, selected = None: "text-generation",
     )
     assert cache_inventory._cached_row_task(repo, gguf = True) == "text-generation"
+
+
+def test_hub_cached_gguf_task_uses_the_selected_snapshot(monkeypatch, tmp_path):
+    from hub.services.models import cache_inventory, catalog_classification
+
+    selected = tmp_path / "models--org--model" / "snapshots" / "selected"
+    repo = SimpleNamespace(
+        repo_id = "org/model",
+        repo_type = "model",
+        repo_path = selected.parents[1],
+        revisions = [],
+    )
+    observed = []
+
+    monkeypatch.setattr(cache_inventory, "_repo_gguf_size_bytes", lambda _repo: 10)
+    monkeypatch.setattr(cache_inventory, "_repo_gguf_last_modified", lambda _repo: 1.0)
+    monkeypatch.setattr(cache_inventory, "_cached_model_snapshot_path", lambda _path: None)
+    monkeypatch.setattr(
+        cache_inventory,
+        "_repo_gguf_payload_snapshots",
+        lambda _repo: (selected, frozenset({str(selected)})),
+    )
+    monkeypatch.setattr(cache_inventory, "_gguf_variant_state_summary", lambda *a, **k: (False, 0))
+    monkeypatch.setattr(cache_inventory, "_is_hidden_infra_repo", lambda *values: False)
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan, "is_gguf_repo_partial", lambda *a, **k: False
+    )
+    monkeypatch.setattr(
+        cache_inventory.download_manifest, "build_variant_state_index", lambda *a, **k: None
+    )
+    monkeypatch.setattr(cache_inventory, "_cache_inventory_fields", lambda *a, **k: {})
+
+    def classify(repo_info, snapshot = None):
+        observed.append((repo_info, snapshot))
+        return "text-generation"
+
+    monkeypatch.setattr(catalog_classification, "_repo_gguf_task", classify)
+
+    rows = cache_inventory._scan_cached_gguf(
+        cache_scans = [SimpleNamespace(repos = [repo])],
+        active_hub_cache = tmp_path,
+    )
+
+    assert rows[0]["task"] == "text-generation"
+    assert observed == [(repo, selected)]
 
 
 def test_hub_cached_row_task_never_hides_a_row_when_classification_fails(monkeypatch, tmp_path):

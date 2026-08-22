@@ -497,6 +497,7 @@ def test_catalog_local_folder_entries_keep_safetensors_and_use_id(monkeypatch):
             source,
             model_format = None,
             partial = False,
+            load_id = None,
         ):
             self.id = id
             self.display_name = display_name
@@ -504,7 +505,7 @@ def test_catalog_local_folder_entries_keep_safetensors_and_use_id(monkeypatch):
             self.source = source
             self.model_format = model_format
             self.partial = partial
-            self.load_id = None
+            self.load_id = load_id
 
     rows = [
         # _dir_model_format reports None for a safetensors folder, never "safetensors".
@@ -512,6 +513,15 @@ def test_catalog_local_folder_entries_keep_safetensors_and_use_id(monkeypatch):
         _LocalModelInfo("/m/Tiny.gguf", "Tiny", "/m/Tiny.gguf", "lmstudio", model_format = "gguf"),
         _LocalModelInfo("/models/Half", "Half", "/models/Half", "models_dir", partial = True),
         _LocalModelInfo("/models/MiniLM", "MiniLM", "/models/MiniLM", "models_dir"),
+        # the cli has no studio load-route materializer for this opaque identifier.
+        _LocalModelInfo(
+            "ollama-manifest:%2Fmodels%2Fmanifests%2Fqwen",
+            "Ollama Qwen",
+            "/models/blobs/sha256-deadbeef",
+            "ollama",
+            model_format = "gguf",
+            load_id = "ollama-manifest:%2Fmodels%2Fmanifests%2Fqwen",
+        ),
     ]
 
     monkeypatch.setattr(cat, "_local_catalog_rows", lambda: rows)

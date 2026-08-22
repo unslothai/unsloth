@@ -484,7 +484,9 @@ def _cached_row_task(
             _cached_repo_task,
             _repo_gguf_task,
         )
-        return _repo_gguf_task(repo_info) if gguf else _cached_repo_task(repo_info, selected)
+        return (
+            _repo_gguf_task(repo_info, selected) if gguf else _cached_repo_task(repo_info, selected)
+        )
     except Exception:  # noqa: BLE001 -- a classification failure never hides a row
         return None
 
@@ -588,7 +590,7 @@ def _scan_cached_gguf(
                     "repo_id": repo_id,
                     "size_bytes": max(total_size, variant_state_size),
                     "cache_path": str(repo_info.repo_path),
-                    "task": _cached_row_task(repo_info, gguf = True),
+                    "task": _cached_row_task(repo_info, gguf = True, selected = gguf_snapshot),
                     "partial": partial,
                     # A marker-only sibling moves neither size nor mtime.
                     "has_variant_state": has_variant_state,
