@@ -22,6 +22,7 @@ import platform
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 TOOL_VERSION = "0.1.0"
 TIERS = ("fast", "quick", "standard", "full")
@@ -248,9 +249,59 @@ def side_specs(args, ab_ref) -> list:
     return specs
 
 
-def watchdog_deadline_s(tier: str, specs: list) -> float:
-    """The hard-exit deadline for a whole run: the measurement budget PLUS the setup it must sit
-    through.
+def planned_rungs(args) -> list:
+    """The ladder this run will actually walk: `--rungs` when given, else the tier's own."""
+    return args.rungs.split(",") if args.rungs else list(TIER_RUNGS[args.tier])
+
+
+#: What a cell costs BESIDES its film, measured from the steps `CellRunner._run_inner` runs around
+#: it: seeding the thread and reading it back, the navigation and thread wait, the 1.5 s idle
+#: calibration, the chars-per-token measurement, the drain and the two censuses. Comfortably over
+#: what the small rungs cost and about what 1M costs.
+CELL_OVERHEAD_S = 60
+#: One optional `--surfaces` sweep per arm, before the cells.
+SURFACE_SWEEP_S = 120
+#: The same generosity the tier budget already carries, applied to the planned work.
+WATCHDOG_MARGIN = 3
+#: An absolute ceiling on the MEASUREMENT half of the deadline. The point of a watchdog is that a
+#: wedged run cannot outlive it, so scaling with the plan must not scale without limit: `--reps
+#: 1000` would otherwise arm a deadline measured in months and the watchdog would guarantee
+#: nothing at all. 24 hours is past any plan this tool supports and short of forever.
+WATCHDOG_MAX_MEASUREMENT_S = 24 * 60 * 60
+
+
+def planned_work_s(
+    tier: str,
+    rungs: list,
+    reps: int,
+    arms: int,
+    surfaces: bool = False,
+) -> float:
+    """The wall clock the CELLS THIS RUN PLANNED will take, from the plan itself.
+
+    The film is a fixed-duration one -- that is the whole design of `scene.schedule` -- so its
+    length is known before it runs: `SCENES[tier].duration_ms`, plus the per-cell work around it,
+    times one cell per (rung, rep, arm).
+    """
+    from .scene import schedule as scene_schedule
+
+    scene = scene_schedule.SCENES.get(tier, scene_schedule.QUICK)
+    cells = max(1, len(rungs)) * max(1, int(reps)) * max(1, int(arms))
+    return cells * (scene.duration_ms / 1000.0 + CELL_OVERHEAD_S) + (
+        SURFACE_SWEEP_S * max(1, int(arms)) if surfaces else 0
+    )
+
+
+def watchdog_deadline_s(
+    tier: str,
+    specs: list,
+    *,
+    rungs: Optional[list] = None,
+    reps: int = 1,
+    surfaces: bool = False,
+) -> float:
+    """The hard-exit deadline for a whole run: the measurement it PLANNED plus the setup it must
+    sit through.
 
     THE MEASUREMENT BUDGET IS THE MEASUREMENT'S. `TIER_BUDGET_S` is the wall clock of the cells --
     the README's table says so, and says the install is not in it -- and three times that is the
@@ -260,11 +311,32 @@ def watchdog_deadline_s(tier: str, specs: list) -> float:
     fired during setup on a perfectly healthy run, and it fires through `os._exit`, so the `finally`
     that stops the Studios it started never ran either. Every side this run INSTALLS adds its own
     documented budget; an attached side installs nothing and adds nothing.
+
+    AND THE TIER BUDGET IS NOT THE PLAN. It is one number per tier, and three things the caller
+    controls multiply the work underneath it: `--ab` runs every cell TWICE, `--reps N` runs the
+    whole ladder N times, and `--rungs` can name a ladder the tier never had. A standard A/B at
+    four repetitions -- three rungs, four reps, two arms -- is 24 cells of the 243 second standard
+    film, 5,832 seconds of film before a single thread is seeded, against a deadline of
+    `20 min * 3 = 3,600` seconds for an attached pair that adds no install budget. The watchdog
+    hard-exited a healthy run 40% of the way through it, through `os._exit`, taking the payload's
+    remaining rows and the `finally` that stops the Studios with it. Reps 2 clears it as well once
+    seeding is counted.
+
+    So the measurement half is the LARGER of the tier's own budget and the planned work with the
+    same 3x margin around it, which leaves every documented single-arm ladder exactly where it was
+    -- a fast tier is one 57 second film, nowhere near its 900 seconds -- and grows only when the
+    caller asks for more work than the tier describes. `WATCHDOG_MAX_MEASUREMENT_S` caps it, because
+    a deadline that scales without limit is not a deadline.
     """
     from .runtime.lifecycle import INSTALL_TIMEOUT_S
 
     owned = sum(1 for spec in specs if not spec[2])
-    return TIER_BUDGET_S[tier] * 3 + INSTALL_TIMEOUT_S * owned
+    arms = max(1, len(specs))
+    planned = planned_work_s(
+        tier, list(rungs) if rungs else list(TIER_RUNGS[tier]), reps, arms, surfaces
+    )
+    measurement = max(TIER_BUDGET_S[tier] * WATCHDOG_MARGIN, planned * WATCHDOG_MARGIN)
+    return min(measurement, WATCHDOG_MAX_MEASUREMENT_S) + INSTALL_TIMEOUT_S * owned
 
 
 def completion_exit_code(rows: list, resumed: int = 0) -> int:
@@ -409,7 +481,15 @@ def run(args, ab_ref = None) -> int:
     # `watchdog_deadline_s`. Nothing between here and there can hang -- `Corpus.load` reads a
     # generated fixture and `side_specs` builds a list.
     watchdog = browser_mod.install_wall_clock_watchdog(
-        watchdog_deadline_s(args.tier, specs), "studiobench", _log
+        watchdog_deadline_s(
+            args.tier,
+            specs,
+            rungs = planned_rungs(args),
+            reps = args.reps,
+            surfaces = bool(args.surfaces),
+        ),
+        "studiobench",
+        _log,
     )
     if ab_ref:
         if args.attach and not args.attach_b:
@@ -543,19 +623,30 @@ def run(args, ab_ref = None) -> int:
             )
             side["auth"] = side_auth
 
-            seed = seed_init_script(
-                side_auth,
-                [side_provider],
-                extra_local_storage = {
-                    # The SELECTION, without which nothing is ever generated. See
-                    # lifecycle.external_checkpoint_id.
-                    "unsloth_chat_last_external_checkpoint": side_checkpoint,
-                    "unsloth_chat_connections_enabled": "true",
-                },
-            )
+            def _side_seed(
+                auth_now,
+                side = side,
+                provider = side_provider,
+                cp = side_checkpoint,
+            ):
+                return origin_scoped(
+                    side["base_url"],
+                    seed_init_script(
+                        auth_now,
+                        [provider],
+                        extra_local_storage = {
+                            # The SELECTION, without which nothing is ever generated. See
+                            # lifecycle.external_checkpoint_id.
+                            "unsloth_chat_last_external_checkpoint": cp,
+                            "unsloth_chat_connections_enabled": "true",
+                        },
+                    ),
+                )
+
             # Origin-gated even in the single-target case, so the one-build and two-build paths are
             # the same code and the gate cannot rot while unused.
-            init_scripts.append(origin_scoped(side["base_url"], seed))
+            side["seed_script"] = _side_seed
+            init_scripts.append(_side_seed(side_auth))
 
         auth = sides[0]["auth"]
         init_scripts.append(resources.read_text("scene/dom.js"))
@@ -581,6 +672,19 @@ def run(args, ab_ref = None) -> int:
             time.sleep(1.0)
             procs = new_roots(os.getpid(), procs_before)
 
+        # AN INIT SCRIPT IS A SNAPSHOT AND THE RUN OUTLIVES IT. The scripts above carry the access
+        # token this run logged in with, they re-run on EVERY navigation, and there is one
+        # navigation per cell -- so after `StudioAuth` re-mints a token, the next `page.goto` would
+        # write the DEAD one back over whatever the SPA had rotated to for itself, which is the
+        # failure this fixes wearing a different hat. Playwright has no way to replace an init
+        # script and does not define the order they run in, so the seed script decides for itself
+        # whether to write: it compares its token's `exp` against the one in storage and defers to
+        # the later one. See `seed_init_script`. At most one extra script per hour of run.
+        for side in sides:
+            side["auth"].on_rotate = lambda auth_now, side = side: bundle.context.add_init_script(
+                side["seed_script"](auth_now)
+            )
+
         ctx, session = make_context(
             bundle, base_url, args.tier, args.instrument_level, paths, _log, procs
         )
@@ -588,7 +692,7 @@ def run(args, ab_ref = None) -> int:
         # The ladder this run PROMISED, resolved before it is announced. Recorded rather than
         # left to be re-derived from the tier later: `--report` reads it back to decide which rungs
         # a payload owes, and a `--rungs` override the payload did not carry made that answer wrong.
-        rungs = args.rungs.split(",") if args.rungs else TIER_RUNGS[args.tier]
+        rungs = planned_rungs(args)
         rec.emit(
             {
                 "row_type": "run_meta",

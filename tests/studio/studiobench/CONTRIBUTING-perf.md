@@ -12,7 +12,7 @@ answer was produced by not having it.
 
 ```
 1. Screen    python -m tests.studio.studiobench --tier fast    ~5 min, direction only
-2. Confirm   python -m tests.studio.studiobench --tier standard --reps 4    ~20 min
+2. Confirm   python -m tests.studio.studiobench --tier standard --reps 4    ~1 h, ~2 h for an A/B
 3. Gate      per-metric floor, sign consistency, stability
 4. Parity    prove you did not change what is rendered
 5. Read      python -m tests.studio.studiobench --report <out>/payload.jsonl --tier standard
@@ -36,7 +36,9 @@ Use it to kill bad ideas cheaply. Do not use it to decide anything.
 
 ## 2. Confirm on the standard tier
 
-`--tier standard --reps 4`. Three rungs, a 243 second film.
+`--tier standard --reps 4`. Three rungs, a 243 second film: twelve cells and about an hour against
+one build, twenty-four cells and about two hours for an A/B wave, before either install. Budget for
+that rather than for the tier's own 20 minute figure, which describes ONE walk of the ladder.
 
 **Use at least 4 repetitions.** At `--reps 2` the null control reported a 38.1% delta on
 `settings.open_ms`. At `--reps 4` the same metric collapsed to 1.2% with 48% spread. Two
