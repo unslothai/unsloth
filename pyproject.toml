@@ -30,6 +30,7 @@ dependencies = [
     "pydantic",
     "pyyaml",
     "nest-asyncio",
+    "huggingface-hub>=0.34.0",
     # Every CLI command imports studio.backend.*, which reaches structlog at
     # module level. The rest of the server stack lives in the studio extra.
     "structlog>=24.1.0",

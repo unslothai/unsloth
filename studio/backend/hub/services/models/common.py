@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import List, Literal, Optional
 from urllib.parse import quote
@@ -96,6 +97,15 @@ def _is_model_directory(d: Path) -> bool:
         if not has_config:
             return False
         return any(_is_weight_file(f) for f in d.iterdir() if f.is_file())
+    except OSError:
+        return False
+
+
+def _is_diffusers_pipeline_dir(path: Path) -> bool:
+    try:
+        return (path / "model_index.json").is_file() or (
+            path / "modular_model_index.json"
+        ).is_file()
     except OSError:
         return False
 
@@ -349,6 +359,44 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
     return None
 
 
+def _base_transformers_can_chat(base_model: str, revision: Optional[str]) -> Optional[bool]:
+    """Classify an exact local or active-cache base without a network lookup."""
+    try:
+        local_path = Path(base_model).expanduser()
+        if local_path.is_dir():
+            return _local_transformers_can_chat(local_path)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        from utils.hf_cache_settings import get_hf_cache_paths
+        config_path = try_to_load_from_cache(
+            base_model,
+            "config.json",
+            cache_dir = get_hf_cache_paths().hub_cache,
+            revision = revision,
+        )
+    except Exception:
+        return None
+    if not isinstance(config_path, str):
+        return None
+    return _local_transformers_can_chat(Path(config_path).parent)
+
+
+def _local_path_can_chat(path: str | Path, base_model: Optional[str] = None) -> Optional[bool]:
+    """Classify a local checkpoint or its exact adapter base without network access."""
+    model_path = Path(path)
+    verdict = _local_transformers_can_chat(model_path)
+    if verdict is not None:
+        return verdict
+    adapter_config = _read_adapter_config(model_path)
+    adapter_base = _clean_optional_string(adapter_config.get("base_model_name_or_path"))
+    revision = _clean_optional_string(adapter_config.get("revision"))
+    base = adapter_base or _clean_optional_string(base_model)
+    return _base_transformers_can_chat(base, revision) if base else None
+
+
 def _capabilities_for_format(
     model_format: ModelFormat,
     source: str,
@@ -562,15 +610,19 @@ def _is_main_gguf_filename(name: str) -> bool:
     )
 
 
-def _iter_gguf_paths(root: Path):
+def _iter_gguf_paths(root: Path, deadline: Optional[float] = None):
     stack = [root]
     while stack:
+        if deadline is not None and time.monotonic() >= deadline:
+            return
         current = stack.pop()
         try:
             entries = list(current.iterdir())
         except OSError:
             continue
         for path in entries:
+            if deadline is not None and time.monotonic() >= deadline:
+                return
             try:
                 if path.is_dir() and not path.is_symlink():
                     stack.append(path)

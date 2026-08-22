@@ -22,6 +22,7 @@ from hub.services import snapshot_progress
 from hub.services.datasets import downloads as dataset_downloads
 from hub.services.models import (
     cache_inventory,
+    catalog_classification,
     common as model_common,
     deletion,
     downloads,
@@ -913,10 +914,10 @@ def test_local_inventory_requests_share_scan(monkeypatch, change_kind):
     response.model_copy = lambda update: SimpleNamespace(models = update["models"])
     sources = local_inventory._local_inventory_sources()
     monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: sources)
-    monkeypatch.setitem(
-        sys.modules,
-        "routes.models",
-        SimpleNamespace(_local_model_task = lambda row: task_calls.append(row.id) or "task"),
+    monkeypatch.setattr(
+        catalog_classification,
+        "_local_model_task",
+        lambda row: task_calls.append(row.id) or "task",
     )
 
     async def scan(*_args):
@@ -1813,9 +1814,21 @@ def _diffusion_scan(monkeypatch, tmp_path, repo_id: str, files: list, *, task: s
         "is_snapshot_partial",
         lambda *_args, **_kwargs: False,
     )
-    monkeypatch.setattr(cache_inventory, "_cached_row_task", lambda _repo, gguf: task)
+    selected_snapshots = []
+
+    def row_task(
+        _repo,
+        *,
+        gguf,
+        selected = None,
+    ):
+        selected_snapshots.append(selected)
+        return task
+
+    monkeypatch.setattr(cache_inventory, "_cached_row_task", row_task)
     rows = cache_inventory._scan_cached_models()
     assert len(rows) == 1
+    assert selected_snapshots == [snapshot]
     return rows[0]
 
 
@@ -4137,6 +4150,19 @@ def test_local_inventory_filters_custom_embedder_hf_cache_row(monkeypatch, tmp_p
     rows = local_inventory._filter_hidden_models([_row("org/embedder"), _row("org/chat-model")])
 
     assert [row.model_id for row in rows] == ["org/chat-model"]
+
+
+def test_qwen3_asr_gguf_name_hint_is_not_classified_as_chat(monkeypatch, tmp_path):
+    from hub.services.models import catalog_classification
+
+    asr = tmp_path / "Qwen3-ASR-0.6B-Q8_0.gguf"
+    chat = tmp_path / "Qwen3-0.6B-Q8_0.gguf"
+    asr.write_bytes(b"gguf")
+    chat.write_bytes(b"gguf")
+    monkeypatch.setattr(catalog_classification, "_gguf_architecture", lambda _path: "qwen3")
+
+    assert catalog_classification._gguf_path_task(asr) == "automatic-speech-recognition"
+    assert catalog_classification._gguf_path_task(chat) == "text-generation"
 
 
 def test_local_inventory_filters_embedder_configured_by_snapshot_path(monkeypatch, tmp_path):
@@ -7185,9 +7211,7 @@ def test_local_inventory_classifies_off_the_event_loop(monkeypatch):
     async def no_folders():
         return []
 
-    monkeypatch.setitem(
-        sys.modules, "routes.models", SimpleNamespace(_local_model_task = classify_row)
-    )
+    monkeypatch.setattr(catalog_classification, "_local_model_task", classify_row)
     monkeypatch.setattr(local_inventory, "_scan_local_models_response", scan)
     monkeypatch.setattr(local_inventory, "_load_custom_folders", no_folders)
     monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: ("roots",))
@@ -7226,12 +7250,10 @@ def test_local_inventory_classifies_a_superseded_result_off_the_event_loop(monke
     async def no_folders():
         return []
 
-    monkeypatch.setitem(
-        sys.modules,
-        "routes.models",
-        SimpleNamespace(
-            _local_model_task = lambda row: idents.append(threading.get_ident()) or "task"
-        ),
+    monkeypatch.setattr(
+        catalog_classification,
+        "_local_model_task",
+        lambda row: idents.append(threading.get_ident()) or "task",
     )
     monkeypatch.setattr(local_inventory, "_scan_local_models_response", always_superseded)
     monkeypatch.setattr(local_inventory, "_load_custom_folders", no_folders)
@@ -7276,9 +7298,7 @@ def test_local_inventory_retries_when_the_cache_changes_during_classification(mo
     async def no_folders():
         return []
 
-    monkeypatch.setitem(
-        sys.modules, "routes.models", SimpleNamespace(_local_model_task = classify_row)
-    )
+    monkeypatch.setattr(catalog_classification, "_local_model_task", classify_row)
     monkeypatch.setattr(local_inventory, "_scan_local_models_response", scan)
     monkeypatch.setattr(local_inventory, "_load_custom_folders", no_folders)
     monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: ("roots",))
