@@ -126,6 +126,24 @@ class StreamCostInstrument(_PageInstrument):
             out["reply_chars_delta_attempted"] = True
 
         self._overhead_ms += float(out.get("overhead_ms") or 0.0)
+
+        # THE CLOSE-SIDE SCAN IS NOT FREE AND WAS NOT COUNTED. `read()` snapshots `overhead_ms`
+        # into its result and then calls `reset()`, so the `replyChars()` above -- which at close
+        # is FORCED whenever the window carried traffic, and is the `querySelectorAll` that is
+        # O(the whole DOM) rather than O(the reply) -- accumulated into a page-side total that
+        # nothing ever read: the next `open()` begins by resetting it. Exactly half of every
+        # window's boundary scans were therefore missing from the one number whose job is to make
+        # the level 0 claim checkable from the payload rather than from a docstring, and the half
+        # that was missing is the rung-dependent half. Drained here, after the scan, rather than
+        # by reordering the pair: the close read needs `force`, and `force` is
+        # `streaming_observed`, which only `read()` can answer. Nothing else is lost by the second
+        # drain -- every other accumulator it clears was already snapshotted above, and `open()`
+        # clears them again before the next window.
+        tail = self._eval("() => window.__sb.streamcost.read(0)")
+        close_scan_ms = float(tail.get("overhead_ms") or 0.0) if isinstance(tail, dict) else 0.0
+        self._overhead_ms += close_scan_ms
+        out["close_scan_overhead_ms"] = round(close_scan_ms, 2)
+
         self._chars_open = None
         return out
 
