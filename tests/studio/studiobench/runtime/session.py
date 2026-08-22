@@ -425,6 +425,30 @@ class CellRunner:
         if self.equivalence_failed and plan.seeded_units:
             row["fidelity"] = "seeded_only"
 
+    @staticmethod
+    def _streamed_follow_ups(plan: RungPlan, row: dict) -> list:
+        """The follow-up units that actually reached the thread during the film.
+
+        EVERY TURN THAT STREAMED, not just the opening one. From 10K upwards the plan carries two
+        follow-ups and the scene streams both through `send_turn` before the peak census is taken,
+        so a mirror seeded from the prefix plus the opening unit is two assistant turns short of
+        the thread it is being compared against. `assistant_messages` is a GATED key, and two
+        missing turns out of six is 33% drift against a 2% tolerance: the check then failed on
+        every healthy cell and labelled every larger rung `seeded_only` for a difference the
+        mirror had introduced itself.
+
+        Counted from the recorded action rows rather than from the plan, because a `send_turn`
+        that did not run (an exhausted queue at the small rungs, a slot missed on a slow machine)
+        put nothing in the thread and must not be seeded into the mirror either.
+        """
+        streamed = 0
+        for action in row.get("actions") or []:
+            if action.get("action") != "send_turn":
+                continue
+            if action.get("ran") and action.get("expect_ok") is not False:
+                streamed += 1
+        return list(plan.follow_up_units or [])[:streamed]
+
     def _check_equivalence(self, plan: RungPlan, row: dict) -> dict:
         """Build the SAME content as a fully seeded thread and compare what the app made of it.
 
@@ -435,8 +459,9 @@ class CellRunner:
         s = self.session
         page = s.ctx.page
         streamed = row.get("census_peak") or row.get("census_after") or {}
+        follow_ups = self._streamed_follow_ups(plan, row)
         try:
-            all_units = list(plan.seeded_units) + [plan.streamed_unit]
+            all_units = list(plan.seeded_units) + [plan.streamed_unit] + follow_ups
             mirror = RungPlan(
                 rung = plan.rung,
                 target_tokens = plan.target_tokens,
@@ -463,6 +488,10 @@ class CellRunner:
         out = compare_signatures(streamed, seeded_sig)
         out["streamed_census"] = streamed
         out["seeded_census"] = seeded_sig
+        # What the mirror was built from, so a drift can be read against the corpus it compared
+        # rather than against an assumption about which turns were in the thread.
+        out["mirrored_follow_ups"] = len(follow_ups)
+        out["planned_follow_ups"] = len(plan.follow_up_units or [])
         return out
 
     def _wait_for_thread(self, page, expected_messages: int) -> None:

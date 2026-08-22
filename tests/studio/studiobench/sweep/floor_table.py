@@ -42,6 +42,7 @@ if __package__ in (None, ""):  # pragma: no cover
 from tests.studio.studiobench.scoring.from_payload import (  # noqa: E402
     ACTION_SOURCES,
     FRAME_METRICS,
+    UNSCORED_WINDOW_KINDS,
     STREAM_METRICS,
     _actions_for,
     _frame_measures,
@@ -62,10 +63,16 @@ def _action_timings(records: list[dict], cid: str) -> dict[str, float]:
     `ran` is checked first. An action that did not happen has no timing worth pairing, and folding
     its absence in as a fast number is the single most common way this harness has produced a
     confident wrong answer.
+
+    AN ACTION WHOSE OWN ASSERTION FAILED IS TREATED THE SAME WAY. `report/payload.py` already
+    records `ran = True` with `expect_ok = False` as a note saying its timings "exist and must not
+    be quoted", and this is where they would be quoted. `keystroke` is the case: if half the
+    characters never reach the controlled component the action still ran, its p95 reads lower for
+    exactly that reason, and pairing it would print the failure as `faster`.
     """
     out: dict[str, float] = {}
     for name, row in _actions_for(records, cid).items():
-        if not row.get("ran"):
+        if not row.get("ran") or row.get("expect_ok") is False:
             continue
         for key, value in (row.get("timings") or {}).items():
             if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -86,26 +93,38 @@ def _action_timings(records: list[dict], cid: str) -> dict[str, float]:
 
 
 def cell_metrics(records: list[dict]) -> dict[str, dict[str, float]]:
-    """{cell_id: {metric: value}} for every COMPLETED cell in the payload."""
+    """{cell_id: {metric: value}} for every COMPLETED cell in the payload.
+
+    SCOPED TO THE CELL'S OWN SESSION, not to its cell id. The payload is append-only and a cell id
+    is REUSED: `--resume` re-runs a cell that died, and a second run into the same output directory
+    repeats every id. Selecting on the id alone pools the dead attempt's windows with the retry's
+    and reports the average as the completed cell, which is a number nothing ever measured.
+
+    IDLE WINDOWS ARE EXCLUDED, exactly as `scoring/from_payload` excludes them. Every cell records a
+    1.5 s `idle:calibrate` window with the frame recorder running, and pooling that quiet into the
+    frame metrics dilutes `time_in_jank_pct` and `jank_index` away from the film that was measured.
+    A metric here has to be the same quantity the rest of the tool calls by that name.
+    """
     out: dict[str, dict[str, float]] = {}
     for row in records:
         if row.get("row_type") != "cell" or not row.get("completed"):
             continue
         cid = row["cell_id"]
-        vals: dict[str, float] = _action_timings(records, cid)
-        # `setup` windows are dropped here as they are in `measures_from_records`. The only one is
-        # the composer click that starts the film, which is mostly Playwright's injected
-        # actionability script blocking the page's own main thread; pooled in, an 11 s driver
-        # stall would set this table's `max_frame_ms` floor and hide every real regression under
-        # it. NOTE: `idle` is NOT dropped here, and it is dropped in `measures_from_records`. That
-        # difference predates the setup window and is left to its owner rather than silently
-        # moving every floor in the table.
+        # Scoped to this cell's OWN attempt: `--resume` re-runs a died cell under a new
+        # session_id into the same file, and pooling both attempts mixes two measurements.
+        sid = row.get("session_id")
+        own = [r for r in records if r.get("cell_id") == cid and r.get("session_id") == sid]
+        vals: dict[str, float] = _action_timings(own, cid)
+        # `UNSCORED_WINDOW_KINDS` is idle plus setup, dropped here as in `measures_from_records`.
+        # The setup window is the composer click that starts the film, which is mostly
+        # Playwright's injected actionability script blocking the page's own main thread; pooled
+        # in, an 11 s driver stall would set this table's `max_frame_ms` floor and hide every real
+        # regression under it.
         windows = [
             w
-            for w in records
+            for w in own
             if w.get("row_type") == "window"
-            and w.get("cell_id") == cid
-            and str(w.get("kind") or "") != "setup"
+            and str(w.get("kind") or "") not in UNSCORED_WINDOW_KINDS
         ]
         for key, m in _frame_measures(windows).items():
             if m.value is not None:
@@ -129,19 +148,45 @@ def rep_of(cell_id: str) -> str:
     return cell_id.rsplit(".", 1)[-1]
 
 
+def cell_sessions(records: list[dict]) -> dict[str, str]:
+    """{cell_id: session_id} for every COMPLETED cell, resolved the way `cell_metrics` resolves it.
+
+    Same last-writer-wins rule as `cell_metrics`, so the session reported here is the session whose
+    numbers that function returned. Anything else would pair a reading against a session it did not
+    come from, which is the thing the caller is trying to stop.
+    """
+    out: dict[str, str] = {}
+    for row in records:
+        if row.get("row_type") == "cell" and row.get("completed"):
+            out[row["cell_id"]] = str(row.get("session_id") or "")
+    return out
+
+
 def paired(records: list[dict], shard: str = "") -> dict[str, list[tuple[float, float]]]:
-    """{metric: [(base, treatment), ...]} matched on (shard, rung, repetition).
+    """{metric: [(base, treatment), ...]} matched on (shard, rung, repetition, session).
 
     The shard is part of the key because sharding restarts the repetition counter: two independent
     sessions both produce `rep0`, and pairing on the repetition alone would silently overwrite one
     session's base with the other's. Pairing WITHIN a shard is also the correct thing to do, since
     a pair only means anything when both arms come from the same session.
+
+    THE SESSION IS PART OF THE KEY FOR THE SAME REASON, and one shard is not one session. `--resume`
+    is the case: when one arm completed and its partner died, the resumed run skips the completed
+    arm and re-runs the dead one under a NEW session id, into the same shard directory. Keyed on the
+    repetition alone those two arms pair, and the ~8% session-to-session drift this file's header
+    measures is then charged in full to whichever arm was re-run. `scoring/ab.py` already refuses
+    that comparison outright; this is the same refusal in the place the sweep does its pairing.
+
+    A payload recorded before session ids existed has `""` on both arms and pairs exactly as before.
     """
     cells = cell_metrics(records)
-    by_key: dict[tuple[str, str, str], dict[str, dict[str, float]]] = collections.defaultdict(dict)
+    sessions = cell_sessions(records)
+    by_key: dict[
+        tuple[str, str, str, str], dict[str, dict[str, float]]
+    ] = collections.defaultdict(dict)
     for cid, vals in cells.items():
         rung = cid.split(".", 1)[0]
-        by_key[(shard, rung, rep_of(cid))][arm_of(cid)] = vals
+        by_key[(shard, rung, rep_of(cid), sessions.get(cid, ""))][arm_of(cid)] = vals
     out: dict[str, list[tuple[float, float]]] = collections.defaultdict(list)
     for sides in by_key.values():
         if "base" not in sides or "treatment" not in sides:
@@ -151,6 +196,16 @@ def paired(records: list[dict], shard: str = "") -> dict[str, list[tuple[float, 
             if b:
                 out[metric].append((b, t))
     return out
+
+
+def tiers_of(records: list[dict]) -> set[str]:
+    """EVERY tier in one file, not the first.
+
+    One payload can hold more than one run: the recorder appends, so a second invocation into the
+    same output directory writes a second `run_meta` behind the first. Reading only the first is
+    what let a fast-tier film and a standard-tier film sit in one file and pass the refusal below.
+    """
+    return {str(r.get("tier") or "?") for r in records if r.get("row_type") == "run_meta"} or {"?"}
 
 
 def tier_of(records: list[dict]) -> str:
@@ -206,7 +261,7 @@ def load(paths: list[Path]) -> tuple[dict[str, list[tuple[float, float]]], set[s
     corpora: set[str] = set()
     for path in paths:
         records = read_rows(path)
-        tiers.add(tier_of(records))
+        tiers |= tiers_of(records)
         corpora.add(corpus_of(records))
         for metric, rows in paired(records, shard = str(path.parent.name)).items():
             pooled[metric].extend(rows)
