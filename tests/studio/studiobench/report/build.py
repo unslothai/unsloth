@@ -20,7 +20,11 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from ..scoring.from_payload import latest_attempt_rows, measures_from_records
+from ..scoring.from_payload import (
+    latest_attempt_rows,
+    measures_from_records,
+    refuse_if_probed,
+)
 from ..scoring.score import LadderScore, RungScore, score_ladder, score_rung
 from .payload import assemble_rows
 from .render import render_summary
@@ -67,12 +71,19 @@ def _completion_by_rung(records: Sequence[Mapping[str, Any]]) -> dict[int, tuple
 def score_payload(path: str | Path, declared_rungs: Sequence[int] | None = None) -> LadderScore:
     """Score one run. `declared_rungs` is the ladder the tier promised, in tokens."""
 
+    # BEFORE anything is scored, and against the RAW rows. `--report` reads the same file the run
+    # wrote, so a probe run that was allowed to print its own A/B table would be scorable a second
+    # time here, hours later, by somebody who was not the one who set the variable. It reads the
+    # unfiltered rows deliberately: a probed attempt that was later superseded still means this
+    # payload was recorded with the camera in the shot.
+    raw = _records(path)
+    refuse_if_probed(raw, str(path))
     # A CELL THAT WAS RE-RUN IS SCORED ON THE RUN THAT FINISHED IT. `--resume` re-runs the cells
     # that died, under the same `cell_id`, into the same file; scoring both attempts as one cell
     # kept the crash forever, so a rung that had since been re-run successfully still came out
     # INCOMPLETE and zero. The dead attempt is still in the payload and still in EXCLUDED CELLS,
     # which is where a superseded crash belongs -- it is only kept out of the score.
-    records = latest_attempt_rows(_records(path))
+    records = latest_attempt_rows(raw)
     measures = measures_from_records(records)
     completion = _completion_by_rung(records)
 
@@ -103,6 +114,11 @@ def build_report(
 ) -> tuple[str, LadderScore, dict[str, Any]]:
     """Return (rendered summary, ladder, assembled payload)."""
 
+    # FIRST, before the payload is assembled. `score_payload` refuses too, but it runs second
+    # here, and `assemble_rows` validates the schema on the way past: a probed payload that also
+    # trips some unrelated schema complaint would report THAT instead, and the refusal would
+    # never be reached. A refusal that any other failure can pre-empt is not a refusal.
+    refuse_if_probed(_records(path), str(path))
     payload = assemble_rows(path)
     ladder = score_payload(path, declared_rungs)
     text = render_summary(payload, ladder, extra_sections = extra_sections)

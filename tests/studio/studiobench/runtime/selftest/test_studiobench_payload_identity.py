@@ -885,6 +885,179 @@ def test_an_unchanged_injection_resumes(tmp_path):
     assert _resume_set(paths) == {"r10K.base.rep0", "r10K.treatment.rep0"}
 
 
+# ── the external probe axis ─────────────────────────────────────────────────────────────────
+#
+# `SBENCH_EXTRA_INIT_SCRIPT` installs a caller's own init script into the page, and the run says so
+# in its log: "this run carries an external probe and is NOT a clean measurement of the build".
+# What it cannot end in is a wrong number, because `refuse_if_probed` reads EVERY `run_meta` in the
+# file and every scoring entry point calls it. It is on `IDENTITY_AXES` for what that refusal
+# costs: the refusal is whole-file and the payload is append-only, so a resume that toggles the
+# probe takes the cells recorded before it down with it, and nothing here can put them back.
+#
+# It is also the axis most easily toggled by accident. The other four are typed on the command
+# line every time; this one is an environment variable, and a variable that is still set is
+# indistinguishable from one that was never set until the run is over.
+
+PROBE = "probes/paint_counter.js"
+
+
+def _probe_resume_args():
+    return parse_args(["--tier", "standard", "--branch", "main", "--resume"])
+
+
+def test_resuming_a_clean_payload_with_the_probe_variable_still_set_is_refused(
+    tmp_path, monkeypatch
+):
+    """REGRESSION, and the destructive direction.
+
+    Half a clean ladder is on disk, the variable from an earlier probe experiment is still set in
+    the shell, and the resume was not asking for a probe run at all. Without the axis this
+    installed both sides, ran every rung still owed with the probe in the page, and appended a
+    probed `run_meta` -- after which `refuse_if_probed` refuses the file, INCLUDING the cells that
+    were recorded cleanly hours earlier.
+    """
+
+    paths = _fixture_payload(tmp_path, "clean", "sess-clean")
+    monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", PROBE)
+
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths,
+            requested_identity(_probe_resume_args(), None, CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+
+    message = str(excinfo.value)
+    assert "probe_init_script" in message
+    assert PROBE in message
+    assert "predates this axis" in message
+
+
+def test_resuming_a_probed_payload_with_the_variable_unset_is_refused(tmp_path, monkeypatch):
+    """The other direction. It cannot poison anything -- the payload is already unscorable -- but
+    it is a full wave of installs and rungs spent on a file no reader will ever accept."""
+
+    paths = _fixture_payload(tmp_path, "probed", "sess-probed", probe_init_script = PROBE)
+    monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT", raising = False)
+
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths,
+            requested_identity(_probe_resume_args(), None, CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+
+    message = str(excinfo.value)
+    assert "probe_init_script" in message
+    assert PROBE in message
+
+
+def test_resuming_a_probed_payload_under_a_different_probe_is_refused(tmp_path, monkeypatch):
+    """Which probe is the experiment. Two scripts sample different things on different schedules,
+    so half a ladder under each is not one arm however unscorable both halves already are."""
+
+    paths = _fixture_payload(tmp_path, "other", "sess-probed", probe_init_script = PROBE)
+    monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", "probes/layout_counter.js")
+
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths,
+            requested_identity(_probe_resume_args(), None, CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+    assert "probe_init_script" in str(excinfo.value)
+
+
+def test_a_payload_from_before_the_probe_hook_resumes_under_the_default(tmp_path, monkeypatch):
+    """THE CONTROL, and the one `HISTORICAL_DEFAULTS` exists for. A payload with no
+    `probe_init_script` key was written when there was no way to install a probe, so absence reads
+    as clean and an ordinary resume is still an ordinary resume."""
+
+    paths = _fixture_payload(tmp_path, "old", "sess-old")
+    assert "probe_init_script" not in paths.payload_jsonl.read_text(encoding = "utf-8")
+    monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT", raising = False)
+
+    assert (
+        prepare_payload(
+            paths,
+            requested_identity(_probe_resume_args(), None, CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+        is None
+    )
+    assert _resume_set(paths) == {"r10K.A0.rep0"}
+
+
+def test_an_unchanged_probe_resumes(tmp_path, monkeypatch):
+    """THE SECOND CONTROL. A probe ladder that died is meant to be resumable AS a probe ladder.
+    The payload is not scorable either way, but a potency run is a run, and refusing every value
+    would make the axis useless rather than safe."""
+
+    paths = _fixture_payload(tmp_path, "same", "sess-probed", probe_init_script = PROBE)
+    monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", PROBE)
+
+    assert (
+        prepare_payload(
+            paths,
+            requested_identity(_probe_resume_args(), None, CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+        is None
+    )
+    assert _resume_set(paths) == {"r10K.A0.rep0"}
+
+
+def test_the_probe_variable_reaches_the_identity_this_invocation_asks_for(monkeypatch):
+    """The check can only refuse a difference it was told about, and this one is not on `args`:
+    the hook is an environment variable, so `requested_identity` reads it where it is set."""
+
+    monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", PROBE)
+    assert requested_identity(_probe_resume_args(), None, CORPUS)["probe_init_script"] == PROBE
+
+    monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", "")
+    assert requested_identity(_probe_resume_args(), None, CORPUS)["probe_init_script"] is None
+
+    monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT", raising = False)
+    assert requested_identity(_probe_resume_args(), None, CORPUS)["probe_init_script"] is None
+
+
+def test_one_probed_session_makes_the_clean_cells_beside_it_unscorable(tmp_path):
+    """WHAT THE REFUSAL COSTS, which is the whole reason the axis is worth an entry.
+
+    The mixture is never scored as a result -- that part is already safe, whole-file and with no
+    override -- and this is the price of it being safe. The clean session below scores; the same
+    file scores nothing at all once one probed `run_meta` has been appended after it. A payload is
+    append-only, so this is not recoverable by re-running: it is recoverable only by not doing it.
+
+    Passes on the unfixed code, because it is a property of `refuse_if_probed` rather than of the
+    identity check.
+    """
+
+    paths = _fixture_payload(tmp_path, "mixed", "sess-clean")
+    text, _ladder, _payload = build_report(paths.payload_jsonl, [10_000])
+    assert text
+
+    _record(
+        paths,
+        "sess-probed",
+        [
+            _run_meta("standard", "main", ["10K"], probe_init_script = PROBE),
+            _cell("r100K.A0.rep0", 100_000),
+            _keystroke("r100K.A0.rep0", 61.0),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        build_report(paths.payload_jsonl, [10_000, 100_000])
+    assert PROBE in str(excinfo.value)
+    assert "refusing to score" in str(excinfo.value)
+
+
 def test_a_fresh_run_into_a_new_directory_archives_nothing(tmp_path):
     paths = Paths.under(tmp_path / "out")
     assert archive_payload(paths, log = lambda *_a: None) is None
