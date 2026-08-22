@@ -58,7 +58,11 @@ def _work(reps = 1, rungs = ("10K",)):
     return interleave(cells, [_target("base"), _target("treatment")])
 
 
-def _cell_row(cell_id, arm, rep = 0):
+def _cell_row(
+    cell_id,
+    arm,
+    rep = 0,
+):
     return {
         "row_type": "cell",
         "cell_id": cell_id,

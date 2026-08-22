@@ -854,7 +854,9 @@ def identity_problems(recorded: dict, requested: dict) -> list:
             # "base"/"treatment") already keeps those cells apart without a refusal.
             continue
         if str(want) != str(got):
-            problems.append(f"{axis}: the payload was recorded with {got!r}, this run asks {want!r}")
+            problems.append(
+                f"{axis}: the payload was recorded with {got!r}, this run asks {want!r}"
+            )
     return problems
 
 
@@ -891,7 +893,13 @@ def archive_payload(paths, log = _log):
     return dest
 
 
-def prepare_payload(paths, requested: dict, *, resume: bool, log = _log):
+def prepare_payload(
+    paths,
+    requested: dict,
+    *,
+    resume: bool,
+    log = _log,
+):
     """What happens to an `--out` that already holds a payload. Called BEFORE anything is installed.
 
     Before, because both answers are worthless afterwards: the refusal below has to arrive before

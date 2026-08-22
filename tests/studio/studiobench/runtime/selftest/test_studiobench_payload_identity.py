@@ -67,7 +67,13 @@ def _run_meta(tier, ref, rungs, **extra):
     return row
 
 
-def _cell(cell_id, tokens, arm = "A0", rep = 0, tier = "standard"):
+def _cell(
+    cell_id,
+    tokens,
+    arm = "A0",
+    rep = 0,
+    tier = "standard",
+):
     return {
         "row_type": "cell",
         "cell_id": cell_id,
@@ -100,7 +106,13 @@ def _record(paths, session, rows):
     recorder.close()
 
 
-def _finished_ab(tmp_path, *, tier = "standard", base = "main", treatment = "fix") -> Paths:
+def _finished_ab(
+    tmp_path,
+    *,
+    tier = "standard",
+    base = "main",
+    treatment = "fix",
+) -> Paths:
     paths = Paths.under(tmp_path / "out")
     _record(
         paths,
@@ -251,7 +263,9 @@ def test_a_payload_that_never_recorded_an_axis_still_resumes(tmp_path):
         "platform": {"system": "Linux"},
         "started_at": "2026-01-01T00:00:00",
     }
-    _record(paths, "sess-old", [legacy, _cell("r10K.A0.rep0", 10_000), _keystroke("r10K.A0.rep0", 9)])
+    _record(
+        paths, "sess-old", [legacy, _cell("r10K.A0.rep0", 10_000), _keystroke("r10K.A0.rep0", 9)]
+    )
     args = parse_args(
         ["--tier", "standard", "--branch", "main", "--cadence", "fast"]
         + ["--instrument-level", "2", "--resume"]
