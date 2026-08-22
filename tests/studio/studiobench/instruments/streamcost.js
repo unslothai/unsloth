@@ -64,9 +64,45 @@
   // and short enough that the forty seconds of post-stream film are never counted as streaming.
   const IDLE_GAP_MS = 1500;
 
-  // A decoded chunk longer than this is not an SSE frame from the relay; it is a bundle, a blob
-  // or a paste. The cap keeps the substring scan below O(1) in practice and keeps unrelated
-  // TextDecoder traffic out of the stream detector.
+  // How much of a decoded chunk is scanned for the relay's framing. The substring search below is
+  // the per-event work this file declares as O(1), and an unbounded scan over a bundle, a blob or
+  // a paste would make it O(the page's whole TextDecoder traffic) instead.
+  //
+  // IT BOUNDS THE SCAN AND NOT THE PAYLOAD, and it used to bound the payload: the guard read
+  // `out.length <= MAX_SSE_CHUNK_CHARS` and dropped anything longer, on the premise that a decode
+  // this large is not relay traffic. That premise is false, and it is false in exactly the case
+  // this instrument exists for. A read does not carry one cadence gap of the stream, it carries
+  // everything the browser buffered since the last one, so the size of a read is the arrival rate
+  // times the length of the stall in front of it. Measured against real chromium reading the real
+  // pacer through the app's own `getReader()` loop, the largest read of a stream is 32.5
+  // characters per millisecond of stall at fast cadence, dead linear over 500 to 3,000 ms: a
+  // 2,000 ms stall lands a 65,000 character read and a 3,000 ms stall a 97,500 character one,
+  // which the old guard discarded whole. That payload is well-formed SSE -- 470 `data:` frames of
+  // the pacer's own framing -- and it is the single largest task chain of the stream, so the guard
+  // took the worst burst out of `sseChunks`, `lastSseAt` and the `deltaTaskMs` numerator at the
+  // one moment they matter most. Field cadence arrives at 2.97 characters per millisecond and
+  // would need a 22 s stall, so this is reachable on `--cadence fast` and not on the default.
+  //
+  // HOW MUCH IT COST, and it is not a rounding error. The size of the loss is whatever the app
+  // spends per streamed character, because what is dropped is one chain over a third of the reply.
+  // Sweeping that rate against the real pacer, with the read loop otherwise identical:
+  //
+  //   0.0 ms per 1,000 characters   15.7 vs 15.4 ms   -1.3%, which is the noise floor
+  //   0.5 ms per 1,000 characters   55.7 vs 104.7 ms   46.8% of the numerator gone
+  //   2.0 ms per 1,000 characters   154.0 vs 350.5 ms  56.1%
+  //   5.0 ms per 1,000 characters   349.1 vs 835.5 ms  58.2%
+  //
+  // A harness that does no work per character loses nothing measurable, which is why this hid: it
+  // needs an app that actually renders what it streams. It also gets WORSE as the app gets slower,
+  // because a slower reader falls further behind and the batch it is then handed is bigger -- the
+  // same shape as the timer attribution above, a build getting worse reading cheaper.
+  //
+  // Scanning a bounded head rather than rejecting keeps both of the things the cap was for. The
+  // work stays bounded by a constant that does not grow with the payload or with the rung, and a
+  // bundle still has to put `data:` in its first 65,536 characters to be mistaken for a stream --
+  // while a real burst, which starts a frame every 279 characters, is found immediately. Measured
+  // in v8: 0.04 us on an SSE batch and 0.68 us on a 2 MB blob with no frame in it, against 0.70 us
+  // for the same scan left unbounded.
   const MAX_SSE_CHUNK_CHARS = 65536;
 
   const S = {
@@ -143,8 +179,12 @@
     const out = nativeDecode.call(this, input, options);
     const t = now();
     S.decodeCalls += 1;
-    if (typeof out === "string" && out.length > 0 && out.length <= MAX_SSE_CHUNK_CHARS) {
-      if (out.indexOf("data:") >= 0) noteSse();
+    if (typeof out === "string" && out.length > 0) {
+      // A chunk at or under the cap is its own head, so nothing is allocated on the ordinary path
+      // and the ordinary path is unchanged. Over the cap, v8 slices a string by reference rather
+      // than by copy, so the head costs no walk of the payload either.
+      const head = out.length <= MAX_SSE_CHUNK_CHARS ? out : out.slice(0, MAX_SSE_CHUNK_CHARS);
+      if (head.indexOf("data:") >= 0) noteSse();
     }
     S.overheadMs += now() - t;
     return out;
