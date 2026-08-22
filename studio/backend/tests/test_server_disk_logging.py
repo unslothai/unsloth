@@ -153,3 +153,27 @@ class TestSetupServerDiskLogging:
             "disk logging must be armed before importing main so import-time "
             "failures leave evidence on disk"
         )
+
+    def test_structlog_is_configured_after_the_tee_and_before_the_first_line(self):
+        """Order, not presence, is the invariant.
+
+        ``LogConfig.setup_logging`` hands structlog a
+        ``PrintLoggerFactory(file = sys.stdout)``, which snapshots the stream it is given,
+        and ``cache_logger_on_first_use`` then freezes that snapshot into any logger that
+        has already emitted a line. Configure before the tee and this module's ``logger``
+        is pinned to the console for the rest of the process -- every later run.py line
+        goes missing from the session log. Configure after it and the whole session,
+        starting with the first line, renders one way into both.
+        """
+        src = (Path(_BACKEND_DIR) / "run.py").read_text(encoding = "utf-8")
+        body = src.index("def run_server")
+        tee_idx = src.index("_setup_server_disk_logging()", body)
+        setup_idx = src.index("LogConfig.setup_logging(", body)
+        first_log_idx = src.index("logger.info(", body)
+        assert tee_idx < setup_idx < first_log_idx, (
+            "run_server must install the tee, then configure structlog, then log; "
+            f"got tee@{tee_idx} setup@{setup_idx} first-log@{first_log_idx}"
+        )
+        assert (
+            "LogConfig.setup_logging(" not in src[:body]
+        ), "configuring structlog at import time pins it to the pre-tee sys.stdout"

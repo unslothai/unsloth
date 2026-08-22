@@ -2,6 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import re
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -188,6 +190,98 @@ def test_quiet_poll_paths_use_longer_heartbeat_window(logs, monkeypatch):
     paths = [e[2]["path"] for e in logs.events]
     assert paths.count("/api/inference/monitor") == 1  # collapsed to one heartbeat
     assert paths.count("/api/models/browse-folders") == 3  # base dedup off -> all logged
+
+
+def test_liveness_probe_heartbeats(logs, monkeypatch):
+    # The desktop watchdog's own probe. Its sibling /api/health was already quiet, so a
+    # steady poll of this one alone used to be a per-request line.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
+    monkeypatch.setattr(hmod, "_WATCHDOG_POLL_DEDUP_MS", 1000)
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    async def send(message):
+        pass
+
+    mw = LoggingMiddleware(app)
+    for _ in range(4):
+        _run(mw(_http_scope("/api/liveness"), _noop_receive, send))
+
+    paths = [e[2]["path"] for e in logs.events]
+    assert paths.count("/api/liveness") == 1
+
+
+def test_watchdog_window_outlasts_the_probe_interval():
+    """The window has to be wider than the poll, or the heartbeat is a no-op.
+
+    ``_QUIET_POLL_DEDUP_MS`` stamps only on emit, so a 10s window against a probe that
+    arrives every ~19s never sees two inside one window and every probe logs anyway --
+    which is what putting this path in ``_QUIET_POLL_PATHS`` would have done. The desktop
+    watchdog runs ``HEALTH_WATCHDOG_INTERVAL`` (15s) between rounds plus up to
+    ``HEALTH_PROBE_TIMEOUT`` (10s) inside one, so pin the floor at a full round.
+    """
+    commands_rs = (
+        Path(__file__).resolve().parents[2] / "src-tauri" / "src" / "commands.rs"
+    ).read_text(encoding = "utf-8")
+    interval_s = int(
+        re.search(
+            r"HEALTH_WATCHDOG_INTERVAL: Duration = Duration::from_secs\((\d+)\)", commands_rs
+        ).group(1)
+    )
+    probe_s = int(
+        re.search(
+            r"HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs\((\d+)\)", commands_rs
+        ).group(1)
+    )
+    assert hmod._WATCHDOG_POLL_DEDUP_MS > (interval_s + probe_s) * 1000, (
+        f"the watchdog heartbeat window ({hmod._WATCHDOG_POLL_DEDUP_MS}ms) is not wider "
+        f"than one probe round ({interval_s}s + {probe_s}s), so it would collapse nothing"
+    )
+
+
+def test_liveness_probe_errors_still_log(logs, monkeypatch):
+    # A watchdog probe that starts failing is the whole signal; heartbeating is 2xx-only.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
+    monkeypatch.setattr(hmod, "_WATCHDOG_POLL_DEDUP_MS", 1000)
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 503, "headers": []})
+        await send({"type": "http.response.body", "body": b"down"})
+
+    async def send(message):
+        pass
+
+    mw = LoggingMiddleware(app)
+    for _ in range(3):
+        _run(mw(_http_scope("/api/liveness"), _noop_receive, send))
+
+    paths = [e[2]["path"] for e in logs.events]
+    assert paths.count("/api/liveness") == 3
+
+
+def test_verbose_keeps_every_watchdog_probe(logs, monkeypatch):
+    # --verbose zeroes the poll window; the watchdog's own window must go with it.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_WATCHDOG_POLL_DEDUP_MS", 60000)
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    async def send(message):
+        pass
+
+    mw = LoggingMiddleware(app)
+    for _ in range(3):
+        _run(mw(_http_scope("/api/liveness"), _noop_receive, send))
+
+    paths = [e[2]["path"] for e in logs.events]
+    assert paths.count("/api/liveness") == 3
 
 
 def test_distinct_query_strings_are_not_deduped(logs, monkeypatch):

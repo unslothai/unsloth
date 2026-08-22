@@ -1,5 +1,5 @@
 use crate::diagnostics::{self, BackendLog, DiagnosticsState};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use process_wrap::std::*;
 use regex::Regex;
 use std::collections::VecDeque;
@@ -1210,6 +1210,57 @@ pub(crate) fn trim_line_endings(bytes: &[u8]) -> &[u8] {
         end -= 1;
     }
     &bytes[..end]
+}
+
+/// Longest single line we will hand to `tauri.log`. Matches the phase log's own cap, which
+/// already trimmed these; without it the same line was capped on one sink and not the other.
+pub(crate) const MAX_BACKEND_LOG_LINE_BYTES: usize = 16 * 1024;
+
+/// Keep only the last frame of a carriage-return progress redraw.
+///
+/// We read to `\n`, so a tqdm or pip bar arrives as every frame it ever drew concatenated
+/// into one line: a single "Loading weights" bar measured 5086 bytes, and it is written to
+/// three sinks. Only the final frame carries information (it is the one showing 100% and the
+/// elapsed total), so the earlier ones are dropped. Text with no interior `\r` is returned
+/// untouched, and a bar whose last frame is empty keeps the last non-empty one rather than
+/// logging a blank line.
+pub(crate) fn collapse_progress_frames(text: &str) -> &str {
+    if !text.contains('\r') {
+        return text;
+    }
+    text.rsplit('\r')
+        .find(|frame| !frame.trim().is_empty())
+        .unwrap_or(text)
+}
+
+/// True when the line is one of the backend's own structured access-log records **and it
+/// reports success**.
+///
+/// Those are already written verbatim to the backend phase log (with stream tags and
+/// millisecond stamps) and to the backend's own session log, so mirroring them into
+/// `tauri.log` a third time was pure duplication: on an idle 4h desktop session they were
+/// 4056 of 5308 lines, and they pushed real failures out of the 5 MiB window in under a day.
+///
+/// The 2xx check is the point. The backend's heartbeat suppressor deliberately exempts
+/// non-2xx so a failing poll logs every time, and `tauri.log` is exactly where someone
+/// reads a watchdog going red; dropping those to `debug!` would put them below the file
+/// target's INFO filter and undo that. A record with no `status_code` we cannot vouch for
+/// either, so it keeps its INFO line too.
+fn is_backend_access_log_line(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    if !trimmed.starts_with('{') {
+        return false;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return false;
+    };
+    if value.get("event").and_then(|event| event.as_str()) != Some("request_completed") {
+        return false;
+    }
+    matches!(
+        value.get("status_code").and_then(|code| code.as_u64()),
+        Some(200..=299)
+    )
 }
 
 /// Windows `CREATE_NO_WINDOW` flag — suppresses console windows for child processes.
@@ -3721,7 +3772,8 @@ fn read_output_stream<R: std::io::Read>(
                 break;
             }
             Ok(_) => {
-                let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
+                let raw = String::from_utf8_lossy(trim_line_endings(&buf));
+                let text = collapse_progress_frames(&raw).to_owned();
                 let log_line = if is_stderr {
                     format!("[stderr] {}", text)
                 } else {
@@ -3785,7 +3837,21 @@ fn read_output_stream<R: std::io::Read>(
                     });
                 }
 
-                info!("[backend] {}", log_line);
+                // The successful access-log records live in the phase log and the backend's
+                // own session log already; keeping them out of tauri.log leaves it for the
+                // startup banner, hardware lines, stderr, tracebacks and failed requests,
+                // which is what anyone opening it is looking for.
+                if is_backend_access_log_line(&text) {
+                    debug!("[backend] {}", log_line);
+                } else if log_line.len() > MAX_BACKEND_LOG_LINE_BYTES {
+                    let mut end = MAX_BACKEND_LOG_LINE_BYTES;
+                    while end > 0 && !log_line.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    info!("[backend] {} [line truncated]", &log_line[..end]);
+                } else {
+                    info!("[backend] {}", log_line);
+                }
 
                 let _ = app.emit("server-log", &log_line);
             }
@@ -4238,6 +4304,68 @@ fn stop_backend_inner(
 // A login-started desktop on Windows inherits C:\Windows\system32 (issue #8510),
 // and so did every CLI child, where the Python CLI refuses to run. These pin the
 // replacement directory and that each command carries it.
+#[cfg(test)]
+mod backend_log_line_tests {
+    use super::*;
+
+    #[test]
+    fn plain_line_is_untouched() {
+        assert_eq!(collapse_progress_frames("Hardware detected: ROCm"), "Hardware detected: ROCm");
+        assert_eq!(collapse_progress_frames(""), "");
+    }
+
+    #[test]
+    fn progress_bar_keeps_only_the_final_frame() {
+        let bar = "Loading weights:   0%| | 0/617\rLoading weights:  47%| | 288/617\rLoading weights: 100%|#| 617/617";
+        assert_eq!(collapse_progress_frames(bar), "Loading weights: 100%|#| 617/617");
+    }
+
+    #[test]
+    fn trailing_blank_frame_falls_back_to_the_last_real_one() {
+        assert_eq!(collapse_progress_frames("Map:  50%\rMap: 100%\r   "), "Map: 100%");
+    }
+
+    #[test]
+    fn access_log_records_are_recognised() {
+        assert!(is_backend_access_log_line(
+            r#"{"timestamp": "2026-08-13T14:22:11Z", "level": "info", "event": "request_completed", "path": "/api/liveness", "status_code": 200}"#
+        ));
+        assert!(is_backend_access_log_line(
+            r#"{"event": "request_completed", "path": "/api/models/local", "status_code": 204}"#
+        ));
+    }
+
+    #[test]
+    fn failed_access_records_keep_their_info_line() {
+        // A watchdog probe going red is the case tauri.log exists for; the backend logs
+        // every one of these (the heartbeat suppressor is 2xx-only) and so must we.
+        assert!(!is_backend_access_log_line(
+            r#"{"event": "request_completed", "path": "/api/liveness", "status_code": 503}"#
+        ));
+        assert!(!is_backend_access_log_line(
+            r#"{"event": "request_completed", "path": "/api/train/start", "status_code": 401}"#
+        ));
+        // No status at all: not a record we can vouch for.
+        assert!(!is_backend_access_log_line(
+            r#"{"event": "request_completed", "path": "/api/liveness"}"#
+        ));
+    }
+
+    #[test]
+    fn other_structured_events_and_plain_text_are_not() {
+        assert!(!is_backend_access_log_line(
+            r#"{"level": "info", "event": "engine_stats", "gen_tok_s": 64.9}"#
+        ));
+        assert!(!is_backend_access_log_line("TAURI_PORT=8888"));
+        // Mentioning the event name in free text must not silence the line.
+        assert!(!is_backend_access_log_line("saw request_completed in the trace"));
+        // Truncated JSON is not a record we can vouch for, so it keeps its INFO line.
+        assert!(!is_backend_access_log_line(
+            r#"{"event": "request_completed", "status_code": 200"#
+        ));
+    }
+}
+
 #[cfg(test)]
 mod managed_cli_working_dir_tests {
     use super::*;

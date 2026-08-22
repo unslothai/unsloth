@@ -151,6 +151,7 @@ install_torchao_windows_rocm_stub()
 import _platform_compat  # noqa: F401
 
 from loggers import get_logger, install_uvicorn_duplicate_exception_filter
+from loggers.config import LogConfig
 from startup_banner import print_studio_access_banner, print_studio_stop_hint
 
 logger = get_logger(__name__)
@@ -1716,15 +1717,59 @@ class _TeeStream:
     Console behavior is unchanged (writes/returns delegate to the original
     stream; Tauri's structured-stdout protocol and isatty probes see exactly
     what they saw before). The file copy is best-effort: a full disk or a
-    closed handle must never break the console."""
+    closed handle must never break the console.
+
+    The file copy also drops carriage-return progress frames. A tqdm bar redraws
+    by writing "\\r<frame>" tens or hundreds of times, and a terminal overwrites
+    in place while a file keeps every one: a single "Loading weights" bar landed
+    as 5 KB of near-identical text. Only the last frame is kept, and only frames
+    are ever withheld -- a partial line with no "\\r" in it (a prompt, or a
+    traceback torn by a hang) is still written the moment it arrives, so nothing
+    diagnostic waits on a newline that may never come. A withheld frame is closed
+    off on its own line as soon as anything but its own redraw follows, so it can
+    never be prefixed onto the record after it."""
 
     def __init__(self, stream, log_fh):
         self._stream = stream
         self._log_fh = log_fh
+        # Last progress frame seen with no newline yet; superseded by the next
+        # frame, flushed ahead of the next real line.
+        self._pending_frame = ""
+
+    @staticmethod
+    def _last_frame(line):
+        return line.rpartition("\r")[2] if "\r" in line else line
+
+    def _write_file(self, data):
+        # Overwhelmingly the common case, and the one that must stay cheap.
+        if "\r" not in data and not self._pending_frame:
+            self._log_fh.write(data)
+            return
+
+        if self._pending_frame and data[:1] not in ("", "\r", "\n"):
+            # Neither a redraw of the held frame nor its terminator, so it is the next
+            # record. Close the frame off on its own line: concatenating them would
+            # produce "Loading 47%{"event": ...}" and cost a reader the JSON record.
+            self._log_fh.write(self._pending_frame + "\n")
+            self._pending_frame = ""
+
+        buf = self._pending_frame + data
+        self._pending_frame = ""
+        head, newline, tail = buf.rpartition("\n")
+        if newline:
+            complete = head + newline
+            self._log_fh.write("\n".join(self._last_frame(line) for line in complete.split("\n")))
+        if tail:
+            # An unterminated remainder: hold it only if it is a redraw, otherwise
+            # write it now so a hang cannot swallow real output.
+            if "\r" in tail:
+                self._pending_frame = self._last_frame(tail)
+            else:
+                self._log_fh.write(tail)
 
     def write(self, data):
         try:
-            self._log_fh.write(data)
+            self._write_file(data)
         except Exception:
             pass
         if self._stream is None:
@@ -1749,7 +1794,11 @@ class _TeeStream:
         # Flush the log copy, then forward close() to the wrapped stream
         # best-effort: on Colab that stream is an ipykernel OutStream whose
         # close() can raise (see _harden_console_close / ipython/ipykernel#867).
+        # A frame still held here has nothing left to supersede it, so land it.
         try:
+            if self._pending_frame:
+                self._log_fh.write(self._pending_frame + "\n")
+                self._pending_frame = ""
             self._log_fh.flush()
         except Exception:
             pass
@@ -1885,9 +1934,8 @@ def _setup_server_disk_logging():
 
     # Best-effort retention: keep the newest 20 session logs.
     try:
-        logs = sorted(log_dir.glob("server-*.log"), key = lambda p: p.stat().st_mtime)
-        for old in logs[:-20]:
-            old.unlink(missing_ok = True)
+        from utils.log_retention import prune_log_dir
+        prune_log_dir(log_dir, "server-*.log")
     except Exception:
         pass
     return log_path
@@ -2243,6 +2291,40 @@ def run_server(
     global _server, _server_thread, _shutdown_event
 
     boot_started = time.perf_counter()
+
+    # Windows cp1252 can't encode emoji; reconfigure stdout to UTF-8. Before the tee, so
+    # it reaches the console stream rather than the wrapper.
+    if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
+        except Exception:
+            pass
+
+    # Persist a session log + native-crash stacks BEFORE anything else, so even
+    # import-time failures leave evidence on disk. Field report: Unsloth "terminates
+    # without a warning" -- a native crash in the GPU runtime kills the process with no
+    # Python traceback, and a desktop-shortcut console closes before anything can be
+    # read. Console-only logging made that undiagnosable.
+    _session_log = _setup_server_disk_logging()
+    if _session_log is not None and not silent:
+        print(f"Session log: {_session_log}")
+
+    # Only now configure structlog, and only after the tee: PrintLoggerFactory captures
+    # sys.stdout at configure() time and cache_logger_on_first_use freezes it into every
+    # logger that has already emitted a line, so configuring first would pin this module's
+    # logger to the console and keep its lines out of the file just opened above.
+    #
+    # main.py configures too, but on import, which happens several seconds further into
+    # this function -- after the "startup begin" line below. That line therefore used to
+    # render through structlog's defaults (ConsoleRenderer, local time) while everything
+    # after it rendered as JSON in UTC, so a reader saw the clock jump hours between line
+    # one and line two of the same stream. Repeating structlog.configure() is safe;
+    # main.py's call still wins for its own service name.
+    LogConfig.setup_logging(
+        service_name = "unsloth-studio-backend",
+        env = os.getenv("ENVIRONMENT_TYPE", "production"),
+    )
+
     logger.info("run_server startup begin api_only=%s host=%s port=%s", api_only, host, port)
     cloudflare_intent = _consume_cloudflare_intent(cloudflare, secure)
 
@@ -2275,23 +2357,6 @@ def run_server(
 
     # `unsloth studio run` installs its own resolved policy and passes None here.
     _apply_cli_tool_policy(enable_tools)
-
-    # Windows cp1252 can't encode emoji; reconfigure stdout to UTF-8.
-    if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
-        try:
-            sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
-        except Exception:
-            pass
-
-    # Persist a session log + native-crash stacks BEFORE importing main, so
-    # even import-time failures leave evidence on disk. Field report: Unsloth
-    # "terminates without a warning" -- a native crash in the GPU runtime
-    # kills the process with no Python traceback, and a desktop-shortcut
-    # console closes before anything can be read. Console-only logging made
-    # that undiagnosable.
-    _session_log = _setup_server_disk_logging()
-    if _session_log is not None and not silent:
-        print(f"Session log: {_session_log}")
 
     # Set env vars BEFORE importing main so CORS middleware picks them up.
     # secure api-only is a remote server behind Cloudflare, so it keeps the
