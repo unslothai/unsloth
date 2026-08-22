@@ -96,6 +96,13 @@ MAX_TIMER_CLOCK_RATIO = 1.2
 # jank share with idle time and make a bad build look average.
 IDLE_WINDOW_KINDS: frozenset[str] = frozenset({"idle"})
 
+# The window kinds in which NO SCRIPTED ACTION IS RUNNING. `gap` is the scheduler's inter-slot
+# wait; `stream` is `stream:drain`, the window the session layer opens after the film to wait the
+# reply out. Both are quiet by construction, which is the property `_unaided` needs -- see there
+# for why the streaming numbers are taken only from these, and for what the `stream` half is worth.
+# `action` is excluded, and `idle` never reaches here (IDLE_WINDOW_KINDS strips it first).
+UNAIDED_WINDOW_KINDS: frozenset[str] = frozenset({"gap", "stream"})
+
 
 def _cell_rows(records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     return [r for r in records if r.get("row_type") == "cell"]
@@ -280,8 +287,26 @@ def _unaided(windows: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     Restricting FURTHER -- to the opening turn only -- was tried and is much worse (101.5%),
     because fewer windows average less and one outlier then owns the cell. More streaming windows
     is better as long as every one of them is unaided.
+
+    UNAIDED IS NOT THE SAME PREDICATE AS `kind == "gap"`, which is what this used to test. The
+    session layer opens one more quiet window that the scheduler does not: `stream:drain`, with
+    `kind = "stream"`, held open after the film to wait the reply out. On the default fixture it
+    carries nothing -- the tail is pinned at 6,000 characters, drains in 14 to 18 s against a
+    243 s standard film, and the measured drain window was 7 ms long -- so `_stream_windows`
+    rejects it for having seen no SSE traffic and the distinction never showed. It shows the
+    moment `--stream-tail-chars` is used, which is the one supported way to make the reply long:
+    at 96,000 characters the reply streams for 291 s at field cadence, so roughly 48 s of it lands
+    AFTER the last slot has closed, in the drain window, with nothing scripted running in it. That
+    stretch is unaided streaming by every part of the definition above, and dropping it dropped
+    the characters and the cost of the LAST fifth of the reply -- the part streamed into the
+    largest thread, so the most expensive part -- out of every streaming metric. Nor is
+    `stream_max_frame_ms` a ratio that might absorb it: a worst frame in that stretch was simply
+    never seen.
+
+    The kind filter is still what does the work, because it is the only thing that separates a
+    quiet window from an action window. It now names both quiet kinds instead of one.
     """
-    return [w for w in windows if str(w.get("kind") or "") == "gap"]
+    return [w for w in windows if str(w.get("kind") or "") in UNAIDED_WINDOW_KINDS]
 
 
 def _stream_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]:

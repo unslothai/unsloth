@@ -138,6 +138,87 @@ def test_overhead_is_reported_per_cell_and_not_accumulated_across_them():
     assert second["overhead_ms"] == 5.0, "the second cell must not carry the first cell's overhead"
 
 
+class _FakeWindow:
+    duration_ms = 10_000.0
+
+
+class _FakeStreamCostPage:
+    """The page-side accumulator, on exactly the contract `streamcost.js` implements.
+
+    `read()` snapshots `overheadMs` into its result and THEN resets it; `replyChars()` adds the
+    cost of its own `querySelectorAll` to whatever the accumulator currently holds; `reset()`
+    zeroes it. Those three facts are the whole of the defect below, and re-stating them here rather
+    than driving node keeps the test about the DRIVER's ordering, which is where the defect lives.
+    """
+
+    #: What one boundary scan costs. `querySelectorAll` collects its matches up front over the
+    #: whole document, so this is the one part of the instrument that grows with the rung.
+    SCAN_MS = 3.9
+
+    def __init__(self) -> None:
+        self.overhead_ms = 0.0
+        self.scans = 0
+
+    def evaluate(self, expr, arg = None):
+        if "reset()" in expr:
+            self.overhead_ms = 0.0
+            return None
+        if "replyChars" in expr:
+            self.scans += 1
+            self.overhead_ms += self.SCAN_MS
+            return 1_000 * self.scans
+        if "read(" in expr:
+            snapshot = round(self.overhead_ms, 2)
+            self.overhead_ms = 0.0
+            return {"streaming_observed": True, "overhead_ms": snapshot}
+        return None
+
+
+def test_the_close_side_reply_scan_is_counted_in_the_declared_overhead():
+    """REGRESSION. Half of every window's boundary scans were missing from `overhead_ms`.
+
+    `close()` calls `read(ms)` first, which snapshots the page's overhead total and then resets it,
+    and only afterwards calls `replyChars(force)` -- the FORCED, whole-document scan that is the
+    one part of this instrument whose cost tracks the rung. That scan accumulated into a fresh
+    page-side total which the next `open()` began by resetting, so it was never read by anyone.
+
+    The number this corrupts is the only evidence for the level 0 claim: `end_cell` declares it
+    precisely so the claim is checkable from the payload rather than from a docstring, and it was
+    reporting about half of the rung-dependent cost it exists to expose.
+    """
+    inst = StreamCostInstrument()
+    page = _FakeStreamCostPage()
+    # After `start_cell`, which re-reads the page from the context every cell.
+    inst.start_cell(_FakeCell())
+    inst.page = page
+    for _ in range(3):
+        inst.open(_FakeWindow())
+        inst.close(_FakeWindow())
+
+    assert page.scans == 6, "three windows means three open scans and three close scans"
+    declared = inst.end_cell(_FakeCell())["overhead_ms"]
+    assert declared == pytest.approx(6 * _FakeStreamCostPage.SCAN_MS, abs = 0.05), (
+        "the close-side scans are missing from the declared overhead",
+        declared,
+    )
+
+
+def test_the_close_side_drain_does_not_disturb_the_window_s_own_reading():
+    """The scan is harvested AFTER the window's numbers are taken, so it cannot move them."""
+    inst = StreamCostInstrument()
+    inst.start_cell(_FakeCell())
+    inst.page = _FakeStreamCostPage()
+    inst.open(_FakeWindow())
+    out = inst.close(_FakeWindow())
+
+    assert out["streaming_observed"] is True
+    assert out["reply_chars_delta"] == 1_000
+    # The window's own overhead figure is what `read()` returned; the close scan is reported
+    # beside it rather than folded into it.
+    assert out["overhead_ms"] == pytest.approx(_FakeStreamCostPage.SCAN_MS, abs = 0.05)
+    assert out["close_scan_overhead_ms"] == pytest.approx(_FakeStreamCostPage.SCAN_MS, abs = 0.05)
+
+
 def test_a_half_open_window_does_not_leak_its_open_reading_into_the_next_cell():
     """`_chars_open` is per window; a cell that died between open and close must not seed the next
     cell's first window with a stale character count."""
