@@ -652,7 +652,7 @@ jobs:
         # temperature = 0.0 for determinism, raise TypeError against it. The v1 route
         # is extra_body; moving to it is a deliberate change to what the probes send,
         # not something a CI install should decide by resolving a new major.
-        run: pip install 'openai>=1.50' 'anthropic>=0.40,<1'
+        run: pip install 'openai>=1.50,<4' 'anthropic>=0.40,<1'
 
       - name: Reset auth + boot Unsloth (API-only)
         id: boot-chat
@@ -1285,7 +1285,7 @@ jobs:
         # temperature = 0.0 for determinism, raise TypeError against it. The v1 route
         # is extra_body; moving to it is a deliberate change to what the probes send,
         # not something a CI install should decide by resolving a new major.
-        run: pip install 'openai>=1.50' 'anthropic>=0.40,<1'
+        run: pip install 'openai>=1.50,<4' 'anthropic>=0.40,<1'
 
       - name: Reset auth + boot Unsloth (API-only)
         id: boot-vision
