@@ -217,3 +217,60 @@ test("the print limitation is written down where it is decided", () => {
     "the measured limitation belongs next to the code that causes it, with its number",
   );
 });
+
+const CODE_PLUGIN = readFileSync(
+  new URL("../src/components/assistant-ui/code-plugin.ts", import.meta.url),
+  "utf8",
+);
+
+test("the fence language is a language, not the whole info string", () => {
+  // `getCodeFence` captures everything after the backticks, so ```python startLine=10 arrives as
+  // "python startLine=10". Markdown treats everything past the first word as metadata and
+  // Streamdown highlights the block as `python`. Passing the raw string through would label the
+  // deferred shell with the metadata attached, and would hand the measurement arm a language no
+  // grammar matches -- so it would tokenize as plain text and silently stop measuring the
+  // tokenizer work it exists to measure.
+  assert.ok(
+    /const languageToken = language\?\.trim\(\)\.split\(\/\\s\+\/\)\[0\] \|\| null;/
+      .test(MARKDOWN_TEXT),
+    "the info string must be split before it is used as a language",
+  );
+  for (const use of [
+    "language: (languageToken ?? \"text\") as never",
+    "<DeferredFenceShell language={languageToken}",
+  ]) {
+    assert.ok(
+      MARKDOWN_TEXT.includes(use),
+      `both the shell and the measurement arm must use the parsed token: ${use}`,
+    );
+  }
+  assert.ok(
+    !/language: \(language \?\? "text"\)/.test(MARKDOWN_TEXT),
+    "no path may pass the unparsed info string to the highlighter",
+  );
+
+  // The parse itself, run rather than described.
+  const token = (info: string | null) => info?.trim().split(/\s+/)[0] || null;
+  assert.equal(token("python startLine=10"), "python");
+  assert.equal(token("  ts  "), "ts");
+  assert.equal(token(""), null);
+  assert.equal(token(null), null);
+});
+
+test("token coalescing was measured at zero and is not carried as code", () => {
+  // Shiki already emits maximally coalesced tokens: 72,550 -> 72,550 over the 100K rung's 99 real
+  // fences, in every theme mode. An implementation that removes no spans cannot make anything
+  // faster, and carrying a runtime-flippable flag through the fence cache for it only creates
+  // ways for a cached result to disagree with the flag that produced it.
+  for (const gone of ["coalesceTokens", "coalesceLine", "mergeable", "__UNSLOTH_COALESCE_TOKENS__",
+                      "VITE_UNSLOTH_COALESCE_TOKENS"]) {
+    assert.ok(
+      !CODE_PLUGIN.includes(gone),
+      `${gone} was removed after measuring 0.0%; re-adding it needs a number first`,
+    );
+  }
+  assert.ok(
+    CODE_PLUGIN.includes("72550 -> merged 72550"),
+    "the null belongs in the file it was measured on, so nobody repeats it",
+  );
+});

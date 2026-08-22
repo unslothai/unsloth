@@ -440,6 +440,13 @@ function FenceBlock({
   // it so that finishing the stream cannot hand it back the plain shell.
   const reached = useFenceReached(host, mode !== "off", Boolean(isIncomplete));
 
+  // `getCodeFence` hands back the WHOLE info string, so a fence opened with metadata such as
+  // ```python startLine=10 arrives here as "python startLine=10". Markdown treats everything
+  // after the first word as metadata and Streamdown highlights it as `python`, so passing the
+  // raw string on would label the shell with the metadata attached and, in the measurement arm,
+  // tokenize an unknown language as plain text -- which is exactly the grammar work the arm
+  // exists to put back.
+  const languageToken = language?.trim().split(/\s+/)[0] || null;
 
   // MEASUREMENT ARM ONLY. See `FenceMode`: this puts the tokenizer work back while leaving the
   // document at the deferred size, so the two costs can be told apart. `code.highlight` caches
@@ -450,17 +457,17 @@ function FenceBlock({
     if (!pretokenize) return;
     code.highlight({
       code: trimTrailingNewlines(source),
-      language: (language ?? "text") as never,
+      language: (languageToken ?? "text") as never,
       themes: STREAMDOWN_SHIKI_THEME,
     }, () => {});
-  }, [pretokenize, source, language]);
+  }, [pretokenize, source, languageToken]);
 
   return (
     <div className="relative isolate" ref={host}>
       {reached ? (
         <Block {...blockProps} />
       ) : (
-        <DeferredFenceShell language={language} source={source} />
+        <DeferredFenceShell language={languageToken} source={source} />
       )}
       <CodeBlockActions
         disabled={Boolean(isIncomplete)}

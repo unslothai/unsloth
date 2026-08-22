@@ -148,121 +148,30 @@ const shiftLine = (line: TokenLine, offset: number): TokenLine =>
     ? line
     : line.map((token) => ({ ...token, offset: token.offset + offset }));
 
-// ── adjacent-token coalescing ───────────────────────────────────────
+// ADJACENT-TOKEN COALESCING: TRIED, MEASURED AT ZERO, REMOVED.
 //
-// WHAT THIS IS. The renderer emits one <span> per themed token (streamdown's
-// `At`: `line.map((token) => <span style=...>{token.content}</span>)`), so the
-// span census of a thread is its token census. Shiki's tokenizer splits on
-// GRAMMAR boundaries, not on rendered appearance: `foo`, `.`, `bar` in a member
-// expression are three tokens carrying one identical colour, and the DOM then
-// carries three spans that paint as one. Merging runs of adjacent tokens whose
-// rendered style is byte-identical removes spans that could never have looked
-// different from their neighbour.
+// The renderer emits one <span> per themed token, so a fence's span census is
+// its token census, and Shiki splits on GRAMMAR boundaries rather than on
+// rendered appearance. Merging runs of adjacent tokens whose rendered style is
+// byte-identical looked like a pure reduction with no gating at all: no
+// viewport state machine, nothing a reader could do to push a fence back into a
+// more expensive shape.
 //
-// WHY IT IS SAFE FOR SELECTION, COPY AND FIND-IN-PAGE. The concatenation is
-// over `content` in order, so the text nodes of a fence, read end to end, are
-// unchanged character for character. Nothing is unmounted, deferred, hidden or
-// made skippable, which is the property `content-visibility: auto` does NOT
-// have: skipped content has to be rendered before it can be selected, and that
-// showed up as a +28.8% cost on `select_all_copy.select_all_ms`. Here the
-// selection tree, the clipboard payload and the find-in-page text are the same
-// objects they were, just carried by fewer elements.
+// It buys exactly nothing. Running the 100K rung's 99 real fences (180,902 code
+// characters) through this component's own Shiki configuration:
 //
-// WHY IT IS MONOTONIC. There is no state machine here at all -- no viewport
-// gate, no intersection observer, no upgrade or downgrade. The token count of a
-// fence is a pure function of its source text and its theme, computed once when
-// the line is committed and cached with it. Nothing a user does (scrolling
-// away, collapsing a pane, closing a thread) can push a fence back into a more
-// expensive shape, which is the exact failure of the viewport-gated attempt:
-// re-gating on viewport EXIT made scrolling create work instead of saving it.
+//   dual        tokens 72550 -> merged 72550   0.0% fewer
+//   darkonly    tokens 72408 -> merged 72408   0.0% fewer
+//   lightonly   tokens 62098 -> merged 62098   0.0% fewer
 //
-// A token is only merged when the span it would render is indistinguishable
-// from its neighbour's, so `htmlAttrs` (which can carry ids, titles or
-// data attributes a consumer may depend on) blocks the merge outright rather
-// than being reconciled.
-
-type TokenLike = {
-  content: string;
-  offset: number;
-  color?: string;
-  bgColor?: string;
-  fontStyle?: number;
-  htmlStyle?: Record<string, string>;
-  htmlAttrs?: Record<string, string>;
-};
-
-// `undefined` and `{}` are the same span, so they compare equal.
-const sameHtmlStyle = (
-  a: Record<string, string> | undefined,
-  b: Record<string, string> | undefined,
-): boolean => {
-  if (a === b) return true;
-  const keysA = a ? Object.keys(a) : [];
-  const keysB = b ? Object.keys(b) : [];
-  if (keysA.length !== keysB.length) return false;
-  for (const key of keysA) {
-    if (a?.[key] !== b?.[key]) return false;
-  }
-  return true;
-};
-
-const hasAttrs = (token: TokenLike): boolean =>
-  token.htmlAttrs !== undefined && Object.keys(token.htmlAttrs).length > 0;
-
-/** Would these two adjacent tokens render as visually identical spans? */
-const mergeable = (a: TokenLike, b: TokenLike): boolean =>
-  a.color === b.color &&
-  a.bgColor === b.bgColor &&
-  a.fontStyle === b.fontStyle &&
-  !hasAttrs(a) &&
-  !hasAttrs(b) &&
-  sameHtmlStyle(a.htmlStyle, b.htmlStyle);
-
-/**
- * One line's tokens with same-styled adjacent runs joined.
- *
- * Returns the ORIGINAL array when nothing merged, so the common
- * already-minimal line costs one pass and no allocation, and React's identity
- * checks on cached lines keep seeing the same object.
- */
-const coalesceLine = (line: TokenLine): TokenLine => {
-  if (line.length < 2) return line;
-  const tokens = line as unknown as TokenLike[];
-  let out: TokenLike[] | null = null;
-  for (let i = 0; i < tokens.length; i += 1) {
-    const token = tokens[i];
-    const last = out === null ? (i > 0 ? tokens[i - 1] : null)
-      : out[out.length - 1];
-    if (last !== null && mergeable(last, token)) {
-      if (out === null) out = tokens.slice(0, i);
-      // A fresh object, never a mutation: the run's head is the token Shiki
-      // handed us and the same object is reachable from an earlier cached
-      // result for this fence.
-      out[out.length - 1] = { ...last, content: last.content + token.content };
-      continue;
-    }
-    if (out !== null) out.push(token);
-  }
-  // Nothing merged: hand back the original array so the common already-minimal
-  // line costs one pass and no allocation.
-  return out === null ? line : (out as unknown as TokenLine);
-};
-
-// Default OFF. Read at call time rather than at module load so a probe or a
-// test can flip it on a live page; the build-time value is what a release uses.
-const coalescingEnabled = (): boolean => {
-  const runtime = (globalThis as Record<string, unknown>)
-    .__UNSLOTH_COALESCE_TOKENS__;
-  if (typeof runtime === "boolean") return runtime;
-  try {
-    return import.meta.env.VITE_UNSLOTH_COALESCE_TOKENS === "1";
-  } catch {
-    return false;
-  }
-};
-
-const coalesceTokens = (lines: TokenLine[]): TokenLine[] =>
-  coalescingEnabled() ? lines.map(coalesceLine) : lines;
+// Not one adjacent pair in 72,550 shares a rendered style, in any theme mode.
+// Shiki already emits maximally coalesced tokens. No timing was run on it,
+// because a mechanism that removes no spans cannot make anything faster.
+//
+// The implementation is not kept. Carrying a runtime-flippable flag through the
+// fence cache for a measured-zero benefit only adds a way for a cached result
+// to disagree with the flag that produced it. `scripts/coal_span_census.mjs`
+// reproduces the census standalone.
 
 // Markdown reports a closing fence as body until it recognizes it, so that
 // line is all a fence can lose: up to three spaces, one run of backticks or
@@ -433,7 +342,7 @@ export function createCodePlugin(
       // Coalesced ONCE, here, as the line is committed. A committed line is
       // never re-tokenized, so this is paid once per line for the life of the
       // fence and every later render of it reads the reduced array.
-      for (const line of coalesceTokens(completed.tokens)) {
+      for (const line of completed.tokens) {
         fence.lines.push(shiftLine(line, fence.committedLength));
       }
       fence.state = completed.grammarState;
@@ -446,7 +355,7 @@ export function createCodePlugin(
     const liveResult = tokenizeFrom(live);
     fence.meta = stripTokens(liveResult);
     fence.liveTokens = shiftLine(
-      coalesceTokens([liveResult.tokens[0] ?? ([] as unknown as TokenLine)])[0],
+      liveResult.tokens[0] ?? ([] as unknown as TokenLine),
       fence.committedLength,
     );
     fence.lastTokenizedAt = monotonicNow();
