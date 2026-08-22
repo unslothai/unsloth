@@ -71,6 +71,42 @@ def test_an_ordinary_chunk_is_relayed_byte_for_byte():
     assert sanitize_provider_sse_line(line) is line
 
 
+def test_ollama_reasoning_is_normalized_across_every_choice():
+    line = "data: " + json.dumps(
+        {
+            "choices": [
+                {"index": 0, "delta": {"content": "", "reasoning": "First thought."}},
+                {
+                    "index": 1,
+                    "delta": {"reasoning": "Second thought.", "reasoning_content": None},
+                },
+                {
+                    "index": 2,
+                    "delta": {
+                        "reasoning": "Provider alternate.",
+                        "reasoning_content": "Canonical thought.",
+                    },
+                },
+                {"index": 3, "delta": {"reasoning": {"text": "structured"}}},
+                {"index": 4, "delta": None},
+                "malformed",
+            ]
+        }
+    )
+
+    cleaned = json.loads(sanitize_provider_sse_line(line)[len("data: ") :])
+    first, second, both, structured, malformed_delta, malformed_choice = cleaned["choices"]
+    assert first["delta"] == {"content": "", "reasoning_content": "First thought."}
+    assert second["delta"] == {"reasoning_content": "Second thought."}
+    assert both["delta"] == {
+        "reasoning": "Provider alternate.",
+        "reasoning_content": "Canonical thought.",
+    }
+    assert structured["delta"] == {"reasoning": {"text": "structured"}}
+    assert malformed_delta["delta"] is None
+    assert malformed_choice == "malformed"
+
+
 @pytest.mark.parametrize(
     "line",
     [
@@ -240,6 +276,30 @@ def test_the_relay_still_forwards_everything_legitimate(monkeypatch):
 
     assert text == "hello"
     assert any('"usage"' in line for line in lines)
+
+
+def test_the_plain_relay_normalizes_ollama_reasoning(monkeypatch):
+    body = (
+        'data: {"choices": [{"index": 0, "delta": '
+        '{"role": "assistant", "content": "", "reasoning": "Thinking"}}]}\n\n'
+        'data: {"choices": [{"index": 0, "delta": '
+        '{"content": "", "reasoning": " more"}}]}\n\n'
+        'data: {"choices": [{"index": 0, "delta": '
+        '{"content": "answer"}, "finish_reason": "stop"}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+
+    lines = _stream(monkeypatch, body)
+    deltas = [
+        choice["delta"]
+        for line in lines
+        if line.startswith("data: ") and line[6:] != "[DONE]"
+        for choice in json.loads(line[6:]).get("choices", [])
+    ]
+
+    assert [delta.get("reasoning_content") for delta in deltas[:2]] == ["Thinking", " more"]
+    assert all("reasoning" not in delta for delta in deltas)
+    assert deltas[-1]["content"] == "answer"
 
 
 # ── The loop must not sanitize a transport that already did ──────────
