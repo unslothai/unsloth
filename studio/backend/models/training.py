@@ -41,6 +41,9 @@ _MAX_VISION_IMAGE_SIZE = 2048
 # Upper bound for dataset slice indices, capping `.skip(n)` on streaming datasets so an absurd
 # index can't iterate effectively forever. 1e9 is far beyond any realistic dataset row count.
 _MAX_DATASET_SLICE_INDEX = 1_000_000_000
+# GRPO generates this many completions per prompt every step, so the cap is a
+# generation-time budget rather than a memory one.
+_MAX_NUM_GENERATIONS = 64
 
 
 class S3Config(BaseModel):
@@ -77,6 +80,49 @@ class S3Config(BaseModel):
                 "access_key_id and secret_access_key"
             )
         return self
+
+
+class RewardFunctionSelection(BaseModel):
+    """One preset reward function enabled for a GRPO run, with its weight."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    id: str = Field(..., min_length = 1, max_length = 64, description = "Preset reward function id")
+    weight: float = Field(
+        1.0,
+        gt = 0,
+        le = 100.0,
+        allow_inf_nan = False,
+        description = "Multiplier applied to this function's score",
+    )
+
+    @field_validator("id")
+    @classmethod
+    def _check_known_preset(cls, v: str) -> str:
+        from core.training.grpo_rewards import REWARD_PRESETS_BY_ID
+
+        v = v.strip()
+        if v not in REWARD_PRESETS_BY_ID:
+            raise ValueError(
+                f"unknown reward function {v!r}; available: "
+                f"{', '.join(sorted(REWARD_PRESETS_BY_ID))}"
+            )
+        return v
+
+
+class RewardFunctionPreset(BaseModel):
+    """Catalog entry describing a built-in reward function to the frontend."""
+
+    id: str
+    name: str
+    description: str
+    expected_columns: List[str] = Field(default_factory = list)
+    default_weight: float
+    default_selected: bool
+
+
+class RewardFunctionPresetsResponse(BaseModel):
+    presets: List[RewardFunctionPreset]
 
 
 def _parse_lr(v: Any) -> float:
@@ -116,9 +162,14 @@ class TrainingStartRequest(BaseModel):
         pattern = TRAINING_REQUEST_ID_PATTERN,
         description = "Opaque client-generated identifier used to reconcile an ambiguous start response",
     )
-    training_type: Literal["LoRA/QLoRA", "Full Finetuning", "Continued Pretraining"] = Field(
-        ...,
-        description = "Training type: 'LoRA/QLoRA', 'Full Finetuning', or 'Continued Pretraining'",
+    training_type: Literal["LoRA/QLoRA", "Full Finetuning", "Continued Pretraining", "GRPO"] = (
+        Field(
+            ...,
+            description = (
+                "Training type: 'LoRA/QLoRA', 'Full Finetuning', "
+                "'Continued Pretraining', or 'GRPO'"
+            ),
+        )
     )
     hf_token: Optional[str] = Field(None, description = "HuggingFace token")
     load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
@@ -525,6 +576,43 @@ class TrainingStartRequest(BaseModel):
         "Must be in (0, 1). Should be 2-10x smaller than the main learning rate.",
     )
 
+    # ── GRPO (RL) ──
+    # Only read when training_type == "GRPO"; the defaults mirror
+    # Gemma3_(1B)-GRPO.ipynb / Llama3.1_(8B)-GRPO.ipynb.
+    reward_functions: List[RewardFunctionSelection] = Field(
+        default_factory = list,
+        description = "Selected preset reward functions with their weights. Empty uses the defaults.",
+    )
+    num_generations: int = Field(
+        4,
+        ge = 2,
+        le = _MAX_NUM_GENERATIONS,
+        description = "Rollouts sampled per prompt. Must divide the effective batch size.",
+    )
+    max_prompt_length: int = Field(
+        256, ge = 1, le = _MAX_SEQ_LENGTH, description = "Prompt tokens kept before generation"
+    )
+    max_completion_length: int = Field(
+        512, ge = 1, le = _MAX_SEQ_LENGTH, description = "Maximum tokens generated per rollout"
+    )
+    grpo_temperature: float = Field(
+        1.0, gt = 0, le = 2.0, allow_inf_nan = False, description = "Rollout sampling temperature"
+    )
+    grpo_top_p: float = Field(
+        1.0, gt = 0, le = 1.0, allow_inf_nan = False, description = "Rollout nucleus sampling cutoff"
+    )
+    grpo_beta: float = Field(
+        0.04,
+        ge = 0,
+        le = 1.0,
+        allow_inf_nan = False,
+        description = "KL coefficient against the reference model; 0 disables the KL term",
+    )
+    grpo_loss_type: Optional[Literal["grpo", "bnpo", "dr_grpo", "dapo"]] = Field(
+        None,
+        description = "GRPO loss variant. Null keeps the installed TRL's own default.",
+    )
+
     use_lora: bool = Field(True, description = "Use LoRA (derived from training_type)")
     lora_r: int = Field(16, description = "LoRA rank")
     lora_alpha: int = Field(16, description = "LoRA alpha")
@@ -631,6 +719,34 @@ class TrainingStartRequest(BaseModel):
             )
         return self
 
+    @model_validator(mode = "after")
+    def _validate_grpo(self) -> "TrainingStartRequest":
+        # getattr for the same reason as _validate_lora_variant_flags: model_construct()
+        # leaves required fields unset and mode="after" validators still run.
+        if getattr(self, "training_type", None) != "GRPO":
+            return self
+        ids = [selection.id for selection in self.reward_functions]
+        duplicates = {name for name in ids if ids.count(name) > 1}
+        if duplicates:
+            raise ValueError(
+                f"Each reward function may be selected once; duplicated: {sorted(duplicates)}"
+            )
+        # TRL splits the effective batch into groups of num_generations rollouts and
+        # errors out at construction time otherwise; catch it before the model loads.
+        effective_batch = self.batch_size * self.gradient_accumulation_steps
+        if effective_batch % self.num_generations != 0:
+            raise ValueError(
+                f"num_generations ({self.num_generations}) must divide "
+                f"batch_size x gradient_accumulation_steps ({effective_batch})"
+            )
+        if self.max_prompt_length + self.max_completion_length > self.max_seq_length:
+            raise ValueError(
+                f"max_prompt_length + max_completion_length "
+                f"({self.max_prompt_length + self.max_completion_length}) must fit within "
+                f"max_seq_length ({self.max_seq_length})"
+            )
+        return self
+
 
 class TrainingJobResponse(BaseModel):
     """Immediate response when training is initiated"""
@@ -689,7 +805,8 @@ class TrainingStatus(BaseModel):
     metric_history: Optional[dict] = Field(
         None,
         description = "Full metric history arrays for chart recovery after SSE reconnection. "
-        "Keys: 'steps', 'loss', 'lr', 'grad_norm', 'grad_norm_steps' — each a list of numeric values.",
+        "Keys: 'steps', 'loss', 'lr', 'grad_norm', 'grad_norm_steps' — each a list of numeric values. "
+        "GRPO runs also carry 'reward', 'reward_std', 'kl', 'completion_length' and 'reward_steps'.",
     )
 
 
@@ -713,6 +830,17 @@ class TrainingProgress(BaseModel):
     num_tokens: Optional[int] = Field(None, description = "Total number of tokens processed so far")
     eval_loss: Optional[float] = Field(
         None, description = "Eval loss from the most recent evaluation step"
+    )
+    reward: Optional[float] = Field(None, description = "GRPO: mean reward over the step's rollouts")
+    reward_std: Optional[float] = Field(
+        None, description = "GRPO: standard deviation of reward within each rollout group"
+    )
+    reward_breakdown: Optional[Dict[str, float]] = Field(
+        None, description = "GRPO: mean reward per selected reward function"
+    )
+    kl: Optional[float] = Field(None, description = "GRPO: KL divergence against the reference model")
+    completion_length: Optional[float] = Field(
+        None, description = "GRPO: mean generated completion length in tokens"
     )
 
 
@@ -773,6 +901,11 @@ class TrainingRunMetrics(BaseModel):
     grad_norm_step_history: List[int] = Field(default_factory = list)
     eval_loss_history: List[float] = Field(default_factory = list)
     eval_step_history: List[int] = Field(default_factory = list)
+    reward_history: List[float] = Field(default_factory = list)
+    reward_step_history: List[int] = Field(default_factory = list)
+    reward_std_history: List[float] = Field(default_factory = list)
+    kl_history: List[float] = Field(default_factory = list)
+    completion_length_history: List[float] = Field(default_factory = list)
     final_epoch: Optional[float] = None
     final_num_tokens: Optional[int] = None
 
