@@ -50,6 +50,16 @@ NOT_IN_CI = {
     # the unmeasured primitive, is covered without a browser by
     # studio/frontend/tests/reasoning-grid-collapse.test.ts, which CI does run.
     "playwright_collapse_layout.py",
+    # Half of what it asserts is about the engine Frontend CI does not install. It proves the
+    # thread's fast copy path byte for byte against the real clipboard on BOTH engines: Chromium
+    # answers and must match, WebKit must refuse and its refusal must be backed by a measured
+    # divergence. That job installs Chromium only, so a Chromium-only run would assert the easy
+    # half and silently drop the reason the fast path is engine-gated at all. It also needs a
+    # vite library build of the module, which no other smoke there does. Run by hand when the
+    # serialiser changes. What CI does run is studio/frontend/tests/thread-fast-copy.test.ts,
+    # which pins the gate's branches and the patch's bookkeeping but, by its own docstring,
+    # cannot see how a real engine serialises anything.
+    "playwright_thread_fast_copy.py",
 }
 
 
