@@ -604,17 +604,27 @@ type OpenFenceState = {
   index: number;
   fenceOpen: boolean;
   bodyStart: number;
-  // `$$` and `~~` are the two markers remend counts across a fence instead of
-  // skipping over it, so a body holding either can still change what it
-  // appends. Those replies take the whole-tail path.
-  bodyHasGlobalMarker: boolean;
+  // The FIRST ` $ or ~ in the current fence body, or -1.
+  //
+  // remend does not have one notion of "inside a fence"; it has at least three,
+  // and they disagree. `isWithinCodeBlock` walks the text and honours a
+  // backslash before a backtick, the emphasis counters toggle on ``` without
+  // honouring it, and the inline-code repair just counts /```/g. An escaped
+  // \``` or a ```` run flips the last of those and not the first. The opener
+  // that stands in for the elided text can only reproduce all three when the
+  // elided part holds none of the characters any of them counts.
+  //
+  // The first such character, not the last: a marker sitting in the window
+  // would otherwise mask an earlier one sitting in the elided middle, which is
+  // the half that matters. First is also monotone, so it costs nothing to keep.
+  firstBodyMarker: number;
 };
 
 const initialOpenFenceState = (): OpenFenceState => ({
   index: 0,
   fenceOpen: false,
   bodyStart: -1,
-  bodyHasGlobalMarker: false,
+  firstBodyMarker: -1,
 });
 
 function advanceOpenFence(
@@ -622,10 +632,15 @@ function advanceOpenFence(
   text: string,
   limit: number,
 ): OpenFenceState {
-  let { index, fenceOpen, bodyStart, bodyHasGlobalMarker } = state;
+  let { index, fenceOpen, bodyStart, firstBodyMarker } = state;
   while (index < limit) {
     const character = text[index];
     if (character === "\\" && text[index + 1] === "`") {
+      // Escaped for `isWithinCodeBlock`, not for the passes that only count
+      // ``` runs, so the backtick still counts as a marker.
+      if (fenceOpen && firstBodyMarker < 0) {
+        firstBodyMarker = index + 1;
+      }
       index += 2;
       continue;
     }
@@ -636,20 +651,20 @@ function advanceOpenFence(
     ) {
       fenceOpen = !fenceOpen;
       bodyStart = fenceOpen ? index + 3 : -1;
-      bodyHasGlobalMarker = false;
+      firstBodyMarker = -1;
       index += 3;
       continue;
     }
     if (
       fenceOpen &&
-      (character === "$" || character === "~") &&
-      text[index + 1] === character
+      firstBodyMarker < 0 &&
+      (character === "`" || character === "$" || character === "~")
     ) {
-      bodyHasGlobalMarker = true;
+      firstBodyMarker = index;
     }
     index += 1;
   }
-  return { index, fenceOpen, bodyStart, bodyHasGlobalMarker };
+  return { index, fenceOpen, bodyStart, firstBodyMarker };
 }
 
 // Carries the scan across updates so a growing tail costs the characters that
@@ -659,8 +674,11 @@ class OpenFenceTracker {
   private text = "";
   private resolved = initialOpenFenceState();
 
-  // Start of the open fence's body, or -1 when the whole-tail repair applies.
-  bodyStart(text: string): number {
+  // Where the open fence's body starts and where its first marker sits, or null
+  // when the whole-tail repair applies.
+  spliceBounds(
+    text: string,
+  ): { bodyStart: number; firstBodyMarker: number } | null {
     if (!hasPrefix(text, this.text)) {
       this.resolved = initialOpenFenceState();
     }
@@ -670,7 +688,13 @@ class OpenFenceTracker {
     }
     this.text = text;
     const live = advanceOpenFence(this.resolved, text, text.length);
-    return live.fenceOpen && !live.bodyHasGlobalMarker ? live.bodyStart : -1;
+    if (!live.fenceOpen) {
+      return null;
+    }
+    return {
+      bodyStart: live.bodyStart,
+      firstBodyMarker: live.firstBodyMarker,
+    };
   }
 }
 
@@ -679,14 +703,34 @@ class OpenFenceTracker {
 // well as off the elided body.
 const OPEN_FENCE_SYNTHETIC_HEAD = "```\n";
 
-// The spliced repair, or null when it cannot be shown to match repairTail.
-// Both refusals fall back to repairing the whole tail: a body still shorter
-// than the window has nothing to elide, and a body whose final line is longer
-// than the window leaves no line boundary to cut on, which is the only place
-// the splice can start without changing what the trailing repairs read.
-function repairOpenFenceTail(tail: string, bodyStart: number): string | null {
+// The spliced repair, or null when it cannot be shown to match repairTail. All
+// four refusals fall back to repairing the whole tail:
+//
+//   a body still shorter than the window has nothing to elide;
+//   a final line longer than the window leaves no line boundary to cut on,
+//     which is the only place the splice can start without changing what the
+//     trailing repairs read;
+//   a PRECEDING line longer than the window puts the cut on the newline that
+//     ends it, so the window holds the final line alone. remend's setext repair
+//     reads exactly one line back, and the synthetic opener standing in for it
+//     is never blank, so a whitespace-only line elided that way turns a tail
+//     ending in `-`, `--`, `=` or `==` into one carrying a zero-width space
+//     that repairing the whole tail does not add, and that the copy button
+//     would then put on the clipboard;
+//   a ` $ or ~ anywhere in what the cut would elide is a character one of
+//     remend's fence notions counts, and the opener cannot stand in for it.
+function repairOpenFenceTail(
+  tail: string,
+  bodyStart: number,
+  firstBodyMarker: number,
+): string | null {
   const cut = tail.indexOf("\n", tail.length - OPEN_FENCE_REPAIR_WINDOW);
-  if (cut < 0 || cut + 1 <= bodyStart) {
+  if (
+    cut < 0 ||
+    cut + 1 <= bodyStart ||
+    tail.indexOf("\n", cut + 1) < 0 ||
+    (firstBodyMarker >= 0 && firstBodyMarker <= cut)
+  ) {
     return null;
   }
   const repaired = remend(OPEN_FENCE_SYNTHETIC_HEAD + tail.slice(cut + 1));
@@ -895,19 +939,19 @@ export class IncrementalMarkdownCache {
   // change the repair of the body, and it stays fixed until the fence closes,
   // so the probe is paid once per fence rather than once per chunk.
   private repairOpenFence(): string | null {
-    const bodyStart = this.fenceTracker.bodyStart(this.tail);
-    if (bodyStart < 0) {
+    const bounds = this.fenceTracker.spliceBounds(this.tail);
+    if (bounds === null) {
       return null;
     }
     const head =
-      repairContextPrefix(this.context) + this.tail.slice(0, bodyStart);
+      repairContextPrefix(this.context) + this.tail.slice(0, bounds.bodyStart);
     if (head !== this.openFenceHead) {
       this.openFenceHead = head;
       const probed = head + OPEN_FENCE_PROBE;
       this.openFenceHeadInert = remend(probed) === probed;
     }
     return this.openFenceHeadInert
-      ? repairOpenFenceTail(this.tail, bodyStart)
+      ? repairOpenFenceTail(this.tail, bounds.bodyStart, bounds.firstBodyMarker)
       : null;
   }
 

@@ -30,6 +30,9 @@ function fenceBody(lines: number): string {
   return body;
 }
 
+// Comfortably past OPEN_FENCE_REPAIR_WINDOW, so the cut cannot land inside it.
+const OVERLONG_BLANK_LINE = 6_000;
+
 const tailOf = (cache: IncrementalMarkdownCache): string =>
   (cache as unknown as { tail: string }).tail;
 
@@ -47,7 +50,15 @@ const contextOf = (cache: IncrementalMarkdownCache): Record<string, unknown> =>
  */
 function assertRepairMatches(text: string, chunk = 192): void {
   const cache = new IncrementalMarkdownCache();
-  for (let end = chunk; end <= text.length; end += chunk) {
+  const ends: number[] = [];
+  for (let end = chunk; end < text.length; end += chunk) {
+    ends.push(end);
+  }
+  // The last frame is fed exactly, not at whatever multiple of the chunk size
+  // happens to land near it. Several of the divergences this file exists to
+  // catch only show on a tail that ends on a specific character.
+  ends.push(text.length);
+  for (const end of ends) {
     const render = cache.update(text.slice(0, end));
     const context = contextOf(cache);
     assert.equal(
@@ -93,6 +104,59 @@ test("display math inside an open fence keeps the whole-tail repair", () => {
 
 test("a marker left open before the fence keeps the whole-tail repair", () => {
   assertRepairMatches(`Intro **bold\n\n\`\`\`python\n${fenceBody(110)}`);
+});
+
+/**
+ * A whitespace-only line longer than the repair window, then a tail that looks
+ * like a setext underline.
+ *
+ * The window is cut at the first line boundary at or after its start, so a
+ * preceding line this long puts the cut on the newline that ENDS it and leaves
+ * the window holding the final line alone. remend's setext repair reads exactly
+ * one line back, and the opener that stands in for the head is never blank, so
+ * the elided blank line used to become a non-blank one and the repair appended a
+ * zero-width space the whole-tail repair does not add -- a hidden character in
+ * rendered code, and on the clipboard behind the copy button.
+ *
+ * Reported on unslothai/unsloth#9517 as review item 3836360429.
+ */
+for (const filler of [" ", "\t"]) {
+  for (const underline of ["-", "--", "=", "=="]) {
+    const label = JSON.stringify(filler);
+    test(`a ${label} line longer than the window before ${underline} keeps the whole-tail repair`, () => {
+      const blank = filler.repeat(OVERLONG_BLANK_LINE);
+      assertRepairMatches(
+        `Here is the code.\n\n\`\`\`python\nx = 1\n${blank}\n${underline}`,
+      );
+    });
+  }
+}
+
+/**
+ * A ` $ or ~ inside the part of the fence body that the window elides.
+ *
+ * remend has at least three notions of "inside a fence" and they disagree: the
+ * escape-aware walk behind `isWithinCodeBlock`, the emphasis counters that
+ * toggle on ``` without honouring a backslash, and the inline-code repair that
+ * just counts /```/g. An escaped \``` or a ```` run flips some and not others,
+ * so the opener that stands in for the elided text cannot reproduce them all
+ * once the elided part carries one of those characters, and the repair appends
+ * a stray closer the whole-tail repair does not add.
+ *
+ * These two are the shrunk reproducers, kept verbatim: the shape needs a stray
+ * backtick before the fence, a longer opener, and an escaped fence inside it,
+ * so a tidier-looking case silently stops covering the bug.
+ */
+test("an escaped fence in the elided body keeps the whole-tail repair", () => {
+  assertRepairMatches(
+    `a\`\n\n\`\`\`\`md\n\\\`\`\`\n${"ab".repeat(3000)}\n===\n`,
+  );
+});
+
+test("an escaped fence before two overlong lines keeps the whole-tail repair", () => {
+  assertRepairMatches(
+    `- a\n- b\n\n\`\`\`\`md\n\\\`\`\`\n* * *\n${" ".repeat(5000)}\n${"x".repeat(5000)}\n\`tick\n`,
+  );
 });
 
 test("a fence that never closes stays live and is never committed away", () => {
