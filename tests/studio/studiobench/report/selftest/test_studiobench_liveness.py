@@ -121,7 +121,13 @@ NOW = "s-now"
 OLD = "s-before"
 
 
-def attempt(session: str, actions: list[dict], *, completed: bool, cell_id: str = "100K/rep0"):
+def attempt(
+    session: str,
+    actions: list[dict],
+    *,
+    completed: bool,
+    cell_id: str = "100K/rep0",
+):
     row = cell(actions, completed = completed, cell_id = cell_id)
     row["session_id"] = session
     return row
@@ -138,8 +144,9 @@ def test_a_resumed_cell_is_not_failed_by_the_attempt_that_died(tmp_path):
     path = write_payload(
         tmp_path,
         [
-            attempt(OLD, [{"action": "message_menu", "ran": False, "reason": "died"}],
-                    completed = False),
+            attempt(
+                OLD, [{"action": "message_menu", "ran": False, "reason": "died"}], completed = False
+            ),
             attempt(NOW, [ran("keystroke"), ran("message_menu")], completed = True),
         ],
     )
@@ -190,8 +197,11 @@ def test_the_latest_attempt_is_judged_on_its_own_failures(tmp_path):
         tmp_path,
         [
             attempt(OLD, [ran("keystroke"), ran("message_menu")], completed = True),
-            attempt(NOW, [{"action": "message_menu", "ran": False, "reason": "died again"}],
-                    completed = False),
+            attempt(
+                NOW,
+                [{"action": "message_menu", "ran": False, "reason": "died again"}],
+                completed = False,
+            ),
         ],
     )
     assert main(["--assert-liveness", str(path)]) == 1
@@ -207,8 +217,9 @@ def test_a_different_cell_in_an_earlier_session_is_not_superseded(tmp_path):
     path = write_payload(
         tmp_path,
         [
-            attempt(OLD, [{"action": "message_menu", "ran": False}],
-                    completed = True, cell_id = "10K/rep0"),
+            attempt(
+                OLD, [{"action": "message_menu", "ran": False}], completed = True, cell_id = "10K/rep0"
+            ),
             attempt(NOW, [ran("keystroke")], completed = True, cell_id = "100K/rep0"),
         ],
     )
