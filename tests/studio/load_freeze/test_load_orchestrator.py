@@ -271,7 +271,12 @@ def _fire_probe(base_url: str) -> dict:
     return r.json()
 
 
-def _health_burst(base_url: str, n_per_worker: int, *, workers: int = 1) -> list[int]:
+def _health_burst(
+    base_url: str,
+    n_per_worker: int,
+    *,
+    workers: int = 1,
+) -> list[int]:
     """Fire ``workers * n_per_worker`` /health requests and return their status codes.
 
     A blocked event loop does not show up here as a slow-but-finished request, it shows
