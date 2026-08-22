@@ -905,9 +905,7 @@ function createStudioDbAdapter(
       const firstAssistant =
         firstUserIndex === -1
           ? undefined
-          : messages.find(
-              (m, i) => m.role === "assistant" && i > firstUserIndex,
-            );
+          : messages.find((m, i) => m.role === "assistant" && i > firstUserIndex);
       const userText = titleTextOf(firstUser) || defaultTitle;
       const assistantText = extractTextParts(firstAssistant);
 
@@ -1324,9 +1322,9 @@ function useStudioRuntimeAdapters(
         }
         // Durable research can outlive this runtime. Reattach its server-owned
         // assistant message to the inline card after navigation or refresh.
-        const researchThreadState = await getResearchThreadState(
-          remoteId,
-        ).catch(() => null);
+        const researchThreadState = await getResearchThreadState(remoteId).catch(
+          () => null,
+        );
         if (researchThreadState) {
           useResearchRunStore
             .getState()
