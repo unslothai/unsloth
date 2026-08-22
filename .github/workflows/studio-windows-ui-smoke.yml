@@ -361,7 +361,7 @@ jobs:
         # packages. windows-latest ships the system frameworks
         # Chromium needs (Edge / WebView2) already.
         run: |
-          python -m pip install 'playwright>=1.45'
+          python -m pip install 'playwright>=1.45,<2'
           python -m playwright install chromium
 
       # Two lanes, concurrently, on one runner.

@@ -244,7 +244,7 @@ jobs:
       - name: Pin the Playwright version so the browser cache has a key
         id: pw
         run: |
-          pip install 'playwright>=1.45'
+          pip install 'playwright>=1.45,<2'
           echo "version=$(python -c 'import playwright; from importlib.metadata import version; print(version("playwright"))')" >> "$GITHUB_OUTPUT"
 
       # Three browser engines, downloaded on every job, on every run, uncached. It was
@@ -844,7 +844,7 @@ jobs:
       - name: Pin the Playwright version so the browser cache has a key
         id: pw
         run: |
-          pip install 'playwright>=1.45'
+          pip install 'playwright>=1.45,<2'
           echo "version=$(python -c 'import playwright; from importlib.metadata import version; print(version("playwright"))')" >> "$GITHUB_OUTPUT"
 
       # Three browser engines, downloaded on every job, on every run, uncached. It was
