@@ -114,6 +114,47 @@ UNSCORED_WINDOW_KINDS: frozenset[str] = frozenset({"idle", "setup"})
 UNAIDED_WINDOW_KINDS: frozenset[str] = frozenset({"gap", "stream"})
 
 
+# The row types keyed by `cell_id`, and so the ones a superseded attempt can leak through.
+ATTEMPT_ROW_TYPES: frozenset[str] = frozenset({"cell", "action", "window"})
+
+
+def latest_attempt_rows(
+    records: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    """Drop the rows of a SUPERSEDED attempt at a cell, keeping every other row untouched.
+
+    `--resume` appends to the payload it is continuing and re-runs the cells that DID NOT
+    complete, and `make_cell_id` is deterministic: the retry of `r10K.base.rep0` is written under
+    the same `cell_id` as the attempt that died. Nothing downstream keys on the attempt, so both
+    were read as one cell. Two ways that produced a wrong number, neither of them visible:
+
+      THE DEAD ATTEMPT'S FRAMES BECAME THE RETRY'S. `_frame_measures` pools every window row
+      carrying the cell id, so a 100 ms frame from the run that crashed stayed the RETRY's
+      `max_frame_ms`, and its gaps stayed in the retry's jank distribution.
+
+      THE RETRY DID NOT COUNT. `measures_from_records` keeps the FIRST cell row per rung and
+      `report.build._completion_by_rung` keeps a failure over a success, so a rung whose only
+      failure had already been re-run successfully still scored zero as INCOMPLETE.
+
+    An attempt is `(cell_id, session_id)` and the LAST one in file order wins, which is the one
+    the resumed run just wrote. Rows without a session id are kept: a payload from before the
+    recorder stamped them cannot be split into attempts, and dropping it would lose the run.
+    """
+    latest: dict[str, Any] = {}
+    for row in records:
+        if row.get("row_type") == "cell" and row.get("cell_id") is not None:
+            latest[str(row.get("cell_id"))] = row.get("session_id")
+
+    out: list[Mapping[str, Any]] = []
+    for row in records:
+        if row.get("row_type") in ATTEMPT_ROW_TYPES:
+            keep = latest.get(str(row.get("cell_id")))
+            if keep is not None and row.get("session_id") not in (None, keep):
+                continue
+        out.append(row)
+    return out
+
+
 def _cell_rows(records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     return [r for r in records if r.get("row_type") == "cell"]
 

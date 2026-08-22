@@ -29,6 +29,26 @@ from . import register_action
 
 SETTLE_TIMEOUT_MS = 8000
 
+#: How long an action that needs the message ACTION BAR waits for it before reporting NOT RUN.
+#:
+#: The bar is mounted `hideWhenRunning`, so Copy, Delete and More do not exist while the thread is
+#: generating. Every film opens these slots after a `send_turn`, spaced by the NOMINAL drain of the
+#: follow-up turn -- FOLLOW_UP_CHARS over the field cadence, 4.59 s. The nominal drain is a floor
+#: rather than an estimate: it assumes the pacer is the binding constraint, and at the 100K rung it
+#: is not. Measured over six 100K cells here, the follow-up streamed for 4.4 to 4.7 s AFTER the
+#: send window closed, so the reply settles within a few hundred milliseconds of the slot on a
+#: quiet machine and a little after it on a loaded one. The CI payload of the run that failed the
+#: liveness gate shows exactly that: one more SSE chunk arrived INSIDE the `message_menu` window
+#: and the reply stopped growing inside it too.
+#:
+#: 1,500 ms, and deliberately NOT `ctx.budget_ms`. The remaining budget at entry is whatever the
+#: previous window's teardown left over -- measured at 51 ms on one of those cells -- so a wait
+#: capped by it is a wait that is not taken in exactly the conditions that need it. It is bounded
+#: so a control that is genuinely absent still reports NOT RUN rather than eating the film: an
+#: action that overruns pushes nothing (every slot has an absolute start) and the overrun is
+#: recorded as `over_budget_ms` on the row.
+ACTION_BAR_WAIT_MS = 1500
+
 
 def _ev(
     ctx: ActionContext,
@@ -724,17 +744,35 @@ def copy_markdown(ctx: ActionContext) -> ActionResult:
     triggers a file download rather than a clipboard write. The action bar has `autohide`, so it
     is hovered first or the button is not in the tree to click.
     """
-    ctx.page.evaluate("""() => {
-        const m = window.__sb.dom.lastAssistantMessage();
-        if (m) m.dispatchEvent(new PointerEvent("pointerover",
-          { bubbles: true, pointerType: "mouse" }));
-    }""")
-    ctx.page.wait_for_timeout(150)
+    # Hover AND WAIT, on the same reasoning as `message_menu`: this bar is `hideWhenRunning`, so a
+    # slot that opens with the follow-up's last chunks still arriving finds no Copy button at all.
+    # The fixed 150 ms this replaced was a hover settle, not a wait for the reply, and it returned
+    # the same "no Copy button" whether the control was missing or merely not mounted yet.
+    found = _ev(
+        ctx,
+        """
+      async (waitMs) => {
+        const found = await window.__sb.dom.waitForActionButton("Copy", waitMs);
+        return { found: Boolean(found.el), waitedMs: found.waitedMs, running: found.running };
+      }
+    """,
+        ACTION_BAR_WAIT_MS,
+    )
+    if not isinstance(found, dict) or not found.get("found"):
+        waited = (found or {}).get("waitedMs") if isinstance(found, dict) else None
+        running = (found or {}).get("running") if isinstance(found, dict) else None
+        return not_run(
+            f"no Copy button on the last assistant message after waiting {waited}ms"
+            + (", and the thread was still generating" if running else "")
+        )
     started = time.monotonic()
     ok_click = _ev(
         ctx,
         """
       () => {
+        // Re-hovered: the wait above ended with a hover, and a re-render between the two
+        // evaluates can unmount the bar again.
+        window.__sb.dom.hoverLastAssistantMessage();
         const b = window.__sb.dom.actionButton("Copy");
         if (!b) return false;
         b.click();
@@ -1175,14 +1213,31 @@ def _click_or_navigate(ctx: ActionContext, selector: str, url: str) -> bool:
 # ── 14. message menu ────────────────────────────────────────────────
 
 MENU_JS = """
-async (timeoutMs) => {
+async (opts) => {
   const D = window.__sb.dom;
-  const message = D.lastAssistantMessage();
-  if (message) {
-    message.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
+  const timeoutMs = opts.timeoutMs;
+  // WAITED FOR, not sampled for. The bar carrying this trigger is `hideWhenRunning`, so the
+  // control is absent -- not hidden -- for as long as the follow-up turn the preceding `send_turn`
+  // started is still arriving. See `dom.js waitForActionButton` for the measurement that says how
+  // late that can be, and why a single sample turns a third of a second of stream into a report of
+  // a missing control. The clock below starts AFTER this returns, so nothing that is waited for
+  // here lands in the latency this action exists to measure.
+  const found = await D.waitForActionButton("More", opts.waitForButtonMs);
+  const trigger = found.el;
+  const waitedMs = found.waitedMs;
+  if (!trigger) {
+    return {
+      ran: false,
+      waitedMs,
+      running: found.running,
+      reason:
+        "no More button on the last assistant message after waiting " + waitedMs + "ms" +
+        (found.running
+          ? ": the thread was STILL GENERATING, which unmounts the action bar, so this slot "
+            + "opened before the reply settled rather than the control being missing"
+          : ""),
+    };
   }
-  const trigger = D.actionButton("More");
-  if (!trigger) return { ran: false, reason: "no More button on the last assistant message" };
   // A MutationObserver flag, NOT a querySelector per frame. The menu content is portaled to the
   // end of document.body, so polling for it walks the whole message list and finds nothing for
   // the entire open latency: a harness cost that grows exactly like the signal being measured.
@@ -1217,7 +1272,7 @@ async (timeoutMs) => {
   const closed = await settle(false);
   const closeMs = closed === null ? null : performance.now() - closeStarted;
   watcher.disconnect();
-  return { ran: true,
+  return { ran: true, waitedMs,
            openMs: openMs === null ? null : Math.round(openMs * 10) / 10,
            closeMs: closeMs === null ? null : Math.round(closeMs * 10) / 10,
            items, bodyPointerEvents,
@@ -1228,12 +1283,22 @@ async (timeoutMs) => {
 
 @register_action(name = "message_menu", default_budget_ms = 12000)
 def message_menu(ctx: ActionContext) -> ActionResult:
-    raw = _ev(ctx, MENU_JS, SETTLE_TIMEOUT_MS)
+    raw = _ev(
+        ctx,
+        MENU_JS,
+        {"timeoutMs": SETTLE_TIMEOUT_MS, "waitForButtonMs": ACTION_BAR_WAIT_MS},
+    )
     err = _failed(raw)
     if err:
         return not_run(err)
     if not raw.get("ran"):
         return not_run(raw.get("reason", "the menu action did not run"))
+    waited_ms = raw.get("waitedMs")
+    if waited_ms:
+        # Logged rather than swallowed. A cell that had to wait says so, because a wait means the
+        # film opened this slot before the follow-up had drained, and that is a fact about the
+        # PACKING which is worth seeing even though the action ran.
+        ctx.log(f"    message_menu waited {waited_ms}ms for the action bar to be mounted")
     # Opened AND closed AND a non-zero item count. Any one of the three alone can be satisfied by
     # a menu that never rendered its items.
     ok = raw["openMs"] is not None and raw["closeMs"] is not None and raw["items"] > 0
@@ -1246,6 +1311,10 @@ def message_menu(ctx: ActionContext) -> ActionResult:
             # fan-out under suspicion. This proves the open really took that path.
             "body_pointer_events_open": raw["bodyPointerEvents"],
             "body_pointer_events_closed": raw["bodyPointerEventsAfterClose"],
+            # In the payload, not only in the log: a run whose cells all waited is a run whose
+            # film opens this slot too early, and that is not visible from a row that only says
+            # `ran`.
+            "action_bar_wait_ms": waited_ms,
         },
         timings = {
             "open_ms": raw["openMs"],
@@ -1266,14 +1335,25 @@ def message_menu(ctx: ActionContext) -> ActionResult:
 # ── 15. delete ──────────────────────────────────────────────────────
 
 DELETE_JS = """
-async (timeoutMs) => {
+async (opts) => {
   const D = window.__sb.dom;
-  const message = D.lastAssistantMessage();
-  if (message) {
-    message.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
+  const timeoutMs = opts.timeoutMs;
+  // "a running message hides it" was already the diagnosis in the line this replaced, and the
+  // action still reported NOT RUN on the first sample rather than waiting for the running message
+  // to stop running. Same wait, same bound and same reporting as `message_menu`.
+  const found = await D.waitForActionButton("Delete message", opts.waitForButtonMs);
+  const button = found.el;
+  const waitedMs = found.waitedMs;
+  if (!button) {
+    return {
+      ran: false,
+      waitedMs,
+      running: found.running,
+      reason:
+        "no Delete button after waiting " + waitedMs + "ms" +
+        (found.running ? ": the thread was still generating, which unmounts the action bar" : ""),
+    };
   }
-  const button = D.actionButton("Delete message");
-  if (!button) return { ran: false, reason: "no Delete button (a running message hides it)" };
   const target = D.lastAssistantMessage();
   const before = D.messageCount();
   const started = performance.now();
@@ -1285,7 +1365,7 @@ async (timeoutMs) => {
     if (target === null || !target.isConnected) { ms = performance.now() - started; break; }
     await window.__sbNextPaint();
   }
-  return { ran: true, ms: ms === null ? null : Math.round(ms * 10) / 10,
+  return { ran: true, waitedMs, ms: ms === null ? null : Math.round(ms * 10) / 10,
            before, after: D.messageCount() };
 }
 """
@@ -1293,7 +1373,11 @@ async (timeoutMs) => {
 
 @register_action(name = "delete_message", default_budget_ms = 15000)
 def delete_message(ctx: ActionContext) -> ActionResult:
-    raw = _ev(ctx, DELETE_JS, SETTLE_TIMEOUT_MS)
+    raw = _ev(
+        ctx,
+        DELETE_JS,
+        {"timeoutMs": SETTLE_TIMEOUT_MS, "waitForButtonMs": ACTION_BAR_WAIT_MS},
+    )
     err = _failed(raw)
     if err:
         return not_run(err)
@@ -1309,6 +1393,7 @@ def delete_message(ctx: ActionContext) -> ActionResult:
             "messages_before": raw["before"],
             "messages_after": raw["after"],
             "dropped": raw["before"] - raw["after"],
+            "action_bar_wait_ms": raw.get("waitedMs"),
         },
         timings = {"delete_ms": raw["ms"]},
         reason = None if ok else f"the message count went {raw['before']} -> {raw['after']}",
