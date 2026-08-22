@@ -44,17 +44,24 @@ _lifecycle_lock = threading.Lock()
 
 
 @contextlib.asynccontextmanager
-async def _unload_gate():
+async def _unload_gate(cancel_event: threading.Event | None = None):
     # Acquire off the loop: non-blocking first (the common uncontended case), else
     # poll a non-blocking acquire off a short sleep. Polling keeps the wait off this
     # loop AND cancellation-safe -- a cancel lands during the sleep, when the gate is
     # not held, so it never leaks (mirrors the auto-switch swap gate).
-    while not _lifecycle_lock.acquire(blocking = False):
-        await asyncio.sleep(0.02)
+    acquired = False
     try:
+        while not _lifecycle_lock.acquire(blocking = False):
+            if cancel_event is not None and cancel_event.is_set():
+                raise asyncio.CancelledError()
+            await asyncio.sleep(0.02)
+        acquired = True
+        if cancel_event is not None and cancel_event.is_set():
+            raise asyncio.CancelledError()
         yield
     finally:
-        _lifecycle_lock.release()
+        if acquired:
+            _lifecycle_lock.release()
 
 
 _INFERENCE_PREFIXES = ("/v1/", "/api/inference/")
@@ -113,6 +120,45 @@ def _note_end() -> None:
     with _lock:
         _inflight = max(0, _inflight - 1)
         _last_active = time.monotonic()
+
+
+class InferenceActivityReservation:
+    """Keep a background inference job visible to lifecycle and idle-unload guards."""
+
+    def __init__(self) -> None:
+        self._state = "new"
+        self._state_lock = threading.Lock()
+
+    def reserve(self) -> None:
+        """Publish pending work synchronously, before its asyncio task can run."""
+        with self._state_lock:
+            if self._state != "new":
+                return
+            _note_pending()
+            self._state = "pending"
+
+    async def start(self, cancel_event: threading.Event | None = None) -> None:
+        """Claim the inference slot after any model lifecycle operation completes."""
+        with self._state_lock:
+            if self._state != "pending":
+                return
+        async with _unload_gate(cancel_event):
+            with self._state_lock:
+                if self._state != "pending":
+                    return
+                _note_start()
+                self._state = "started"
+
+    def finish(self) -> None:
+        """Balance a pending or started reservation. Idempotent."""
+        with self._state_lock:
+            if self._state == "pending":
+                _note_unpending()
+            elif self._state == "started":
+                _note_end()
+            else:
+                return
+            self._state = "finished"
 
 
 def _note_untracked_end() -> None:

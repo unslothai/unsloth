@@ -683,9 +683,9 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         < ensure_compare_model.index("const resp = await loadModel(")
     )
     assert "force_cancel_active:" in SHARED_COMPOSER
-    assert (
-        "resolvedThreadId ===\n              useChatRuntimeStore.getState().activeThreadId"
-        in CHAT_ADAPTER
+    assert re.search(
+        r"resolvedThreadId\s*===\s*useChatRuntimeStore\.getState\(\)\.activeThreadId",
+        CHAT_ADAPTER,
     )
     assert (
         "findLatestUserAudioBase64(\n        survivingMessages,\n        !queuedRunSettings"
@@ -693,11 +693,22 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     assert "if (audioBase64 && !queuedRunSettings)" in CHAT_ADAPTER
     assert ".setThreadContextUsage(usageThreadKey, usage)" in CHAT_ADAPTER
-    assert (
-        "usageThreadIsVisible &&\n"
-        "            useChatRuntimeStore.getState().params.checkpoint === params.checkpoint"
-        in CHAT_ADAPTER
+    assert re.search(
+        r"usageThreadIsVisible\s*&&\s*"
+        r"useChatRuntimeStore\.getState\(\)\.params\.checkpoint\s*===\s*params\.checkpoint",
+        CHAT_ADAPTER,
     )
+
+
+def test_base64_media_turns_stay_on_the_legacy_stream():
+    candidate = _between(
+        CHAT_ADAPTER,
+        "const generationCandidate = Boolean(",
+        ");",
+    )
+    assert "!imageBase64" in candidate
+    assert "!audioBase64" in candidate
+    assert "!videoBase64" in candidate
 
 
 def test_compare_prompt_list_resets_when_preflight_never_starts_a_run():

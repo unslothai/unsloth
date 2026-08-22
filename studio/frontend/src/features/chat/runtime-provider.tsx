@@ -43,6 +43,12 @@ import {
 } from "./api/chat-adapter";
 import { CHAT_HISTORY_UPDATED_EVENT } from "./api/chat-api";
 import { getResearchThreadState } from "./api/research-api";
+import {
+  cancelChatGenerationRun,
+  type ChatGenerationRun,
+  getActiveChatGenerationRuns,
+  followChatGenerationRun,
+} from "./api/chat-generation-api";
 import { sanitizeThreadScopedSettings } from "./utils/thread-scoped-settings";
 import {
   ingestResearchUpdate,
@@ -85,6 +91,26 @@ import {
   releasePreStreamRunReservation,
 } from "./utils/pre-stream-run-reservation";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
+import type { OpenAIChatChunk } from "./types/api";
+import {
+  budgetImpliesTruncation,
+  restoredAssistantStatus,
+} from "./utils/continuation";
+import {
+  generationChunkHasSubstantiveDelta,
+  generationNeedsRecovery,
+  loadGenerationOverlaySnapshot,
+  recoveredReasoningSummaryMetadata,
+  recoveredGenerationFinalMetadata,
+  generationRecoveryMetadata,
+  shouldPreserveGenerationMetadata,
+  subscribeGenerationRecoveryTriggers,
+} from "./utils/chat-generation-recovery";
+import { mergeContextTruncation } from "./utils/context-truncation";
+import {
+  extractDeltaText,
+  parseAssistantContent,
+} from "./utils/parse-assistant-content";
 import {
   chatContentPartAttachmentIdFromSignature,
   chatContentPartAttachmentSignature,
@@ -668,6 +694,14 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
   const savedTiming = custom.timing as
     | import("@assistant-ui/react").MessageTiming
     | undefined;
+  const restoredStatus = restoredAssistantStatus({ custom });
+  const generationStatus = custom.generationStatus;
+  const needsGenerationRecovery =
+    typeof custom.generationRunId === "string" &&
+    (generationStatus === "queued" ||
+      generationStatus === "running" ||
+      generationStatus === "cancelling" ||
+      (generationStatus === "completed" && custom.generationSettled !== true));
   return {
     id: m.id,
     createdAt: new Date(m.createdAt),
@@ -676,7 +710,7 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
       ThreadMessage,
       { role: "assistant" }
     >["content"],
-    status: { type: "complete" as const, reason: "unknown" as const },
+    status: needsGenerationRecovery ? { type: "running" } : restoredStatus,
     metadata: {
       custom,
       ...(savedTiming ? { timing: savedTiming } : {}),
@@ -686,6 +720,285 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
       unstable_state: null,
     },
   };
+}
+
+type GenerationRecovery = {
+  promise: Promise<void>;
+  views: Set<ReturnType<typeof useAui>>;
+};
+
+const generationRecoveries = new Map<string, GenerationRecovery>();
+
+function generationRawContent(content: MessageRecord["content"]): {
+  raw: string;
+  reasoningOpen: boolean;
+} {
+  if (typeof content === "string") {
+    return { raw: content, reasoningOpen: false };
+  }
+  if (!Array.isArray(content)) return { raw: "", reasoningOpen: false };
+  let raw = "";
+  let reasoningOpen = false;
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const record = part as { type?: string; text?: unknown };
+    const text = typeof record.text === "string" ? record.text : "";
+    if (record.type === "reasoning") {
+      if (reasoningOpen) raw += text;
+      else raw += `<think>${text}`;
+      reasoningOpen = true;
+    } else if (record.type === "text") {
+      if (reasoningOpen) raw += "</think>";
+      raw += text;
+      reasoningOpen = false;
+    }
+  }
+  return { raw, reasoningOpen };
+}
+
+function scheduleGenerationRecovery(
+  threadId: string,
+  storedMessage: MessageRecord,
+  aui: ReturnType<typeof useAui>,
+): void {
+  const metadata = (storedMessage.metadata ?? {}) as Record<string, unknown>;
+  const runId = metadata.generationRunId;
+  if (typeof runId !== "string" || !generationNeedsRecovery(metadata)) return;
+  const existingRecovery = generationRecoveries.get(runId);
+  if (existingRecovery) {
+    existingRecovery.views.add(aui);
+    return;
+  }
+  const views = new Set([aui]);
+
+  const recovery = (async () => {
+    let cursor = Number(metadata.generationSeq ?? 0);
+    if (!Number.isSafeInteger(cursor) || cursor < 0) cursor = 0;
+    let { raw, reasoningOpen } = generationRawContent(storedMessage.content);
+    let completionTokens: number | undefined;
+    let recoveryUsage:
+      | {
+          prompt_tokens?: unknown;
+          completion_tokens?: unknown;
+          total_tokens?: unknown;
+          prompt_tokens_details?: { cached_tokens?: unknown };
+          cache_creation_input_tokens?: unknown;
+          cache_read_input_tokens?: unknown;
+        }
+      | undefined;
+    let recoveryTimings: Record<string, unknown> | undefined;
+    let firstChunkAt =
+      typeof metadata.generationFirstChunkAt === "number" &&
+      Number.isFinite(metadata.generationFirstChunkAt)
+        ? metadata.generationFirstChunkAt
+        : undefined;
+    let totalChunks = Number(metadata.generationChunkCount ?? 0);
+    if (!Number.isSafeInteger(totalChunks) || totalChunks < 0) totalChunks = 0;
+    let currentMetadata = { ...metadata };
+    const serverCancel = () => {
+      void cancelChatGenerationRun(runId).catch(() => {});
+    };
+    const runtime = useChatRuntimeStore.getState();
+    runtime.registerThreadServerCancel(threadId, serverCancel);
+    runtime.setThreadRunning(threadId, true, {
+      local: true,
+      owner: serverCancel,
+    });
+
+    const publish = async (run: ChatGenerationRun) => {
+      const status = run.status;
+      const runModel = useChatRuntimeStore
+        .getState()
+        .models.find((model) => model.id === run.requestPayload.model);
+      const lengthLimited =
+        run.finishReason === "length" ||
+        budgetImpliesTruncation({
+          isMlx: runModel?.isMlx === true,
+          maxTokens: run.requestPayload.max_tokens,
+          completionTokens,
+        });
+      let nextMetadata = generationRecoveryMetadata({
+        current: currentMetadata,
+        runId,
+        status,
+        cursor,
+        lastEventSeq: run.lastEventSeq,
+        lengthLimited,
+        firstChunkAt,
+        totalChunks,
+      });
+      if (nextMetadata.generationSettled === true) {
+        nextMetadata = recoveredGenerationFinalMetadata({
+          current: nextMetadata,
+          run,
+          usage: recoveryUsage,
+          timings: recoveryTimings,
+          firstChunkAt,
+          totalChunks,
+        });
+      }
+      currentMetadata = nextMetadata;
+      const content = parseAssistantContent(
+        reasoningOpen ? `${raw}</think>` : raw,
+      ) as MessageRecord["content"];
+      await saveStoredChatMessage({
+        id: storedMessage.id,
+        threadId,
+        parentId: storedMessage.parentId ?? null,
+        role: "assistant",
+        content,
+        metadata: nextMetadata,
+        createdAt: storedMessage.createdAt,
+      }).catch(() => {
+        // The producer may have committed a newer status between the event and
+        // this write. Keep following; the terminal publish carries all content.
+      });
+
+      for (const view of views) {
+        if (view.threadListItem().getState().remoteId !== threadId) continue;
+        try {
+          const exported = view.thread().export();
+          const messages = exported.messages.map((item) =>
+            item.message.id === storedMessage.id
+              ? {
+                  ...item,
+                  message: {
+                    ...item.message,
+                    content,
+                    status: generationNeedsRecovery(nextMetadata)
+                      ? { type: "running" as const }
+                      : restoredAssistantStatus({ custom: nextMetadata }),
+                    metadata: {
+                      ...item.message.metadata,
+                      custom: nextMetadata,
+                    },
+                  } as ThreadMessage,
+                }
+              : item,
+          );
+          view.thread().import({ ...exported, messages });
+        } catch {
+          // Storage remains authoritative if the thread unmounted between awaits.
+        }
+      }
+    };
+
+    try {
+      let lastPublishedStatus = "";
+      let identityValidated = false;
+      for await (const update of followChatGenerationRun(runId, {
+        replayFrom: cursor,
+      })) {
+        if (!identityValidated) {
+          if (
+            update.run.threadId !== threadId ||
+            update.run.assistantMessageId !== storedMessage.id
+          ) {
+            return;
+          }
+          if (cursor === 0 && raw.length === 0) {
+            const requestMessages = update.run.requestPayload.messages;
+            const lastRequestMessage = Array.isArray(requestMessages)
+              ? requestMessages.at(-1)
+              : undefined;
+            if (
+              lastRequestMessage?.role === "assistant" &&
+              typeof lastRequestMessage.content === "string"
+            ) {
+              // Continue sends the old partial as an assistant prefill. The
+              // server-owned placeholder is empty until the first client save,
+              // so a reload before that save must seed replay from the request.
+              raw = lastRequestMessage.content;
+            }
+          }
+          identityValidated = true;
+        }
+        if (update.event && update.event.seq > cursor) {
+          cursor = update.event.seq;
+          if (update.event.type === "chunk") {
+            const chunk = update.event.payload as {
+              _reasoningDurationMs?: unknown;
+              usage?: {
+                prompt_tokens?: unknown;
+                completion_tokens?: unknown;
+                total_tokens?: unknown;
+                prompt_tokens_details?: { cached_tokens?: unknown };
+                cache_creation_input_tokens?: unknown;
+                cache_read_input_tokens?: unknown;
+              };
+              timings?: Record<string, unknown>;
+              choices?: Array<{
+                delta?: {
+                  content?: unknown;
+                  reasoning_content?: unknown;
+                };
+              }>;
+              context_truncated?: OpenAIChatChunk["context_truncated"];
+            };
+            if ("_reasoningDurationMs" in chunk) {
+              currentMetadata = recoveredReasoningSummaryMetadata(
+                currentMetadata,
+                chunk._reasoningDurationMs,
+              );
+              lastPublishedStatus = update.run.status;
+              await publish(update.run);
+              continue;
+            }
+            totalChunks += 1;
+            if (generationChunkHasSubstantiveDelta(chunk)) {
+              firstChunkAt ??= update.event.createdAt;
+            }
+            if (chunk.context_truncated) {
+              currentMetadata = {
+                ...currentMetadata,
+                contextTruncation: mergeContextTruncation(
+                  currentMetadata.contextTruncation as OpenAIChatChunk["context_truncated"],
+                  chunk.context_truncated,
+                ),
+              };
+            }
+            if (chunk.usage) recoveryUsage = chunk.usage;
+            if (chunk.timings) recoveryTimings = chunk.timings;
+            if (typeof chunk.usage?.completion_tokens === "number") {
+              completionTokens = chunk.usage.completion_tokens;
+            }
+            const deltaRecord = chunk.choices?.[0]?.delta;
+            const reasoning =
+              typeof deltaRecord?.reasoning_content === "string"
+                ? deltaRecord.reasoning_content
+                : "";
+            const delta = extractDeltaText(deltaRecord?.content).text;
+            if (reasoning) {
+              if (!reasoningOpen) raw += "<think>";
+              raw += reasoning;
+              reasoningOpen = true;
+            }
+            if (delta) {
+              if (reasoningOpen) raw += "</think>";
+              raw += delta;
+              reasoningOpen = false;
+            }
+          }
+        }
+        const shouldPublish =
+          update.event?.type === "chunk" ||
+          update.run.status !== lastPublishedStatus ||
+          (["cancelled", "completed", "failed"].includes(update.run.status) &&
+            cursor >= update.run.lastEventSeq);
+        if (shouldPublish) {
+          lastPublishedStatus = update.run.status;
+          await publish(update.run);
+        }
+      }
+    } finally {
+      const store = useChatRuntimeStore.getState();
+      store.setThreadRunning(threadId, false, { owner: serverCancel });
+      store.clearThreadServerCancel(threadId, serverCancel);
+    }
+  })()
+    .catch(() => {})
+    .finally(() => generationRecoveries.delete(runId));
+  generationRecoveries.set(runId, { promise: recovery, views });
 }
 
 export async function ensureThreadRecord({
@@ -867,7 +1180,9 @@ function createStudioDbAdapter(
       // while the creator is still queued. Use the same retry choke point as other mutations so a
       // temporarily missing row does not permanently skip first-turn title generation. A title is
       // cosmetic, so a row that never landed falls back to the default rather than rejecting here.
-      const thread = await ensureStoredChatThread(remoteId).catch(() => undefined);
+      const thread = await ensureStoredChatThread(remoteId).catch(
+        () => undefined,
+      );
       const defaultTitle = "New Chat";
 
       function streamTitle(title: string) {
@@ -905,7 +1220,9 @@ function createStudioDbAdapter(
       const firstAssistant =
         firstUserIndex === -1
           ? undefined
-          : messages.find((m, i) => m.role === "assistant" && i > firstUserIndex);
+          : messages.find(
+              (m, i) => m.role === "assistant" && i > firstUserIndex,
+            );
       const userText = titleTextOf(firstUser) || defaultTitle;
       const assistantText = extractTextParts(firstAssistant);
 
@@ -930,10 +1247,11 @@ function createStudioDbAdapter(
           const running = useChatRuntimeStore.getState().runningByThreadId;
           if (running[paired.id]) {
             setTimeout(() => {
-              void createStudioDbAdapter(modelType, pairId, projectId).generateTitle(
-                remoteId,
-                messages,
-              );
+              void createStudioDbAdapter(
+                modelType,
+                pairId,
+                projectId,
+              ).generateTitle(remoteId, messages);
             }, 600);
             return streamTitle(thread.title || defaultTitle);
           }
@@ -1030,7 +1348,9 @@ async function waitForRunStartHistoryAppend(
     return;
   }
   const runStartReady = pendingRunStartReadyByMessageId.get(userMessage.id);
-  const historyAppendReady = pendingHistoryAppendByMessageId.get(userMessage.id);
+  const historyAppendReady = pendingHistoryAppendByMessageId.get(
+    userMessage.id,
+  );
   if (runStartReady === undefined && historyAppendReady === undefined) {
     return undefined;
   }
@@ -1055,7 +1375,9 @@ async function waitForRunStartHistoryAppend(
   return adoptedThreadId;
 }
 
-function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter {
+function createPersistedRunAdapter(
+  adapter: ChatModelAdapter,
+): ChatModelAdapter {
   return {
     ...adapter,
     async *run(options) {
@@ -1082,10 +1404,7 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
       };
       throwIfReservationCancelled();
       const persistedRunThreadIds = preStreamRunThreadIdsForRuntime(
-        [
-          ...reservationThreadIds,
-          ...trackedRunStartThreadIds,
-        ],
+        [...reservationThreadIds, ...trackedRunStartThreadIds],
         undefined,
       );
       let adoptedThreadId: string | undefined;
@@ -1137,6 +1456,31 @@ function useStudioRuntimeAdapters(
   pairId?: string,
 ): StudioRuntimeAdapters {
   const aui = useAui();
+
+  useEffect(() => {
+    const recoverCurrentThread = () => {
+      const remoteId = aui.threadListItem().getState().remoteId;
+      if (!remoteId) return;
+      void listStoredChatMessages(remoteId)
+        .then((messages) => {
+          for (const message of messages) {
+            if (
+              message.role === "assistant" &&
+              typeof (message.metadata as Record<string, unknown> | undefined)
+                ?.generationRunId === "string"
+            ) {
+              scheduleGenerationRecovery(remoteId, message, aui);
+            }
+          }
+        })
+        .catch(() => {});
+    };
+    return subscribeGenerationRecoveryTriggers(
+      globalThis,
+      document,
+      recoverCurrentThread,
+    );
+  }, [aui]);
 
   // Mirror Data-tab attachment deletions into the loaded thread. The in-memory
   // repository otherwise keeps the attachment, and a later repo-to-storage sync
@@ -1223,8 +1567,7 @@ function useStudioRuntimeAdapters(
                     ...(Array.isArray(attachments)
                       ? {
                           attachments: attachments.filter(
-                            (attachment) =>
-                              attachment.id !== attachmentId,
+                            (attachment) => attachment.id !== attachmentId,
                           ),
                         }
                       : {}),
@@ -1247,9 +1590,7 @@ function useStudioRuntimeAdapters(
             ).attachments;
             if (
               Array.isArray(attachments) &&
-              attachments.some(
-                (attachment) => attachment.id === attachmentId,
-              )
+              attachments.some((attachment) => attachment.id === attachmentId)
             ) {
               changed = true;
               return {
@@ -1313,19 +1654,40 @@ function useStudioRuntimeAdapters(
           assistant: 2,
         };
         let msgs: MessageRecord[];
+        let activeGenerationRuns: ChatGenerationRun[];
         try {
-          msgs = await listStoredChatMessages(remoteId);
+          const snapshot = await loadGenerationOverlaySnapshot(
+            remoteId,
+            getActiveChatGenerationRuns,
+            listStoredChatMessages,
+          );
+          msgs = snapshot.messages;
+          activeGenerationRuns = snapshot.activeRuns;
         } catch (error) {
           if (!isExpectedBackgroundChatStorageError(error)) {
             throw error;
           }
           msgs = [];
+          activeGenerationRuns = [];
+        }
+        for (const run of activeGenerationRuns) {
+          const assistant = msgs.find(
+            (message) => message.id === run.assistantMessageId,
+          );
+          if (!assistant) continue;
+          assistant.metadata = {
+            ...(assistant.metadata ?? {}),
+            generationRunId: run.id,
+            generationStatus: run.status,
+            generationSettled: false,
+            serverManaged: true,
+          };
         }
         // Durable research can outlive this runtime. Reattach its server-owned
         // assistant message to the inline card after navigation or refresh.
-        const researchThreadState = await getResearchThreadState(remoteId).catch(
-          () => null,
-        );
+        const researchThreadState = await getResearchThreadState(
+          remoteId,
+        ).catch(() => null);
         if (researchThreadState) {
           useResearchRunStore
             .getState()
@@ -1354,6 +1716,23 @@ function useStudioRuntimeAdapters(
           if (aOrder !== bOrder) return aOrder - bOrder;
           return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
         });
+        for (const message of msgs) {
+          if (
+            message.role === "assistant" &&
+            typeof (message.metadata as Record<string, unknown> | undefined)
+              ?.generationRunId === "string"
+          ) {
+            scheduleGenerationRecovery(
+              remoteId,
+              {
+                ...message,
+                content: cloneContent(message.content),
+                metadata: { ...(message.metadata ?? {}) },
+              },
+              aui,
+            );
+          }
+        }
 
         // Restore context usage from last assistant message if model matches.
         const lastAssistant = [...msgs]
@@ -1430,9 +1809,7 @@ function useStudioRuntimeAdapters(
         const localThreadId = aui.threadListItem().getState().id;
         const historyClearGeneration = chatHistoryClearBoundary.capture();
         const throwIfHistoryWasCleared = async (remoteId: string) => {
-          if (
-            chatHistoryClearBoundary.capture() === historyClearGeneration
-          ) {
+          if (chatHistoryClearBoundary.capture() === historyClearGeneration) {
             return;
           }
           markChatThreadDeleted(remoteId);
@@ -1481,26 +1858,40 @@ function useStudioRuntimeAdapters(
           await throwIfHistoryWasCleared(remoteId);
           const content = cloneContent(message.content);
           const attachments =
-            message.role === "user" ? cloneAttachments(message.attachments) : [];
+            message.role === "user"
+              ? cloneAttachments(message.attachments)
+              : [];
           const custom = message.metadata?.custom;
           const createdAt =
             existingMessage?.createdAt ??
             message.createdAt?.getTime?.() ??
-              Date.now();
+            Date.now();
           const existingMetadata = existingMessage?.metadata;
           const incomingRevision = Number(
-            (custom as Record<string, unknown> | undefined)?.serverRevision ?? -1,
+            (custom as Record<string, unknown> | undefined)?.serverRevision ??
+              -1,
           );
-          const existingRevision = Number(existingMetadata?.serverRevision ?? -1);
+          const existingRevision = Number(
+            existingMetadata?.serverRevision ?? -1,
+          );
           const incomingMetadata = custom as
             | Record<string, unknown>
             | undefined;
           const sameResearchRun =
             typeof existingMetadata?.researchRunId === "string" &&
             existingMetadata.researchRunId === incomingMetadata?.researchRunId;
+          const sameGenerationRun =
+            typeof existingMetadata?.generationRunId === "string" &&
+            existingMetadata.generationRunId ===
+              incomingMetadata?.generationRunId;
+          const preserveGeneration = shouldPreserveGenerationMetadata(
+            existingMetadata,
+            incomingMetadata,
+          );
           const preserveServerManaged =
             existingMetadata?.serverManaged === true &&
-            (sameResearchRun ||
+            (preserveGeneration ||
+              sameResearchRun ||
               !incomingMetadata?.serverManaged ||
               existingRevision > incomingRevision);
           // Echo the backend's stored metadata verbatim on autosave: merging
@@ -1588,7 +1979,9 @@ function useRuntimeHook(
 }
 
 function createRuntimeHook(modelType: ModelType, pairId?: string) {
-  return function useConfiguredRuntimeHook(): ReturnType<typeof useLocalRuntime> {
+  return function useConfiguredRuntimeHook(): ReturnType<
+    typeof useLocalRuntime
+  > {
     return useRuntimeHook(modelType, pairId);
   };
 }
@@ -1680,7 +2073,14 @@ function ThreadNewChatSwitch({
     // runActive is a DEPENDENCY, not just a guard: refreshContextUsage declines while anything
     // generates, and nothing else re-fires this when the run ends. ThreadContextUsageRecount
     // cannot cover for it -- an unpersisted New Chat has no activeThreadId.
-  }, [checkpoint, ggufContextLength, isLoading, modelLoading, nonce, runActive]);
+  }, [
+    checkpoint,
+    ggufContextLength,
+    isLoading,
+    modelLoading,
+    nonce,
+    runActive,
+  ]);
 
   return null;
 }
@@ -1846,7 +2246,9 @@ function ThreadScopedSettingsSync({
           // the response spells every omitted field as null, which is not a value to apply.
           applyThreadScopedSettings(
             activeThreadId,
-            thread.settings ? sanitizeThreadScopedSettings(thread.settings) : null,
+            thread.settings
+              ? sanitizeThreadScopedSettings(thread.settings)
+              : null,
           );
         })
         // A failed read leaves the installation defaults up (dropped to above), not the
@@ -1987,7 +2389,11 @@ function CancelRegistrar(): ReactElement | null {
     if (!mainThreadId) return;
     const runtime = aui.threads().__internal_getAssistantRuntime?.();
     const threadIds = Array.from(
-      new Set([mainThreadId, remoteThreadId].filter((id): id is string => Boolean(id))),
+      new Set(
+        [mainThreadId, remoteThreadId].filter((id): id is string =>
+          Boolean(id),
+        ),
+      ),
     );
     const cancel = () => {
       for (const threadId of threadIds) {
@@ -2028,9 +2434,7 @@ function CancelRegistrar(): ReactElement | null {
           return;
         }
         for (const threadId of threadIds) {
-          useChatRuntimeStore
-            .getState()
-            .clearThreadCancel(threadId, cancel);
+          useChatRuntimeStore.getState().clearThreadCancel(threadId, cancel);
         }
         unsubscribe();
       });

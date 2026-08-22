@@ -51,6 +51,10 @@ def __getattr__(name: str):
 logger = get_logger(__name__)
 
 
+class _LoadCancelled(Exception):
+    """Internal control flow for a caller-cancelled model load."""
+
+
 _CTX = mp.get_context("spawn")
 
 
@@ -558,6 +562,7 @@ class InferenceOrchestrator:
         self,
         expected_type: str,
         timeout: float = 300.0,
+        cancel_event: Optional[threading.Event] = None,
     ) -> dict:
         """Block until a response of the expected type arrives.
 
@@ -575,8 +580,11 @@ class InferenceOrchestrator:
         deadline = time.monotonic() + timeout
 
         while time.monotonic() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                raise _LoadCancelled()
             remaining = max(0.1, deadline - time.monotonic())
-            resp = self._read_resp(timeout = min(remaining, 1.0))
+            poll_seconds = 0.1 if cancel_event is not None else 1.0
+            resp = self._read_resp(timeout = min(remaining, poll_seconds))
 
             if resp is None:
                 # Check subprocess health
@@ -1322,6 +1330,11 @@ class InferenceOrchestrator:
             # Parent-detected backend for the worker's apply_gpu_ids().
             sub_config["device_backend"] = get_device().value
 
+            if load_cancel_event is not None and load_cancel_event.is_set():
+                self.loading_models.discard(model_name)
+                logger.info("Load cancelled before worker teardown: %s", model_name)
+                return False
+
             # Recheck the sidecar reservation BEFORE tearing the old worker down,
             # for REPAIRS only: an install holds this same lifecycle gate, so it
             # cannot swap while this load runs, and its queued-load snapshot
@@ -1365,7 +1378,10 @@ class InferenceOrchestrator:
                 # lands before any child exists (GPU placement, or between retries) there is
                 # nothing to kill, and without this check the loop would spawn a worker and
                 # load the model after /unload reported it unloaded. Observe removal and stop.
-                if model_name not in self.loading_models:
+                if model_name not in self.loading_models or (
+                    load_cancel_event is not None and load_cancel_event.is_set()
+                ):
+                    self.loading_models.discard(model_name)
                     logger.info(
                         "Load for '%s' was cancelled before spawn; not starting a worker",
                         model_name,
@@ -1390,7 +1406,10 @@ class InferenceOrchestrator:
                 # orphaning this fresh worker; the load would then wait for "loaded" and
                 # publish a model /unload reported unloaded, over a live subprocess nothing
                 # reaps. Recheck now the child exists and tear it down before publishing.
-                if model_name not in self.loading_models:
+                if model_name not in self.loading_models or (
+                    load_cancel_event is not None and load_cancel_event.is_set()
+                ):
+                    self.loading_models.discard(model_name)
                     logger.info(
                         "Load for '%s' was cancelled during spawn; tearing the worker down",
                         model_name,
@@ -1401,7 +1420,20 @@ class InferenceOrchestrator:
                     return False
 
                 try:
-                    resp = self._wait_response("loaded")
+                    if load_cancel_event is None:
+                        resp = self._wait_response("loaded")
+                    else:
+                        resp = self._wait_response("loaded", cancel_event = load_cancel_event)
+                except _LoadCancelled:
+                    logger.info(
+                        "Load for '%s' was cancelled while waiting for 'loaded'",
+                        model_name,
+                    )
+                    self.loading_models.discard(model_name)
+                    self._shutdown_subprocess(timeout = 5)
+                    self.active_model_name = None
+                    self.models.clear()
+                    return False
                 except DownloadStallError:
                     # First stall with Xet on -> retry with Xet disabled
                     if attempt == 0 and not disable_xet:
@@ -1429,12 +1461,20 @@ class InferenceOrchestrator:
                     # /unload reported cancelled, over a subprocess cancel_load just killed;
                     # its post-teardown re-clear cannot undo a publish that lands after it
                     # returns. Observe the removal and abort; cancel_load owns teardown.
-                    if model_name not in self.loading_models:
+                    if model_name not in self.loading_models or (
+                        load_cancel_event is not None and load_cancel_event.is_set()
+                    ):
+                        cancelled_by_event = (
+                            load_cancel_event is not None and load_cancel_event.is_set()
+                        )
+                        self.loading_models.discard(model_name)
                         logger.info(
                             "Load for '%s' was cancelled while waiting for 'loaded'; "
                             "not publishing the cancelled model",
                             model_name,
                         )
+                        if cancelled_by_event:
+                            self._shutdown_subprocess(timeout = 5)
                         self.active_model_name = None
                         self.models.clear()
                         return False

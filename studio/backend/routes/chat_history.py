@@ -33,7 +33,7 @@ from storage.studio_db import (
     count_forks_for_message,
     delete_chat_attachment,
     delete_chat_project,
-    delete_chat_threads,
+    delete_chat_threads_with_active_runs,
     ensure_chat_project_workspace,
     fork_chat_thread,
     fork_counts_for_thread,
@@ -307,6 +307,7 @@ class ChatMessageListResponse(BaseModel):
 class ChatMessageSyncRequest(BaseModel):
     messages: list[ChatMessage]
     pruneMissing: bool = False
+    deletedMessageIds: list[str] = Field(default_factory = list)
 
 
 class ChatDeleteRequest(BaseModel):
@@ -699,6 +700,25 @@ def _cancel_active_generations(thread_ids: list[str]) -> None:
             continue
 
 
+def _cancel_chat_generation_runs(request: Request, run_ids: list[str]) -> None:
+    """Cancel durable producers whose rows were captured before thread cascade."""
+    if not run_ids:
+        return
+    supervisor = getattr(request.app.state, "chat_generation_supervisor", None)
+    for run_id in run_ids:
+        try:
+            if supervisor is not None:
+                supervisor.cancel(run_id)
+            else:
+                from routes.inference import _cancel_by_cancel_id_or_stash
+                from state import active_generations
+
+                active_generations.cancel_run(run_id)
+                _cancel_by_cancel_id_or_stash(run_id)
+        except Exception:  # noqa: BLE001 - deletion must still complete
+            logger.warning("Could not signal chat generation run %s", run_id, exc_info = True)
+
+
 @router.delete("/threads")
 async def delete_threads(
     payload: ChatDeleteRequest,
@@ -709,8 +729,12 @@ async def delete_threads(
 
     # Before the rows go, so a thread id that comes back in the gap is cut here.
     cutoff = _archive_cutoff()
-    deleted_research_run_ids = await run_in_threadpool(delete_chat_threads, payload.ids)
+    deleted_research_run_ids, deleted_chat_run_ids = await run_in_threadpool(
+        delete_chat_threads_with_active_runs,
+        payload.ids,
+    )
     _cancel_research_runs(request, deleted_research_run_ids)
+    _cancel_chat_generation_runs(request, deleted_chat_run_ids)
     _cancel_active_generations(payload.ids)
     # Keyed by thread id, so nothing can reference the folder once the thread
     # is gone. Clean it up rather than leaking one per chat.
@@ -1065,19 +1089,21 @@ async def delete_project(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
+    # The transaction is authoritative about membership and captured the worker ids before its
+    # cascades. Signal them before any potentially slow RAG or workspace cleanup.
+    member_ids = list(project.get("memberIds") or [])
+    _cancel_research_runs(request, list(project.get("activeResearchRunIds") or []))
+    _cancel_chat_generation_runs(
+        request,
+        list(project.get("activeChatGenerationRunIds") or []),
+    )
+    _cancel_active_generations(member_ids)
     # before any workspace work: the row is already gone, so a later failure must not
     # leave the scope owned by nothing
     try:
         await run_in_threadpool(_delete_project_rag_sources, project_id)
     except Exception:  # noqa: BLE001 - source cleanup must not block project deletion
         logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
-    # The transaction is the only authority on membership and it runs first, so
-    # a chat moved in just before is deleted and one moved out survives. An
-    # earlier listing would stop a chat that is still there.
-    member_ids = list(project.get("memberIds") or [])
-    # By run id: the rows are gone by now, so there is nothing left to look up.
-    _cancel_research_runs(request, list(project.get("activeResearchRunIds") or []))
-    _cancel_active_generations(member_ids)
     # The project's chats go with it, so their archives have to as well.
     await run_in_threadpool(_remove_conversation_archives, member_ids, cutoff = cutoff)
     if project.get("sandboxPath"):
@@ -1241,6 +1267,7 @@ def save_thread_message(
     thread_id: str,
     message_id: str,
     payload: ChatMessage,
+    allow_generation_edit: Annotated[bool, Query(alias = "allowGenerationEdit")] = False,
     current_subject: str = Depends(get_current_subject),
 ):
     if thread_id != payload.threadId or message_id != payload.id:
@@ -1248,7 +1275,9 @@ def save_thread_message(
     if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     try:
-        return ChatMessage(**upsert_chat_message(payload.model_dump()))
+        return ChatMessage(
+            **upsert_chat_message(payload.model_dump(), allow_generation_edit = allow_generation_edit)
+        )
     except sqlite3.IntegrityError as exc:
         if get_chat_thread(thread_id) is None:
             raise _missing_thread_error(thread_id) from exc
@@ -1288,6 +1317,7 @@ def replace_thread_messages(
                     thread_id,
                     messages,
                     prune_missing = payload.pruneMissing,
+                    deleted_message_ids = payload.deletedMessageIds,
                 )
             ]
         )
@@ -1346,20 +1376,23 @@ async def clear_history(
         else [thread["id"] for thread in await run_in_threadpool(list_chat_threads)]
     )
 
-    def _clear_rows() -> tuple[list[str], list[str]]:
+    def _clear_rows() -> tuple[list[str], list[str], list[str]]:
         if payload is None:
-            cleared, cleared_runs = clear_chat_history()
+            cleared, cleared_runs, cleared_chat_runs = clear_chat_history(
+                include_chat_generation_runs = True
+            )
         else:
-            cleared, cleared_runs = clear_chat_history(
+            cleared, cleared_runs, cleared_chat_runs = clear_chat_history(
                 payload.ids,
                 operation_id = payload.operationId,
+                include_chat_generation_runs = True,
             )
-        return cleared, cleared_runs
+        return cleared, cleared_runs, cleared_chat_runs
 
     # The clear reports what it deleted, which is what gets cleaned up: a thread
     # added between the listing above and the delete is gone too, and its
     # sandbox would otherwise be stranded.
-    cleared, cleared_runs = await run_in_threadpool(_clear_rows)
+    cleared, cleared_runs, cleared_chat_runs = await run_in_threadpool(_clear_rows)
     # A chat started between the listing and the transaction is in `cleared`
     # but was never cancelled, and a generation still running would dispatch a
     # tool and rebuild the sandbox this call is about to remove.
@@ -1370,6 +1403,7 @@ async def clear_history(
         _cancel_active_generations(late)
     # By id: the rows went with the threads, so nothing can look them up now.
     _cancel_research_runs(request, cleared_runs)
+    _cancel_chat_generation_runs(request, cleared_chat_runs)
     # Same archive cleanup as DELETE /threads. Without it "Clear all chats" leaves every
     # conversation searchable in rag.db, and a reused thread id reads the old archive.
     await run_in_threadpool(

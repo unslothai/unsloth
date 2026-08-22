@@ -35,28 +35,55 @@ class ActiveGeneration:
     Each __enter__ mints its own handle, so overlapping uses never clobber.
     """
 
-    __slots__ = ("thread_id", "cancel_event", "model", "kind", "_handle")
+    __slots__ = (
+        "thread_id",
+        "run_id",
+        "cancel_event",
+        "model",
+        "kind",
+        "_handle",
+        "_borrowed",
+    )
 
     def __init__(
         self,
         cancel_event: threading.Event,
         *,
         thread_id: Optional[str] = None,
+        run_id: Optional[str] = None,
         model: Optional[str] = None,
         kind: str = "chat",
     ):
         self.thread_id = thread_id or None
+        self.run_id = run_id or None
         self.cancel_event = cancel_event
         self.model = model or None
         self.kind = kind
         self._handle: Optional[str] = None
+        self._borrowed = False
 
     def __enter__(self) -> "ActiveGeneration":
-        self._handle = uuid.uuid4().hex
         with _LOCK:
+            # A durable supervisor registers before model loading starts. The
+            # route later enters its normal tracker with that exact event/run;
+            # borrow the outer registration so lifecycle counts stay truthful.
+            if self.run_id:
+                for entry in _ACTIVE.values():
+                    if entry["run_id"] != self.run_id or entry["event"] is not self.cancel_event:
+                        continue
+                    if self.thread_id:
+                        entry["thread_id"] = self.thread_id
+                    if self.model:
+                        entry["model"] = self.model
+                    if self.kind:
+                        entry["kind"] = self.kind
+                    self._borrowed = True
+                    return self
+            self._handle = uuid.uuid4().hex
             _ACTIVE[self._handle] = {
                 "handle": self._handle,
                 "thread_id": self.thread_id,
+                "run_id": self.run_id,
                 "model": self.model,
                 "kind": self.kind,
                 "started_at": time.time(),
@@ -65,6 +92,9 @@ class ActiveGeneration:
         return self
 
     def __exit__(self, *exc) -> bool:
+        if self._borrowed:
+            self._borrowed = False
+            return False
         handle, self._handle = self._handle, None
         if handle is not None:
             with _LOCK:
@@ -81,6 +111,7 @@ def snapshot() -> list[dict[str, Any]]:
         {
             "handle": e["handle"],
             "thread_id": e["thread_id"],
+            "run_id": e["run_id"],
             "model": e["model"],
             "kind": e["kind"],
             "started_at": e["started_at"],
@@ -132,6 +163,20 @@ def cancel_thread(thread_id: str) -> int:
         return 0
     with _LOCK:
         events = [e["event"] for e in _ACTIVE.values() if e["thread_id"] == thread_id]
+    for ev in events:
+        try:
+            ev.set()
+        except Exception:
+            pass
+    return len(events)
+
+
+def cancel_run(run_id: str) -> int:
+    """Signal only the generation registered for a durable Studio run."""
+    if not run_id:
+        return 0
+    with _LOCK:
+        events = [e["event"] for e in _ACTIVE.values() if e["run_id"] == run_id]
     for ev in events:
         try:
             ev.set()

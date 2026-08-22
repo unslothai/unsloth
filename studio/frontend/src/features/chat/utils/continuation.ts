@@ -48,6 +48,20 @@ export function readIncompleteInfo(metadata: unknown): IncompleteInfo | null {
   return null;
 }
 
+/** Restore assistant-ui's status without losing the product-specific stop reason. */
+export function restoredAssistantStatus(
+  metadata: unknown,
+): import("@assistant-ui/react").MessageStatus {
+  const incomplete = readIncompleteInfo(metadata);
+  if (!incomplete) {
+    return { type: "complete", reason: "unknown" };
+  }
+  return {
+    type: "incomplete",
+    reason: incomplete.reason === "cancelled" ? "cancelled" : "error",
+  };
+}
+
 const INCOMPLETE_LABELS: Record<IncompleteReason, string> = {
   length: "Response hit the Max Tokens limit",
   cancelled: "Response stopped",

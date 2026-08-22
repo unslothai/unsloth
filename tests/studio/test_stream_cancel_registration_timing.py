@@ -100,10 +100,10 @@ def test_no_tracker_enter_inside_async_generators():
 def test_tracker_enter_exists_in_sync_body_of_chat_completions():
     top = None
     for n in ast.walk(_TREE):
-        if isinstance(n, ast.AsyncFunctionDef) and n.name == "openai_chat_completions":
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "produce_openai_chat_completions":
             top = n
             break
-    assert top is not None, "openai_chat_completions handler missing"
+    assert top is not None, "produce_openai_chat_completions handler missing"
     count = 0
     for sub in ast.walk(top):
         if not isinstance(sub, ast.Call):
@@ -117,7 +117,7 @@ def test_tracker_enter_exists_in_sync_body_of_chat_completions():
         ):
             count += 1
     assert count >= 3, (
-        f"expected >=3 _tracker.__enter__() calls in openai_chat_completions "
+        f"expected >=3 _tracker.__enter__() calls in produce_openai_chat_completions "
         f"(one per streaming path), got {count}"
     )
 
@@ -148,7 +148,7 @@ def test_async_generators_cleanup_tracker_in_finally():
 
 
 def test_chat_completions_streams_avoid_starlette_task_group():
-    top = _async_function("openai_chat_completions")
+    top = _async_function("produce_openai_chat_completions")
     legacy_calls = []
     same_task_calls = 0
     for sub in ast.walk(top):
@@ -190,7 +190,7 @@ def test_openai_passthrough_stream_avoids_starlette_task_group():
 
 
 def test_local_chat_streams_install_same_task_disconnect_watcher():
-    top = _async_function("openai_chat_completions")
+    top = _async_function("produce_openai_chat_completions")
     assert _calls_name(top, "_await_disconnect_then_cancel"), (
         "Local same-task streams must watch request disconnects themselves; "
         "do not restore Starlette's task-group StreamingResponse for this."
@@ -725,7 +725,7 @@ def test_stream_chunks_cancel_branch_resets_backend_state():
     fn = None
     top = None
     for n in ast.walk(_TREE):
-        if isinstance(n, ast.AsyncFunctionDef) and n.name == "openai_chat_completions":
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "produce_openai_chat_completions":
             top = n
             break
     assert top is not None
