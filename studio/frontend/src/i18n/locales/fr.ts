@@ -1073,6 +1073,10 @@ export const fr = {
           "Garde l'agent parent sur son modèle actuel et enregistre Unsloth comme sous-agent local (Claude Code, Codex et OpenCode).",
         apiKey:
           "Fournit votre clé API Unsloth, ou lit la variable UNSLOTH_API_KEY.",
+        reasoning:
+          "Utiliser le raisonnement dans le chat : on, off ou auto. Auto suit le modèle de chat du modèle, ce qui veut généralement dire on.",
+        reasoningEffort:
+          "Effort de raisonnement transmis au modèle de chat du modèle, par exemple medium. Les niveaux dépendent du modèle, utilisez-en un qu'il accepte. Sans valeur, le niveau du modèle de chat s'applique.",
         yolo:
           "Ignore les demandes d'autorisation. À n'utiliser que dans des environnements de confiance.",
       },

@@ -1030,6 +1030,10 @@ export const ja = {
           "親エージェントを現在のモデルのままにし、Unsloth をローカルのサブエージェントとして登録します (Claude Code、Codex、OpenCode)。",
         apiKey:
           "Unsloth の API キーを指定します (または UNSLOTH_API_KEY を設定)。",
+        reasoning:
+          "チャットで推論を使うかどうか: on、off、auto。auto はモデルのチャットテンプレートに従い、通常は on になります。",
+        reasoningEffort:
+          "モデルのチャットテンプレートに渡す推論の強さ (例: medium)。指定できる値はモデルごとに異なるため、そのモデルが受け付ける値を渡してください。未指定ならテンプレートの値が使われます。",
         yolo:
           "承認の確認をスキップします。信頼できる環境でのみ使用してください。",
       },
