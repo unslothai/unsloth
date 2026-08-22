@@ -1317,3 +1317,98 @@ def test_the_repetition_that_missed_its_slot_is_what_the_verdict_turns_on(tmp_pa
     assert "VOID (pairs disagree on sign)" in table
     assert "0 metric(s) cleared all three gates." in table
     assert cli_main(["--assert-liveness", str(mine)]) == 0
+
+
+# ── the null control needs the same liveness gate the treatment run gets ───────
+
+
+# A null control is base against base, so its four paired ratios are the noise this machine puts
+# between two identical builds. The fourth repetition is the one that hiccupped.
+NULL_WITH_A_NOISY_REPETITION = [
+    (1000.0, 1000.0),
+    (1010.0, 1012.0),
+    (990.0, 989.0),
+    (1000.0, 1300.0),
+]
+
+# The same null control on a run where that fourth repetition was slow enough to miss the slot, so
+# the reading that carried the noise is the reading that never happened.
+NULL_THAT_MISSED_THE_SLOT = NULL_WITH_A_NOISY_REPETITION[:3] + [(1000.0, None)]
+
+# A treatment payload that is 10% faster, consistently, with a spread well inside its own effect:
+# it clears gates 2 and 3 outright, so the only thing standing between it and `faster` is gate 1.
+MINE_TEN_PERCENT_FASTER = [
+    (1000.0, 900.0),
+    (1000.0, 905.0),
+    (1000.0, 895.0),
+    (1000.0, 900.0),
+]
+
+
+def liveness_commands(commands: list[str]) -> list[str]:
+    return [line for line in commands if "--assert-liveness" in line]
+
+
+def credentials_prose() -> str:
+    """The paragraph between the loop's fenced block and the first numbered section."""
+    body = LOOP_DOC.read_text(encoding = "utf-8").split("## The loop", 1)[1]
+    return body.split("```")[2].split("## 1.")[0]
+
+
+def test_the_documented_loop_asserts_liveness_on_the_null_control_too():
+    commands = loop_commands()
+    gated = liveness_commands(commands)
+    for payload in ("outputs/mine", "outputs/null"):
+        assert any(payload in line for line in gated), (
+            f"the loop never runs --assert-liveness on {payload}/payload.jsonl, so a missed slot "
+            f"in that run reaches the verdict table unchecked"
+        )
+    last_gate = max(commands.index(line) for line in gated)
+    for reader in ("sweep.floor_table", "sweep.ui_parity", "--report"):
+        assert last_gate < index_of(commands, reader), (
+            f"the loop runs {reader} before both liveness gates, so a contributor reads a verdict "
+            f"built from a payload nothing has checked for missed slots"
+        )
+
+
+def test_the_doc_says_which_commands_in_the_loop_need_a_studio():
+    # The loop is now four offline commands and three that drive a browser, so "every command
+    # above except the last" bills `--assert-liveness`, `floor_table` and `ui_parity` for
+    # credentials none of them read. All three run against a payload file on disk.
+    prose = credentials_prose()
+    for offline in ("--assert-liveness", "floor_table", "ui_parity", "--report"):
+        assert offline in prose, (
+            f"the paragraph under the loop does not say that {offline} runs offline, so it reads "
+            f"as though a contributor needs a Studio to score a payload they already have"
+        )
+
+
+def test_a_missed_slot_in_the_null_control_prints_noise_as_a_result(tmp_path, capsys):
+    # WHY THE NULL CONTROL IS GATED TOO. The floor is `max(|null delta|, null spread)` over the
+    # repetitions that survived pairing, and `paired` keys on the metrics BOTH arms recorded, so a
+    # null repetition that missed its slot leaves no trace either. The repetition a run drops is
+    # the one that was slow enough to miss a budget, which is the noisiest one it had, so the loss
+    # is not symmetric: it can only tighten the floor.
+    mine = liveness_payload(tmp_path, "mine", MINE_TEN_PERCENT_FASTER)
+    null = liveness_payload(tmp_path, "null", NULL_THAT_MISSED_THE_SLOT)
+    assert F.main(["--floor", str(null.parent), str(mine.parent)]) == 0
+    table = capsys.readouterr().out
+    assert "0.3  faster" in table
+    assert "1 metric(s) cleared all three gates." in table
+    # And the gate the loop used to run only on `outputs/mine` has nothing to say about it: the
+    # contributor's own payload is whole. The hole is in the run that set the bar.
+    assert cli_main(["--assert-liveness", str(mine)]) == 0
+    assert cli_main(["--assert-liveness", str(null)]) == 1
+
+
+def test_the_null_repetition_that_kept_its_reading_voids_the_same_result(tmp_path, capsys):
+    # The control for the test above, and the reading the missed slot removed. The treatment
+    # payload is byte-identical; only the null control differs, by the one repetition it managed to
+    # finish. Its floor is 30.1% rather than 0.3%, and the same 10% is noise.
+    mine = liveness_payload(tmp_path, "mine", MINE_TEN_PERCENT_FASTER)
+    null = liveness_payload(tmp_path, "null", NULL_WITH_A_NOISY_REPETITION)
+    assert F.main(["--floor", str(null.parent), str(mine.parent)]) == 0
+    table = capsys.readouterr().out
+    assert "30.1  VOID (under floor)" in table
+    assert "0 metric(s) cleared all three gates." in table
+    assert cli_main(["--assert-liveness", str(null)]) == 0
