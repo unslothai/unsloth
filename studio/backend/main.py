@@ -178,6 +178,14 @@ _backend_dir = str(_Path(__file__).parent)
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
+# Normal Studio launch and direct `uvicorn main:app` converge here after Windows ROCm DLL setup and
+# the WSL bridge check. The helper imports torch only for the exact validated ROCm wheel, then sets
+# a process-local value before route imports or attention probes. Spawned Studio workers inherit it.
+from unsloth_runtime.rocm_attention import enable_rocm_aotriton_attention as _enable_aotriton
+
+_enable_aotriton()
+del _enable_aotriton
+
 # OS trust store for TLS before anything opens a connection: behind a
 # TLS-inspecting proxy certifi alone rejects every Hub request.
 from utils.native_tls import activate_native_tls
