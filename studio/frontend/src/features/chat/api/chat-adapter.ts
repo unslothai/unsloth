@@ -46,6 +46,7 @@ import {
   missingListSubjects,
   SEARCH_IMAGE_TOOL,
   searchResultText,
+  stripSearchImageTokens,
   type SearchImageEntry,
   type SearchImagesToolResult,
 } from "../search-images/search-images";
@@ -1119,7 +1120,14 @@ function serializeToolResultPart(
   ) {
     // Replay the stdout the model saw, not the card's sessionId/images/files:
     // stringifying the wrapper feeds it internal metadata instead of the output.
-    content = result.text.length > 0 ? result.text : JSON.stringify({ result: "" });
+    // The image tokens go with them: a token resolves against the message whose
+    // search produced it, so a model copying one out of replayed history names
+    // an id the next message cannot resolve and the picture silently does not
+    // render. Without them it searches again, and that token does resolve.
+    const replayText = isSearchImagesToolResult(result)
+      ? stripSearchImageTokens(result.text)
+      : result.text;
+    content = replayText.length > 0 ? replayText : JSON.stringify({ result: "" });
   } else {
     try {
       content = JSON.stringify(result);
@@ -1145,7 +1153,9 @@ function canReplayToolCallWithoutRoleTool(part: ToolCallMessagePart): boolean {
 }
 
 function sanitizeAssistantReplayText(text: string): string {
-  return text.replace(
+  // Same reason as the tool result above: the tokens the model wrote last turn
+  // are renderer markup scoped to that message, not prose it should repeat.
+  return stripSearchImageTokens(text).replace(
     /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
     "[audio]",
   );

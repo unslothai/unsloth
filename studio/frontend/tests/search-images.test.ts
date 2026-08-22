@@ -686,3 +686,66 @@ test("placeSubjectImages still places a subject whose token only sits in code", 
   const placed = "The Pug is small.\n\n[[img:cccccccccccc]]";
   assert.equal(placeSubjectImages(placed, images, false), placed);
 });
+
+// A replayed turn keeps its tokens in the model's context, but they resolve
+// against the message whose search produced them: repeating one in a later
+// answer renders nothing at all. So history is replayed without them, and the
+// model has to search again to get a token this message can resolve.
+const sanitizeAssistantReplayJs = ts.transpileModule(
+  [
+    liftAdapterFunction("function sanitizeAssistantReplayText("),
+    "return sanitizeAssistantReplayText;",
+  ].join("\n\n"),
+  { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+).outputText;
+
+const sanitizeAssistantReplayText = new Function(
+  "stripSearchImageTokens",
+  sanitizeAssistantReplayJs,
+)(stripSearchImageTokens) as (text: string) => string;
+
+test("a token from an earlier turn is unresolvable in the message that repeats it", () => {
+  const earlier = [
+    {
+      type: "tool-call",
+      toolName: "web_search",
+      result: { text: `- [[img:${ENTRY.id}]] ${ENTRY.title}`, webImages: [ENTRY] },
+    },
+  ];
+  const repeatText = `Here it is again:\n\n[[img:${ENTRY.id}]]`;
+  const later = [{ type: "text", text: repeatText }];
+
+  assert.equal(collectSearchImages(earlier).size, 1);
+  assert.equal(collectSearchImages(later).size, 0);
+  // Silently nothing, which is why the token must not survive into replay.
+  assert.equal(
+    rewriteSearchImageTokens(repeatText, collectSearchImages(later)),
+    "Here it is again:\n\n",
+  );
+});
+
+test("replayed assistant text carries no image tokens", () => {
+  assert.equal(
+    sanitizeAssistantReplayText(`The retriever:\n\n[[img:${ENTRY.id}]]\n\nand more.`),
+    "The retriever:\n\nand more.",
+  );
+  // The audio placeholder this shares the chokepoint with is untouched.
+  assert.equal(
+    sanitizeAssistantReplayText("clip: data:audio/mp3;base64,QUJD"),
+    "clip: [audio]",
+  );
+  assert.equal(sanitizeAssistantReplayText("plain answer"), "plain answer");
+});
+
+test("a replayed web_search result carries no image tokens either", () => {
+  const branch = adapterSource.slice(
+    adapterSource.indexOf("function serializeToolResultPart("),
+    adapterSource.indexOf("function sanitizeAssistantReplayText("),
+  );
+  assert.ok(branch.length > 0, "serializeToolResultPart moved");
+  assert.match(
+    branch,
+    /isSearchImagesToolResult\(result\)\s*\?\s*stripSearchImageTokens\(result\.text\)/,
+    "the replayed web_search result must be stripped of its tokens",
+  );
+});
