@@ -4043,23 +4043,6 @@ const Composer: FC<{
       notifyStudioDictationUnavailable();
     }
   }, [aui]);
-  // Both chords live here, not with the controls below: the recording bar
-  // replaces those while dictation runs, so a chord registered there could
-  // start dictation and never stop it.
-  const chatActive = useChatActive();
-  useShortcut(
-    "startDictation",
-    () => {
-      if (isDictating) aui.composer().stopDictation();
-      else startDictation();
-    },
-    { enabled: chatActive },
-  );
-  // requestSubmit, not the runtime's send: it runs handleSubmit first, which is
-  // what parks a send behind indexing, queues it behind a run, or refuses it.
-  useShortcut("sendMessage", () => formRef.current?.requestSubmit(), {
-    enabled: chatActive && !disabled,
-  });
   const sendAfterDictation = useCallback(() => {
     sendAfterDictationRef.current = true;
     dictationComposerRef.current = composerIdentity;
@@ -4082,6 +4065,35 @@ const Composer: FC<{
     hasAttachments,
     hasPendingAudio,
   });
+  // Both chords live here, not with the controls below: the recording bar
+  // replaces those while dictation runs, so a chord registered there could
+  // start dictation and never stop it.
+  const chatActive = useChatActive();
+  useShortcut(
+    "startDictation",
+    () => {
+      if (isDictating) aui.composer().stopDictation();
+      else startDictation();
+    },
+    { enabled: chatActive },
+  );
+  useShortcut(
+    "sendMessage",
+    () => {
+      // While recording, the bar's own send: it stops dictation first and lets
+      // the final transcript land, where submitting here would send the text
+      // so far and leave the rest of the sentence in an empty composer.
+      if (isDictating) {
+        if (!dictationBlocked) sendAfterDictation();
+        return;
+      }
+      // requestSubmit, not the runtime's send: it runs handleSubmit first,
+      // which parks a send behind indexing, queues it behind a run, or
+      // refuses it.
+      formRef.current?.requestSubmit();
+    },
+    { enabled: chatActive && !disabled },
+  );
   const wasDictatingRef = useRef(false);
   useEffect(() => {
     if (isDictating) {

@@ -684,8 +684,13 @@ test("the composer chords outlive the recording bar", async () => {
     assert.ok(found < controls, `${id} registers inside the recording swap`);
   }
   // Send goes through the form, which runs the parking, queueing and refusing
-  // that the runtime's own send knows nothing about.
-  assert.match(thread, /"sendMessage", \(\) => formRef\.current\?\.requestSubmit\(\)/);
+  // that the runtime's own send knows nothing about, and through the recording
+  // bar's own path while dictation is running.
+  assert.match(thread, /formRef\.current\?\.requestSubmit\(\);/);
+  assert.match(
+    thread,
+    /if \(isDictating\) \{\n\s*if \(!dictationBlocked\) sendAfterDictation\(\);/,
+  );
 });
 
 test("a collapsed sidebar section is not published for the chords", async () => {

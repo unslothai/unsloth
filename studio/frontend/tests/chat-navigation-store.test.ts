@@ -162,6 +162,51 @@ test("a chat that lives in a project folder is still navigable", () => {
   assert.equal(adjacentChatItem(store(), -1)?.id, "pinned");
 });
 
+test("a row that moves project is republished, not kept by id", () => {
+  const inProject = (projectId: string) => ({
+    ...row("c1"),
+    projectId,
+  });
+  store().publishLists({
+    pinnedItems: [],
+    projectItems: [inProject("a")],
+    recentItems: [],
+    attentionItemIds: [],
+    activeItemId: "c1",
+  });
+  store().publishLists({
+    pinnedItems: [],
+    projectItems: [inProject("b")],
+    recentItems: [],
+    attentionItemIds: [],
+    activeItemId: "c1",
+  });
+  // The chords route with this projectId, so a stale one opens the chat in
+  // the project it just left.
+  assert.equal(visibleChatItems(store())[0].projectId, "b");
+});
+
+test("a title-only change does not republish", () => {
+  // The sidebar rebuilds its rows every render, so the guard has to hold for
+  // the fields nothing here reads, or every render writes to the store.
+  store().publishLists({
+    pinnedItems: [],
+    projectItems: [],
+    recentItems: [row("c1")],
+    attentionItemIds: [],
+    activeItemId: "c1",
+  });
+  const before = visibleChatItems(store())[0];
+  store().publishLists({
+    pinnedItems: [],
+    projectItems: [],
+    recentItems: [{ ...row("c1"), title: "renamed" }],
+    attentionItemIds: [],
+    activeItemId: "c1",
+  });
+  assert.equal(visibleChatItems(store())[0], before);
+});
+
 test("a pinned project chat is drawn twice but walked once", () => {
   useChatNavigationStore.setState({ recentlyViewedIds: [], traversal: null });
   store().publishLists({

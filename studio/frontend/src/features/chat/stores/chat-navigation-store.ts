@@ -50,10 +50,29 @@ export interface ChatNavigationState {
   endTraversal: () => void;
 }
 
-function sameIds(a: SidebarItem[], b: SidebarItem[]): boolean {
+/**
+ * Everything the chords read off a row: which chat it is, where it routes, and
+ * the threads behind it. The sidebar rebuilds its items on every render, so
+ * this cannot compare by identity; ids alone would keep a row whose project
+ * changed under it and route the next jump to the project it left.
+ *
+ * Titles and timestamps are left out. They churn constantly, and no consumer
+ * here reads them: the sidebar renders from its own copies.
+ */
+function sameRows(a: SidebarItem[], b: SidebarItem[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
-    if (a[i].id !== b[i].id) return false;
+    const before = a[i];
+    const after = b[i];
+    if (
+      before.id !== after.id ||
+      before.type !== after.type ||
+      (before.projectId ?? null) !== (after.projectId ?? null) ||
+      (before.threadIds ?? []).join("\u0000") !==
+        (after.threadIds ?? []).join("\u0000")
+    ) {
+      return false;
+    }
   }
   return true;
 }
@@ -83,9 +102,9 @@ export const useChatNavigationStore = create<ChatNavigationState>(
       set((state) => {
         if (
           state.activeItemId === next.activeItemId &&
-          sameIds(state.pinnedItems, next.pinnedItems) &&
-          sameIds(state.projectItems, next.projectItems) &&
-          sameIds(state.recentItems, next.recentItems) &&
+          sameRows(state.pinnedItems, next.pinnedItems) &&
+          sameRows(state.projectItems, next.projectItems) &&
+          sameRows(state.recentItems, next.recentItems) &&
           sameStrings(state.attentionItemIds, next.attentionItemIds)
         ) {
           return state;
