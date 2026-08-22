@@ -118,18 +118,18 @@ test("a staged attachment does not follow the user into the next view", () => {
   // attachment would be filed into a chat under the next project.
   assert.match(
     provider,
-    /const previousNonce = switchedNonceRef\.current;\s*if \(previousNonce === nonce\) \{\s*return;\s*\}\s*switchedNonceRef\.current = nonce;/,
+    /const switchState = newThreadSwitchStateRef\.current;\s*if \(switchState\.activeNonce === nonce\) \{\s*return;\s*\}/,
   );
   assert.match(
     provider,
-    /if \(previousNonce !== null\) \{[\s\S]{0,220}?clearAttachments\(\)/,
+    /const returningFromSavedThread =[\s\S]{0,160}?switchState\.activeNonce === null;/,
   );
   const switchSource = componentSource(
     provider,
     "function ThreadNewChatSwitch({",
   );
   assert.equal(
-    switchSource.includes("useRef<string | null>(null)"),
+    switchSource.includes("useRef<NewThreadSwitchState>"),
     false,
     "the nonce guard must outlive ThreadNewChatSwitch mounts",
   );
@@ -139,11 +139,23 @@ test("a staged attachment does not follow the user into the next view", () => {
   );
   assert.match(
     runtimeProvider,
-    /const switchedNewThreadNonceRef = useRef<string \| null>\(null\);/,
+    /const newThreadSwitchStateRef = useRef<NewThreadSwitchState>\(\{\s*activeNonce: null,\s*hasSwitched: false,\s*\}\);/,
   );
   assert.match(
     runtimeProvider,
-    /<ThreadNewChatSwitch[\s\S]*?switchedNonceRef=\{switchedNewThreadNonceRef\}[\s\S]*?\/>/,
+    /<ThreadNewChatSwitch[\s\S]*?newThreadSwitchStateRef=\{newThreadSwitchStateRef\}[\s\S]*?\/>/,
+  );
+  const savedThreadSwitch = componentSource(
+    provider,
+    "function ThreadAutoSwitch({",
+  );
+  assert.match(
+    savedThreadSwitch,
+    /newThreadSwitchStateRef\.current\.activeNonce = null;/,
+  );
+  assert.match(
+    runtimeProvider,
+    /<ThreadAutoSwitch[\s\S]*?newThreadSwitchStateRef=\{newThreadSwitchStateRef\}[\s\S]*?\/>/,
   );
 });
 

@@ -1597,19 +1597,30 @@ function createRuntimeHook(modelType: ModelType, pairId?: string) {
   };
 }
 
+type NewThreadSwitchState = {
+  activeNonce: string | null;
+  hasSwitched: boolean;
+};
+
 function ThreadAutoSwitch({
   threadId,
   syncActiveThreadId = true,
+  newThreadSwitchStateRef,
 }: {
   threadId: string;
   syncActiveThreadId?: boolean;
+  newThreadSwitchStateRef: { current: NewThreadSwitchState };
 }): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
 
   useEffect(() => {
-    if (!isLoading && mainThreadId !== threadId) {
+    if (isLoading) {
+      return;
+    }
+    newThreadSwitchStateRef.current.activeNonce = null;
+    if (mainThreadId !== threadId) {
       // Saved chats keep running in the background, but a temporary chat is
       // unreachable after this switch and must not retain an active queue.
       requestTemporaryPromptQueueStop();
@@ -1625,7 +1636,14 @@ function ThreadAutoSwitch({
         });
       }
     }
-  }, [aui, isLoading, mainThreadId, syncActiveThreadId, threadId]);
+  }, [
+    aui,
+    isLoading,
+    mainThreadId,
+    newThreadSwitchStateRef,
+    syncActiveThreadId,
+    threadId,
+  ]);
 
   useEffect(() => {
     if (!syncActiveThreadId || isLoading || mainThreadId !== threadId) {
@@ -1640,11 +1658,11 @@ function ThreadAutoSwitch({
 function ThreadNewChatSwitch({
   nonce,
   paused,
-  switchedNonceRef,
+  newThreadSwitchStateRef,
 }: {
   nonce: string;
   paused: boolean;
-  switchedNonceRef: { current: string | null };
+  newThreadSwitchStateRef: { current: NewThreadSwitchState };
 }): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
@@ -1660,22 +1678,24 @@ function ThreadNewChatSwitch({
     if (isLoading || paused) {
       return;
     }
-    const previousNonce = switchedNonceRef.current;
-    if (previousNonce === nonce) {
+    const switchState = newThreadSwitchStateRef.current;
+    if (switchState.activeNonce === nonce) {
       return;
     }
-    switchedNonceRef.current = nonce;
-    // switchToNewThread() reuses the uninitialized new thread rather than minting
-    // one, and its composer is therefore the same one the last New Chat used. A
-    // staged-but-unsent attachment would otherwise follow the user into the next
-    // project's landing and be filed there. Text needs no help: the composer
-    // remounts with the view and restores its own draft.
-    if (previousNonce !== null) {
+    const shouldClearAttachments = switchState.hasSwitched;
+    const returningFromSavedThread =
+      shouldClearAttachments && switchState.activeNonce === null;
+    switchState.activeNonce = nonce;
+    switchState.hasSwitched = true;
+    const clearAttachments = () => {
       try {
         void aui.composer().clearAttachments();
       } catch {
         // No thread mounted yet, so there is no composer to carry anything over.
       }
+    };
+    if (shouldClearAttachments && !returningFromSavedThread) {
+      clearAttachments();
     }
     // Saved chats keep running in the background. A temporary chat is never
     // persisted, so abandoning it must also discard its otherwise unreachable
@@ -1683,9 +1703,17 @@ function ThreadNewChatSwitch({
     requestTemporaryPromptQueueStop();
     // Switch to a fresh local thread without persisting it yet; persistence
     // still happens on first message append.
-    void aui.threads().switchToNewThread();
+    const switchResult = aui.threads().switchToNewThread();
+    if (returningFromSavedThread) {
+      void Promise.resolve(switchResult)
+        .then(() => {
+          if (newThreadSwitchStateRef.current.activeNonce !== nonce) return;
+          clearAttachments();
+        })
+        .catch(() => undefined);
+    }
     useChatRuntimeStore.getState().setActiveThreadId(null);
-  }, [aui, isLoading, nonce, paused]);
+  }, [aui, isLoading, newThreadSwitchStateRef, nonce, paused]);
 
   // The effect above blanks the bar, and this view reaches no other recount trigger: no persisted
   // thread for the history loader, and ActiveThreadSync is off while a nonce is present. Keyed on
@@ -2225,7 +2253,10 @@ export function ChatRuntimeProvider({
   });
 
   const aui = useAui({});
-  const switchedNewThreadNonceRef = useRef<string | null>(null);
+  const newThreadSwitchStateRef = useRef<NewThreadSwitchState>({
+    activeNonce: null,
+    hasSwitched: false,
+  });
 
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>
@@ -2257,13 +2288,14 @@ export function ChatRuntimeProvider({
           <ThreadAutoSwitch
             threadId={initialThreadId}
             syncActiveThreadId={syncActiveThreadId && !backgrounded}
+            newThreadSwitchStateRef={newThreadSwitchStateRef}
           />
         )}
         {!initialThreadId && newThreadNonce && (
           <ThreadNewChatSwitch
             nonce={newThreadNonce}
             paused={backgrounded}
-            switchedNonceRef={switchedNewThreadNonceRef}
+            newThreadSwitchStateRef={newThreadSwitchStateRef}
           />
         )}
         {/* The view stays mounted (only CSS-hidden) while off-route so the run

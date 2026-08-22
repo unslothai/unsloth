@@ -50,6 +50,7 @@ BOUND_NAMES = {
     "isLoading",
     "runActive",
     "modelLoading",
+    "newThreadSwitchStateRef",
     "nonce",
     "paused",
 }
@@ -417,8 +418,14 @@ __RECOUNT_EFFECTS__
 }
 
 const renderedDeps: any[] = [];
-// useRef, so it has to outlive a render.
-const switchedNonceRef: any = { current: null };
+const newThreadSwitchStateRef: any = {
+  current: { activeNonce: null, hasSwitched: false },
+};
+
+export function leaveNewChatForSavedThread(): void {
+  newThreadSwitchStateRef.current.activeNonce = null;
+  renderedDeps.length = 0;
+}
 
 export function renderNewChatSwitch(props: any): void {
   const aui = auiFixture;
@@ -436,6 +443,7 @@ export function renderNewChatSwitch(props: any): void {
   const scope: any = {
     aui,
     isLoading,
+    newThreadSwitchStateRef,
     nonce,
     paused,
     checkpoint,
@@ -791,6 +799,29 @@ def test_a_staged_attachment_is_cleared_only_when_the_switch_moves_on():
     }, "a re-render at the same nonce must not switch or clear again"
     assert out["switched"] == 2
     assert out["cleared"] == 1, "moving to another nonce must not carry the attachment"
+
+
+def test_back_to_the_same_new_chat_nonce_switches_after_a_saved_thread():
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ leaveNewChatForSavedThread, renderNewChatSwitch, seed, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            leaveNewChatForSavedThread();
+            renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({{
+              switched: world.switchedToNewThread,
+              cleared: world.clearedAttachments,
+            }}));
+            """
+        )
+    )
+    assert out["switched"] == 2, "Back to the same nonce must restore the new thread"
+    assert out["cleared"] == 1, "the reused new-thread composer must lose its attachment"
 
 
 @pytest.mark.parametrize(
