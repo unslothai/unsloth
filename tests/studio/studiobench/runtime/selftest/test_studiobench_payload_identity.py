@@ -412,7 +412,11 @@ def test_an_unchanged_fixture_resumes_and_returns_its_completed_cells(tmp_path):
 
 def test_a_payload_from_before_the_fixture_axes_existed_resumes_exactly_as_it_did(tmp_path):
     """No `stream_tail_chars` and no `corpus_dollars` key at all, which is every payload written
-    before this branch. The defaults, not a difference."""
+    before this branch. Resumed UNDER THE DEFAULTS it is asking for the film it already ran, so it
+    resumes and its completed cells are skipped, exactly as they were before either flag existed.
+
+    The other half of that reading -- a resume that does NOT use the defaults -- is the test below.
+    """
 
     paths = _fixture_payload(tmp_path, "old", "sess-old")
     assert "stream_tail_chars" not in paths.payload_jsonl.read_text(encoding = "utf-8")
@@ -427,6 +431,75 @@ def test_a_payload_from_before_the_fixture_axes_existed_resumes_exactly_as_it_di
         is None
     )
     assert _resume_set(paths) == {"r10K.A0.rep0"}
+
+
+def test_a_payload_from_before_the_fixture_axes_is_refused_under_a_non_default_fixture(tmp_path):
+    """REGRESSION. Absence PROVES the default here, and skipping the axis threw that proof away.
+
+    An axis a payload never declared is normally skipped: it declined to say, so there is nothing
+    to disagree with. These two axes arrived WITH the flags that set them, so a payload written
+    before them could not have run under anything but `stream_tail_chars = None` and
+    `corpus_dollars = False`. Skipping them accepted `--resume --stream-tail-chars 24000` against
+    such a payload, skipped every cell it had completed, and recorded the remaining cells under a
+    different streamed fixture beneath the same cell ids -- the mixed ladder the refusal exists to
+    prevent, arrived at through the one door left open.
+    """
+
+    for name, flags in (
+        ("tail", ["--stream-tail-chars", "24000"]),
+        ("dollars", ["--corpus-dollars"]),
+    ):
+        paths = _fixture_payload(tmp_path, f"legacy-{name}", "sess-old")
+        with pytest.raises(SystemExit) as excinfo:
+            prepare_payload(
+                paths,
+                requested_identity(_resume_args(*flags), None, CORPUS),
+                resume = True,
+                log = lambda *_a: None,
+            )
+
+        message = str(excinfo.value)
+        assert ("stream_tail_chars" if "--stream-tail-chars" in flags else "corpus_dollars") in (
+            message
+        )
+        # The refusal has to say WHY an axis the payload never mentions is a difference, or the
+        # reader's next move is to go looking for a key that was never going to be there.
+        assert "predates this axis" in message
+
+
+def test_the_skip_rule_still_holds_for_an_axis_that_really_did_decline_to_say(tmp_path):
+    """The other axes keep the general rule: `run_meta` has always carried them, so a payload that
+    omits one omitted it for its own reasons and this check has nothing to say about it. Only the
+    two fixture axes read absence as a value."""
+
+    paths = Paths.under(tmp_path / "quiet")
+    _record(
+        paths,
+        "sess-quiet",
+        [
+            {
+                "row_type": "run_meta",
+                "tier": "standard",
+                "tool_version": "0.0.9",
+                "corpus_hash": CORPUS,
+                "studio_ref": "main",
+                "bundle": {"production": True},
+                "platform": {"system": "Linux"},
+                "started_at": "2026-01-01T00:00:00",
+                "stream_tail_chars": 24_000,
+                "corpus_dollars": True,
+            },
+            _cell("r10K.A0.rep0", 10_000),
+        ],
+    )
+    args = _resume_args("--stream-tail-chars", "24000", "--corpus-dollars", "--cadence", "fast")
+
+    assert (
+        prepare_payload(
+            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+        )
+        is None
+    )
 
 
 def test_a_dead_cell_is_still_re_run_and_a_missing_payload_is_still_empty(tmp_path):

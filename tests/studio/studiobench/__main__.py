@@ -831,10 +831,28 @@ IDENTITY_AXES = (
     # Added by this branch with `--stream-tail-chars` / `--corpus-dollars`: both change the reply
     # the cell streams without moving its id, so they belong to the identity for the same reason
     # the tier does. Recorded already, so no schema change and a payload from before them reads
-    # back as the defaults.
+    # back as the defaults (see `HISTORICAL_DEFAULTS`).
     "stream_tail_chars",
     "corpus_dollars",
 )
+
+#: The axes whose ABSENCE from a payload is itself a reading, and what it reads as.
+#:
+#: `identity_problems` otherwise skips an axis the payload never declared, because an axis a row
+#: never declared cannot be a difference. That is right for the axes `run_meta` has always carried:
+#: a payload missing one of those is a payload this check has nothing to say about.
+#:
+#: It is WRONG for these two. They arrived with the flags that set them, so a payload written
+#: before them did not decline to record a value -- there was no way to ask for anything but the
+#: default, and it ran under `stream_tail_chars = None` and `corpus_dollars = False` by
+#: construction. Skipping them therefore accepted `--resume --stream-tail-chars 24000` against such
+#: a payload, skipped its completed cells, and recorded the rest under a different streamed fixture
+#: beneath the same cell ids: one ladder built from two films, which is what this check exists to
+#: refuse. Absence proves the value here, so it is read as the value.
+HISTORICAL_DEFAULTS = {
+    "stream_tail_chars": None,
+    "corpus_dollars": False,
+}
 
 
 def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
@@ -894,18 +912,28 @@ def identity_problems(recorded: dict, requested: dict) -> list:
     """Every axis on which a recorded session and this invocation disagree."""
     problems = []
     for axis in IDENTITY_AXES:
-        if axis not in recorded:
+        declared = axis in recorded
+        if declared:
+            got = recorded[axis]
+        elif axis in HISTORICAL_DEFAULTS:
+            # Not declared, but not silent either: this axis postdates the payload, so the payload
+            # ran under the default. See `HISTORICAL_DEFAULTS`.
+            got = HISTORICAL_DEFAULTS[axis]
+        else:
             # An axis this payload never declared. See `recorded_identities`.
             continue
-        want, got = requested.get(axis), recorded[axis]
+        want = requested.get(axis)
         if axis == "treatment_ref" and not (want and got):
             # One of the two is not an A/B at all, and the arm in the cell id ("A0" against
             # "base"/"treatment") already keeps those cells apart without a refusal.
             continue
         if str(want) != str(got):
-            problems.append(
-                f"{axis}: the payload was recorded with {got!r}, this run asks {want!r}"
+            where = (
+                f"the payload was recorded with {got!r}"
+                if declared
+                else f"the payload predates this axis and therefore ran with {got!r}"
             )
+            problems.append(f"{axis}: {where}, this run asks {want!r}")
     return problems
 
 
