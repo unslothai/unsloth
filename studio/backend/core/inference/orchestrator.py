@@ -1881,6 +1881,7 @@ class InferenceOrchestrator:
             # So a conversation search can be sized against what this model can hold.
             context_length = _model_info.get("context_length"),
             max_tokens = max_new_tokens,
+            generation_stats_holder = stats_holder,
         )
 
     def generate_with_adapter_control(
