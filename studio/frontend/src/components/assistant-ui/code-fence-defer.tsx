@@ -244,11 +244,21 @@ const scrollerOf = (node: HTMLElement): HTMLElement | null => {
  * the pane fully in view. When the two scrollers are the same element, which is every fence outside
  * a nested scroller, there is exactly one observer and this costs nothing.
  *
- * The conjunction is also what makes case 2 harmless without re-resolving anything: a stale inner
- * root can only ever be too permissive, and the outer gate is not stale, because a pane below it
- * ceasing to scroll does not change which element is outermost.
+ * THE CONJUNCTION IS NOT ENOUGH ON ITS OWN, which took a measurement to see. A stale inner root
+ * is too permissive, and the outer gate only covers that while the pane is out of view. Scroll the
+ * expanded pane so much as partly on screen and the outer gate is true, so the stale inner root
+ * decides alone and reports the WHOLE trace: 10 of 10 in both engines, on a 4,080 px trace against
+ * a 900 px viewport where the right answer is about 3. So the inner root is re-resolved when the
+ * pane stops scrolling, which collapses the fence back to the single-gate case where the outermost
+ * scroller is the root and nothing can be stale.
  *
- * Still one-way. Neither observer can clear a latch; the second can only withhold one.
+ * Watched with a ResizeObserver on the pane rather than by re-resolving on every frame, and only
+ * for fences that actually have a nested scroller. The callback reads one `overflow-y` on one
+ * element, so a streaming pane resizing every frame costs one computed-style read per fence per
+ * frame and rebinds nothing until the cap actually comes off.
+ *
+ * Still one-way. Nothing here can clear a latch; the extra gate and the rebind can only withhold
+ * one.
  */
 const outermostScrollerOf = (node: HTMLElement): HTMLElement | null => {
   let found: HTMLElement | null = null;
@@ -279,6 +289,9 @@ export function useFenceReached(
   streaming: boolean,
 ): boolean {
   const [latched, setLatched] = useState(false);
+  // Bumped when the resolved scrolling ancestor stops being one, which rebuilds the gates below
+  // against the element that clips this fence now. Never read for anything else.
+  const [generation, setGeneration] = useState(0);
   const reached = !enabled || !CAN_OBSERVE || streaming || latched;
 
   /*
@@ -374,10 +387,22 @@ export function useFenceReached(
       { root, rootMargin: REACH_MARGIN },
     ));
     gates.forEach(([target], i) => observers[i].observe(target));
+
+    // `reasoning.tsx` drops `max-h-64` when a stream ends and keeps `overflow-y-auto`, so the pane
+    // stops being a scroller and its box becomes the whole trace. Watch for that and rebuild.
+    let resize: ResizeObserver | undefined;
+    if (near !== null && near !== outer && typeof ResizeObserver !== "undefined") {
+      resize = new ResizeObserver(() => {
+        if (!isScrollable(near)) setGeneration((n) => n + 1);
+      });
+      resize.observe(near);
+    }
+
     return () => {
       for (const observer of observers) observer.disconnect();
+      resize?.disconnect();
     };
-  }, [reached, host]);
+  }, [reached, host, generation]);
 
   return reached;
 }

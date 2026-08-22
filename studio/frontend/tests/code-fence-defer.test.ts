@@ -151,6 +151,28 @@ test("a nested scroller is gated by the outermost one as well", () => {
       + "it was rooted at the pane to get: measured 2 of 10 against 4 with the pane in view",
   );
 
+  // The rebind. The conjunction alone is not enough: scroll an expanded pane partly on screen and
+  // the outer gate is true, so a stale inner root decides alone and reports the whole trace,
+  // measured at 10 of 10 on a 4,080 px trace against a 900 px viewport where the right answer is
+  // about 3, and 4 of 10 once the inner root is re-resolved. Both engines.
+  assert.ok(
+    /resize = new ResizeObserver\(\(\) => \{\s*if \(!isScrollable\(near\)\) setGeneration/
+      .test(SOURCE),
+    "the gates must be rebuilt when the nested scroller stops being one",
+  );
+  assert.ok(
+    /\}, \[reached, host, generation\]\);/.test(SOURCE),
+    "and the rebind has to be a dependency of the effect that builds them",
+  );
+  assert.ok(
+    /if \(near !== null && near !== outer && typeof ResizeObserver !== "undefined"\)/.test(SOURCE),
+    "watched only for fences that actually have a nested scroller, and only one element",
+  );
+  assert.ok(
+    !/setGeneration\(0\)|setLatched\(false\)/.test(SOURCE),
+    "the rebind must stay one-way: it can withhold a latch, never clear one",
+  );
+
   // The conjunction, run rather than described: a fence inside a pane's window while the pane is
   // far outside the thread viewport must NOT be reached.
   const band = (rect: {top: number; bottom: number}, root: {top: number; height: number}) =>
