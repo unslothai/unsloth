@@ -399,12 +399,29 @@ jobs:
           pattern: studiobench-parity-*
           path: artifacts
 
+      # FOUND, not assumed. The arms upload several paths, so upload-artifact
+      # roots the archive at their least common ancestor and the payload comes
+      # back one directory deeper than the path it was uploaded under. A fixed
+      # `cp` here reads as a verdict-job bug in a run whose measurement was
+      # fine, and the depth changes the moment another path is added to the
+      # upload. `ui_parity.shards_of` also takes the DIRECTORY, never the file,
+      # and names the shard after that directory, so both payloads have to land
+      # in a directory of their own.
       - name: Lay the shards out where ui_parity looks for them
         run: |
           set -euo pipefail
-          mkdir -p outputs/parity-result outputs/parity-null-control
-          cp artifacts/studiobench-parity-result/payload.jsonl outputs/parity-result/
-          cp artifacts/studiobench-parity-null-control/payload.jsonl outputs/parity-null-control/
+          for arm in result null-control; do
+            found="$(find "artifacts/studiobench-parity-$arm" -name payload.jsonl -print -quit)"
+            if [ -z "$found" ]; then
+              echo "::error::no payload.jsonl in the $arm artifact. The arm cannot have"
+              echo "recorded a session, and an empty comparison is not a pass."
+              find "artifacts/studiobench-parity-$arm" -type f | head -40
+              exit 1
+            fi
+            mkdir -p "outputs/parity-$arm"
+            cp "$found" "outputs/parity-$arm/payload.jsonl"
+            echo "$arm: $found -> outputs/parity-$arm/payload.jsonl ($(wc -l < "$found") rows)"
+          done
 
       # THE NULL'S OWN SCORE, ALWAYS, AND FIRST. Scored against the DECLARED
       # list, which is what makes it readable: this is the number that says how
@@ -457,7 +474,15 @@ jobs:
             --null outputs/parity-null-control outputs/parity-null-control \
             > derived.txt 2>&1
           grep -E 'undetermined|scoring against' derived.txt || true
-          if ! grep -Eq '[a-z_]+@[0-9]+[KM]' derived.txt; then
+          # `action@rung`, and the rung token is whatever the payload's cell ids
+          # carry -- `r100K` on a real run, `100K` in the selftests' fixtures --
+          # so this matches on the `@` rather than on a rung spelling. The
+          # literal `action@rung` is excluded because it appears in that line's
+          # own explanatory text whether or not anything was measured, which is
+          # exactly the false pass this step exists to prevent.
+          measured="$(grep -Eo '[a-z_]+@[A-Za-z0-9]+' derived.txt | grep -vx 'action@rung' | sort -u || true)"
+          echo "measured entries: ${measured:-(none)}"
+          if [ -z "$measured" ]; then
             echo "::error::the null control decided nothing: the derived unstable set holds no"
             echo "MEASURED (action@rung) entry, only the declared names it unions back in."
             echo "The verdict would then be scored against the declared list, which is the"
