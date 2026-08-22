@@ -40,7 +40,9 @@ test("both reasoning rows are there, and say what each one does", () => {
   // is what an agent session gets unless it is set.
   assert.ok(reasoning.includes("on, off, or auto"));
   assert.ok(reasoning.includes("chat template"));
-  // The level is a separate flag, and unset means the template's own level.
-  assert.ok(reasoningEffort.includes("minimal, low, medium, high, xhigh or max"));
+  // The level is a separate flag. The accepted values are the model's own, so
+  // the row gives an example rather than a list that would be wrong elsewhere.
+  assert.ok(reasoningEffort.includes("e.g. medium"));
+  assert.ok(reasoningEffort.includes("per model"));
   assert.ok(reasoningEffort.includes("chat template"));
 });

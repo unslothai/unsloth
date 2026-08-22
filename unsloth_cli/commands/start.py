@@ -264,9 +264,9 @@ _REASONING_EFFORT_OPTION = typer.Option(
     "--reasoning-effort",
     rich_help_panel = _PANEL_SERVER,
     help = (
-        "Reasoning effort level for an auto-started coding-agent server: 'minimal', "
-        "'low', 'medium', 'high', 'xhigh' or 'max'. Default: unset, so the model's "
-        "chat template decides."
+        "Reasoning effort for an auto-started coding-agent server, e.g. 'medium'. The "
+        "levels are the model's own, so pass one its chat template accepts. Default: "
+        "unset, which keeps the template's level."
     ),
 )
 # Sampling overrides pin a value on the auto-started server (winning over the client and the
@@ -587,9 +587,6 @@ class LoadOptions(NamedTuple):
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
 
 
-_ReasoningEffort = Literal["minimal", "low", "medium", "high", "xhigh", "max"]
-
-
 class ServerOptions(NamedTuple):
     """Tool-call knobs forwarded to an auto-started `unsloth run` server."""
 
@@ -597,7 +594,7 @@ class ServerOptions(NamedTuple):
     tool_call_healing: Optional[bool] = None
     tool_call_nudging: Optional[bool] = None
     reasoning: Optional[Literal["on", "off", "auto"]] = None
-    reasoning_effort: Optional[_ReasoningEffort] = None
+    reasoning_effort: Optional[str] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     top_k: Optional[int] = None
@@ -4387,7 +4384,7 @@ def claude(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
-    reasoning_effort: Optional[_ReasoningEffort] = _REASONING_EFFORT_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4510,7 +4507,7 @@ def codex(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
-    reasoning_effort: Optional[_ReasoningEffort] = _REASONING_EFFORT_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4617,7 +4614,7 @@ def openclaw(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
-    reasoning_effort: Optional[_ReasoningEffort] = _REASONING_EFFORT_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4710,7 +4707,7 @@ def opencode(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
-    reasoning_effort: Optional[_ReasoningEffort] = _REASONING_EFFORT_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4894,7 +4891,7 @@ def hermes(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
-    reasoning_effort: Optional[_ReasoningEffort] = _REASONING_EFFORT_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4956,7 +4953,7 @@ def pi(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
-    reasoning_effort: Optional[_ReasoningEffort] = _REASONING_EFFORT_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,

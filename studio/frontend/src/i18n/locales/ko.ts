@@ -1043,7 +1043,7 @@ export const ko = {
         reasoning:
           "채팅에서 추론 사용 여부: on, off, auto. auto는 모델의 채팅 템플릿을 따르며 보통 on입니다.",
         reasoningEffort:
-          "채팅 템플릿에 전달하는 추론 강도: minimal, low, medium, high, xhigh, max. 지정하지 않으면 템플릿의 값이 유지됩니다.",
+          "모델의 채팅 템플릿에 전달하는 추론 강도(예: medium). 사용할 수 있는 값은 모델마다 다르므로 해당 모델이 받는 값을 지정하세요. 지정하지 않으면 템플릿의 값이 유지됩니다.",
         yolo: "승인 확인을 건너뜁니다. 신뢰할 수 있는 환경에서만 사용하세요.",
       },
       remote: {

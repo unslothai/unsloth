@@ -1044,7 +1044,7 @@ export const it = {
         reasoning:
           "Usare il ragionamento nella chat: on, off o auto. Auto segue il chat template del modello, che di solito significa on.",
         reasoningEffort:
-          "Livello di impegno passato al chat template: minimal, low, medium, high, xhigh o max. Se non impostato resta il livello del template.",
+          "Impegno di ragionamento passato al chat template del modello, ad esempio medium. I livelli dipendono dal modello, quindi usane uno che accetta. Se non impostato resta quello del template.",
         yolo: "Salta le richieste di approvazione. Usa solo in ambienti fidati.",
       },
       remote: {

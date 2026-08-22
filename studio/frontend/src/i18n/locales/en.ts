@@ -1040,7 +1040,7 @@ export const en = {
         reasoning:
           "Use reasoning in the chat: on, off, or auto. Auto follows the model's chat template, which usually means on.",
         reasoningEffort:
-          "Reasoning effort level given to the chat template: minimal, low, medium, high, xhigh or max. Unset leaves the template's own level.",
+          "Reasoning effort passed to the model's chat template, e.g. medium. Levels are per model, so use one that model accepts. Unset keeps the template's own.",
         yolo: "Skip approval prompts. Use only in trusted environments.",
       },
       remote: {

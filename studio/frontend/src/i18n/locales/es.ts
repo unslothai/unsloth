@@ -1070,7 +1070,7 @@ export const es = {
         reasoning:
           "Usar razonamiento en el chat: on, off o auto. Auto sigue la plantilla de chat del modelo, lo que suele significar on.",
         reasoningEffort:
-          "Nivel de esfuerzo de razonamiento que se pasa a la plantilla de chat: minimal, low, medium, high, xhigh o max. Sin valor se mantiene el nivel de la plantilla.",
+          "Esfuerzo de razonamiento que se pasa a la plantilla de chat del modelo, por ejemplo medium. Los niveles dependen del modelo, así que usa uno que acepte. Sin valor se mantiene el de la plantilla.",
         yolo:
           "Omite las solicitudes de aprobación. Úsalo solo en entornos de confianza.",
       },

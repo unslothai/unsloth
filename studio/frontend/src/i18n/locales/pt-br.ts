@@ -1059,7 +1059,7 @@ export const ptBR = {
         reasoning:
           "Usar raciocínio no chat: on, off ou auto. Auto segue o chat template do modelo, o que normalmente significa on.",
         reasoningEffort:
-          "Nível de esforço de raciocínio passado ao chat template: minimal, low, medium, high, xhigh ou max. Sem valor, vale o nível do template.",
+          "Esforço de raciocínio passado ao chat template do modelo, por exemplo medium. Os níveis dependem do modelo, então use um que ele aceite. Sem valor, vale o do template.",
         yolo: "Pula os pedidos de aprovação. Use apenas em ambientes confiáveis.",
       },
       remote: {

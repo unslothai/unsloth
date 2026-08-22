@@ -1021,7 +1021,7 @@ export const zhCN = {
         reasoning:
           "是否在对话中使用推理：on、off 或 auto。auto 会遵循模型的对话模板，通常为开启。",
         reasoningEffort:
-          "传给对话模板的推理强度：minimal、low、medium、high、xhigh 或 max。不设置时沿用模板自身的强度。",
+          "传给模型对话模板的推理强度，例如 medium。可用的级别因模型而异，请使用该模型接受的级别。不设置时沿用模板自身的值。",
         yolo: "跳过确认提示。请仅在可信环境中使用。",
       },
       remote: {
