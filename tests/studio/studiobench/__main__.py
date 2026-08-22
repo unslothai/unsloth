@@ -307,6 +307,25 @@ def is_null_control(sides: list) -> bool:
     return bool(base.get("owns") and treatment.get("owns"))
 
 
+def stop_owned_sides(
+    installs: list,
+    stop,
+    *,
+    keep: bool = False,
+) -> None:
+    """Stop every Studio THIS RUN launched. An attached one belongs to the caller and is left alone.
+
+    `installs` is the `(install, owns)` list the acquisition loop builds, so a side that has not
+    been reached yet is simply not in it. `keep` is `--keep-studio`, which asks for exactly this
+    leak.
+    """
+    if keep:
+        return
+    for side_install, side_owns in installs:
+        if side_owns and side_install is not None:
+            stop(side_install)
+
+
 def run(args, ab_ref = None) -> int:
     from .fixture.corpus import Corpus
     from .instruments import build as build_instruments  # noqa: F401
@@ -359,298 +378,333 @@ def run(args, ab_ref = None) -> int:
 
     installs = []
     sides = []
-    for label, ref, attach, port, password in specs:
-        if attach:
-            side_url = attach.rstrip("/")
-            side_install, owns = None, False
-            _log(f"  {label}: attaching to {side_url}")
-        else:
-            home = side_home(args.home, out, label, ab = bool(ab_ref))
-            _log(f"  {label}: installing Studio from {ref} into {home} (this takes a while)")
-            side_install = install_studio(ref, home)
-            launch_studio(side_install, port, out / "logs" / f"studio_{label}.log")
-            side_url, owns = side_install.base_url, True
-            _log(f"  {label}: Studio up at {side_url}")
-        installs.append((side_install, owns))
-        sides.append(
-            {"label": label, "ref": ref, "base_url": side_url, "owns": owns, "password": password}
-        )
-
-    base_url = sides[0]["base_url"]
-    install, owns_studio = installs[0]
-
-    for side in sides:
-        if not wait_for_healthz(side["base_url"], 60):
-            _log(f"  FATAL: {side['base_url']}/healthz did not answer 200")
-            return 2
-
-    # ── THE GATE. Before anything else is measured. Both sides, because an A/B where one side
-    # is a development build is worse than no A/B: the 3.2x inflation lands entirely on one arm
-    # and reads as a colossal regression or win. ────────────────────
-    verdict = None
-    for side in sides:
-        side_verdict = check_bundle(side["base_url"])
-        _log(f"  {side['label']} bundle: {side_verdict.reason}")
-        side["verdict"] = side_verdict
-        if verdict is None:
-            verdict = side_verdict
-        if not side_verdict.production and not args.allow_dev_server:
-            _log(
-                "  REFUSING TO RUN. A development build inflates the very axis under "
-                "investigation"
-            )
-            _log(
-                "  by about 3.2x, so a measurement here would confirm any hypothesis brought "
-                "to it."
-            )
-            _log("  Pass --allow-dev-server only to demonstrate that this gate matters.")
-            return 3
-
-    pacer = Pacer().start()
-    _log(f"  pacer at {pacer.base_url}")
-    model_id = "studiobench-pacer"
-    pacer.state.model_ids = [model_id]
-
-    from .runtime.ab import origin_scoped
-
-    init_scripts = []
-    for index, side in enumerate(sides):
-        side_install = installs[index][0]
-        side_auth = authenticate(
-            side["base_url"],
-            args.username,
-            side["password"] or (side_install.bootstrap_password if side_install else ""),
-        )
-        _log(f"  {side['label']}: authenticated as {side_auth.username}")
-
-        # BOTH sides register the SAME pacer, so the bytes on the wire are identical by
-        # construction rather than by two configurations that are meant to agree.
-        side_provider = pacer_provider(pacer.base_url, [model_id])
-        # Registered in the BACKEND, and the id it assigns is what the selection names. See
-        # lifecycle.register_provider: a provider that exists only in localStorage renders in the
-        # picker as "No longer offered" and send throws `Connection not found` without ever asking
-        # for a completion.
-        register_provider(side["base_url"], side_auth, side_provider)
-        side_checkpoint = external_checkpoint_id(side_provider, model_id)
-        _log(
-            f"  {side['label']}: provider {side_provider.provider_type} -> "
-            f"{side_provider.base_url}, checkpoint {side_checkpoint}"
-        )
-        side["auth"] = side_auth
-
-        seed = seed_init_script(
-            side_auth,
-            [side_provider],
-            extra_local_storage = {
-                # The SELECTION, without which nothing is ever generated. See
-                # lifecycle.external_checkpoint_id.
-                "unsloth_chat_last_external_checkpoint": side_checkpoint,
-                "unsloth_chat_connections_enabled": "true",
-            },
-        )
-        # Origin-gated even in the single-target case, so the one-build and two-build paths are
-        # the same code and the gate cannot rot while unused.
-        init_scripts.append(origin_scoped(side["base_url"], seed))
-
-        if getattr(args, "inject_stream_cost_ms", None) and side is not sides[0]:
-            # VALIDATION, not a measurement mode. Burns a known amount of main-thread time per SSE
-            # chunk on the TREATMENT side only, so an A/B whose two arms are otherwise the same
-            # build has a known answer. It is origin-gated like the seed above, because a context
-            # init script fires on every document and burning on both sides would inject the cost
-            # into the control as well and read back a recovery of zero.
-            from .instruments.selfcheck import stream_cost_injection_init_script
-            init_scripts.append(
-                origin_scoped(
-                    side["base_url"],
-                    stream_cost_injection_init_script(args.inject_stream_cost_ms),
-                )
-            )
-            _log(
-                f"  {side['label']}: INJECTING {args.inject_stream_cost_ms} ms of main-thread "
-                f"time per SSE chunk. This arm is not a measurement of the build."
-            )
-
-    auth = sides[0]["auth"]
-    init_scripts.append(resources.read_text("scene/dom.js"))
-    init_scripts.append(resources.read_text("scene/parity.js"))
-    # Loaded unconditionally, even without --surfaces. It defines selectors and reads dom.js and
-    # parity.js; it never runs on its own. Making the page's JS depend on a CLI flag would mean
-    # the flag changes what is on the page during the FILM as well, and the film's numbers must
-    # not depend on whether a later phase was asked for.
-    init_scripts.append(resources.read_text("scene/surfaces.js"))
-
-    procs_before = {}
+    # EVERY SIDE THIS RUN LAUNCHED IS STOPPED WHEN THE SETUP AROUND IT FAILS. The sides are
+    # acquired one after another, so the base is already SERVING while the treatment clones and
+    # builds, and the cleanup that stops them both is the `finally` under the cells -- which a
+    # failure up here never reaches. The Studios are the resources that outlive this process:
+    # `launch_studio` detaches the server with `setsid -f`, so an abandoned one keeps its port.
+    # It is not idle there. Studio's own launcher ABORTS rather than binding when it finds one of
+    # its own servers on the requested port (`studio/backend/run.py`, `_resolve_port` with
+    # `avoid_own_studio`), so the next attempt's server exits and `wait_for_healthz` takes its 200
+    # from the STALE process: that run measures the build this one installed while `run_meta`
+    # records the ref it was asked for.
+    #
+    # A RETURN IS A FAILURE HERE TOO. The health check below and the development-build gate leave
+    # by returning, with both Studios up, which is the same abandoned server by a quieter route --
+    # so the guard is a `finally` on the whole of setup rather than an `except` on the install.
+    setup_complete = False
     try:
-        from .instruments.rss import new_roots, snapshot_children
-        procs_before = snapshot_children(os.getpid())
-    except Exception:  # noqa: BLE001
-        new_roots = None  # type: ignore[assignment]
-
-    bundle = browser_mod.launch(
-        args.engine, headless = not args.headed, init_scripts = init_scripts, log = _log
-    )
-    procs = []
-    if new_roots is not None:
-        time.sleep(1.0)
-        procs = new_roots(os.getpid(), procs_before)
-
-    ctx, session = make_context(
-        bundle, base_url, args.tier, args.instrument_level, paths, _log, procs
-    )
-    rec = ctx.recorder
-    # The ladder this run PROMISED, resolved before it is announced. Recorded rather than left to
-    # be re-derived from the tier later: `--report` reads it back to decide which rungs a payload
-    # owes, and a `--rungs` override the payload did not carry made that answer wrong.
-    rungs = args.rungs.split(",") if args.rungs else TIER_RUNGS[args.tier]
-    rec.emit(
-        {
-            "row_type": "run_meta",
-            "tier": args.tier,
-            "tool_version": TOOL_VERSION,
-            "corpus_hash": corpus.corpus_hash,
-            "studio_ref": args.branch if owns_studio else f"attached:{base_url}",
-            "bundle": verdict.as_dict(),
-            "platform": {
-                "system": platform.system(),
-                "machine": platform.machine(),
-                "python": sys.version.split()[0],
-                "engine": bundle.engine,
-                "engine_note": bundle.engine_note,
-            },
-            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "pacer_base_url": pacer.base_url,
-            "cadence": args.cadence,
-            "rungs": rungs,
-            "tier_rungs": TIER_RUNGS[args.tier],
-            "reps": args.reps,
-            "instrument_level": args.instrument_level,
-            # In the payload, not only in the log. Two runs with different fixtures are
-            # not comparable, and a fixture difference that is not recorded is one a later
-            # reader has no way to notice before quoting a ratio across it.
-            "stream_tail_chars": args.stream_tail_chars,
-            "corpus_dollars": bool(args.corpus_dollars),
-        }
-    )
-    rec.gate("production_build", verdict.production, verdict.as_dict())
-
-    if args.tier == "fast":
-        # Said in the log AND recorded in the payload. A fast-tier reading is a DIRECTION, not a
-        # number: it runs one rung, a 47 s film and however few repetitions the caller asked for,
-        # so its detection floor is wider than the standard tier's and it has no null control of
-        # its own unless one is run alongside. The gate exists so the analysis layer can refuse to
-        # pool a fast payload with a standard one -- a fast reading quoted against a standard
-        # floor is the single most likely way this tier gets somebody a wrong answer.
-        _log("")
-        _log("  FAST TIER: for iteration while you are changing something, not for reporting.")
-        _log("  One rung (100K), a 47s film. Use it to see whether a fix moved anything at all,")
-        _log("  then confirm with --tier standard and a null control before quoting a number.")
-        _log("")
-    rec.gate(
-        "reportable_tier",
-        args.tier != "fast",
-        {
-            "tier": args.tier,
-            "scene": TIER_RUNGS[args.tier],
-            "reason": (
-                "the fast tier is an iteration loop: one rung, a compressed film, and a "
-                "wider floor than the standard tier"
+        for label, ref, attach, port, password in specs:
+            if attach:
+                side_url = attach.rstrip("/")
+                side_install, owns = None, False
+                _log(f"  {label}: attaching to {side_url}")
+            else:
+                home = side_home(args.home, out, label, ab = bool(ab_ref))
+                _log(f"  {label}: installing Studio from {ref} into {home} (this takes a while)")
+                side_install = install_studio(ref, home)
+                launch_studio(side_install, port, out / "logs" / f"studio_{label}.log")
+                side_url, owns = side_install.base_url, True
+                _log(f"  {label}: Studio up at {side_url}")
+            installs.append((side_install, owns))
+            sides.append(
+                {
+                    "label": label,
+                    "ref": ref,
+                    "base_url": side_url,
+                    "owns": owns,
+                    "password": password,
+                }
             )
-            if args.tier == "fast"
-            else "standard measurement protocol",
-        },
-    )
 
-    image_path = ensure_probe_image(paths)
-    for side in sides:
-        side_seeder = Seeder(
-            base_url = side["base_url"], auth = side["auth"], model_id = model_id, log = _log
-        )
-        side["seeder"] = side_seeder
-        side["runner"] = CellRunner(
-            session = session,
-            pacer = pacer,
-            seeder = side_seeder,
-            corpus = corpus,
-            base_url = side["base_url"],
-            model_id = model_id,
-            tier = args.tier,
-            paths = paths,
-            log = _log,
-            cadence = args.cadence,
-            image_path = image_path,
-        )
+        base_url = sides[0]["base_url"]
+        install, owns_studio = installs[0]
 
-    seeder = sides[0]["seeder"]
-    runner = sides[0]["runner"]
+        for side in sides:
+            if not wait_for_healthz(side["base_url"], 60):
+                _log(f"  FATAL: {side['base_url']}/healthz did not answer 200")
+                return 2
 
-    if args.surfaces:
-        _sweep_surfaces(sides, ctx, paths)
+        # ── THE GATE. Before anything else is measured. Both sides, because an A/B where one side
+        # is a development build is worse than no A/B: the 3.2x inflation lands entirely on one arm
+        # and reads as a colossal regression or win. ────────────────────
+        verdict = None
+        for side in sides:
+            side_verdict = check_bundle(side["base_url"])
+            _log(f"  {side['label']} bundle: {side_verdict.reason}")
+            side["verdict"] = side_verdict
+            if verdict is None:
+                verdict = side_verdict
+            if not side_verdict.production and not args.allow_dev_server:
+                _log(
+                    "  REFUSING TO RUN. A development build inflates the very axis under "
+                    "investigation"
+                )
+                _log(
+                    "  by about 3.2x, so a measurement here would confirm any hypothesis brought "
+                    "to it."
+                )
+                _log("  Pass --allow-dev-server only to demonstrate that this gate matters.")
+                return 3
 
-    cells = build_cells(
-        rungs,
-        corpus,
-        args.tier,
-        ctx.session_id,
-        args.instrument_level,
-        reps = args.reps,
-        stream_tail_chars = args.stream_tail_chars,
-        corpus_dollars = args.corpus_dollars,
-    )
-    if args.stream_tail_chars or args.corpus_dollars:
-        # Loud, because both change the fixture. A payload produced under either of them is not
-        # comparable with one produced without, and the pair that says so is printed here and
-        # written into the run manifest above.
-        _log(
-            f"  FIXTURE CHANGED: stream tail {args.stream_tail_chars or 'default'}, "
-            f"dollars {'on' if args.corpus_dollars else 'off'}. Compare only against a run "
-            f"with the same pair."
-        )
+        pacer = Pacer().start()
+        _log(f"  pacer at {pacer.base_url}")
+        model_id = "studiobench-pacer"
+        pacer.state.model_ids = [model_id]
 
-    done = _resume_set(paths) if args.resume else set()
-    if done:
-        _log(f"  resuming: {len(done)} cells already in {paths.payload_jsonl.name}")
+        from .runtime.ab import origin_scoped
 
-    if ab_ref:
-        from .runtime.ab import Target, interleave, order_is_balanced
-
-        targets = [
-            Target(
-                label = s["label"],
-                ref = s["ref"],
-                base_url = s["base_url"],
-                seeder = s["seeder"],
-                runner = s["runner"],
+        init_scripts = []
+        for index, side in enumerate(sides):
+            side_install = installs[index][0]
+            side_auth = authenticate(
+                side["base_url"],
+                args.username,
+                side["password"] or (side_install.bootstrap_password if side_install else ""),
             )
-            for s in sides
-        ]
-        work = interleave(cells, targets)
-        if not order_is_balanced(work):
-            # Said out loud rather than silently absorbed: with an odd number of reps one side
-            # always runs first, so anything drifting monotonically through the session lands on
-            # the other one instead of cancelling.
+            _log(f"  {side['label']}: authenticated as {side_auth.username}")
+
+            # BOTH sides register the SAME pacer, so the bytes on the wire are identical by
+            # construction rather than by two configurations that are meant to agree.
+            side_provider = pacer_provider(pacer.base_url, [model_id])
+            # Registered in the BACKEND, and the id it assigns is what the selection names. See
+            # lifecycle.register_provider: a provider that exists only in localStorage renders in
+            # the picker as "No longer offered" and send throws `Connection not found` without ever
+            # asking for a completion.
+            register_provider(side["base_url"], side_auth, side_provider)
+            side_checkpoint = external_checkpoint_id(side_provider, model_id)
             _log(
-                "  WARNING: the run order is not balanced (use an even --reps). Linear drift "
-                "within the session is charged to whichever side runs second."
+                f"  {side['label']}: provider {side_provider.provider_type} -> "
+                f"{side_provider.base_url}, checkpoint {side_checkpoint}"
             )
+            side["auth"] = side_auth
+
+            seed = seed_init_script(
+                side_auth,
+                [side_provider],
+                extra_local_storage = {
+                    # The SELECTION, without which nothing is ever generated. See
+                    # lifecycle.external_checkpoint_id.
+                    "unsloth_chat_last_external_checkpoint": side_checkpoint,
+                    "unsloth_chat_connections_enabled": "true",
+                },
+            )
+            # Origin-gated even in the single-target case, so the one-build and two-build paths are
+            # the same code and the gate cannot rot while unused.
+            init_scripts.append(origin_scoped(side["base_url"], seed))
+
+            if getattr(args, "inject_stream_cost_ms", None) and side is not sides[0]:
+                # VALIDATION, not a measurement mode. Burns a known amount of main-thread time per
+                # SSE chunk on the TREATMENT side only, so an A/B whose two arms are otherwise the
+                # same build has a known answer. It is origin-gated like the seed above, because a
+                # context init script fires on every document and burning on both sides would
+                # inject the cost into the control as well and read back a recovery of zero.
+                from .instruments.selfcheck import stream_cost_injection_init_script
+                init_scripts.append(
+                    origin_scoped(
+                        side["base_url"],
+                        stream_cost_injection_init_script(args.inject_stream_cost_ms),
+                    )
+                )
+                _log(
+                    f"  {side['label']}: INJECTING {args.inject_stream_cost_ms} ms of main-thread "
+                    f"time per SSE chunk. This arm is not a measurement of the build."
+                )
+
+        auth = sides[0]["auth"]
+        init_scripts.append(resources.read_text("scene/dom.js"))
+        init_scripts.append(resources.read_text("scene/parity.js"))
+        # Loaded unconditionally, even without --surfaces. It defines selectors and reads dom.js and
+        # parity.js; it never runs on its own. Making the page's JS depend on a CLI flag would mean
+        # the flag changes what is on the page during the FILM as well, and the film's numbers must
+        # not depend on whether a later phase was asked for.
+        init_scripts.append(resources.read_text("scene/surfaces.js"))
+
+        procs_before = {}
+        try:
+            from .instruments.rss import new_roots, snapshot_children
+            procs_before = snapshot_children(os.getpid())
+        except Exception:  # noqa: BLE001
+            new_roots = None  # type: ignore[assignment]
+
+        bundle = browser_mod.launch(
+            args.engine, headless = not args.headed, init_scripts = init_scripts, log = _log
+        )
+        procs = []
+        if new_roots is not None:
+            time.sleep(1.0)
+            procs = new_roots(os.getpid(), procs_before)
+
+        ctx, session = make_context(
+            bundle, base_url, args.tier, args.instrument_level, paths, _log, procs
+        )
+        rec = ctx.recorder
+        # The ladder this run PROMISED, resolved before it is announced. Recorded rather than
+        # left to be re-derived from the tier later: `--report` reads it back to decide which rungs
+        # a payload owes, and a `--rungs` override the payload did not carry made that answer wrong.
+        rungs = args.rungs.split(",") if args.rungs else TIER_RUNGS[args.tier]
         rec.emit(
             {
-                "row_type": "ab_plan",
-                "base_ref": sides[0]["ref"],
-                "treatment_ref": sides[1]["ref"],
-                "balanced": order_is_balanced(work),
-                "order": [c.cell_id for _t, c, _p in work],
+                "row_type": "run_meta",
+                "tier": args.tier,
+                "tool_version": TOOL_VERSION,
+                "corpus_hash": corpus.corpus_hash,
+                "studio_ref": args.branch if owns_studio else f"attached:{base_url}",
+                "bundle": verdict.as_dict(),
+                "platform": {
+                    "system": platform.system(),
+                    "machine": platform.machine(),
+                    "python": sys.version.split()[0],
+                    "engine": bundle.engine,
+                    "engine_note": bundle.engine_note,
+                },
+                "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "pacer_base_url": pacer.base_url,
+                "cadence": args.cadence,
+                "rungs": rungs,
+                "tier_rungs": TIER_RUNGS[args.tier],
+                "reps": args.reps,
+                "instrument_level": args.instrument_level,
+                # In the payload, not only in the log. Two runs with different fixtures are
+                # not comparable, and a fixture difference that is not recorded is one a later
+                # reader has no way to notice before quoting a ratio across it.
+                "stream_tail_chars": args.stream_tail_chars,
+                "corpus_dollars": bool(args.corpus_dollars),
             }
         )
-    else:
-        work = [(None, cell, plan) for cell, plan in cells]
+        rec.gate("production_build", verdict.production, verdict.as_dict())
 
-    if done:
-        # AT PAIR GRANULARITY. An A/B pair whose two arms are not both recorded is re-run whole, so
-        # the resumed session never measures one arm on its own -- see `ab.skippable_cells`. For a
-        # run without --ab every pair holds one cell and this is the set it already was.
-        from .runtime.ab import skippable_cells
-        done = skippable_cells(work, done)
-        _log(f"  resuming: {len(done)} cells already in {paths.payload_jsonl.name}")
+        if args.tier == "fast":
+            # Said in the log AND recorded in the payload. A fast-tier reading is a DIRECTION, not
+            # a number: it runs one rung, a 47 s film and however few repetitions the caller asked
+            # for, so its detection floor is wider than the standard tier's and it has no null
+            # control of its own unless one is run alongside. The gate exists so the analysis layer
+            # can refuse to pool a fast payload with a standard one -- a fast reading quoted against
+            # a standard floor is the single most likely way this tier gets somebody a wrong answer.
+            _log("")
+            _log("  FAST TIER: for iteration while you are changing something, not for reporting.")
+            _log(
+                "  One rung (100K), a 47s film. Use it to see whether a fix moved anything at all,"
+            )
+            _log("  then confirm with --tier standard and a null control before quoting a number.")
+            _log("")
+        rec.gate(
+            "reportable_tier",
+            args.tier != "fast",
+            {
+                "tier": args.tier,
+                "scene": TIER_RUNGS[args.tier],
+                "reason": (
+                    "the fast tier is an iteration loop: one rung, a compressed film, and a "
+                    "wider floor than the standard tier"
+                )
+                if args.tier == "fast"
+                else "standard measurement protocol",
+            },
+        )
+
+        image_path = ensure_probe_image(paths)
+        for side in sides:
+            side_seeder = Seeder(
+                base_url = side["base_url"], auth = side["auth"], model_id = model_id, log = _log
+            )
+            side["seeder"] = side_seeder
+            side["runner"] = CellRunner(
+                session = session,
+                pacer = pacer,
+                seeder = side_seeder,
+                corpus = corpus,
+                base_url = side["base_url"],
+                model_id = model_id,
+                tier = args.tier,
+                paths = paths,
+                log = _log,
+                cadence = args.cadence,
+                image_path = image_path,
+            )
+
+        seeder = sides[0]["seeder"]
+        runner = sides[0]["runner"]
+
+        if args.surfaces:
+            _sweep_surfaces(sides, ctx, paths)
+
+        cells = build_cells(
+            rungs,
+            corpus,
+            args.tier,
+            ctx.session_id,
+            args.instrument_level,
+            reps = args.reps,
+            stream_tail_chars = args.stream_tail_chars,
+            corpus_dollars = args.corpus_dollars,
+        )
+        if args.stream_tail_chars or args.corpus_dollars:
+            # Loud, because both change the fixture. A payload produced under either of them is
+            # not comparable with one produced without, and the pair that says so is printed here
+            # and written into the run manifest above.
+            _log(
+                f"  FIXTURE CHANGED: stream tail {args.stream_tail_chars or 'default'}, "
+                f"dollars {'on' if args.corpus_dollars else 'off'}. Compare only against a run "
+                f"with the same pair."
+            )
+
+        done = _resume_set(paths) if args.resume else set()
+        if done:
+            _log(f"  resuming: {len(done)} cells already in {paths.payload_jsonl.name}")
+
+        if ab_ref:
+            from .runtime.ab import Target, interleave, order_is_balanced
+
+            targets = [
+                Target(
+                    label = s["label"],
+                    ref = s["ref"],
+                    base_url = s["base_url"],
+                    seeder = s["seeder"],
+                    runner = s["runner"],
+                )
+                for s in sides
+            ]
+            work = interleave(cells, targets)
+            if not order_is_balanced(work):
+                # Said out loud rather than silently absorbed: with an odd number of reps one side
+                # always runs first, so anything drifting monotonically through the session lands on
+                # the other one instead of cancelling.
+                _log(
+                    "  WARNING: the run order is not balanced (use an even --reps). Linear drift "
+                    "within the session is charged to whichever side runs second."
+                )
+            rec.emit(
+                {
+                    "row_type": "ab_plan",
+                    "base_ref": sides[0]["ref"],
+                    "treatment_ref": sides[1]["ref"],
+                    # WHICH SERVER THE TREATMENT WAS, when the caller attached one. `run_meta`
+                    # already records the base that way in `studio_ref`; without the same for the
+                    # treatment a resume can only compare the `--ab` label, which says nothing about
+                    # the build that answered on the port. See `requested_identity`. Empty when this
+                    # run installed the treatment itself: then the ref above is the identity.
+                    "treatment_url": "" if sides[1]["owns"] else sides[1]["base_url"],
+                    "balanced": order_is_balanced(work),
+                    "order": [c.cell_id for _t, c, _p in work],
+                }
+            )
+        else:
+            work = [(None, cell, plan) for cell, plan in cells]
+
+        if done:
+            # AT PAIR GRANULARITY. An A/B pair whose two arms are not both recorded is re-run
+            # whole, so the resumed session never measures one arm on its own -- see
+            # `ab.skippable_cells`. For a run without --ab every pair holds one cell and this is the
+            # set it already was.
+            from .runtime.ab import skippable_cells
+            done = skippable_cells(work, done)
+            _log(f"  resuming: {len(done)} cells already in {paths.payload_jsonl.name}")
+        setup_complete = True
+    finally:
+        if not setup_complete:
+            stop_owned_sides(installs, stop_studio, keep = args.keep_studio)
 
     rows = []
     resumed = 0
@@ -673,9 +727,7 @@ def run(args, ab_ref = None) -> int:
             pass
         bundle.close()
         pacer.stop()
-        for side_install, side_owns in installs:
-            if side_owns and side_install is not None and not args.keep_studio:
-                stop_studio(side_install)
+        stop_owned_sides(installs, stop_studio, keep = args.keep_studio)
         rec.close()
 
     if ab_ref:
@@ -828,6 +880,7 @@ IDENTITY_AXES = (
     "corpus_hash",
     "studio_ref",
     "treatment_ref",
+    "treatment_url",
     # Added by this branch with `--stream-tail-chars` / `--corpus-dollars`: both change the reply
     # the cell streams without moving its id, so they belong to the identity for the same reason
     # the tier does. Recorded already, so no schema change and a payload from before them reads
@@ -835,6 +888,10 @@ IDENTITY_AXES = (
     "stream_tail_chars",
     "corpus_dollars",
 )
+
+#: The axes that describe the SECOND side, which only exist when a run has one. See
+#: `identity_problems`: an A/B judged against a run that is not one may not differ on them.
+TREATMENT_AXES = ("treatment_ref", "treatment_url")
 
 #: The axes whose ABSENCE from a payload is itself a reading, and what it reads as.
 #:
@@ -862,6 +919,7 @@ def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
     recorded one are comparable without a second convention to keep in step.
     """
     base_ref = f"attached:{args.attach.rstrip('/')}" if args.attach else args.branch
+    attach_b = (getattr(args, "attach_b", "") or "").rstrip("/")
     return {
         "tier": args.tier,
         "cadence": args.cadence,
@@ -869,6 +927,13 @@ def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
         "corpus_hash": corpus_hash,
         "studio_ref": base_ref,
         "treatment_ref": ab_ref or "",
+        # THE ATTACHED TREATMENT IS THE SERVER, NOT THE LABEL. `studio_ref` folds an attached base
+        # down to its URL because that is the only thing about it this harness can see; the
+        # treatment carried nothing but the name typed after `--ab`, and that name is free. So
+        # `--attach A --attach-b B --ab fix --resume`, re-run later against `--attach-b C`, passed
+        # the identity check, skipped every completed treatment cell and reported B's measurements
+        # as C's result. Empty for a treatment this run installs itself, whose ref IS its identity.
+        "treatment_url": attach_b if (ab_ref and attach_b) else "",
         "stream_tail_chars": args.stream_tail_chars,
         "corpus_dollars": bool(args.corpus_dollars),
     }
@@ -911,6 +976,12 @@ def recorded_identities(payload_path) -> list:
 def identity_problems(recorded: dict, requested: dict) -> list:
     """Every axis on which a recorded session and this invocation disagree."""
     problems = []
+    # Is there a second side on BOTH sides of this comparison? One of the two not being an A/B at
+    # all is not a difference: the arm in the cell id ("A0" against "base"/"treatment") already
+    # keeps those cells apart without a refusal. Decided once, from the ref, so that an A/B whose
+    # treatment this run installed -- which records no treatment URL -- is still judged against an
+    # attached one on the axis where the two of them do differ.
+    both_ab = bool(requested.get("treatment_ref")) and bool(recorded.get("treatment_ref"))
     for axis in IDENTITY_AXES:
         declared = axis in recorded
         if declared:
@@ -922,11 +993,9 @@ def identity_problems(recorded: dict, requested: dict) -> list:
         else:
             # An axis this payload never declared. See `recorded_identities`.
             continue
-        want = requested.get(axis)
-        if axis == "treatment_ref" and not (want and got):
-            # One of the two is not an A/B at all, and the arm in the cell id ("A0" against
-            # "base"/"treatment") already keeps those cells apart without a refusal.
+        if axis in TREATMENT_AXES and not both_ab:
             continue
+        want = requested.get(axis)
         if str(want) != str(got):
             where = (
                 f"the payload was recorded with {got!r}"
@@ -1071,13 +1140,23 @@ def _rung_tokens(labels: list) -> list:
 
 
 def recorded_ladder(path) -> list:
-    """The rungs the RUN promised, read from its own `run_meta` row. `[]` when it did not say.
+    """The rungs the RUN promised, folded over EVERY `run_meta` the payload carries. `[]` when it
+    never said.
 
     A payload knows which ladder it was collecting; the CLI only knows which tier the caller
     happened to type. Reporting a standard run that was killed before its top cell under the
     default tier scored the surviving low rungs and never mentioned the missing one, which is the
     crash-beats-limp failure `report/build.py` exists to refuse, arriving through the front door.
+
+    FOLDED, NOT THE FIRST HEADER, because a resume is allowed to ADD rungs -- `rungs` is
+    deliberately not a payload identity axis, and `--resume --rungs 1K,10K` over a finished 1K run
+    appends a second `run_meta` promising both. Reading the first one alone meant a continuation
+    killed after that header and before the 10K cell reported the 1K ladder it had already finished
+    and scored COMPLETE, which is the same truncated run passing as a whole one. Every rung any
+    session in this file promised is owed by it, and one it never reached is scored INCOMPLETE
+    rather than dropped.
     """
+    ladder: list = []
     try:
         with Path(path).open(encoding = "utf-8") as fh:
             for line in fh:
@@ -1090,11 +1169,13 @@ def recorded_ladder(path) -> list:
                     continue
                 if row.get("row_type") != "run_meta":
                     continue
-                rungs = row.get("rungs") or TIER_RUNGS.get(str(row.get("tier")))
-                return [str(r) for r in rungs] if rungs else []
+                rungs = row.get("rungs") or TIER_RUNGS.get(str(row.get("tier"))) or []
+                for rung in rungs:
+                    if str(rung) not in ladder:
+                        ladder.append(str(rung))
     except OSError:
         return []
-    return []
+    return ladder
 
 
 def report_only(args) -> int:

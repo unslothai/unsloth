@@ -112,6 +112,7 @@ def _finished_ab(
     tier = "standard",
     base = "main",
     treatment = "fix",
+    treatment_url = "",
 ) -> Paths:
     paths = Paths.under(tmp_path / "out")
     _record(
@@ -123,6 +124,8 @@ def _finished_ab(
                 "row_type": "ab_plan",
                 "base_ref": base,
                 "treatment_ref": treatment,
+                # Empty for a treatment the run installed itself, exactly as `run()` records it.
+                "treatment_url": treatment_url,
                 "balanced": False,
                 "order": ["r10K.base.rep0", "r10K.treatment.rep0"],
             },
@@ -150,6 +153,27 @@ def test_resuming_after_changing_the_treatment_ref_is_refused(tmp_path):
     message = str(excinfo.value)
     assert "treatment_ref" in message
     assert "'fix'" in message and "'other'" in message
+
+
+def test_resuming_a_self_managed_treatment_against_an_attached_one_is_refused(tmp_path):
+    """The label after `--ab` says nothing about where the build came from.
+
+    The payload's treatment was cloned and built by that run; this one points the same label at a
+    server the caller is holding open. Two different builds, one `--ab fix`.
+    """
+
+    paths = _finished_ab(tmp_path)
+    args = parse_args(
+        ["--tier", "standard", "--branch", "main", "--ab", "fix"]
+        + ["--attach-b", "http://127.0.0.1:5311", "--resume"]
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths, requested_identity(args, "fix", CORPUS), resume = True, log = lambda *_a: None
+        )
+
+    assert "treatment_url" in str(excinfo.value)
 
 
 def test_resuming_after_changing_the_branch_is_refused(tmp_path):
@@ -278,6 +302,55 @@ def test_a_payload_that_never_recorded_an_axis_still_resumes(tmp_path):
         is None
     )
     assert _resume_set(paths) == {"r10K.A0.rep0"}
+
+
+def test_an_attached_ab_payload_still_resumes_under_a_run_that_is_not_an_ab(tmp_path):
+    """The other direction of the same control. A payload recorded as an A/B against a URL, and a
+    single-sided run over the same output: the arm in the cell id keeps `A0` off `base` and
+    `treatment` without either treatment axis inventing a refusal."""
+
+    paths = _finished_ab(tmp_path, treatment_url = "http://127.0.0.1:5311")
+    args = parse_args(["--tier", "standard", "--branch", "main", "--resume"])
+
+    assert (
+        prepare_payload(
+            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+        )
+        is None
+    )
+
+
+def test_an_ab_payload_that_never_recorded_a_treatment_url_still_resumes(tmp_path):
+    """The legacy control for the newest axis: an `ab_plan` written before the URL was recorded
+    declares nothing about it, and an axis a row never declared cannot be a difference."""
+
+    paths = Paths.under(tmp_path / "out")
+    _record(
+        paths,
+        "sess-1",
+        [
+            _run_meta("standard", "attached:http://127.0.0.1:5310", ["10K"]),
+            {
+                "row_type": "ab_plan",
+                "base_ref": "main",
+                "treatment_ref": "fix",
+                "balanced": False,
+                "order": ["r10K.base.rep0", "r10K.treatment.rep0"],
+            },
+            _cell("r10K.base.rep0", 10_000, arm = "base"),
+        ],
+    )
+    args = parse_args(
+        ["--tier", "standard", "--attach", "http://127.0.0.1:5310", "--ab", "fix"]
+        + ["--attach-b", "http://127.0.0.1:5311", "--resume"]
+    )
+
+    assert (
+        prepare_payload(
+            paths, requested_identity(args, "fix", CORPUS), resume = True, log = lambda *_a: None
+        )
+        is None
+    )
 
 
 def test_a_non_ab_payload_and_an_ab_run_do_not_collide(tmp_path):

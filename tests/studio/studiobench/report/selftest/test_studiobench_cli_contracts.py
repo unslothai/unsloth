@@ -174,14 +174,17 @@ def test_one_failed_cell_fails_the_run():
 # ── the report ladder ───────────────────────────────────────────────────────────────────────
 
 
-def _payload(tmp_path, rungs, cells):
-    path = tmp_path / "payload.jsonl"
+def _rows(
+    rungs,
+    cells,
+    session = "s1",
+):
     rows = [
         {
             "row_type": "run_meta",
             "tier": "standard",
             "rungs": rungs,
-            "session_id": "s1",
+            "session_id": session,
             "corpus_hash": "c0ffee",
         }
     ]
@@ -190,7 +193,7 @@ def _payload(tmp_path, rungs, cells):
             {
                 "row_type": "cell",
                 "cell_id": f"r{tokens}",
-                "session_id": "s1",
+                "session_id": session,
                 "target_tokens": tokens,
                 "completed": True,
                 "cell": {"arm": "A0", "rep": 0},
@@ -200,15 +203,31 @@ def _payload(tmp_path, rungs, cells):
             {
                 "row_type": "action",
                 "cell_id": f"r{tokens}",
-                "session_id": "s1",
+                "session_id": session,
                 "action": "keystroke",
                 "ran": True,
                 "expect_ok": True,
                 "timings": {"p95_ms": 20.0},
             }
         )
+    return rows
+
+
+def _write(path, rows):
     path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding = "utf-8")
     return path
+
+
+def _payload(tmp_path, rungs, cells):
+    return _write(tmp_path / "payload.jsonl", _rows(rungs, cells))
+
+
+def _resumed_payload(tmp_path, first, then, cells):
+    """One payload, two sessions: a run that promised `first`, and the `--resume` that promised
+    `then`. A resume APPENDS its own `run_meta`, which is how a longer ladder gets into a file that
+    already has one -- `rungs` is deliberately not a payload identity axis precisely so it can."""
+
+    return _write(tmp_path / "payload.jsonl", _rows(first, cells) + _rows(then, [], session = "s2"))
 
 
 def test_the_recorded_ladder_is_read_back_from_the_payload(tmp_path):
@@ -229,6 +248,35 @@ def test_report_scores_the_rung_the_run_promised_and_never_reached(tmp_path, cap
     assert main(["--report", str(path)]) == 0
     summary = (tmp_path / "summary.md").read_text(encoding = "utf-8")
     assert "100,000" in summary or "100000" in summary or "100K" in summary
+
+
+def test_a_rung_a_resume_added_is_still_owed_by_the_payload(tmp_path):
+    """1K completed, resumed with `--rungs 1K,10K`, killed after the new header and before the cell.
+
+    The ladder a payload owes is every rung any of its sessions promised. Reading the FIRST
+    `run_meta` alone declared only 1K, and a continuation that never reached its new top rung
+    scored COMPLETE -- the crash-beats-limp failure, arriving through the resume.
+    """
+
+    path = _resumed_payload(tmp_path, ["1K"], ["1K", "10K"], [1_000])
+    assert recorded_ladder(path) == ["1K", "10K"]
+
+
+def test_the_report_declares_the_rung_the_resume_promised_and_never_reached(tmp_path):
+    path = _resumed_payload(tmp_path, ["1K"], ["1K", "10K"], [1_000])
+    assert main(["--report", str(path)]) == 0
+    summary = (tmp_path / "summary.md").read_text(encoding = "utf-8")
+    assert "10,000" in summary
+    assert "INCOMPLETE" in summary
+
+
+def test_a_resume_that_promised_no_new_rung_reports_the_same_ladder(tmp_path):
+    """The control: folding the headers may not invent a rung out of an ordinary continuation."""
+
+    path = _resumed_payload(tmp_path, ["1K", "10K"], ["1K", "10K"], [1_000, 10_000])
+    assert recorded_ladder(path) == ["1K", "10K"]
+    assert main(["--report", str(path)]) == 0
+    assert "100,000" not in (tmp_path / "summary.md").read_text(encoding = "utf-8")
 
 
 def test_an_explicit_tier_still_wins(tmp_path):
