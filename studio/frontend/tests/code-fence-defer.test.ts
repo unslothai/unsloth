@@ -241,6 +241,28 @@ test("the shell trims trailing newlines the way streamdown does", () => {
     SOURCE.includes("trimTrailingNewlines"),
     "an untrimmed shell is one blank line taller than the block it stands in for",
   );
+
+  // ...and an EMPTY one is one line SHORTER, in the other direction. Streamdown special-cases the
+  // empty token line, from its own renderer:
+  //
+  //   children: c.length === 0 || (c.length === 1 && c[0].content === "") ? `\n` : c.map(...)
+  //
+  // so a fence whose body is empty, or nothing but newlines, is one line box tall. A <code> with
+  // an empty text node has no line box, so the fence would grow by a line on upgrade and move
+  // everything below it.
+  const body = (source: string): string => (trim(source) === "" ? "\n" : trim(source));
+  assert.equal(body(""), "\n");
+  assert.equal(body("\n\n\n"), "\n");
+  assert.equal(body("x"), "x");
+  assert.ok(
+    /const trimmed = trimTrailingNewlines\(source\);\s*return trimmed === "" \? "\\n" : trimmed;/
+      .test(SOURCE),
+    "the shell must reproduce streamdown's empty line rather than collapse to no line at all",
+  );
+  assert.ok(
+    !/<code>\{trimTrailingNewlines\(source\)\}<\/code>/.test(SOURCE),
+    "the raw trim must not be rendered directly; it loses the empty-line case",
+  );
 });
 
 test("the gate does not mount a wrapper element of its own", () => {

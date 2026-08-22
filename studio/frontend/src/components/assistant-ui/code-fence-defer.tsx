@@ -99,6 +99,24 @@ export const trimTrailingNewlines = (text: string): string => {
   return text.slice(0, end);
 };
 
+/*
+ * AN EMPTY FENCE IS ONE LINE TALL, not nothing.
+ *
+ * Streamdown renders a code block as one span per token line, and it special-cases the empty line:
+ *
+ *   children: c.length === 0 || (c.length === 1 && c[0].content === "") ? `\n` : c.map(...)
+ *
+ * It also trims trailing newlines off the source first, exactly as `trimTrailingNewlines` does
+ * here, so a fence whose body is empty or is nothing but newlines tokenizes to a single empty line
+ * and renders as one newline: one line box of height. A `<code>` holding an empty text node has no
+ * line box at all, so without this the shell is one line shorter than the block it stands in for
+ * and the fence grows by a line when it upgrades, moving everything below it.
+ */
+const shellBody = (source: string): string => {
+  const trimmed = trimTrailingNewlines(source);
+  return trimmed === "" ? "\n" : trimmed;
+};
+
 function FenceShell({
   language,
   source,
@@ -126,7 +144,7 @@ function FenceShell({
         data-streamdown="code-block-body"
       >
         <pre>
-          <code>{trimTrailingNewlines(source)}</code>
+          <code>{shellBody(source)}</code>
         </pre>
       </div>
     </div>
