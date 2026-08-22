@@ -111,6 +111,19 @@ test("compare hides the shared provider instead of unmounting it", () => {
   }
 });
 
+test("compare preserves a materialized project chat", () => {
+  const landing = componentSource(page, "function ProjectLanding({");
+  assert.match(landing, /const wasActiveRef = useRef\(active\);/);
+  assert.match(
+    landing,
+    /const resumed = active && !wasActiveRef\.current;\s*wasActiveRef\.current = active;\s*if \(!active\) \{\s*return;\s*\}/,
+  );
+  assert.match(
+    landing,
+    /if \(resumed && pendingNewThreadId\) \{\s*useChatRuntimeStore\.getState\(\)\.setActiveThreadId\(pendingNewThreadId\);\s*return;/,
+  );
+});
+
 test("a staged attachment does not follow the user into the next view", () => {
   // switchToNewThread() reuses the uninitialized new thread rather than minting
   // one, and the composer belongs to that thread. With the provider shared, that
@@ -169,7 +182,10 @@ test("the outgoing thread id is captured before the provider blanks it", () => {
     page,
     /const \[initialActiveThreadId\] = useState\(\s*\(\) => useChatRuntimeStore\.getState\(\)\.activeThreadId,\s*\);/,
   );
-  assert.match(page, /if \(activeThreadId === initialActiveThreadId\) \{/);
+  assert.match(
+    page,
+    /if \(\s*activeThreadId === initialActiveThreadId \|\|\s*activeThreadId === pendingNewThreadId\s*\) \{/,
+  );
   assert.equal(
     page.includes("initialActiveThreadRef"),
     false,

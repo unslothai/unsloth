@@ -1124,6 +1124,7 @@ function ProjectLanding({
   // Gates body-portaled surfaces so they can't linger or act while the landing
   // is off-route (e.g. behind another tab).
   const active = useChatActive();
+  const wasActiveRef = useRef(active);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   // Captured in render, not an effect: the shared provider's ThreadNewChatSwitch
   // is an earlier sibling of this subtree, so its mount effect blanks the store's
@@ -1378,7 +1379,16 @@ function ProjectLanding({
   }, [newThreadNonce]);
 
   useEffect(() => {
+    const resumed = active && !wasActiveRef.current;
+    wasActiveRef.current = active;
+    if (!active) {
+      return;
+    }
     if (!activeThreadId) {
+      if (resumed && pendingNewThreadId) {
+        useChatRuntimeStore.getState().setActiveThreadId(pendingNewThreadId);
+        return;
+      }
       // Leaving a created chat for a new one: rotate the nonce so the runtime
       // switches to a fresh thread instead of appending to the old chat.
       if (pendingNewThreadId) {
@@ -1387,7 +1397,10 @@ function ProjectLanding({
       }
       return;
     }
-    if (activeThreadId === initialActiveThreadId) {
+    if (
+      activeThreadId === initialActiveThreadId ||
+      activeThreadId === pendingNewThreadId
+    ) {
       return;
     }
     // Hand the composer's attach choice to the chat it just created: setting
@@ -1404,6 +1417,7 @@ function ProjectLanding({
       );
     setPendingNewThreadId(activeThreadId);
   }, [
+    active,
     activeThreadId,
     initialActiveThreadId,
     pendingNewThreadId,
