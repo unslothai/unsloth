@@ -200,6 +200,109 @@ def unstable_label(entry) -> str:
     return entry if isinstance(entry, str) else f"{entry[1]}@{entry[0]}"
 
 
+def audit_null(paths: list[Path], allow_undecided: frozenset = frozenset()) -> tuple[int, dict]:
+    """Did this base-vs-base run DECIDE the actions it exercised? Not: did it find any.
+
+    A caller that is about to score a result against `--null` needs to know that the null control
+    was capable of an opinion, because `unstable_set` falls back to the declared list when it was
+    not, and prints the words "UNSTABLE SET DERIVED" either way. The obvious check -- require at
+    least one measured `action@rung` entry -- is WRONG, and wrong in the worst direction: a null
+    control in which every action reached `min_observations` and NONE of them differed is the best
+    null control obtainable, and it emits no entries at all, because `derive_unstable` only sets
+    `unstable` when something differed. That check fails exactly when the machine is quietest and
+    the measurement is at its best, which trains everyone to re-run the job on its good days. Four
+    consecutive nulls measured on CI runners here produced 11, 9, 10 and 0 stable differences, so
+    the zero is not a hypothetical.
+
+    So the question asked is whether each (rung, action) is DECIDED -- `undetermined` is
+    `observations < min_observations`, which is the thing that actually breaks the derivation --
+    and the number that differed is reported rather than required.
+
+    UNDECIDED IS NOT ALWAYS A DEFECT. `derive_unstable` counts a pair that was not comparable or
+    not exercised as blind rather than as an observation, so an action this fixture cannot perform
+    at all -- `image_upload`, whose attachments button Studio never mounts without a model -- is
+    permanently undecided for an honest reason. Those names are excused by `allow_undecided`, and
+    every one of them is a hole, so they are printed.
+
+    Returns `(exit code, report)`. 0 decided, 1 undecided beyond the excused names, 2 no data.
+    """
+    results, _got = compare_all(paths)
+    if not results:
+        return 2, {"reason": "no parity data", "decided": [], "undecided": [], "differed": []}
+
+    by_rung: dict[str, list[tuple[str, dict]]] = collections.defaultdict(list)
+    for action, _shard, cell, r in results:
+        by_rung[rung_of_cell(cell)].append((action, r))
+
+    decided, undecided, differed, excused = [], [], [], []
+    for rung, pairs in sorted(by_rung.items()):
+        for action, row in sorted(P.derive_unstable(pairs).items()):
+            entry = (rung, action)
+            if row["undetermined"]:
+                (excused if action in allow_undecided else undecided).append(entry)
+                continue
+            decided.append(entry)
+            if row["unstable"]:
+                differed.append(entry)
+
+    report_ = {
+        "decided": decided,
+        "undecided": undecided,
+        "excused": excused,
+        "differed": differed,
+    }
+    # Everything excused is not a decided null control, it is a null control that measured
+    # nothing while naming a reason for each blank. Passing it would let the excuse list grow
+    # until the audit is vacuous.
+    if not decided:
+        report_["reason"] = "no (rung, action) reached min_observations"
+        return 1, report_
+    if undecided:
+        report_["reason"] = "undecided actions outside the excused list"
+        return 1, report_
+    return 0, report_
+
+
+def print_null_audit(rc: int, report_: dict, allow_undecided: frozenset) -> None:
+    """The audit, said out loud, including the case where it passes with nothing measured."""
+    label = {0: "DECIDED", 1: "UNDECIDED", 2: "NO DATA"}[rc]
+    print(f"\nNULL CONTROL AUDIT: {label}")
+    if rc == 2:
+        print("  no comparable base/treatment pair was found in this payload at all.")
+        print("  A null control that measured nothing cannot excuse anything, and a result")
+        print("  scored against it would be scored against the declared list.")
+        return
+    print(f"  decided (rung, action):     {len(report_['decided'])}")
+    print(f"  of which differed:          {len(report_['differed'])}  (the MEASURED unstable set)")
+    print(f"  undecided:                  {len(report_['undecided'])}")
+    if allow_undecided:
+        print(
+            f"  excused as undecided:       {len(report_['excused'])}  "
+            f"({', '.join(sorted(allow_undecided))}) -- each one a hole"
+        )
+    if rc == 0 and not report_["differed"]:
+        # Said explicitly, because this is the reading a naive gate treats as breakage.
+        print(
+            "\n  Every action this run exercised reached the observation count and NONE of them"
+            "\n  differed against itself. The measured unstable set is empty because there was"
+            "\n  nothing to measure, which is the best null control obtainable, not a failure."
+        )
+    if rc == 1:
+        if not report_["decided"]:
+            print("\n  NOT ONE (rung, action) reached min_observations.")
+        else:
+            print("\n  These (rung, action) pairs never reached min_observations:")
+            for rung, action in report_["undecided"][:12]:
+                print(f"    {action}@{rung}")
+        print(
+            "\n  `analysis.parity.derive_unstable` needs two comparable observations of a"
+            "\n  (rung, action) before it will decide anything about it, so the first thing to"
+            "\n  check is --reps: a single repetition gives one observation per (rung, action)"
+            "\n  and leaves every one of them undetermined. The unstable set would then come"
+            "\n  back empty and the result would be scored against the DECLARED list."
+        )
+
+
 def unstable_set(paths: list[Path] | None) -> tuple[frozenset, dict, dict]:
     """The unstable set to score with, derived from a null control when one is supplied.
 
@@ -387,7 +490,40 @@ def main(argv: list[str] | None = None) -> int:
         default = [],
         help = "a base-vs-base run to derive the unstable set from",
     )
+    ap.add_argument(
+        "--audit-null",
+        action = "store_true",
+        dest = "audit_null",
+        help = "treat the positional payload as a base-vs-base run and exit non-zero unless it "
+        "DECIDED every action it exercised. Asks whether the null control was capable of an "
+        "opinion, not whether it happened to find one: a null in which nothing differed is the "
+        "best one obtainable and must pass",
+    )
+    ap.add_argument(
+        "--allow-undecided",
+        metavar = "ACTIONS",
+        dest = "allow_undecided",
+        default = "",
+        help = "comma-separated action names --audit-null may leave undecided. Only for an "
+        "action the fixture genuinely cannot perform, and say which: every name here is a hole",
+    )
     args = ap.parse_args(argv)
+
+    if args.audit_null:
+        allow = frozenset(a.strip() for a in args.allow_undecided.split(",") if a.strip())
+        worst = 0
+        for pattern in args.payloads:
+            paths = shards_of(pattern)
+            if not paths:
+                print(f"\nno payload found for {pattern}")
+                worst = max(worst, 2)
+                continue
+            one_tier(paths, "null control")
+            rc, report_ = audit_null(paths, allow)
+            print(f"\nauditing {pattern} as a null control")
+            print_null_audit(rc, report_, allow)
+            worst = max(worst, rc)
+        return worst
 
     null_paths: list[Path] = []
     for pattern in args.null:

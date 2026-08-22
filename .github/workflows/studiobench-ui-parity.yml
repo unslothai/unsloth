@@ -463,50 +463,36 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # THE ONE WAY THIS JOB CAN LOOK LIKE IT WORKED AND BE WORTH NOTHING.
-      # `derive_unstable` needs two observations of a (rung, action) before it
-      # will decide anything about it. Below that it returns UNDETERMINED for
-      # every action, the measured set comes back EMPTY, and `unstable_set`
-      # falls back to the union with the declared list -- while still printing
-      # the words "UNSTABLE SET DERIVED", because the derivation ran. The
-      # verdict then scores against exactly the declared list this job exists to
+      # `derive_unstable` needs two comparable observations of a (rung, action)
+      # before it will decide anything about it. Below that every action comes
+      # back undetermined, the measured set is EMPTY, and `unstable_set` falls
+      # back to the union with the declared list -- while still printing the
+      # words "UNSTABLE SET DERIVED", because the derivation ran. The verdict
+      # then scores against exactly the declared list this job exists to
       # replace, and reports the null's own eleven differences as regressions.
       #
-      # So the assertion is on a MEASURED entry, which is the only thing that
-      # cannot be produced by an empty derivation: `unstable_set` writes those
-      # as `action@rung` and declared entries as a bare name.
-      - name: The null measured a set, rather than only attempting one
+      # WHAT THIS DOES NOT ASSERT, and the first version of it got this wrong:
+      # that the null control FOUND something. A null in which every action
+      # reached its observation count and none of them differed emits no
+      # measured entry at all, because `derive_unstable` records an action only
+      # when it DIFFERED -- and that null is the best one obtainable. Keying on
+      # a measured entry fails the job precisely when the runner is quietest and
+      # the measurement is at its best, which teaches everyone to re-run it on
+      # its good days. Nulls measured on these runners produced 11, 9, 10 and 0
+      # stable differences across four consecutive waves; the 0 is not
+      # hypothetical.
+      #
+      # So the question is whether each (rung, action) is DECIDED, and the tool
+      # answers it. Not a grep over the tool's printed prose: that has now been
+      # wrong twice, once because a real payload spells its rung `r100K` where a
+      # fixture spells it `100K`, and once because the literal `action@rung`
+      # appears in the explanatory text whether or not anything was measured.
+      # `sweep/selftest/test_studiobench_null_audit.py` holds both directions.
+      - name: The null control decided the actions it exercised
         run: |
-          # `set +e` is not redundant. GitHub runs every `run:` block under
-          # `bash -e {0}`, so a non-zero exit aborts the step before the line
-          # that was going to read it -- and ui_parity exits non-zero as its
-          # normal way of REPORTING a difference. Without this the step dies
-          # having printed nothing, which reads as a broken job on a run whose
-          # measurement was fine.
-          set +e
-          set -uo pipefail
           python -m tests.studio.studiobench.sweep.ui_parity \
-            --null outputs/parity-null-control outputs/parity-null-control \
-            > derived.txt 2>&1
-          grep -E 'undetermined|scoring against' derived.txt || true
-          # `action@rung`, and the rung token is whatever the payload's cell ids
-          # carry -- `r100K` on a real run, `100K` in the selftests' fixtures --
-          # so this matches on the `@` rather than on a rung spelling. The
-          # literal `action@rung` is excluded because it appears in that line's
-          # own explanatory text whether or not anything was measured, which is
-          # exactly the false pass this step exists to prevent.
-          measured="$(grep -Eo '[a-z_]+@[A-Za-z0-9]+' derived.txt | grep -vx 'action@rung' | sort -u || true)"
-          echo "measured entries: ${measured:-(none)}"
-          if [ -z "$measured" ]; then
-            echo "::error::the null control decided nothing: the derived unstable set holds no"
-            echo "MEASURED (action@rung) entry, only the declared names it unions back in."
-            echo "The verdict would then be scored against the declared list, which is the"
-            echo "thing this job exists to replace, and the null's own differences would be"
-            echo "reported as this pull request's regressions."
-            echo "First thing to check is --reps on the arms job: analysis/parity.py sets"
-            echo "min_observations = 2, and a single repetition gives one observation per"
-            echo "(rung, action), so every action comes back undetermined."
-            exit 1
-          fi
+            --audit-null --allow-undecided image_upload \
+            outputs/parity-null-control
 
       # Exit 1 when a STABLE action rendered differently, 2 when there was no
       # parity data to read at all -- an empty comparison is reported as an
