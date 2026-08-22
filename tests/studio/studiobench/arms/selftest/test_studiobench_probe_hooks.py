@@ -79,27 +79,32 @@ def test_the_probe_path_is_validated_before_anything_is_started(main_src: str):
 
     read_at = main_src.index("extra_init_source = Path(extra_init).read_text")
     assert read_at < main_src.index("install_studio(ref, home)")
-    assert read_at < main_src.index("_isolated_probe(extra_init, extra_init_source)")
+    assert read_at < main_src.index("_probe_init_scripts(extra_init, extra_init_source)")
     assert "except (OSError, UnicodeDecodeError) as exc:" in main_src
     # Read once, used later. A second read at launch time would reintroduce the window.
     assert main_src.count("Path(extra_init).read_text") == 1
 
 
-def test_a_malformed_probe_cannot_take_the_scene_scripts_with_it(main_src: str):
-    """Concatenation makes the browser parse the joined text as ONE unit.
+def test_the_probe_is_installed_without_eval(main_src: str):
+    """CSP, not style. Studio serves `script-src 'self'` with no `'unsafe-eval'`, and the DEFAULT
+    engine on Linux and macOS is webkit, which enforces that against an init script.
 
-    So a single syntax error in the external file would stop dom.js, parity.js and surfaces.js
-    executing too, leaving no `window.__sb` at all and a silence that reads like an arm that did
-    not fire. The source is embedded as a string and evaluated at runtime instead, so the parse
-    failure is caught and reported and the scene scripts are untouched.
+    The probe was briefly handed to indirect eval as a string so that a malformed file could not
+    stop the scene scripts. Measured against a page carrying Studio's own header, with the real
+    `content_visibility_probe.js`: chromium and firefox installed the probe either way, and webkit
+    refused the eval with `EvalError` and installed NOTHING. The isolation was not real there
+    either -- Playwright gives webkit its init scripts as one bootstrap unit, so a parse error
+    kills them all however the probe is written -- and on the two engines where it is real,
+    separate `add_init_script` calls already provide it. So the source goes in as source.
     """
 
-    assert "def _isolated_probe(" in main_src
-    assert "init_scripts.append(_isolated_probe(extra_init, extra_init_source))" in main_src
-    # Indirect eval, so the source evaluates in global scope exactly as a separate init script
-    # would rather than in the wrapper's scope.
-    assert "(0, eval)(" in main_src
-    assert 'bundle.page.on("pageerror"' in main_src
+    assert "def _probe_init_scripts(" in main_src
+    assert "init_scripts.extend(_probe_init_scripts(extra_init, extra_init_source))" in main_src
+    assert "(0, eval)(" not in main_src, (
+        "the probe is back on eval; Studio's script-src 'self' blocks it and the probe will not "
+        "install at all on the default engine"
+    )
+    assert "eval(" not in main_src, "any string evaluation is refused by Studio's CSP"
 
 
 def test_the_probe_exists_and_is_not_a_stub(probe_src: str):
@@ -202,15 +207,18 @@ def test_each_scene_script_keeps_its_own_failure_domain(main_src: str):
     assert "page_scripts" not in main_src
 
 
-def test_the_probe_is_its_own_script_and_its_own_parse(main_src: str):
+def test_the_probe_is_its_own_script_and_says_when_it_did_not_install(main_src: str):
     """Order is undefined, so a probe has to be self-contained; that is the documented rule.
 
-    Its parse is still isolated, because a malformed probe must not be able to stop the scene
-    scripts or the page.
+    A probe that installed nothing must not read as an arm that did not fire, so both failure
+    modes have a channel. A probe that did not PARSE leaves `window.__sbExtraInitScript` unset and
+    the second script names it on the console; a probe that parsed and then THREW arrives as a
+    `pageerror`. Both listeners are attached whenever a probe is asked for.
     """
 
-    assert "init_scripts.append(_isolated_probe(extra_init, extra_init_source))" in main_src
-    assert "(0, eval)(" in main_src
+    assert "init_scripts.extend(_probe_init_scripts(extra_init, extra_init_source))" in main_src
+    assert "window.__sbExtraInitScript" in main_src
+    assert "never installed: it did not " in main_src
     assert 'bundle.page.on("pageerror"' in main_src
 
 

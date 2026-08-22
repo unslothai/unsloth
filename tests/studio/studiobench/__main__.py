@@ -669,7 +669,7 @@ def run(args, ab_ref = None) -> int:
         # constraint and it is written down in CONTRIBUTING-perf.md rather than papered over with
         # a guarantee this file is not in a position to give.
         if extra_init:
-            init_scripts.append(_isolated_probe(extra_init, extra_init_source))
+            init_scripts.extend(_probe_init_scripts(extra_init, extra_init_source))
             _log(
                 f"  EXTRA INIT SCRIPT: {extra_init} -- this run carries an external probe and "
                 f"is NOT a clean measurement of the build"
@@ -1013,38 +1013,51 @@ def _sweep_surfaces(sides: list, ctx, paths) -> None:
         ctx.recorder.gate(f"surface_sweep:{label}", passed, manifest)
 
 
-def _isolated_probe(path: str, source: str) -> str:
-    """The external script, ordered with the scene scripts but PARSED ON ITS OWN.
+def _probe_init_scripts(path: str, source: str) -> list[str]:
+    """The external script AS SOURCE, plus a separate script that says when it did not install.
 
-    Concatenation bought a guarantee Playwright does not give (it says the evaluation order of
-    several init scripts is undefined) and sold a worse one in exchange: the browser parses the
-    joined text as ONE unit, so a single syntax error anywhere in the external file means dom.js,
-    parity.js and surfaces.js never execute either. The run then has no `window.__sb` at all, the
-    probe prints nothing, and the two failures are indistinguishable from an arm that did not fire.
+    NO `eval`, AND THAT IS THE WHOLE POINT. This used to hand the file to indirect eval as a
+    string, so that a malformed probe degraded to a caught `SyntaxError` instead of taking the
+    scene scripts with it. Studio serves `script-src 'self'` with no `'unsafe-eval'`
+    (`studio/backend/main.py::_build_csp`), and `runtime/browser.py::default_engine` picks WEBKIT
+    on both Linux and macOS, so on the DEFAULT engine that eval was refused by CSP and the probe
+    never installed at all. Measured against a page served with Studio's own header:
 
-    So the source is embedded as a STRING and evaluated at runtime. The outer unit parses whatever
-    the file contains, the scene scripts run first because they are earlier in the same unit, and a
-    malformed probe degrades to a caught, reported `SyntaxError` instead of taking the harness with
-    it. Indirect eval (`(0, eval)`) so the source evaluates in global scope, exactly as a separate
-    init script would.
+        chromium   indirect eval runs;      a bad init script leaves the other init scripts alone
+        firefox    indirect eval runs;      a bad init script leaves the other init scripts alone
+        webkit     indirect eval REFUSED;   a bad init script kills every other init script
+
+    So the isolation the wrapper was bought for does not exist on webkit either way -- Playwright
+    installs webkit's init scripts as one bootstrap unit -- and on the two engines where it does
+    exist, separate `add_init_script` calls already provide it without evaluating a string. The
+    source is therefore installed as its own script, in global scope, exactly as it reads on disk.
+
+    The second script is the report. The first line of the probe script stamps
+    `window.__sbExtraInitScript`, so a probe that failed to PARSE leaves it unset and the deferred
+    check names it on the console; a probe that parsed and then THREW arrives as a `pageerror`,
+    which `bundle.page.on("pageerror", ...)` already logs. On webkit the check dies in the same
+    bootstrap unit as the probe, and the `pageerror` is what reports there.
     """
-    return (
-        "(function () {\n"
-        "  try {\n"
-        f"    (0, eval)({json.dumps(source)});\n"
-        "  } catch (err) {\n"
-        f"    var where = {json.dumps(path)};\n"
-        "    try {\n"
-        "      window.console.error(\n"
-        "        'SBENCH_EXTRA_INIT_SCRIPT ' + where + ' failed to evaluate: ' + err +\n"
-        "        '. The scene scripts are unaffected, but this probe reported nothing, which is '"
-        " +\n"
-        "        'NOT the same as an arm that did not fire.'\n"
-        "      );\n"
-        "    } catch (ignored) {}\n"
-        "  }\n"
-        "})();\n"
-    )
+    where = json.dumps(path)
+    return [
+        f"window.__sbExtraInitScript = {where};\n{source}",
+        (
+            "(function () {\n"
+            "  setTimeout(function () {\n"
+            "    if (window.__sbExtraInitScript) { return; }\n"
+            "    try {\n"
+            "      window.console.error(\n"
+            f"        'SBENCH_EXTRA_INIT_SCRIPT ' + {where} + ' never installed: it did not "
+            "parse. '" + " +\n"
+            "        'This probe reported nothing, which is NOT the same as an arm that did not '"
+            " +\n"
+            "        'fire.'\n"
+            "      );\n"
+            "    } catch (ignored) {}\n"
+            "  }, 0);\n"
+            "})();\n"
+        ),
+    ]
 
 
 def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:

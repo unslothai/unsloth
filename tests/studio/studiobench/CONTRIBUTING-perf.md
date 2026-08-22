@@ -342,8 +342,14 @@ a file no reader will ever accept, cells already recorded included, and a payloa
 A probe must be **self-contained**. Playwright does not define the evaluation order of separate
 init scripts, and the scene scripts are deliberately kept as separate scripts so that a throw in
 one cannot stop the others, so a probe cannot assume `window.__sb` exists when it is installed.
-Its own parse is isolated, so a syntax error in a probe is reported and cannot take the scene
-scripts or the page with it, but that is the only guarantee it gets.
+A probe that fails to install is **reported, never silent**: one that did not parse is named on the
+console, and one that parsed and then threw arrives as a `pageerror`, both of which the run log
+carries. On chromium and firefox a probe that does not parse also leaves the scene scripts alone.
+On **webkit**, the default engine on Linux and macOS, it does not: Playwright hands webkit its init
+scripts as one bootstrap unit, so a syntax error in the probe stops dom.js, parity.js and
+surfaces.js as well. The probe is installed as plain source rather than through `eval` because
+Studio serves `script-src 'self'` with no `'unsafe-eval'`, and webkit enforces that against an init
+script, so an eval-installed probe never ran there at all.
 
 Attach your listeners at **insertion**, from a `MutationObserver` installed before the app boots,
 not on your sampling tick. `contentvisibilityautostatechange` fires on a *change* of state, and a
