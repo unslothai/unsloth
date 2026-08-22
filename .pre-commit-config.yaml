@@ -17,7 +17,7 @@ repos:
         # Mirror ruff's [tool.ruff] extend-exclude so this hook does not
         # half-process files ruff itself skips (which produced churn). vendor/ is
         # repeated here because this hook does not read ruff's config.
-        exclude: '(chat_templates|ollama_template_mappers|_auto_install|mapper)\.py$|^studio/backend/vendor/'
+        exclude: '(chat_templates|ollama_template_mappers|_auto_install|mapper)\.py$|^studio/backend/vendor/|^tests/python/fixtures/uembed_reference/vendor/'
         additional_dependencies:
           - ruff==0.6.9
       # Re-pins allowScripts entries after dependency bumps. pre-commit.ci
