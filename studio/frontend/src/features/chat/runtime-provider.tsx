@@ -1683,7 +1683,7 @@ function ThreadNewChatSwitch({
       return;
     }
     const shouldClearAttachments = switchState.hasSwitched;
-    const returningFromSavedThread =
+    const clearAfterSwitch =
       shouldClearAttachments && switchState.activeNonce === null;
     switchState.activeNonce = nonce;
     switchState.hasSwitched = true;
@@ -1694,7 +1694,7 @@ function ThreadNewChatSwitch({
         // No thread mounted yet, so there is no composer to carry anything over.
       }
     };
-    if (shouldClearAttachments && !returningFromSavedThread) {
+    if (shouldClearAttachments && !clearAfterSwitch) {
       clearAttachments();
     }
     // Saved chats keep running in the background. A temporary chat is never
@@ -1704,7 +1704,7 @@ function ThreadNewChatSwitch({
     // Switch to a fresh local thread without persisting it yet; persistence
     // still happens on first message append.
     const switchResult = aui.threads().switchToNewThread();
-    if (returningFromSavedThread) {
+    if (clearAfterSwitch) {
       void Promise.resolve(switchResult)
         .then(() => {
           if (newThreadSwitchStateRef.current.activeNonce !== nonce) return;
@@ -2257,6 +2257,11 @@ export function ChatRuntimeProvider({
     activeNonce: null,
     hasSwitched: false,
   });
+  useEffect(() => {
+    if (!initialThreadId && !newThreadNonce) {
+      newThreadSwitchStateRef.current.hasSwitched = true;
+    }
+  }, [initialThreadId, newThreadNonce]);
 
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>

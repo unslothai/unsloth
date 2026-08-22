@@ -427,6 +427,10 @@ export function leaveNewChatForSavedThread(): void {
   renderedDeps.length = 0;
 }
 
+export function markImplicitNewChatUsed(): void {
+  newThreadSwitchStateRef.current.hasSwitched = true;
+}
+
 export function renderNewChatSwitch(props: any): void {
   const aui = auiFixture;
   const isLoading = props.isLoading;
@@ -799,6 +803,27 @@ def test_a_staged_attachment_is_cleared_only_when_the_switch_moves_on():
     }, "a re-render at the same nonce must not switch or clear again"
     assert out["switched"] == 2
     assert out["cleared"] == 1, "moving to another nonce must not carry the attachment"
+
+
+def test_the_first_nonce_switch_clears_an_implicit_new_chat_attachment():
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ markImplicitNewChatUsed, renderNewChatSwitch, seed, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            markImplicitNewChatUsed();
+            renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({{
+              switched: world.switchedToNewThread,
+              cleared: world.clearedAttachments,
+            }}));
+            """
+        )
+    )
+    assert out["switched"] == 1
+    assert out["cleared"] == 1, "a staged implicit-chat attachment must not follow the nonce"
 
 
 def test_back_to_the_same_new_chat_nonce_switches_after_a_saved_thread():
