@@ -95,20 +95,58 @@ class Pair:
     base: Measure
     treatment: Measure
 
+    @staticmethod
+    def _divisible(measure: Measure) -> float | None:
+        """The value this arm contributes to a ratio, or None when it cannot contribute one.
+
+        A MEASURED ZERO IS A READING, AND `> 0` THREW THAT AWAY. `time_in_jank_pct` and
+        `jank_index` are 0.0 on any arm smooth enough to have no over-budget frames, which is the
+        ordinary state of a healthy base. Requiring both values to be strictly positive dropped
+        the pair, so a treatment that introduced 5% time-in-jank over a zero-jank base reported
+        `no reading` -- a false statement about two arms that both read -- kept the regression out
+        of the table, the headline and `result.regressions`, and, as a null control, neither voided
+        the run nor contributed to the noise floor derived from it. That last one is the worst of
+        the three: the floor is what every later comparison is judged against, so a null control
+        blind to the jank it introduced silently shrinks the effect size anything else can claim.
+
+        The rule is `score.py`'s, which the ladder scorer has always applied to exactly this case:
+        a sub-floor reading is at least as good as the floor, so use the floor rather than the raw
+        value. Dividing by it yields a BOUND on the ratio -- understating the regression, never
+        overstating it -- instead of an infinity or a silence. Two sub-floor arms give floor/floor
+        = 1.0, which is the honest answer and the one score.py's comment is about: instrument noise
+        on a fast machine must not invent a difference between two perfect builds.
+
+        WHAT THIS DELIBERATELY DOES NOT ADMIT. It keys on `has_reading`, so a measure that was
+        never attempted or that was attempted and failed still contributes nothing: those carry
+        `value is None` and are a different thing from a measured zero, which is the distinction
+        `frames.py` makes when it refuses to score an unscheduled rAF loop as zero jank. A zero
+        with no declared floor stays unusable too, because nothing bounds it. So this admits
+        readings that were taken and still excludes readings that were not.
+        """
+        if not measure.has_reading:
+            return None
+        value = float(measure.value)
+        if measure.sub_floor and measure.floor is not None and value >= 0:
+            return float(measure.floor)
+        return value if value > 0 else None
+
     @property
     def usable(self) -> bool:
         return (
-            self.base.has_reading
-            and self.treatment.has_reading
-            and float(self.base.value) > 0
-            and float(self.treatment.value) > 0
+            self._divisible(self.base) is not None
+            and self._divisible(self.treatment) is not None
         )
+
+    @property
+    def bounded(self) -> bool:
+        """True when either arm was sub-floor, so the ratio is a bound and not a point estimate."""
+        return self.usable and (self.base.sub_floor or self.treatment.sub_floor)
 
     @property
     def ratio(self) -> float:
         """treatment / base. Below 1 is faster for a lower-is-better metric."""
 
-        return float(self.treatment.value) / float(self.base.value)
+        return float(self._divisible(self.treatment)) / float(self._divisible(self.base))
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -118,6 +156,7 @@ class Pair:
             "treatment": self.treatment.to_json(),
             "ratio": self.ratio if self.usable else None,
             "usable": self.usable,
+            "bounded": self.bounded,
         }
 
 
@@ -134,6 +173,10 @@ class MetricComparison:
     ci_high: float | None
     verdict: str = "no_reading"
     beyond_noise: bool = False
+    #: At least one contributing pair had a sub-floor arm, so the ratio is a BOUND: the true
+    #: magnitude is larger. Carried so the table can say so rather than let a number derived from
+    #: an instrument floor be quoted as a measurement.
+    bounded: bool = False
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -144,6 +187,7 @@ class MetricComparison:
             "ci95": [self.ci_low, self.ci_high],
             "verdict": self.verdict,
             "beyond_noise": bool(self.beyond_noise),
+            "bounded": bool(self.bounded),
         }
 
 
@@ -280,6 +324,7 @@ def compare(
             ratio_max = max(ratios) if ratios else None,
             ci_low = lo,
             ci_high = hi,
+            bounded = any(p.bounded for p in usable),
         )
         if geo is None:
             comparison.verdict = "no_reading"
@@ -335,19 +380,35 @@ def noise_floor_from_null_control(
     The floor is the largest absolute per-metric deviation the null control showed, never below
     `minimum_pct`. Using the measured spread rather than a constant is the difference between
     "this machine can resolve 3%" and "we hope every machine can resolve 5%".
+
+    A BOUNDED RATIO IS NOT A DEVIATION and is excluded here. A metric whose base fell under its
+    instrument floor contributes the floor to the ratio, so the result says "at least this much"
+    rather than "this much": a null control that moved from no measurable jank to 5% yields a
+    ratio of 50 and would publish a 4,900% noise floor, which would then swallow every real effect
+    on that machine. Such a control has already set `void` on the same evidence -- the movement is
+    real and nothing measured beside it can be believed -- and that is the outcome that belongs to
+    it. The floor is a question about SPREAD, and only point estimates can answer it.
     """
 
+    bounded = sum(1 for m in null_control.metrics if m.ratio_geomean is not None and m.bounded)
     deviations = [
         abs(m.ratio_geomean - 1.0) * 100.0
         for m in null_control.metrics
-        if m.ratio_geomean is not None
+        if m.ratio_geomean is not None and not m.bounded
     ]
     if not deviations:
-        return DEFAULT_NOISE_FLOOR_PCT, "declared default (null control produced no ratios)"
+        why = (
+            f"null control produced only bounded ratios ({bounded} metric(s) under an instrument "
+            "floor)"
+            if bounded
+            else "null control produced no ratios"
+        )
+        return DEFAULT_NOISE_FLOOR_PCT, f"declared default ({why})"
     floor = max(minimum_pct, max(deviations))
+    note = f" ({bounded} bounded metric(s) excluded)" if bounded else ""
     return floor, (
         f"measured from the null-treatment control over {len(deviations)} metrics "
-        f"(worst deviation {max(deviations):.2f}%)"
+        f"(worst deviation {max(deviations):.2f}%){note}"
     )
 
 
