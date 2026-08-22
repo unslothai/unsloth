@@ -71,6 +71,8 @@ const RESIZE_FALLBACK = `<script>(()=>{const post=()=>parent.postMessage({mcpApp
 // makes for localStorage. Shadowing top too: a view reaching for either gets the
 // wrapper, and there is no other handle on the host from inside the sandbox.
 export function bridgeShim(token: string): string {
+  const hostOrigin =
+    typeof window === "undefined" ? "" : window.location.origin;
   return `<script>(()=>{try{
   const real = window.parent;
   const post = real.postMessage.bind(real);
@@ -81,6 +83,21 @@ export function bridgeShim(token: string): string {
   for (const name of ["parent", "top"]) {
     try { Object.defineProperty(window, name, { value: proxy, configurable: true }); } catch (e) {}
   }
+  // Replies come back over a channel owned by THIS document. A page the frame
+  // navigates to keeps the same contentWindow, so a wildcard post would hand it
+  // an in-flight tool result; a port dies with the document that made it, which
+  // is the only thing here that actually distinguishes them.
+  const channel = new MessageChannel();
+  channel.port1.onmessage = (event) => {
+    // Re-dispatched as an ordinary message event so a view listening the usual
+    // way needs to know nothing about any of this. \`source\` is the real host
+    // window and \`origin\` its real origin; what it is NOT is identical to
+    // \`window.parent\`, which is the wrapper above.
+    window.dispatchEvent(new MessageEvent("message", {
+      data: event.data, source: real, origin: ${JSON.stringify(hostOrigin)},
+    }));
+  };
+  post({ __unslothMcpApp: ${JSON.stringify(token)}, __unslothMcpAppPort: true }, "*", [channel.port2]);
 }catch(e){}})();</script>`;
 }
 
@@ -225,14 +242,29 @@ export function McpAppFrame({
   // nothing orders them; losing once means onLoad declines to post and the widget
   // sits on the empty shell for good, with nothing to retry it. A layout effect
   // runs inside the commit, before the browser can dispatch anything.
+  // The seeded document's own reply channel, handed over by the shim.
+  const viewPortRef = useRef<MessagePort | null>(null);
   useLayoutEffect(() => {
     pendingPostRef.current = true;
     viewOwnsSizeRef.current = false;
     initializedRef.current = false;
+    viewPortRef.current?.close();
+    viewPortRef.current = null;
     setHeight(DEFAULT_HEIGHT);
   }, [src, html]);
 
+  // Down the seeded document's own channel, never the frame's contentWindow: the
+  // window survives a navigation and would hand an in-flight tool result or
+  // resource body to whatever page the frame moved to. A port cannot outlive the
+  // document that made it, so there is nowhere for a reply to leak to.
   const postToView = useCallback((message: unknown) => {
+    viewPortRef.current?.postMessage(message);
+  }, []);
+
+  // The one exception, and it has to be: the shim only exists inside the HTML
+  // this delivers, so there is no port yet. It carries the template the host
+  // just fetched and nothing about the conversation.
+  const postTemplate = useCallback((message: unknown) => {
     // Opaque origin, so a wildcard target is required; it still only reaches
     // this iframe's contentWindow.
     iframeRef.current?.contentWindow?.postMessage(message, "*");
@@ -286,8 +318,8 @@ export function McpAppFrame({
   const onLoad = useCallback(() => {
     if (!pendingPostRef.current || !html) return;
     pendingPostRef.current = false;
-    postToView({ type: "unsloth:artifact-html", html });
-  }, [html, postToView]);
+    postTemplate({ type: "unsloth:artifact-html", html });
+  }, [html, postTemplate]);
 
   // Theme flips reach a live widget as a partial host-context update.
   useEffect(() => {
@@ -315,13 +347,22 @@ export function McpAppFrame({
       // Identity survives a navigation and so does the opaque origin, so the
       // token the shim stamps into the seeded document is what actually names
       // the sender. A page the frame navigated to has no shim and no token.
-      const envelope = event.data as { __unslothMcpApp?: unknown; message?: unknown };
+      const envelope = event.data as {
+        __unslothMcpApp?: unknown;
+        __unslothMcpAppPort?: unknown;
+        message?: unknown;
+      };
       if (
         !bridgeToken ||
         typeof envelope !== "object" ||
         envelope === null ||
         envelope.__unslothMcpApp !== bridgeToken
       ) {
+        return;
+      }
+      if (envelope.__unslothMcpAppPort === true) {
+        viewPortRef.current?.close();
+        viewPortRef.current = event.ports[0] ?? null;
         return;
       }
 

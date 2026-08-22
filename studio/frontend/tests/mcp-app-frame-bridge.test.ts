@@ -89,6 +89,42 @@ test("only the document the host seeded can reach the bridge", () => {
   );
 });
 
+test("replies go down the seeded document's own channel", () => {
+  // The frame's contentWindow survives a navigation, so a wildcard reply hands an
+  // in-flight tool result to whatever page the frame moved to -- reproduced in
+  // tests/studio/playwright_mcp_app_bridge_smoke.py, which still scores that path
+  // alongside this one. A port cannot outlive the document that created it.
+  const postToView = declarationText("postToView");
+  assert.ok(
+    /viewPortRef\.current\?\.postMessage\(message\)/.test(postToView),
+    "replies must go over the view's port",
+  );
+  assert.ok(
+    !/contentWindow/.test(postToView),
+    "replies must not be posted at the frame's window",
+  );
+  // The template is the one thing that cannot go over the port: it carries the
+  // shim that creates it. It must stay the only such sender.
+  const postTemplate = declarationText("postTemplate");
+  assert.ok(
+    /contentWindow\?\.postMessage\(message, "\*"\)/.test(postTemplate),
+    "the template still reaches the frame directly, since no port exists yet",
+  );
+  assert.equal(
+    (text.match(/^\s*postTemplate\(/gm) ?? []).length,
+    1,
+    "postTemplate must have exactly one caller: the template hand-off",
+  );
+  assert.ok(
+    /viewPortRef\.current = event\.ports\[0\] \?\? null/.test(text),
+    "the port must be taken from the token-checked handshake",
+  );
+  assert.ok(
+    /viewPortRef\.current\?\.close\(\);\s*\n\s*viewPortRef\.current = null;/.test(text),
+    "re-seeding must drop the previous document's port",
+  );
+});
+
 test("the token is minted per fetched template", () => {
   // A token reused across re-seeds would let a document that captured one earlier
   // keep talking after the frame moved on.
