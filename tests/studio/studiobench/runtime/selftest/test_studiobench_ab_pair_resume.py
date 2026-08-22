@@ -229,12 +229,7 @@ def _two_rung_resumed_table(tmp_path, *, whole_table: bool) -> str:
         by_pair: dict = {}
         for _t, cell, _p in work:
             by_pair.setdefault((cell.rung, cell.rep), []).append(cell.cell_id)
-        done = {
-            cid
-            for ids in by_pair.values()
-            if all(c in recorded for c in ids)
-            for cid in ids
-        }
+        done = {cid for ids in by_pair.values() if all(c in recorded for c in ids) for cid in ids}
 
     resumed = Recorder(paths.payload_jsonl, "sess-2")
     for target, cell, _plan in work:

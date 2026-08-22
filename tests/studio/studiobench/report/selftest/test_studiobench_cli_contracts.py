@@ -39,7 +39,13 @@ from studiobench.__main__ import (  # noqa: E402
 )
 
 
-def _side(label, ref, url, owns, commit = None):
+def _side(
+    label,
+    ref,
+    url,
+    owns,
+    commit = None,
+):
     side = {"label": label, "ref": ref, "base_url": url, "owns": owns}
     if commit is not None:
         side["commit"] = commit
@@ -126,7 +132,7 @@ def test_a_side_with_no_commit_to_declare_is_judged_as_before():
 
 
 def test_the_table_names_both_builds_when_one_ref_resolved_to_two():
-    """"main -> main" over two different commits would read as a null control on a screenshot."""
+    """ "main -> main" over two different commits would read as a null control on a screenshot."""
 
     sides = [
         _side("base", "main", "http://127.0.0.1:5399", True, commit = "a" * 40),
