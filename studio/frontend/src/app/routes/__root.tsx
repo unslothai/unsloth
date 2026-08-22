@@ -351,8 +351,12 @@ function RootLayout() {
   }) => {
     clearNewChatDraft(); // fresh chat starts empty, no bleed from the last one
     const chatRuntime = useChatRuntimeStore.getState();
-    // Inherit the open project, like the sidebar's New chat button.
-    const projectId = options?.standalone ? null : chatRuntime.activeProjectId;
+    // The project on screen, read off the route as the sidebar's New chat
+    // button reads it. The runtime keeps its project while a hidden chat is
+    // still generating, so on another workspace it would name a project the
+    // user cannot see.
+    const openProjectId = isChatRoute ? (rawProject ?? null) : null;
+    const projectId = options?.standalone ? null : openProjectId;
     chatRuntime.setActiveThreadId(null);
     chatRuntime.setActiveProjectId(projectId);
     chatRuntime.setIncognito(Boolean(options?.incognito));

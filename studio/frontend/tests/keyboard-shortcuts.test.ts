@@ -765,6 +765,22 @@ test("the copy chords keep their gesture across the read", async () => {
   }
 });
 
+test("New chat inherits the project on screen, not the one still running", async () => {
+  const root = await readFile(
+    new URL("../src/app/routes/__root.tsx", import.meta.url),
+    "utf8",
+  );
+  const sidebar = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  // The runtime holds its project off-route while a chat is still generating,
+  // so reading it there would open a project the user is not looking at. The
+  // sidebar's button reads the route; the chord has to agree with it.
+  assert.match(root, /isChatRoute \? \(rawProject \?\? null\) : null/);
+  assert.match(sidebar, /isChatRoute\n\s*\? \(\(search\.project as string \| undefined\) \?\? null\)\n\s*: null/);
+});
+
 test("every settings tab survives a reload", () => {
   // The persisted-tab check reads this same list, so a tab added to the union
   // alone can no longer be rejected back to General.
