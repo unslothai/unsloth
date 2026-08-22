@@ -160,11 +160,31 @@ def tier_of(records: list[dict]) -> str:
     return "?"
 
 
+def corpora_of(records: list[dict]) -> set[str]:
+    """EVERY corpus hash the payload carries, not just the first one.
+
+    The recorder appends, so one payload file can hold more than one `run_meta`: `--resume` (and
+    any re-run into the same `--out`) writes a second header next to the first run's completed
+    cells. `paired` matches base against treatment on (shard, rung, repetition) and does not care
+    which run wrote either side, so a first-header-wins reading would pair a base recorded on the
+    old corpus with a treatment recorded on the new one and print the corpus change as a
+    performance change -- the exact thing the refusal below exists to prevent.
+    """
+    found = {str(r.get("corpus_hash") or "?") for r in records if r.get("row_type") == "run_meta"}
+    return found or {"?"}
+
+
 def corpus_of(records: list[dict]) -> str:
-    for r in records:
-        if r.get("row_type") == "run_meta":
-            return str(r.get("corpus_hash") or "?")
-    return "?"
+    """The one corpus a payload was recorded on, or a refusal if it holds more than one."""
+    corpora = corpora_of(records)
+    if len(corpora) > 1:
+        raise SystemExit(
+            f"refusing to read a payload recorded on more than one corpus: "
+            f"{sorted(h[:16] for h in corpora)}. Its cells were recorded against different "
+            f"films, so pairing them would read the corpus change as a performance change. "
+            f"Re-run the whole payload on one corpus."
+        )
+    return next(iter(corpora))
 
 
 def read_rows(path: Path) -> list[dict]:
