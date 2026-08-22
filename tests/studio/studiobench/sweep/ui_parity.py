@@ -15,8 +15,10 @@ is never reported as one. Three things produce it:
   normaliser missed     a generated id, a rendered duration, a backend-minted record id. The fix
                         is in parity.js, and until it is fixed the reading is noise. The first
                         null control this tool ever ran failed on all eighteen actions for exactly
-                        one such volatile; run `parity_null_control.py --hunt` before believing a
-                        wall of red.
+                        one such volatile. `sweep/parity_null_control.py --hunt`, over a null
+                        control recorded with `--parity-raw`, prints the exact bytes that moved,
+                        which is the only way to tell this case from a real change without
+                        guessing. Run it before believing a wall of red.
   a legitimately
   divergent action      `stop_generation` stops a live stream, so how much text arrived before the
                         stop differs between two runs of ANY build.
@@ -348,7 +350,41 @@ def unstable_set(paths: list[Path] | None) -> tuple[frozenset, dict, dict]:
     return frozenset(measured) | frozenset(UNSTABLE_ACTIONS), derived, checks
 
 
-def report(paths: list[Path], label: str, unstable: frozenset) -> int:
+def corroborated(entries: list[tuple], min_reps: int) -> tuple[list[tuple], list[tuple]]:
+    """Split stable differences into those that REPEATED and those seen in one repetition only.
+
+    A build renders the same way every time it renders. So a real UI change differs in EVERY
+    repetition of an action, and a difference that shows up in one repetition and not the other
+    is, by that fact alone, not a property of the build.
+
+    This is the discriminator the false-alarm data pointed at rather than one chosen on taste.
+    Over 132 scored pairs of base-vs-base films, every false alarm was a single-repetition
+    difference; the injected-element probe -- one `<span>` added inside the thread root, which is
+    as real as a UI change gets -- differed in every repetition of five separate actions.
+
+    WHAT IT COSTS, said plainly: a genuine change that can only render in one repetition is
+    demoted to a warning. That is a change whose visibility depends on state the film reaches
+    once, and the repetitions are not independent runs of a fresh app but two passes in one
+    session, so this is not free. It is printed as UNCORROBORATED rather than dropped, so the
+    reading survives even when the verdict does not rest on it.
+    """
+    by_action: dict[tuple[str, str], list[tuple]] = collections.defaultdict(list)
+    for entry in entries:
+        by_action[(entry[0], rung_of_cell(entry[2]))].append(entry)
+    firm, weak = [], []
+    for group in by_action.values():
+        # DISTINCT repetitions, not rows: one repetition seen twice is one observation.
+        reps = {e[2] for e in group}
+        (firm if len(reps) >= min_reps else weak).extend(group)
+    return firm, weak
+
+
+def report(
+    paths: list[Path],
+    label: str,
+    unstable: frozenset,
+    min_reps: int = 1,
+) -> int:
     results, got = compare_all(paths)
     if not results:
         # An empty result is reported as an empty result. "No mismatches found" when nothing was
@@ -377,10 +413,23 @@ def report(paths: list[Path], label: str, unstable: frozenset) -> int:
         entry = (action, shard, cell, r["moved"])
         (unstable_bad if is_unstable(unstable, action, cell) else stable_bad).append(entry)
 
+    # SPLIT BEFORE THE COUNTS ARE PRINTED. Printing "stable actions differing: 1" above a verdict
+    # of 0 is how a reader concludes the tool is lying to them; the headline number has to be the
+    # one the exit code is taken from.
+    stable_bad, uncorroborated = corroborated(stable_bad, min_reps)
+
     print(f"\n{label}")
     print(f"  {len(results)} action pairs across {len(paths)} shard(s)")
     print(f"  matched:                    {matched}")
-    print(f"  stable actions differing:   {len(stable_bad)}")
+    print(
+        f"  stable actions differing:   {len(stable_bad)}"
+        + (f"  (in >= {min_reps} repetitions)" if min_reps > 1 else "")
+    )
+    if min_reps > 1:
+        print(
+            f"  uncorroborated:             {len(uncorroborated)}  (a stable action that differed "
+            f"in fewer than {min_reps} repetitions; reported, not counted)"
+        )
     print(f"  unstable actions differing: {len(unstable_bad)}  (expected to vary; not a verdict)")
     print(f"  NOT COMPARABLE:             {len(blind)}  (never measured; not a pass)")
     print(f"  NOT EXERCISED:              {len(idle)}  (the action did not run; not coverage)")
@@ -395,6 +444,17 @@ def report(paths: list[Path], label: str, unstable: frozenset) -> int:
             print(f"    {action:<26} {shard} {cell}: {', '.join(moved[:4])}")
     else:
         print("\n  No stable action rendered differently between the two arms.")
+
+    if uncorroborated:
+        # Printed in full. A build renders the same way every time, so one repetition out of two
+        # is evidence of the run rather than of the build -- but it is still a reading, and a
+        # reader chasing an intermittent regression needs to see it rather than be told nothing.
+        print(
+            f"\n  UNCORROBORATED -- differed in only one repetition, so not counted as a "
+            f"regression:"
+        )
+        for action, shard, cell, moved in uncorroborated[:8]:
+            print(f"    {action:<26} {shard} {cell}: {', '.join(moved[:3])}")
 
     if blind:
         print("\n  NOT COMPARABLE -- these surfaces carry no verdict in either direction:")
@@ -491,6 +551,16 @@ def main(argv: list[str] | None = None) -> int:
         help = "a base-vs-base run to derive the unstable set from",
     )
     ap.add_argument(
+        "--min-reps",
+        type = int,
+        default = 1,
+        dest = "min_reps",
+        help = "how many DISTINCT repetitions of an action must show the same stable difference "
+        "before it counts as a regression. 1 is the historical behaviour. 2 refuses to call a "
+        "difference seen in one repetition of two a change to the build, which is what every "
+        "measured false alarm has been",
+    )
+    ap.add_argument(
         "--audit-null",
         action = "store_true",
         dest = "audit_null",
@@ -560,7 +630,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"this payload at {sorted(tiers)}. Which actions are unstable depends on the "
                 f"film's slot spacing, so this unstable set does not transfer."
             )
-        worst = max(worst, report(paths, f"UI PARITY: {pattern}", unstable))
+        worst = max(worst, report(paths, f"UI PARITY: {pattern}", unstable, args.min_reps))
     return worst
 
 

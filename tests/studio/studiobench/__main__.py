@@ -625,6 +625,9 @@ def run(args, ab_ref = None) -> int:
                 log = _log,
                 cadence = args.cadence,
                 image_path = image_path,
+                parity_raw = args.parity_raw,
+                parity_shots = args.parity_shots,
+                arm_label = side["label"],
             )
 
         seeder = sides[0]["seeder"]
@@ -1463,6 +1466,23 @@ def parse_args(argv: list):
         "parity digest of each. The film covers the chat thread; this covers "
         "the rest of the app. Off by default: it costs about a minute per arm "
         "and it does not measure performance",
+    )
+    ap.add_argument(
+        "--parity-shots",
+        metavar = "DIR",
+        dest = "parity_shots",
+        help = "write a viewport PNG per action per arm into DIR, taken at the same instant as "
+        "the parity digest, so a mismatch can be SEEN rather than read as a hex pair. Off by "
+        "default",
+    )
+    ap.add_argument(
+        "--parity-raw",
+        action = "store_true",
+        dest = "parity_raw",
+        help = "record the NORMALISED signature text beside every parity digest, so "
+        "`sweep/parity_null_control.py --hunt` can name which bytes moved between two arms "
+        "instead of only that they did. Off by default: it multiplies a payload's size by "
+        "roughly a hundred, and only the hunt reads it",
     )
     ap.add_argument("--headed", action = "store_true")
     ap.add_argument("--keep-studio", action = "store_true")

@@ -263,6 +263,8 @@ def make_target(
     cadence: str,
     image_path,
     session,
+    parity_raw: bool = False,
+    parity_shots = None,
     username: str,
     password: str,
 ) -> Target:
@@ -294,6 +296,9 @@ def make_target(
         log = log,
         cadence = cadence,
         image_path = image_path,
+        parity_raw = parity_raw,
+        parity_shots = parity_shots,
+        arm_label = label,
     )
     target = Target(label = label, ref = ref, base_url = base_url, seeder = seeder, runner = runner)
     target.auth = auth  # type: ignore[attr-defined]

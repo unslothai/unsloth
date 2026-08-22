@@ -142,6 +142,7 @@ jobs:
       HOME_A: ${{ github.workspace }}/.parity/home_a
       HOME_B: ${{ github.workspace }}/.parity/home_b
       OUT_DIR: outputs/parity-${{ matrix.arm }}
+      SHOT_DIR: outputs/shots-${{ matrix.arm }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -314,9 +315,62 @@ jobs:
               bash .github/scripts/boot-studio-api-only.sh \
                 --port "$port" --log "logs/studio_${label}.log" --pid-var "STUDIO_${label}_PID"
             bash .github/scripts/wait-for-health.sh --port "$port" --log "logs/studio_${label}.log"
+            # READ ONCE, HERE. `<home>/auth/.bootstrap_password` is minted on a boot with no auth
+            # directory and Studio removes it once it has been used, so every later step that
+            # `cat`s it is reading a file documented to disappear -- and studiobench rotates the
+            # account to its own password on top of that. Capturing the value at boot makes the
+            # order of the steps below irrelevant instead of load-bearing.
+            local pw
+            pw="$(cat "$home/auth/.bootstrap_password")"
+            echo "::add-mask::$pw"
+            echo "PASSWORD_${label}=$pw" >> "$GITHUB_ENV"
           }
           boot "$HOME_A" "$PORT_A" a
           boot "$HOME_B" "$PORT_B" b
+
+      # BOTH ARMS MUST START EMPTY, and this is asserted rather than assumed.
+      #
+      # A Studio home carries its chat database. A home reused from an earlier run brings that
+      # run's threads into the shot, and the harness then manufactures a visible difference on
+      # the exact pair whose whole claim is that nothing changed -- a real screenshot of the
+      # wrong state, under the right label, which is the worst artefact this job could produce.
+      # The homes are created fresh under the workspace on every run, so this should always
+      # hold; "should always hold" is the reason to check it rather than the reason not to.
+      #
+      # It also catches the case the digest cannot: two arms that are each non-empty but agree
+      # would compare clean and be measuring somebody else's leftovers.
+      - name: Both arms start from an empty thread list
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          for spec in "a:$PORT_A" "b:$PORT_B"; do
+            side="${spec%%:*}"; port="${spec##*:}"
+            pw_var="PASSWORD_$side"; pw="${!pw_var}"
+            n="$(python - "$port" "$pw" <<'PY'
+          import json, sys, urllib.request
+          port, pw = sys.argv[1], sys.argv[2]
+          def post(path, body):
+              req = urllib.request.Request(
+                  f"http://127.0.0.1:{port}{path}", method="POST",
+                  data=json.dumps(body).encode(),
+                  headers={"Content-Type": "application/json"})
+              return json.load(urllib.request.urlopen(req, timeout=30))
+          tok = post("/api/auth/login", {"username": "unsloth", "password": pw})["access_token"]
+          req = urllib.request.Request(f"http://127.0.0.1:{port}/api/chat/threads",
+                                       headers={"Authorization": f"Bearer {tok}"})
+          got = json.load(urllib.request.urlopen(req, timeout=30))
+          rows = got if isinstance(got, list) else got.get("threads", got.get("items", []))
+          print(len(rows))
+          PY
+          )"
+            echo "  side $side: $n existing thread(s)"
+            if [ "$n" != "0" ]; then
+              echo "::error::side $side booted with $n pre-existing thread(s). This home is not"
+              echo "clean, so anything it renders is partly somebody else's run and the pair"
+              echo "below would be a real screenshot of the wrong state."
+              exit 1
+            fi
+          done
 
       # --reps 2, not 1, and this is load-bearing rather than a comfort margin.
       # `analysis/parity.derive_unstable` needs min_observations=2 before it will
@@ -339,9 +393,10 @@ jobs:
             --attach-b "http://127.0.0.1:${PORT_B}" \
             --branch "${{ steps.refs.outputs.merge_base }}" \
             --ab "${{ steps.refs.outputs.side_b }}" \
-            --password "$(cat "$HOME_A/auth/.bootstrap_password")" \
-            --password-b "$(cat "$HOME_B/auth/.bootstrap_password")" \
+            --password "$PASSWORD_a" \
+            --password-b "$PASSWORD_b" \
             --engine chromium \
+            --parity-shots "$SHOT_DIR" \
             --out "$OUT_DIR"
 
       # THE GATE, and it runs on the null arm exactly as it runs on the result
@@ -359,6 +414,20 @@ jobs:
             --allow-not-run image_upload \
             --allow-slot-misses 2
 
+      # PRUNED HERE, not in the verdict job, because the images are the only thing in this
+      # payload that is big. A clean run keeps nothing: an action whose two arms produced the
+      # same digest has two identical pictures and no reader will ever want them. What survives
+      # is only the actions whose arms DISAGREED -- which this job can decide on its own, since
+      # it holds both arms. Whether a disagreement is EXCUSED needs the null control and is the
+      # verdict job's call, so a few excused pairs ride along and are dropped there.
+      - name: Keep only the shots whose two arms differed
+        if: always()
+        run: |
+          set -uo pipefail
+          python -m tests.studio.studiobench.sweep.parity_shots --prune \
+            --payload "$OUT_DIR" --shots "$SHOT_DIR" || true
+          du -sh "$SHOT_DIR" 2> /dev/null || true
+
       - name: Stop both Studios
         if: always()
         run: |
@@ -374,6 +443,7 @@ jobs:
           name: studiobench-parity-${{ matrix.arm }}
           path: |
             ${{ env.OUT_DIR }}/**
+            ${{ env.SHOT_DIR }}/**
             logs/studio_*.log
             logs/install_*.log
           retention-days: 7
@@ -418,9 +488,16 @@ jobs:
               find "artifacts/studiobench-parity-$arm" -type f | head -40
               exit 1
             fi
-            mkdir -p "outputs/parity-$arm"
+            mkdir -p "outputs/parity-$arm" "outputs/shots-$arm"
             cp "$found" "outputs/parity-$arm/payload.jsonl"
             echo "$arm: $found -> outputs/parity-$arm/payload.jsonl ($(wc -l < "$found") rows)"
+            # The shots ride in the same artifact and land at whatever depth the ancestor put
+            # them; found the same way and for the same reason as the payload.
+            shots="$(find "artifacts/studiobench-parity-$arm" -type d -name "shots-$arm" -print -quit)"
+            if [ -n "$shots" ]; then
+              cp "$shots"/*.png "outputs/shots-$arm/" 2> /dev/null || true
+            fi
+            echo "$arm: $(find "outputs/shots-$arm" -name '*.png' | wc -l) screenshot(s)"
           done
 
       # THE NULL'S OWN SCORE, ALWAYS, AND FIRST. Scored against the DECLARED
@@ -494,10 +571,30 @@ jobs:
             --audit-null --allow-undecided image_upload \
             outputs/parity-null-control
 
-      # Exit 1 when a STABLE action rendered differently, 2 when there was no
-      # parity data to read at all -- an empty comparison is reported as an
-      # empty comparison rather than as a pass, which is the shape a job like
-      # this fails silently in.
+      # Exit 1 when a STABLE action rendered differently in BOTH repetitions, 2
+      # when there was no parity data to read at all -- an empty comparison is
+      # reported as an empty comparison rather than as a pass, which is the shape
+      # a job like this fails silently in.
+      #
+      # --min-reps 2 is the discriminator, and it is the one the data chose. A
+      # build renders the same way every time it renders, so a stable action that
+      # differs on one pass and matches on the next is a fact about the run. That
+      # is what every measured false alarm has been: over 264 scored pairs of
+      # base-vs-base films -- the shape a pull request with no UI change presents
+      # -- 41 were red at --min-reps 1 and ZERO at 2. The probe that adds one
+      # <span> inside the thread root, which is as real as a UI change gets,
+      # stays red at 2 because it differs on every pass of five actions.
+      #
+      # Where those 41 came from is worth recording, because it is not what it
+      # looks like: every one of them used one of the last films of that sweep as
+      # its NULL. A null control that happened to be QUIET excuses little, and
+      # then the result's ordinary noise has nothing to hide behind. So the
+      # failure mode is not a noisy null, it is a null quieter than the result it
+      # is scoring -- which is exactly what corroboration is immune to.
+      #
+      # The cost is stated in `corroborated()`: a genuine change that can only
+      # render in one repetition is demoted to UNCORROBORATED and printed rather
+      # than counted.
       - name: The verdict
         run: |
           # `set +e` is not redundant. GitHub runs every `run:` block under
@@ -509,6 +606,7 @@ jobs:
           set +e
           set -uo pipefail
           python -m tests.studio.studiobench.sweep.ui_parity \
+            --min-reps 2 \
             --null outputs/parity-null-control \
             outputs/parity-result > verdict.txt 2>&1
           rc=$?
@@ -521,3 +619,36 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
+
+      # ONLY ON FAILURE, which is what keeps a green run fast: a passing run uploads no images
+      # at all, and the arms have already deleted every shot whose two sides matched.
+      #
+      # A red verdict without these is a hex pair and a character count, which cannot answer the
+      # one question a reader has -- is this real -- so the job gets re-run instead of read. The
+      # pair comes from the SAME session that produced the differing digests, shot at the same
+      # instant as the capture. Re-driving the film afterwards to take a nicer picture would be
+      # the more comfortable design and a dishonest one: stream progress differs run to run, so
+      # the second run would very often show two identical pages for a difference that was real.
+      - name: Draw the before/after pairs for what turned it red
+        if: failure()
+        run: |
+          set -uo pipefail
+          pip install --quiet 'pillow<12'
+          python -m tests.studio.studiobench.sweep.parity_shots \
+            --result outputs/parity-result \
+            --null outputs/parity-null-control \
+            --shots outputs/shots-result \
+            --out outputs/parity-evidence
+          echo
+          echo "Composites are BEFORE (merge base) | AFTER (head), padded rather than scaled,"
+          echo "each half labelled with its arm, action, cell and scrollTop. A pair whose two"
+          echo "scroll offsets disagree is marked as not a like-for-like comparison."
+
+      - name: Upload the before/after evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: studiobench-parity-evidence
+          path: outputs/parity-evidence/**
+          retention-days: 7
+          if-no-files-found: warn

@@ -229,3 +229,62 @@ def test_the_parity_workflow_audits_the_null_with_the_tool(tmp_path):
     assert "--allow-undecided image_upload" in text
     # The prose may still EXPLAIN the two regexes that were wrong; what it may not do is run one.
     assert "grep -Eo" not in text, "the guard must not key on the tool's printed prose again"
+
+
+# ── a difference that did not repeat is not a change to the build ────
+
+
+def test_a_difference_in_one_repetition_of_two_is_not_counted(tmp_path):
+    # The measured false alarm, in miniature. A build renders the same way every time, so a stable
+    # action that differs in rep0 and matches in rep1 is telling you about the run.
+    mine = null_run(
+        tmp_path,
+        "one_rep",
+        [
+            ("r100K", "rep0", "settings", "A", "B"),
+            ("r100K", "rep1", "settings", "A", "A"),
+        ],
+    )
+    assert U.report([mine], "t", frozenset(), min_reps = 1) == 1
+    assert U.report([mine], "t", frozenset(), min_reps = 2) == 0
+
+
+def test_a_difference_in_every_repetition_still_fails(tmp_path):
+    # The other direction, and the one that matters more: an injected element differs on every
+    # pass, so raising the bar must not make the gate unable to fail. Measured on the real probe
+    # -- one <span> added inside the thread root -- which stays red at --min-reps 2.
+    mine = null_run(
+        tmp_path,
+        "both_reps",
+        [
+            ("r100K", "rep0", "settings", "A", "B"),
+            ("r100K", "rep1", "settings", "A", "B"),
+        ],
+    )
+    assert U.report([mine], "t", frozenset(), min_reps = 2) == 1
+
+
+def test_the_headline_count_is_the_one_the_exit_code_uses(tmp_path, capsys):
+    # Printing "stable actions differing: 1" above a verdict of 0 is how a reader decides the
+    # tool is lying to them.
+    mine = null_run(
+        tmp_path,
+        "hdr",
+        [
+            ("r100K", "rep0", "settings", "A", "B"),
+            ("r100K", "rep1", "settings", "A", "A"),
+        ],
+    )
+    rc = U.report([mine], "t", frozenset(), min_reps = 2)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "stable actions differing:   0" in out
+    assert "uncorroborated:             1" in out
+
+
+def test_one_repetition_seen_twice_is_not_two_observations(tmp_path):
+    # Two shards can carry the same (rung, rep); corroboration counts DISTINCT repetitions, or a
+    # single flake recorded in two places would corroborate itself.
+    a = null_run(tmp_path, "sh1", [("r100K", "rep0", "settings", "A", "B")])
+    b = null_run(tmp_path, "sh2", [("r100K", "rep0", "settings", "A", "B")])
+    assert U.report([a, b], "t", frozenset(), min_reps = 2) == 0

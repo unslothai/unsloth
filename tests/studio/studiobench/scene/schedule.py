@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from ..runtime.types import ActionContext, ActionResult, Cell, Slot, Window, not_run
@@ -277,10 +278,46 @@ class SceneRunner:
         Taken at the CLOSE of the action window, at the same moment as the census, so the digest
         and the occupancy it should be read against come from one reading of one DOM.
         """
+        want_raw = bool(self.base_args.get("parity_raw"))
         try:
-            return self.page.evaluate("() => window.__sb.parity.capture()")
+            return self.page.evaluate("(raw) => window.__sb.parity.capture({ raw })", want_raw)
         except Exception as exc:  # noqa: BLE001
             return {"parity_attempted": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+    def _parity_shot(self, action: str) -> dict:
+        """A viewport PNG taken at the same instant as the digest, when `--parity-shots` asked.
+
+        WHY THE VIEWPORT AND NOT THE DIFFERING ELEMENT. An element screenshot is the better
+        picture and Playwright takes it by SCROLLING the element into view, which mutates the
+        page. The next slot in the film is scripted against where the thread actually is, so a
+        shot that scrolls has changed the run it was supposed to be observing. The viewport is
+        what the user sees and costs nothing beyond the encode.
+
+        SCROLL IS RECORDED RATHER THAN FORCED, for the same reason. Both arms are driven by one
+        script inside one session so their offsets agree by construction, but "by construction"
+        is a claim, and a pair of shots at different offsets looks exactly like a UI change. The
+        number travels with the image and the composite refuses to present a mismatched pair as
+        a comparison.
+        """
+        out = self.base_args.get("parity_shots")
+        if not out:
+            return {}
+        label = self.base_args.get("arm_label") or "?"
+        try:
+            scroll = self.page.evaluate(
+                "() => { const v = document.querySelector('.aui-thread-viewport');"
+                " return v ? Math.round(v.scrollTop) : -1; }"
+            )
+        except Exception:  # noqa: BLE001
+            scroll = -1
+        name = f"{self.cell.cell_id}__{action}__{label}.png"
+        path = Path(out) / name
+        try:
+            path.parent.mkdir(parents = True, exist_ok = True)
+            self.page.screenshot(path = str(path))
+        except Exception as exc:  # noqa: BLE001
+            return {"shot_error": f"{type(exc).__name__}: {exc}"}
+        return {"shot": name, "shot_scroll_top": scroll}
 
     def _gap_window(self, name: str, until_ms: int, t0: float) -> None:
         now_ms = (time.monotonic() - t0) * 1000
@@ -361,6 +398,16 @@ class SceneRunner:
         row["window_ms"] = window.duration_ms
         row["census"] = window.notes.get("census")
         row["parity"] = window.notes.get("parity")
+        # THE SCREENSHOT IS TAKEN OUTSIDE THE WINDOW, on purpose and not as a tidiness point.
+        # The film runs on a wall clock and every slot has an absolute start, so an encode charged
+        # to the measured window eats the gap before the next slot -- which is how an action comes
+        # to report a MISSED SLOT on a contended runner. `--assert-liveness` counts those, so a
+        # camera inside the window could turn a healthy run red and it would look like the harness
+        # failing rather than like the instrument taxing itself. Out here it costs the gap, which
+        # is what the gap is for. The DOM has moved on by a few milliseconds; for a picture that
+        # is nothing, and for the digest, which was taken inside, it is not true at all.
+        if isinstance(row.get("parity"), dict) and row["parity"].get("parity_attempted"):
+            row["parity"].update(self._parity_shot(slot.action))
         # An action that ran but overran its budget has pushed nothing (the next slot has its own
         # absolute start), but it has overlapped the next one, so it is flagged.
         row["over_budget_ms"] = round(over_ms, 1) if over_ms > 0 else 0.0
