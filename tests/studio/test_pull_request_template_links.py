@@ -19,12 +19,17 @@ import pytest
 
 TEMPLATE = Path(__file__).resolve().parents[2] / ".github" / "PULL_REQUEST_TEMPLATE.md"
 
-# [text](target), ignoring images and reference-style definitions.
+# [text](target), ignoring images.
 LINK = re.compile(r"(?<!!)\[[^\]]*\]\(([^)\s]+)")
+# [label]: target -- the reference-style definition. It carries a target exactly as an inline link
+# does, and resolves against the same wrong base, so a guard that reads only the inline form would
+# pass a template whose links all 404. The optional <> wrapper and the trailing title are both
+# standard and must not end up in the target.
+REF_DEF = re.compile(r"^[ ]{0,3}\[[^\]]+\]:[ \t]*<?([^>\s]+)>?", re.MULTILINE)
 
 
 def _targets(text: str) -> list[str]:
-    return LINK.findall(text)
+    return LINK.findall(text) + REF_DEF.findall(text)
 
 
 def test_template_exists() -> None:
@@ -67,3 +72,26 @@ def test_the_guard_classifies_targets_the_way_github_resolves_them(
     assert found == [target]
     is_relative = not target.startswith(("http://", "https://", "mailto:", "#"))
     assert is_relative is relative
+
+
+@pytest.mark.parametrize(
+    "body, caught",
+    [
+        ("See [guidelines][contrib].\n\n[contrib]: ../CONTRIBUTING.md\n", True),
+        ("See [guidelines][contrib].\n\n[contrib]: <../CONTRIBUTING.md>\n", True),
+        ('See [g][c].\n\n[c]: ../CONTRIBUTING.md "Contributing"\n', True),
+        ("[c]: https://github.com/unslothai/unsloth/blob/main/CONTRIBUTING.md\n", False),
+        ("See [inline](../CONTRIBUTING.md).\n", True),
+        ("![shot](../docs/a.png)\n", False),
+    ],
+)
+def test_the_scan_reads_reference_definitions_as_well_as_inline_links(body, caught) -> None:
+    """A reference-style link resolves against the same wrong base as an inline one.
+
+    Without this the guard read only `[text](target)`, so a template that moved to
+    `[guidelines][contrib]` would have passed while every rendered link still 404'd.
+    """
+    relative = [
+        t for t in _targets(body) if not t.startswith(("http://", "https://", "mailto:", "#"))
+    ]
+    assert bool(relative) is caught, f"targets found: {_targets(body)}"
