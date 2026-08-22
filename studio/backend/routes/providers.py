@@ -183,7 +183,9 @@ async def get_public_key(current_subject: str = Depends(get_current_subject)):
 
 @router.get("/registry", response_model = list[ProviderRegistryEntry])
 async def list_registry(
-    include_hidden: bool = False, current_subject: str = Depends(get_current_subject)
+    include_hidden: bool = False,
+    include_oauth: bool = False,
+    current_subject: str = Depends(get_current_subject),
 ):
     """List all supported provider types with their default configurations.
 
@@ -192,8 +194,12 @@ async def list_registry(
     needs. It is opt-in so that a browser still running a pre-capability bundle,
     which does not know to filter on ``hidden``, keeps seeing exactly the list
     it saw before and cannot render them as duplicate dropdown options.
+
+    ``include_oauth=true`` declares that the client can render OAuth connection
+    flows. Without it, OAuth-only providers stay hidden from legacy bundles that
+    would incorrectly render an API-key form.
     """
-    return list_available_providers(include_hidden = include_hidden)
+    return list_available_providers(include_hidden = include_hidden, include_oauth = include_oauth)
 
 
 # ── Per-MTok pricing snapshot for client-side cost display ──────────
