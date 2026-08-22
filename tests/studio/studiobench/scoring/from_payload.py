@@ -600,3 +600,50 @@ def measures_by_cell(
         for readings in single.values():
             out[(int(tokens), rep)] = readings
     return out
+
+
+# ── was there an instrument in the shot ──────────────────────────────
+
+
+def probe_scripts(records: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Every external init script this payload records, in order, without duplicates.
+
+    EVERY `run_meta`, not the first one. `--resume` continues an interrupted run by APPENDING to
+    the existing payload, so a file can carry a clean `run_meta` at the top and a second one
+    further down with a probe named in it, above the cells that were re-recorded under that
+    probe. Returning on the first row reads such a file as clean and scores perturbed cells.
+
+    The failed `probe_free` gate is read as well as the metadata field. Two independent records of
+    one fact, so a payload written by a version that emits only one of them is still refused.
+    """
+    found: list[str] = []
+    for row in records:
+        script = ""
+        if row.get("row_type") == "run_meta":
+            script = str(row.get("probe_init_script") or "")
+        elif row.get("row_type") == "gate" and row.get("name") == "probe_free":
+            if not row.get("passed"):
+                detail = row.get("detail")
+                detail = detail if isinstance(detail, Mapping) else {}
+                script = str(detail.get("probe_init_script") or "an unnamed probe")
+        if script and script not in found:
+            found.append(script)
+    return found
+
+
+def refuse_if_probed(records: Sequence[Mapping[str, Any]], where: str) -> None:
+    """Raise rather than score a payload that was recorded with a probe in the page.
+
+    Called from every scoring entry point rather than from one of them. A refusal that only
+    `floor_table` performs still lets the run print an `ab.md` at the end and `--report` produce a
+    score from the same file afterwards, and those are the two tables somebody actually reads.
+    """
+    scripts = probe_scripts(records)
+    if not scripts:
+        return
+    raise SystemExit(
+        f"refusing to score {where}: it was recorded with an external init script "
+        f"installed ({', '.join(scripts)}). A probe samples the DOM and forces layout "
+        f"on its own schedule, so these timings are a measurement of the page and the "
+        f"instrument together. Re-run with SBENCH_EXTRA_INIT_SCRIPT unset."
+    )

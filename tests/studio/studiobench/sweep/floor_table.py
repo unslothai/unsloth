@@ -47,6 +47,7 @@ from tests.studio.studiobench.scoring.from_payload import (  # noqa: E402
     _actions_for,
     _frame_measures,
     _stream_measures,
+    refuse_if_probed,
 )
 
 METRICS = tuple(ACTION_SOURCES) + FRAME_METRICS + STREAM_METRICS
@@ -261,6 +262,13 @@ def load(paths: list[Path]) -> tuple[dict[str, list[tuple[float, float]]], set[s
     corpora: set[str] = set()
     for path in paths:
         records = read_rows(path)
+        # REFUSED HERE, not warned about. This is the same class of refusal as the tier and
+        # corpus checks below, one step earlier: those two say "these are different films", and
+        # this one says "this film was shot with the camera in the shot". There is no flag to
+        # override it, because the only correct response is to re-run without the probe. The
+        # check itself lives in the scoring layer so that the A/B table and `--report` refuse on
+        # exactly the same evidence rather than on a second copy of the rule.
+        refuse_if_probed(records, str(path))
         tiers |= tiers_of(records)
         corpora.add(corpus_of(records))
         for metric, rows in paired(records, shard = str(path.parent.name)).items():

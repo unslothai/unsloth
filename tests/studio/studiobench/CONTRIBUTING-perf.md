@@ -53,7 +53,10 @@ See **"You need a Studio, and you need its password"** in [README.md](README.md)
 run the first one: a missing `--password` fails as an HTTP 401 only after the browser has
 already started, and `--doctor` reports PASS on that exact configuration. If you drive the wave
 against Studios you started yourself rather than letting studiobench install them, `--ab` needs
-`--attach` **and** `--attach-b`, one URL per arm, or it exits before measuring anything.
+`--attach` **and** `--attach-b`, one URL per arm, or it exits before measuring anything. It also
+needs `--password` **and** `--password-b`, one per arm: two separately booted Studios mint two
+different bootstrap passwords, so a single `--password` is a 401 on the treatment alone, after
+the browser is already up.
 
 `--assert-liveness` is strict on purpose and an action that could not run is a real finding, not
 noise. But two of the eighteen are unreachable on a fixture that loads no model (`image_upload`
@@ -175,6 +178,50 @@ parity-clean and still visibly wrong. **If you touched CSS, take screenshots as 
 Virtualization, windowing and progressive mount all change what is mounted by design, so the digest
 reports differences everywhere and proves nothing. For those changes parity means screenshots at
 matched scroll positions plus the behavioural invariants below.
+
+### When the equivalence is proved by a differential, the fixture is the claim
+
+Some optimisations are not "the DOM still matches" but "this cheaper path returns the same bytes as
+the expensive one it replaces". You prove those with a randomized differential: generate inputs,
+run both paths, compare. The number of frames it clears is then quoted as the evidence, so the
+generator, not the run, is what the claim actually rests on.
+
+Two ways that goes wrong, both paid for on unslothai/unsloth#9517, where the cheap path repaired a
+bounded window of an open code fence instead of the whole tail:
+
+- **A fixture that generates only short lines cannot find a bug about long ones.** The first sweep
+  reported byte-identical output on 17,436 adversarial open-fence frames and was quoted in the pull
+  request. Every generated piece was a short line, so the window never elided a whole line, and the
+  bug lived exactly there: a whitespace-only line longer than the window moved the cut past it, and
+  the repair then appended a zero-width space into code that the copy button would put on the
+  clipboard. A reviewer found it by reading. Adding lines longer than the window, whitespace-only
+  and not, immediately produced 60 divergences, and then a second, unrelated family of 57.
+- **A clean result from a fixture you built yourself is weaker evidence than a clean result from one
+  designed to break you.** The two are not the same measurement and should not carry the same
+  weight in a pull request. Before quoting a differential, write down the dimension your generator
+  varies and the dimension it holds constant, and go looking for a bug in the constant one.
+
+A corollary about hunting the second bug: **a check that comes back clean against code you believe
+is broken is usually a hole in the check.** The first probe for that second family reported the
+production code unaffected, and the reason was that its head set contained no stray backtick before
+the fence. It was reachable. Prove reachability against the real code path with the real input
+before deciding a class of bug does not apply.
+
+### Getting a guard backwards costs a sweep, so state its direction in words first
+
+The same round produced two guards that were written the wrong way round and only caught by
+re-sweeping:
+
+- The refusal gated the cut **from below** when the risk is a cut landing **past** the marker.
+  The condition and its inverse both read plausibly at the call site.
+- It then tracked the **last** marker in the body when the one that matters is the **first**: a
+  marker sitting in the retained window masks an earlier one sitting in the elided middle, which is
+  the half that gets dropped. First is also monotone, so it is the cheaper thing to carry anyway.
+
+Write the invariant as a sentence about which region must be clean before writing the comparison,
+and keep the shrunk reproducers verbatim in the test with a comment saying so. Both of these needed
+a stray backtick before the fence, a longer opener and an escaped fence inside it; a tidier-looking
+case stops covering the bug.
 
 ## 5. Invariant counts: the metrics whose sign means the opposite
 
@@ -355,6 +402,178 @@ straight line makes a *null* informative, which an on/off arm cannot do.
 
 Which knob removes the slope names the fix. If none does, your hypothesis was wrong, and saying so
 is a better contribution than a fix aimed at the wrong mechanism.
+
+## The `content-visibility` trap, in full
+
+This mechanism has cost this project three separate investigations and produced two nulls that were
+not nulls. It is written out here so nobody spends a fourth day on it. **Do not open another
+`content-visibility: auto` arm on the message roots.** The arm is dead, for the reason in the last
+subsection, and it is dominated: deferring off-screen fence highlighting monotonically reaches
+LayoutObjects -74.0% and `pre span` -96.9% at the same rung with a viewport `scrollHeight` delta of
+**0 px**, byte-identical `selected_chars`, and `select_all_ms` at -67.5% instead of +33%.
+
+Everything below generalises past this one property, which is why it is here and not in a commit
+message.
+
+### How to prove an arm fired
+
+`contentvisibilityautostatechange` is emitted by Blink's own relevance machinery and by nothing
+else. No stylesheet, no selector and no author code can produce one. That makes it a potency
+counter of a strictly stronger kind than anything you can read out of `getComputedStyle`.
+
+The method: before writing any property, attach a listener to every candidate element exactly once,
+and count events by `event.skipped`. Then run the same probe on a control arm that has no rule at
+all. On a 100K thread this read **193 `skipped === true` events on the armed side against exactly 0
+on the control**, with 384 state changes in total and 22 roots simultaneously in the skipped state.
+
+A computed-value read cannot give you that. Computed `content-visibility: auto` proves only that
+the declaration won the cascade. An element can compute to `auto` and be painted on every frame
+because it never stopped being relevant to the user, and then your arm reads null for a reason that
+has nothing to do with rendering.
+
+`arms/content_visibility_probe.js` is the working probe. Install it with
+`SBENCH_EXTRA_INIT_SCRIPT`, read it back with `SBENCH_PAGE_CONSOLE="CVPOT "`. Both are unset by
+default, so a scored run is unaffected. A probe run drives a real Studio like everything else in
+the loop, so it needs the credentials above; the file's own header carries the full command.
+
+A run carrying a probe is **not scorable**, because the probe samples the DOM and forces layout on
+its own schedule. That is a gate, not a convention. The init script's path is written into
+`run_meta.probe_init_script`, the run records a `probe_free` gate, and **all three scoring entry
+points refuse the payload on that evidence**: the session prints no `ab.md` at the end, `--report`
+refuses, and `floor_table` refuses. There is no flag to override any of them. The payload is still
+kept, because `--assert-liveness` and the probe's own output are exactly what you wanted from that
+run. Re-run with the variable unset to get a number.
+
+Into a **fresh `--out`**, though, because that refusal is whole-file. `run_meta.probe_init_script`
+is on the payload identity, so `--resume` refuses before anything is installed when the variable
+was set for the payload and not for this run or the other way round. Without that refusal a
+variable still set in the shell from an earlier experiment turned a half-finished clean ladder into
+a file no reader will ever accept, cells already recorded included, and a payload is append-only.
+
+A probe must be **self-contained**. Playwright does not define the evaluation order of separate
+init scripts, and the scene scripts are deliberately kept as separate scripts so that a throw in
+one cannot stop the others, so a probe cannot assume `window.__sb` exists when it is installed.
+A probe that fails to install is **reported, never silent**: one that did not parse is named on the
+console, and one that parsed and then threw arrives as a `pageerror`, both of which the run log
+carries. On chromium and firefox a probe that does not parse also leaves the scene scripts alone.
+On **webkit**, the default engine on Linux and macOS, it does not: Playwright hands webkit its init
+scripts as one bootstrap unit, so a syntax error in the probe stops dom.js, parity.js and
+surfaces.js as well. The probe is installed as plain source rather than through `eval` because
+Studio serves `script-src 'self'` with no `'unsafe-eval'`, and webkit enforces that against an init
+script, so an eval-installed probe never ran there at all.
+
+Attach your listeners at **insertion**, from a `MutationObserver` installed before the app boots,
+not on your sampling tick. `contentvisibilityautostatechange` fires on a *change* of state, and a
+root inserted off screen becomes skipped once and then never changes again while the user stays
+put. A whole seeded thread mounts inside two seconds, so a probe that adopts roots on a two-second
+tick misses every one of their only events and reports zero.
+
+### The geometry route is self-defeating
+
+This is the subtle one, and it is the first thing everyone reaches for.
+
+The reasoning is sound: a skipped subtree is not laid out, so its element descendants generate no
+layout boxes, so counting boxes should tell you whether skipping happened. The measurement is still
+useless, because **asking is what breaks it**. `getClientRects()` on content inside a locked subtree
+makes Chromium render that subtree in order to answer. The probe unlocks exactly what it came to
+observe.
+
+Measured side by side in one session, the geometry route reported **0 off-screen unrendered roots
+while the event counter recorded 22 roots in the skipped state**. Read on its own it is a clean,
+confident, wrong "the arm did not fire". Use the events.
+
+The same forced render is the mechanism behind the select-all cost below, so this is not a quirk of
+the instrument. It is the property under test biting the instrument.
+
+### The cascade rule that silently voids an arm
+
+`index.css` opens `@layer utilities` at **line 1051** and closes it at **line 2572** (check by brace
+depth, not by eye). Inside it, at **lines 2565-2567**:
+
+```css
+.aui-thread-root [data-streamdown="code-block"] {
+	content-visibility: visible !important;
+	contain-intrinsic-size: none !important;
+}
+```
+
+Per css-cascade-5 the sorting order is Origin and Importance, then Context, then **Element-Attached
+Styles**, then **Layers**, then Specificity, then Order of Appearance, and for important rules the
+declaration in the **earliest** layer wins while unlayered declarations sit in an implicit **final**
+layer. So:
+
+- an **unlayered** `content-visibility: auto !important` on code blocks **loses** to that rule at
+  any specificity, however many `html body` prefixes you pile on;
+- an **inline** `!important` **wins**, because Element-Attached Styles are checked before Layers;
+- a rule targeting the **message roots** never contests it at all, because that selector matches
+  code blocks only.
+
+An arm that loses this way reports a perfectly clean null. If you inject CSS, emit it into the same
+layer or inline, and then verify with `getComputedStyle` before you believe any timing.
+
+Worth knowing separately: a descendant's `content-visibility: visible` does **not** stop an ancestor
+from skipping. In the session above the code blocks kept computing to `visible` on both arms and
+their message roots skipped anyway.
+
+### You cannot opt out of the last remembered size
+
+Chromium ships `content-visibility: auto` **implies** `contain-intrinsic-size: auto` (Blink intent
+"content-visibility: auto implies contain-intrinsic-size: auto", CSSWG issue #8407). Declaring a
+plain `<length>` does not opt out: on Chromium 151, `contain-intrinsic-size: 300px` on such an
+element computes back as `auto 300px`. A variant built with the keyword deliberately removed
+produced byte-identical geometry to one with it, which is what that behaviour predicts and which
+wastes a build and a run if you have not read this.
+
+### The actual killer: a remembered size of zero
+
+`contain-intrinsic-size: auto <length>` uses the **last remembered size** and falls back to the
+`<length>` only if one does not yet exist (css-sizing-4 5.2, 5.2.1). The fallback being too small is
+the failure everyone anticipates. It is not the one that happens here.
+
+A message root is mounted **before its content arrives**, so the remembered size is recorded while
+the root is empty, and it is recorded as zero. The root is then skipped and frozen at zero forever.
+Measured at rest on a freshly loaded 100K thread, 13 of 18 roots reported their **padding alone**
+(18 px and 40 px), and the raw height list carried no root at 318 px or 100 px, which is where the
+declared 300 px and 60 px fallbacks would have put one: `getBoundingClientRect()` is the border box,
+so a fallback-sized root measures the fallback *plus* the root's padding. The thread's scroll height
+read **58,355 px on the control against 11,949 px armed** (min 5,101). The concurrent null control
+read 58,355 against 58,355, to the pixel.
+
+It self-heals: once the user has scrolled the whole thread, real sizes get remembered and the armed
+side climbs back to ~58,000 px. So the damage is on load and after every remount, which is the worst
+possible shape for it to have. **Static CSS has no way to override a remembered size.**
+
+UI parity records the same thing from the other side: **0 of 64 action pairs matched** on the armed
+comparison against **47 of 64** for the null in the same wave. Every timing from an arm in that
+state is a bound at best.
+
+### The select-all cost
+
+Skipped content has to be rendered before it can be selected, so select-all pays for the unlock.
+Three independent measurements, all at the 100K rung:
+
+| run | base | armed | delta | n | floor | verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| `u6i_` sweep | | | **+28.8%** | 4 | 16.7% | cleared |
+| probe run, fast tier | 176.2 ms | 236.1 ms | **+34%** | 2 | none | direction only |
+| `cvs1_` standard tier | 196.2 ms | 250.8 ms | **+33.2%** | 4 | 37.5% | **void**, spread 71.5% |
+
+Stated honestly: the third run's own scatter was wider than its effect, so gate 3 voided it. Three
+measurements agreeing on sign and magnitude is not the same as one that cleared the gates, and the
+row above is the one to quote. The mechanism is not in doubt; the certification is.
+
+`select_all_copy.count.selected_chars` did **not** fall (194,992 against 195,006), which is the
+expected direction: the selection forces the content back into existence, so the clipboard is intact
+and only the clock suffers.
+
+### The 60.2 versus 64.8 figure is not a message-roots null
+
+This number has circulated as evidence that `content-visibility: auto` on message roots does
+nothing. It is not that measurement. It was `content-visibility: auto` on the **reasoning pane's
+code blocks**, PR 9073, **n=1, no floor**, and PR 9073's own investigation notes had already
+withdrawn it for the cascade reason two subsections above: the rule lost to `index.css:2566` and the
+arm never fired. Please stop citing it. The message-roots arm was never null; it fires hard and dies
+on geometry instead.
 
 ## If you have many cores
 
