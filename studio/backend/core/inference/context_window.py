@@ -11,6 +11,9 @@ from collections.abc import Callable
 from typing import Any, Optional
 
 _OMITTED_TOOL_EXCHANGE = "[Earlier tool exchange omitted from the rolling context window.]"
+_UNPRICED_MEDIA_TYPES = frozenset(
+    ("image_url", "input_audio", "audio", "input_image", "input_video")
+)
 
 # How far BELOW the prompt budget a compaction trims, as a fraction of that budget.
 # Trimming to exactly the budget puts the next turn over it again, so the boundary creeps
@@ -181,26 +184,37 @@ def truncate_oldest_messages(
     return kept, dropped
 
 
-def messages_have_media(messages: list[dict]) -> bool:
+def messages_without_unpriced_media(messages: list[dict]) -> list[dict]:
+    """Return the text/template portion that llama-server can count reliably.
+
+    ``/apply-template`` does not include tokens added later by the multimodal
+    processor. Sending base64 there is therefore both expensive and misleading, but
+    skipping the rolling fit entirely also sends an already-overlong text history to
+    prefill. Count a media-free shallow copy as a lower bound instead. The original
+    messages, including every media part, remain the request that is ultimately sent.
+    """
+    stripped: list[dict] = []
+    changed = False
     for message in messages:
         content = message.get("content")
         if not isinstance(content, list):
+            stripped.append(message)
             continue
-        for part in content:
-            if not isinstance(part, dict):
-                continue
-            # `input_video` is llama.cpp's own part type (written by `_inject_video_part`);
-            # missing it here would let a video prompt take the rolling preflight, whose
-            # `/apply-template` count omits the sampled video tokens.
-            if part.get("type") in (
-                "image_url",
-                "input_audio",
-                "audio",
-                "input_image",
-                "input_video",
-            ):
-                return True
-    return False
+        countable = [
+            part
+            for part in content
+            if not (isinstance(part, dict) and part.get("type") in _UNPRICED_MEDIA_TYPES)
+        ]
+        if len(countable) == len(content):
+            stripped.append(message)
+            continue
+        changed = True
+        copy = dict(message)
+        # A plain empty string is accepted by more strict chat templates than an
+        # empty content-part list when the user turn contains media only.
+        copy["content"] = countable or ""
+        stripped.append(copy)
+    return stripped if changed else messages
 
 
 def prompt_budget(context_length: int, max_tokens: Optional[int]) -> int:
