@@ -18,7 +18,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from studiobench.scoring.from_payload import measures_from_records  # noqa: E402
+from studiobench.scoring.from_payload import (  # noqa: E402
+    latest_attempt_rows,
+    measures_from_records,
+)
 from studiobench.scoring.schema import (  # noqa: E402
     PayloadSchemaError,
     validate_payload,
@@ -290,3 +293,82 @@ def test_an_action_whose_assertion_passed_is_still_a_reading():
         {**_action("c1", "keystroke", ran = True, timings = {"p95_ms": 12.0}), "expect_ok": True},
     ]
     assert measures_from_records(recs)[10_000]["keystroke_p95_ms"].value == 12.0
+
+
+# ---------------------------------------------------------------------------------------
+# The latest attempt is the last one that WROTE anything, not the last one that finished
+# ---------------------------------------------------------------------------------------
+#
+# `CellRunner.run` writes its terminal cell row in a `finally`, which a SIGKILL, an OOM kill or a
+# lost machine never reaches -- while the Recorder has already flushed and fsynced every action and
+# window row before it. Keyed on cell rows alone, a resume hard-killed inside a cell left the
+# older, completed attempt named as the latest, and `_resume_set` skipped it.
+
+
+def _stamped(row, session):
+    return {**row, "session_id": session}
+
+
+def test_a_killed_attempt_supersedes_the_completed_one_it_was_re_running():
+    records = [
+        _stamped(_cell("c1", completed = True), "sess-1"),
+        _stamped(_action("c1", "keystroke", timings = {"p95_ms": 40.0}), "sess-1"),
+        # sess-2 got this far and was killed: no cell row was ever written.
+        _stamped(_action("c1", "keystroke", timings = {"p95_ms": 900.0}), "sess-2"),
+    ]
+
+    kept = latest_attempt_rows(records)
+
+    # The old attempt's rows are gone, so nothing reports c1 as completed.
+    assert not [r for r in kept if r.get("row_type") == "cell"]
+    assert [r["timings"]["p95_ms"] for r in kept if r.get("row_type") == "action"] == [900.0]
+
+
+def test_a_window_row_alone_is_enough_to_prove_a_newer_attempt():
+    records = [
+        _stamped(_cell("c1", completed = True), "sess-1"),
+        _stamped(_window("c1", [16.0, 17.0]), "sess-1"),
+        _stamped(_window("c1", [400.0]), "sess-2"),
+    ]
+
+    kept = latest_attempt_rows(records)
+
+    assert not [r for r in kept if r.get("row_type") == "cell"]
+    assert len([r for r in kept if r.get("row_type") == "window"]) == 1
+
+
+def test_a_completed_retry_still_supersedes_the_attempt_that_died():
+    """The control this rule already existed for, unchanged: the retry that FINISHED wins."""
+
+    records = [
+        _stamped(_cell("c1", completed = False), "sess-1"),
+        _stamped(_action("c1", "keystroke", timings = {"p95_ms": 900.0}), "sess-1"),
+        _stamped(_action("c1", "keystroke", timings = {"p95_ms": 40.0}), "sess-2"),
+        _stamped(_cell("c1", completed = True), "sess-2"),
+    ]
+
+    kept = latest_attempt_rows(records)
+
+    assert [r["completed"] for r in kept if r.get("row_type") == "cell"] == [True]
+    assert [r["timings"]["p95_ms"] for r in kept if r.get("row_type") == "action"] == [40.0]
+
+
+def test_a_payload_with_no_session_ids_is_kept_whole():
+    """A payload from before the recorder stamped sessions cannot be split into attempts, and
+    dropping it would lose the run."""
+
+    records = [_cell("c1"), _action("c1", "keystroke", timings = {"p95_ms": 40.0})]
+
+    assert latest_attempt_rows(records) == records
+
+
+def test_rows_of_another_cell_are_untouched():
+    records = [
+        _stamped(_cell("c1", completed = True), "sess-1"),
+        _stamped(_action("c2", "keystroke", timings = {"p95_ms": 40.0}), "sess-1"),
+        _stamped(_action("c1", "keystroke", timings = {"p95_ms": 900.0}), "sess-2"),
+    ]
+
+    kept = latest_attempt_rows(records)
+
+    assert any(r.get("cell_id") == "c2" for r in kept)

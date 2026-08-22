@@ -268,3 +268,40 @@ def test_skipping_the_recorded_pair_publishes_a_verdict_over_the_remainder(tmp_p
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_a_resume_killed_inside_a_cell_does_not_read_as_a_finished_run(tmp_path):
+    """THE CONSEQUENCE, through `_resume_set` and `skippable_cells` together.
+
+    Session one failed the 10K base arm. The resume repaired the 10K pair, then was hard-killed
+    inside the 100K base arm: its action and window rows are on disk, fsynced, but the terminal
+    cell row that `CellRunner.run` writes in a `finally` never was. Keyed on cell rows alone, the
+    older completed 100K attempt stayed the latest, every cell read as done across two sessions,
+    and the next `--resume` ran nothing and exited 0 over a stale table.
+    """
+
+    paths = Paths.under(tmp_path / "out")
+    first = Recorder(paths.payload_jsonl, "sess-1")
+    first.emit({**_cell_row("r10K.base.rep0", "base"), "completed": False})
+    first.emit(_keystroke("r10K.base.rep0", 40.0))
+    first.emit(_cell_row("r10K.treatment.rep0", "treatment"))
+    first.emit(_keystroke("r10K.treatment.rep0", 41.0))
+    for arm in ("base", "treatment"):
+        cid = f"r100K.{arm}.rep0"
+        first.emit(_cell_row(cid, arm, tokens = RUNG_TOKENS["100K"]))
+        first.emit(_keystroke(cid, 50.0))
+    first.close()
+
+    killed = Recorder(paths.payload_jsonl, "sess-2")
+    for arm in ("base", "treatment"):
+        cid = f"r10K.{arm}.rep0"
+        killed.emit(_cell_row(cid, arm))
+        killed.emit(_keystroke(cid, 42.0))
+    killed.emit(_keystroke("r100K.base.rep0", 900.0))  # killed here: no cell row follows
+    killed.close()
+
+    done = _resume_set(paths)
+    assert "r100K.base.rep0" not in done
+
+    work = _work(rungs = ("10K", "100K"))
+    assert skippable_cells(work, done) == set()

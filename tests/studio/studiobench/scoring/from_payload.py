@@ -82,10 +82,23 @@ def latest_attempt_rows(records: Sequence[Mapping[str, Any]]) -> list[Mapping[st
     An attempt is `(cell_id, session_id)` and the LAST one in file order wins, which is the one
     the resumed run just wrote. Rows without a session id are kept: a payload from before the
     recorder stamped them cannot be split into attempts, and dropping it would lose the run.
+
+    THE LATEST ATTEMPT IS THE LAST ONE THAT WROTE ANYTHING, not the last one that FINISHED. Keying
+    this on cell rows alone made an attempt invisible unless it reached its terminal row, and
+    `CellRunner.run` writes that in a `finally` -- which a SIGKILL, an OOM kill or a lost machine
+    never reaches, while the Recorder has already flushed and fsynced every action and window row
+    before it. So a resume hard-killed inside a cell left the older, completed attempt named as
+    the latest, and `__main__._resume_set` skipped it. Combined with a resume that had already
+    repaired an earlier pair, every cell then read as complete across two sessions, the next
+    `--resume` ran nothing at all and exited 0 over a stale table.
+
+    Any attempt-keyed row is evidence that an attempt happened, so all three types set it. This is
+    the same set the filter below applies to, which is the point: a row type that can leak from a
+    superseded attempt is a row type that can prove a newer one exists.
     """
     latest: dict[str, Any] = {}
     for row in records:
-        if row.get("row_type") == "cell" and row.get("cell_id") is not None:
+        if row.get("row_type") in ATTEMPT_ROW_TYPES and row.get("cell_id") is not None:
             latest[str(row.get("cell_id"))] = row.get("session_id")
 
     out: list[Mapping[str, Any]] = []
