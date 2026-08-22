@@ -55,3 +55,30 @@ class McpServerImportResult(BaseModel):
     created: list[McpServerResponse] = Field(default_factory = list)
     skipped: list[str] = Field(default_factory = list)  # display names skipped as duplicates
     errors: list[str] = Field(default_factory = list)
+
+
+class McpUiResourceResponse(BaseModel):
+    """A ui:// template for the sandboxed frame to render."""
+
+    uri: str
+    mime_type: str
+    text: str
+    # _meta.ui: the CSP domains the host builds the sandbox from, plus hints.
+    ui: dict = Field(default_factory = dict)
+
+
+class McpUiToolCallRequest(BaseModel):
+    """A tool call a rendered widget asked the host to make."""
+
+    tool_name: str
+    arguments: dict = Field(default_factory = dict)
+    # Scopes the stdio session to the conversation that produced the widget.
+    thread_id: Optional[str] = None
+    session_id: Optional[str] = None
+
+
+class McpUiToolCallResult(BaseModel):
+    content: list[dict] = Field(default_factory = list)
+    structured_content: Optional[dict] = None
+    is_error: bool = False
+    meta: Optional[dict] = None

@@ -317,6 +317,27 @@ def _strip_mcp_image_suffix(result: str) -> str:
     return head.rstrip()
 
 
+def _strip_mcp_ui_suffix(result: str) -> str:
+    """Drop a trailing __MCP_UI__ envelope, and only a well-formed one. The
+    payload is one JSON line, so the scan stops there; images may follow."""
+    marker = "\n__MCP_UI__:"
+    start = result.rfind(marker)
+    if start == -1:
+        return result
+    payload_start = start + len(marker)
+    end = result.find("\n", payload_start)
+    if end == -1:
+        end = len(result)
+    try:
+        payload = json.loads(result[payload_start:end])
+    except (ValueError, RecursionError):
+        return result
+    # A tool that merely printed the marker keeps its text.
+    if not isinstance(payload, dict) or not isinstance(payload.get("resourceUri"), str):
+        return result
+    return (result[:start] + result[end:]).rstrip()
+
+
 def _strip_files_sentinel(result: str) -> str:
     """Drop a trailing ``__FILES__`` envelope, and only that.
 
@@ -361,6 +382,8 @@ def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
     """Remove frontend-only sentinels (image paths, RAG source map) before
     feeding the result back to the model."""
     result = _strip_mcp_image_suffix(result)
+    # After the image strip, which leaves the UI envelope as the tail.
+    result = _strip_mcp_ui_suffix(result)
     if tool_name is None or tool_name in _SANDBOX_TOOLS:
         result = _strip_files_sentinel(result)
     for sentinel in ("__IMAGES__:", "__RAG_SOURCES__:"):

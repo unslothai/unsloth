@@ -129,3 +129,63 @@ export function importMcpServers(
 ): Promise<McpServerImportResult> {
   return mcpRequest("/import", { method: "POST", body: { config } });
 }
+
+/** A ui:// template and the sandbox settings it declared in _meta.ui. */
+export interface McpUiResource {
+  uri: string;
+  mime_type: string;
+  text: string;
+  ui: {
+    csp?: {
+      connectDomains?: string[];
+      resourceDomains?: string[];
+      frameDomains?: string[];
+      baseUriDomains?: string[];
+    };
+    prefersBorder?: boolean;
+    domain?: string;
+  };
+}
+
+export interface McpUiToolCallResult {
+  content: { type?: string; text?: string; [key: string]: unknown }[];
+  structured_content: Record<string, unknown> | null;
+  is_error: boolean;
+  meta: Record<string, unknown> | null;
+}
+
+/** Fetch the widget template a tool result points at. */
+export function readMcpUiResource(
+  serverId: string,
+  uri: string,
+  scope?: { threadId?: string; sessionId?: string },
+): Promise<McpUiResource> {
+  const query = new URLSearchParams({ uri });
+  if (scope?.threadId) query.set("thread_id", scope.threadId);
+  if (scope?.sessionId) query.set("session_id", scope.sessionId);
+  return mcpRequest(`/${serverId}/ui-resource?${query.toString()}`);
+}
+
+/**
+ * Relay a tool call a widget asked for. `serverId` comes from the tool part that
+ * drew the frame, never from the widget's own message.
+ */
+export function callMcpUiTool(
+  serverId: string,
+  payload: {
+    toolName: string;
+    arguments?: Record<string, unknown>;
+    threadId?: string;
+    sessionId?: string;
+  },
+): Promise<McpUiToolCallResult> {
+  return mcpRequest(`/${serverId}/ui-tool-call`, {
+    method: "POST",
+    body: {
+      tool_name: payload.toolName,
+      arguments: payload.arguments ?? {},
+      thread_id: payload.threadId ?? null,
+      session_id: payload.sessionId ?? null,
+    },
+  });
+}

@@ -58,12 +58,36 @@ function stripMcpImageSuffix(value: string): string {
   return value;
 }
 
+// Drop a trailing __MCP_UI__ envelope on the same terms: only when the line
+// parses and names a resource. The scan stops at the line end; images follow.
+function stripMcpUiSuffix(value: string): string {
+  const marker = "\n__MCP_UI__:";
+  const idx = value.lastIndexOf(marker);
+  if (idx === -1) return value;
+  const payloadStart = idx + marker.length;
+  const lineEnd = value.indexOf("\n", payloadStart);
+  const end = lineEnd === -1 ? value.length : lineEnd;
+  try {
+    const payload: unknown = JSON.parse(value.slice(payloadStart, end));
+    if (
+      typeof payload === "object" &&
+      payload !== null &&
+      typeof (payload as Record<string, unknown>).resourceUri === "string"
+    ) {
+      return value.slice(0, idx) + value.slice(end);
+    }
+  } catch {
+    // Not a valid envelope; leave the text intact.
+  }
+  return value;
+}
+
 // Readable text from tool args/results, dropping base64 image/audio blobs so
 // they never bloat the index (object fields by key, plus data URLs / long
 // base64 runs and the "__IMAGES__" suffix inside strings).
 function searchableText(value: unknown, depth = 0): string {
   if (typeof value === "string") {
-    let text = stripMcpImageSuffix(value);
+    let text = stripMcpUiSuffix(stripMcpImageSuffix(value));
     const cut = text.indexOf("\n__IMAGES__:");
     if (cut !== -1) text = text.slice(0, cut);
     return text
