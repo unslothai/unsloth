@@ -131,19 +131,45 @@ def rep_of(cell_id: str) -> str:
     return cell_id.rsplit(".", 1)[-1]
 
 
+def cell_sessions(records: list[dict]) -> dict[str, str]:
+    """{cell_id: session_id} for every COMPLETED cell, resolved the way `cell_metrics` resolves it.
+
+    Same last-writer-wins rule as `cell_metrics`, so the session reported here is the session whose
+    numbers that function returned. Anything else would pair a reading against a session it did not
+    come from, which is the thing the caller is trying to stop.
+    """
+    out: dict[str, str] = {}
+    for row in records:
+        if row.get("row_type") == "cell" and row.get("completed"):
+            out[row["cell_id"]] = str(row.get("session_id") or "")
+    return out
+
+
 def paired(records: list[dict], shard: str = "") -> dict[str, list[tuple[float, float]]]:
-    """{metric: [(base, treatment), ...]} matched on (shard, rung, repetition).
+    """{metric: [(base, treatment), ...]} matched on (shard, rung, repetition, session).
 
     The shard is part of the key because sharding restarts the repetition counter: two independent
     sessions both produce `rep0`, and pairing on the repetition alone would silently overwrite one
     session's base with the other's. Pairing WITHIN a shard is also the correct thing to do, since
     a pair only means anything when both arms come from the same session.
+
+    THE SESSION IS PART OF THE KEY FOR THE SAME REASON, and one shard is not one session. `--resume`
+    is the case: when one arm completed and its partner died, the resumed run skips the completed
+    arm and re-runs the dead one under a NEW session id, into the same shard directory. Keyed on the
+    repetition alone those two arms pair, and the ~8% session-to-session drift this file's header
+    measures is then charged in full to whichever arm was re-run. `scoring/ab.py` already refuses
+    that comparison outright; this is the same refusal in the place the sweep does its pairing.
+
+    A payload recorded before session ids existed has `""` on both arms and pairs exactly as before.
     """
     cells = cell_metrics(records)
-    by_key: dict[tuple[str, str, str], dict[str, dict[str, float]]] = collections.defaultdict(dict)
+    sessions = cell_sessions(records)
+    by_key: dict[
+        tuple[str, str, str, str], dict[str, dict[str, float]]
+    ] = collections.defaultdict(dict)
     for cid, vals in cells.items():
         rung = cid.split(".", 1)[0]
-        by_key[(shard, rung, rep_of(cid))][arm_of(cid)] = vals
+        by_key[(shard, rung, rep_of(cid), sessions.get(cid, ""))][arm_of(cid)] = vals
     out: dict[str, list[tuple[float, float]]] = collections.defaultdict(list)
     for sides in by_key.values():
         if "base" not in sides or "treatment" not in sides:

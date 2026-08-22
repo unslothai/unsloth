@@ -143,26 +143,69 @@ def compare_all(paths: list[Path]) -> tuple[list[tuple], dict]:
     return results, got
 
 
-def unstable_set(paths: list[Path] | None) -> tuple[frozenset[str], dict, dict]:
+def rung_of_cell(cell: str) -> str:
+    """The rung half of a `compare_all` cell label, which is built as `f"{rung} {rep}"`."""
+    return cell.split(" ", 1)[0]
+
+
+def is_unstable(unstable: frozenset, action: str, cell: str) -> bool:
+    """Is this action expected to vary AT THIS RUNG?
+
+    Two kinds of entry live in the same set. A bare action name is a DECLARED entry and holds at
+    every rung, because its mechanism is a property of the action. A `(rung, action)` tuple is a
+    MEASURED entry and holds only at the rung it was measured at.
+    """
+    return action in unstable or (rung_of_cell(cell), action) in unstable
+
+
+def unstable_label(entry) -> str:
+    return entry if isinstance(entry, str) else f"{entry[1]}@{entry[0]}"
+
+
+def unstable_set(paths: list[Path] | None) -> tuple[frozenset, dict, dict]:
     """The unstable set to score with, derived from a null control when one is supplied.
 
     DERIVED BEATS DECLARED, and the declared set is kept as the cross-check rather than thrown
     away: an entry that the null control never saw differ is costing real signal, and an action
     that differs against itself without being declared is producing noise. Both are printed.
+
+    DERIVED PER RUNG, because instability is a property of the rung and not only of the action.
+    `collect()` already keeps the rung in a pair's identity, and the reason it has to is the same
+    reason this does: the mechanisms in `UNSTABLE_ACTIONS` are races between a scripted slot and a
+    stream, and how that race lands depends on how much thread the rung mounted. The tool's own
+    rung ladder says so out loud -- at 10K "the UI work disappears underneath the scene's own
+    scripted timings", at 100K it does not.
+
+    Pooling the rungs is not a smaller version of this. It is the failure mode the whole `--null`
+    mechanism exists to avoid: one differing observation at 100K, which `derive_unstable` would
+    call undetermined on its own, borrows the observation COUNT of the 1K and 10K pairs, clears
+    `min_observations`, and silences that action at every rung. A genuine DOM regression at 1K then
+    prints under "expected to vary" and the command exits 0.
     """
     if not paths:
-        return UNSTABLE_ACTIONS, {}, {}
+        return frozenset(UNSTABLE_ACTIONS), {}, {}
     results, _ = compare_all(paths)
-    derived = P.derive_unstable([(a, r) for a, _s, _cell, r in results])
-    checks = P.cross_check(derived, UNSTABLE_ACTIONS)
-    measured = frozenset(a for a, row in derived.items() if row["unstable"])
+    by_rung: dict[str, list[tuple[str, dict]]] = collections.defaultdict(list)
+    for action, _shard, cell, r in results:
+        by_rung[rung_of_cell(cell)].append((action, r))
+    derived: dict[str, dict] = {}
+    measured: set[tuple[str, str]] = set()
+    for rung, pairs in sorted(by_rung.items()):
+        for action, row in P.derive_unstable(pairs).items():
+            derived[f"{action}@{rung}"] = row
+            if row["unstable"]:
+                measured.add((rung, action))
+    # The cross-check stays pooled ON PURPOSE. It audits the DECLARED list, whose entries claim to
+    # hold at every rung, so the question it answers -- did this run ever see this action differ --
+    # is an action-level question. It is advisory output and carries no verdict.
+    checks = P.cross_check(P.derive_unstable([(a, r) for a, _s, _c, r in results]), UNSTABLE_ACTIONS)
     # UNION, not replacement. An action the null control could not reach -- `image_upload` has no
     # visible attachments button on this fixture -- would otherwise silently move from "declared
     # unstable" to "stable" on the strength of a measurement that never happened.
-    return measured | UNSTABLE_ACTIONS, derived, checks
+    return frozenset(measured) | frozenset(UNSTABLE_ACTIONS), derived, checks
 
 
-def report(paths: list[Path], label: str, unstable: frozenset[str]) -> int:
+def report(paths: list[Path], label: str, unstable: frozenset) -> int:
     results, got = compare_all(paths)
     if not results:
         # An empty result is reported as an empty result. "No mismatches found" when nothing was
@@ -189,7 +232,7 @@ def report(paths: list[Path], label: str, unstable: frozenset[str]) -> int:
             matched += 1
             continue
         entry = (action, shard, cell, r["moved"])
-        (unstable_bad if action in unstable else stable_bad).append(entry)
+        (unstable_bad if is_unstable(unstable, action, cell) else stable_bad).append(entry)
 
     print(f"\n{label}")
     print(f"  {len(results)} action pairs across {len(paths)} shard(s)")
@@ -285,11 +328,15 @@ def main(argv: list[str] | None = None) -> int:
         for key, entries in checks.items():
             print(f"  {key:<32} {', '.join(entries) if entries else '(none)'}")
         print(
-            f"  scoring against {len(unstable)} unstable action(s): "
-            f"{', '.join(sorted(unstable))}"
+            f"  scoring against {len(unstable)} unstable entr(ies), `action@rung` where the "
+            f"instability was MEASURED at one rung: "
+            f"{', '.join(sorted(unstable_label(e) for e in unstable))}"
         )
     else:
-        print(f"UNSTABLE SET DECLARED, not measured: {', '.join(sorted(unstable))}")
+        print(
+            f"UNSTABLE SET DECLARED, not measured: "
+            f"{', '.join(sorted(unstable_label(e) for e in unstable))}"
+        )
         print("  pass --null OUTDIR of a base-vs-base run to derive it instead.")
 
     null_tiers = tier_of(null_paths)
