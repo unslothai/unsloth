@@ -438,10 +438,30 @@ class TestCudaLeafDigitParity:
         assert re.search(
             r'cu\[0-9\]\*\)\s*export UNSLOTH_TORCH_BACKEND="cuda"', text
         ), "install.sh backend export must brand cuda only on cu[0-9]*"
+        assert re.search(
+            r'xpu\)\s*export UNSLOTH_TORCH_BACKEND="xpu"', text
+        ), "install.sh backend export must preserve the selected XPU family"
         # An unknown leaf must NOT commit a cuda backend (it unsets instead).
         assert re.search(
             r"\*\)\s*unset UNSLOTH_TORCH_BACKEND", text
         ), "install.sh backend export must unset (not force cuda) on an unknown leaf"
+
+    def test_explicit_amd_arch_keeps_the_cpu_reroute_handoff(self):
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        marker = "AMD GPU detected with no readable ROCm version"
+        branch = text[text.index(marker) :]
+        branch = branch[: branch.index("fi")]
+        assert 'echo "$_base/cpu"; return' in branch
+        assert "_fallback_to_intel_or_cpu" not in branch
+
+    def test_intel_pci_fallback_requires_an_accessible_render_node(self):
+        for path in (INSTALL_SH, REPO_ROOT / "studio" / "setup.sh"):
+            text = path.read_text(encoding = "utf-8")
+            body = text[text.index("_has_intel_xpu_gpu() {") :]
+            body = body[: body.index("\n}")]
+            assert '"$_pci_dev"/drm/renderD*' in body
+            assert '"/dev/dri/${_pci_render##*/}"' in body
+            assert '"0x8086"' in body
 
     def test_install_sh_lowercases_backend_leaf(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
