@@ -758,6 +758,89 @@ def test_a_parity_payload_with_no_session_ids_pairs_exactly_as_before(tmp_path):
     assert U.report([path], "t", U.UNSTABLE_ACTIONS) == 1
 
 
+# ── ui parity: one set, one tier ─────────────────────────────────────
+
+
+def two_tier_parity(tmp_path: Path, name: str, fast: tuple[str, str], standard: tuple[str, str]):
+    """One shard holding a fast run and a standard run, both at 100K, appended in that order.
+
+    The shape a second `--out` reuse at the other tier leaves behind: `fast` walks 100K only and
+    `standard` walks 1K, 10K and 100K, so the two films meet on that rung.
+    """
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast", "session_id": "s1"}]
+    rows.append(in_session(parity_action("r100K.base.rep0", "settings", fast[0]), "s1"))
+    rows.append(in_session(parity_action("r100K.treatment.rep0", "settings", fast[1]), "s1"))
+    rows.append({"row_type": "run_meta", "tier": "standard", "session_id": "s2"})
+    rows.append(in_session(parity_action("r100K.base.rep0", "settings", standard[0]), "s2"))
+    rows.append(in_session(parity_action("r100K.treatment.rep0", "settings", standard[1]), "s2"))
+    return write(tmp_path, name, rows)
+
+
+def test_a_null_control_holding_two_tiers_is_refused_before_the_set_is_derived(tmp_path):
+    # One differing 100K pair from the fast film and one matching 100K pair from the standard film
+    # are pooled by `derive_unstable` into two observations of one action at one rung, which is
+    # exactly `min_observations`, so `settings` is marked unstable at 100K on the strength of two
+    # different films. That is the pooling, stated so the refusal below is not vacuous.
+    null = two_tier_parity(tmp_path, "null_mixed", ("X", "Y"), ("Q", "Q"))
+    unstable, _derived, _checks = U.unstable_set([null])
+    assert ("r100K", "settings") in unstable
+
+    with pytest.raises(SystemExit) as exc:
+        U.main([str(tmp_path / "mine_any"), "--null", str(null.parent)])
+    assert "more than one tier" in str(exc.value)
+
+
+def test_two_mixed_tier_sets_do_not_pass_by_matching_each_other(tmp_path):
+    # The case the tier-mismatch WARNING cannot see: both sides were re-run at the other tier, so
+    # both sets are {fast, standard}, they compare EQUAL, and no warning fires. The pooled null
+    # control then silences `settings` at 100K and the real 100K regression in the payload prints
+    # as expected variation with the command exiting 0.
+    null = two_tier_parity(tmp_path, "null_both", ("X", "Y"), ("Q", "Q"))
+    mine = two_tier_parity(tmp_path, "mine_both", ("Q", "Q"), ("Q", "REGRESSED"))
+    assert U.tier_of([null]) == U.tier_of([mine]) == {"fast", "standard"}
+
+    with pytest.raises(SystemExit) as exc:
+        U.main([str(mine.parent), "--null", str(null.parent)])
+    assert "more than one tier" in str(exc.value)
+
+
+def test_a_payload_holding_two_tiers_is_refused_even_with_no_null_control(tmp_path):
+    # The declared unstable set is not derived from anything, so nothing is pooled -- but the
+    # payload's own 100K pairs still come from two films, and reporting them as repetitions of one
+    # measurement is the same misreading.
+    mine = two_tier_parity(tmp_path, "mine_alone", ("Q", "Q"), ("Q", "REGRESSED"))
+    with pytest.raises(SystemExit) as exc:
+        U.main([str(mine.parent)])
+    assert "more than one tier" in str(exc.value)
+
+
+def test_one_tier_on_each_side_still_scores_in_both_directions(tmp_path):
+    # The control, so the refusal cannot pass by rejecting every run. A single-tier null control
+    # and a single-tier payload score exactly as before, and a real regression still exits 1.
+    null = parity_run(tmp_path, "null_one", [("r100K", "rep0", "Q", "Q")])
+    clean = parity_run(tmp_path, "mine_clean", [("r100K", "rep0", "Q", "Q")])
+    regressed = parity_run(tmp_path, "mine_bad", [("r100K", "rep0", "Q", "REGRESSED")])
+    assert U.main([str(clean.parent), "--null", str(null.parent)]) == 0
+    assert U.main([str(regressed.parent), "--null", str(null.parent)]) == 1
+
+
+def test_a_tier_mismatch_between_two_single_tier_sets_still_only_warns(tmp_path, capsys):
+    # The other control. Two sets that each hold ONE tier are comparable enough to score; the
+    # existing warning says the derived set does not transfer, and that stays a warning.
+    null = write(
+        tmp_path,
+        "null_fast",
+        [
+            {"row_type": "run_meta", "tier": "fast"},
+            parity_action("r100K.base.rep0", "settings", "Q"),
+            parity_action("r100K.treatment.rep0", "settings", "Q"),
+        ],
+    )
+    mine = parity_run(tmp_path, "mine_standard", [("r100K", "rep0", "Q", "REGRESSED")])
+    assert U.main([str(mine.parent), "--null", str(null.parent)]) == 1
+    assert "WARNING: the null control was recorded at tier" in capsys.readouterr().out
+
+
 def test_main_prints_a_mixed_unstable_set_without_dying(tmp_path, capsys):
     # The set now holds bare action names and (rung, action) pairs together, and `sorted()` over
     # the two raises TypeError. The one place that formats it is the run header.

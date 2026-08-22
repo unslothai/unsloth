@@ -319,6 +319,36 @@ def tier_of(paths: list[Path]) -> set[str]:
     return tiers
 
 
+def one_tier(paths: list[Path], label: str) -> set[str]:
+    """The ONE tier `paths` were recorded at, refusing a set that holds more than one.
+
+    The recorder appends, so a second run into the same `--out` leaves both films in one payload
+    and `tier_of` reports both tiers. Comparing the two SETS is not enough on its own: when the
+    null control and the payload have each been re-run at the other tier they hold the same two
+    tiers, the sets are equal, and the mismatch warning below never fires.
+
+    Equal is not the same as comparable here, because the harm is inside one set. `fast` and
+    `standard` both walk 100K, so the two films' 100K pairs land on one rung in `unstable_set`,
+    and `derive_unstable` counts them together: one differing observation from the fast film plus
+    one matching observation from the standard film reads as two observations of one action, which
+    is exactly `min_observations`, so the action is marked unstable at 100K. A real DOM regression
+    at 100K in the payload then prints under "expected to vary" and the command exits 0.
+
+    `sweep/floor_table.load` already refuses the same file for the same reason on the timing side.
+    This is that refusal on the parity side, and it has to happen BEFORE the set is derived rather
+    than after, because by then the pooling has already happened.
+    """
+    tiers = tier_of(paths)
+    if len(tiers) > 1:
+        raise SystemExit(
+            f"refusing to score a {label} recorded at more than one tier: {sorted(tiers)}. "
+            f"Which actions are unstable is a property of the film, and the fast and standard "
+            f"films share the 100K rung, so their pairs would be pooled into one rung's "
+            f"observation count. Record each tier into its own --out."
+        )
+    return tiers
+
+
 def shards_of(pattern: str) -> list[Path]:
     root = Path(pattern).parent if "/" in pattern else Path(".")
     stem = Path(pattern).name
@@ -342,6 +372,7 @@ def main(argv: list[str] | None = None) -> int:
     null_paths: list[Path] = []
     for pattern in args.null:
         null_paths.extend(shards_of(pattern))
+    null_tiers = one_tier(null_paths, "null control")
     unstable, derived, checks = unstable_set(null_paths or None)
     if derived:
         print(f"UNSTABLE SET DERIVED from {len(null_paths)} null-control shard(s)")
@@ -359,7 +390,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         print("  pass --null OUTDIR of a base-vs-base run to derive it instead.")
 
-    null_tiers = tier_of(null_paths)
     worst = 0
     for pattern in args.payloads:
         paths = shards_of(pattern)
@@ -367,7 +397,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\nno payload found for {pattern}")
             worst = max(worst, 2)
             continue
-        tiers = tier_of(paths)
+        tiers = one_tier(paths, "payload")
         if null_tiers and tiers and null_tiers != tiers:
             print(
                 f"\n  WARNING: the null control was recorded at tier {sorted(null_tiers)} and "
