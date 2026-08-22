@@ -357,6 +357,8 @@ def test_a_drafter_that_will_not_load_costs_the_model_only_when_it_was_asked_for
         assert backend._tokenizer is not None
         assert backend._processor is not None
         assert backend.models["fake/vlm"]["mlx_speculative_reason"] == "auto_drafter_load_failed"
+        # Recorded: the reuse comparison re-resolves Auto at this same value.
+        assert backend.models["fake/vlm"]["load_in_4bit"] is in_4bit
     else:
         # A method the user named is not silently downgraded; that load failed.
         with pytest.raises(RuntimeError, match = "drafter unavailable"):
@@ -4625,30 +4627,6 @@ def test_the_loader_takes_the_revision_the_ranking_measured(monkeypatch):
     assert spec._config_precision_rank(config) == spec._precision_rank(4)
 
 
-def test_the_loader_takes_the_revision_the_ranking_measured(monkeypatch):
-    # The loader's side of the shared choice: an unfitting revision listed first is not the
-    # one handed to the worker.
-    from core.inference import mlx_speculative as spec
-    from pathlib import Path as _Path
-
-    cached = [
-        ("org/A", {"quantization": {"bits": 8}, "fits": False}, _Path("/wrong"), 0),
-        ("org/A", {"quantization": {"bits": 4}, "fits": True}, _Path("/right"), 0),
-    ]
-    monkeypatch.setattr(spec, "_active_cached_drafter_configs", lambda: iter(cached))
-    monkeypatch.setattr(spec, "_drafter_method", lambda _c: "mtp")
-    monkeypatch.setattr(spec, "_dynamic_candidate_config_matches",
-                        lambda _m, _t, _tc, config, *a: config.get("fits", True))
-    monkeypatch.setattr(spec, "_read_config", lambda _t: {"model_type": "qwen3_5"})
-
-    assert spec.mlx_speculative_snapshot_path("org/A", "org/target", "mtp") == _Path("/right")
-    config, snapshot = spec._fitting_cached_revision(
-        "org/A", "org/target", {"model_type": "qwen3_5"}, "mtp"
-    )
-    assert snapshot == _Path("/right")
-    assert spec._config_precision_rank(config) == spec._precision_rank(4)
-
-
 def test_auto_names_the_target_the_way_the_drafters_were_matched(monkeypatch):
     # Both name the target canonically, or every drafter ties and the repository name decides.
     from core.inference import mlx_speculative as spec
@@ -4925,6 +4903,13 @@ def test_a_request_is_ruled_out_on_the_terms_its_own_load_will_apply(
     auto = spec.resolve_mlx_speculative_request(
         "org/target", "auto", None, is_vision = vision, is_lora = lora
     )
+    assert (auto.method, auto.draft_model, auto.reason) == (
+        ("off", None, reason) if reason else ("mtp", "builtin://mtp", None)
+    )
+    # The preflight is the one asked ahead of the unload, so the refusal has to reach it too.
+    assert spec.mlx_speculative_request_reason(
+        "org/target", "mtp", "builtin://mtp", is_vision = vision, is_lora = lora
+    ) == reason
 
 
 @pytest.mark.parametrize(
@@ -5102,7 +5087,23 @@ def test_the_options_endpoint_reports_the_drafters_the_sources_found(monkeypatch
     # What the panel is served carries Auto's answer: this target is too small to gain.
     import asyncio
 
-    served = asyncio.run(inf_mod.get_mlx_speculative_options("org/target", "tester"))
+    import utils.models.model_config as model_config_mod
+
+    # Reading the target's configuration fetches it for a model seen for the first time, so
+    # a cache with nothing in it yet is what the scan must not be run against: pairing needs
+    # the configuration this very probe brings down.
+    monkeypatch.setattr(spec, "_read_config", lambda _t: None)
+
+    def _probe(name, *a, **k):
+        monkeypatch.setattr(spec, "_read_config", lambda _t: _MTP_TARGET)
+        return name == "org/Target"
+
+    monkeypatch.setattr(model_config_mod, "is_vision_model", _probe)
+    monkeypatch.setattr(spec, "_canonical_target_id", lambda _t: "org/Target")
+    served = asyncio.run(inf_mod.get_mlx_speculative_options("target", "tester"))
+    # Asked about the name the scan and the load match on. The request's own spelling names a
+    # repository that does not exist, which answers no and withdraws every drafter it has.
+    assert served.runtime_supported is True
     assert [(row.repo_id, row.loadable) for row in served.candidates] == [("org/Drafter", True)]
     assert (served.auto_method, served.auto_reason) == ("off", "target_too_small_to_draft")
 
@@ -5411,3 +5412,7 @@ def test_a_matched_drafter_reports_why_it_cannot_run(
 
 
 # fmt: on
+
+
+def _record(seen, answer, at):
+    return lambda *a: (seen.append(a[at] if at is not None else 1), answer)[1]

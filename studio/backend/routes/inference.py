@@ -2986,6 +2986,7 @@ from core.inference.mlx_speculative import (
     mlx_speculative_request_reason,
     mlx_speculative_refusal,
     mlx_speculative_target_ineligible,
+    mlx_speculative_target_is_adapter,
     resolve_mlx_speculative_request,
 )
 from models.inference import (
@@ -13128,6 +13129,22 @@ async def get_mlx_speculative_options(
                 for row in options["candidates"]
             ],
         )
+    # Two of Auto's rules turn on the target, not on a drafter, so the panel is told the answer.
+    resolution = await asyncio.to_thread(
+        resolve_mlx_speculative_request,
+        target_model,
+        "auto",
+        None,
+        is_vision = target_is_vision,
+        is_lora = target_is_adapter,
+        options = options,
+    )
+    options = dict(
+        options,
+        auto_method = resolution.method,
+        auto_draft_model = resolution.draft_model,
+        auto_reason = resolution.reason,
+    )
     return MlxSpeculativeOptionsResponse.model_validate(options)
 
 
@@ -13852,16 +13869,6 @@ async def _load_model_impl(
         _mlx_refusal = mlx_speculative_refusal(request.mlx_speculative_mode, _mlx_resolution)
         if _mlx_refusal is not None:
             raise HTTPException(status_code = 400, detail = _mlx_refusal)
-        # Pinned here rather than in the worker so one view of the cache decides it, and only
-        # now the quantization is settled, since a requantized target cannot keep its own head.
-        if _mlx_resolution is None:
-            _mlx_resolution = await asyncio.to_thread(
-                resolve_mlx_speculative_request,
-                model_identifier,
-                request.mlx_speculative_mode,
-                request.mlx_draft_model,
-                effective_load_in_4bit,
-            )
 
         placement = await _preflight_native_audio_placement(config, request, placement)
 

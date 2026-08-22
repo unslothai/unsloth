@@ -15,6 +15,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
@@ -522,6 +523,10 @@ def _snapshot_complete_at(snapshot: Path, *, require_tokenizer: bool = False) ->
         return False
 
 
+# repository id, configuration, snapshot directory, weight bytes
+_DrafterRows = tuple[tuple[str, dict[str, Any], Path, int], ...]
+
+
 def _config_from_path(path: Path) -> Optional[dict[str, Any]]:
     try:
         value = json.loads(path.read_text(encoding = "utf-8"))
@@ -530,14 +535,19 @@ def _config_from_path(path: Path) -> Optional[dict[str, Any]]:
     return value if isinstance(value, dict) else None
 
 
-def _scan_active_cached_drafter_configs(
-    root: Path,
-) -> tuple[tuple[str, dict[str, Any], Path, int], ...]:
+def _scan_active_cached_drafter_configs(root: Path) -> Optional[_DrafterRows]:
+    """The drafters under ``root``, or None where the cache itself could not be read."""
     try:
         from hub.utils.hf_cache_state import latest_snapshot_dir, ref_snapshot_dir
-        repo_dirs = sorted(root.glob("models--*"), key = lambda path: path.name.casefold())
+
+        # Listed rather than matched with a glob, which reports a directory it cannot read as one
+        # holding nothing and would have this return an empty cache instead of no answer.
+        repo_dirs = sorted(
+            (path for path in root.iterdir() if path.name.startswith("models--")),
+            key = lambda path: path.name.casefold(),
+        )
     except (OSError, RuntimeError, ValueError):
-        return ()
+        return None
     rows = []
     for repo_dir in repo_dirs:
         encoded = repo_dir.name.removeprefix("models--")
@@ -562,32 +572,76 @@ def _scan_active_cached_drafter_configs(
             pass
         for snapshot in snapshots:
             config = _config_from_path(snapshot / "config.json")
-            if config is None or not _snapshot_complete_at(snapshot):
+            if config is None:
                 continue
+            # Completeness reads shard indexes off disk, so reject on the configuration first.
             method = _drafter_method(config)
             if (
                 method is None
                 or not _drafter_architecture_available(config)
                 or _normalized_drafter_config(config) is None
-                or (
-                    method == "mtp"
-                    and (
-                        not _snapshot_complete_at(snapshot, require_tokenizer = True)
-                        or _token_id_map_from_path(snapshot / "tokenizer.json") is None
-                    )
-                )
             ):
+                continue
+            if not _snapshot_complete_at(snapshot):
+                continue
+            if method == "mtp" and not _snapshot_complete_at(snapshot, require_tokenizer = True):
                 continue
             rows.append((repo_id, config, snapshot, _snapshot_weight_bytes_at(snapshot)))
     return tuple(rows)
 
 
-@lru_cache(maxsize = 8)
-def _cached_active_drafter_configs(
-    root: str, epoch: int, ttl_bucket: int
-) -> tuple[tuple[str, dict[str, Any], Path, int], ...]:
-    del epoch, ttl_bucket
-    return _scan_active_cached_drafter_configs(Path(root))
+# A scan ages from the moment it ran, so the lookups a request makes within that age share one
+# scan rather than falling either side of a deadline and scanning the cache twice. It also bounds
+# how long the scan's view may disagree with disk about a change Studio did not make, in either
+# direction: a checkpoint written behind its back stays invisible, and one deleted behind its back
+# stays selectable. Changes Studio does make bump the scan epoch, and are seen by the first
+# lookup that starts after the bump.
+_DRAFTER_SCAN_MAX_AGE_SECONDS = 15.0
+_DRAFTER_SCANS_KEPT = 8
+# (cache root, scan epoch) -> when that scan finished, and the drafters it found
+_drafter_scans: dict[tuple[str, int], tuple[float, _DrafterRows]] = {}
+_drafter_scans_lock = threading.Lock()
+
+
+def _serve_kept_scan(key: tuple[str, int]) -> _DrafterRows:
+    """The rows held for ``key``, moved youngest-last because they were just asked for."""
+    # Reinserted rather than read in place: assigning to a key a dictionary already holds leaves
+    # it where it was, which is first in line to be dropped when scans arrive behind it.
+    held = _drafter_scans.pop(key)
+    _drafter_scans[key] = held
+    return held[1]
+
+
+def _cached_active_drafter_configs(root: str, epoch: int) -> _DrafterRows:
+    key = (root, epoch)
+    started = time.monotonic()
+    with _drafter_scans_lock:
+        held = _drafter_scans.get(key)
+        if held is not None and started - held[0] < _DRAFTER_SCAN_MAX_AGE_SECONDS:
+            return _serve_kept_scan(key)
+    rows = _scan_active_cached_drafter_configs(Path(root))
+    finished = time.monotonic()
+    with _drafter_scans_lock:
+        held = _drafter_scans.get(key)
+        fresh = held is not None and finished - held[0] < _DRAFTER_SCAN_MAX_AGE_SECONDS
+        # A cache that could not be read is not a cache holding no drafters. Remembering it as one
+        # would keep every request off the accelerator until the entry aged out, and reporting it
+        # is worse still while a scan that did read the cache is standing right there.
+        if rows is None:
+            return _serve_kept_scan(key) if fresh else ()
+        # The first scan of an epoch to finish is the one kept until it ages out, so one that
+        # started earlier but arrived later does not replace it, and every caller is answered with
+        # the scan that was kept rather than its own. Scans of other epochs, or of another cache
+        # root, are kept beside it rather than displacing it.
+        if fresh:
+            return _serve_kept_scan(key)
+        # Ages from the moment it finished, so a scan slower than the age it is kept for does not
+        # arrive already expired.
+        _drafter_scans.pop(key, None)
+        _drafter_scans[key] = (finished, rows)
+        while len(_drafter_scans) > _DRAFTER_SCANS_KEPT:
+            del _drafter_scans[next(iter(_drafter_scans))]
+    return rows
 
 
 def _active_cached_drafter_configs() -> Iterator[tuple[str, dict[str, Any], Path, int]]:
@@ -599,7 +653,7 @@ def _active_cached_drafter_configs() -> Iterator[tuple[str, dict[str, Any], Path
         epoch = hf_cache_scans_epoch()
     except Exception:
         return iter(())
-    return iter(_cached_active_drafter_configs(str(root), epoch, int(time.monotonic() / 15)))
+    return iter(_cached_active_drafter_configs(str(root), epoch))
 
 
 def _mlx_speculative_memory_ready(estimated_bytes: int) -> bool:
@@ -1113,13 +1167,18 @@ def _fitting_cached_revision(
     target_id: Optional[str],
     target_config: Optional[dict[str, Any]],
     method: Optional[str],
+    revisions: Optional[tuple[tuple[str, dict[str, Any], Path, int], ...]] = None,
 ) -> tuple[Optional[dict[str, Any]], Optional[Path]]:
     """The cached revision of ``repo_id`` a load would choose for this target.
 
     One repository is often cached in several revisions, so ranking and loading share this:
-    ranking one revision and loading another picks a drafter for a precision it lacks.
+    ranking one revision and loading another picks a drafter for a precision it lacks. A caller
+    asking about several repositories hands the scan over rather than reaching for it each time,
+    which is what can otherwise expire mid-request and scan the cache twice.
     """
-    for cached_repo_id, config, snapshot, _size in _active_cached_drafter_configs():
+    if revisions is None:
+        revisions = tuple(_active_cached_drafter_configs())
+    for cached_repo_id, config, snapshot, _size in revisions:
         if cached_repo_id.casefold() != repo_id.casefold():
             continue
         if target_config is None or (
@@ -2296,11 +2355,11 @@ def resolve_mlx_speculative_request(
     # Ranked by the revision a load would take. A row with none that fits is one the loader
     # would refuse, whatever the list said when it was built.
     precision = {}
-    for row in downloaded:
-        if not row["loadable"] or row is builtin:
-            continue
+    rankable = [row for row in downloaded if row["loadable"] and row is not builtin]
+    revisions = tuple(_active_cached_drafter_configs()) if rankable else ()
+    for row in rankable:
         config, snapshot = _fitting_cached_revision(
-            row["repo_id"], target_id, target_config, row["method"]
+            row["repo_id"], target_id, target_config, row["method"], revisions
         )
         if snapshot is not None:
             precision[row["repo_id"]] = _config_precision_rank(config, snapshot)
