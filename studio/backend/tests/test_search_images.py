@@ -13,6 +13,7 @@ import json
 import sys
 import threading
 from email.message import Message
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -894,3 +895,33 @@ def test_route_requires_auth():
     entry = search_images.register_images(RAW_IMAGES)[0]
     response = anonymous.get(f"/api/inference/search-images/{entry['id']}")
     assert response.status_code in (401, 403)
+
+def test_one_locked_thumbnail_does_not_strand_the_rest_of_the_clear(monkeypatch, tmp_path):
+    # A JPEG another process holds open on Windows raises on unlink. Aborting the
+    # sweep there left every later file on disk, and thumbnail_bytes reads the
+    # cache before the registry, so those ids kept serving after a clear.
+    entries = [search_images.register_images(RAW_IMAGES)[0] for _ in range(3)]
+    monkeypatch.setattr(
+        tools, "_fetch_url_raw", lambda url, **kw: (None, _png_bytes((40, 30)), "image/png")
+    )
+    for entry in entries:
+        assert search_images.thumbnail_bytes(entry["id"]) is not None
+    stuck = tmp_path / f"{entries[1]['id']}.jpg"
+    real_unlink = Path.unlink
+
+    def unlink(self, *args, **kwargs):
+        if self == stuck:
+            raise OSError(13, "in use by another process")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    search_images.clear_cache()
+    monkeypatch.undo()
+
+    left = {path.name for path in tmp_path.iterdir()}
+    assert left == {stuck.name}, f"only the locked file may survive, found {sorted(left)}"
+    assert search_images._registry == {}
+    for entry in entries:
+        if entry["id"] == entries[1]["id"]:
+            continue
+        assert search_images.thumbnail_bytes(entry["id"]) is None

@@ -451,9 +451,17 @@ def clear_cache() -> None:
     with _registry_lock:
         _registry.clear()
         _cache_generation += 1
-        try:
-            for pattern in ("*.jpg", "*.json", "*.tmp"):
-                for path in _cache_dir().glob(pattern):
+        for pattern in ("*.jpg", "*.json", "*.tmp"):
+            try:
+                paths = list(_cache_dir().glob(pattern))
+            except OSError:
+                continue
+            for path in paths:
+                # Per file, as _evict_cache does: one that cannot be unlinked --
+                # a JPEG another process holds open on Windows -- must not leave
+                # every later one on disk, where the cache-first read in
+                # thumbnail_bytes would go on serving it after a clear.
+                try:
                     path.unlink(missing_ok = True)
-        except OSError:
-            pass
+                except OSError:
+                    pass
