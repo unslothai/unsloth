@@ -67,7 +67,11 @@ def _text(value: Any) -> str | None:
 def _category(name: str) -> str:
     lowered = name.lower()
     return next(
-        (category for category, tokens in _CATEGORY_RULES if any(token in lowered for token in tokens)),
+        (
+            category
+            for category, tokens in _CATEGORY_RULES
+            if any(token in lowered for token in tokens)
+        ),
         "sft",
     )
 
@@ -173,9 +177,7 @@ def _repo_notebook_files() -> list[str]:
 
 
 def _entry(
-    notebook: str,
-    overrides: dict[str, dict[str, Any]],
-    studio_models: dict[str, str],
+    notebook: str, overrides: dict[str, dict[str, Any]], studio_models: dict[str, str]
 ) -> dict[str, Any]:
     fields = overrides.get(notebook, {})
     stem = notebook.removesuffix(".ipynb")
@@ -196,8 +198,7 @@ def _entry(
 def notebook_matches_query(entry: dict[str, Any], query: str | None) -> bool:
     needle = re.sub(r"[^a-z0-9]+", "", (query or "").lower())
     haystack = "".join(
-        str(entry.get(key) or "")
-        for key in ("title", "notebook_file", "studio_model", "category")
+        str(entry.get(key) or "") for key in ("title", "notebook_file", "studio_model", "category")
     )
     return not needle or needle in re.sub(r"[^a-z0-9]+", "", haystack.lower())
 
