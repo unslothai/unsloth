@@ -77,6 +77,27 @@ export function bridgeShim(token: string): string {
 }catch(e){}})();</script>`;
 }
 
+/** A fresh bridge token, or null when nothing here can make an unguessable one.
+ *
+ * crypto.randomUUID needs a secure context and Studio is reachable over plain
+ * HTTP on a LAN address (`-H 0.0.0.0`), where it is simply undefined. The other
+ * chat call sites fall back to Date.now()+Math.random(), which is fine for an
+ * attachment id and not for this: the token is the only thing separating the
+ * widget from a page the frame navigated to. getRandomValues is the right
+ * fallback -- unlike randomUUID it is not secure-context gated.
+ */
+export function newBridgeToken(): string | null {
+  const webCrypto = globalThis.crypto;
+  if (typeof webCrypto?.randomUUID === "function") return webCrypto.randomUUID();
+  if (typeof webCrypto?.getRandomValues === "function") {
+    return Array.from(webCrypto.getRandomValues(new Uint8Array(16)), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+  }
+  // A guessable token is worse than none, so the caller shows the failure.
+  return null;
+}
+
 /** Put `shim` where it runs before any of the view's own script, doctype intact. */
 export function withBridgeShim(html: string, shim: string): string {
   for (const opener of [/<head\b[^>]*>/i, /<html\b[^>]*>/i, /<!doctype[^>]*>/i]) {
@@ -168,7 +189,7 @@ export function McpAppFrame({
 
   // One token per fetched template, so re-seeding cannot be replayed either.
   const bridgeToken = useMemo(
-    () => (resource ? crypto.randomUUID() : null),
+    () => (resource ? newBridgeToken() : null),
     [resource],
   );
 
@@ -208,23 +229,23 @@ export function McpAppFrame({
       method: "ui/notifications/tool-input",
       params: { arguments: toolArgs ?? {} },
     });
-    // The view is sent the tool's whole result: dropping the images would show
-    // it a different result than the card beside it renders.
-    // ui.text only. It is the tool's own text blocks; the flattened body beside
-    // it is the model-facing transcript, where an image-only result reads
-    // "[1 image attached...]" and a structuredContent-only one is a Python repr
-    // of the payload. Neither is something the server put in its CallToolResult,
-    // and a view told otherwise renders host prose as the tool's answer. No text
-    // blocks means no text block.
-    const content: Record<string, unknown>[] = ui.text
-      ? [{ type: "text", text: ui.text }]
-      : [];
-    for (const image of resultImages ?? []) {
-      content.push({
-        type: "image",
-        data: image.data,
-        mimeType: image.mimeType,
-      });
+    // The server's own blocks, in order, with the image bytes put back: the
+    // envelope leaves those to the image sentinel rather than carrying a second
+    // copy, so an image block arrives with its mimeType and no data. Anything
+    // the flattened body would have shown instead is host prose -- an
+    // "[1 image attached...]" note, or a Python repr of structuredContent --
+    // and no part of what the server returned.
+    const images = [...(resultImages ?? [])];
+    const content: Record<string, unknown>[] = [];
+    for (const block of ui.content ?? []) {
+      if (block?.type === "image" && block.data === undefined) {
+        const image = images.shift();
+        // Dropped by the payload budget upstream; the card says so too.
+        if (!image) continue;
+        content.push({ ...block, data: image.data, mimeType: image.mimeType });
+        continue;
+      }
+      content.push({ ...block });
     }
     postToView({
       jsonrpc: "2.0",
@@ -241,7 +262,7 @@ export function McpAppFrame({
     postToView,
     toolArgs,
     resultImages,
-    ui.text,
+    ui.content,
     ui.structuredContent,
     ui._meta,
   ]);
@@ -479,10 +500,16 @@ export function McpAppFrame({
     toolName,
   ]);
 
-  if (error) {
+  const failure =
+    error ??
+    (resource && !bridgeToken
+      ? "this browser has no Web Crypto to isolate it with"
+      : null);
+
+  if (failure) {
     return (
       <div className="mt-2 rounded border border-border bg-muted/30 px-3 py-2 text-ui-12p5 text-muted-foreground">
-        Could not load this MCP app's interface: {error}
+        Could not load this MCP app's interface: {failure}
       </div>
     );
   }

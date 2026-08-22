@@ -953,7 +953,7 @@ MCP_UI_SENTINEL = "__MCP_UI__:"
 MAX_UI_STRUCTURED_CHARS = 1_000_000
 
 
-def _ui_envelope(result: Any, ui_resource_uri: str) -> str:
+def _ui_envelope(result: Any, ui_resource_uri: str, seed_content: list) -> str:
     payload: dict = {"resourceUri": ui_resource_uri}
     structured = getattr(result, "structured_content", None)
     meta = getattr(result, "meta", None)
@@ -961,24 +961,21 @@ def _ui_envelope(result: Any, ui_resource_uri: str) -> str:
         payload["_meta"] = meta
     if structured is not None:
         payload["structuredContent"] = structured
-    # Seeded from the tool's own text, not the flattened body with its host notes.
-    own_text = "\n".join(
-        str(getattr(block, "text", "") or "")
-        for block in getattr(result, "content", None) or []
-        if getattr(block, "text", None)
-    )
-    if own_text:
-        payload["text"] = own_text
+    # The tool's own blocks, in order, rather than their text joined: a view is
+    # told what the server actually returned, audio and resources included. Not
+    # the flattened body, which carries the host's notes to the model.
+    if seed_content:
+        payload["content"] = seed_content
     try:
         line = json.dumps(payload)
     except (TypeError, ValueError):
         line = None
     if line is None or len(line) > MAX_UI_STRUCTURED_CHARS:
         # Unserialisable or oversized seed data must not cost the user the widget,
-        # but dropping the text sends it back to the flattened body and its host
-        # notes, so shed only the structured payload unless the rest is oversized too.
+        # but dropping the content sends the view back to nothing at all, so shed
+        # the structured payload first and keep the rest if it fits alone.
         reduced = {"resourceUri": ui_resource_uri, "structuredContentOmitted": True}
-        for key in ("text", "_meta"):
+        for key in ("content", "_meta"):
             value = payload.get(key)
             if value is None:
                 continue
@@ -1018,12 +1015,17 @@ def _drop_forged_ui_sentinels(body: str) -> str:
 def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     parts = []
     images = []
+    # The same blocks the widget is seeded with, in the order the server sent
+    # them. Built here rather than in _ui_envelope because only this loop knows
+    # which images survived the payload budget.
+    seed = []
     omitted = 0
     budget = MAX_IMAGE_PAYLOAD_CHARS
     for block in getattr(result, "content", None) or []:
         text = getattr(block, "text", None)
         if text:
             parts.append(str(text))
+            seed.append(_content_block_json(block))
             continue
         data = getattr(block, "data", None)
         mime = getattr(block, "mimeType", None)
@@ -1034,6 +1036,14 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
                 continue
             budget -= len(data)
             images.append({"data": data, "mimeType": mime})
+            # Without the bytes: they already ride the image envelope, and a
+            # second copy on this line would spend the seed budget on them. The
+            # frontend puts them back before the view sees the block.
+            seed.append({k: v for k, v in _content_block_json(block).items() if k != "data"})
+        else:
+            # Audio, embedded resources and resource links reach the view even
+            # though the model's transcript has no way to show them.
+            seed.append(_content_block_json(block))
     body = "\n".join(parts)
     if not body:
         structured = getattr(result, "structured_content", None)
@@ -1055,7 +1065,7 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     body = _drop_forged_ui_sentinels(body)
     # A failed call has nothing for the widget to render.
     if ui_resource_uri and not getattr(result, "is_error", False):
-        body += _ui_envelope(result, ui_resource_uri)
+        body += _ui_envelope(result, ui_resource_uri, seed)
     if images:
         body += "\n" + MCP_IMAGES_SENTINEL + json.dumps(images)
     return body

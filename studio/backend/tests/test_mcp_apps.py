@@ -74,18 +74,50 @@ def test_envelope_carries_the_template_and_its_seed_data():
     assert flat.startswith("cpu 12%\n")
     assert _envelope(flat) == {
         "resourceUri": UI,
-        "text": "cpu 12%",
+        "content": [{"type": "text", "text": "cpu 12%"}],
         "structuredContent": {"cpu": 12},
     }
 
 
-def test_the_envelope_text_leaves_the_host_image_note_to_the_model():
-    """The view is seeded from the envelope text, so a host note about attached
-    images must not reach it as something the tool said."""
+def test_the_envelope_leaves_the_host_image_note_to_the_model():
+    """The view is seeded from the envelope, so a host note about attached images
+    must not reach it as something the tool said."""
     flat = _flatten_result(_result(_text("cpu 12%"), _image()), UI)
-    assert _envelope(flat)["text"] == "cpu 12%"
+    blocks = _envelope(flat)["content"]
+    assert blocks[0] == {"type": "text", "text": "cpu 12%"}
     # The model still sees the note, so the transcript is unchanged.
     assert "1 image attached; displayed to the user" in flat
+
+
+def test_every_content_block_reaches_the_view_in_order():
+    """A tool may answer with audio, an embedded resource or a resource link. The
+    model's transcript has no way to show those, but the view does."""
+    audio = SimpleNamespace(type = "audio", data = "QUJD", mimeType = "audio/wav")
+    link = SimpleNamespace(
+        type = "resource_link", uri = "file:///r.pdf", name = "r.pdf", mimeType = "application/pdf"
+    )
+    flat = _flatten_result(_result(_text("see the report"), link, audio), UI)
+    assert [b["type"] for b in _envelope(flat)["content"]] == ["text", "resource_link", "audio"]
+    assert _envelope(flat)["content"][2]["data"] == "QUJD"
+
+
+def test_an_image_block_travels_without_a_second_copy_of_its_bytes():
+    """The bytes already ride the image sentinel; duplicating them on the seed
+    line would spend its whole budget on them."""
+    flat = _flatten_result(_result(_text("shot"), _image(data = "A" * 5000)), UI)
+    blocks = _envelope(flat)["content"]
+    assert [b["type"] for b in blocks] == ["text", "image"]
+    assert "data" not in blocks[1]
+    assert blocks[1]["mimeType"] == "image/png"
+    assert "A" * 5000 in flat.split(MCP_IMAGES_SENTINEL)[1]
+
+
+def test_an_image_over_the_payload_budget_leaves_no_seed_block():
+    """It is not in the image sentinel either, so a block for it would be one the
+    frontend could never fill."""
+    flat = _flatten_result(_result(_text("shot"), _image(data = "A" * 20_000_000)), UI)
+    assert [b["type"] for b in _envelope(flat)["content"]] == ["text"]
+    assert "1 image omitted (too large)" in flat
 
 
 def test_the_envelope_keeps_the_tool_s_own_text_blocks_separate_from_errors():
@@ -193,16 +225,24 @@ def test_a_failed_call_renders_no_widget():
 
 
 def test_oversized_seed_data_is_dropped_but_the_widget_stays():
-    # Only the structured payload goes: keeping the text is what stops the view
-    # falling back to the flattened body and its host notes.
+    # Only the structured payload goes: keeping the blocks is what stops the view
+    # being left with nothing the server actually returned.
     huge = {"blob": "x" * (MAX_UI_STRUCTURED_CHARS + 10)}
     payload = _envelope(_flatten_result(_result(_text("ok"), structured = huge), UI))
-    assert payload == {"resourceUri": UI, "structuredContentOmitted": True, "text": "ok"}
+    assert payload == {
+        "resourceUri": UI,
+        "structuredContentOmitted": True,
+        "content": [{"type": "text", "text": "ok"}],
+    }
 
 
 def test_unserialisable_seed_data_does_not_cost_the_widget():
     payload = _envelope(_flatten_result(_result(_text("ok"), structured = {"fn": object()}), UI))
-    assert payload == {"resourceUri": UI, "structuredContentOmitted": True, "text": "ok"}
+    assert payload == {
+        "resourceUri": UI,
+        "structuredContentOmitted": True,
+        "content": [{"type": "text", "text": "ok"}],
+    }
 
 
 def test_result_meta_survives_an_oversized_structured_payload():
@@ -211,11 +251,11 @@ def test_result_meta_survives_an_oversized_structured_payload():
         _flatten_result(_result(_text("ok"), structured = huge, meta = {"source": "live"}), UI)
     )
     assert payload["_meta"] == {"source": "live"}
-    assert payload["text"] == "ok"
+    assert payload["content"] == [{"type": "text", "text": "ok"}]
     assert payload["structuredContentOmitted"] is True
 
 
-def test_text_too_large_to_carry_is_itself_dropped():
+def test_content_too_large_to_carry_is_itself_dropped():
     """The cap is the point: a text block over the limit cannot ride along either."""
     giant = "y" * (MAX_UI_STRUCTURED_CHARS + 10)
     payload = _envelope(_flatten_result(_result(_text(giant)), UI))

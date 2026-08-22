@@ -41,6 +41,23 @@ function declarationText(name: string): string {
   return found as unknown as string;
 }
 
+/** A standalone `export function` from the frame, evaluated on its own. */
+function liftFunction<T>(signature: string): T {
+  const start = text.indexOf(signature);
+  assert.ok(start >= 0, `${signature} is no longer in mcp-app-frame.tsx`);
+  const end = text.indexOf("\n}\n", start);
+  assert.ok(end > start, `${signature} has no top-level closing brace`);
+  const declaration = text.slice(start, end + 3).replace(/^export /, "");
+  const name = /function (\w+)/.exec(declaration)?.[1];
+  return new Function(
+    `${
+      ts.transpileModule(declaration, {
+        compilerOptions: { target: ts.ScriptTarget.ES2020 },
+      }).outputText
+    }; return ${name};`,
+  )() as T;
+}
+
 test("only the document the host seeded can reach the bridge", () => {
   // A sandboxed frame keeps one contentWindow and reports origin "null" whatever
   // it navigates to, and the replacement document's inline scripts run BEFORE the
@@ -77,8 +94,8 @@ test("the token is minted per fetched template", () => {
   // keep talking after the frame moved on.
   const token = declarationText("bridgeToken");
   assert.ok(
-    /crypto\.randomUUID\(\)/.test(token),
-    "the bridge token must be unguessable",
+    /newBridgeToken\(\)/.test(token),
+    "the bridge token must come from the minter, which handles a non-secure origin",
   );
   assert.ok(
     /\[resource\]/.test(token),
@@ -86,22 +103,67 @@ test("the token is minted per fetched template", () => {
   );
 });
 
-test("the view is seeded from the tool's own text, never the flattened body", () => {
+test("the view is seeded from the server's own blocks", () => {
   // _flatten_result builds the model-facing transcript: an image-only result reads
   // "[1 image attached; displayed to the user]" and a structuredContent-only one is
-  // a Python repr of the payload. Neither is in the server's CallToolResult, so a
-  // fallback to it hands the view host prose as the tool's answer.
+  // a Python repr of the payload. Neither is in the server's CallToolResult, so the
+  // seed comes from the blocks the envelope carries, image bytes put back from the
+  // image sentinel rather than duplicated on the seed line.
   const seedView = declarationText("seedView");
   assert.ok(
-    /ui\.text\s*\?\s*\[\{\s*type:\s*"text",\s*text:\s*ui\.text\s*\}\]/.test(seedView),
-    "the text content block must come from ui.text alone",
+    /for \(const block of ui\.content \?\? \[\]\)/.test(seedView),
+    "the seed must walk the server's blocks in order",
   );
   assert.ok(
-    !/resultText/.test(seedView),
-    "seedView must not fall back to the flattened result text",
+    /block\.data === undefined/.test(seedView) && /images\.shift\(\)/.test(seedView),
+    "an image block arrives without data and must be refilled from the image sentinel",
   );
   assert.ok(
     !/resultText/.test(text),
-    "the resultText prop is the flattened body; it has no seeding role left",
+    "the flattened body has no seeding role left",
+  );
+});
+
+test("the bridge token survives a non-secure Studio origin", () => {
+  // Studio is reachable over plain HTTP on a LAN address, where crypto.randomUUID
+  // is simply undefined; calling it unconditionally threw on render and took every
+  // widget with it. getRandomValues is not secure-context gated, so it is the
+  // fallback -- not the Date.now()+Math.random() the attachment adapters use, which
+  // is fine for an id and not for the value that names the seeded document.
+  const mint = liftFunction<() => string | null>("export function newBridgeToken(");
+  const realCrypto = globalThis.crypto;
+  const withCrypto = (value: unknown, run: () => void): void => {
+    Object.defineProperty(globalThis, "crypto", {
+      value,
+      configurable: true,
+      writable: true,
+    });
+    try {
+      run();
+    } finally {
+      Object.defineProperty(globalThis, "crypto", {
+        value: realCrypto,
+        configurable: true,
+        writable: true,
+      });
+    }
+  };
+
+  withCrypto({ randomUUID: () => "from-random-uuid" }, () => {
+    assert.equal(mint(), "from-random-uuid");
+  });
+
+  withCrypto({ getRandomValues: realCrypto.getRandomValues.bind(realCrypto) }, () => {
+    const first = mint();
+    assert.match(String(first), /^[0-9a-f]{32}$/, "128 bits of hex from getRandomValues");
+    assert.notEqual(first, mint(), "a fresh token every call");
+  });
+
+  // No Web Crypto at all: a guessable token would be worse than none, and the
+  // component renders the failure instead.
+  withCrypto(undefined, () => assert.equal(mint(), null));
+  assert.ok(
+    /resource && !bridgeToken/.test(text),
+    "a frame with no token must report the failure rather than render",
   );
 });
