@@ -326,7 +326,7 @@ def test_env_mode_blocks_when_bin_unsloth_is_broken_symlink(tmp_path):
 def test_install_sh_writes_venv_marker_after_uv_venv():
     """install.sh must write .unsloth-studio-owned into $VENV_DIR right after `uv venv` succeeds."""
     src = INSTALL_SH.read_text(encoding = "utf-8")
-    create_idx = src.index('_run_uv_venv "create venv" "$VENV_DIR"')
+    create_idx = src.index('_uv_venv_requested "create venv"')
     tail = src[create_idx : create_idx + 600]
     assert (
         ".unsloth-studio-owned" in tail

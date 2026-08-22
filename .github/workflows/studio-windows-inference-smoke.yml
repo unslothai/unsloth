@@ -300,7 +300,7 @@ jobs:
         # temperature = 0.0 for determinism, raise TypeError against it. The v1 route
         # is extra_body; moving to it is a deliberate change to what the probes send,
         # not something a CI install should decide by resolving a new major.
-        run: python -m pip install 'openai>=1.50' 'anthropic>=0.40,<1'
+        run: python -m pip install 'openai>=1.50,<4' 'anthropic>=0.40,<1'
 
       # Phase 1's environment and model cache sit HERE, after the shared
       # preamble, not before it. They used to run before the installer, which is
