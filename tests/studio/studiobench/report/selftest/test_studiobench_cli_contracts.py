@@ -127,6 +127,71 @@ def test_a_trailing_slash_does_not_make_one_origin_into_two():
     assert stream_cost_injection_problem(side_specs(args, "main"), args.inject_stream_cost_ms)
 
 
+@pytest.mark.parametrize(
+    ("attach", "attach_b"),
+    [
+        # The port a scheme does not spell out. Chromium reports `http://studio` for both.
+        ("http://studio", "http://studio:80"),
+        ("http://studio:80", "http://studio"),
+        ("https://studio.example.com", "https://studio.example.com:443"),
+        # Case. The URL standard lower-cases the scheme and the host; a string compare does not.
+        ("http://studio", "http://STUDIO"),
+        ("http://studio", "HTTP://studio"),
+        # A path is not part of an origin.
+        ("http://studio", "http://studio/app"),
+    ],
+)
+def test_one_origin_spelled_two_ways_is_still_one_origin(attach, attach_b):
+    """REGRESSION. `origin_scoped` compares against `window.location.origin`, which is the URL
+    standard's canonical origin and not the URL as typed, so the refusal has to compare the same
+    thing or it refuses a different question from the one that matters.
+
+    Measured in chromium against real documents: `http://studio:80`, `http://STUDIO`,
+    `HTTP://studio` and `http://studio/app` all report an origin of `http://studio`, and the
+    shipped `origin_scoped` predicate built from any of those four ran on NONE of them. So the pair
+    below is one server under two names and the run goes wrong whichever way round it is spelled --
+    the treatment's injection gated on the dead spelling burns on neither arm, or the base's is the
+    dead one and the treatment's matches every document and both arms burn. Either way the
+    difference between the arms is zero and `evaluate_stream_cost_recovery_gate` reports a working
+    metric as under-attributing, which is the exact verdict this refusal exists to prevent."""
+
+    args = _inject_args(attach, attach_b, "--inject-stream-cost-ms", "3")
+    problem = stream_cost_injection_problem(side_specs(args, "main"), args.inject_stream_cost_ms)
+
+    assert problem is not None, f"{attach} and {attach_b} are one origin"
+    assert "origin" in problem
+    # And it says so in terms the caller can act on, because the two URLs they typed do differ.
+    assert attach in problem and attach_b in problem
+
+
+def test_the_predicate_and_the_refusal_read_the_same_origin():
+    """The two halves of this guard are in different files and only agree by construction. If
+    `origin_scoped` gated on the URL as typed while `arm_origins` canonicalised, a pair that got
+    past the refusal could still be gated onto a document that does not exist."""
+
+    from studiobench.__main__ import arm_origins
+    from studiobench.runtime.ab import origin_scoped
+
+    args = _inject_args("http://studio:80", "https://other.example.com:443")
+    for spec, origin in zip(side_specs(args, "main"), arm_origins(side_specs(args, "main"))):
+        assert f'"{origin}"' in origin_scoped(spec[2], "doThing();")
+
+
+def test_localhost_and_the_loopback_address_are_two_origins():
+    """THE CONTROL THAT THE CANONICALISATION MUST NOT SWALLOW. `http://localhost:8000` and
+    `http://127.0.0.1:8000` reach the same server and are two ORIGINS to a browser -- chromium
+    reports each as itself -- so localStorage, the seed and the injection are all separate between
+    them. Folding them together would refuse a pair of arms the injection works perfectly well
+    against."""
+
+    args = _inject_args(
+        "http://localhost:8000", "http://127.0.0.1:8000", "--inject-stream-cost-ms", "3"
+    )
+    assert (
+        stream_cost_injection_problem(side_specs(args, "main"), args.inject_stream_cost_ms) is None
+    )
+
+
 def test_an_attached_side_and_a_self_installed_one_on_the_same_port_are_refused():
     """The mixed case. A side this run installs is launched on `--port` and serves at
     `http://127.0.0.1:{port}`, so an `--attach` URL naming that port is the same origin twice

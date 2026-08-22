@@ -17,6 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
+from tests.studio.studiobench.__main__ import main as cli_main  # noqa: E402
 from tests.studio.studiobench.sweep import floor_table as F  # noqa: E402
 from tests.studio.studiobench.sweep import ui_parity as U  # noqa: E402
 
@@ -1082,3 +1083,128 @@ def test_the_composer_click_does_not_set_the_frame_floor(tmp_path):
     )
     metrics = F.cell_metrics(F.read_rows(out / "payload.jsonl"))["100K.base.rep0"]
     assert metrics["max_frame_ms"] == 120.0
+
+
+# ── the documented loop runs liveness before it reads a timing ───────
+
+
+LOOP_DOC = Path(__file__).resolve().parents[2] / "CONTRIBUTING-perf.md"
+
+
+def loop_commands() -> list[str]:
+    """The commands in the fenced block under `## The loop`, in the order a reader runs them."""
+    block = LOOP_DOC.read_text(encoding = "utf-8").split("## The loop", 1)[1].split("```")[1]
+    return [
+        line.strip()
+        for line in block.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+
+def index_of(commands: list[str], needle: str) -> int:
+    for i, line in enumerate(commands):
+        if needle in line:
+            return i
+    raise AssertionError(f"the documented loop no longer runs {needle}")
+
+
+SLOT_MISSED = (
+    "the slot opened at 73000ms and this machine reached it at 79000ms, past its 12000ms budget"
+)
+
+
+def liveness_action(cell_id: str, ms: float | None) -> dict:
+    """One action row. `ms` of `None` is the repetition whose slot the film moved on without."""
+    if ms is None:
+        return {
+            "row_type": "action",
+            "cell_id": cell_id,
+            "action": "message_menu",
+            "ran": False,
+            "slot_missed": True,
+            "timings": {},
+            "reason": SLOT_MISSED,
+        }
+    return {
+        "row_type": "action",
+        "cell_id": cell_id,
+        "action": "message_menu",
+        "ran": True,
+        "slot_missed": False,
+        "timings": {"open_close_ms": ms},
+        "reason": None,
+    }
+
+
+def liveness_payload(tmp_path: Path, name: str, pairs: list[tuple[float, float | None]]) -> Path:
+    """One shard whose cells carry their own actions, which is what `--assert-liveness` reads.
+
+    `paired` reads the standalone action rows and the liveness gate reads the list embedded in the
+    cell row, so a payload that exercises both has to carry the action twice, exactly as a real
+    `SceneRunner` cell does.
+    """
+    out = tmp_path / name
+    out.mkdir(parents = True, exist_ok = True)
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "standard"}]
+    for i, (base, treat) in enumerate(pairs):
+        for arm, ms in (("base", base), ("treatment", treat)):
+            cid = f"100K.{arm}.rep{i}"
+            action = liveness_action(cid, ms)
+            rows.append(
+                {"row_type": "cell", "cell_id": cid, "completed": True, "actions": [action]}
+            )
+            rows.append(action)
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    return path
+
+
+def test_the_documented_loop_asserts_liveness_before_it_reads_any_timing():
+    commands = loop_commands()
+    liveness = index_of(commands, "--assert-liveness")
+    for reader in ("sweep.floor_table", "sweep.ui_parity", "--report"):
+        assert liveness < index_of(commands, reader), (
+            f"the loop runs {reader} before --assert-liveness, so a contributor reads a verdict "
+            f"out of a payload nothing has checked for missed slots"
+        )
+
+
+def test_floor_table_prints_a_clean_verdict_from_a_run_that_liveness_voids(tmp_path, capsys):
+    # WHY THAT ORDER IS LOAD-BEARING, and the reason the line above is a gate rather than a note.
+    # The treatment build is 10% faster on the three repetitions it managed, and on the fourth it
+    # was so slow that `message_menu` never reached its slot. `paired` matches on the metrics BOTH
+    # arms recorded, so that repetition leaves the table with no trace except a smaller `n`, and
+    # the survivors print as a clean win over a tight floor.
+    mine = liveness_payload(
+        tmp_path, "mine", [(1000.0, 900.0), (1000.0, 900.0), (1000.0, 900.0), (1000.0, None)]
+    )
+    null = liveness_payload(
+        tmp_path,
+        "null",
+        [(1000.0, 1000.0), (1010.0, 1012.0), (990.0, 989.0), (1000.0, 1001.0)],
+    )
+    assert F.main(["--floor", str(null.parent), str(mine.parent)]) == 0
+    table = capsys.readouterr().out
+    assert "faster" in table
+    assert "1 metric(s) cleared all three gates." in table
+    # The same payload, read by the gate the loop now runs first.
+    assert cli_main(["--assert-liveness", str(mine)]) == 1
+
+
+def test_the_repetition_that_missed_its_slot_is_what_the_verdict_turns_on(tmp_path, capsys):
+    # The control for the test above. With the fourth repetition's timing present, the same run is
+    # VOID on the same floor: the clean win is an artefact of the reading that went missing, not a
+    # property of the change. Every other number in the payload is identical.
+    mine = liveness_payload(
+        tmp_path, "mine", [(1000.0, 900.0), (1000.0, 900.0), (1000.0, 900.0), (1000.0, 2500.0)]
+    )
+    null = liveness_payload(
+        tmp_path,
+        "null",
+        [(1000.0, 1000.0), (1010.0, 1012.0), (990.0, 989.0), (1000.0, 1001.0)],
+    )
+    assert F.main(["--floor", str(null.parent), str(mine.parent)]) == 0
+    table = capsys.readouterr().out
+    assert "VOID (pairs disagree on sign)" in table
+    assert "0 metric(s) cleared all three gates." in table
+    assert cli_main(["--assert-liveness", str(mine)]) == 0
