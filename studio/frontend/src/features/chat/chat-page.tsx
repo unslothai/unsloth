@@ -2764,6 +2764,14 @@ export function ChatPage({
     },
     [artifactViewKey],
   );
+  const handleNativeOpenDocumentDrop = useCallback(
+    (intents: NativeIntent[]) => {
+      useNativeIntentStore
+        .getState()
+        .addOpenDocumentAttachments(artifactViewKey, intents);
+    },
+    [artifactViewKey],
+  );
   const handleNativeAudioDrop = useCallback(
     (intents: NativeIntent[]) => {
       useNativeIntentStore.getState().addAudioAttachments(artifactViewKey, intents);
@@ -2793,6 +2801,7 @@ export function ChatPage({
     onAutoLoad: handleNativeModelDropAutoLoad,
     onAttach: handleNativeAttachmentDrop,
     onAttachImages: handleNativeImageDrop,
+    onAttachOpenDocuments: handleNativeOpenDocumentDrop,
     onAttachAudio: handleNativeAudioDrop,
     onAttachVideo: handleNativeVideoDrop,
   });
