@@ -596,7 +596,8 @@ pub fn open_path_token(
 ) -> Result<(), String> {
     ensure_main_window(&window)?;
     let entry = state.path_for_operation(&token, NativePathOperation::Open)?;
-    crate::process::open_detached(entry.canonical_path).map_err(|e| format!("Failed to open path: {e}"))
+    crate::process::open_detached(entry.canonical_path)
+        .map_err(|e| format!("Failed to open path: {e}"))
 }
 
 // Covers the generic client-side limit (audio, 25 MB).
@@ -698,16 +699,13 @@ fn open_attachment_file(path: &Path) -> Result<fs::File, String> {
 
 fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFile, String> {
     let path = &entry.canonical_path;
-    let mime_type = attachment_mime_type(path).ok_or_else(|| {
-        "Only chat attachments can be read inline.".to_string()
-    })?;
+    let mime_type = attachment_mime_type(path)
+        .ok_or_else(|| "Only chat attachments can be read inline.".to_string())?;
     let is_text_attachment = path
         .extension()
         .and_then(|value| value.to_str())
         .map(|value| value.to_ascii_lowercase())
-        .is_some_and(|ext| {
-            crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&ext.as_str())
-        });
+        .is_some_and(|ext| crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&ext.as_str()));
     let max_bytes = if is_text_attachment {
         MAX_NATIVE_TEXT_BYTES
     } else if mime_type.starts_with("image/") {
@@ -785,9 +783,11 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        crate::native_path_policy::scratch_root().join(format!("unsloth-native-intents-{name}-{}-{nanos}", std::process::id()))
+        crate::native_path_policy::scratch_root().join(format!(
+            "unsloth-native-intents-{name}-{}-{nanos}",
+            std::process::id()
+        ))
     }
-
 
     fn attachment_entry(path: &Path) -> (NativeIntakeState, NativePathEntry) {
         let state = new_native_intake_state();
