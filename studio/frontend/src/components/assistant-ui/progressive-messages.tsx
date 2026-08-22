@@ -103,6 +103,23 @@ export function hasPendingProgressiveMounts(): boolean {
 }
 
 /**
+ * Hand native scroll anchoring back, leaving no trace of having taken it.
+ *
+ * `removeProperty` empties the inline declaration but keeps the attribute, so the settled viewport
+ * carried `style=""` where the shipping one carries no `style` at all. That is inert, but it was the
+ * ONLY difference a whole-document structural digest could find between this branch and its merge
+ * base at 100K and 300K (45,014 lines, one changed line, on a null scoring exactly zero), and a
+ * byte-identical converged document is a claim worth being able to make rather than footnote.
+ *
+ * Only an empty declaration is cleared, so any other inline style a caller has set survives.
+ */
+function restoreScrollAnchoring(viewport: HTMLElement | null): void {
+  if (!viewport) return;
+  viewport.style.removeProperty("overflow-anchor");
+  if (viewport.getAttribute("style") === "") viewport.removeAttribute("style");
+}
+
+/**
  * The row to hold still: the first one the reader can actually SEE, not the first in the list.
  *
  * Widening prepends above everything, so for a widening any row will do. A RELAYOUT will not: a row
@@ -458,14 +475,14 @@ function useProgressiveMountWindow(
   // scrollTop moves only when the reader or this code moves it, which anchorCorrection assumes.
   useLayoutEffect(() => {
     if (mountWindow != null) return;
-    viewportRef.current?.style.removeProperty("overflow-anchor");
+    restoreScrollAnchoring(viewportRef.current);
   }, [mountWindow, viewportRef]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: unmount-only cleanup
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     return () => {
-      viewport?.style.removeProperty("overflow-anchor");
+      restoreScrollAnchoring(viewport);
     };
   }, [viewportRef]);
 

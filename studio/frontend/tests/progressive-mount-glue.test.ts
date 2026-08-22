@@ -230,8 +230,20 @@ test("the window owns the viewport's scroll-anchoring mode while it is open", ()
   );
   assert.match(
     closing,
-    /removeProperty\("overflow-anchor"\)/,
+    /restoreScrollAnchoring\(viewportRef\.current\)/,
     "the closing commit must hand scroll anchoring back to the browser",
+  );
+  // Both hand-backs go through the one helper, which also drops the emptied `style` attribute.
+  // removeProperty alone leaves `style=""` behind, and that attribute was the only difference a
+  // whole-document digest could find between this branch and its merge base at 100K and 300K.
+  assert.match(
+    section(GLUE, "function restoreScrollAnchoring(", "\n}"),
+    /if \(viewport\.getAttribute\("style"\) === ""\) viewport\.removeAttribute\("style"\);/,
+  );
+  assert.doesNotMatch(
+    GLUE.replace(section(GLUE, "function restoreScrollAnchoring(", "\n}"), ""),
+    /removeProperty\("overflow-anchor"\)/,
+    "every hand-back must go through restoreScrollAnchoring, or one path leaks style=''",
   );
   // No feature probe and no gesture bookkeeping: both decided which behaviour the browser was
   // giving us, and the browser is no longer in that loop.
