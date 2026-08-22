@@ -118,7 +118,11 @@ def make_cell_id(rung: str, arm: str, rep: int) -> str:
 #: `gap` is the quiet stretch the scheduler holds between two slots. It is NOT `stream`: a gap
 #: window is opened before every slot, so most of them sit long after the reply finished. See
 #: SceneRunner._gap_window for what that mislabelling cost.
-WINDOW_KINDS = frozenset({"action", "stream", "gap", "idle", "settle", "teardown"})
+#: `setup` is work the harness has to do before the film can start -- the composer click is the
+#: one that costs anything -- and it is NOT `action`. It is dominated by the driver rather than by
+#: the app, so the scoring layer keeps it out of the frame pool. See
+#: `scoring/from_payload.UNSCORED_WINDOW_KINDS`.
+WINDOW_KINDS = frozenset({"action", "stream", "gap", "idle", "setup", "settle", "teardown"})
 
 
 @dataclass

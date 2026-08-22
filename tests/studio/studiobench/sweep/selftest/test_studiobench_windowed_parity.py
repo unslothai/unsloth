@@ -723,7 +723,7 @@ def test_noise_at_one_rung_does_not_silence_a_regression_at_another(tmp_path, ca
     out = capsys.readouterr().out
     assert "DIFFERENCES INSIDE THE VIEWPORT" in out
     # And it is the 1K pair that is counted, with the 100K one still reported as floored noise.
-    assert "r1K.rep0" in out
+    assert "r1K rep0" in out
     assert "differ against an identical build" in out
 
 
@@ -1073,7 +1073,8 @@ def test_two_rungs_of_one_payload_are_two_pairs_and_not_one(tmp_path):
     shard = _mixed_rung_shard(tmp_path, "mixed_keys")
     pairs = U.collect([shard])["pairs"]
     assert len(pairs) == 2, sorted(pairs)
-    assert {rep for _shard, rep, _action in pairs} == {"r1K.rep0", "r100K.rep0"}
+    cells = {f"{rung} {rep}" for _shard, rung, rep, _sid, _action in pairs}
+    assert cells == {"r1K rep0", "r100K rep0"}, cells
     assert all(set(sides) == {"base", "treatment"} for sides in pairs.values())
 
 
@@ -1090,14 +1091,17 @@ def test_the_windowed_large_rung_does_not_suppress_the_digest_on_the_mounted_sma
     from studiobench.sweep import ui_parity as U
 
     shard = _mixed_rung_shard(tmp_path, "mixed")
-    modes = {rep: mode for (_s, rep, _a), (mode, _why) in U.decide_modes([shard]).items()}
-    assert modes == {"r1K.rep0": U.STRUCTURAL, "r100K.rep0": U.WINDOWED}, modes
+    modes = {
+        f"{rung} {rep}": mode
+        for (_s, rung, rep, _sid, _a), (mode, _why) in U.decide_modes([shard]).items()
+    }
+    assert modes == {"r1K rep0": U.STRUCTURAL, "r100K rep0": U.WINDOWED}, modes
 
     code = U.main([str(tmp_path / "mixed")])
     out = capsys.readouterr().out
     assert "MODE DECIDED PER ACTION PAIR: 1 of 2" in out, out
     assert "UI PARITY DIFFERENCES ON STABLE ACTIONS" in out, out
-    assert "r1K.rep0" in out.split("UI PARITY DIFFERENCES ON STABLE ACTIONS")[1], out
+    assert "r1K rep0" in out.split("UI PARITY DIFFERENCES ON STABLE ACTIONS")[1], out
     # (1 fully mounted pair(s) of 2) in the heading: a structural section that silently covered
     # part of a payload would read as a verdict on all of it.
     assert "1 fully mounted pair(s) of 2" in out, out
@@ -1202,11 +1206,14 @@ def test_a_declared_windowed_arm_with_no_row_is_not_scored_structurally(tmp_path
     from studiobench.sweep import ui_parity as U
 
     shard = _one_sided_shard(tmp_path, "one_sided")
-    modes = {rep: (mode, why) for (_s, rep, _a), (mode, why) in U.decide_modes([shard]).items()}
-    assert modes["r100K.rep0"][0] == U.WINDOWED, modes
-    assert "DECLARED, not measured" in modes["r100K.rep0"][1], modes
+    modes = {
+        f"{rung} {rep}": (mode, why)
+        for (_s, rung, rep, _sid, _a), (mode, why) in U.decide_modes([shard]).items()
+    }
+    assert modes["r100K rep0"][0] == U.WINDOWED, modes
+    assert "DECLARED, not measured" in modes["r100K rep0"][1], modes
     # And the rung that really did mount everything on both arms is still owed its digest.
-    assert modes["r1K.rep0"][0] == U.STRUCTURAL, modes
+    assert modes["r1K rep0"][0] == U.STRUCTURAL, modes
 
 
 def test_a_windowed_cell_row_declares_the_arm_even_when_that_arm_has_no_action_row(tmp_path):
@@ -1216,9 +1223,12 @@ def test_a_windowed_cell_row_declares_the_arm_even_when_that_arm_has_no_action_r
     from studiobench.sweep import ui_parity as U
 
     shard = _one_sided_shard(tmp_path, "one_sided_cell", gate = False, cell_row = True)
-    modes = {rep: mode for (_s, rep, _a), (mode, _why) in U.decide_modes([shard]).items()}
-    assert modes["r100K.rep0"] == U.WINDOWED, modes
-    assert modes["r1K.rep0"] == U.STRUCTURAL, modes
+    modes = {
+        f"{rung} {rep}": mode
+        for (_s, rung, rep, _sid, _a), (mode, _why) in U.decide_modes([shard]).items()
+    }
+    assert modes["r100K rep0"] == U.WINDOWED, modes
+    assert modes["r1K rep0"] == U.STRUCTURAL, modes
 
 
 def test_a_missing_windowed_arm_does_not_exit_zero_on_the_strength_of_the_other_rung(
@@ -1232,7 +1242,7 @@ def test_a_missing_windowed_arm_does_not_exit_zero_on_the_strength_of_the_other_
     _one_sided_shard(tmp_path, "one_sided_main")
     code = U.main([str(tmp_path / "one_sided_main")])
     out = capsys.readouterr().out
-    assert "windowed:   " in out and "r100K.rep0" in out, out
+    assert "windowed:   " in out and "r100K rep0" in out, out
     assert "NOTHING WAS COMPARED" in out, out
     assert code == 2, out
 
@@ -1245,8 +1255,11 @@ def test_a_pair_missing_an_arm_with_no_declaration_anywhere_is_still_structural(
     from studiobench.sweep import ui_parity as U
 
     shard = _one_sided_shard(tmp_path, "one_sided_undeclared", gate = False)
-    modes = {rep: mode for (_s, rep, _a), (mode, _why) in U.decide_modes([shard]).items()}
-    assert modes == {"r1K.rep0": U.STRUCTURAL, "r100K.rep0": U.STRUCTURAL}, modes
+    modes = {
+        f"{rung} {rep}": mode
+        for (_s, rung, rep, _sid, _a), (mode, _why) in U.decide_modes([shard]).items()
+    }
+    assert modes == {"r1K rep0": U.STRUCTURAL, "r100K rep0": U.STRUCTURAL}, modes
 
 
 def test_a_capture_that_saw_no_thread_at_all_falls_back_on_the_declaration(tmp_path):

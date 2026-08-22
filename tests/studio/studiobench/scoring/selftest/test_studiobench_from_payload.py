@@ -321,8 +321,114 @@ def test_the_scroll_intent_block_still_attests_in_the_session_layer():
     `scroll_intent` block written without `follow_attempted` passes every unit test in this file
     and refuses the first real session that reaches the report step.
     """
-    session = (
-        Path(__file__).resolve().parents[2] / "runtime" / "session.py"
-    ).read_text(encoding = "utf-8")
+    session = (Path(__file__).resolve().parents[2] / "runtime" / "session.py").read_text(
+        encoding = "utf-8"
+    )
     block = session[session.index('row["scroll_intent"] = {') :][:2_000]
     assert '"follow_attempted": bool(follow.get("follow_attempted"))' in block
+
+
+# ── ran is not "did what it claimed" ────────────────────────────────────────────────────────
+
+
+def test_an_action_whose_own_assertion_failed_is_not_a_reading():
+    """`report/payload.py` lists this cell under EXCLUDED CELLS with "must not be quoted".
+
+    Before this, the same action was excluded in the report and load-bearing in the headline: the
+    keystroke row reported `ran: true, expect_ok: false` because the composer never accepted the
+    commanded characters, and its p95 still set the rung's highest-weight metric.
+    """
+    recs = [
+        _cell(),
+        {
+            **_action("c1", "keystroke", ran = True, timings = {"p95_ms": 12.0}),
+            "expect_ok": False,
+            "reason": "typed 12 characters but the composer value grew by 0",
+        },
+    ]
+    keystroke = measures_from_records(recs)[10_000]["keystroke_p95_ms"]
+    assert keystroke.attempted is True
+    assert keystroke.value is None
+    assert "its own assertion failed" in keystroke.note
+    assert "grew by 0" in keystroke.note
+
+
+def test_an_action_whose_assertion_passed_is_still_a_reading():
+    recs = [
+        _cell(),
+        {**_action("c1", "keystroke", ran = True, timings = {"p95_ms": 12.0}), "expect_ok": True},
+    ]
+    assert measures_from_records(recs)[10_000]["keystroke_p95_ms"].value == 12.0
+
+
+# ── the composer click, which is the driver's cost and not the build's ───────────────────────
+
+
+def test_setup_windows_are_excluded_so_the_click_does_not_become_the_worst_frame():
+    """`setup:composer_click` is mostly Playwright's injected actionability script, which blocks
+    the page's main thread exactly as app work would. Pooled into the film it would peg
+    `max_frame_ms` against a 2,000 ms anchor on every run, probe or no probe."""
+    film = _window("c1", [200.0] * 10, duration_ms = 2000.0, kind = "action")
+    click = _window("c1", [11_000.0], duration_ms = 11_000.0, kind = "setup")
+
+    with_click = measures_from_records([_cell(), film, click])[10_000]
+    without = measures_from_records([_cell(), film])[10_000]
+
+    assert with_click["max_frame_ms"].value == pytest.approx(200.0)
+    assert with_click["max_frame_ms"].value == pytest.approx(without["max_frame_ms"].value)
+    assert with_click["jank_index"].value == pytest.approx(without["jank_index"].value)
+    assert with_click["time_in_jank_pct"].value == pytest.approx(without["time_in_jank_pct"].value)
+
+
+def test_setup_is_a_declared_window_kind():
+    from studiobench.runtime.types import WINDOW_KINDS
+    assert "setup" in WINDOW_KINDS
+
+
+def test_a_probe_payload_with_legitimate_zeros_still_validates():
+    """An unseeded rung has no code blocks, and `performance.now()` is coarsened to 100 us, so
+    `code_token_spans`, `blur_inpage_ms` and `forced_layout_ms` can all be a true 0. Before the
+    attestation was written next to them, `--report` refused the whole payload of a run that
+    completed."""
+    cell = _cell()
+    cell["composer_click_ms"] = 120.0
+    cell["click_attribution"] = {
+        "click_attribution_attempted": True,
+        "first_touch_ms": 10.0,
+        "touch_decay_ms": [10.0, 0.0],
+        "blur_inpage_ms": 0.0,
+        "forced_layout_ms": 0.0,
+        "code_token_spans": 0,
+    }
+    validate_payload(_payload_with(cell))
+
+
+def test_the_same_probe_payload_without_the_attestation_is_still_refused():
+    """The exemption must come from the flag, not from the key names: an unattested zero is the
+    thing the walk exists to catch."""
+    cell = _cell()
+    cell["click_attribution"] = {"code_token_spans": 0}
+    with pytest.raises(PayloadSchemaError, match = "code_token_spans"):
+        validate_payload(_payload_with(cell))
+
+
+def _payload_with(cell):
+    return {
+        "schema": "studiobench/payload/1",
+        "source": "recorder_rows",
+        "complete": True,
+        "truncated_records": 0,
+        "record_counts": {"cells": 1},
+        "header": {},
+        "selfcheck": [],
+        "windows": [],
+        "actions": [],
+        "cells": [cell],
+        "samples": [],
+        "surfaces": [],
+        "crashes": [],
+        "arms": [],
+        "unknown_rows": [],
+        "footer": None,
+        "excluded_cells": [],
+    }

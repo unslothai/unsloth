@@ -43,6 +43,53 @@ class Target:
     owns_studio: bool = False
 
 
+#: The port a scheme does not spell out. `window.location.origin` omits it, so an attach URL that
+#: writes it is the same origin under a different name.
+DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
+
+
+def browser_origin(url: str) -> str:
+    """The ORIGIN a browser computes for `url`, spelled the way `window.location.origin` spells it.
+
+    THE ONLY THING THAT DISCRIMINATES THE TWO ARMS. Both are driven by one browser context and one
+    page, so `origin_scoped`'s `window.location.origin !== <url>` is the whole of the gate, and the
+    right-hand side of that comparison has to be what the browser will actually produce rather than
+    what the caller typed. Measured in chromium against real documents:
+    `http://studio:80` and `HTTP://STUDIO` and `http://studio/app` all report an origin of
+    `http://studio`, so every one of those spellings gates a script onto a document that does not
+    exist. The failure is silent in both directions -- the base's seed then runs on the treatment's
+    documents as well, and the treatment's injection runs on neither -- and it reaches
+    `evaluate_stream_cost_recovery_gate` as a recovery of zero blamed on the accumulator.
+
+    WHAT IS NOT FOLDED TOGETHER: `localhost` and `127.0.0.1`. A browser treats those as two
+    origins, chromium reports them as two (`http://localhost:8000` stays `http://localhost:8000`),
+    and a check that called them one would refuse a perfectly good pair of arms. Only the four
+    canonicalisations the URL standard itself performs are applied: the scheme and host are
+    lower-cased, a port the scheme implies is dropped, and the path, query, fragment and any
+    userinfo are discarded.
+
+    A string this cannot parse as an absolute URL is returned trailing-slash-stripped, which is
+    what the acquisition loop does with `--attach` anyway: an unparseable URL is the caller's
+    problem to see at `wait_for_healthz`, not a reason for this to guess.
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        split = urlsplit(url.strip())
+        host, port = split.hostname, split.port
+    except ValueError:
+        return url.rstrip("/")
+    scheme = split.scheme.lower()
+    if not scheme or not host:
+        return url.rstrip("/")
+    host = host.lower()
+    if ":" in host:  # IPv6, which serialises with its brackets
+        host = f"[{host}]"
+    if port is None or port == DEFAULT_PORTS.get(scheme):
+        return f"{scheme}://{host}"
+    return f"{scheme}://{host}:{port}"
+
+
 def origin_scoped(base_url: str, script: str) -> str:
     """Run `script` only on its own Studio's origin.
 
@@ -51,11 +98,14 @@ def origin_scoped(base_url: str, script: str) -> str:
     last writes the other build's auth token into this build's storage, and the failure shows up
     much later as a logged-out SPA or a provider that renders as "No longer offered" -- neither of
     which points back here.
+
+    Gated on the CANONICAL origin rather than on the URL as typed: see `browser_origin` for the
+    spellings that otherwise gate a script onto a document no browser will ever produce.
     """
     import json as _json
     return (
         "(() => { if (window.location.origin !== "
-        + _json.dumps(base_url.rstrip("/"))
+        + _json.dumps(browser_origin(base_url))
         + ") return; "
         + script
         + " })();"
@@ -76,6 +126,36 @@ def interleave(
         order = list(targets) if cell.rep % 2 == 0 else list(reversed(targets))
         for target in order:
             out.append((target, cell.derive(arm = target.label), plan))
+    return out
+
+
+def skippable_cells(work: list[tuple[Any, Cell, RungPlan]], done: set) -> set:
+    """Of the cells `--resume` COULD skip, the ones it may: only whole `(rung, rep)` pairs.
+
+    A PAIR IS THE UNIT OF AN A/B, NOT A CELL. An interruption between the two adjacent cells of one
+    pair is the ordinary way a run stops, and skipping the arm that completed then measured its
+    partner ALONE in the new session. That lone reading can never be used: `readings_by_arm` scopes
+    the comparison to one session on purpose -- cross-session drift measured 8%, larger than most
+    wins anybody argues about -- so the completed arm from the old session is dropped, the new
+    arm has nothing to pair with, and the run pays a full cell for a number no table can contain.
+    What it renders instead is that repetition missing from the table, or NO READING with an exit
+    code of 0 underneath it.
+
+    So a pair is skipped only when EVERY arm of it is already complete, and otherwise both arms are
+    re-run -- adjacent in time, in one session, which is the only arrangement `interleave` exists to
+    produce. The old attempt stays in the payload and `latest_attempt_rows` supersedes it, exactly
+    as it already does for a cell that died.
+
+    Single-target work is a degenerate case of the same rule: each pair holds one cell, so nothing
+    changes for a run without `--ab`.
+    """
+    by_pair: dict[tuple[str, int], list[str]] = {}
+    for _target, cell, _plan in work:
+        by_pair.setdefault((str(cell.rung), int(cell.rep)), []).append(str(cell.cell_id))
+    out: set = set()
+    for cell_ids in by_pair.values():
+        if all(cell_id in done for cell_id in cell_ids):
+            out.update(cell_ids)
     return out
 
 
@@ -100,18 +180,43 @@ def order_is_balanced(plan: list[tuple[Target, Cell, RungPlan]]) -> bool:
     return len(labels) > 1 and len(set(first_counts.values())) == 1
 
 
-def readings_by_arm(records: list[dict]) -> dict[str, dict[int, dict]]:
+def readings_by_arm(
+    records: list[dict], session_id: Optional[str] = None
+) -> dict[str, dict[int, dict]]:
     """Split one payload's cell rows into `{arm: {rung_tokens: {metric: Measure}}}`.
+
+    A CELL THAT DID NOT COMPLETE IS NOT AN ARM'S READING. The ladder scores an incomplete cell on
+    purpose -- a build that dies at 500K is the most important thing the run has to say -- but a
+    ratio is a different question. An arm that crashed after emitting one action row still carries
+    that row's timings, and pairing them against a completed cell on the other side turns a crash
+    into a win: a treatment cell holding nothing but a 50 ms keystroke, measured against a
+    completed 100 ms base cell, reports IMPROVED. The crash is still in the payload, in the
+    summary and in `excluded_cells`; it is only kept out of the ratios.
+
+    `session_id`, when given, keeps the comparison inside ONE session. `--resume` appends to the
+    payload a previous run wrote, so an interrupted A/B resumed into the same directory otherwise
+    hands `compare_arms` cells from two browser sessions -- the 8% cross-session drift term that
+    `assert_comparable` exists to refuse, arriving through the back door because both sides are
+    labelled with the CURRENT session id.
 
     Deferred import: `scoring` pulls in the anchor table and this module is imported by the CLI
     before a run, where that cost buys nothing.
     """
-    from ..scoring.from_payload import measures_by_cell
+    from ..scoring.from_payload import latest_attempt_rows, measures_by_cell
+
+    # The session filter below scopes the CELL rows, but `action` and `window` rows are collected
+    # by `cell_id` alone, and a resumed retry reuses the cell id of the attempt that died. Without
+    # this the completed-cell filter admitted the dead attempt's windows into the retry's reading.
+    records = list(latest_attempt_rows(records))
 
     arms: dict[str, list[dict]] = {}
     cell_ids: dict[str, set[str]] = {}
     for row in records:
         if row.get("row_type") == "cell":
+            if row.get("completed") is not True:
+                continue
+            if session_id is not None and row.get("session_id") not in (None, session_id):
+                continue
             arm = str((row.get("cell") or {}).get("arm") or row.get("arm") or "")
             if arm:
                 cell_ids.setdefault(arm, set()).add(str(row.get("cell_id")))
@@ -144,7 +249,7 @@ def compare_arms(
     from ..scoring.ab import DEFAULT_NOISE_FLOOR_PCT, Pair, RunIdentity, compare
     from ..scoring.anchors import METRIC_BY_KEY, weights_id
 
-    by_arm = readings_by_arm(records)
+    by_arm = readings_by_arm(records, session_id = session_id)
     base = by_arm.get(base_label, {})
     treatment = by_arm.get(treatment_label, {})
 

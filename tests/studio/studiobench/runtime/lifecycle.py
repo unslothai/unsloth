@@ -24,6 +24,7 @@ import re
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import time
 import urllib.error
@@ -42,6 +43,10 @@ class StudioInstall:
     bootstrap_password: Optional[str] = None
     port: Optional[int] = None
     pid: Optional[int] = None
+    #: The commit `branch` RESOLVED TO, which is the build that was installed. `branch` is what
+    #: the caller typed, and a branch or a movable tag is not a build. See
+    #: `__main__.commit_problems`.
+    commit: Optional[str] = None
 
     @property
     def base_url(self) -> str:
@@ -235,6 +240,50 @@ def _run(
     )
 
 
+def checkout_ref(repo: Path, ref: str) -> str:
+    """Put `repo` on `ref`, whatever kind of ref it is. Returns the commit checked out.
+
+    NOT `git clone --branch <ref>` AND NOT `reset --hard origin/<ref>`. `--branch` resolves against
+    the remote's advertised branches and tags -- `git clone -h` calls it "checkout <branch> instead
+    of the remote's HEAD" -- so a commit sha fails with `Remote branch <sha> not found in upstream
+    origin` before anything is installed, and `origin/<sha>` is not a name that exists either.
+    CONTRIBUTING-perf.md asks for exactly that ref: a change that has already merged is measured as
+    `merge commit` against `merge commit^1`, and neither of those is a branch.
+
+    So the ref is fetched and then resolved locally: `FETCH_HEAD` when the fetch could name it,
+    `origin/<ref>` when it is a branch, and the ref itself when it is already an object here.
+    """
+    fetched = _run(["git", "fetch", "--tags", "origin", ref], cwd = repo, check = False)
+    if fetched.returncode != 0:
+        # A ref the remote will not serve by name (an old server, or `ref^1`, which is a local
+        # expression rather than something to ask for). Fetch everything and resolve it here.
+        _run(["git", "fetch", "--tags", "origin"], cwd = repo, check = False)
+    candidates = [] if fetched.returncode != 0 else ["FETCH_HEAD"]
+    candidates += [f"origin/{ref}", ref]
+    for candidate in candidates:
+        got = _run(
+            ["git", "rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}"],
+            cwd = repo,
+            check = False,
+        )
+        commit = got.stdout.strip()
+        if got.returncode == 0 and commit:
+            _run(["git", "checkout", "--force", "--detach", commit], cwd = repo)
+            _run(["git", "reset", "--hard", commit], cwd = repo)
+            return commit
+    raise RuntimeError(
+        f"{ref!r} could not be resolved in {repo}: it is not a branch, a tag or a commit this "
+        "remote will serve"
+    )
+
+
+#: What `install.sh` is allowed. A multi-gigabyte download and build, documented in the README as
+#: "budgeted at up to 45 minutes" and explicitly NOT part of a tier's wall clock. Named rather
+#: than inlined because the run's watchdog has to add it to a deadline it would otherwise fire in
+#: the middle of: see `watchdog_deadline_s`.
+INSTALL_TIMEOUT_S = 60 * 45
+
+
 def install_studio(
     branch: str,
     home: Path,
@@ -245,14 +294,15 @@ def install_studio(
     home = Path(home).resolve()
     home.mkdir(parents = True, exist_ok = True)
     repo = (repo or (home.parent / f"{home.name}_repo")).resolve()
-    if reuse_clone and (repo / ".git").exists():
-        _run(["git", "fetch", "origin", branch], cwd = repo)
-        _run(["git", "checkout", branch], cwd = repo)
-        _run(["git", "reset", "--hard", f"origin/{branch}"], cwd = repo)
-    else:
+    if not (reuse_clone and (repo / ".git").exists()):
         if repo.exists():
             shutil.rmtree(repo)
-        _run(["git", "clone", "--branch", branch, remote, str(repo)])
+        # Cloned WITHOUT `--branch`, then moved onto the ref locally, so one code path serves a
+        # branch, a tag and a commit sha instead of two that disagree about what a ref is.
+        _run(["git", "clone", remote, str(repo)])
+    # KEPT, not discarded. `checkout_ref` is the only place that knows which commit a ref names,
+    # and the ref alone cannot tell a resumed run that `main` moved underneath it.
+    commit = checkout_ref(repo, branch)
     install_sh = repo / "install.sh"
     if not install_sh.exists():
         raise FileNotFoundError(f"install.sh missing at {install_sh}")
@@ -260,9 +310,9 @@ def install_studio(
         ["bash", str(install_sh), "--local"],
         cwd = repo,
         env = {"UNSLOTH_STUDIO_HOME": str(home)},
-        timeout = 60 * 45,
+        timeout = INSTALL_TIMEOUT_S,
     )
-    return StudioInstall(home = home, repo = repo, branch = branch)
+    return StudioInstall(home = home, repo = repo, branch = branch, commit = commit)
 
 
 def _find_unsloth_bin(install: StudioInstall) -> str:
@@ -301,6 +351,58 @@ def _read_bootstrap_password(home: Path, log_path: Path, deadline: float) -> Opt
     return None
 
 
+#: How long to keep looking for the launched server's pid. It appears once the server has forked
+#: and exec'd, which is after `setsid -f` has already returned, so this is a poll rather than a
+#: read. Named so a test can set it to zero instead of sleeping through it.
+PID_DISCOVERY_TIMEOUT_S = 15.0
+
+
+def _discover_pid(port: int, timeout_s: Optional[float] = None) -> Optional[int]:
+    """The pid of the Studio serving `port`, or None. Polls, because it appears asynchronously.
+
+    THE PROCESS WE LAUNCHED IS NOT THE PROCESS WE SPAWNED. `launch_studio` runs the server under
+    `setsid -f`, which always forks and lets the parent exit without waiting, so the pid `Popen`
+    returns belongs to a `setsid` that is gone by the time the server binds; the server itself is
+    reparented into a session of its own and cannot be reached through our process group. `pgrep`
+    is the only handle on it, and it can only be taken once the server exists.
+    """
+    if timeout_s is None:
+        timeout_s = PID_DISCOVERY_TIMEOUT_S
+    deadline = time.time() + max(0.0, timeout_s)
+    while True:
+        try:
+            out = _run(["pgrep", "-f", f"unsloth studio.*-p {port}"], check = False).stdout.strip()
+        except Exception:  # noqa: BLE001
+            return None
+        if out:
+            try:
+                return int(out.splitlines()[0])
+            except ValueError:
+                return None
+        if time.time() >= deadline:
+            return None
+        time.sleep(0.5)
+
+
+def port_is_busy(
+    port: int,
+    host: str = "127.0.0.1",
+    timeout_s: float = 1.0,
+) -> bool:
+    """Is something already accepting connections on `port`?
+
+    A plain connect, not a bind: the server we are about to launch is DETACHED and binds in a
+    process of its own, so the only question this can answer is whether the port is already
+    somebody's -- and if it is, it will not be ours.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(timeout_s)
+        try:
+            return sock.connect_ex((host, int(port))) == 0
+        except OSError:
+            return False
+
+
 def launch_studio(
     install: StudioInstall,
     port: int,
@@ -309,6 +411,29 @@ def launch_studio(
     healthz_timeout_s: int = 240,
     password_timeout_s: int = 30,
 ) -> StudioInstall:
+    # AN OCCUPIED PORT IS REFUSED BEFORE ANYTHING IS LAUNCHED, and this is the half of the
+    # abandoned-server failure that no cleanup can reach. `--keep-studio` asks for a Studio to be
+    # LEFT RUNNING on this port, so the next run's `unsloth studio -p <port>` finds one of our own
+    # servers there and aborts rather than binding (`studio/backend/run.py`, `_resolve_port` with
+    # `avoid_own_studio`); when the pid record is not readable it falls back to the NEXT port
+    # instead. Either way nothing this run launched is on `port`.
+    #
+    # Everything downstream then agrees that the launch worked. `_discover_pid` pgreps for
+    # `unsloth studio.*-p <port>` and finds the OLD process; `wait_for_healthz` takes its 200 from
+    # it; and `authenticate` retries with `BENCH_PASSWORD`, which a previous studiobench run has
+    # already rotated that Studio to, so the login succeeds as well. The run then measures the
+    # build the PREVIOUS invocation installed while `run_meta` records the ref this one asked for,
+    # and `stop_studio` kills the server the caller asked to keep. There is no reading anywhere
+    # that says which build answered, so this is refused rather than reported.
+    if port_is_busy(port):
+        holder = _discover_pid(port, 0.0)
+        raise RuntimeError(
+            f"port {port} is already in use"
+            + (f" by Studio pid {holder}" if holder else "")
+            + ". A Studio launched here would abort or land on another port while this harness "
+            "measured whatever is already answering. Stop it (`unsloth studio stop`, or the "
+            "Studio a previous --keep-studio run left behind) or pass --port."
+        )
     log_path = Path(log_path).resolve()
     log_path.parent.mkdir(parents = True, exist_ok = True)
     log_path.write_text("")
@@ -335,14 +460,23 @@ def launch_studio(
     install.bootstrap_password = _read_bootstrap_password(
         install.home, log_path, time.time() + password_timeout_s
     )
-    if not wait_for_healthz(install.base_url, healthz_timeout_s):
+    # BEFORE the health check, not after it. A Studio that starts and stays unhealthy used to raise
+    # here with `install.pid` still None, and `stop_studio` has nothing to kill without it -- so the
+    # detached server was left running on the requested port while the CLI unwound. It is not idle
+    # there: the next attempt's `unsloth studio -p <port>` finds one of our own servers on the port
+    # and aborts rather than binding (`run.py:_resolve_port`, `avoid_own_studio`), while
+    # `wait_for_healthz` gets its 200 from the STALE process -- which by then may have finished
+    # starting. That run measures the build the previous attempt installed and records the ref this
+    # one asked for, which is the one failure this harness may never produce quietly.
+    install.pid = _discover_pid(port)
+    healthy = wait_for_healthz(install.base_url, healthz_timeout_s)
+    if install.pid is None:
+        # One more look: a server slow enough to miss the window above is exactly the one whose
+        # health check just timed out, and it is the one that most needs to be terminated.
+        install.pid = _discover_pid(port, 0.0)
+    if not healthy:
+        stop_studio(install)
         raise TimeoutError(f"Studio on :{port} did not pass /healthz within {healthz_timeout_s}s")
-    try:
-        out = _run(["pgrep", "-f", f"unsloth studio.*-p {port}"], check = False).stdout.strip()
-        if out:
-            install.pid = int(out.splitlines()[0])
-    except Exception:  # noqa: BLE001
-        pass
     return install
 
 

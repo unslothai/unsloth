@@ -12,13 +12,29 @@ answer was produced by not having it.
 
 ```
 # 1. Screen: about 5 minutes, direction only
-python -m tests.studio.studiobench --tier fast --ab YOUR_REF --out outputs/mine
+python -m tests.studio.studiobench --tier fast --ab YOUR_REF --out outputs/screen
 
-# 2. Confirm: about 20 minutes
+# 2. Confirm: about 20 minutes. A NEW --out: the payload is append-only, so writing a standard
+#    run into the screen's directory leaves one file holding two films.
 python -m tests.studio.studiobench --tier standard --reps 4 --ab YOUR_REF --out outputs/mine
 
-# ... and the same command with --ab pointing at the BASE, as your null control
-python -m tests.studio.studiobench --tier standard --reps 4 --ab BASE_REF --out outputs/null
+# ... and the same film with BOTH arms on the base, as your null control. --ab sets the
+#    TREATMENT ref only; --branch is the base arm and defaults to main, so passing --ab BASE_REF
+#    alone measures main against BASE_REF and calls the difference noise.
+python -m tests.studio.studiobench --tier standard --reps 4 \
+    --branch BASE_REF --ab BASE_REF --out outputs/null
+
+# ... and, before you read any timing at all, that the runs actually ran. Here rather than at
+#    the end: floor_table DROPS a repetition whose action did not run instead of refusing it, so
+#    a missed slot leaves the paired table quietly and the repetitions that survive print as a
+#    clean win on a smaller n.
+python -m tests.studio.studiobench --assert-liveness outputs/mine/payload.jsonl
+
+# ... BOTH payloads. The null control is the one people forget, and a hole there is worse: the
+#    floor is max(|null delta|, null spread) over the repetitions that SURVIVED pairing, so a
+#    slot the null run missed drops its noisiest repetition and tightens the bar your result is
+#    then measured against. Your own payload passes this gate while it happens.
+python -m tests.studio.studiobench --assert-liveness outputs/null/payload.jsonl
 
 # 3. Gate: per-metric floor, sign consistency, stability
 python -m tests.studio.studiobench.sweep.floor_table --floor outputs/null outputs/mine
@@ -26,14 +42,13 @@ python -m tests.studio.studiobench.sweep.floor_table --floor outputs/null output
 # 4. Parity: prove you did not change what is rendered
 python -m tests.studio.studiobench.sweep.ui_parity --null outputs/null outputs/mine
 
-# and, before you read any timing at all, that the run actually ran
-python -m tests.studio.studiobench --assert-liveness outputs/mine/payload.jsonl
-
 # 5. Read the payload back as a scored report. No Studio, no browser, no network.
 python -m tests.studio.studiobench --report outputs/mine/payload.jsonl --tier standard
 ```
 
-Every command above except the last drives a real Studio and therefore needs credentials.
+The three commands in steps 1 and 2 drive a real Studio and therefore need credentials. The rest
+read a payload that already exists: `--assert-liveness`, `floor_table`, `ui_parity` and `--report`
+run offline, with no Studio, no browser and no network.
 See **"You need a Studio, and you need its password"** in [README.md](README.md) before you
 run the first one: a missing `--password` fails as an HTTP 401 only after the browser has
 already started, and `--doctor` reports PASS on that exact configuration. If you drive the wave
@@ -79,7 +94,7 @@ A result must clear all three. Failing any one makes it **void**, not "a small w
 You need a **null control**: the same build against itself, base versus base, producing a delta that
 you know is exactly zero in truth. Whatever it reports is your noise.
 
-Two rules about it, both learned the hard way:
+Three rules about it, all learned the hard way:
 
 - **The floor is per metric, not global.** A single global floor derived from the frame tail says
   nothing about whether `settings.open_ms` can resolve 5%. Each metric gets its own floor from the
@@ -88,6 +103,12 @@ Two rules about it, both learned the hard way:
   A floor measured on a quiet machine does not transfer to a busy one. Session-to-session drift on
   this metric set is about 8%, which is larger than most real effects, so a floor from yesterday's
   run is not a floor.
+- **A hole in the null control tightens the floor**, so the null gets `--assert-liveness` too. The
+  floor is computed from the repetitions that survived pairing, and the repetition a null run drops
+  is the one that was slow enough to miss a slot, which is the noisiest one it had. Four null
+  repetitions reading 1.000, 1.002, 0.999 and 1.300 set a 30.1% floor on
+  `message_menu.open_close_ms` and void a 10% result; lose the fourth to a missed slot and the same
+  three survivors set a 0.3% floor and the same 10% prints as `faster`.
 
 The floor for a metric is `max(|null delta|, spread)`. The null control's own systematic bias has to
 be cleared as well as its scatter.

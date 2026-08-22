@@ -92,9 +92,65 @@ MIN_STREAM_CHARS_PER_WINDOW = 100
 # availability signal and this is the bound it has to respect.
 MAX_TIMER_CLOCK_RATIO = 1.2
 
-# Windows that are deliberately quiet. Pooling these into the frame metrics would dilute every
-# jank share with idle time and make a bad build look average.
-IDLE_WINDOW_KINDS: frozenset[str] = frozenset({"idle"})
+# Windows that are not part of the film, and whose frames therefore say nothing about the build.
+#
+# `idle` is deliberately quiet: pooling it into the frame metrics would dilute every jank share
+# with idle time and make a bad build look average.
+#
+# `setup` is the opposite and is excluded for the opposite reason. The only one is the composer
+# click that starts the film, and most of it is Playwright's injected actionability script --
+# selector resolution, visibility, stability and the `elementsFromPoint` hit test -- running on
+# the page's own main thread, where it blocks frames indistinguishably from app work. At 500K
+# that window alone runs about 11 s against a `max_frame_ms` anchor whose worst case is 2,000 ms,
+# so pooling it would peg all three frame metrics on every run, including runs that never asked
+# for the click probe.
+UNSCORED_WINDOW_KINDS: frozenset[str] = frozenset({"idle", "setup"})
+
+# The window kinds in which NO SCRIPTED ACTION IS RUNNING. `gap` is the scheduler's inter-slot
+# wait; `stream` is `stream:drain`, the window the session layer opens after the film to wait the
+# reply out. Both are quiet by construction, which is the property `_unaided` needs -- see there
+# for why the streaming numbers are taken only from these, and for what the `stream` half is worth.
+# `action` is excluded, and `idle` never reaches here (IDLE_WINDOW_KINDS strips it first).
+UNAIDED_WINDOW_KINDS: frozenset[str] = frozenset({"gap", "stream"})
+
+
+# The row types keyed by `cell_id`, and so the ones a superseded attempt can leak through.
+ATTEMPT_ROW_TYPES: frozenset[str] = frozenset({"cell", "action", "window"})
+
+
+def latest_attempt_rows(records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """Drop the rows of a SUPERSEDED attempt at a cell, keeping every other row untouched.
+
+    `--resume` appends to the payload it is continuing and re-runs the cells that DID NOT
+    complete, and `make_cell_id` is deterministic: the retry of `r10K.base.rep0` is written under
+    the same `cell_id` as the attempt that died. Nothing downstream keys on the attempt, so both
+    were read as one cell. Two ways that produced a wrong number, neither of them visible:
+
+      THE DEAD ATTEMPT'S FRAMES BECAME THE RETRY'S. `_frame_measures` pools every window row
+      carrying the cell id, so a 100 ms frame from the run that crashed stayed the RETRY's
+      `max_frame_ms`, and its gaps stayed in the retry's jank distribution.
+
+      THE RETRY DID NOT COUNT. `measures_from_records` keeps the FIRST cell row per rung and
+      `report.build._completion_by_rung` keeps a failure over a success, so a rung whose only
+      failure had already been re-run successfully still scored zero as INCOMPLETE.
+
+    An attempt is `(cell_id, session_id)` and the LAST one in file order wins, which is the one
+    the resumed run just wrote. Rows without a session id are kept: a payload from before the
+    recorder stamped them cannot be split into attempts, and dropping it would lose the run.
+    """
+    latest: dict[str, Any] = {}
+    for row in records:
+        if row.get("row_type") == "cell" and row.get("cell_id") is not None:
+            latest[str(row.get("cell_id"))] = row.get("session_id")
+
+    out: list[Mapping[str, Any]] = []
+    for row in records:
+        if row.get("row_type") in ATTEMPT_ROW_TYPES:
+            keep = latest.get(str(row.get("cell_id")))
+            if keep is not None and row.get("session_id") not in (None, keep):
+                continue
+        out.append(row)
+    return out
 
 
 def _cell_rows(records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
@@ -130,6 +186,15 @@ def _action_measure(metric_key: str, actions: Mapping[str, Mapping[str, Any]]) -
         reason = row.get("reason") or "no reason recorded"
         # Attempted-and-did-not-run, which is a fact about the run, not an absent instrument.
         return Measure.failed(unit, f"{action_name} did not run: {reason}")
+    if row.get("expect_ok") is False:
+        # RAN IS NOT DID WHAT IT CLAIMED. An action carries its own assertion -- the composer's
+        # value grew by the characters that were typed, the menu that was opened has items, the
+        # panes that were expanded are open -- and when that assertion fails the timing describes
+        # something other than the action. `report/payload.py` already lists these cells under
+        # EXCLUDED CELLS with "its timings exist and must not be quoted"; scoring them anyway let
+        # the same number be excluded in the report and load-bearing in the headline.
+        reason = row.get("reason") or "no reason recorded"
+        return Measure.failed(unit, f"{action_name} ran but its own assertion failed: {reason}")
 
     value = (row.get("timings") or {}).get(timing_key)
     if value is None:
@@ -290,8 +355,26 @@ def _unaided(windows: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     Restricting FURTHER -- to the opening turn only -- was tried and is much worse (101.5%),
     because fewer windows average less and one outlier then owns the cell. More streaming windows
     is better as long as every one of them is unaided.
+
+    UNAIDED IS NOT THE SAME PREDICATE AS `kind == "gap"`, which is what this used to test. The
+    session layer opens one more quiet window that the scheduler does not: `stream:drain`, with
+    `kind = "stream"`, held open after the film to wait the reply out. On the default fixture it
+    carries nothing -- the tail is pinned at 6,000 characters, drains in 14 to 18 s against a
+    243 s standard film, and the measured drain window was 7 ms long -- so `_stream_windows`
+    rejects it for having seen no SSE traffic and the distinction never showed. It shows the
+    moment `--stream-tail-chars` is used, which is the one supported way to make the reply long:
+    at 96,000 characters the reply streams for 291 s at field cadence, so roughly 48 s of it lands
+    AFTER the last slot has closed, in the drain window, with nothing scripted running in it. That
+    stretch is unaided streaming by every part of the definition above, and dropping it dropped
+    the characters and the cost of the LAST fifth of the reply -- the part streamed into the
+    largest thread, so the most expensive part -- out of every streaming metric. Nor is
+    `stream_max_frame_ms` a ratio that might absorb it: a worst frame in that stretch was simply
+    never seen.
+
+    The kind filter is still what does the work, because it is the only thing that separates a
+    quiet window from an action window. It now names both quiet kinds instead of one.
     """
-    return [w for w in windows if str(w.get("kind") or "") == "gap"]
+    return [w for w in windows if str(w.get("kind") or "") in UNAIDED_WINDOW_KINDS]
 
 
 def _stream_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]:
@@ -454,7 +537,7 @@ def measures_from_records(
             for w in records
             if w.get("row_type") == "window"
             and w.get("cell_id") == cell_id
-            and str(w.get("kind") or "") not in IDLE_WINDOW_KINDS
+            and str(w.get("kind") or "") not in UNSCORED_WINDOW_KINDS
         ]
         frames = _frame_measures(windows)
         # The streaming phase is NOT in METRIC_BY_KEY, and that is deliberate rather than an

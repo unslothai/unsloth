@@ -201,6 +201,22 @@ class Session:
             self._open = None
             self.ctx.recorder.emit(w.row())
 
+    def each_instrument(self, method: str, *args) -> dict:
+        """Run one lifecycle hook on every instrument, and collect what each returned.
+
+        OVER A SNAPSHOT, not the live list. `_safe` drops an instrument that raises, and removing
+        from the list being iterated makes Python skip whichever instrument shifted into the freed
+        index, so one broken optional instrument silently cost its neighbour's hook as well --
+        `heap` failing took `input`, and with it the highest-weight metric in the table, while the
+        cell still completed and reported.
+        """
+        out: dict = {}
+        for inst in list(self.instruments):
+            got = self._safe(inst, method, *args)
+            if got is not None:
+                out[inst.name] = got
+        return out
+
     def _safe(self, inst, method: str, *args):
         """One broken instrument never costs the window."""
         fn = getattr(inst, method, None)
@@ -266,8 +282,7 @@ class CellRunner:
             f"\n=== cell {cell.cell_id}: {plan.rung} "
             f"({plan.seeded_chars:,} seeded + {plan.streamed_chars:,} streamed chars)"
         )
-        for inst in s.instruments:
-            s._safe(inst, "start_cell", cell)
+        s.each_instrument("start_cell", cell)
 
         row: dict = {
             "row_type": "cell",
@@ -281,6 +296,10 @@ class CellRunner:
             "target_tokens": plan.target_tokens,
             "instruments": {},
         }
+        # Cleared HERE, not beside the click that produces it, so the preservation in the `finally`
+        # below cannot attach the PREVIOUS cell's attribution to a cell that died before its own
+        # probe ran. A reading filed under the wrong cell id is worse than a missing one.
+        self._click_attribution_result = None
         try:
             self._run_inner(cell, plan, row)
             row["completed"] = True
@@ -308,14 +327,20 @@ class CellRunner:
             with contextlib.suppress(Exception):
                 dump_diagnostics(page, self.paths.logs, f"fail_{cell.cell_id}", self.log)
         finally:
-            for inst in s.instruments:
-                got = s._safe(inst, "end_cell", cell)
-                if got is not None:
-                    row["instruments"][inst.name] = got
+            row["instruments"].update(s.each_instrument("end_cell", cell))
             # A cell that could not complete is a FIRST-CLASS RESULT with its failure mode and its
             # RSS at death, not a gap in the table.
             rss = row["instruments"].get("rss") or {}
             row["rss_at_death_mb"] = rss.get("rss_peak_mb") if not row["completed"] else None
+            # AND SO IS THE PROBE THAT ALREADY RAN. `--click-probe` finishes inside `_press_send`,
+            # and everything after it there -- the `page.fill`, the send button lookup and its
+            # click -- still runs under the default 8s action timeout, which is exactly what a
+            # large rung exceeds. Assigned only on the way out of `_run_inner`, the whole
+            # attribution was dropped from the cell it was measured for, and unlike
+            # `composer_click_ms` it has no window row of its own to survive in: nothing else in
+            # the payload records it. So it is filed from here, on both paths.
+            if self._click_attribution_result is not None:
+                row["click_attribution"] = self._click_attribution_result
             rec.emit(row)
         return row
 
@@ -449,10 +474,9 @@ class CellRunner:
 
         before_metrics = cdp_metrics(s.ctx.cdp)
         self._composer_click_ms = None
-        self._click_attribution_result = None
+        # `click_attribution` is NOT filed here. It is filed in `run`'s `finally`, because a cell
+        # that dies after the probe has to keep it: see there.
         t0 = self._press_send(page)
-        if self._click_attribution_result:
-            row["click_attribution"] = self._click_attribution_result
         # On the cell rather than in `actions`, because it happens before the first slot opens and
         # filing it as an action would put a reading outside the film into a list the scoring layer
         # pairs by slot. It is still a per-cell timing and grows with the rung like any other.
@@ -575,6 +599,29 @@ class CellRunner:
                 + (" -- THE USER WAS YANKED DOWN" if follow.get("yanked_after_scroll") else "")
             )
         row["pacer"] = self.pacer.last_stats()
+        # A REPLY THAT NEVER FINISHED IS A FAILED CELL, not a completed one with a note.
+        #
+        # `_drain_stream` reports rather than raises, and the value it reports was recorded here
+        # and read by nothing: no gate, no report column, no `--assert-liveness` check and no
+        # exit code. So the one state this tool exists to catch -- the app still generating three
+        # times past its own cadence and 120 s beyond that, after the whole film has run -- came
+        # back as `completed: true`, `ok` in the summary and exit 0, with its actions and its
+        # frame windows scored and paired into the A/B ratio against an arm that DID finish.
+        # That is the crash-beats-limp rule inverted: a build that cannot finish reads as a build
+        # that had nothing to say.
+        #
+        # Raised AFTER the drain reading AND the pacer's own counters are on the row, so the two
+        # facts that say WHY it never finished -- how long was waited, and how much the pacer
+        # actually delivered -- ship in the same row as the failure. `CellRunner.run` catches
+        # this, records `failure`, dumps the diagnostics and keeps the cell as a first-class
+        # incomplete result; the rung then scores INCOMPLETE, which is exactly how this harness
+        # reports a build that died at 500K. The censuses below are not taken, because a census of
+        # a thread that is still growing describes nothing that was measured.
+        if not drained.get("finished"):
+            raise RuntimeError(
+                f"the reply never finished: {drained.get('reason') or 'the run was still going'} "
+                f"({drained.get('drain_ms')}ms waited, {drained.get('expected_ms')}ms expected)"
+            )
         row["census_after"] = dom_signature(page)
         row["cdp"] = cdp_counters(before_metrics, cdp_metrics(s.ctx.cdp))
 
@@ -657,6 +704,30 @@ class CellRunner:
         if self.equivalence_failed and plan.seeded_units:
             row["fidelity"] = "seeded_only"
 
+    @staticmethod
+    def _streamed_follow_ups(plan: RungPlan, row: dict) -> list:
+        """The follow-up units that actually reached the thread during the film.
+
+        EVERY TURN THAT STREAMED, not just the opening one. From 10K upwards the plan carries two
+        follow-ups and the scene streams both through `send_turn` before the peak census is taken,
+        so a mirror seeded from the prefix plus the opening unit is two assistant turns short of
+        the thread it is being compared against. `assistant_messages` is a GATED key, and two
+        missing turns out of six is 33% drift against a 2% tolerance: the check then failed on
+        every healthy cell and labelled every larger rung `seeded_only` for a difference the
+        mirror had introduced itself.
+
+        Counted from the recorded action rows rather than from the plan, because a `send_turn`
+        that did not run (an exhausted queue at the small rungs, a slot missed on a slow machine)
+        put nothing in the thread and must not be seeded into the mirror either.
+        """
+        streamed = 0
+        for action in row.get("actions") or []:
+            if action.get("action") != "send_turn":
+                continue
+            if action.get("ran") and action.get("expect_ok") is not False:
+                streamed += 1
+        return list(plan.follow_up_units or [])[:streamed]
+
     def _check_equivalence(self, plan: RungPlan, row: dict) -> dict:
         """Build the SAME content as a fully seeded thread and compare what the app made of it.
 
@@ -667,8 +738,9 @@ class CellRunner:
         s = self.session
         page = s.ctx.page
         streamed = row.get("census_peak") or row.get("census_after") or {}
+        follow_ups = self._streamed_follow_ups(plan, row)
         try:
-            all_units = list(plan.seeded_units) + [plan.streamed_unit]
+            all_units = list(plan.seeded_units) + [plan.streamed_unit] + follow_ups
             mirror = RungPlan(
                 rung = plan.rung,
                 target_tokens = plan.target_tokens,
@@ -709,6 +781,10 @@ class CellRunner:
                 "`content_code_blocks` are counts over what is mounted at the end of the thread. "
                 "A pass is equivalence of the WINDOW, not of the thread."
             )
+        # What the mirror was built from, so a drift can be read against the corpus it compared
+        # rather than against an assumption about which turns were in the thread.
+        out["mirrored_follow_ups"] = len(follow_ups)
+        out["planned_follow_ups"] = len(plan.follow_up_units or [])
         return out
 
     def _read_follow(self, page) -> dict:
@@ -807,6 +883,15 @@ class CellRunner:
         # is the page's state and not the operation.
         decay = [settled(lambda: None) for _ in range(5)]
         out: dict[str, Any] = {
+            # The harness layer's attestation, and it is load-bearing rather than decorative.
+            # `scoring/schema._walk_for_bare_zeros` rejects any bare zero that is not covered by a
+            # sibling `*_attempted` flag, and this block has legitimate zeros: a thread with no
+            # mounted code blocks records `code_token_spans: 0`, and `blur_inpage_ms` and
+            # `forced_layout_ms` come from `performance.now()`, which Chromium coarsens to 100 us
+            # outside a cross-origin-isolated context, so an operation shorter than that reads
+            # exactly 0. Without this flag `--report` refuses the whole payload of a completed
+            # probe run.
+            "click_attribution_attempted": True,
             "first_touch_ms": decay[0],
             "settled_touch_ms": min(decay[1:]),
             "touch_decay_ms": [round(v, 1) for v in decay],
@@ -910,14 +995,27 @@ class CellRunner:
         page.wait_for_selector(selector, timeout = 60_000)
         if self.click_probe:
             self._click_attribution_result = self._click_attribution(page, selector)
-        clicked_at = time.monotonic()
         # In a window, so every instrument covers it. At 500K this single click is the largest
         # cost in the whole run by an order of magnitude, and it was the one moment the tool could
         # not see inside: no window, so no frame recorder, no CPU profile, no RSS delta. A cost
         # that big being outside every instrument is how it stayed unattributed.
-        with self.session.window("setup:composer_click", kind = "action"):
+        #
+        # `setup`, NOT `action`. The scoring layer pools every non-excluded window of the cell into
+        # `max_frame_ms`, `jank_index` and `time_in_jank_pct`, and this window is mostly Playwright's
+        # own injected actionability script running ON THE PAGE'S MAIN THREAD -- it blocks frames
+        # exactly as app work would, so the frame recorder cannot tell them apart. Filed as an
+        # `action` it would put an 11 s driver stall into three weighted headline metrics whose
+        # `max_frame_ms` anchor calls 2,000 ms the worst case, on EVERY run including the ones that
+        # never asked for --click-probe. It is measured, reported and kept out of the film.
+        with self.session.window("setup:composer_click", kind = "setup"):
+            # Timed INSIDE the window, like `Window.duration_ms` itself: the session opens every
+            # instrument before this block and closes them after it, and at instrument level 1-3
+            # those hooks stop a CPU profile, collect coverage and write and analyse a trace.
+            # Timed around the `with`, `composer_click_ms` would grow with the instrument level
+            # and stop being the click.
+            clicked_at = time.monotonic()
             page.click(selector, timeout = COMPOSER_CLICK_TIMEOUT_S * 1000)
-        self._composer_click_ms = (time.monotonic() - clicked_at) * 1000.0
+            self._composer_click_ms = (time.monotonic() - clicked_at) * 1000.0
         if self._composer_click_ms > SLOW_COMPOSER_CLICK_MS:
             self.log(
                 f"  page.click on the composer took {self._composer_click_ms / 1000:.1f}s. "

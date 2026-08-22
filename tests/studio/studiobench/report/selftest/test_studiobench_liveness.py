@@ -175,3 +175,117 @@ def test_blank_lines_are_skipped(tmp_path, blank):
     path = tmp_path / "payload.jsonl"
     path.write_text(json.dumps(cell([ran("keystroke")])) + "\n" + blank + "\n", encoding = "utf-8")
     assert main(["--assert-liveness", str(path)]) == 0
+
+
+# ── a cell that was re-run is judged on the run that finished it ─────
+
+
+NOW = "s-now"
+OLD = "s-before"
+
+
+def attempt(
+    session: str,
+    actions: list[dict],
+    *,
+    completed: bool,
+    cell_id: str = "100K/rep0",
+):
+    row = cell(actions, completed = completed, cell_id = cell_id)
+    row["session_id"] = session
+    return row
+
+
+def test_a_resumed_cell_is_not_failed_by_the_attempt_that_died(tmp_path):
+    """`--resume` appends, so both attempts at one `cell_id` are in the file forever.
+
+    The resumed run exits 0 and `--report` scores the retry. Read raw, this gate found the dead
+    attempt's `completed: false` and NOT RUN actions on every later invocation, so a payload that
+    had already been repaired could never pass again.
+    """
+
+    path = write_payload(
+        tmp_path,
+        [
+            attempt(
+                OLD, [{"action": "message_menu", "ran": False, "reason": "died"}], completed = False
+            ),
+            attempt(NOW, [ran("keystroke"), ran("message_menu")], completed = True),
+        ],
+    )
+    assert main(["--assert-liveness", str(path)]) == 0
+
+
+def test_the_superseded_attempt_does_not_count_as_a_second_cell(tmp_path):
+    """Not merely "does not fail": the dead attempt is not a cell this payload contains.
+
+    Counting it would make `--assert-liveness` report two cells where one ran, and the count is
+    the only thing standing between this gate and an empty payload passing vacuously.
+    """
+
+    rows = [
+        attempt(OLD, [{"action": "message_menu", "ran": False}], completed = False),
+        attempt(NOW, [ran("keystroke")], completed = True),
+    ]
+    path = write_payload(tmp_path, rows)
+    logged: list[str] = []
+    import studiobench.__main__ as m
+
+    real = m._log
+    m._log = lambda msg = "": (logged.append(str(msg)), real(msg))[1]
+    try:
+        assert main(["--assert-liveness", str(path)]) == 0
+    finally:
+        m._log = real
+    # The summary names scene problems and missed slots apart on this branch, so the count is
+    # asserted on its own rather than against one spelling of the rest of the line.
+    assert any("1 cell(s)" in line and "0 scene problem(s)" in line for line in logged), logged
+
+
+# ── the controls: what must still fail ──────────────────────────────
+
+
+def test_a_cell_that_was_never_re_run_still_fails(tmp_path):
+    """A crash with no retry behind it is still a crash."""
+
+    path = write_payload(
+        tmp_path,
+        [attempt(OLD, [{"action": "message_menu", "ran": False}], completed = False)],
+    )
+    assert main(["--assert-liveness", str(path)]) == 1
+
+
+def test_the_latest_attempt_is_judged_on_its_own_failures(tmp_path):
+    """Superseding must not become excusing: a retry that itself died is the answer."""
+
+    path = write_payload(
+        tmp_path,
+        [
+            attempt(OLD, [ran("keystroke"), ran("message_menu")], completed = True),
+            attempt(
+                NOW,
+                [{"action": "message_menu", "ran": False, "reason": "died again"}],
+                completed = False,
+            ),
+        ],
+    )
+    assert main(["--assert-liveness", str(path)]) == 1
+
+
+def test_a_different_cell_in_an_earlier_session_is_not_superseded(tmp_path):
+    """Only a later attempt at the SAME cell id supersedes an earlier one.
+
+    A resumed run re-runs only the cells that died; every cell the first session completed stays
+    in the payload under its own id and must still be checked.
+    """
+
+    path = write_payload(
+        tmp_path,
+        [
+            attempt(
+                OLD, [{"action": "message_menu", "ran": False}], completed = True, cell_id = "10K/rep0"
+            ),
+            attempt(NOW, [ran("keystroke")], completed = True, cell_id = "100K/rep0"),
+        ],
+    )
+    assert main(["--assert-liveness", str(path)]) == 1
