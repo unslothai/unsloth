@@ -80,7 +80,7 @@ jobs:
       # it must stay runnable on a machine with no Chromium, because that is
       # also the machine an external tester first runs `--doctor` on.
       - name: Install the test dependencies only
-        run: pip install pytest ruff playwright psutil
+        run: pip install pytest ruff 'playwright<2' psutil
 
       - name: Selftests
         run: python -m pytest tests/studio/studiobench -q
@@ -131,7 +131,7 @@ jobs:
       - name: Pin the Playwright version so the browser cache has a key
         id: pw
         run: |
-          pip install 'playwright>=1.45' psutil
+          pip install 'playwright>=1.45,<2' psutil
           echo "version=$(python -c 'import playwright; from importlib.metadata import version; print(version("playwright"))')" >> "$GITHUB_OUTPUT"
 
       - name: Restore the Playwright browser cache
