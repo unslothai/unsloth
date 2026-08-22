@@ -1038,6 +1038,10 @@ export const en = {
         asSubagent:
           "Keep the parent on its current model and register Unsloth as a local subagent (Claude Code, Codex, and OpenCode).",
         apiKey: "Provide your Unsloth API key (or set UNSLOTH_API_KEY).",
+        reasoning:
+          "Use reasoning in the chat: on, off, or auto. Auto follows the model's chat template, which usually means on.",
+        reasoningEffort:
+          "Reasoning effort passed to the model's chat template, e.g. medium. Levels are per model, so use one that model accepts. Unset keeps the template's own.",
         yolo: "Skip approval prompts. Use only in trusted environments.",
       },
       remote: {

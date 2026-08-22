@@ -1077,6 +1077,10 @@ export const de = {
           "Belässt den übergeordneten Agenten bei seinem aktuellen Modell und registriert Unsloth als lokalen Subagenten (Claude Code, Codex und OpenCode).",
         apiKey:
           "Übergibt Ihren Unsloth-API-Schlüssel (alternativ UNSLOTH_API_KEY setzen).",
+        reasoning:
+          "Reasoning im Chat verwenden: on, off oder auto. Auto folgt der Chat-Vorlage des Modells, was meist on bedeutet.",
+        reasoningEffort:
+          "Reasoning-Aufwand, der an die Chat-Vorlage des Modells übergeben wird, z. B. medium. Die Stufen hängen vom Modell ab, verwenden Sie also eine, die es kennt. Ohne Angabe gilt die Stufe der Vorlage.",
         yolo:
           "Überspringt Bestätigungsabfragen. Nur in vertrauenswürdigen Umgebungen verwenden.",
       },

@@ -1057,6 +1057,10 @@ export const ptBR = {
           "Mantém o agente principal no modelo atual e registra o Unsloth como subagente local (Claude Code, Codex e OpenCode).",
         apiKey:
           "Informa sua chave de API do Unsloth (ou defina UNSLOTH_API_KEY).",
+        reasoning:
+          "Usar raciocínio no chat: on, off ou auto. Auto segue o chat template do modelo, o que normalmente significa on.",
+        reasoningEffort:
+          "Esforço de raciocínio passado ao chat template do modelo, por exemplo medium. Os níveis dependem do modelo, então use um que ele aceite. Sem valor, vale o do template.",
         yolo: "Pula os pedidos de aprovação. Use apenas em ambientes confiáveis.",
       },
       remote: {
