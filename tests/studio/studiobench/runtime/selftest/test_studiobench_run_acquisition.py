@@ -351,5 +351,84 @@ def test_the_same_treatment_studio_still_resumes(studio):
     )
 
 
+# ── whether the probe ran before the film ───────────────────────────────────────────────────
+
+
+def test_a_run_records_whether_the_click_probe_ran(studio):
+    """REGRESSION, and the recording half of the identity axis.
+
+    `--click-probe` runs a full `page.click`, a real mouse click, a dispatch, a focus and a hover
+    over the thread before the film starts, and its own help text says it "makes the cell's
+    timings incomparable with a cell that did not run it". A cell id carries the rung, the arm and
+    the repetition and none of that, so unless `run_meta` says which way the run was measured, a
+    later `--resume` has nothing to compare and cannot refuse a toggle.
+    """
+
+    assert sb.run(_args(studio, "--branch", "main", "--click-probe")) == 0
+
+    meta = [r for r in _rows(studio) if r.get("row_type") == "run_meta"]
+    assert len(meta) == 1
+    assert meta[0]["click_probe"] is True
+
+
+def test_a_resume_that_drops_the_click_probe_is_refused(studio):
+    """End to end, over the payload the run above actually wrote."""
+
+    paths = Paths.under(studio["out"])
+    assert sb.run(_args(studio, "--branch", "main", "--click-probe")) == 0
+    corpus_hash = _rows(studio)[0]["corpus_hash"]
+
+    with pytest.raises(SystemExit) as excinfo:
+        sb.prepare_payload(
+            paths,
+            sb.requested_identity(_args(studio, "--branch", "main", "--resume"), None, corpus_hash),
+            resume = True,
+            log = lambda *_a: None,
+        )
+
+    assert "click_probe" in str(excinfo.value)
+
+
+def test_a_resume_that_keeps_the_click_probe_still_resumes(studio):
+    """The control: the identity this payload was recorded under has to keep resuming."""
+
+    paths = Paths.under(studio["out"])
+    assert sb.run(_args(studio, "--branch", "main", "--click-probe")) == 0
+    corpus_hash = _rows(studio)[0]["corpus_hash"]
+
+    resumed = _args(studio, "--branch", "main", "--click-probe", "--resume")
+
+    assert (
+        sb.prepare_payload(
+            paths,
+            sb.requested_identity(resumed, None, corpus_hash),
+            resume = True,
+            log = lambda *_a: None,
+        )
+        is None
+    )
+
+
+def test_a_plain_run_and_a_plain_resume_are_unaffected(studio):
+    """The other control. A run that never asks for the probe records it as false and resumes."""
+
+    paths = Paths.under(studio["out"])
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+
+    meta = [r for r in _rows(studio) if r.get("row_type") == "run_meta"]
+    assert meta[0]["click_probe"] is False
+    corpus_hash = _rows(studio)[0]["corpus_hash"]
+
+    assert (
+        sb.prepare_payload(
+            paths,
+            sb.requested_identity(_args(studio, "--branch", "main", "--resume"), None, corpus_hash),
+            resume = True,
+            log = lambda *_a: None,
+        )
+        is None
+    )
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

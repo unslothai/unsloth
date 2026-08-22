@@ -540,10 +540,113 @@ def test_a_payload_from_before_the_fixture_axes_is_refused_under_a_non_default_f
         assert "predates this axis" in message
 
 
+# ── the measurement-mode axis ───────────────────────────────────────────────────────────────
+#
+# `--click-probe` runs a full `page.click`, a real mouse click, a dispatch, a focus and a hover
+# over the thread BEFORE the film starts, and the tool's own help text for the flag says it "makes
+# the cell's timings incomparable with a cell that did not run it". The cell then carries a
+# `composer_click_ms` measured on a composer all of those paths have already been through, and a
+# `click_attribution` block a cell without the flag does not have at all. None of that moves the
+# cell id, so it is on `IDENTITY_AXES` for the same reason the tier is.
+
+
+def test_resuming_after_toggling_the_click_probe_is_refused(tmp_path):
+    """REGRESSION. Both directions, because either one produces the same mixed ladder.
+
+    Without this the flag was invisible to the check: `click_probe` was in neither `run_meta` nor
+    `requested_identity`, so `--resume --click-probe` against a finished plain payload skipped
+    every completed cell, appended the remaining rungs measured the other way, and reported the
+    two halves as one ladder.
+    """
+
+    probed = _fixture_payload(tmp_path, "probed", "sess-probed", click_probe = True)
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            probed,
+            requested_identity(_resume_args(), None, CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+    message = str(excinfo.value)
+    assert "click_probe" in message
+    assert "True" in message and "False" in message
+
+    plain = _fixture_payload(tmp_path, "plain", "sess-plain", click_probe = False)
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            plain,
+            requested_identity(_resume_args("--click-probe"), None, CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+    assert "click_probe" in str(excinfo.value)
+
+
+def test_a_payload_from_before_the_probe_flag_is_refused_under_a_probed_resume(tmp_path):
+    """Absence proves the default here too. A payload with no `click_probe` key was written when
+    there was no way to ask for the probe, so it ran without it."""
+
+    paths = _fixture_payload(tmp_path, "legacy-probe", "sess-old")
+    assert "click_probe" not in paths.payload_jsonl.read_text(encoding = "utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths,
+            requested_identity(_resume_args("--click-probe"), None, CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+
+    message = str(excinfo.value)
+    assert "click_probe" in message
+    assert "predates this axis" in message
+
+
+def test_an_unchanged_probe_setting_resumes_and_returns_its_completed_cells(tmp_path):
+    """The control. The axis may not swallow a resume that is asking for the run it already has,
+    on either setting."""
+
+    probed = _fixture_payload(tmp_path, "probed-same", "sess-probed", click_probe = True)
+    assert (
+        prepare_payload(
+            probed,
+            requested_identity(_resume_args("--click-probe"), None, CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+        is None
+    )
+    assert _resume_set(probed) == {"r10K.A0.rep0"}
+
+    plain = _fixture_payload(tmp_path, "plain-same", "sess-plain")
+    assert (
+        prepare_payload(
+            plain,
+            requested_identity(_resume_args(), None, CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+        is None
+    )
+    assert _resume_set(plain) == {"r10K.A0.rep0"}
+
+
+def test_the_probe_flag_reaches_the_identity_this_invocation_asks_for():
+    """The check can only refuse a difference it was told about, so the flag has to be requested.
+
+    What the payload has to carry for it to be compared against is asserted end to end, over a
+    `run_meta` a real run wrote, in `test_studiobench_run_acquisition`.
+    """
+
+    for flags, expected in ((("--click-probe",), True), ((), False)):
+        args = parse_args(["--tier", "standard", "--branch", "main", *flags])
+        assert requested_identity(args, None, CORPUS)["click_probe"] is expected
+
+
 def test_the_skip_rule_still_holds_for_an_axis_that_really_did_decline_to_say(tmp_path):
     """The other axes keep the general rule: `run_meta` has always carried them, so a payload that
     omits one omitted it for its own reasons and this check has nothing to say about it. Only the
-    two fixture axes read absence as a value."""
+    axes that arrived with a flag of their own read absence as a value."""
 
     paths = Paths.under(tmp_path / "quiet")
     _record(
@@ -657,6 +760,129 @@ def test_the_readme_sequence_no_longer_scores_two_runs_as_one_ladder(tmp_path):
     _text, _ladder, payload = build_report(paths.payload_jsonl, [1_000, 10_000, 100_000])
     assert payload["header"]["tier"] == "standard"
     assert payload["header"]["studio_ref"] == "main"
+
+
+# ── the injection axis ──────────────────────────────────────────────────────────────────────
+#
+# `--inject-stream-cost-ms` burns a known amount of main-thread time per SSE chunk on the TREATMENT
+# arm, so a treatment cell recorded with it is not the same reading as one recorded without it --
+# and `cell_id` carries the rung, the arm and the repetition and nothing that could tell. It is on
+# `IDENTITY_AXES` for the same reason the two fixture axes above are, and for a larger perturbation
+# than either of them makes.
+
+
+def _injected_payload(tmp_path, name, session, **fixture):
+    paths = Paths.under(tmp_path / name)
+    _record(
+        paths,
+        session,
+        [
+            _run_meta("standard", "main", ["10K"], **fixture),
+            _cell("r10K.base.rep0", 10_000, arm = "base"),
+            _cell("r10K.treatment.rep0", 10_000, arm = "treatment"),
+        ],
+    )
+    return paths
+
+
+def _ab_resume_args(*flags):
+    return parse_args(
+        ["--tier", "standard", "--branch", "main", "--ab", "main", "--resume", *flags]
+    )
+
+
+def test_resuming_a_finished_uninjected_run_with_the_injection_on_is_refused(tmp_path):
+    """REGRESSION, and the expensive half of it.
+
+    Every pair in this payload is complete, so `skippable_cells` skips all of them, `rows` comes
+    back empty with `resumed` non-zero and `completion_exit_code` returns 0. The run pays for two
+    installs, measures nothing, and the recovery gate is then answered out of cells that were never
+    injected -- a calibration reporting that the metric cannot see a cost nobody put there.
+    """
+
+    paths = _injected_payload(tmp_path, "clean", "sess-1")
+
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths,
+            requested_identity(_ab_resume_args("--inject-stream-cost-ms", "3"), "main", CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+
+    message = str(excinfo.value)
+    assert "inject_stream_cost_ms" in message
+    assert "3.0" in message
+
+
+def test_resuming_an_injected_run_without_the_injection_is_refused(tmp_path):
+    """The other direction, and the likelier one: an injected A/B dies part way up the ladder and
+    the retry is typed without the flag. The rungs already done stay injected, the rungs still to
+    come are not, and the ladder the recovery fraction is computed from is half of each."""
+
+    paths = _injected_payload(tmp_path, "injected", "sess-1", inject_stream_cost_ms = 3.0)
+
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths,
+            requested_identity(_ab_resume_args(), "main", CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+    assert "inject_stream_cost_ms" in str(excinfo.value)
+
+
+def test_resuming_under_a_changed_injection_amount_is_refused(tmp_path):
+    """The amount is the measurement. A ladder half of which burned 3 ms per chunk and half 40 ms
+    has no recovery fraction at all."""
+
+    paths = _injected_payload(tmp_path, "amount", "sess-1", inject_stream_cost_ms = 3.0)
+
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths,
+            requested_identity(_ab_resume_args("--inject-stream-cost-ms", "40"), "main", CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+    assert "inject_stream_cost_ms" in str(excinfo.value)
+
+
+def test_a_payload_from_before_the_injection_flag_resumes_under_the_default(tmp_path):
+    """THE CONTROL, and the one `HISTORICAL_DEFAULTS` exists for. A payload written before the flag
+    could not have been injected, so absence reads as off and an ordinary resume still works."""
+
+    paths = _injected_payload(tmp_path, "old", "sess-old")
+    assert "inject_stream_cost_ms" not in paths.payload_jsonl.read_text(encoding = "utf-8")
+
+    assert (
+        prepare_payload(
+            paths,
+            requested_identity(_ab_resume_args(), "main", CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+        is None
+    )
+    assert _resume_set(paths) == {"r10K.base.rep0", "r10K.treatment.rep0"}
+
+
+def test_an_unchanged_injection_resumes(tmp_path):
+    """THE SECOND CONTROL. An injected run that died is meant to be resumable AS an injected run;
+    a refusal on every value would make the axis useless rather than safe."""
+
+    paths = _injected_payload(tmp_path, "same", "sess-1", inject_stream_cost_ms = 3.0)
+
+    assert (
+        prepare_payload(
+            paths,
+            requested_identity(_ab_resume_args("--inject-stream-cost-ms", "3"), "main", CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+        is None
+    )
+    assert _resume_set(paths) == {"r10K.base.rep0", "r10K.treatment.rep0"}
 
 
 def test_a_fresh_run_into_a_new_directory_archives_nothing(tmp_path):

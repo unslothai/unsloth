@@ -279,7 +279,12 @@ class _FakePage:
         return _Button() if "Stop generating" in selector else None
 
 
-def _stop_ctx(page: _FakePage):
+def _stop_ctx(page: _FakePage, budget_ms: int = 3_000):
+    """3,000 ms because that is the stop slot on the fast and quick films, and the smallest one
+    any film gives this action. The budget decides whether the throwaway turn is affordable at
+    all -- see `OWN_TURN_RESERVE_MS` -- so a figure no film uses would test a slot that does not
+    exist. The truncation test below keeps a deliberately tiny one for its own reason."""
+
     from studiobench.runtime.types import ActionContext
     return ActionContext(
         page = page,
@@ -287,7 +292,7 @@ def _stop_ctx(page: _FakePage):
         cell = None,
         window = None,
         args = {},
-        budget_ms = 200,
+        budget_ms = budget_ms,
         dom = None,
         log = lambda _m: None,
     )
@@ -309,7 +314,9 @@ def test_stop_refuses_to_truncate_the_cell_s_own_reply():
     from studiobench.scene.actions import stop_generation
 
     page = _FakePage(running = True)
-    result = stop_generation(_stop_ctx(page))
+    # 200 ms: too small to hold the throwaway turn at all, so the drain wait is zero and the
+    # refusal below is the one this test is about rather than the budget check beside it.
+    result = stop_generation(_stop_ctx(page, budget_ms = 200))
 
     assert result.ran is False, "a stop that would truncate the measured reply must not run"
     assert "truncate" in (result.reason or "")

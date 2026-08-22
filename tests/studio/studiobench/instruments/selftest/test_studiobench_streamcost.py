@@ -64,6 +64,51 @@ setTimeout(() => {
 """
 
 
+#: The same file, driven through the ordering that loses a burst: a window that closes while the
+#: chain the last chunk started has not reached its macrotask yet. `readWhilePending` decides which
+#: of the two orderings the harness produces, so the pinned case and its control differ by nothing
+#: else.
+PENDING_HARNESS_JS = r"""
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[2], "utf8");
+const burnMs = Number(process.argv[3]);
+const readWhilePending = process.argv[4] === "pending";
+
+const window = {};
+const document = { querySelectorAll: () => [] };
+(new Function("window", "document", src))(window, document);
+window.__sb.frames = { clamp: () => ({ clampMs: 1.0 }) };
+const sc = window.__sb.streamcost;
+
+// ONE BURST AND ITS TASK CHAIN. `__markStreaming` is the decode; the spin after it is the parse,
+// the delta accumulation and the render that the chain exists to measure.
+const burst = () => {
+  sc.__markStreaming();
+  const started = performance.now();
+  while (performance.now() - started < burnMs) { /* spin */ }
+};
+
+const finish = (first) => setTimeout(() => {
+  // A SECOND WINDOW, opened and closed after the macrotask has certainly run. Whatever the burst
+  // cost belongs to the first window; anything landing here is the leak.
+  const second = sc.read(0);
+  console.log(JSON.stringify({ first: first, second: second }));
+  process.exit(0);
+}, 60);
+
+if (readWhilePending) {
+  burst();
+  // The window closes IN THE SAME TASK, so the MessageChannel message posted by the decode is
+  // still queued.
+  finish(sc.read(burnMs + 50));
+} else {
+  burst();
+  // The ordinary ordering: the chain reaches its macrotask first and the window closes after it.
+  setTimeout(() => finish(sc.read(burnMs + 50)), 30);
+}
+"""
+
+
 def _node() -> str:
     exe = shutil.which("node") or shutil.which("nodejs")
     if exe is None:
@@ -88,6 +133,78 @@ def drain_after_stall(stall_ms: float) -> dict:
     if got.returncode != 0:
         raise AssertionError(f"the streamcost.js harness failed: {got.stderr.strip()[-800:]}")
     return json.loads(got.stdout)
+
+
+def burst_across_a_window_close(burn_ms: float, *, read_while_pending: bool) -> dict:
+    exe = _node()
+    with tempfile.TemporaryDirectory() as tmp:
+        harness = Path(tmp) / "pending.js"
+        harness.write_text(PENDING_HARNESS_JS, encoding = "utf-8")
+        got = subprocess.run(
+            [
+                exe,
+                str(harness),
+                str(STREAMCOST_JS),
+                str(burn_ms),
+                "pending" if read_while_pending else "settled",
+            ],
+            capture_output = True,
+            text = True,
+            timeout = 120,
+        )
+    if got.returncode != 0:
+        raise AssertionError(f"the streamcost.js harness failed: {got.stderr.strip()[-800:]}")
+    return json.loads(got.stdout)
+
+
+#: The task chain one burst starts, in the harness above. Large enough that losing it is
+#: unmistakable in the assertions and small enough that node's timers stay honest.
+BURST_CHAIN_MS = 40.0
+
+
+def test_a_burst_still_in_flight_at_the_window_close_is_charged_to_that_window():
+    """REGRESSION. `read()` snapshotted `deltaTaskMs` and then `reset()` zeroed it while the chain
+    the last chunk started was still open, so the MessageChannel callback charged that burst to a
+    fresh accumulator that nobody ever reads: `StreamCostInstrument.close` discards everything but
+    `overhead_ms` from its tail `read(0)`, and `open()` resets before the next window in any case.
+    The burst's characters stayed in the denominator and its targeted cost left the numerator.
+
+    `delta_task_ms` is the TARGETED numerator -- the one quantity that separates stream cost from
+    the action windows around it, and the one the `--inject-stream-cost-ms` recovery fraction is
+    computed from -- so it may not lose a burst it counted.
+
+    HOW OFTEN, MEASURED, because the answer is small and the reader should have it: driving the
+    shipped file in real chromium against a real SSE response read through a fetch reader at field
+    cadence, a driver-side `read()` found a chain still open 10 to 21 times in 2,600 to 5,500
+    reads, or 0.4 to 0.65 per cent. A cell opens about eight windows over its streaming phase, so
+    what this costs a real run is a fraction of one burst chain. It is pinned here rather than left
+    because the file's own contract is that a burst is charged once, from the first chunk to the
+    loop draining, and a burst that is charged to nothing breaks it in the direction that reads
+    cheaper.
+
+    The same-task close below is the deterministic way to put the accumulator in the state chromium
+    reaches by racing; the invariant it pins is the production one.
+    """
+    out = burst_across_a_window_close(BURST_CHAIN_MS, read_while_pending = True)
+
+    assert out["first"]["delta_task_ms"] >= BURST_CHAIN_MS * 0.9, (
+        "the burst in flight when the window closed was dropped from its own window",
+        out,
+    )
+    assert out["second"]["delta_task_ms"] < BURST_CHAIN_MS * 0.1, (
+        "the burst was charged a second time to the window that followed",
+        out,
+    )
+
+
+def test_a_burst_whose_chain_has_already_closed_is_charged_once():
+    """THE CONTROL, and it passes with or without the flush: the ordinary ordering, where the
+    chain reaches its macrotask before the window closes, must keep charging exactly once."""
+
+    out = burst_across_a_window_close(BURST_CHAIN_MS, read_while_pending = False)
+
+    assert out["first"]["delta_task_ms"] >= BURST_CHAIN_MS * 0.9, out
+    assert out["second"]["delta_task_ms"] < BURST_CHAIN_MS * 0.1, out
 
 
 def test_a_stall_longer_than_the_idle_gap_is_still_charged_to_the_stream():

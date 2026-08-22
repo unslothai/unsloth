@@ -307,6 +307,55 @@ def is_null_control(sides: list) -> bool:
     return bool(base.get("owns") and treatment.get("owns"))
 
 
+def arm_origins(specs: list) -> list:
+    """Each side's ORIGIN, resolved exactly as the acquisition loop resolves its base URL.
+
+    An attached side is the URL the caller typed; one this run installs is launched by
+    `launch_studio` on the port `side_specs` handed it and `StudioInstall.base_url` is
+    `http://127.0.0.1:{port}`. Read from the specs rather than from the sides so the answer is
+    available BEFORE anything is cloned, built or launched.
+    """
+    return [
+        (attach.rstrip("/") if attach else f"http://127.0.0.1:{port}")
+        for _label, _ref, attach, port, _password in specs
+    ]
+
+
+def stream_cost_injection_problem(specs: list, inject_ms) -> str | None:
+    """Why `--inject-stream-cost-ms` cannot be honoured against these sides. `None` when it can.
+
+    THE INJECTION IS GATED BY ORIGIN AND NOTHING ELSE. Both arms are driven by one browser
+    context and one page, so the init scripts assembled in `run` are the context's, not an arm's:
+    `add_init_script` fires on every document. `origin_scoped` is the only discriminator available
+    and it discriminates on `window.location.origin`, so two arms served from ONE origin both
+    match the treatment's predicate and both burn the injected cost.
+
+    That configuration is not a mistake the caller has to be warned off in general -- one attached
+    Studio driven twice is a null control `is_null_control` detects on purpose, and
+    `test_one_attached_studio_driven_twice_is_a_null_control` pins it. It is only fatal WITH the
+    injection, and it is fatal quietly: `evaluate_stream_cost_recovery_gate` reads back
+    `(injected_rate - base_rate) * chars`, both rates carry the burn, the difference is zero, and
+    the gate fails with "the accumulator is under-attributing" -- a verdict against a metric that
+    was working, delivered by the one flag whose entire job is to tell those two apart.
+
+    Refused rather than isolated. Isolating by arm would mean toggling the burn at every cell
+    boundary from the driver, which puts the injection's own timing inside the measured window;
+    the cheap and honest answer is to give the two arms two origins.
+    """
+    if not inject_ms or len(specs) < 2:
+        return None
+    origins = arm_origins(specs)
+    if origins[0] != origins[1]:
+        return None
+    return (
+        f"--inject-stream-cost-ms needs the two arms on DIFFERENT origins, and both are "
+        f"{origins[0]}. The injection is installed as a context init script gated on "
+        f"window.location.origin, so one origin means both arms burn the cost, the difference "
+        f"between them is zero and the recovery gate blames the metric for it. Point --attach and "
+        f"--attach-b at two Studios, or drop --attach and let this run install both."
+    )
+
+
 def stop_owned_sides(
     installs: list,
     stop,
@@ -393,6 +442,15 @@ def run(args, ab_ref = None) -> int:
         if args.attach and not args.attach_b:
             _log("  --ab with --attach needs --attach-b URL: the second build has to be somewhere.")
             return 2
+        # Here rather than beside the init script it guards, because by then two Studios have been
+        # cloned, built and launched to run a validation that cannot say anything. See
+        # `stream_cost_injection_problem`.
+        injection_problem = stream_cost_injection_problem(
+            specs, getattr(args, "inject_stream_cost_ms", None)
+        )
+        if injection_problem:
+            _log(f"  {injection_problem}")
+            return 2
         _log(f"  A/B: base={args.branch} vs treatment={ab_ref}, interleaved in ONE session")
 
     installs = []
@@ -433,8 +491,31 @@ def run(args, ab_ref = None) -> int:
                     "base_url": side_url,
                     "owns": owns,
                     "password": password,
+                    "commit": getattr(side_install, "commit", None) or "",
                 }
             )
+
+        # THE BUILD, NOW THAT IT IS KNOWN. `prepare_payload` has already agreed the refs match,
+        # and a ref is a pointer: see `commit_problems`. This is the first moment the commit
+        # behind it exists, and it is still before the browser, the pacer and every cell, so a
+        # resume onto a moved branch costs the install it has already paid and nothing more.
+        if args.resume:
+            resolved = resolved_commits(sides)
+            commit_issues: list = []
+            for recorded in recorded_identities(paths.payload_jsonl):
+                for problem in commit_problems(recorded, resolved):
+                    if problem not in commit_issues:
+                        commit_issues.append(problem)
+            if commit_issues:
+                raise SystemExit(
+                    f"refusing to resume {paths.payload_jsonl}: the ref matches but the build "
+                    "does not.\n  "
+                    + "\n  ".join(commit_issues)
+                    + "\nThe cells already in this payload were measured on the commit it "
+                    "records, and the rungs it still owes would be measured on the one installed "
+                    "now, under one header naming one ref. Resume with the commit the payload "
+                    "was recorded at, or re-run into a fresh --out."
+                )
 
         base_url = sides[0]["base_url"]
         install, owns_studio = installs[0]
@@ -626,6 +707,10 @@ def run(args, ab_ref = None) -> int:
                 "tool_version": TOOL_VERSION,
                 "corpus_hash": corpus.corpus_hash,
                 "studio_ref": args.branch if owns_studio else f"attached:{base_url}",
+                # WHICH COMMIT THAT REF NAMED, so a later `--resume` can tell a continuation from
+                # a branch that moved. Empty for an attached Studio, whose build is not visible
+                # from here. See `commit_problems`.
+                "studio_commit": sides[0].get("commit") or "",
                 "bundle": verdict.as_dict(),
                 "platform": {
                     "system": platform.system(),
@@ -650,6 +735,17 @@ def run(args, ab_ref = None) -> int:
                 # the same reason: a payload nobody can audit against the page it measured has to
                 # be taken on trust. `null` is the normal case and the only scorable one.
                 "probe_init_script": extra_init or None,
+                # WHETHER THE PROBE RAN BEFORE THE FILM, for the same reason and with the same
+                # consequence: it changes what the cell measures without moving the cell id, so
+                # `--resume` needs it on the record to be able to refuse a toggle. See
+                # `IDENTITY_AXES`.
+                "click_probe": bool(getattr(args, "click_probe", False)),
+                # AN ARM RUNNING THIS IS NOT A MEASUREMENT OF THE BUILD, and the payload has to
+                # say so itself. A reader who finds a treatment arm 40% slower has no other way
+                # to discover that the harness put the 40% there on purpose, and `--resume` reads
+                # it back as an identity axis so a calibration cannot be continued as an ordinary
+                # run or the other way round. See `IDENTITY_AXES`.
+                "inject_stream_cost_ms": getattr(args, "inject_stream_cost_ms", None),
             }
         )
         rec.gate("production_build", verdict.production, verdict.as_dict())
@@ -790,6 +886,8 @@ def run(args, ab_ref = None) -> int:
                     # the build that answered on the port. See `requested_identity`. Empty when this
                     # run installed the treatment itself: then the ref above is the identity.
                     "treatment_url": "" if sides[1]["owns"] else sides[1]["base_url"],
+                    # The treatment's half of `studio_commit`. Same reason, same emptiness rule.
+                    "treatment_commit": sides[1].get("commit") or "",
                     "balanced": order_is_balanced(work),
                     "order": [c.cell_id for _t, c, _p in work],
                 }
@@ -1052,6 +1150,26 @@ IDENTITY_AXES = (
     # back as the defaults (see `HISTORICAL_DEFAULTS`).
     "stream_tail_chars",
     "corpus_dollars",
+    # `--click-probe`, whose own help text says it "makes the cell's timings incomparable with a
+    # cell that did not run it". That is the definition of an identity axis: the probe runs a full
+    # `page.click`, a real mouse click, a dispatch, a focus and a hover over the thread before the
+    # film starts, and the cell then records a `composer_click_ms` measured on a composer those
+    # paths have already been through plus a `click_attribution` block a cell without the flag
+    # does not have at all. None of it moves the cell id, so a resume that toggles the flag skips
+    # the completed cells and appends the rest under the same ids -- the one ladder built from two
+    # films this check exists to refuse.
+    "click_probe",
+    # `--inject-stream-cost-ms`, on the same rule and for a larger perturbation than either of
+    # those two. It burns a known amount of main-thread time per SSE chunk on the TREATMENT arm,
+    # so a treatment cell recorded with it is a different reading from one recorded without it,
+    # under a cell id that cannot tell -- the id carries the rung, the arm and the repetition and
+    # stops there. Off it, `--resume` had two ways to lie about a calibration: against a FINISHED
+    # uninjected payload every pair is skippable, the run exits 0 having measured nothing, and the
+    # recovery gate is answered from cells that were never injected; against a HALF-FINISHED
+    # injected one the resume drops the flag and the ladder ends up part injected and part not.
+    # Both land as a recovery fraction near zero, which reads as "the metric is blind" and is the
+    # single verdict this flag exists to make trustworthy.
+    "inject_stream_cost_ms",
 )
 
 #: The axes that describe the SECOND side, which only exist when a run has one. See
@@ -1064,17 +1182,29 @@ TREATMENT_AXES = ("treatment_ref", "treatment_url")
 #: never declared cannot be a difference. That is right for the axes `run_meta` has always carried:
 #: a payload missing one of those is a payload this check has nothing to say about.
 #:
-#: It is WRONG for these two. They arrived with the flags that set them, so a payload written
+#: It is WRONG for these three. They arrived with the flags that set them, so a payload written
 #: before them did not decline to record a value -- there was no way to ask for anything but the
-#: default, and it ran under `stream_tail_chars = None` and `corpus_dollars = False` by
-#: construction. Skipping them therefore accepted `--resume --stream-tail-chars 24000` against such
-#: a payload, skipped its completed cells, and recorded the rest under a different streamed fixture
-#: beneath the same cell ids: one ladder built from two films, which is what this check exists to
-#: refuse. Absence proves the value here, so it is read as the value.
+#: default, and it ran under `stream_tail_chars = None`, `corpus_dollars = False` and
+#: `click_probe = False` and `inject_stream_cost_ms = None` by construction. Skipping them
+#: therefore accepted `--resume --stream-tail-chars 24000` against such a payload, skipped its
+#: completed cells, and recorded the rest under a different streamed fixture beneath the same cell
+#: ids: one ladder built from two films, which is what this check exists to refuse. Absence proves
+#: the value here, so it is read as the value.
 HISTORICAL_DEFAULTS = {
     "stream_tail_chars": None,
     "corpus_dollars": False,
+    "click_probe": False,
+    "inject_stream_cost_ms": None,
 }
+
+#: THE BUILD, as opposed to the name it was asked for by. A ref is a POINTER: `main`, a topic
+#: branch and a movable tag all resolve afresh on every install, and `checkout_ref` is the only
+#: thing that ever knows which commit one named. So these are not in `IDENTITY_AXES` and are not
+#: checked by `prepare_payload`: that refusal is deliberately made BEFORE anything is installed,
+#: and a commit cannot be known before the fetch that resolves it. They are checked instead by
+#: `commit_problems`, once the sides are up and before the first cell -- late enough to have the
+#: answer, early enough that nothing has been measured under it. See `run`.
+COMMIT_AXES = ("studio_commit", "treatment_commit")
 
 
 def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
@@ -1101,6 +1231,8 @@ def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
         "treatment_url": attach_b if (ab_ref and attach_b) else "",
         "stream_tail_chars": args.stream_tail_chars,
         "corpus_dollars": bool(args.corpus_dollars),
+        "click_probe": bool(getattr(args, "click_probe", False)),
+        "inject_stream_cost_ms": getattr(args, "inject_stream_cost_ms", None),
     }
 
 
@@ -1129,7 +1261,7 @@ def recorded_identities(payload_path) -> list:
             if session not in by_session:
                 by_session[session] = {}
                 order.append(session)
-            for axis in IDENTITY_AXES:
+            for axis in IDENTITY_AXES + COMMIT_AXES:
                 if axis in row:
                     by_session[session][axis] = row[axis]
             # `ab_plan` is where the treatment ref is recorded; `run_meta` names only the base.
@@ -1168,6 +1300,48 @@ def identity_problems(recorded: dict, requested: dict) -> list:
                 else f"the payload predates this axis and therefore ran with {got!r}"
             )
             problems.append(f"{axis}: {where}, this run asks {want!r}")
+    return problems
+
+
+def resolved_commits(sides: list) -> dict:
+    """The commits the sides of THIS run were actually installed from. `""` when unknowable.
+
+    Unknowable for an attached Studio: the caller pointed this harness at a URL and nothing about
+    what is deployed behind it is visible from here, which is why `studio_ref` folds an attached
+    base down to that URL instead.
+    """
+    out = {axis: "" for axis in COMMIT_AXES}
+    for axis, side in zip(COMMIT_AXES, sides):
+        if side.get("owns"):
+            out[axis] = str(side.get("commit") or "")
+    return out
+
+
+def commit_problems(recorded: dict, resolved: dict) -> list:
+    """Every side on which a recorded session and this invocation installed a different BUILD.
+
+    `--resume` skips a completed `cell_id`, and a cell id is the rung, the arm and the repetition.
+    The identity check in `prepare_payload` keeps the REFS in step, and a ref is enough right up
+    until it moves: `--branch main --ab fix --resume` into a payload recorded yesterday passes
+    every axis while `main` has advanced, so the cells already in the file were measured on one
+    build and the rungs still owed are measured on another, and `report.assemble_rows` prints the
+    mixture under a single header naming one ref. Movable tags and any live topic branch do the
+    same thing; `unsloth/main` does it several times a day.
+
+    An empty commit on EITHER side is not a difference. A payload written before this was recorded
+    never declared it -- the same rule `recorded_identities` applies to every other axis -- and an
+    attached side has no commit to declare, so attaching does not start failing against a payload
+    that a self-managed run wrote.
+    """
+    problems = []
+    for axis in COMMIT_AXES:
+        want, got = str(resolved.get(axis) or ""), str(recorded.get(axis) or "")
+        if not want or not got or want == got:
+            continue
+        side = "the base" if axis == "studio_commit" else "the treatment"
+        problems.append(
+            f"{axis}: {side} was recorded at commit {got[:12]}, this run installed {want[:12]}"
+        )
     return problems
 
 
@@ -1250,19 +1424,38 @@ def prepare_payload(
 
 
 def _resume_set(paths) -> set:
+    """The cells `--resume` may skip: the ones whose LATEST attempt completed.
+
+    THE LATEST ATTEMPT DECIDES, which is the rule `latest_attempt_rows` already applies for the
+    score (`report.build.score_payload`), the ratio (`ab.readings_by_arm`), the surface parity
+    sweep and `--assert-liveness`. Read raw, this loop was the last reader in which a superseded
+    row still counted -- and it counted in the direction that skips work.
+
+    How that happens without anybody doing anything unusual: an A/B pair is re-run WHOLE
+    (`ab.skippable_cells`), so a resume re-runs an arm that had already succeeded. If that retry
+    fails while its partner succeeds, the payload holds a completed row and a LATER failed row
+    under the same deterministic `cell_id`. The next `--resume` found the old success, skipped the
+    whole pair and exited 0, while `--report` scored the failed retry INCOMPLETE and
+    `--assert-liveness` failed on it. A resume that can never re-run the cell that is broken is a
+    gate nobody can satisfy by fixing the run.
+    """
+    from .scoring.from_payload import latest_attempt_rows
+
     done = set()
     if not paths.payload_jsonl.exists():
         return done
+    records = []
     with paths.payload_jsonl.open(encoding = "utf-8") as fh:
         for line in fh:
             try:
-                row = json.loads(line)
+                records.append(json.loads(line))
             except ValueError:
                 continue
-            # Only a COMPLETED cell is skipped. A cell that died is re-run, because its failure
-            # may have been the machine and not the build.
-            if row.get("row_type") == "cell" and row.get("completed"):
-                done.add(row.get("cell_id"))
+    for row in latest_attempt_rows(records):
+        # Only a COMPLETED cell is skipped. A cell that died is re-run, because its failure
+        # may have been the machine and not the build.
+        if row.get("row_type") == "cell" and row.get("completed"):
+            done.add(row.get("cell_id"))
     return done
 
 
