@@ -19,9 +19,10 @@
  *                                               IgnoresCssTextTransforms, EmitsImageAltText
  *
  * and `WebViewImpl::ApplyWebPreferences` turns `SetSelectionIncludesAltImageText(true)` on for
- * every web view, so the alt-text one is not conditional in practice. Twenty-seven constructs
- * were copied one at a time on Playwright's Chromium and WebKit and pasted back, and the
- * clipboard differs from `toString()` in exactly four places:
+ * every web view, so the alt-text one is not conditional in practice. The thirty-one constructs
+ * in tests/studio/_thread_fast_copy_constructs.py were copied one at a time on Playwright's
+ * Chromium and WebKit and pasted back, and the clipboard differs from `toString()` in exactly
+ * four places:
  *
  *   construct           chromium               webkit                  what is done here
  *   img[alt]            emits the alt text     emits the alt text      REPRODUCED
@@ -87,7 +88,10 @@ export type ThreadCopyDecision =
 /**
  * A copy event, structurally. The GATE needs no DOM, so its branches can be unit tested against
  * plain objects. The SERIALISER below is the part that must be proven in a browser against a
- * real clipboard, and is, by scripts/fastcopy/prove.py.
+ * real clipboard, and is, by tests/studio/playwright_thread_fast_copy.py, which builds THIS
+ * module and, per construct, sets what it produces against what the engine's own copy puts on
+ * the clipboard: Chromium must match byte for byte, WebKit must refuse, and its refusal must be
+ * backed by a divergence the same run measures.
  */
 export type CopyEventLike = {
   readonly defaultPrevented: boolean;
@@ -268,9 +272,9 @@ function patchClipboardDeltas(root: Element): Array<() => void> {
   // `querySelectorAll("*")` does not include the element it is called on, so the transform was
   // missed and the TRANSFORMED text was written where the clipboard carries the source text.
   // Raised in review and reproduced against the real clipboard before it was fixed: the three
-  // cases now in scripts/fastcopy/prove.py under INSIDE_SCOPE all failed. `text-transform`
-  // inherits, so `getComputedStyle(root)` already reports a transform set on any ancestor above
-  // the scope, and no walk upwards is needed.
+  // cases now in tests/studio/_thread_fast_copy_constructs.py under INSIDE_SCOPE all failed.
+  // `text-transform` inherits, so `getComputedStyle(root)` already reports a transform set on
+  // any ancestor above the scope, and no walk upwards is needed.
   const scoped: HTMLElement[] = [];
   if (root instanceof HTMLElement) scoped.push(root);
   scoped.push(...Array.from(root.querySelectorAll<HTMLElement>("*")));
@@ -326,8 +330,10 @@ function patchClipboardDeltas(root: Element): Array<() => void> {
 
 /**
  * The string the browser would have put on the clipboard, produced without building the styled
- * flavour. Proven byte-for-byte against the real clipboard over 27 constructs and 3 partial
- * selections on Chromium, and on the real thread at 40,648 characters.
+ * flavour. Proven byte-for-byte against Chromium's real clipboard over 31 selections -- the 23
+ * of the 31 constructs it answers, the other 8 being refused or copying nothing, plus two
+ * element-offset endpoints, three selections scoped to a transformed element and three partials
+ * -- and on the real thread at 40,648 characters.
  *
  * The selection is restored whatever happens, because a copy that quietly moved the user's
  * highlight would be a worse bug than the one being fixed.

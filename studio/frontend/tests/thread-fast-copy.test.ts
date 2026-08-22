@@ -1262,8 +1262,8 @@ test("the dom is left exactly as it was found", () => {
   // touched, even after `removeAttribute("style")`, so every copy was permanently rewriting the
   // document while this test was green. The structural parity digest found it, six actions
   // differing against a null that matched fifteen of sixteen. The authoritative check is
-  // `scripts/fastcopy/prove.py`, which compares `outerHTML` before and after in a real browser,
-  // per construct.
+  // `tests/studio/playwright_thread_fast_copy.py`, which compares `outerHTML` before and after
+  // in a real browser, per construct.
   const root = el("div", {
     children: [
       el("span", { rule: "uppercase", children: ["stdout"] }),
