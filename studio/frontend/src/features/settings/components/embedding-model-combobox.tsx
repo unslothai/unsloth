@@ -42,7 +42,6 @@ export function EmbeddingModelCombobox({
   ariaLabel,
   className,
 }: EmbeddingModelComboboxProps): ReactElement {
-  const selectingRef = useRef(false);
   const anchorRef = useRef<HTMLDivElement>(null);
   // Only text the user typed is a query. A saved or selected value searches for
   // itself, which leaves the list holding that one model instead of the others.
@@ -92,9 +91,10 @@ export function EmbeddingModelCombobox({
         filter={null}
         value={value.trim() ? value : null}
         onValueChange={(next) => onChange(next ?? "")}
-        onInputValueChange={(next) => {
-          if (selectingRef.current) {
-            selectingRef.current = false;
+        onInputValueChange={(next, details) => {
+          // The settings load and a pick both write the input too, and arrive
+          // with another reason; only typing is a search.
+          if (details.reason !== "input-change") {
             setTyped(null);
             return;
           }
@@ -121,13 +121,7 @@ export function EmbeddingModelCombobox({
           )}
           <ComboboxList>
             {(id: string) => (
-              <ComboboxItem
-                key={id}
-                value={id}
-                onPointerDown={() => {
-                  selectingRef.current = true;
-                }}
-              >
+              <ComboboxItem key={id} value={id}>
                 <span className="truncate font-mono text-ui-11">{id}</span>
               </ComboboxItem>
             )}
