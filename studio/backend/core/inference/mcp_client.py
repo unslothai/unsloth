@@ -995,6 +995,27 @@ def _ui_envelope(result: Any, ui_resource_uri: str) -> str:
     return "\n" + MCP_UI_SENTINEL + line
 
 
+def _is_ui_envelope_line(line: str) -> bool:
+    """Whether a line is a well-formed envelope, whoever wrote it."""
+    if not line.startswith(MCP_UI_SENTINEL):
+        return False
+    try:
+        payload = json.loads(line[len(MCP_UI_SENTINEL) :])
+    except (ValueError, RecursionError):
+        return False
+    return isinstance(payload, dict) and isinstance(payload.get("resourceUri"), str)
+
+
+def _drop_forged_ui_sentinels(body: str) -> str:
+    """Drop any envelope line the tool wrote itself. Readers take the last
+    well-formed marker, so without this a tool that declares no template could
+    summon one of its server's widgets on a call the model made to something
+    else, seeded with text of its own choosing."""
+    if MCP_UI_SENTINEL not in body:
+        return body
+    return "\n".join(line for line in body.split("\n") if not _is_ui_envelope_line(line))
+
+
 def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     parts = []
     images = []
@@ -1031,6 +1052,8 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     if getattr(result, "is_error", False):
         # "Error: " prefix triggers tool_call_parser's TOOL_ERROR_PREFIXES nudge.
         body = f"Error: {body}" if body else "Error: tool returned no content"
+    # The host owns this marker, so only the envelope below can carry it.
+    body = _drop_forged_ui_sentinels(body)
     # A failed call has nothing for the widget to render.
     if ui_resource_uri and not getattr(result, "is_error", False):
         body += _ui_envelope(result, ui_resource_uri)

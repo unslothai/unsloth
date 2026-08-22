@@ -29,6 +29,12 @@ if (!markerLine) {
   throw new Error("MCP_UI_MARKER is no longer defined in chat-adapter.ts");
 }
 
+// The tool-name gate closes over this one, lifted for the same reason.
+const prefixLine = /^const MCP_UI_TOOL_PREFIX = .*$/m.exec(source)?.[0];
+if (!prefixLine) {
+  throw new Error("MCP_UI_TOOL_PREFIX is no longer defined in chat-adapter.ts");
+}
+
 function lift<T>(signature: string, name: string): T {
   const start = source.indexOf(signature);
   assert.ok(start >= 0, `${name} is no longer defined in chat-adapter.ts`);
@@ -41,7 +47,7 @@ function lift<T>(signature: string, name: string): T {
   const declaration = source.slice(start, end + 3).replace(/^export /, "");
   return new Function(
     `${
-      ts.transpileModule(`${markerLine}\n${declaration}`, {
+      ts.transpileModule(`${markerLine}\n${prefixLine}\n${declaration}`, {
         compilerOptions: { target: ts.ScriptTarget.ES2020 },
       }).outputText
     }; return ${name};`,
@@ -49,8 +55,13 @@ function lift<T>(signature: string, name: string): T {
 }
 
 const MARKER = "\n__MCP_UI__:";
+// Any MCP tool name; the gate only reads the prefix.
+const MCP_TOOL = "mcp__srv__get_status";
 const extractMcpUiEnvelope = lift<
-  (raw: string) => {
+  (
+    raw: string,
+    toolName: string,
+  ) => {
     text: string;
     ui: { resourceUri: string; structuredContent?: unknown } | null;
   }
@@ -62,7 +73,7 @@ const isMcpUiToolResult = lift<(val: unknown) => boolean>(
 
 test("pulls the envelope off and leaves the model text untouched", () => {
   const raw = `cpu 12%${MARKER}{"resourceUri":"ui://sys/dash","structuredContent":{"cpu":12}}`;
-  const { text, ui } = extractMcpUiEnvelope(raw);
+  const { text, ui } = extractMcpUiEnvelope(raw, MCP_TOOL);
   assert.equal(text, "cpu 12%");
   assert.equal(ui?.resourceUri, "ui://sys/dash");
   assert.deepEqual(ui?.structuredContent, { cpu: 12 });
@@ -74,7 +85,7 @@ test("stops at the line end so a trailing image envelope survives", () => {
   // swallow the images with it.
   const images = '\n__MCP_IMAGES__:[{"data":"AAAA","mimeType":"image/png"}]';
   const raw = `shot${MARKER}{"resourceUri":"ui://a/b"}${images}`;
-  const { text, ui } = extractMcpUiEnvelope(raw);
+  const { text, ui } = extractMcpUiEnvelope(raw, MCP_TOOL);
   assert.equal(text, `shot${images}`);
   assert.equal(ui?.resourceUri, "ui://a/b");
 });
@@ -85,7 +96,7 @@ test("a tool that merely prints the marker keeps its whole output", () => {
     '{"resourceUri": 5} was the shape\n__MCP_UI__:{"resourceUri":5}',
     "trailing\n__MCP_UI__:[1,2,3]",
   ]) {
-    const { text, ui } = extractMcpUiEnvelope(raw);
+    const { text, ui } = extractMcpUiEnvelope(raw, MCP_TOOL);
     assert.equal(ui, null);
     assert.equal(text, raw);
   }
@@ -93,14 +104,26 @@ test("a tool that merely prints the marker keeps its whole output", () => {
 
 test("an earlier literal mention is not mistaken for the envelope", () => {
   const raw = `see __MCP_UI__: in the docs${MARKER}{"resourceUri":"ui://a/b"}`;
-  const { text, ui } = extractMcpUiEnvelope(raw);
+  const { text, ui } = extractMcpUiEnvelope(raw, MCP_TOOL);
   assert.equal(text, "see __MCP_UI__: in the docs");
   assert.equal(ui?.resourceUri, "ui://a/b");
 });
 
+test("only an MCP result can be carrying an envelope", () => {
+  // A terminal command printing the marker -- MCP documentation, say -- is
+  // content. The backend leaves it alone for the model, so the card must too.
+  const raw = `see the docs${MARKER}{"resourceUri":"ui://sys/dash"}`;
+  for (const toolName of ["terminal", "python", "web_search", ""]) {
+    const { text, ui } = extractMcpUiEnvelope(raw, toolName);
+    assert.equal(ui, null);
+    assert.equal(text, raw);
+  }
+  assert.equal(extractMcpUiEnvelope(raw, MCP_TOOL).ui?.resourceUri, "ui://sys/dash");
+});
+
 test("a result with no envelope round-trips byte for byte", () => {
   const raw = "plain output\nwith lines";
-  const { text, ui } = extractMcpUiEnvelope(raw);
+  const { text, ui } = extractMcpUiEnvelope(raw, MCP_TOOL);
   assert.equal(text, raw);
   assert.equal(ui, null);
 });

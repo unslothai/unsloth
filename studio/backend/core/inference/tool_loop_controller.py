@@ -370,13 +370,18 @@ def _is_file_entry(entry: object) -> bool:
 # not an envelope, and stripping it would take that line away from the model.
 _SANDBOX_TOOLS = frozenset({"python", "terminal"})
 
+# Same rule for the widget envelope: mcp_client writes it, and defuses any a
+# tool wrote itself, so only an MCP result can be carrying one.
+_MCP_TOOL_PREFIX = "mcp__"
+
 
 def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
     """Remove frontend-only sentinels (image paths, RAG source map) before
     feeding the result back to the model."""
     result = _strip_mcp_image_suffix(result)
     # After the image strip, which leaves the UI envelope as the tail.
-    result = _strip_mcp_ui_suffix(result)
+    if tool_name is None or tool_name.startswith(_MCP_TOOL_PREFIX):
+        result = _strip_mcp_ui_suffix(result)
     if tool_name is None or tool_name in _SANDBOX_TOOLS:
         result = _strip_files_sentinel(result)
     for sentinel in ("__IMAGES__:", "__RAG_SOURCES__:"):

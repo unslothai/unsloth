@@ -1033,16 +1033,22 @@ export interface McpUiToolResult {
 }
 
 const MCP_UI_MARKER = "\n__MCP_UI__:";
+const MCP_UI_TOOL_PREFIX = "mcp__";
 
 /**
  * Split a trailing __MCP_UI__ envelope off a raw tool result. The payload is one
  * JSON line, so the scan stops there; the image envelope may follow. A tool that
- * merely prints the marker keeps its text.
+ * merely prints the marker keeps its text, and so does every tool that cannot
+ * have been given an envelope: only MCP results carry one.
  */
-export function extractMcpUiEnvelope(raw: string): {
+export function extractMcpUiEnvelope(
+  raw: string,
+  toolName: string,
+): {
   text: string;
   ui: McpUiEnvelope | null;
 } {
+  if (!toolName.startsWith(MCP_UI_TOOL_PREFIX)) return { text: raw, ui: null };
   const start = raw.lastIndexOf(MCP_UI_MARKER);
   if (start === -1) return { text: raw, ui: null };
   const payloadStart = start + MCP_UI_MARKER.length;
@@ -5992,7 +5998,10 @@ export function createOpenAIStreamAdapter(
                         : { text: rawEvent, files: [] as SandboxFile[] };
                     // Ahead of the image slice, which parses to end of string.
                     const { text: rawResult, ui: mcpUi } =
-                      extractMcpUiEnvelope(withUi);
+                      extractMcpUiEnvelope(
+                        withUi,
+                        toolCallParts[idx].toolName ?? "",
+                      );
                     const imgMarker = "\n__IMAGES__:";
                     const imgIdx = rawResult.lastIndexOf(imgMarker);
                     const mcpImgMarker = "\n__MCP_IMAGES__:";
