@@ -109,7 +109,7 @@ test("the chunk warm-up claims exactly one fence, and never releases it", () => 
 test("the grammar warm-up tokenizes nothing real and is skipped when the flag is off", () => {
   const block = MARKDOWN_TEXT.slice(
     MARKDOWN_TEXT.indexOf("GRAMMAR WARM-UP"),
-    MARKDOWN_TEXT.indexOf("GRAMMAR WARM-UP") + 1600,
+    MARKDOWN_TEXT.indexOf("GRAMMAR WARM-UP") + 2600,
   );
   assert.ok(
     block.includes('if (mode === "off" || reached) return;'),
@@ -125,6 +125,35 @@ test("the grammar warm-up tokenizes nothing real and is skipped when the flag is
   );
 });
 
+test("a language is recorded warm only when the highlighter says so", () => {
+  // "the callback ran" and "the grammar loaded" are different facts. `code.highlight` returns
+  // null while a grammar is still loading and calls back later, so marking the language warm on
+  // entry to the callback records something that has not happened, and a print snapshot then
+  // trusts a grammar that is not there.
+  const block = MARKDOWN_TEXT.slice(
+    MARKDOWN_TEXT.indexOf("GRAMMAR WARM-UP"),
+    MARKDOWN_TEXT.indexOf("GRAMMAR WARM-UP") + 2600,
+  );
+  assert.ok(
+    MARKDOWN_TEXT.includes("const pendingGrammars = new Set<string>();"),
+    "scheduled and loaded need separate sets or the two facts get conflated",
+  );
+  const confirm = block.slice(block.indexOf("const confirm ="), block.indexOf("const warm ="));
+  assert.ok(
+    confirm.includes("warmedGrammars.add(lang)"),
+    "the warm set must be written from the confirmation path only",
+  );
+  const warm = block.slice(block.indexOf("const warm ="), block.indexOf("const release ="));
+  assert.ok(
+    !warm.includes("warmedGrammars.add(lang)"),
+    "nothing may be recorded warm merely because the idle callback was entered",
+  );
+  assert.ok(
+    warm.includes("confirm,") && warm.includes("if (ready) confirm();"),
+    "both the asynchronous callback and the synchronous return must confirm",
+  );
+});
+
 test("a cancelled grammar warm-up releases its claim", () => {
   // The claim is taken before the callback is scheduled, or every fence of a language schedules
   // its own. But a cleanup can cancel a callback that never ran, and a claim left behind then
@@ -132,12 +161,12 @@ test("a cancelled grammar warm-up releases its claim", () => {
   // snapshotting the asynchronous plain fallback.
   const block = MARKDOWN_TEXT.slice(
     MARKDOWN_TEXT.indexOf("GRAMMAR WARM-UP"),
-    MARKDOWN_TEXT.indexOf("GRAMMAR WARM-UP") + 1800,
+    MARKDOWN_TEXT.indexOf("GRAMMAR WARM-UP") + 2900,
   );
-  assert.ok(block.includes("let ran = false;"), "the callback must record that it ran");
+  assert.ok(block.includes("let confirmed = false;"), "completion must be tracked");
   assert.ok(
-    /const release = \(\) => \{\s*if \(!ran\) warmedGrammars\.delete\(lang\);/.test(block),
-    "cancelling a warm-up that never ran must release the language claim",
+    /const release = \(\) => \{\s*if \(!confirmed\) pendingGrammars\.delete\(lang\);/.test(block),
+    "cancelling a warm-up that never completed must release the pending claim so a later fence retries",
   );
   for (const path of ["cancelIdleCallback", "clearTimeout"]) {
     const i = block.indexOf(path);
