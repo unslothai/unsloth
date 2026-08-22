@@ -389,9 +389,7 @@ def cell_runner(monkeypatch, tmp_path):
             session = session,
             pacer = _RecordedPacer(streams),
             seeder = types.SimpleNamespace(
-                seed = lambda plan: types.SimpleNamespace(
-                    thread_id = "t1", seconds = 0.5, messages = 0
-                ),
+                seed = lambda plan: types.SimpleNamespace(thread_id = "t1", seconds = 0.5, messages = 0),
                 auth = None,
             ),
             corpus = None,

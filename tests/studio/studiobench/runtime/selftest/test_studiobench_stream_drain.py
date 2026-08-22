@@ -109,7 +109,15 @@ class _Pacer:
     def reset(self) -> None:
         self.streams = []
 
-    def load(self, reasoning, content, *, cadence = "field", tag = "", **k) -> None:
+    def load(
+        self,
+        reasoning,
+        content,
+        *,
+        cadence = "field",
+        tag = "",
+        **k,
+    ) -> None:
         self.streams.append(
             {
                 "tag": tag,
