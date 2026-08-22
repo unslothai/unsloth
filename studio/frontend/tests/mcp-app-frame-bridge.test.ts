@@ -124,6 +124,29 @@ test("the view is seeded from the server's own blocks", () => {
   );
 });
 
+test("the frame is armed and listening inside the commit, not after it", () => {
+  // The iframe starts fetching the shell the moment it is committed, and onLoad
+  // reads pendingPostRef. A passive effect is queued during that same commit and
+  // normally wins -- 10/10 against a real local server here -- but they are
+  // different task sources with nothing ordering them, and losing once leaves the
+  // widget on the empty shell permanently, with no second load to retry it.
+  assert.ok(
+    /useLayoutEffect\(\(\) => \{\s*pendingPostRef\.current = true;/.test(text),
+    "arming pendingPostRef must happen in the commit, not in a passive effect",
+  );
+  assert.ok(
+    /useLayoutEffect\(\(\) => \{\s*const respond =/.test(text),
+    "the message listener must be attached in the commit, before the view can post",
+  );
+  // initializedRef used to be reset in its own passive effect, which could land
+  // after the view had already said `initialized` and silently stop theme updates.
+  assert.equal(
+    (text.match(/initializedRef\.current = false/g) ?? []).length,
+    1,
+    "initializedRef must be reset once, alongside the other per-load state",
+  );
+});
+
 test("the bridge token survives a non-secure Studio origin", () => {
   // Studio is reachable over plain HTTP on a LAN address, where crypto.randomUUID
   // is simply undefined; calling it unconditionally threw on render and took every

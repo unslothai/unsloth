@@ -7,7 +7,14 @@ import { useTheme } from "@/features/settings/stores/theme-store";
 import { apiUrl, isTauri } from "@/lib/api-base";
 import { openLink } from "@/lib/open-link";
 import { cn } from "@/lib/utils";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   callMcpUiTool,
   readMcpUiResource,
@@ -210,9 +217,18 @@ export function McpAppFrame({
   // Once the view reports its own size the measured fallback is ignored for
   // good, or it would drag a self-sized widget back on every content change.
   const viewOwnsSizeRef = useRef(false);
-  useEffect(() => {
+  // The view is ready for host-context updates only after it says `initialized`.
+  const initializedRef = useRef(false);
+  // Layout, not passive: this arms the state onLoad reads, and the iframe starts
+  // fetching the moment it is committed. A passive effect is queued during that
+  // same commit and so normally wins, but the two are different task sources and
+  // nothing orders them; losing once means onLoad declines to post and the widget
+  // sits on the empty shell for good, with nothing to retry it. A layout effect
+  // runs inside the commit, before the browser can dispatch anything.
+  useLayoutEffect(() => {
     pendingPostRef.current = true;
     viewOwnsSizeRef.current = false;
+    initializedRef.current = false;
     setHeight(DEFAULT_HEIGHT);
   }, [src, html]);
 
@@ -274,10 +290,6 @@ export function McpAppFrame({
   }, [html, postToView]);
 
   // Theme flips reach a live widget as a partial host-context update.
-  const initializedRef = useRef(false);
-  useEffect(() => {
-    initializedRef.current = false;
-  }, [src, html]);
   useEffect(() => {
     if (!initializedRef.current) return;
     postToView({
@@ -287,7 +299,10 @@ export function McpAppFrame({
     });
   }, [theme, postToView]);
 
-  useEffect(() => {
+  // Layout, for the same reason as the arming above: the view's first message can
+  // only follow the HTML onLoad posts, but the listener must already be attached
+  // when it lands, and a passive effect is not ordered against that.
+  useLayoutEffect(() => {
     const respond = (id: JsonRpcId, result: unknown) =>
       postToView({ jsonrpc: "2.0", id, result });
     const fail = (id: JsonRpcId, code: number, message: string) =>
