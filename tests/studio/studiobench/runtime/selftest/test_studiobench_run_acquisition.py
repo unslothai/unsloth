@@ -430,5 +430,78 @@ def test_a_plain_run_and_a_plain_resume_are_unaffected(studio):
     )
 
 
+# ── the external probe on the record ────────────────────────────────────────────────────────
+#
+# `SBENCH_EXTRA_INIT_SCRIPT` is an ENVIRONMENT variable, not a flag, so it outlives the command
+# that wanted it. A resume under a shell that still has it set runs the rungs still owed with the
+# probe in the page and appends a probed `run_meta`, and `refuse_if_probed` reads every `run_meta`
+# in a file: the cells recorded cleanly before it stop being scorable too, permanently, because a
+# payload is append-only. So `run_meta` has to carry the probe and `--resume` has to compare it.
+
+
+class _ProbedBundle(_Bundle):
+    """A probe run attaches console and `pageerror` listeners, which a `None` page cannot take."""
+
+    page = types.SimpleNamespace(on = lambda *_a, **_k: None)
+
+
+@pytest.fixture
+def probe(tmp_path, monkeypatch):
+    """A probe installed the way a caller installs one, with a file that really is readable."""
+
+    path = tmp_path / "paint_counter.js"
+    path.write_text("window.__probe_ticks = 0;\n", encoding = "utf-8")
+    monkeypatch.setattr(browser_mod, "launch", lambda *a, **k: _ProbedBundle())
+    monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", str(path))
+    return path
+
+
+def test_a_run_records_which_probe_was_in_the_page(studio, probe):
+    """The recording half of the identity axis, over a `run_meta` a real run wrote."""
+
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+
+    meta = [r for r in _rows(studio) if r.get("row_type") == "run_meta"]
+    assert len(meta) == 1
+    assert meta[0]["probe_init_script"] == str(probe)
+
+
+def test_a_resume_that_drops_the_external_probe_is_refused(studio, probe, monkeypatch):
+    """End to end, over the payload the run above actually wrote."""
+
+    paths = Paths.under(studio["out"])
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+    corpus_hash = _rows(studio)[0]["corpus_hash"]
+    monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT")
+
+    with pytest.raises(SystemExit) as excinfo:
+        sb.prepare_payload(
+            paths,
+            sb.requested_identity(_args(studio, "--branch", "main", "--resume"), None, corpus_hash),
+            resume = True,
+            log = lambda *_a: None,
+        )
+
+    assert "probe_init_script" in str(excinfo.value)
+
+
+def test_a_resume_under_the_same_probe_still_resumes(studio, probe):
+    """The control. A potency ladder that died is meant to be resumable as the ladder it was."""
+
+    paths = Paths.under(studio["out"])
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+    corpus_hash = _rows(studio)[0]["corpus_hash"]
+
+    assert (
+        sb.prepare_payload(
+            paths,
+            sb.requested_identity(_args(studio, "--branch", "main", "--resume"), None, corpus_hash),
+            resume = True,
+            log = lambda *_a: None,
+        )
+        is None
+    )
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

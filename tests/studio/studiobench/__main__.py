@@ -1193,6 +1193,17 @@ IDENTITY_AXES = (
     # Both land as a recovery fraction near zero, which reads as "the metric is blind" and is the
     # single verdict this flag exists to make trustworthy.
     "inject_stream_cost_ms",
+    # `SBENCH_EXTRA_INIT_SCRIPT`, the external probe. Unlike the axes above it cannot end in a
+    # wrong NUMBER -- `refuse_if_probed` reads every `run_meta` in the file and every scoring entry
+    # point calls it, so one probed session makes the whole payload unscorable and there is no flag
+    # to override that. It is here for what the refusal costs instead. The variable is an
+    # ENVIRONMENT variable rather than a flag, so it survives in a shell after the experiment that
+    # set it is over, and `--resume` into a half-finished clean payload then installs both sides,
+    # runs the rungs that are still owed with the probe in the page, and appends a probed
+    # `run_meta` to the file. The payload is append-only and the refusal is whole-file, so the
+    # cells that were recorded cleanly before it are unscorable from then on and nothing this tool
+    # offers takes it back. Refusing here costs a millisecond and happens before the first install.
+    "probe_init_script",
 )
 
 #: The axes that describe the SECOND side, which only exist when a run has one. See
@@ -1205,19 +1216,20 @@ TREATMENT_AXES = ("treatment_ref", "treatment_url")
 #: never declared cannot be a difference. That is right for the axes `run_meta` has always carried:
 #: a payload missing one of those is a payload this check has nothing to say about.
 #:
-#: It is WRONG for these three. They arrived with the flags that set them, so a payload written
-#: before them did not decline to record a value -- there was no way to ask for anything but the
-#: default, and it ran under `stream_tail_chars = None`, `corpus_dollars = False` and
-#: `click_probe = False` and `inject_stream_cost_ms = None` by construction. Skipping them
-#: therefore accepted `--resume --stream-tail-chars 24000` against such a payload, skipped its
-#: completed cells, and recorded the rest under a different streamed fixture beneath the same cell
-#: ids: one ladder built from two films, which is what this check exists to refuse. Absence proves
-#: the value here, so it is read as the value.
+#: It is WRONG for the ones below. They arrived with the flag or the variable that sets them, so a
+#: payload written before them did not decline to record a value -- there was no way to ask for
+#: anything but the default, and it ran under `stream_tail_chars = None`, `corpus_dollars = False`,
+#: `click_probe = False`, `inject_stream_cost_ms = None` and `probe_init_script = None` by
+#: construction. Skipping them therefore accepted `--resume --stream-tail-chars 24000` against such
+#: a payload, skipped its completed cells, and recorded the rest under a different streamed fixture
+#: beneath the same cell ids: one ladder built from two films, which is what this check exists to
+#: refuse. Absence proves the value here, so it is read as the value.
 HISTORICAL_DEFAULTS = {
     "stream_tail_chars": None,
     "corpus_dollars": False,
     "click_probe": False,
     "inject_stream_cost_ms": None,
+    "probe_init_script": None,
 }
 
 #: THE BUILD, as opposed to the name it was asked for by. A ref is a POINTER: `main`, a topic
@@ -1256,6 +1268,12 @@ def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
         "corpus_dollars": bool(args.corpus_dollars),
         "click_probe": bool(getattr(args, "click_probe", False)),
         "inject_stream_cost_ms": getattr(args, "inject_stream_cost_ms", None),
+        # FROM THE ENVIRONMENT, because that is where this one is asked for: the probe hook is a
+        # variable rather than a flag on purpose, so `args` never sees it and there is nothing to
+        # read it from. Spelled exactly as `run_meta` records it -- the path as it was given -- for
+        # the same reason `studio_ref` is, so the requested value and the recorded one compare
+        # without a second convention to keep in step.
+        "probe_init_script": os.environ.get("SBENCH_EXTRA_INIT_SCRIPT") or None,
     }
 
 

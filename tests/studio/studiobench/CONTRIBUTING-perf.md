@@ -275,6 +275,12 @@ refuses, and `floor_table` refuses. There is no flag to override any of them. Th
 kept, because `--assert-liveness` and the probe's own output are exactly what you wanted from that
 run. Re-run with the variable unset to get a number.
 
+Into a **fresh `--out`**, though, because that refusal is whole-file. `run_meta.probe_init_script`
+is on the payload identity, so `--resume` refuses before anything is installed when the variable
+was set for the payload and not for this run or the other way round. Without that refusal a
+variable still set in the shell from an earlier experiment turned a half-finished clean ladder into
+a file no reader will ever accept, cells already recorded included, and a payload is append-only.
+
 A probe must be **self-contained**. Playwright does not define the evaluation order of separate
 init scripts, and the scene scripts are deliberately kept as separate scripts so that a throw in
 one cannot stop the others, so a probe cannot assume `window.__sb` exists when it is installed.
