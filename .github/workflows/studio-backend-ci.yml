@@ -260,23 +260,17 @@ jobs:
         # ones down are 76s and 25s, so the cap is 4x the worst real test. Nothing here is
         # near it, and a deadlock is caught in minutes rather than never.
         #
-        # --timeout arms inside each xdist worker, so it cannot fire when the CONTROLLER
-        # is the thing stuck: if a worker wedges or dies holding the pipe, the session
-        # waits on it forever and no per-test cap is ever consulted. That is not
-        # hypothetical. On the #9473 branch this step sat silent from 95% for 36.8
-        # minutes, three runs in a row, and each one burned the full 45 minute job budget
-        # and reported "cancelled" -- indistinguishable from ordinary concurrency
-        # supersession, which is exactly what --timeout=330 above promises to prevent.
-        # Job cleanup then terminated three orphan python processes.
+        # --timeout arms inside each xdist worker, so a stuck CONTROLLER escapes it: when a
+        # worker wedges holding the pipe, the session waits forever and no per-test cap is
+        # consulted. On the #9473 branch this step sat silent from 95% for 36.8 minutes,
+        # three runs running, each burning the whole 45 minute budget and reporting
+        # "cancelled" -- unreadable against ordinary concurrency supersession.
         #
         # So bound the session from outside, where a wedged worker cannot defeat it. SIGINT
-        # first, because pytest traps it and dumps where the session was stuck; SIGKILL 60s
-        # later if it will not even do that. Reproduced locally with a test that forks a
-        # child that never exits: unwrapped, the run is silent forever and --timeout=8 never
-        # fires; wrapped, it exits 124 with a traceback through
-        # execnet/multi.py safe_terminate -> workerpool.waitall, which is the controller
-        # blocked on its workers rather than any one test. Expect a stuck FRAME, not always
-        # a test name. 1500s is roughly 3x the ~8-10 minute norm and stays inside the job's 45.
+        # first so pytest dumps where it was stuck, SIGKILL 60s later if it will not.
+        # Reproduced with a test forking a child that never exits: unwrapped it hangs
+        # silently, wrapped it exits 124 through execnet safe_terminate -> workerpool.waitall.
+        # Expect a stuck FRAME, not always a test name. 1500s is ~3x the 8-10 minute norm.
         run: |
           timeout --signal=INT --kill-after=60 1500 \
           python -m pytest tests/ -q --tb=short -n 4 --timeout=330 \
