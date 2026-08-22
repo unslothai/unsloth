@@ -37,6 +37,7 @@ from studiobench.__main__ import (  # noqa: E402
     recorded_ladder,
     side_home,
     side_specs,
+    stream_cost_injection_problem,
 )
 
 
@@ -81,6 +82,107 @@ def test_one_attached_studio_driven_twice_is_a_null_control():
         _side("treatment", "main", "http://127.0.0.1:5401", False),
     ]
     assert is_null_control(sides) is True
+
+
+# ── the stream-cost injection needs two origins ─────────────────────────────────────────────
+#
+# The injection is a CONTEXT init script gated on `window.location.origin`, and both arms are
+# driven by one browser context and one page, so the origin is the only thing that can tell them
+# apart. Two arms on one origin therefore BOTH burn the injected cost, the difference between them
+# is zero, and `evaluate_stream_cost_recovery_gate` -- which reads back
+# `(injected_rate - base_rate) * chars` -- reports a recovery of nothing and blames the
+# accumulator. The one flag whose job is to separate "the change did nothing" from "the metric is
+# not watching" would answer the second when the truth is neither.
+#
+# One attached Studio driven twice is not a mistake in general: it is a null control this tool
+# detects on purpose, pinned by the test directly above. It is only fatal with the injection on.
+
+
+def _inject_args(attach, attach_b, *extra):
+    return parse_args(["--attach", attach, "--ab", "main", "--attach-b", attach_b, *extra])
+
+
+def test_injecting_stream_cost_into_two_arms_on_one_origin_is_refused():
+    """REGRESSION. `--attach U --attach-b U` is the cheapest null control there is -- one Studio,
+    no installs -- and it is the obvious place to check that the metric can see a known cost."""
+
+    args = _inject_args(
+        "http://127.0.0.1:5401", "http://127.0.0.1:5401", "--inject-stream-cost-ms", "3"
+    )
+    problem = stream_cost_injection_problem(side_specs(args, "main"), args.inject_stream_cost_ms)
+
+    assert problem is not None
+    assert "127.0.0.1:5401" in problem
+    assert "origin" in problem
+
+
+def test_a_trailing_slash_does_not_make_one_origin_into_two():
+    """`--attach-b http://host:5401/` and `--attach http://host:5401` are the same server. The
+    acquisition loop strips the slash before it ever reaches `origin_scoped`, so a check that did
+    not would pass this and inject into both arms anyway."""
+
+    args = _inject_args(
+        "http://127.0.0.1:5401", "http://127.0.0.1:5401/", "--inject-stream-cost-ms", "3"
+    )
+    assert stream_cost_injection_problem(side_specs(args, "main"), args.inject_stream_cost_ms)
+
+
+def test_an_attached_side_and_a_self_installed_one_on_the_same_port_are_refused():
+    """The mixed case. A side this run installs is launched on `--port` and serves at
+    `http://127.0.0.1:{port}`, so an `--attach` URL naming that port is the same origin twice
+    without either flag looking like it."""
+
+    args = parse_args(
+        [
+            "--attach",
+            "http://127.0.0.1:5400",
+            "--ab",
+            "main",
+            "--attach-b",
+            "http://127.0.0.1:5400",
+            "--port",
+            "5399",
+            "--inject-stream-cost-ms",
+            "3",
+        ]
+    )
+    assert stream_cost_injection_problem(side_specs(args, "main"), args.inject_stream_cost_ms)
+
+
+# ── the controls: the refusal may not swallow a run that is fine ────────────────────────────
+
+
+def test_two_origins_may_inject():
+    args = _inject_args(
+        "http://127.0.0.1:5401", "http://127.0.0.1:5402", "--inject-stream-cost-ms", "3"
+    )
+    assert (
+        stream_cost_injection_problem(side_specs(args, "main"), args.inject_stream_cost_ms) is None
+    )
+
+
+def test_a_self_installed_pair_may_inject():
+    """`--branch main --ab main` installs the same ref twice and launches the copies on `--port`
+    and `--port + 1`, so their origins differ by construction. This is the null control the
+    injection is most likely to be run against and it must keep working."""
+
+    args = parse_args(["--branch", "main", "--ab", "main", "--inject-stream-cost-ms", "3"])
+    assert (
+        stream_cost_injection_problem(side_specs(args, "main"), args.inject_stream_cost_ms) is None
+    )
+
+
+def test_one_origin_without_the_injection_is_still_allowed():
+    """THE CONTROL THAT MATTERS MOST. One attached Studio driven twice is a null control, and
+    refusing it outright would remove the calibration run this tool exists to support."""
+
+    args = _inject_args("http://127.0.0.1:5401", "http://127.0.0.1:5401")
+    assert stream_cost_injection_problem(side_specs(args, "main"), None) is None
+
+
+def test_a_single_side_is_never_refused():
+    args = parse_args(["--branch", "main", "--inject-stream-cost-ms", "3"])
+    assert stream_cost_injection_problem(side_specs(args, None), 3.0) is None
 
 
 # ── one password per side ───────────────────────────────────────────────────────────────────

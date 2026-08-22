@@ -96,12 +96,30 @@
   // whole shortfall in a single burst when it has fallen behind, and charging per chunk would
   // multiply one task chain by the number of chunks that started it.
   let chainStart = null;
-  const chan = new MessageChannel();
-  chan.port1.onmessage = () => {
+  // Close whatever chain is open and charge it to the accumulator it was opened against. Called
+  // from the MessageChannel callback -- the ordinary end of a chain -- and from `read()`, which
+  // is the case that used to lose it.
+  //
+  // WHY read() HAS TO DO THIS. `read()` arrives on its own task, from the driver, at a window
+  // boundary; the message closing the last burst's chain is a task too, and the two are on
+  // different task queues, so a window can close in the gap between a burst's decode and its
+  // chain's macrotask. The snapshot then takes `deltaTaskMs` without that burst in it and
+  // `reset()` zeroes the accumulator, so the callback charges the burst to a fresh one -- which
+  // the tail `read(0)` in `StreamCostInstrument.close` discards, and which the next `open()`
+  // resets in any case. The burst's characters are counted in the denominator and its targeted
+  // cost is silently gone from the numerator. Reproduced against real chromium under a synthetic
+  // stream of known per-burst cost: 0 to 2 of 200 bursts lost per run, one per window boundary at
+  // most, and always downward.
+  //
+  // The stale message is harmless: it finds `chainStart === null` and returns. A burst that
+  // starts after this posts a message of its own.
+  const closeChain = () => {
     if (chainStart === null) return;
     S.deltaTaskMs += now() - chainStart;
     chainStart = null;
   };
+  const chan = new MessageChannel();
+  chan.port1.onmessage = closeChain;
 
   const noteSse = () => {
     S.sseChunks += 1;
@@ -197,6 +215,9 @@
     // windows this is measuring.
     read(elapsedMs) {
       const t = now();
+      // BEFORE the snapshot, because a chain still in flight belongs to the window that started
+      // it and `reset()` below is about to throw it away. See `closeChain`.
+      closeChain();
       const f = window.__sb.frames;
       const clampInfo = f && f.clamp ? f.clamp() : { clampMs: null, reason: "frames.js absent" };
       const out = {
