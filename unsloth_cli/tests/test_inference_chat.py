@@ -1768,9 +1768,12 @@ def test_catalog_local_folder_entries_require_loadable_payloads(monkeypatch, tmp
 def test_catalog_trained_and_exported_entries_drop_non_chat_checkpoints(monkeypatch, tmp_path):
     """Studio trains Whisper and other audio models, so an outputs or exports folder
     legitimately holds a checkpoint that cannot answer a text turn. Neither builder
-    classified anything, so both offered it for chat. A GGUF export is a file, not a
-    directory, so it fails open and stays."""
+    classified anything, so both offered it for chat."""
+    from unsloth_cli._inference import ensure_studio_backend_path
     from unsloth_cli import _model_catalog as cat
+
+    ensure_studio_backend_path()
+    from hub.services.models import catalog_classification
 
     def _ckpt(parent, name, config):
         d = parent / name
@@ -1802,6 +1805,9 @@ def test_catalog_trained_and_exported_entries_drop_non_chat_checkpoints(monkeypa
     exported_gguf = tmp_path / "exports" / "run-gguf" / "model-Q4_K_M.gguf"
     exported_gguf.parent.mkdir(parents = True)
     exported_gguf.write_bytes(b"\0" * 8)
+    exported_image_gguf = tmp_path / "exports" / "run-image-gguf" / "model-Q4_K_M.gguf"
+    exported_image_gguf.parent.mkdir(parents = True)
+    exported_image_gguf.write_bytes(b"\0" * 8)
 
     fake_models = types.ModuleType("utils.models")
     fake_models.scan_trained_models = lambda: [
@@ -1816,6 +1822,7 @@ def test_catalog_trained_and_exported_entries_drop_non_chat_checkpoints(monkeypa
         ("qwen-export", str(exported_chat), "merged", None),
         ("whisper-adapter", str(exported_whisper_adapter), "lora", str(trained_whisper)),
         ("gguf-export", str(exported_gguf), "gguf", None),
+        ("image-gguf-export", str(exported_image_gguf), "gguf", None),
     ]
     monkeypatch.setitem(sys.modules, "utils.models", fake_models)
     monkeypatch.setattr(
@@ -1824,24 +1831,11 @@ def test_catalog_trained_and_exported_entries_drop_non_chat_checkpoints(monkeypa
         lambda: {str(trained_run_adapter): {"model_name": str(trained_whisper)}},
     )
 
-    # Mirrors the shared predicate's contract: False only for a locally identifiable
-    # non-chat architecture, None when it cannot tell. The real one is covered by the
-    # backend suite (hub/tests/test_model_services.py).
-    def _can_chat(path):
-        try:
-            config = json.loads((Path(path) / "config.json").read_text())
-        except (OSError, ValueError):
-            return None
-        return False if config.get("model_type") == "whisper" else None
-
-    fake_common = types.ModuleType("hub.services.models.common")
-    fake_common._local_transformers_can_chat = _can_chat
-    fake_common._read_adapter_config = lambda path: (
-        json.loads((path / "adapter_config.json").read_text())
-        if (path / "adapter_config.json").is_file()
-        else {}
+    monkeypatch.setattr(
+        catalog_classification,
+        "_gguf_architecture",
+        lambda path: "flux" if Path(path) == exported_image_gguf else "llama",
     )
-    monkeypatch.setitem(sys.modules, "hub.services.models.common", fake_common)
 
     assert [e.name for e in cat.trained_entries()] == ["qwen-finetune", "qwen-adapter"]
     assert [e.name for e in cat.exported_entries()] == ["qwen-export", "gguf-export"]
@@ -1851,6 +1845,9 @@ def test_catalog_adapter_classifies_the_exact_cached_base_revision(monkeypatch, 
     from unsloth_cli import _model_catalog as cat
 
     monkeypatch.syspath_prepend(str(_REPO_ROOT / "studio" / "backend"))
+    import huggingface_hub
+    from utils import hf_cache_settings
+
     adapter = tmp_path / "adapter"
     adapter.mkdir()
     (adapter / "adapter_config.json").write_text(
@@ -1866,33 +1863,18 @@ def test_catalog_adapter_classifies_the_exact_cached_base_revision(monkeypatch, 
     base.mkdir(parents = True)
     (base / "config.json").write_text(json.dumps({"model_type": "whisper"}))
 
-    fake_common = types.ModuleType("hub.services.models.common")
-
-    def _can_chat(path):
-        try:
-            config = json.loads((Path(path) / "config.json").read_text())
-        except (OSError, ValueError):
-            return None
-        return False if config.get("model_type") == "whisper" else None
-
-    fake_common._local_transformers_can_chat = _can_chat
-    fake_common._read_adapter_config = lambda path: json.loads(
-        (path / "adapter_config.json").read_text()
-    )
-    monkeypatch.setitem(sys.modules, "hub.services.models.common", fake_common)
-
     calls = []
-    fake_hub = types.ModuleType("huggingface_hub")
 
     def _cached(repo_id, filename, *, cache_dir, revision):
         calls.append((repo_id, filename, cache_dir, revision))
         return str(base / filename)
 
-    fake_hub.try_to_load_from_cache = _cached
-    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
-    fake_settings = types.ModuleType("utils.hf_cache_settings")
-    fake_settings.get_hf_cache_paths = lambda: types.SimpleNamespace(hub_cache = tmp_path / "cache")
-    monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", fake_settings)
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", _cached)
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "get_hf_cache_paths",
+        lambda: types.SimpleNamespace(hub_cache = tmp_path / "cache"),
+    )
 
     assert cat._path_can_chat(str(adapter)) is False
     assert calls == [

@@ -15,6 +15,7 @@ No GPU/network: only file names and sizes are inspected.
 
 from __future__ import annotations
 
+import json
 import sys
 import types
 from pathlib import Path
@@ -38,6 +39,25 @@ def _touch(path: Path) -> Path:
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_bytes(b"\0")
     return path
+
+
+def test_local_adapter_chat_capability_uses_its_local_base(tmp_path):
+    from hub.services.models.common import _classify_local_path
+
+    base = tmp_path / "whisper-base"
+    _touch(base / "model.safetensors")
+    (base / "config.json").write_text(
+        '{"model_type":"whisper","architectures":["WhisperForConditionalGeneration"]}'
+    )
+    adapter = tmp_path / "whisper-adapter"
+    _touch(adapter / "adapter_model.safetensors")
+    (adapter / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": str(base)}))
+
+    rows = _classify_local_path(adapter, "custom")
+
+    assert len(rows) == 1
+    assert rows[0].base_model == str(base)
+    assert models_route._local_model_can_chat(rows[0]) is False
 
 
 def test_dir_model_format_gguf_only(tmp_path):

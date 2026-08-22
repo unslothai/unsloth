@@ -13,7 +13,7 @@ from hub.services.models.common import (
     _is_diffusers_pipeline_dir,
     _is_mmproj_filename,
     _iter_gguf_paths,
-    _local_transformers_can_chat,
+    _local_path_can_chat,
 )
 
 
@@ -203,6 +203,19 @@ def _repo_gguf_task(repo_info, selected: Optional[Path] = None) -> Optional[str]
         return None
 
 
+def _gguf_path_task(path: str | Path, id_hints: tuple[Optional[str], ...] = ()) -> Optional[str]:
+    model_path = Path(path)
+    try:
+        if model_path.suffix.lower() == ".gguf" and model_path.is_file():
+            return _arch_to_task(
+                _gguf_architecture(str(model_path)),
+                name_hints = id_hints + (model_path.name,),
+            )
+        return _gguf_folder_task(model_path, id_hints)
+    except Exception:
+        return None
+
+
 def _hf_cache_snapshot_repo_id(path: Optional[str]) -> Optional[str]:
     if not path:
         return None
@@ -232,23 +245,14 @@ def _local_family_needles(model) -> tuple[str, ...]:
 
 
 def _local_model_can_chat(model) -> Optional[bool]:
-    return _local_transformers_can_chat(Path(model.path))
+    return _local_path_can_chat(model.path, getattr(model, "base_model", None))
 
 
 def _local_model_task(model) -> Optional[str]:
     path = model.path
     id_hints = (model.model_id, model.display_name, model.id)
     if model.model_format == "gguf" or Path(path).suffix.lower() == ".gguf":
-        try:
-            model_path = Path(path)
-            if model_path.suffix.lower() == ".gguf" and model_path.is_file():
-                return _arch_to_task(
-                    _gguf_architecture(str(model_path)),
-                    name_hints = id_hints + (model_path.name,),
-                )
-            return _gguf_folder_task(model_path, id_hints)
-        except Exception:
-            return None
+        return _gguf_path_task(path, id_hints)
     if not _local_is_diffusers(model):
         return None
     try:

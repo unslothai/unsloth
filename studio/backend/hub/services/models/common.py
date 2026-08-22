@@ -359,6 +359,44 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
     return None
 
 
+def _base_transformers_can_chat(base_model: str, revision: Optional[str]) -> Optional[bool]:
+    """Classify an exact local or active-cache base without a network lookup."""
+    try:
+        local_path = Path(base_model).expanduser()
+        if local_path.is_dir():
+            return _local_transformers_can_chat(local_path)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        from utils.hf_cache_settings import get_hf_cache_paths
+        config_path = try_to_load_from_cache(
+            base_model,
+            "config.json",
+            cache_dir = get_hf_cache_paths().hub_cache,
+            revision = revision,
+        )
+    except Exception:
+        return None
+    if not isinstance(config_path, str):
+        return None
+    return _local_transformers_can_chat(Path(config_path).parent)
+
+
+def _local_path_can_chat(path: str | Path, base_model: Optional[str] = None) -> Optional[bool]:
+    """Classify a local checkpoint or its exact adapter base without network access."""
+    model_path = Path(path)
+    verdict = _local_transformers_can_chat(model_path)
+    if verdict is not None:
+        return verdict
+    adapter_config = _read_adapter_config(model_path)
+    adapter_base = _clean_optional_string(adapter_config.get("base_model_name_or_path"))
+    revision = _clean_optional_string(adapter_config.get("revision"))
+    base = adapter_base or _clean_optional_string(base_model)
+    return _base_transformers_can_chat(base, revision) if base else None
+
+
 def _capabilities_for_format(
     model_format: ModelFormat,
     source: str,
