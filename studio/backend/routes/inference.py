@@ -7717,9 +7717,7 @@ class _GgufMemoryBreakdown(NamedTuple):
 
 
 def _gguf_offloaded_layer_fraction(
-    gpu_memory_mode: Optional[str],
-    gpu_layers: Optional[int],
-    layer_count: Optional[int],
+    gpu_memory_mode: Optional[str], gpu_layers: Optional[int], layer_count: Optional[int]
 ) -> float:
     """Share of the weights the requested offload keeps on the GPU, in [0, 1].
 
@@ -11437,8 +11435,7 @@ def _cached_estimate_config(
 
 @router.post("/estimate-memory", response_model = EstimateMemoryResponse)
 async def estimate_memory(
-    request: EstimateMemoryRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: EstimateMemoryRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Price a prospective GGUF load from its header, before anything is allocated.
 

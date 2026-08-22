@@ -145,7 +145,12 @@ _GQA_FIELDS = {
 }
 
 
-def _write_gguf(tmp_path: Path, arch: str, fields: dict, name: str = "model.gguf") -> str:
+def _write_gguf(
+    tmp_path: Path,
+    arch: str,
+    fields: dict,
+    name: str = "model.gguf",
+) -> str:
     kv = {"general.architecture": arch}
     kv.update({f"{arch}.{k}": v for k, v in fields.items()})
     path = tmp_path / name
@@ -310,9 +315,7 @@ class TestResidentFileGb:
         ctx_term = ri._estimate_gguf_kv_gb(gqa_gguf, 0, None)
         assert ctx_term > 0, "fixture must have a non-trivial context term to subtract"
         config = SimpleNamespace(identifier = "local/model", gguf_file = gqa_gguf, is_gguf = True)
-        monkeypatch.setattr(
-            ri, "_estimate_gguf_required_gb", lambda cfg, **kw: 3.0 + ctx_term
-        )
+        monkeypatch.setattr(ri, "_estimate_gguf_required_gb", lambda cfg, **kw: 3.0 + ctx_term)
         assert ri._gguf_resident_file_gb(config) == pytest.approx(3.0)
 
     def test_unresolvable_size_is_not_cached(self, gqa_gguf, monkeypatch):
@@ -493,7 +496,12 @@ class TestLocalizedEstimateConfig:
         seen = {}
 
         def _stub(name, result):
-            def _detect(path, search_root = None, *a, **kw):
+            def _detect(
+                path,
+                search_root = None,
+                *a,
+                **kw,
+            ):
                 seen[name] = (path, search_root)
                 return result
 
@@ -578,7 +586,11 @@ class TestTokenFingerprint:
         # the 30s TTL. Distinguishable return values make a shared entry visible.
         calls = []
 
-        def _from_identifier(model_id, hf_token = None, **kw):
+        def _from_identifier(
+            model_id,
+            hf_token = None,
+            **kw,
+        ):
             calls.append(hf_token)
             return SimpleNamespace(identifier = model_id, resolved_with = hf_token)
 
@@ -620,9 +632,7 @@ class TestTokenFingerprint:
 
 def _estimate(**kwargs):
     """Call the route directly, bypassing the auth dependency."""
-    return asyncio.run(
-        ri.estimate_memory(EstimateMemoryRequest(**kwargs), current_subject = "test")
-    )
+    return asyncio.run(ri.estimate_memory(EstimateMemoryRequest(**kwargs), current_subject = "test"))
 
 
 class TestEstimateMemoryRoute:

@@ -764,17 +764,15 @@ class EstimateMemoryRequest(BaseModel):
         "-nkvo, --swa-full and the cache-type flags all move this estimate.",
     )
 
-    _no_booleans = field_validator("n_batch", "n_ubatch", "ctx_checkpoints", "n_ctx", mode = "before")(
-        LoadRequest._no_booleans.__func__
-    )
+    _no_booleans = field_validator(
+        "n_batch", "n_ubatch", "ctx_checkpoints", "n_ctx", mode = "before"
+    )(LoadRequest._no_booleans.__func__)
 
 
 class EstimateMemoryResponse(BaseModel):
     """Itemized memory an inference load would occupy, or why it could not be sized."""
 
-    available: bool = Field(
-        ..., description = "Whether a breakdown could be produced at all."
-    )
+    available: bool = Field(..., description = "Whether a breakdown could be produced at all.")
     reason: Optional[str] = Field(
         None,
         description = "Cause when available is false: 'not_gguf', 'not_downloaded', "
