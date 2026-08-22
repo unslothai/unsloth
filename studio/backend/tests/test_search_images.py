@@ -896,6 +896,7 @@ def test_route_requires_auth():
     response = anonymous.get(f"/api/inference/search-images/{entry['id']}")
     assert response.status_code in (401, 403)
 
+
 def test_one_locked_thumbnail_does_not_strand_the_rest_of_the_clear(monkeypatch, tmp_path):
     # A JPEG another process holds open on Windows raises on unlink. Aborting the
     # sweep there left every later file on disk, and thumbnail_bytes reads the
