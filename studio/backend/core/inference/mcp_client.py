@@ -877,7 +877,6 @@ def invalidate_tool_cache(server_id: Optional[str] = None) -> None:
 
 
 UI_RESOURCE_SCHEME = "ui://"
-UI_RESOURCE_MIME = "text/html;profile=mcp-app"
 MAX_UI_RESOURCE_CHARS = 5_000_000
 
 
