@@ -21,6 +21,23 @@ export interface MemoryEstimateState {
   stale: boolean;
 }
 
+/**
+ * Identity of a token without the token. The backend resolves and caches gated
+ * repositories per token, so swapping one for another has to re-fetch, but the
+ * credential itself has no business sitting in a React dependency key.
+ *
+ * djb2: this only has to separate two strings held in this tab, never to resist
+ * anyone, and it has to be synchronous (SubtleCrypto is not).
+ */
+function tokenIdentity(token: string | null | undefined): string {
+  if (!token) return "";
+  let hash = 5381;
+  for (let i = 0; i < token.length; i++) {
+    hash = ((hash << 5) + hash + token.charCodeAt(i)) | 0;
+  }
+  return (hash >>> 0).toString(36);
+}
+
 /** Everything that changes the answer. Settings the backend ignores stay out, or
  *  the row re-fetches for nothing. */
 function estimateKey(request: MemoryEstimateRequest | null): string | null {
@@ -28,7 +45,7 @@ function estimateKey(request: MemoryEstimateRequest | null): string | null {
   return JSON.stringify([
     request.modelPath,
     request.ggufVariant ?? null,
-    request.hfToken ? "token" : "",
+    tokenIdentity(request.hfToken),
     request.nativePathToken ?? null,
     request.nCtx ?? null,
     request.cacheTypeKv ?? null,
@@ -37,6 +54,8 @@ function estimateKey(request: MemoryEstimateRequest | null): string | null {
     request.nUbatch ?? null,
     request.ctxCheckpoints ?? null,
     request.speculativeType ?? null,
+    request.specDraftNMax ?? null,
+    request.specDraftCacheType ?? null,
     request.tensorParallel ?? false,
     request.disableVision ?? false,
     request.gpuMemoryMode ?? null,

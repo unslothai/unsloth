@@ -32,6 +32,9 @@ export {
 export interface GpuInfo {
   available: boolean;
   budgetKnown: boolean;
+  /** A Vulkan iGPU: memoryTotalGb is a capped view of system RAM, not a pool
+   *  beside it, so callers must not add systemRamTotalGb on top of it. */
+  sharedMemory: boolean;
   /** The backend torch resolved: cuda, rocm, xpu, mlx, cpu. Carried on every path, including the
    * GPU-less one, because "which runtimes can this host place" is exactly the question a host
    * with no usable GPU has to answer. Empty until system info arrives. */
@@ -51,6 +54,7 @@ export interface GpuInfo {
 const DEFAULT_GPU: GpuInfo = {
   available: false,
   budgetKnown: false,
+  sharedMemory: false,
   backend: "",
   name: "Unknown",
   memoryTotalGb: 0,
@@ -88,6 +92,7 @@ function toGpuInfo(
     systemRamAvailableGb: devices.some((device) => device.shared_memory)
       ? 0
       : base.systemRamAvailableGb,
+    sharedMemory: devices.some((device) => device.shared_memory),
     available: true,
     budgetKnown: true,
     name: devices[0]?.name ?? "Unknown",

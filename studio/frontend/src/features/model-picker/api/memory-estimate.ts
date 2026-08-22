@@ -56,6 +56,8 @@ export interface MemoryEstimateRequest {
   nUbatch?: number | null;
   ctxCheckpoints?: number | null;
   speculativeType?: string | null;
+  specDraftNMax?: number | null;
+  specDraftCacheType?: string | null;
   tensorParallel?: boolean;
   disableVision?: boolean;
   gpuMemoryMode?: string | null;
@@ -117,6 +119,8 @@ function estimateRequestBody(
     n_ubatch: payload.nUbatch ?? null,
     ctx_checkpoints: payload.ctxCheckpoints ?? null,
     speculative_type: payload.speculativeType ?? null,
+    spec_draft_n_max: payload.specDraftNMax ?? null,
+    spec_draft_cache_type: payload.specDraftCacheType ?? null,
     tensor_parallel: payload.tensorParallel ?? false,
     disable_vision: payload.disableVision ?? false,
     gpu_memory_mode: payload.gpuMemoryMode ?? null,

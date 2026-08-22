@@ -905,3 +905,106 @@ class TestNativeLeaseOperation:
         ).read_text(encoding = "utf-8")
         assert '"validate-model"' in types_ts
         assert "estimate-memory" not in types_ts
+
+
+from core.inference.llama_cpp import (  # noqa: E402
+    _extra_args_draft_offloaded_to_cpu as _draft_on_cpu,
+)
+
+
+class TestDrafterAccounting:
+    """A separate drafter costs more than its file.
+
+    The loader budgets its KV cache and rollback state through
+    ``_estimate_mtp_overhead_bytes``, which grows with context exactly as the target's
+    cache does. Charging only the file made speculation look nearly free.
+    """
+
+    @pytest.fixture
+    def config(self, gqa_gguf, tmp_path):
+        drafter = tmp_path / "mtp-model.gguf"
+        drafter.write_bytes(
+            _make_gguf_bytes(
+                "qwen3",
+                {
+                    "general.architecture": "qwen3",
+                    **{f"qwen3.{k}": v for k, v in _GQA_FIELDS.items()},
+                },
+            )
+        )
+        return SimpleNamespace(
+            identifier = "local/model",
+            gguf_file = gqa_gguf,
+            is_gguf = True,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = str(drafter),
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+        )
+
+    def test_the_charged_drafter_is_found_by_the_bytes_it_added(self, config, tmp_path):
+        size = os.path.getsize(config.gguf_mtp_file)
+        assert ri._charged_drafter_path(config, size) == config.gguf_mtp_file
+        # A figure matching no candidate must not pick one at random.
+        assert ri._charged_drafter_path(config, size + 1) is None
+        assert ri._charged_drafter_path(config, 0) is None
+
+    def test_drafter_runtime_grows_with_context(self, config, gqa_gguf, monkeypatch):
+        drafter_bytes = os.path.getsize(config.gguf_mtp_file)
+        main_gb = 1.0
+
+        # Mimic the files term: the drafter is charged unless the probe forces it off.
+        def _files(
+            cfg,
+            *,
+            llama_extra_args = None,
+            **kw,
+        ):
+            pinned = _draft_on_cpu(list(llama_extra_args or ()))
+            return main_gb + (0.0 if pinned else drafter_bytes / 1024**3)
+
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", _files)
+        small = ri._gguf_memory_breakdown(config, gqa_gguf, n_ctx = 2048)
+        large = ri._gguf_memory_breakdown(config, gqa_gguf, n_ctx = 32768)
+        # Weights are the same files at both contexts; only the drafter's cache moved.
+        assert small.weights_bytes == large.weights_bytes
+        drafter_runtime_small = small.total_bytes - small.weights_bytes - small.kv_bytes
+        drafter_runtime_large = large.total_bytes - large.weights_bytes - large.kv_bytes
+        assert drafter_runtime_large > drafter_runtime_small
+
+    def test_a_cpu_pinned_drafter_stays_in_the_total(self, config, gqa_gguf, monkeypatch):
+        drafter_bytes = os.path.getsize(config.gguf_mtp_file)
+        main_gb = 1.0
+
+        def _files(
+            cfg,
+            *,
+            llama_extra_args = None,
+            **kw,
+        ):
+            pinned = _draft_on_cpu(list(llama_extra_args or ()))
+            return main_gb + (0.0 if pinned else drafter_bytes / 1024**3)
+
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", _files)
+        on_gpu = ri._gguf_memory_breakdown(config, gqa_gguf, n_ctx = 8192)
+        on_cpu = ri._gguf_memory_breakdown(
+            config, gqa_gguf, n_ctx = 8192, llama_extra_args = ["--spec-draft-ngl", "0"]
+        )
+        # _estimate_gguf_required_gb drops a CPU-pinned drafter because it is a VRAM
+        # admission figure. This panel reports host RAM too, so the bytes stay in the
+        # total and leave only the GPU column.
+        assert on_cpu.total_bytes == on_gpu.total_bytes
+        assert on_cpu.weights_bytes == on_gpu.weights_bytes
+        assert on_cpu.gpu_bytes < on_gpu.gpu_bytes
+
+
+class TestDeviceCount:
+    """A pinned layer split pays per-device overhead, not just tensor mode."""
+
+    def test_a_pinned_layer_split_counts_its_cards(self):
+        # _gguf_runtime_bytes adds pipeline overhead per extra device and replicates
+        # the context-linear compute term, so forcing 1 here underestimated both.
+        assert ri._guard_device_count([0, 1], None, tensor_parallel = False) == 2
+        assert ri._guard_device_count([0, 1, 2], None, tensor_parallel = False) == 3
+        # Automatic placement lands on one card until the fit says otherwise.
+        assert ri._guard_device_count(None, None, tensor_parallel = False) == 1

@@ -742,6 +742,18 @@ class EstimateMemoryRequest(BaseModel):
     speculative_type: Optional[str] = Field(
         None, description = "Speculative mode; decides which drafter's weights are charged."
     )
+    spec_draft_n_max: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 16,
+        description = "Draft depth. Sizes the drafter's rollback state, so it moves the "
+        "estimate for every mode that loads a separate drafter.",
+    )
+    spec_draft_cache_type: Optional[str] = Field(
+        None,
+        description = "Draft KV cache dtype. The drafter keeps its own cache, and at a "
+        "long context that is GB, not a rounding error.",
+    )
     tensor_parallel: bool = Field(False, description = "Whether tensor mode is requested")
     disable_vision: bool = Field(
         False, description = "Vision off, so an image projector's bytes are not charged."

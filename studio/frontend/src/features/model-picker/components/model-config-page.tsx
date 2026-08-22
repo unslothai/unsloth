@@ -989,17 +989,20 @@ function MemoryEstimateRow({
   gpuCapacityGb,
   totalCapacityGb,
   isUnifiedMemory,
+  singleMemoryPool,
   expanded,
   onExpandedChange,
 }: {
   estimate: MemoryEstimate | null;
   loading: boolean;
   stale: boolean;
-  /** VRAM available, or the unified pool on Apple Silicon. 0 when unknown. */
+  /** VRAM available, or the shared pool where there is only one. 0 when unknown. */
   gpuCapacityGb: number;
   /** GPU plus host RAM, the ceiling an offloaded load works against. 0 when unknown. */
   totalCapacityGb: number;
   isUnifiedMemory: boolean;
+  /** GPU and host draw on the same memory, so an offloaded byte is not a freed one. */
+  singleMemoryPool: boolean;
   expanded: boolean;
   onExpandedChange: (next: boolean) => void;
 }) {
@@ -1033,11 +1036,11 @@ function MemoryEstimateRow({
           tone: "muted",
           text: "Expert layers held on the CPU aren't modelled here, so the GPU figure reads high.",
         }
-      : gpuFit === "exceeds"
+      : (singleMemoryPool ? totalFit : gpuFit) === "exceeds"
         ? {
             tone: "warn",
-            text: isUnifiedMemory
-              ? "More than this machine's unified memory. The GPU and the rest of the system share one pool here, so there is nothing to offload to."
+            text: singleMemoryPool
+              ? "More than this machine's memory. The GPU and the rest of the system share one pool here, so there is nothing to offload to."
               : "More than this GPU holds. Layers will spill to system RAM, or the context will be fitted down to what fits.",
           }
         : null;
@@ -1064,13 +1067,17 @@ function MemoryEstimateRow({
         <div
           className={`flex shrink-0 items-center gap-3 transition-opacity ${stale || loading ? "opacity-50" : ""}`}
         >
+          {/* One pool: offloading a layer moves it within the same memory rather
+              than out of it, so the honest single figure is the total. Reporting
+              the GPU share here let a zero-layer load read as almost free. */}
           <MemoryFigure
-            label={isUnifiedMemory ? "Unified" : "GPU"}
-            value={`${prefix}${formatMemoryGb(estimate.gpuBytes)}`}
-            tone={MEMORY_VALUE_TONE[gpuFit]}
+            label={singleMemoryPool ? (isUnifiedMemory ? "Unified" : "Shared") : "GPU"}
+            value={`${prefix}${formatMemoryGb(
+              singleMemoryPool ? estimate.totalBytes : estimate.gpuBytes,
+            )}`}
+            tone={MEMORY_VALUE_TONE[singleMemoryPool ? totalFit : gpuFit]}
           />
-          {/* One shared pool means the same number twice. */}
-          {isUnifiedMemory ? null : (
+          {singleMemoryPool ? null : (
             <MemoryFigure
               label="Total"
               value={`${prefix}${formatMemoryGb(estimate.totalBytes)}`}
@@ -2608,6 +2615,8 @@ export function ModelConfigPage({
           nUbatch: runtimeConfig.nUbatch,
           ctxCheckpoints: runtimeConfig.ctxCheckpoints ?? null,
           speculativeType: runtimeConfig.speculativeType,
+          specDraftNMax: runtimeConfig.specDraftNMax,
+          specDraftCacheType: runtimeConfig.specDraftCacheDtype ?? null,
           tensorParallel: runtimeConfig.tensorParallel,
           disableVision: runtimeConfig.disableVision,
           gpuMemoryMode: runtimeConfig.gpuMemoryMode ?? null,
@@ -2638,9 +2647,12 @@ export function ModelConfigPage({
   // RAM. Both 0 when the probe found nothing, which reads as "no verdict".
   const memoryGpuCapacityGb =
     pinnedCapacityGb > 0 ? pinnedCapacityGb : inferenceGpu.memoryTotalGb;
-  const memoryTotalCapacityGb = isUnifiedMemory
-    ? // One pool, so adding system RAM to VRAM would count the same bytes twice.
-      memoryGpuCapacityGb
+  // Apple Silicon shares one pool, and so does a Vulkan iGPU whose reported budget
+  // is already a capped view of system RAM. Adding that RAM again would count the
+  // same bytes twice and call an oversized load a fit.
+  const singleMemoryPool = isUnifiedMemory || inferenceGpu.sharedMemory;
+  const memoryTotalCapacityGb = singleMemoryPool
+    ? memoryGpuCapacityGb
     : memoryGpuCapacityGb + inferenceGpu.systemRamTotalGb;
 
   const rememberChanged = remember !== savedRemember;
@@ -2869,6 +2881,7 @@ export function ModelConfigPage({
               gpuCapacityGb={memoryGpuCapacityGb}
               totalCapacityGb={memoryTotalCapacityGb}
               isUnifiedMemory={isUnifiedMemory}
+              singleMemoryPool={singleMemoryPool}
               expanded={memoryBreakdownOpen}
               onExpandedChange={setMemoryBreakdownOpen}
             />

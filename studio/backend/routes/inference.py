@@ -7858,6 +7858,34 @@ def _gguf_resident_file_gb(
     return files_gb
 
 
+# Appended to a probe's argument list to force the drafter charge one way or the
+# other. Both flags are last-wins in llama.cpp's parsers, so an appended value
+# overrides anything earlier in the list AND the environment fallback, which only
+# applies when no argument carries the flag at all.
+_DRAFT_FORCE_GPU_ARGS = ("--spec-draft-ngl", "999", "--spec-draft-device", "gpu")
+_DRAFT_FORCE_CPU_ARGS = ("--spec-draft-ngl", "0")
+
+
+def _charged_drafter_path(config: ModelConfig, drafter_bytes: int) -> Optional[str]:
+    """Which drafter file accounts for ``drafter_bytes``, or None.
+
+    Identified by size rather than by re-deriving the mode precedence. That
+    precedence lives in ``_estimate_gguf_required_gb`` and depends on capability
+    probes and Auto-mode rules; a second copy of it would pick a different sidecar
+    from the one that was actually charged, which is worse than not pricing the KV
+    at all. Matching on the bytes it added cannot disagree with it.
+    """
+    if drafter_bytes <= 0:
+        return None
+    for attr in ("gguf_dspark_file", "gguf_dflash_file", "gguf_mtp_file"):
+        candidate = getattr(config, attr, None)
+        if not candidate or not Path(candidate).is_file():
+            continue
+        if LlamaCppBackend._get_gguf_size_bytes(str(candidate)) == drafter_bytes:
+            return str(candidate)
+    return None
+
+
 def _gguf_memory_breakdown(
     config: ModelConfig,
     gguf_path: str,
@@ -7877,6 +7905,8 @@ def _gguf_memory_breakdown(
     disable_vision: bool = False,
     gpu_memory_mode: Optional[str] = None,
     gpu_layers: Optional[int] = None,
+    spec_draft_n_max: Optional[int] = None,
+    spec_draft_cache_type: Optional[str] = None,
 ) -> Optional[_GgufMemoryBreakdown]:
     """Itemize what loading this GGUF at ``n_ctx`` would cost. None if nothing sizes.
 
@@ -7906,18 +7936,77 @@ def _gguf_memory_breakdown(
     )
     if files_gb is None:
         return None
-    runtime_bytes = runtime.kv_bytes + runtime.compute_bytes
-    weights_bytes = int(round(files_gb * (1024**3)))
+    from core.inference.llama_cpp import (
+        _extra_args_draft_offloaded_to_cpu,
+        _kv_offload_from_args,
+        _resolved_mmproj_offload,
+    )
+
+    gpu_files_bytes = int(round(files_gb * (1024**3)))
+    extras = list(llama_extra_args or ())
+    files_probe = dict(
+        hf_token = hf_token,
+        speculative_type = speculative_type,
+        disable_vision = disable_vision,
+    )
+
+    def _files_bytes_with(extra: tuple[str, ...]) -> Optional[int]:
+        gb = _gguf_resident_file_gb(config, llama_extra_args = extras + list(extra), **files_probe)
+        return None if gb is None else int(round(gb * (1024**3)))
+
+    # A CPU-pinned drafter is dropped from _estimate_gguf_required_gb, which is a VRAM
+    # admission figure. This panel reports host RAM too, so those bytes belong in the
+    # total even though they never reach the GPU. Recovered by re-pricing with the pin
+    # overridden rather than by re-deriving which sidecar the mode picks.
+    host_drafter_bytes = 0
+    if _extra_args_draft_offloaded_to_cpu(extras):
+        unpinned = _files_bytes_with(_DRAFT_FORCE_GPU_ARGS)
+        if unpinned is not None and unpinned > gpu_files_bytes:
+            host_drafter_bytes = unpinned - gpu_files_bytes
+    else:
+        no_drafter = _files_bytes_with(_DRAFT_FORCE_CPU_ARGS)
+        if no_drafter is not None:
+            gpu_drafter_bytes = max(0, gpu_files_bytes - no_drafter)
+        else:
+            gpu_drafter_bytes = 0
+    weights_bytes = gpu_files_bytes + host_drafter_bytes
+
+    # The drafter keeps its own KV cache and rollback state on top of its file, which
+    # the loader budgets separately and the files term says nothing about. Priced
+    # wherever the drafter itself lives: a CPU-pinned one still holds that state, in
+    # host RAM, so it belongs in the total even though it never reaches the GPU.
+    drafter_runtime_bytes = 0
+    drafter_on_gpu = host_drafter_bytes == 0
+    drafter_path = _charged_drafter_path(
+        config, host_drafter_bytes if host_drafter_bytes else gpu_drafter_bytes
+    )
+    if drafter_path:
+        probe = LlamaCppBackend()
+        probe._read_gguf_metadata(gguf_path)
+        drafter_runtime_bytes = (
+            probe._estimate_mtp_overhead_bytes(
+                runtime.n_ctx,
+                spec_draft_n_max = spec_draft_n_max or 0,
+                draft_cache_type_k = spec_draft_cache_type,
+                draft_cache_type_v = spec_draft_cache_type,
+                drafter_path = drafter_path,
+                # The file is already in weights_bytes; this term is runtime only.
+                draft_weights_bytes = 0,
+                n_parallel = n_parallel,
+            )
+            or 0
+        )
+
+    runtime_bytes = runtime.kv_bytes + runtime.compute_bytes + drafter_runtime_bytes
 
     layer_count = runtime.layer_count
     gpu_fraction = _gguf_offloaded_layer_fraction(gpu_memory_mode, gpu_layers, layer_count)
-    from core.inference.llama_cpp import _kv_offload_from_args, _resolved_mmproj_offload
 
     # Only the main weight is split by --gpu-layers. A projector and a drafter are
     # placed by their own flags, so scaling them by the model's layer fraction let
     # --gpu-layers 0 report zero GPU bytes while both sat in VRAM.
-    main_bytes = min(weights_bytes, LlamaCppBackend._get_gguf_size_bytes(gguf_path))
-    companion_bytes = max(0, weights_bytes - main_bytes)
+    main_bytes = min(gpu_files_bytes, LlamaCppBackend._get_gguf_size_bytes(gguf_path))
+    companion_bytes = max(0, gpu_files_bytes - main_bytes)
     # A drafter is only charged when it lands on the GPU (a CPU-pinned one is dropped
     # from the total upstream), so the projector is the single companion that can be
     # charged and off-GPU: --no-mmproj-offload keeps it in host RAM. Priced by itself
@@ -7936,8 +8025,11 @@ def _gguf_memory_breakdown(
     kv_on_gpu = _kv_offload_from_args(llama_extra_args) and gpu_fraction > 0.0
     gpu_bytes = gpu_weights + (runtime.kv_bytes if kv_on_gpu else 0)
     if gpu_fraction > 0.0:
-        # Compute buffers land on the devices running layers.
+        # Compute buffers land on the devices running layers, and the drafter's
+        # own state goes wherever the drafter itself was placed.
         gpu_bytes += runtime.compute_bytes
+        if drafter_on_gpu:
+            gpu_bytes += drafter_runtime_bytes
     return _GgufMemoryBreakdown(
         weights_bytes = weights_bytes,
         kv_bytes = runtime.kv_bytes,
@@ -11523,16 +11615,20 @@ async def estimate_memory(
             n_batch = request.n_batch,
             n_ubatch = request.n_ubatch,
             ctx_checkpoints = request.ctx_checkpoints,
-            # Only tensor mode spreads the buffers, and only it is worth the probe.
-            # A pin counts the cards it names, not every card on the host.
-            n_devices = (
-                _guard_device_count(request.selected_gpu_ids or None, None, tensor_parallel = True)
-                if request.tensor_parallel
-                else 1
+            # A layer split across pinned cards replicates the context-linear
+            # compute term and adds per-device pipeline overhead, so the count
+            # matters there too, not just in tensor mode. Automatic placement
+            # stays at one: _guard_device_count makes the same call.
+            n_devices = _guard_device_count(
+                request.selected_gpu_ids or None,
+                None,
+                tensor_parallel = bool(request.tensor_parallel),
             ),
             disable_vision = bool(request.disable_vision),
             gpu_memory_mode = request.gpu_memory_mode,
             gpu_layers = request.gpu_layers,
+            spec_draft_n_max = request.spec_draft_n_max,
+            spec_draft_cache_type = request.spec_draft_cache_type,
         )
         if breakdown is None:
             return EstimateMemoryResponse(available = False, reason = "unsizable")
