@@ -22,6 +22,7 @@ on:
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
       - 'tests/studio/playwright_heavy_thread.py'
+      - 'tests/studio/probe_dismiss_guard.py'
       - 'tests/studio/playwright_settings_tabs.py'
       - 'tests/studio/playwright_stream_pacing.py'
       # Shared lifecycle helpers, and the contract tests that keep verdicts from going unread.
@@ -398,6 +399,11 @@ jobs:
           PW_ART_DIR: logs/playwright_heavy_thread
         run: python3 tests/studio/playwright_heavy_thread.py
 
+      # A failure means dismissal triggered an unconfirmed delete.
+      - name: Browser check for non-modal menu dismissal
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/probe_dismiss_guard.py --label ci --engine chromium
+
       # The settings panels are fetched on first view, so only a browser can answer whether
       # every tab renders and deep-opens land (and abandoned ones do not come back).
       - name: Browser smoke for the settings tab panels
@@ -436,13 +442,12 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: studio-frontend-smoke-artifacts
-          # Four of the five smokes write logs/playwright-<name>; the settings smoke writes a
-          # JSON report instead, under its own name, so a bare playwright-* glob uploaded
-          # everything EXCEPT the report of the smoke that had just failed.
+          # Include the settings and dismissal probe reports as well as playwright-* logs.
           path: |
             logs/playwright-*
             logs/settings_tabs_report.json
             logs/settings_tabs_blocked_report.json
+            logs/pw/
           retention-days: 3
           if-no-files-found: ignore
 
