@@ -112,6 +112,7 @@ def _finished_ab(
     tier = "standard",
     base = "main",
     treatment = "fix",
+    treatment_url = "",
 ) -> Paths:
     paths = Paths.under(tmp_path / "out")
     _record(
@@ -123,6 +124,8 @@ def _finished_ab(
                 "row_type": "ab_plan",
                 "base_ref": base,
                 "treatment_ref": treatment,
+                # Empty for a treatment the run installed itself, exactly as `run()` records it.
+                "treatment_url": treatment_url,
                 "balanced": False,
                 "order": ["r10K.base.rep0", "r10K.treatment.rep0"],
             },
@@ -150,6 +153,27 @@ def test_resuming_after_changing_the_treatment_ref_is_refused(tmp_path):
     message = str(excinfo.value)
     assert "treatment_ref" in message
     assert "'fix'" in message and "'other'" in message
+
+
+def test_resuming_a_self_managed_treatment_against_an_attached_one_is_refused(tmp_path):
+    """The label after `--ab` says nothing about where the build came from.
+
+    The payload's treatment was cloned and built by that run; this one points the same label at a
+    server the caller is holding open. Two different builds, one `--ab fix`.
+    """
+
+    paths = _finished_ab(tmp_path)
+    args = parse_args(
+        ["--tier", "standard", "--branch", "main", "--ab", "fix"]
+        + ["--attach-b", "http://127.0.0.1:5311", "--resume"]
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths, requested_identity(args, "fix", CORPUS), resume = True, log = lambda *_a: None
+        )
+
+    assert "treatment_url" in str(excinfo.value)
 
 
 def test_resuming_after_changing_the_branch_is_refused(tmp_path):
@@ -280,6 +304,55 @@ def test_a_payload_that_never_recorded_an_axis_still_resumes(tmp_path):
     assert _resume_set(paths) == {"r10K.A0.rep0"}
 
 
+def test_an_attached_ab_payload_still_resumes_under_a_run_that_is_not_an_ab(tmp_path):
+    """The other direction of the same control. A payload recorded as an A/B against a URL, and a
+    single-sided run over the same output: the arm in the cell id keeps `A0` off `base` and
+    `treatment` without either treatment axis inventing a refusal."""
+
+    paths = _finished_ab(tmp_path, treatment_url = "http://127.0.0.1:5311")
+    args = parse_args(["--tier", "standard", "--branch", "main", "--resume"])
+
+    assert (
+        prepare_payload(
+            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+        )
+        is None
+    )
+
+
+def test_an_ab_payload_that_never_recorded_a_treatment_url_still_resumes(tmp_path):
+    """The legacy control for the newest axis: an `ab_plan` written before the URL was recorded
+    declares nothing about it, and an axis a row never declared cannot be a difference."""
+
+    paths = Paths.under(tmp_path / "out")
+    _record(
+        paths,
+        "sess-1",
+        [
+            _run_meta("standard", "attached:http://127.0.0.1:5310", ["10K"]),
+            {
+                "row_type": "ab_plan",
+                "base_ref": "main",
+                "treatment_ref": "fix",
+                "balanced": False,
+                "order": ["r10K.base.rep0", "r10K.treatment.rep0"],
+            },
+            _cell("r10K.base.rep0", 10_000, arm = "base"),
+        ],
+    )
+    args = parse_args(
+        ["--tier", "standard", "--attach", "http://127.0.0.1:5310", "--ab", "fix"]
+        + ["--attach-b", "http://127.0.0.1:5311", "--resume"]
+    )
+
+    assert (
+        prepare_payload(
+            paths, requested_identity(args, "fix", CORPUS), resume = True, log = lambda *_a: None
+        )
+        is None
+    )
+
+
 def test_a_non_ab_payload_and_an_ab_run_do_not_collide(tmp_path):
     """`A0` against `base`/`treatment`: the arm in the cell id already keeps these apart, so the
     identity check must not invent a refusal on top of it."""
@@ -349,7 +422,9 @@ def test_resuming_under_a_changed_dollar_setting_is_refused(tmp_path):
     on = _fixture_payload(tmp_path, "on", "sess-on", corpus_dollars = True)
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
-            on, requested_identity(_resume_args(), None, CORPUS), resume = True,
+            on,
+            requested_identity(_resume_args(), None, CORPUS),
+            resume = True,
             log = lambda *_a: None,
         )
     assert "corpus_dollars" in str(excinfo.value)
@@ -410,7 +485,11 @@ def test_an_unchanged_fixture_resumes_and_returns_its_completed_cells(tmp_path):
 
 def test_a_payload_from_before_the_fixture_axes_existed_resumes_exactly_as_it_did(tmp_path):
     """No `stream_tail_chars` and no `corpus_dollars` key at all, which is every payload written
-    before this branch. The defaults, not a difference."""
+    before this branch. Resumed UNDER THE DEFAULTS it is asking for the film it already ran, so it
+    resumes and its completed cells are skipped, exactly as they were before either flag existed.
+
+    The other half of that reading -- a resume that does NOT use the defaults -- is the test below.
+    """
 
     paths = _fixture_payload(tmp_path, "old", "sess-old")
     assert "stream_tail_chars" not in paths.payload_jsonl.read_text(encoding = "utf-8")
@@ -425,6 +504,75 @@ def test_a_payload_from_before_the_fixture_axes_existed_resumes_exactly_as_it_di
         is None
     )
     assert _resume_set(paths) == {"r10K.A0.rep0"}
+
+
+def test_a_payload_from_before_the_fixture_axes_is_refused_under_a_non_default_fixture(tmp_path):
+    """REGRESSION. Absence PROVES the default here, and skipping the axis threw that proof away.
+
+    An axis a payload never declared is normally skipped: it declined to say, so there is nothing
+    to disagree with. These two axes arrived WITH the flags that set them, so a payload written
+    before them could not have run under anything but `stream_tail_chars = None` and
+    `corpus_dollars = False`. Skipping them accepted `--resume --stream-tail-chars 24000` against
+    such a payload, skipped every cell it had completed, and recorded the remaining cells under a
+    different streamed fixture beneath the same cell ids -- the mixed ladder the refusal exists to
+    prevent, arrived at through the one door left open.
+    """
+
+    for name, flags in (
+        ("tail", ["--stream-tail-chars", "24000"]),
+        ("dollars", ["--corpus-dollars"]),
+    ):
+        paths = _fixture_payload(tmp_path, f"legacy-{name}", "sess-old")
+        with pytest.raises(SystemExit) as excinfo:
+            prepare_payload(
+                paths,
+                requested_identity(_resume_args(*flags), None, CORPUS),
+                resume = True,
+                log = lambda *_a: None,
+            )
+
+        message = str(excinfo.value)
+        assert ("stream_tail_chars" if "--stream-tail-chars" in flags else "corpus_dollars") in (
+            message
+        )
+        # The refusal has to say WHY an axis the payload never mentions is a difference, or the
+        # reader's next move is to go looking for a key that was never going to be there.
+        assert "predates this axis" in message
+
+
+def test_the_skip_rule_still_holds_for_an_axis_that_really_did_decline_to_say(tmp_path):
+    """The other axes keep the general rule: `run_meta` has always carried them, so a payload that
+    omits one omitted it for its own reasons and this check has nothing to say about it. Only the
+    two fixture axes read absence as a value."""
+
+    paths = Paths.under(tmp_path / "quiet")
+    _record(
+        paths,
+        "sess-quiet",
+        [
+            {
+                "row_type": "run_meta",
+                "tier": "standard",
+                "tool_version": "0.0.9",
+                "corpus_hash": CORPUS,
+                "studio_ref": "main",
+                "bundle": {"production": True},
+                "platform": {"system": "Linux"},
+                "started_at": "2026-01-01T00:00:00",
+                "stream_tail_chars": 24_000,
+                "corpus_dollars": True,
+            },
+            _cell("r10K.A0.rep0", 10_000),
+        ],
+    )
+    args = _resume_args("--stream-tail-chars", "24000", "--corpus-dollars", "--cadence", "fast")
+
+    assert (
+        prepare_payload(
+            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+        )
+        is None
+    )
 
 
 def test_a_dead_cell_is_still_re_run_and_a_missing_payload_is_still_empty(tmp_path):

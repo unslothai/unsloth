@@ -350,6 +350,22 @@ def reasoning_toggle(ctx: ActionContext) -> ActionResult:
 
 # ── 5. stop generation ──────────────────────────────────────────────
 
+#: What `stop_generation`'s throwaway turn costs in FIXED waits once it starts, on any machine: 80
+#: ms for the composer to take the text, 600 ms to let the new turn get going so stop is measured
+#: against a live stream rather than a starting one, 400 ms for the chunks already in flight to
+#: land, and 200 ms for the cleanup delete to settle. Polling for the turn to start and for the
+#: stream to stop is on top of it, so this is a floor.
+#:
+#: RESERVED OUT OF THE DRAIN WAIT rather than spent past the deadline. The drain wait below is
+#: bounded by the slot's remaining budget, so a reply that finishes at the last moment of the slot
+#: used to leave nothing at all for the 1.28 s that follows. `stop_generation` closes 300 ms before
+#: `scroll_after` opens on the fast film and 500 ms before it on the quick one, and the runner is
+#: sequential -- every slot has an absolute start, but nothing enters it until the previous action
+#: returns. So the overrun came out of `scroll_after`'s own 1,200 ms window on the fast film and
+#: recorded `slot_missed` there, whose reason blames the machine for reaching the slot late when
+#: what happened is that this action was still cleaning up its scaffolding.
+OWN_TURN_FIXED_MS = 80 + 600 + 400 + 200
+
 #: Remove the throwaway turn `stop_generation` created, so the thread it leaves behind is the
 #: thread it found. Deletes the assistant turn and then the user turn that prompted it, in that
 #: order, because deleting the user message first can take the reply with it and leave the count
@@ -422,15 +438,18 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
     # the flag's own help text sends the caller to -- still passes. A silently truncated fixture
     # reported as a clean run is the most expensive failure shape this harness has.
     #
-    # So the reply is given the rest of this slot's budget to finish on its own, which is all a
-    # marginally slow drain needs (the fast film opens this slot 0.4 s after the worst-case drain
-    # on the ladder), and if it has not finished, NOTHING IS STOPPED and the row says why. An
-    # honest `not_run` costs a column; stopping the reply costs the whole cell. With the default
-    # tail nothing is ever running when this slot opens -- the packing test in fixture/selftest
-    # holds every film to that -- so this path is unreachable on an unmodified run and the
-    # behaviour there is exactly what it was.
+    # So the reply is given the rest of this slot's budget LESS what the throwaway turn then costs
+    # (`OWN_TURN_FIXED_MS`) to finish on its own, which is all a marginally slow drain needs (the
+    # fast film opens this slot 0.4 s after the worst-case drain on the ladder, and 1.7 s of the
+    # fast film's 3 s budget is still left over for it). If it has not finished by then, NOTHING IS
+    # STOPPED and the row says why. An honest `not_run` costs a column; stopping the reply costs
+    # the whole cell, and spending the rest of the slot draining and THEN starting a turn of our
+    # own costs the next slot. With the default tail nothing is ever running when this slot opens
+    # -- the packing test in fixture/selftest holds every film to that -- so this path is
+    # unreachable on an unmodified run and the behaviour there is exactly what it was.
     if _ev(ctx, "() => window.__sb.dom.isRunning()"):
-        settle_deadline = time.monotonic() + max(0.0, ctx.budget_ms / 1000.0)
+        drain_ms = max(0.0, ctx.budget_ms - OWN_TURN_FIXED_MS)
+        settle_deadline = time.monotonic() + drain_ms / 1000.0
         running: Any = True
         while time.monotonic() < settle_deadline:
             ctx.page.wait_for_timeout(100)
@@ -440,9 +459,11 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
         if running:
             return not_run(
                 "the cell's own reply was still streaming when this slot opened and had not "
-                f"drained {ctx.budget_ms}ms later. Stopping it would permanently truncate the "
-                "reply the rest of the film and the final census measure, so nothing was "
-                "stopped. Lower --stream-tail-chars or move this slot past the drain"
+                f"drained {drain_ms:.0f}ms later -- this slot's remaining {ctx.budget_ms}ms less "
+                f"the {OWN_TURN_FIXED_MS}ms it then takes to start, stop and remove a turn of our "
+                "own. Stopping it would permanently truncate the reply the rest of the film and "
+                "the final census measure, so nothing was stopped. Lower --stream-tail-chars or "
+                "move this slot past the drain"
             )
 
     ctx.page.fill('textarea[aria-label="Message input"]', "one more")
