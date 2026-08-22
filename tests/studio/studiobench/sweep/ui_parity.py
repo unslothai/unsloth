@@ -53,6 +53,7 @@ if __package__ in (None, ""):  # pragma: no cover
     sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 from tests.studio.studiobench.analysis import parity as P  # noqa: E402
+from tests.studio.studiobench.scoring.from_payload import latest_attempt_rows  # noqa: E402
 
 # The DECLARED unstable set, each entry carrying its mechanism. It lives in the studiobench
 # package rather than here so that a test can require a mechanism for every entry, and so that
@@ -88,16 +89,33 @@ def collect(paths: list[Path]) -> dict:
     overwritten by the matching 100K row and the gate reported success.
 
     THE SESSION IS PART OF IT FOR THE SAME REASON, and one shard is not one session. `--resume`
-    skips the arm that COMPLETED and re-runs the arm that died, under a new session id, appending
-    into the same shard directory -- so the payload holds the completed partner under the old
-    session and the retry under the new one. Keyed on the repetition alone those two arms pair, and
-    the comparison is then across sessions: `sweep/floor_table.paired` and `scoring/ab.py` both
-    refuse exactly that, the first for the ~8% session-to-session drift it charges to whichever arm
-    was re-run, and this one because the digests are of two different browser sessions. A pair that
-    differs only for that reason is counted by `derive_unstable` as evidence that the action is
-    unstable, and two of them at one rung silence a real DOM regression at that rung for good.
+    re-runs a pair under a new session id, appending into the same shard directory, and it can
+    stop again partway: a resume that re-ran the base arm and died before its partner leaves the
+    payload holding one arm under the old session and the other under the new one. Keyed on the
+    repetition alone those two arms pair, and the comparison is then across sessions:
+    `sweep/floor_table.paired` and `scoring/ab.py` both refuse exactly that, the first for the ~8%
+    session-to-session drift it charges to whichever arm was re-run, and this one because the
+    digests are of two different browser sessions. A pair that differs only for that reason is
+    counted by `derive_unstable` as evidence that the action is unstable, and two of them at one
+    rung silence a real DOM regression at that rung for good.
 
     A payload recorded before session ids existed has `""` on both arms and pairs exactly as before.
+
+    A SUPERSEDED ATTEMPT IS NOT AN OBSERVATION, so `latest_attempt_rows` drops it before any of
+    that pairing happens. `runtime/ab.skippable_cells` skips a `(rung, rep)` pair only when EVERY
+    arm of it completed, and re-runs BOTH arms otherwise, so an interruption leaves the payload
+    holding a full base/treatment pair under the dead session AND another under the retry's. The
+    scene emits its action rows before `stream:drain`, so a cell that dies draining has already
+    written every digest it captured: keyed by session alone those two pairs are two comparable
+    observations of ONE logical repetition, and the first of them compares a completed arm against
+    an arm that was on its way down.
+
+    That is the shape `derive_unstable` is least able to survive. One differing superseded pair
+    plus one matching replacement is exactly `min_observations`, so the action is marked unstable
+    at that rung on the strength of a reading the run itself threw away, a real DOM regression
+    there prints under "expected to vary", and the command exits 0. `readings_by_arm` filters the
+    same rows for the same reason on the timing side, and `sweep/floor_table.cell_metrics` gets it
+    for free by keying completed cells on the cell id -- this was the one path left reading both.
 
     A row whose parity is missing or failed is KEPT, as the failed capture it is. Dropping it here
     would delete the evidence that the surface went unmeasured, and the comparison layer needs to
@@ -110,7 +128,9 @@ def collect(paths: list[Path]) -> dict:
     attempted = missing = 0
     for path in paths:
         shard = path.parent.name
-        for r in rows(path):
+        # Per file: the payload is append-only within one shard, and a cell id is reused across
+        # shards, so superseding has to be resolved inside the stream that appended it.
+        for r in latest_attempt_rows(rows(path)):
             if r.get("row_type") != "action":
                 continue
             parity = r.get("parity")

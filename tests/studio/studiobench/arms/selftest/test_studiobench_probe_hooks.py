@@ -16,6 +16,7 @@ unset would make every scored run a probe run.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -124,7 +125,10 @@ def test_a_probe_run_records_the_gate_that_makes_it_unscorable(main_src: str):
     """
 
     assert '"probe_init_script": extra_init or None' in main_src
-    assert 'rec.gate(\n        "probe_free",' in main_src
+    # Matched without pinning the indent. `run()` puts side acquisition under a cleanup guard, so
+    # everything from the acquisition loop to the end of setup sits one level deeper than it did,
+    # and the gate moving with it is not the thing this test is here to notice.
+    assert re.search(r"rec\.gate\(\s*\n\s*\"probe_free\",", main_src)
 
 
 def test_roots_are_adopted_at_insertion_not_on_the_sample_tick(probe_src: str):

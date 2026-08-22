@@ -29,7 +29,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from studiobench.__main__ import (  # noqa: E402
-    _resume_set,
     completion_exit_code,
     engines_installed,
     is_null_control,
@@ -39,7 +38,6 @@ from studiobench.__main__ import (  # noqa: E402
     side_home,
     side_specs,
 )
-from studiobench.runtime.types import Paths  # noqa: E402
 
 
 def _side(label, ref, url, owns):
@@ -176,14 +174,17 @@ def test_one_failed_cell_fails_the_run():
 # ── the report ladder ───────────────────────────────────────────────────────────────────────
 
 
-def _payload(tmp_path, rungs, cells):
-    path = tmp_path / "payload.jsonl"
+def _rows(
+    rungs,
+    cells,
+    session = "s1",
+):
     rows = [
         {
             "row_type": "run_meta",
             "tier": "standard",
             "rungs": rungs,
-            "session_id": "s1",
+            "session_id": session,
             "corpus_hash": "c0ffee",
         }
     ]
@@ -192,7 +193,7 @@ def _payload(tmp_path, rungs, cells):
             {
                 "row_type": "cell",
                 "cell_id": f"r{tokens}",
-                "session_id": "s1",
+                "session_id": session,
                 "target_tokens": tokens,
                 "completed": True,
                 "cell": {"arm": "A0", "rep": 0},
@@ -202,15 +203,31 @@ def _payload(tmp_path, rungs, cells):
             {
                 "row_type": "action",
                 "cell_id": f"r{tokens}",
-                "session_id": "s1",
+                "session_id": session,
                 "action": "keystroke",
                 "ran": True,
                 "expect_ok": True,
                 "timings": {"p95_ms": 20.0},
             }
         )
+    return rows
+
+
+def _write(path, rows):
     path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding = "utf-8")
     return path
+
+
+def _payload(tmp_path, rungs, cells):
+    return _write(tmp_path / "payload.jsonl", _rows(rungs, cells))
+
+
+def _resumed_payload(tmp_path, first, then, cells):
+    """One payload, two sessions: a run that promised `first`, and the `--resume` that promised
+    `then`. A resume APPENDS its own `run_meta`, which is how a longer ladder gets into a file that
+    already has one -- `rungs` is deliberately not a payload identity axis precisely so it can."""
+
+    return _write(tmp_path / "payload.jsonl", _rows(first, cells) + _rows(then, [], session = "s2"))
 
 
 def test_the_recorded_ladder_is_read_back_from_the_payload(tmp_path):
@@ -233,103 +250,40 @@ def test_report_scores_the_rung_the_run_promised_and_never_reached(tmp_path, cap
     assert "100,000" in summary or "100000" in summary or "100K" in summary
 
 
+def test_a_rung_a_resume_added_is_still_owed_by_the_payload(tmp_path):
+    """1K completed, resumed with `--rungs 1K,10K`, killed after the new header and before the cell.
+
+    The ladder a payload owes is every rung any of its sessions promised. Reading the FIRST
+    `run_meta` alone declared only 1K, and a continuation that never reached its new top rung
+    scored COMPLETE -- the crash-beats-limp failure, arriving through the resume.
+    """
+
+    path = _resumed_payload(tmp_path, ["1K"], ["1K", "10K"], [1_000])
+    assert recorded_ladder(path) == ["1K", "10K"]
+
+
+def test_the_report_declares_the_rung_the_resume_promised_and_never_reached(tmp_path):
+    path = _resumed_payload(tmp_path, ["1K"], ["1K", "10K"], [1_000])
+    assert main(["--report", str(path)]) == 0
+    summary = (tmp_path / "summary.md").read_text(encoding = "utf-8")
+    assert "10,000" in summary
+    assert "INCOMPLETE" in summary
+
+
+def test_a_resume_that_promised_no_new_rung_reports_the_same_ladder(tmp_path):
+    """The control: folding the headers may not invent a rung out of an ordinary continuation."""
+
+    path = _resumed_payload(tmp_path, ["1K", "10K"], ["1K", "10K"], [1_000, 10_000])
+    assert recorded_ladder(path) == ["1K", "10K"]
+    assert main(["--report", str(path)]) == 0
+    assert "100,000" not in (tmp_path / "summary.md").read_text(encoding = "utf-8")
+
+
 def test_an_explicit_tier_still_wins(tmp_path):
     path = _payload(tmp_path, ["1K", "10K", "100K"], [1_000, 10_000])
     assert main(["--report", str(path), "--tier", "quick"]) == 0
     summary = (tmp_path / "summary.md").read_text(encoding = "utf-8")
     assert "100,000" not in summary and "100K" not in summary
-
-
-# ── the resume identity ─────────────────────────────────────────────────────────────────────
-#
-# `--stream-tail-chars` and `--corpus-dollars` change what the last turn STREAMS and neither of
-# them moves `corpus_hash`, which covers the frozen units on disk and the generator's parameters.
-# The refusal in `sweep/floor_table.corpus_of` is written for exactly this shape -- a second
-# `run_meta` appended behind the first run's completed cells -- and cannot see either axis, and
-# `cell_id` encodes the rung, the arm and the repetition and neither. So the resume has to refuse
-# it itself or the payload silently becomes one ladder measured against two films.
-
-
-def _resume_payload(
-    tmp_path,
-    name,
-    meta: dict,
-    cells = ("1K.A0.rep0",),
-):
-    out = tmp_path / name
-    out.mkdir(parents = True, exist_ok = True)
-    rows = [{"row_type": "run_meta", "tier": "standard", "corpus_hash": "same", **meta}]
-    rows += [{"row_type": "cell", "cell_id": c, "completed": True} for c in cells]
-    (out / "payload.jsonl").write_text(
-        "".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8"
-    )
-    return Paths.under(out)
-
-
-def test_resuming_under_a_changed_stream_tail_is_refused(tmp_path):
-    paths = _resume_payload(tmp_path, "tail", {"stream_tail_chars": 24_000})
-    with pytest.raises(SystemExit) as exc:
-        _resume_set(paths, 96_000, False)
-    assert "different fixture" in str(exc.value)
-
-
-def test_resuming_under_a_changed_dollar_setting_is_refused(tmp_path):
-    """Both directions. Dropping the flag on the resume is the likelier of the two."""
-
-    paths = _resume_payload(tmp_path, "on", {"corpus_dollars": True})
-    with pytest.raises(SystemExit):
-        _resume_set(paths, None, False)
-    paths = _resume_payload(tmp_path, "off", {"corpus_dollars": False})
-    with pytest.raises(SystemExit):
-        _resume_set(paths, None, True)
-
-
-def test_a_payload_that_already_holds_two_fixtures_is_refused_either_way(tmp_path):
-    out = tmp_path / "mixed"
-    out.mkdir()
-    (out / "payload.jsonl").write_text(
-        json.dumps({"row_type": "run_meta", "stream_tail_chars": 6_000})
-        + "\n"
-        + json.dumps({"row_type": "run_meta", "stream_tail_chars": 96_000})
-        + "\n",
-        encoding = "utf-8",
-    )
-    with pytest.raises(SystemExit):
-        _resume_set(Paths.under(out), 6_000, False)
-
-
-# ── the control: the refusal must not swallow the resumes that are legitimate ────────────────
-
-
-def test_an_unchanged_fixture_resumes_and_returns_its_completed_cells(tmp_path):
-    paths = _resume_payload(
-        tmp_path,
-        "same",
-        {"stream_tail_chars": 24_000, "corpus_dollars": True},
-        cells = ("1K.A0.rep0", "10K.A0.rep0"),
-    )
-    assert _resume_set(paths, 24_000, True) == {"1K.A0.rep0", "10K.A0.rep0"}
-
-
-def test_a_payload_from_before_these_axes_existed_resumes_exactly_as_it_did(tmp_path):
-    """No `stream_tail_chars` and no `corpus_dollars` key at all. The defaults, not a difference."""
-
-    paths = _resume_payload(tmp_path, "old", {})
-    assert _resume_set(paths, None, False) == {"1K.A0.rep0"}
-
-
-def test_a_dead_cell_is_still_re_run_and_a_missing_payload_is_still_empty(tmp_path):
-    out = tmp_path / "died"
-    out.mkdir()
-    (out / "payload.jsonl").write_text(
-        json.dumps({"row_type": "run_meta", "stream_tail_chars": None})
-        + "\n"
-        + json.dumps({"row_type": "cell", "cell_id": "1K.A0.rep0", "completed": False})
-        + "\n",
-        encoding = "utf-8",
-    )
-    assert _resume_set(Paths.under(out), None, False) == set()
-    assert _resume_set(Paths.under(tmp_path / "nothing-here"), None, False) == set()
 
 
 if __name__ == "__main__":
