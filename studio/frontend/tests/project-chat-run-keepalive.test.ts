@@ -105,7 +105,7 @@ test("compare hides the shared provider instead of unmounting it", () => {
     /<ThreadScopedSettingsSync\s+enabled=\{[^}]*!backgrounded\s*\}/,
     /<ActiveBranchRegistrar\s+enabled=\{[^}]*!backgrounded\s*\}/,
     /<ThreadContextUsageRecount\s+enabled=\{[^}]*!backgrounded\s*\}/,
-    /<ThreadNewChatSwitch nonce=\{newThreadNonce\} paused=\{backgrounded\} \/>/,
+    /<ThreadNewChatSwitch[\s\S]*?nonce=\{newThreadNonce\}[\s\S]*?paused=\{backgrounded\}[\s\S]*?\/>/,
   ]) {
     assert.match(provider, gated);
   }
@@ -123,6 +123,27 @@ test("a staged attachment does not follow the user into the next view", () => {
   assert.match(
     provider,
     /if \(previousNonce !== null\) \{[\s\S]{0,220}?clearAttachments\(\)/,
+  );
+  const switchSource = componentSource(
+    provider,
+    "function ThreadNewChatSwitch({",
+  );
+  assert.equal(
+    switchSource.includes("useRef<string | null>(null)"),
+    false,
+    "the nonce guard must outlive ThreadNewChatSwitch mounts",
+  );
+  const runtimeProvider = componentSource(
+    provider,
+    "export function ChatRuntimeProvider({",
+  );
+  assert.match(
+    runtimeProvider,
+    /const switchedNewThreadNonceRef = useRef<string \| null>\(null\);/,
+  );
+  assert.match(
+    runtimeProvider,
+    /<ThreadNewChatSwitch[\s\S]*?switchedNonceRef=\{switchedNewThreadNonceRef\}[\s\S]*?\/>/,
   );
 });
 

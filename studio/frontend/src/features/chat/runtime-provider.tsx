@@ -1640,7 +1640,12 @@ function ThreadAutoSwitch({
 function ThreadNewChatSwitch({
   nonce,
   paused,
-}: { nonce: string; paused: boolean }): ReactElement | null {
+  switchedNonceRef,
+}: {
+  nonce: string;
+  paused: boolean;
+  switchedNonceRef: { current: string | null };
+}): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
@@ -1650,10 +1655,6 @@ function ThreadNewChatSwitch({
   const runActive = useChatRuntimeStore((s) =>
     Object.values(s.runningByThreadId).some(Boolean),
   );
-  // What the switch below last ran for, so re-running the effect for any other
-  // reason -- isLoading settling, compare releasing the pause -- is a no-op
-  // rather than a second switch that would drop the user out of a live chat.
-  const switchedNonceRef = useRef<string | null>(null);
   // The outgoing thread is not read here: New Chat leaves it running.
   useEffect(() => {
     if (isLoading || paused) {
@@ -2224,6 +2225,7 @@ export function ChatRuntimeProvider({
   });
 
   const aui = useAui({});
+  const switchedNewThreadNonceRef = useRef<string | null>(null);
 
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>
@@ -2258,7 +2260,11 @@ export function ChatRuntimeProvider({
           />
         )}
         {!initialThreadId && newThreadNonce && (
-          <ThreadNewChatSwitch nonce={newThreadNonce} paused={backgrounded} />
+          <ThreadNewChatSwitch
+            nonce={newThreadNonce}
+            paused={backgrounded}
+            switchedNonceRef={switchedNewThreadNonceRef}
+          />
         )}
         {/* The view stays mounted (only CSS-hidden) while off-route so the run
             stays attached and the stream alive; unmounting aborts generation. */}
