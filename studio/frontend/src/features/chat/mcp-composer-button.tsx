@@ -367,5 +367,13 @@ export function McpServersDialogMount() {
   // model that cannot use them yet is the usual reason to come here.
   const chatActive = useChatActive();
   useShortcut("openMcpServers", () => setOpen(true), { enabled: chatActive });
-  return <ChatMcpServersDialog open={open} onOpenChange={setOpen} />;
+  // Leaving the chat closes it for good rather than parking it: the flag
+  // outlives this subtree, so a dialog left open would come back on the next
+  // visit as a ghost of the last one.
+  useEffect(() => {
+    if (!chatActive && open) setOpen(false);
+  }, [chatActive, open, setOpen]);
+  return (
+    <ChatMcpServersDialog open={chatActive && open} onOpenChange={setOpen} />
+  );
 }

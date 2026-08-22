@@ -733,7 +733,12 @@ test("the MCP chord does not live behind the MCP pill", async () => {
     button.indexOf('useShortcut("openMcpServers"') > mount,
     "the chord is back inside the pill",
   );
-  assert.match(page, /\{active && <McpServersDialogMount \/>\}/);
+  // Mounted through the route change, not gated on `active`: the flag lives in
+  // a store, so a dialog left open has to be closed on the way out rather than
+  // unmounted with it still set.
+  assert.match(page, /\n\s*<McpServersDialogMount \/>/);
+  assert.match(button, /if \(!chatActive && open\) setOpen\(false\);/);
+  assert.match(button, /open=\{chatActive && open\}/);
 });
 
 test("every settings tab survives a reload", () => {

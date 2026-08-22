@@ -3552,10 +3552,11 @@ export function ChatPage({
           render their own copy and the shared-composer menu would have none. It
           also portals to body, so gate it on `active` like the tour above. */}
       {active && <BypassPermissionsConfirmDialog />}
-      {/* Same treatment for the MCP servers dialog: its chord has to work
-          before MCP is switched on, and the pill that used to own it only
-          renders once it is. */}
-      {active && <McpServersDialogMount />}
+      {/* The MCP servers dialog: its chord has to work before MCP is switched
+          on, and the pill that used to own it only renders once it is. Mounted
+          through the route change, not gated on `active`, so it can close
+          itself on the way out instead of returning with the tab. */}
+      <McpServersDialogMount />
       {/* `--studio-chat-notice-height` is 0 until ChatModelNotice is actually on
           screen, and the thread viewport adds it to the top padding it already
           reserves for the header. Without it the notice is an opaque bar over
