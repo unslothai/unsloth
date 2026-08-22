@@ -328,7 +328,7 @@ export function NotebooksPage(): ReactElement {
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
       <main className="mx-auto w-full max-w-7xl px-5 py-8 sm:px-9">
         <div className="max-w-2xl">
-          <h1 className="text-[30px] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[34px]">
+          <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
             {t("notebooks.title")}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">

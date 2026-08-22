@@ -2064,7 +2064,7 @@ export const en = {
       modelWeights: "Model weights",
     },
   },
-    notebooks: {
+  notebooks: {
     routeTitle: "Notebooks",
     title: "Unsloth Notebooks",
     subtitle:
