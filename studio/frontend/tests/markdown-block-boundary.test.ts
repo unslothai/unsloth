@@ -154,6 +154,65 @@ test("an empty fence degrades to nothing, not to its own closing backticks", () 
   assert.equal(fallback.fenced, true);
 });
 
+test("an opening fence the reply ends on is still a fence", () => {
+  // The repository's own parser (`mdast-util-from-markdown`, via Streamdown's
+  // `parseMarkdownIntoBlocks`) reads "```python" with no line break as
+  // code(lang="python", value=""), so the highlighter chunk IS requested for it
+  // and this fallback is reachable. CommonMark 0.31.2 closes an unclosed block
+  // at the end of the document. Read as prose, the reader gets the delimiter and
+  // the language tag as literal text where their answer should be.
+  for (const [content, language] of [
+    ["```python", "python"],
+    ["```", null],
+    ["~~~py", "py"],
+    ["   ```py", "py"],
+  ] as const) {
+    const fallback = markdownBlockFallback(content);
+    assert.equal(
+      fallback.fenced,
+      true,
+      `an EOF terminated opening fence rendered as prose: ${JSON.stringify(content)}`,
+    );
+    assert.equal(fallback.text, "");
+    assert.equal(fallback.language, language);
+  }
+});
+
+test("a backtick fence whose info string carries a backtick is prose", () => {
+  // "If the info string comes after a backtick fence, it may not contain any
+  // backtick characters" (CommonMark 0.31.2), so this line does not open a
+  // fence and the parser keeps it as a paragraph. Accepting it as an opener
+  // discarded the opening line AND the closing one, which is the model's answer
+  // silently going missing in the one view of it that still exists.
+  const content = "```py`bad\nabc\n```";
+  const fallback = markdownBlockFallback(content);
+
+  assert.equal(
+    fallback.text,
+    content,
+    "an invalid backtick fence opener was accepted, so the block degraded to part of itself",
+  );
+  assert.equal(fallback.fenced, false);
+  assert.equal(fallback.language, null);
+});
+
+test("a backtick anywhere in the info string disqualifies the opener", () => {
+  // Not just the first word: the restriction is on the whole info string.
+  const content = "```py meta`x\nabc\n```";
+  assert.equal(markdownBlockFallback(content).text, content);
+  assert.equal(markdownBlockFallback("```py`bad").text, "```py`bad");
+});
+
+test("a tilde fence may carry backticks in its info string", () => {
+  // The restriction is backtick fences only, and the parser agrees:
+  // "~~~py`ok\nabc\n~~~" is code(lang="py`ok", value="abc").
+  const fallback = markdownBlockFallback("~~~py`ok\nabc\n~~~");
+
+  assert.equal(fallback.text, "abc");
+  assert.equal(fallback.fenced, true);
+  assert.equal(fallback.language, "py`ok");
+});
+
 test("a block with content never degrades to nothing", () => {
   for (const content of [
     "```python\nx = 1\n```",

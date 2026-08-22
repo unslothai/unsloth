@@ -58,11 +58,21 @@ function openingFence(content: string): OpeningFence | null {
   while (content[i + run] === char) run += 1;
   if (run < 3) return null;
   const lineEnd = content.indexOf("\n", i + run);
-  // No line break yet means the fence has not opened; it is still the literal
-  // characters the model has sent so far.
-  if (lineEnd === -1) return null;
-  const info = content.slice(i + run, lineEnd).replace(/\r$/, "");
-  return { marker: char.repeat(run), info, body: content.slice(lineEnd + 1) };
+  // A reply that ENDS on the opening line has still opened a fence. CommonMark
+  // 0.31.2 closes an unclosed block at the end of the document, so the opening
+  // line is the whole fence and the body is empty. Returning null here showed
+  // the delimiter and the language tag as prose instead.
+  const rest = lineEnd === -1 ? content.length : lineEnd;
+  const info = content.slice(i + run, rest).replace(/\r$/, "");
+  // "If the info string comes after a backtick fence, it may not contain any
+  // backtick characters" (CommonMark 0.31.2). Such a line is a PARAGRAPH, so
+  // the block is not a whole-block fence and belongs to the caller unchanged;
+  // treating it as one drops the opening line and the reader loses that text.
+  // Tilde fences carry no such restriction. `CODE_FENCE_RE` in
+  // `features/chat/artifacts/html-fences` already spells the same rule.
+  if (char === "`" && info.includes("`")) return null;
+  const body = lineEnd === -1 ? "" : content.slice(lineEnd + 1);
+  return { marker: char.repeat(run), info, body };
 }
 
 /**
