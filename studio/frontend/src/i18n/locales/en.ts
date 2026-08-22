@@ -1038,7 +1038,7 @@ export const en = {
           "Keep the parent on its current model and register Unsloth as a local subagent (Claude Code, Codex, and OpenCode).",
         apiKey: "Provide your Unsloth API key (or set UNSLOTH_API_KEY).",
         reasoning:
-          "Set the reasoning mode (off, auto, on) for a server this command starts. Defaults to off.",
+          "Reasoning mode (off, auto, on) for a server this command starts; defaults to off. For an effort level, serve the model with unsloth run --chat-template-kwargs '{\"reasoning_effort\":\"medium\"}'.",
         yolo: "Skip approval prompts. Use only in trusted environments.",
       },
       remote: {
@@ -1050,11 +1050,6 @@ export const en = {
         title: "Passing agent arguments",
         description:
           "Arguments after the Unsloth flags are forwarded to the agent itself, so native commands like resume still work:",
-      },
-      reasoning: {
-        title: "Reasoning effort",
-        description:
-          "Agent sessions serve the model with reasoning off, so tool calls stay in the structured tool channel. Add --reasoning auto or --reasoning on to opt back into model reasoning. It only applies to a server unsloth start launches itself, so stop a running Studio with unsloth studio stop and re-run, or the current mode is kept.",
       },
       dryRun: {
         title: "Preview without launching",

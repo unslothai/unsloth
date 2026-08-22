@@ -133,7 +133,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     // subagent.title is deliberately absent: its label only mounts for the agents
     // that support subagents, so a hit would have nothing to scroll to otherwise.
     "settings.agents.options.title",
-    "settings.agents.reasoning.title",
     "settings.agents.remote.title",
     "settings.agents.passthrough.title",
     "settings.agents.dryRun.title",

@@ -6,7 +6,6 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { createSettingsSearchIndex } from "../src/features/settings/settings-search.ts";
 import { en } from "../src/i18n/locales/en.ts";
 
 // agents-tab.tsx reaches the chat barrel and cannot be imported here, so this
@@ -33,22 +32,12 @@ test("--reasoning is listed with the other start flags", () => {
   );
 });
 
-test("the reasoning example carries the agent and model that are picked", () => {
-  // A fixed `unsloth start claude` example would tell the user to serve a model
-  // other than the one the builder above just resolved.
-  assert.match(TAB, /command=\{`\$\{command\} \$\{REASONING_FLAGS\}`\}/);
-  assert.match(TAB, /const REASONING_FLAGS = "--reasoning auto"/);
-});
-
-test("the tip is findable from settings search", () => {
-  const index = createSettingsSearchIndex({
-    desktop: false,
-    closeToTray: false,
-  });
-  // SettingsSection renders the title as its data-settings-label, so a hit here
-  // has something to scroll to.
-  assert.ok(index.agents.includes("settings.agents.reasoning.title"));
-  assert.ok(en.settings.agents.reasoning.title.length > 0);
-  assert.ok(en.settings.agents.reasoning.description.includes("--reasoning"));
-  assert.ok(en.settings.agents.options.reasoning.includes("off"));
+test("the row carries the effort recipe, which is a different flag", () => {
+  const row = en.settings.agents.options.reasoning;
+  // --reasoning is the on/off/auto mode. An effort level is a chat template
+  // kwarg on the server, and unsloth start forwards unknown flags to the
+  // agent, so it has to be set when the model is served.
+  assert.ok(row.includes("off, auto, on"));
+  assert.ok(row.includes('--chat-template-kwargs \'{"reasoning_effort":"medium"}\''));
+  assert.ok(row.includes("unsloth run"));
 });

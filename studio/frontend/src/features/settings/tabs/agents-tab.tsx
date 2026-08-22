@@ -469,9 +469,6 @@ const PASSTHROUGH_EXAMPLES = [
 
 const DRY_RUN_FLAGS = "--no-launch";
 
-// `on` also opts back in; `auto` follows the model, so it is the safer example.
-const REASONING_FLAGS = "--reasoning auto";
-
 /** Code box with the copy control inside it, top-right. Presentational: the
  *  copy state stays with the caller so existing resets still apply. */
 function CopyableCode({
@@ -1570,16 +1567,6 @@ export function AgentsTab() {
               </span>
             </div>
           ))}
-        </div>
-      </SettingsSection>
-
-      <SettingsSection
-        title={t("settings.agents.reasoning.title")}
-        description={t("settings.agents.reasoning.description")}
-      >
-        {/* Built from the live command, so it carries the picked agent and model. */}
-        <div className="pt-3">
-          <CommandBlock command={`${command} ${REASONING_FLAGS}`} />
         </div>
       </SettingsSection>
 

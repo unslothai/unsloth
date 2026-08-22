@@ -1077,7 +1077,7 @@ export const de = {
         apiKey:
           "Übergibt Ihren Unsloth-API-Schlüssel (alternativ UNSLOTH_API_KEY setzen).",
         reasoning:
-          "Legt den Reasoning-Modus (off, auto, on) für einen von diesem Befehl gestarteten Server fest. Standard: off.",
+          "Reasoning-Modus (off, auto, on) für einen von diesem Befehl gestarteten Server; Standard: off. Für eine Aufwandsstufe starten Sie das Modell mit unsloth run --chat-template-kwargs '{\"reasoning_effort\":\"medium\"}'.",
         yolo:
           "Überspringt Bestätigungsabfragen. Nur in vertrauenswürdigen Umgebungen verwenden.",
       },
@@ -1090,11 +1090,6 @@ export const de = {
         title: "Argumente an den Agenten übergeben",
         description:
           "Argumente nach den Unsloth-Optionen werden an den Agenten selbst weitergereicht, sodass native Befehle wie resume weiterhin funktionieren:",
-      },
-      reasoning: {
-        title: "Reasoning-Aufwand",
-        description:
-          "Agentensitzungen stellen das Modell mit reasoning off bereit, damit Tool-Aufrufe im strukturierten Tool-Kanal bleiben. Fügen Sie --reasoning auto oder --reasoning on hinzu, um das Reasoning des Modells wieder zu aktivieren. Das gilt nur für einen Server, den unsloth start selbst startet: Beenden Sie ein laufendes Studio mit unsloth studio stop und führen Sie den Befehl erneut aus, sonst bleibt der aktuelle Modus erhalten.",
       },
       dryRun: {
         title: "Vorschau ohne Start",

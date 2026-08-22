@@ -1041,7 +1041,7 @@ export const ko = {
         apiKey:
           "Unsloth API 키를 지정합니다(또는 UNSLOTH_API_KEY 환경 변수를 설정합니다).",
         reasoning:
-          "이 명령이 시작하는 서버의 추론 모드(off, auto, on)를 설정합니다. 기본값: off.",
+          "이 명령이 시작하는 서버의 추론 모드(off, auto, on). 기본값은 off입니다. 강도를 지정하려면 unsloth run --chat-template-kwargs '{\"reasoning_effort\":\"medium\"}'로 모델을 제공하세요.",
         yolo: "승인 확인을 건너뜁니다. 신뢰할 수 있는 환경에서만 사용하세요.",
       },
       remote: {
@@ -1053,11 +1053,6 @@ export const ko = {
         title: "에이전트에 인자 전달",
         description:
           "Unsloth 플래그 뒤의 인자는 에이전트 자체로 전달되므로 resume 같은 기본 명령도 그대로 동작합니다:",
-      },
-      reasoning: {
-        title: "추론 강도",
-        description:
-          "에이전트 세션은 도구 호출이 구조화된 도구 채널에 남도록 모델을 reasoning off로 제공합니다. 모델 추론을 다시 켜려면 --reasoning auto 또는 --reasoning on을 추가하세요. unsloth start가 직접 시작한 서버에만 적용되므로, 실행 중인 Studio는 unsloth studio stop으로 종료한 뒤 다시 실행해야 하며 그렇지 않으면 현재 모드가 유지됩니다.",
       },
       dryRun: {
         title: "실행하지 않고 미리 보기",

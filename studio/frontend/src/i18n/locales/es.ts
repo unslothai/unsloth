@@ -1068,7 +1068,7 @@ export const es = {
           "Mantén el agente principal en su modelo actual y registra Unsloth como subagente local (Claude Code, Codex y OpenCode).",
         apiKey: "Indica tu clave de API de Unsloth (o define UNSLOTH_API_KEY).",
         reasoning:
-          "Define el modo de razonamiento (off, auto, on) para un servidor que inicie este comando. Valor predeterminado: off.",
+          "Modo de razonamiento (off, auto, on) para un servidor que inicie este comando; predeterminado: off. Para un nivel de esfuerzo, sirve el modelo con unsloth run --chat-template-kwargs '{\"reasoning_effort\":\"medium\"}'.",
         yolo:
           "Omite las solicitudes de aprobación. Úsalo solo en entornos de confianza.",
       },
@@ -1081,11 +1081,6 @@ export const es = {
         title: "Pasar argumentos al agente",
         description:
           "Los argumentos que van después de las opciones de Unsloth se reenvían al propio agente, así que comandos nativos como resume siguen funcionando:",
-      },
-      reasoning: {
-        title: "Esfuerzo de razonamiento",
-        description:
-          "Las sesiones de agente sirven el modelo con reasoning off, para que las llamadas a herramientas se queden en el canal de herramientas estructurado. Añade --reasoning auto o --reasoning on para volver a activar el razonamiento del modelo. Solo se aplica a un servidor que inicie el propio unsloth start: detén un Studio en ejecución con unsloth studio stop y vuelve a ejecutarlo, o se mantendrá el modo actual.",
       },
       dryRun: {
         title: "Previsualizar sin iniciar",
