@@ -510,14 +510,33 @@ def _download(
 
 
 def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
-    """``extractall`` with a per-member containment check, so an archive carrying an
-    absolute path or a ``..`` entry can't write outside ``target`` (Zip-Slip)."""
+    """Extract safely within ``target`` and restore symlinks that ``zipfile`` flattens."""
     base = target.resolve()
+    destinations: list[Path] = []
+    links: list[tuple[Path, str, str]] = []
     for member in zf.infolist():
-        dest = (base / member.filename).resolve()
-        if dest != base and base not in dest.parents:
+        dest = base / member.filename
+        resolved = dest.resolve()
+        if resolved != base and base not in resolved.parents:
             raise RuntimeError(f"unsafe path in archive: {member.filename!r}")
+        destinations.append(dest)
+        if stat.S_ISLNK(member.external_attr >> 16):
+            links.append(
+                (dest, zf.read(member).decode("utf-8", "surrogateescape"), member.filename)
+            )
+    # Avoid following stale links when a newer archive replaces them with regular files.
+    for dest in destinations:
+        if dest.is_symlink():
+            dest.unlink()
     zf.extractall(target)
+    for dest, link_target, filename in links:
+        # Keep symlink targets inside the extraction tree too.
+        resolved = (dest.parent / link_target).resolve()
+        if resolved != base and base not in resolved.parents:
+            raise RuntimeError(f"unsafe symlink in archive: {filename!r} -> {link_target!r}")
+        if dest.is_symlink() or dest.exists():
+            dest.unlink()
+        dest.symlink_to(link_target)
 
 
 def _maybe_fetch_windows_cudart(release: dict, chosen: str, target: Path) -> None:
