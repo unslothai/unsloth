@@ -36,8 +36,22 @@ elif v  < V('2.8.9'): x = 'cu{}{}-torch280'
 elif v  < V('2.9.1'): x = 'cu{}{}-torch290'
 elif v  < V('2.9.2'): x = 'cu{}{}-torch291'
 elif v  < V('2.10.1'): x = 'cu{}{}-torch2100'
+elif v  < V('2.11.0'): raise RuntimeError(f"Torch = {v} not supported!")
+elif v  < V('2.11.1'): x = 'cu{}{}-torch2110'
+elif v  < V('2.12.0'): raise RuntimeError(f"Torch = {v} not supported!")
+elif v  < V('2.12.1'): x = 'cu{}{}-torch2120'
+elif v  < V('2.12.2'): x = 'cu{}{}-torch2121'
 else: raise RuntimeError(f"Torch = {v} too new!")
 if v > V('2.6.9') and cuda not in ("11.8", "12.6", "12.8", "13.0"): raise RuntimeError(f"CUDA = {cuda} not supported!")
-if v >= V('2.10.0') and cuda not in ("12.6", "12.8", "13.0"): raise RuntimeError(f"Torch 2.10 requires CUDA 12.6, 12.8, or 13.0! Got CUDA = {cuda}")
+if v >= V('2.10.0') and cuda not in ("12.6", "12.8", "13.0"): raise RuntimeError(f"Torch = {v} requires CUDA 12.6, 12.8, or 13.0! Got CUDA = {cuda}")
+# torch 2.12 is published on the cu126 and cu130 indexes only, so there is no cu128 extra.
+# Of those two, only cu130 covers Blackwell: measured on 2.12.1, the cu126 build's
+# arch list ends at sm_90 while cu130 carries sm_100 and sm_120, so on a B200 a cu126
+# 2.12 fails even a plain matmul with "no kernel image is available for execution on
+# the device". This gate keys off the detected CUDA, not the GPU, so cu126 stays valid
+# for pre-Blackwell; a Blackwell host needs CUDA 13.
+if v >= V('2.12.0') and cuda not in ("12.6", "13.0"): raise RuntimeError(f"Torch = {v} requires CUDA 12.6 or 13.0! Got CUDA = {cuda}")
 x = x.format(cuda.replace(".", ""), "-ampere" if False else "") # is_ampere is broken due to flash-attn
-print(f'pip install --upgrade pip setuptools wheel && pip install --no-deps git+https://github.com/unslothai/unsloth-zoo.git && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git" --no-build-isolation')
+# torch2110 and later extras pin +cuNNN local builds that only resolve from the matching index.
+extra_index = f' --extra-index-url https://download.pytorch.org/whl/cu{cuda.replace(".", "")}' if (x.endswith(('-torch2110', '-torch2120', '-torch2121')) and cuda in ("12.6", "12.8", "13.0")) else ''
+print(f'pip install --upgrade pip setuptools wheel && pip install --no-deps git+https://github.com/unslothai/unsloth-zoo.git && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git" --no-build-isolation{extra_index}')
