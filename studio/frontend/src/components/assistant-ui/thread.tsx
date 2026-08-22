@@ -4030,6 +4030,36 @@ const Composer: FC<{
   // a new chat first persists, which is the same composer.
   const composerIdentity = threadListItemId ?? "";
   composerIdentityRef.current = composerIdentity;
+  // Keep the mic clickable: if the engine can't run here, explain and point to
+  // the local model instead of disabling the button.
+  const startDictation = useCallback(() => {
+    if (!isStudioDictationAvailable()) {
+      notifyStudioDictationUnavailable();
+      return;
+    }
+    try {
+      aui.composer().startDictation();
+    } catch {
+      notifyStudioDictationUnavailable();
+    }
+  }, [aui]);
+  // Both chords live here, not with the controls below: the recording bar
+  // replaces those while dictation runs, so a chord registered there could
+  // start dictation and never stop it.
+  const chatActive = useChatActive();
+  useShortcut(
+    "startDictation",
+    () => {
+      if (isDictating) aui.composer().stopDictation();
+      else startDictation();
+    },
+    { enabled: chatActive },
+  );
+  // requestSubmit, not the runtime's send: it runs handleSubmit first, which is
+  // what parks a send behind indexing, queues it behind a run, or refuses it.
+  useShortcut("sendMessage", () => formRef.current?.requestSubmit(), {
+    enabled: chatActive && !disabled,
+  });
   const sendAfterDictation = useCallback(() => {
     sendAfterDictationRef.current = true;
     dictationComposerRef.current = composerIdentity;
@@ -4465,6 +4495,7 @@ const Composer: FC<{
               // submitting the form, so run the complete queue/capacity path.
               onSendClick={handleSubmit}
               onStopClick={stopQueue}
+              onDictateClick={startDictation}
               pendingSend={pendingSend}
               menuSide={effectiveMenuSide}
               queueThreadIds={promptQueueThreadIds}
@@ -6166,6 +6197,7 @@ const ComposerRightControls: FC<{
   onQueueClick?: () => void;
   onSendClick?: (event: { preventDefault: () => void }) => void;
   onStopClick?: () => void;
+  onDictateClick?: () => void;
   pendingSend?: boolean;
   menuSide?: "top" | "bottom";
   queueThreadIds: string[];
@@ -6175,6 +6207,7 @@ const ComposerRightControls: FC<{
   onQueueClick,
   onSendClick,
   onStopClick,
+  onDictateClick,
   pendingSend,
   menuSide,
   queueThreadIds,
@@ -6242,40 +6275,6 @@ const ComposerRightControls: FC<{
     }
     if (isQueueRunning) onStopClick?.();
   };
-  const aui = useAui();
-  // Keep the mic clickable: if the engine can't run here, explain and point to
-  // the local model instead of disabling the button.
-  const startDictation = () => {
-    if (!isStudioDictationAvailable()) {
-      notifyStudioDictationUnavailable();
-      return;
-    }
-    try {
-      aui.composer().startDictation();
-    } catch {
-      notifyStudioDictationUnavailable();
-    }
-  };
-  // One chord for both halves, like the mic button while recording.
-  const composerIsDictating = useAuiState((s) => s.composer.dictation != null);
-  const chatActive = useChatActive();
-  useShortcut(
-    "startDictation",
-    () => {
-      if (composerIsDictating) aui.composer().stopDictation();
-      else startDictation();
-    },
-    { enabled: chatActive },
-  );
-  // Through the form: the same send the button uses, with its checks.
-  useShortcut(
-    "sendMessage",
-    () => {
-      if (disabled || pendingSend) return;
-      aui.composer().send();
-    },
-    { enabled: chatActive && !disabled },
-  );
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
@@ -6288,7 +6287,7 @@ const ComposerRightControls: FC<{
           type="button"
           variant="ghost"
           className="size-8 rounded-full text-foreground"
-          onClick={startDictation}
+          onClick={onDictateClick}
         >
           {/* size-[22px] is the fallback; unsloth-dictate-icon sets the size. */}
           <MicIcon className="unsloth-dictate-icon size-[22px]" />

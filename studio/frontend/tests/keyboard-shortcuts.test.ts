@@ -667,6 +667,27 @@ test("the chords that need one target do not fire where there are two", async ()
   assert.match(toolCard, /soleRequest &&\n\s*showControls &&/);
 });
 
+test("the composer chords outlive the recording bar", async () => {
+  const thread = await readFile(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  // Dictation swaps ComposerRightControls out for the recording bar, so a
+  // chord registered in there could start dictation and never stop it.
+  const controls = thread.indexOf("const ComposerRightControls:");
+  assert.ok(controls !== -1, "the controls component moved");
+  for (const id of ["startDictation", "sendMessage"]) {
+    const at = thread.indexOf(`useShortcut(\n    "${id}"`);
+    const inline = thread.indexOf(`useShortcut("${id}"`);
+    const found = at === -1 ? inline : at;
+    assert.ok(found !== -1, `${id} lost its call site`);
+    assert.ok(found < controls, `${id} registers inside the recording swap`);
+  }
+  // Send goes through the form, which runs the parking, queueing and refusing
+  // that the runtime's own send knows nothing about.
+  assert.match(thread, /"sendMessage", \(\) => formRef\.current\?\.requestSubmit\(\)/);
+});
+
 test("every settings tab survives a reload", () => {
   // The persisted-tab check reads this same list, so a tab added to the union
   // alone can no longer be rejected back to General.
