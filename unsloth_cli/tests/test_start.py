@@ -2752,8 +2752,8 @@ def test_start_studio_server_forwards_tool_flags_via_command_and_env(monkeypatch
     assert "--enable-tools" in cmd and "--disable-tools" not in cmd
     assert "--reasoning" not in cmd
     assert env["LLAMA_ARG_REASONING"] == "auto"
-    # Unset: the level stays with the chat template.
-    assert "LLAMA_ARG_REASONING_EFFORT" not in env
+    # Unset: the template's own level, and an inherited pin cannot survive.
+    assert env["LLAMA_ARG_REASONING_EFFORT"] == "default"
     assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "1"
     assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "0"
 
@@ -2912,6 +2912,29 @@ def test_start_studio_server_forwards_reasoning_effort(monkeypatch):
         start.ServerOptions(reasoning_effort = "medium"),
     )
     assert captured["kwargs"]["env"]["LLAMA_ARG_REASONING_EFFORT"] == "medium"
+
+
+def test_start_studio_server_overrides_inherited_reasoning_effort(monkeypatch):
+    # A level exported for some earlier llama-server run must not silently pin a
+    # server started without the flag.
+    monkeypatch.setenv("LLAMA_ARG_REASONING_EFFORT", "high")
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            captured["kwargs"] = kwargs
+            self.pid = 1
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(start.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(start, "_studio_healthy", lambda base, timeout = 3.0: True)
+    monkeypatch.setattr(start, "_log_tail", lambda path, lines = 20: "API Key: sk-unsloth-x")
+    monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+
+    start._start_studio_server("http://127.0.0.1:8888", "unsloth/M-GGUF", start.LoadOptions())
+    assert captured["kwargs"]["env"]["LLAMA_ARG_REASONING_EFFORT"] == "default"
 
 
 def test_require_studio_warns_on_explicit_reasoning_effort_when_reusing_server(monkeypatch, capsys):

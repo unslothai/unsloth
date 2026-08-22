@@ -1160,9 +1160,10 @@ def _start_studio_server(
     # Older managed versions ignore an unknown env variable instead of failing startup on
     # an unknown passthrough CLI flag. An omitted start option still defaults to off.
     child_env["LLAMA_ARG_REASONING"] = server.reasoning or "off"
-    # Unset leaves the level to the chat template, which is llama-server's default.
-    if server.reasoning_effort:
-        child_env["LLAMA_ARG_REASONING_EFFORT"] = server.reasoning_effort
+    # Always written, like the line above: an inherited value would otherwise pin
+    # a level the omitted flag promises to leave alone. 'default' is llama.cpp's
+    # own sentinel for "keep the chat template's level".
+    child_env["LLAMA_ARG_REASONING_EFFORT"] = server.reasoning_effort or "default"
     # Pass the marker via env so an older launcher ignores it instead of treating an
     # unknown CLI flag as a llama-server arg; new launchers preserve it across re-exec.
     child_env[_START_API_KEY_MARKER_ENV] = "1"
