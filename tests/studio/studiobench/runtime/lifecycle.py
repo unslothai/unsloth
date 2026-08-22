@@ -344,6 +344,39 @@ def _read_bootstrap_password(home: Path, log_path: Path, deadline: float) -> Opt
     return None
 
 
+#: How long to keep looking for the launched server's pid. It appears once the server has forked
+#: and exec'd, which is after `setsid -f` has already returned, so this is a poll rather than a
+#: read. Named so a test can set it to zero instead of sleeping through it.
+PID_DISCOVERY_TIMEOUT_S = 15.0
+
+
+def _discover_pid(port: int, timeout_s: Optional[float] = None) -> Optional[int]:
+    """The pid of the Studio serving `port`, or None. Polls, because it appears asynchronously.
+
+    THE PROCESS WE LAUNCHED IS NOT THE PROCESS WE SPAWNED. `launch_studio` runs the server under
+    `setsid -f`, which always forks and lets the parent exit without waiting, so the pid `Popen`
+    returns belongs to a `setsid` that is gone by the time the server binds; the server itself is
+    reparented into a session of its own and cannot be reached through our process group. `pgrep`
+    is the only handle on it, and it can only be taken once the server exists.
+    """
+    if timeout_s is None:
+        timeout_s = PID_DISCOVERY_TIMEOUT_S
+    deadline = time.time() + max(0.0, timeout_s)
+    while True:
+        try:
+            out = _run(["pgrep", "-f", f"unsloth studio.*-p {port}"], check = False).stdout.strip()
+        except Exception:  # noqa: BLE001
+            return None
+        if out:
+            try:
+                return int(out.splitlines()[0])
+            except ValueError:
+                return None
+        if time.time() >= deadline:
+            return None
+        time.sleep(0.5)
+
+
 def launch_studio(
     install: StudioInstall,
     port: int,
@@ -378,14 +411,23 @@ def launch_studio(
     install.bootstrap_password = _read_bootstrap_password(
         install.home, log_path, time.time() + password_timeout_s
     )
-    if not wait_for_healthz(install.base_url, healthz_timeout_s):
+    # BEFORE the health check, not after it. A Studio that starts and stays unhealthy used to raise
+    # here with `install.pid` still None, and `stop_studio` has nothing to kill without it -- so the
+    # detached server was left running on the requested port while the CLI unwound. It is not idle
+    # there: the next attempt's `unsloth studio -p <port>` finds one of our own servers on the port
+    # and aborts rather than binding (`run.py:_resolve_port`, `avoid_own_studio`), while
+    # `wait_for_healthz` gets its 200 from the STALE process -- which by then may have finished
+    # starting. That run measures the build the previous attempt installed and records the ref this
+    # one asked for, which is the one failure this harness may never produce quietly.
+    install.pid = _discover_pid(port)
+    healthy = wait_for_healthz(install.base_url, healthz_timeout_s)
+    if install.pid is None:
+        # One more look: a server slow enough to miss the window above is exactly the one whose
+        # health check just timed out, and it is the one that most needs to be terminated.
+        install.pid = _discover_pid(port, 0.0)
+    if not healthy:
+        stop_studio(install)
         raise TimeoutError(f"Studio on :{port} did not pass /healthz within {healthz_timeout_s}s")
-    try:
-        out = _run(["pgrep", "-f", f"unsloth studio.*-p {port}"], check = False).stdout.strip()
-        if out:
-            install.pid = int(out.splitlines()[0])
-    except Exception:  # noqa: BLE001
-        pass
     return install
 
 

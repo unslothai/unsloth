@@ -336,6 +336,14 @@ def run(args, ab_ref = None) -> int:
     corpus = Corpus.load()
     _log(f"  corpus_hash {corpus.corpus_hash}")
 
+    # BEFORE the first install, the first launch and the first recorded row. See `prepare_payload`:
+    # a refusal that arrives after two clones and two builds has cost the caller an hour to say
+    # something it could have said in a millisecond, and an archive that arrives after the Recorder
+    # has opened the file has already appended this run's header to the payload it was moving.
+    prepare_payload(
+        paths, requested_identity(args, ab_ref, corpus.corpus_hash), resume = bool(args.resume)
+    )
+
     specs = side_specs(args, ab_ref)
     # Armed AFTER the sides are known, because what it has to cover depends on them: see
     # `watchdog_deadline_s`. Nothing between here and there can hang -- `Corpus.load` reads a
@@ -560,8 +568,6 @@ def run(args, ab_ref = None) -> int:
     )
 
     done = _resume_set(paths) if args.resume else set()
-    if done:
-        _log(f"  resuming: {len(done)} cells already in {paths.payload_jsonl.name}")
 
     if ab_ref:
         from .runtime.ab import Target, interleave, order_is_balanced
@@ -596,6 +602,14 @@ def run(args, ab_ref = None) -> int:
         )
     else:
         work = [(None, cell, plan) for cell, plan in cells]
+
+    if done:
+        # AT PAIR GRANULARITY. An A/B pair whose two arms are not both recorded is re-run whole, so
+        # the resumed session never measures one arm on its own -- see `ab.skippable_cells`. For a
+        # run without --ab every pair holds one cell and this is the set it already was.
+        from .runtime.ab import skippable_cells
+        done = skippable_cells(work, done)
+        _log(f"  resuming: {len(done)} cells already in {paths.payload_jsonl.name}")
 
     rows = []
     resumed = 0
@@ -753,6 +767,167 @@ def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
             "NOTE: no null control (base vs base) was run, so the noise floor here is the "
             "declared default and not this machine's. A win inside that floor is not a win."
         )
+
+
+#: THE PAYLOAD IDENTITY. The axes that decide whether a cell already in a payload measures the
+#: same thing a new invocation is asking for.
+#:
+#: `cell_id` is `r{rung}.{arm}.rep{rep}` and nothing else, so every one of these can change under a
+#: cell id that stays identical: the tier picks the FILM (the standard film runs 243 s, the quick
+#: one 77.5 s and the fast one 47 s, with different budgets), the cadence picks the rate the reply
+#: streams at, the instrument level decides how much of the number is the instrument, the corpus
+#: hash is the fixture, and the two refs are the builds under test.
+#:
+#: `rungs` and `reps` are deliberately NOT here. Resuming with more repetitions or another rung is
+#: a legitimate continuation -- it ADDS cells rather than reinterpreting the ones already recorded.
+IDENTITY_AXES = (
+    "tier",
+    "cadence",
+    "instrument_level",
+    "corpus_hash",
+    "studio_ref",
+    "treatment_ref",
+)
+
+
+def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
+    """The payload identity THIS invocation is asking for.
+
+    `studio_ref` is spelled exactly as `run_meta` records it, so the requested value and the
+    recorded one are comparable without a second convention to keep in step.
+    """
+    base_ref = f"attached:{args.attach.rstrip('/')}" if args.attach else args.branch
+    return {
+        "tier": args.tier,
+        "cadence": args.cadence,
+        "instrument_level": args.instrument_level,
+        "corpus_hash": corpus_hash,
+        "studio_ref": base_ref,
+        "treatment_ref": ab_ref or "",
+    }
+
+
+def recorded_identities(payload_path) -> list:
+    """One identity per session already in the payload, from the rows those sessions wrote.
+
+    Read out of `run_meta` and `ab_plan` rather than out of a new field, so a payload written
+    before this check existed is judged on exactly the axes it DID record: an axis a row never
+    declared cannot be a difference, and an older output therefore still resumes.
+    """
+    by_session: dict = {}
+    order: list = []
+    path = Path(payload_path)
+    if not path.exists():
+        return []
+    with path.open(encoding = "utf-8") as fh:
+        for line in fh:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            row_type = row.get("row_type")
+            if row_type not in ("run_meta", "ab_plan"):
+                continue
+            session = str(row.get("session_id"))
+            if session not in by_session:
+                by_session[session] = {}
+                order.append(session)
+            for axis in IDENTITY_AXES:
+                if axis in row:
+                    by_session[session][axis] = row[axis]
+            # `ab_plan` is where the treatment ref is recorded; `run_meta` names only the base.
+            if row_type == "ab_plan" and row.get("treatment_ref") is not None:
+                by_session[session]["treatment_ref"] = row["treatment_ref"]
+    return [by_session[s] for s in order if by_session[s]]
+
+
+def identity_problems(recorded: dict, requested: dict) -> list:
+    """Every axis on which a recorded session and this invocation disagree."""
+    problems = []
+    for axis in IDENTITY_AXES:
+        if axis not in recorded:
+            # An axis this payload never declared. See `recorded_identities`.
+            continue
+        want, got = requested.get(axis), recorded[axis]
+        if axis == "treatment_ref" and not (want and got):
+            # One of the two is not an A/B at all, and the arm in the cell id ("A0" against
+            # "base"/"treatment") already keeps those cells apart without a refusal.
+            continue
+        if str(want) != str(got):
+            problems.append(f"{axis}: the payload was recorded with {got!r}, this run asks {want!r}")
+    return problems
+
+
+def archive_payload(paths, log = _log):
+    """Move an existing payload aside so a FRESH run starts a file of its own. `None` when empty.
+
+    APPEND MODE IS FOR VALIDATED RESUMES ONLY. `Recorder` opens the payload with `"a"`, so a second
+    invocation into the same `--out` used to write its rows behind the first run's. That is exactly
+    right for `--resume`, which re-runs the cells that died under the same deterministic `cell_id`
+    so `latest_attempt_rows` can supersede them -- and it is wrong for every other reuse, because
+    superseding only reaches the cell ids the new run REACHED. A fresh run that is interrupted
+    leaves the previous run's cells standing in the rungs it never got to, `report.assemble_rows`
+    takes its header from the FIRST `run_meta` in the file, and `--report` then scores one ladder
+    whose rungs came from two builds under two different films without a word about it.
+
+    Moved rather than truncated: the previous run's payload is the previous run's evidence, and the
+    fix for reporting a mixture may not be to delete half of it.
+    """
+    src = Path(paths.payload_jsonl)
+    try:
+        if not src.exists() or src.stat().st_size == 0:
+            return None
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(src.stat().st_mtime))
+    except OSError:
+        return None
+    dest = src.with_name(f"{src.stem}-{stamp}{src.suffix}")
+    index = 1
+    while dest.exists():
+        dest = src.with_name(f"{src.stem}-{stamp}.{index}{src.suffix}")
+        index += 1
+    src.rename(dest)
+    log(f"  a payload was already in this output directory; moved it to {dest.name}")
+    log("  (this run starts a payload of its own. Pass --resume to CONTINUE the previous one.)")
+    return dest
+
+
+def prepare_payload(paths, requested: dict, *, resume: bool, log = _log):
+    """What happens to an `--out` that already holds a payload. Called BEFORE anything is installed.
+
+    Before, because both answers are worthless afterwards: the refusal below has to arrive before
+    the caller has paid for a clone and a build -- an A/B installs TWO -- and the archive has to
+    happen before this run's `Recorder` opens the file it would otherwise append to.
+
+    TWO REUSES, TWO ANSWERS.
+
+    A fresh run archives (see `archive_payload`).
+
+    A `--resume` continues, and is REFUSED when the payload was recorded under a different identity.
+    `--resume` skips every `cell_id` the payload already completed, and a cell id encodes the rung,
+    the arm and the repetition -- not the tier, the cadence, the instrument level, the corpus or
+    either ref. So resuming after changing one of those skips cells that measured something else:
+    at the extreme, `--branch main --ab other --resume` into a directory holding a finished
+    `main -> fix` run installs and launches two Studios, skips every cell, exits 0, and leaves the
+    OLD comparison standing in `ab.md` for somebody to read as the answer for `other`.
+    """
+    if not resume:
+        return archive_payload(paths, log = log)
+
+    problems: list = []
+    for recorded in recorded_identities(paths.payload_jsonl):
+        for problem in identity_problems(recorded, requested):
+            if problem not in problems:
+                problems.append(problem)
+    if problems:
+        raise SystemExit(
+            f"refusing to resume {paths.payload_jsonl}: it was not recorded by a run of this "
+            "configuration.\n  "
+            + "\n  ".join(problems)
+            + "\nA cell id is the rung, the arm and the repetition, so resuming here would skip "
+            "cells that measured something else and report the mixture as one run. Re-run into a "
+            "fresh --out, or resume with the configuration the payload was recorded under."
+        )
+    return None
 
 
 def _resume_set(paths) -> set:
