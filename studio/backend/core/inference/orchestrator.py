@@ -1503,9 +1503,7 @@ class InferenceOrchestrator:
                 try:
                     self._shutdown_subprocess(timeout = 5)
                 except Exception as teardown_exc:
-                    logger.warning(
-                        "Could not shut the failed load's worker down: %s", teardown_exc
-                    )
+                    logger.warning("Could not shut the failed load's worker down: %s", teardown_exc)
             raise
 
     def cancel_load(self, model_name: str) -> bool:
