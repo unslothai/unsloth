@@ -1042,6 +1042,49 @@ def test_main_returns_two_when_nothing_matches(tmp_path, capsys):
     assert "no payload found" in capsys.readouterr().out
 
 
+def test_the_composer_click_does_not_set_the_frame_floor(tmp_path):
+    """The floor table pools the cell's windows too. An 11 s `setup:composer_click` -- almost all
+    of it Playwright's actionability check running on the page's main thread -- would become this
+    table's `max_frame_ms` floor and swallow every regression smaller than itself."""
+
+    def _frames(gaps):
+        return {
+            "frames": {
+                "frames_attempted": True,
+                "frame_gaps_ms": gaps,
+                "frame_gaps_truncated": False,
+                "max_frame_ms": max(gaps),
+            }
+        }
+
+    rows = [
+        {"row_type": "run_meta", "tier": "standard"},
+        {"row_type": "cell", "cell_id": "100K.base.rep0", "completed": True},
+        {
+            "row_type": "window",
+            "cell_id": "100K.base.rep0",
+            "kind": "action",
+            "duration_ms": 2000.0,
+            "instruments": _frames([120.0] * 10),
+        },
+        {
+            "row_type": "window",
+            "cell_id": "100K.base.rep0",
+            "name": "setup:composer_click",
+            "kind": "setup",
+            "duration_ms": 11_000.0,
+            "instruments": _frames([11_000.0]),
+        },
+    ]
+    out = tmp_path / "click"
+    out.mkdir()
+    (out / "payload.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8"
+    )
+    metrics = F.cell_metrics(F.read_rows(out / "payload.jsonl"))["100K.base.rep0"]
+    assert metrics["max_frame_ms"] == 120.0
+
+
 # ── the documented loop runs liveness before it reads a timing ───────
 
 

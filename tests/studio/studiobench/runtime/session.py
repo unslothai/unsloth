@@ -68,6 +68,15 @@ IDLE_CALIBRATION_MS = 1500
 EQUIVALENCE_RUNG = "10K"
 MOUNT_TIMEOUT_S = 180
 
+# How long the composer may take to accept the click that starts the film. Not a performance
+# budget: the point is that the cell survives and the number gets recorded. See `_press_send`.
+# 90s because it has to be well clear of the worst real reading and still bounded, since a click
+# that never lands is a different fact from a slow one.
+COMPOSER_CLICK_TIMEOUT_S = 90
+# Above this the log says so out loud, because a multi-second click is the user complaint itself
+# and it should not be something you only find by reading the payload afterwards.
+SLOW_COMPOSER_CLICK_MS = 1_000
+
 
 class WindowInUse(RuntimeError):
     pass
@@ -164,6 +173,10 @@ class CellRunner:
     # Set once the 10K check fails, and it then labels every LARGER rung, which is the whole
     # point: those rungs are mostly seeded and their fidelity depends on this one answer.
     equivalence_failed: bool = False
+    # Run the click attribution probe before the film starts. Off by default: it costs a handful
+    # of seconds at small rungs and a great deal at large ones, and it makes the cell's timings
+    # incomparable with a cell that did not run it. See `_click_attribution`.
+    click_probe: bool = False
 
     def run(self, cell: Cell, plan: RungPlan) -> dict:
         s = self.session
@@ -188,6 +201,10 @@ class CellRunner:
             "target_tokens": plan.target_tokens,
             "instruments": {},
         }
+        # Cleared HERE, not beside the click that produces it, so the preservation in the `finally`
+        # below cannot attach the PREVIOUS cell's attribution to a cell that died before its own
+        # probe ran. A reading filed under the wrong cell id is worse than a missing one.
+        self._click_attribution_result = None
         try:
             self._run_inner(cell, plan, row)
             row["completed"] = True
@@ -207,6 +224,15 @@ class CellRunner:
             # RSS at death, not a gap in the table.
             rss = row["instruments"].get("rss") or {}
             row["rss_at_death_mb"] = rss.get("rss_peak_mb") if not row["completed"] else None
+            # AND SO IS THE PROBE THAT ALREADY RAN. `--click-probe` finishes inside `_press_send`,
+            # and everything after it there -- the `page.fill`, the send button lookup and its
+            # click -- still runs under the default 8s action timeout, which is exactly what a
+            # large rung exceeds. Assigned only on the way out of `_run_inner`, the whole
+            # attribution was dropped from the cell it was measured for, and unlike
+            # `composer_click_ms` it has no window row of its own to survive in: nothing else in
+            # the payload records it. So it is filed from here, on both paths.
+            if self._click_attribution_result is not None:
+                row["click_attribution"] = self._click_attribution_result
             rec.emit(row)
         return row
 
@@ -297,7 +323,14 @@ class CellRunner:
         )
 
         before_metrics = cdp_metrics(s.ctx.cdp)
+        self._composer_click_ms = None
+        # `click_attribution` is NOT filed here. It is filed in `run`'s `finally`, because a cell
+        # that dies after the probe has to keep it: see there.
         t0 = self._press_send(page)
+        # On the cell rather than in `actions`, because it happens before the first slot opens and
+        # filing it as an action would put a reading outside the film into a list the scoring layer
+        # pairs by slot. It is still a per-cell timing and grows with the rung like any other.
+        row["composer_click_ms"] = self._composer_click_ms
 
         scene = scene_schedule.SCENES.get(self.tier, scene_schedule.QUICK)
         runner = SceneRunner(
@@ -526,11 +559,212 @@ class CellRunner:
             f"the thread mounted {last} of {expected_messages} messages in " f"{MOUNT_TIMEOUT_S}s"
         )
 
+    def _click_attribution(self, page, selector: str) -> dict:
+        """Split the composer click into what a user pays and what the DRIVER pays.
+
+        `page.click` is not a click. Before dispatching it resolves the selector, waits for the
+        element to be visible, enabled and stable, scrolls it into view, then hit-tests the point
+        with `elementsFromPoint` and checks that what is under the cursor is what was asked for,
+        retrying until it agrees. Every one of those steps is O(DOM), and a human does none of
+        them. The Chromium CPU profile of that window at 500K is dominated by Playwright's own
+        injected script, so a number taken from `page.click` cannot be reported as user cost
+        without first showing how much of it is the driver.
+
+        Four paths, ordered by how much machinery each one skips:
+
+          click     `page.click`         full actionability, which is what the ladder recorded
+          mouse     `page.mouse.click`   real input at a point: the browser hit-tests, the driver
+                                         does not resolve or re-check anything
+          dispatch  `dispatch_event`     a synthesised event, no hit test at all
+          focus     `el.focus()`         no event and no hit test, just focus and its handlers
+
+        And one that involves no click whatsoever:
+
+          hover     move the cursor from a corner into the transcript, flipping `:hover` down the
+                    whole hover chain. If THIS costs seconds then focus was never the variable and
+                    the cost is style invalidation from a pseudo-class flip, which is worse news
+                    than a slow click: a user pays it on every mouse movement over the thread.
+
+        Each is preceded by a blur and a settle so no repetition inherits the previous one's state.
+        """
+
+        def blur() -> None:
+            page.evaluate("() => document.activeElement && document.activeElement.blur()")
+            page.wait_for_timeout(250)
+
+        def settled(fn) -> float:
+            """Time `fn` AND the wait for the main thread to be free again.
+
+            Timing the call alone measures the wrong thing, and differently wrong per engine.
+            `page.mouse.click` hands an input event to the browser over the debug protocol and
+            returns; whether the acknowledgement waits for the renderer to process it is an
+            implementation detail of each engine's Playwright backend, not a property of the app.
+            Read that way, Chromium came back at 3 ms for both 100K and 500K, which does not mean
+            the work was free, only that the ack did not wait for it.
+
+            So every path is followed by a round trip into the page. `page.evaluate` CANNOT return
+            while the main thread is blocked, and `offsetHeight` forces any pending style and
+            layout to be resolved rather than deferred. The reading is then "how long until the
+            page could serve me again", which is the thing a user actually experiences and is
+            comparable across engines.
+            """
+            started = time.monotonic()
+            fn()
+            page.evaluate("() => document.body.offsetHeight")
+            return (time.monotonic() - started) * 1000.0
+
+        # FIRST, before anything else touches the page: the same trivial operation N times.
+        #
+        # This exists because the biggest number in the whole ladder is one I could not attribute.
+        # The first thing touched after a large thread mounts costs 11 to 24 seconds, and in every
+        # probe the cost vanished, because whatever ran first absorbed it and by the time the
+        # interesting path ran the page was warm. Measuring the decay directly is the way out: if
+        # the first reading is seconds and the rest are milliseconds, the cost is ONE TIME and its
+        # size is the first reading minus the steady state. If they are all expensive, it is a
+        # per-interaction cost and the ladder's number was never a one-off.
+        #
+        # A no-op body on purpose. Every reading is the same work, so any difference between them
+        # is the page's state and not the operation.
+        decay = [settled(lambda: None) for _ in range(5)]
+        out: dict[str, Any] = {
+            # The harness layer's attestation, and it is load-bearing rather than decorative.
+            # `scoring/schema._walk_for_bare_zeros` rejects any bare zero that is not covered by a
+            # sibling `*_attempted` flag, and this block has legitimate zeros: a thread with no
+            # mounted code blocks records `code_token_spans: 0`, and `blur_inpage_ms` and
+            # `forced_layout_ms` come from `performance.now()`, which Chromium coarsens to 100 us
+            # outside a cross-origin-isolated context, so an operation shorter than that reads
+            # exactly 0. Without this flag `--report` refuses the whole payload of a completed
+            # probe run.
+            "click_attribution_attempted": True,
+            "first_touch_ms": decay[0],
+            "settled_touch_ms": min(decay[1:]),
+            "touch_decay_ms": [round(v, 1) for v in decay],
+        }
+        # The blur, timed, and timed again from INSIDE the page.
+        #
+        # The decay series above says the first touch after mount costs 10.6 ms at 500K, so there
+        # is no expensive first interaction. Yet the reading taken right after the first blur came
+        # back at 10,052 ms and 10,017 ms in two of three runs. Two things about that: it sits
+        # between the cheap decay series and the cheap readings that follow, so the blur is what it
+        # attaches to; and 10.0 seconds to three digits is the shape of a TIMEOUT, not of work that
+        # happens to take ten seconds.
+        #
+        # `blur_inpage_ms` decides which. It runs the same blur and the same forced layout inside a
+        # single evaluate and times them with `performance.now()`, so the protocol is excluded. If
+        # the page reports ten seconds, it is real work. If the page reports a millisecond while
+        # the outer reading is ten seconds, the ten seconds is the driver or the transport and not
+        # the app, and must never be quoted as a user cost.
+        out["blur_outer_ms"] = settled(
+            lambda: page.evaluate("() => document.activeElement && document.activeElement.blur()")
+        )
+        out["blur_inpage_ms"] = page.evaluate(
+            "() => { const t = performance.now();"
+            " document.activeElement && document.activeElement.blur();"
+            " void document.body.offsetHeight;"
+            " return performance.now() - t; }"
+        )
+        blur()
+        out["roundtrip_ms"] = settled(lambda: None)
+        box = page.query_selector(selector).bounding_box()
+        x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+        blur()
+        out["click_ms"] = settled(
+            lambda: page.click(selector, timeout = COMPOSER_CLICK_TIMEOUT_S * 1000)
+        )
+        blur()
+        out["mouse_ms"] = settled(lambda: page.mouse.click(x, y))
+        blur()
+        out["dispatch_ms"] = settled(lambda: page.dispatch_event(selector, "click"))
+        blur()
+        out["focus_ms"] = settled(lambda: page.eval_on_selector(selector, "e => { e.focus(); }"))
+        blur()
+        page.mouse.move(2, 2)
+        page.wait_for_timeout(250)
+        out["hover_thread_ms"] = settled(lambda: page.mouse.move(x, 300))
+        # The reading that decides what `roundtrip_ms` meant. If the first forced layout of a huge
+        # thread is expensive and every later one is cheap, this comes back near zero and the cost
+        # is a ONE-TIME layout of the mounted thread, not a per-interaction cost. If it is
+        # expensive again, every interaction pays it and the story is the opposite.
+        blur()
+        out["roundtrip_again_ms"] = settled(lambda: None)
+        # Measured INSIDE the page, so the protocol round trip is not in the number. `offsetHeight`
+        # is read after a write that dirties layout, so it cannot be served from a clean tree.
+        out["forced_layout_ms"] = page.evaluate(
+            "() => { const t = performance.now();"
+            " document.body.style.minHeight = (1 + Math.random()) + 'px';"
+            " void document.body.offsetHeight;"
+            " document.body.style.minHeight = '';"
+            " void document.body.offsetHeight;"
+            " return performance.now() - t; }"
+        )
+        out["code_token_spans"] = page.evaluate(
+            "() => document.querySelectorAll('[data-streamdown=\"code-block\"] code > span').length"
+        )
+        self.log(
+            "  click attribution: "
+            + ", ".join(
+                f"{k.replace('_ms', '')}={v:,.0f}ms"
+                for k, v in out.items()
+                if k.endswith("_ms") and isinstance(v, (int, float))
+            )
+            + f", code token spans={out['code_token_spans']:,}"
+            + f"\n  touch decay: {out['touch_decay_ms']}"
+        )
+        return out
+
     def _press_send(self, page) -> float:
-        """Type a prompt and press send. Returns the driver monotonic time the film starts."""
+        """Type a prompt and press send. Returns the driver monotonic time the film starts.
+
+        THE CELL MUST SURVIVE THIS, and it took losing a whole rung to notice it did not.
+
+        This runs before the film starts, so it was written as setup and inherited the default
+        8s action timeout. At 500K `page.click` exceeds it and the exception killed the cell
+        before a single slot opened, three times out of three across two runs, so the ladder had
+        NO data at 500K at all. `COMPOSER_CLICK_TIMEOUT_S` fixes that: the cell survives, the film
+        runs, and the cost is recorded whatever it comes to. Still bounded, because a click that
+        never lands is a different fact from a slow one.
+
+        `composer_click_ms` IS NOT WHAT A USER PAYS, and must never be quoted as though it were.
+        I made exactly that mistake and published it. `page.click` resolves the selector, waits
+        for visible, enabled and stable, scrolls into view, hit-tests the point with
+        `elementsFromPoint` and re-checks that the element under the cursor is the one asked for,
+        retrying until it agrees. All of that is O(DOM) and a human does none of it. Measured at
+        500K on WebKit with `--click-probe`: `page.click` 11,036 ms, a real mouse click at the
+        same point 573 ms. About 95% of the number is the driver.
+
+        So this reading is a HARNESS health number: it says whether the cell can start. For what
+        the user pays, run `--click-probe` and read `mouse_ms` and `focus_ms`.
+        """
         selector = 'textarea[aria-label="Message input"]'
         page.wait_for_selector(selector, timeout = 60_000)
-        page.click(selector)
+        if self.click_probe:
+            self._click_attribution_result = self._click_attribution(page, selector)
+        # In a window, so every instrument covers it. At 500K this single click is the largest
+        # cost in the whole run by an order of magnitude, and it was the one moment the tool could
+        # not see inside: no window, so no frame recorder, no CPU profile, no RSS delta. A cost
+        # that big being outside every instrument is how it stayed unattributed.
+        #
+        # `setup`, NOT `action`. The scoring layer pools every non-excluded window of the cell into
+        # `max_frame_ms`, `jank_index` and `time_in_jank_pct`, and this window is mostly Playwright's
+        # own injected actionability script running ON THE PAGE'S MAIN THREAD -- it blocks frames
+        # exactly as app work would, so the frame recorder cannot tell them apart. Filed as an
+        # `action` it would put an 11 s driver stall into three weighted headline metrics whose
+        # `max_frame_ms` anchor calls 2,000 ms the worst case, on EVERY run including the ones that
+        # never asked for --click-probe. It is measured, reported and kept out of the film.
+        with self.session.window("setup:composer_click", kind = "setup"):
+            # Timed INSIDE the window, like `Window.duration_ms` itself: the session opens every
+            # instrument before this block and closes them after it, and at instrument level 1-3
+            # those hooks stop a CPU profile, collect coverage and write and analyse a trace.
+            # Timed around the `with`, `composer_click_ms` would grow with the instrument level
+            # and stop being the click.
+            clicked_at = time.monotonic()
+            page.click(selector, timeout = COMPOSER_CLICK_TIMEOUT_S * 1000)
+            self._composer_click_ms = (time.monotonic() - clicked_at) * 1000.0
+        if self._composer_click_ms > SLOW_COMPOSER_CLICK_MS:
+            self.log(
+                f"  page.click on the composer took {self._composer_click_ms / 1000:.1f}s. "
+                f"MOST OF THAT IS THE DRIVER, not the app: run --click-probe to split it."
+            )
         page.fill(selector, "continue")
         page.wait_for_timeout(150)
         send = page.query_selector('button[aria-label="Send message"]')

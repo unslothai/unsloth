@@ -678,6 +678,11 @@ def run(args, ab_ref = None) -> int:
                 # reader has no way to notice before quoting a ratio across it.
                 "stream_tail_chars": args.stream_tail_chars,
                 "corpus_dollars": bool(args.corpus_dollars),
+                # WHETHER THE PROBE RAN BEFORE THE FILM, for the same reason and with the same
+                # consequence: it changes what the cell measures without moving the cell id, so
+                # `--resume` needs it on the record to be able to refuse a toggle. See
+                # `IDENTITY_AXES`.
+                "click_probe": bool(getattr(args, "click_probe", False)),
                 # AN ARM RUNNING THIS IS NOT A MEASUREMENT OF THE BUILD, and the payload has to
                 # say so itself. A reader who finds a treatment arm 40% slower has no other way
                 # to discover that the harness put the 40% there on purpose, and `--resume` reads
@@ -728,6 +733,7 @@ def run(args, ab_ref = None) -> int:
                 pacer = pacer,
                 seeder = side_seeder,
                 corpus = corpus,
+                click_probe = bool(getattr(args, "click_probe", False)),
                 base_url = side["base_url"],
                 model_id = model_id,
                 tier = args.tier,
@@ -1003,6 +1009,15 @@ IDENTITY_AXES = (
     # back as the defaults (see `HISTORICAL_DEFAULTS`).
     "stream_tail_chars",
     "corpus_dollars",
+    # `--click-probe`, whose own help text says it "makes the cell's timings incomparable with a
+    # cell that did not run it". That is the definition of an identity axis: the probe runs a full
+    # `page.click`, a real mouse click, a dispatch, a focus and a hover over the thread before the
+    # film starts, and the cell then records a `composer_click_ms` measured on a composer those
+    # paths have already been through plus a `click_attribution` block a cell without the flag
+    # does not have at all. None of it moves the cell id, so a resume that toggles the flag skips
+    # the completed cells and appends the rest under the same ids -- the one ladder built from two
+    # films this check exists to refuse.
+    "click_probe",
     # `--inject-stream-cost-ms`, on the same rule and for a larger perturbation than either of
     # those two. It burns a known amount of main-thread time per SSE chunk on the TREATMENT arm,
     # so a treatment cell recorded with it is a different reading from one recorded without it,
@@ -1029,14 +1044,15 @@ TREATMENT_AXES = ("treatment_ref", "treatment_url")
 #: It is WRONG for these three. They arrived with the flags that set them, so a payload written
 #: before them did not decline to record a value -- there was no way to ask for anything but the
 #: default, and it ran under `stream_tail_chars = None`, `corpus_dollars = False` and
-#: `inject_stream_cost_ms = None` by construction. Skipping them therefore accepted `--resume
-#: --stream-tail-chars 24000` against such a payload, skipped its completed cells, and recorded the
-#: rest under a different streamed fixture beneath the same cell ids: one ladder built from two
-#: films, which is what this check exists to refuse. Absence proves the value here, so it is read
-#: as the value.
+#: `click_probe = False` and `inject_stream_cost_ms = None` by construction. Skipping them
+#: therefore accepted `--resume --stream-tail-chars 24000` against such a payload, skipped its
+#: completed cells, and recorded the rest under a different streamed fixture beneath the same cell
+#: ids: one ladder built from two films, which is what this check exists to refuse. Absence proves
+#: the value here, so it is read as the value.
 HISTORICAL_DEFAULTS = {
     "stream_tail_chars": None,
     "corpus_dollars": False,
+    "click_probe": False,
     "inject_stream_cost_ms": None,
 }
 
@@ -1074,6 +1090,7 @@ def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
         "treatment_url": attach_b if (ab_ref and attach_b) else "",
         "stream_tail_chars": args.stream_tail_chars,
         "corpus_dollars": bool(args.corpus_dollars),
+        "click_probe": bool(getattr(args, "click_probe", False)),
         "inject_stream_cost_ms": getattr(args, "inject_stream_cost_ms", None),
     }
 
@@ -1583,6 +1600,15 @@ def parse_args(argv: list):
         help = "comma-separated action names --assert-liveness may excuse. Use only "
         "for an action a platform genuinely cannot perform, and say which in "
         "the pull request: every name here is a hole in the gate",
+    )
+    ap.add_argument(
+        "--click-probe",
+        dest = "click_probe",
+        action = "store_true",
+        help = "before the film starts, split the composer click into what a USER pays and "
+        "what Playwright's actionability check pays, plus a hover-only reading. Off by "
+        "default: it costs seconds at large rungs and makes the cell's timings "
+        "incomparable with a cell that did not run it",
     )
     ap.add_argument(
         "--allow-slot-misses",

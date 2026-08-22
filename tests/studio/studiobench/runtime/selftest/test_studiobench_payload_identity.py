@@ -540,10 +540,113 @@ def test_a_payload_from_before_the_fixture_axes_is_refused_under_a_non_default_f
         assert "predates this axis" in message
 
 
+# ── the measurement-mode axis ───────────────────────────────────────────────────────────────
+#
+# `--click-probe` runs a full `page.click`, a real mouse click, a dispatch, a focus and a hover
+# over the thread BEFORE the film starts, and the tool's own help text for the flag says it "makes
+# the cell's timings incomparable with a cell that did not run it". The cell then carries a
+# `composer_click_ms` measured on a composer all of those paths have already been through, and a
+# `click_attribution` block a cell without the flag does not have at all. None of that moves the
+# cell id, so it is on `IDENTITY_AXES` for the same reason the tier is.
+
+
+def test_resuming_after_toggling_the_click_probe_is_refused(tmp_path):
+    """REGRESSION. Both directions, because either one produces the same mixed ladder.
+
+    Without this the flag was invisible to the check: `click_probe` was in neither `run_meta` nor
+    `requested_identity`, so `--resume --click-probe` against a finished plain payload skipped
+    every completed cell, appended the remaining rungs measured the other way, and reported the
+    two halves as one ladder.
+    """
+
+    probed = _fixture_payload(tmp_path, "probed", "sess-probed", click_probe = True)
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            probed,
+            requested_identity(_resume_args(), None, CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+    message = str(excinfo.value)
+    assert "click_probe" in message
+    assert "True" in message and "False" in message
+
+    plain = _fixture_payload(tmp_path, "plain", "sess-plain", click_probe = False)
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            plain,
+            requested_identity(_resume_args("--click-probe"), None, CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+    assert "click_probe" in str(excinfo.value)
+
+
+def test_a_payload_from_before_the_probe_flag_is_refused_under_a_probed_resume(tmp_path):
+    """Absence proves the default here too. A payload with no `click_probe` key was written when
+    there was no way to ask for the probe, so it ran without it."""
+
+    paths = _fixture_payload(tmp_path, "legacy-probe", "sess-old")
+    assert "click_probe" not in paths.payload_jsonl.read_text(encoding = "utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths,
+            requested_identity(_resume_args("--click-probe"), None, CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+
+    message = str(excinfo.value)
+    assert "click_probe" in message
+    assert "predates this axis" in message
+
+
+def test_an_unchanged_probe_setting_resumes_and_returns_its_completed_cells(tmp_path):
+    """The control. The axis may not swallow a resume that is asking for the run it already has,
+    on either setting."""
+
+    probed = _fixture_payload(tmp_path, "probed-same", "sess-probed", click_probe = True)
+    assert (
+        prepare_payload(
+            probed,
+            requested_identity(_resume_args("--click-probe"), None, CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+        is None
+    )
+    assert _resume_set(probed) == {"r10K.A0.rep0"}
+
+    plain = _fixture_payload(tmp_path, "plain-same", "sess-plain")
+    assert (
+        prepare_payload(
+            plain,
+            requested_identity(_resume_args(), None, CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+        is None
+    )
+    assert _resume_set(plain) == {"r10K.A0.rep0"}
+
+
+def test_the_probe_flag_reaches_the_identity_this_invocation_asks_for():
+    """The check can only refuse a difference it was told about, so the flag has to be requested.
+
+    What the payload has to carry for it to be compared against is asserted end to end, over a
+    `run_meta` a real run wrote, in `test_studiobench_run_acquisition`.
+    """
+
+    for flags, expected in ((("--click-probe",), True), ((), False)):
+        args = parse_args(["--tier", "standard", "--branch", "main", *flags])
+        assert requested_identity(args, None, CORPUS)["click_probe"] is expected
+
+
 def test_the_skip_rule_still_holds_for_an_axis_that_really_did_decline_to_say(tmp_path):
     """The other axes keep the general rule: `run_meta` has always carried them, so a payload that
     omits one omitted it for its own reasons and this check has nothing to say about it. Only the
-    two fixture axes read absence as a value."""
+    axes that arrived with a flag of their own read absence as a value."""
 
     paths = Paths.under(tmp_path / "quiet")
     _record(

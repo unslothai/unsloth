@@ -42,7 +42,7 @@ if __package__ in (None, ""):  # pragma: no cover
 from tests.studio.studiobench.scoring.from_payload import (  # noqa: E402
     ACTION_SOURCES,
     FRAME_METRICS,
-    IDLE_WINDOW_KINDS,
+    UNSCORED_WINDOW_KINDS,
     STREAM_METRICS,
     _actions_for,
     _frame_measures,
@@ -110,13 +110,21 @@ def cell_metrics(records: list[dict]) -> dict[str, dict[str, float]]:
         if row.get("row_type") != "cell" or not row.get("completed"):
             continue
         cid = row["cell_id"]
+        # Scoped to this cell's OWN attempt: `--resume` re-runs a died cell under a new
+        # session_id into the same file, and pooling both attempts mixes two measurements.
         sid = row.get("session_id")
         own = [r for r in records if r.get("cell_id") == cid and r.get("session_id") == sid]
         vals: dict[str, float] = _action_timings(own, cid)
+        # `UNSCORED_WINDOW_KINDS` is idle plus setup, dropped here as in `measures_from_records`.
+        # The setup window is the composer click that starts the film, which is mostly
+        # Playwright's injected actionability script blocking the page's own main thread; pooled
+        # in, an 11 s driver stall would set this table's `max_frame_ms` floor and hide every real
+        # regression under it.
         windows = [
             w
             for w in own
-            if w.get("row_type") == "window" and str(w.get("kind") or "") not in IDLE_WINDOW_KINDS
+            if w.get("row_type") == "window"
+            and str(w.get("kind") or "") not in UNSCORED_WINDOW_KINDS
         ]
         for key, m in _frame_measures(windows).items():
             if m.value is not None:

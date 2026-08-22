@@ -92,9 +92,19 @@ MIN_STREAM_CHARS_PER_WINDOW = 100
 # availability signal and this is the bound it has to respect.
 MAX_TIMER_CLOCK_RATIO = 1.2
 
-# Windows that are deliberately quiet. Pooling these into the frame metrics would dilute every
-# jank share with idle time and make a bad build look average.
-IDLE_WINDOW_KINDS: frozenset[str] = frozenset({"idle"})
+# Windows that are not part of the film, and whose frames therefore say nothing about the build.
+#
+# `idle` is deliberately quiet: pooling it into the frame metrics would dilute every jank share
+# with idle time and make a bad build look average.
+#
+# `setup` is the opposite and is excluded for the opposite reason. The only one is the composer
+# click that starts the film, and most of it is Playwright's injected actionability script --
+# selector resolution, visibility, stability and the `elementsFromPoint` hit test -- running on
+# the page's own main thread, where it blocks frames indistinguishably from app work. At 500K
+# that window alone runs about 11 s against a `max_frame_ms` anchor whose worst case is 2,000 ms,
+# so pooling it would peg all three frame metrics on every run, including runs that never asked
+# for the click probe.
+UNSCORED_WINDOW_KINDS: frozenset[str] = frozenset({"idle", "setup"})
 
 # The window kinds in which NO SCRIPTED ACTION IS RUNNING. `gap` is the scheduler's inter-slot
 # wait; `stream` is `stream:drain`, the window the session layer opens after the film to wait the
@@ -508,7 +518,7 @@ def measures_from_records(
             for w in records
             if w.get("row_type") == "window"
             and w.get("cell_id") == cell_id
-            and str(w.get("kind") or "") not in IDLE_WINDOW_KINDS
+            and str(w.get("kind") or "") not in UNSCORED_WINDOW_KINDS
         ]
         frames = _frame_measures(windows)
         # The streaming phase is NOT in METRIC_BY_KEY, and that is deliberate rather than an
