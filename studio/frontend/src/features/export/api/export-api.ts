@@ -263,11 +263,9 @@ export interface ExportLogsResponse {
 }
 
 /**
- * Tunnel-safe JSON fallback for {@link streamExportLogs}. Cloudflare quick
- * tunnels (`--secure` mode) buffer `text/event-stream`, so the SSE stream
- * delivers nothing until it closes; this plain-JSON poll is never buffered and
- * carries the same ring-buffer lines. Poll it while a run is active and merge
- * the entries into the store (de-duped by seq), so logs appear over the tunnel.
+ * short-response fallback for {@link streamExportLogs}. it carries the same
+ * ring-buffer lines when a proxy drops or stalls a stream. Poll it while a run
+ * is active and merge entries into the store, de-duped by seq.
  */
 export async function fetchExportLogs(
   since: number | null,
@@ -346,7 +344,7 @@ export async function streamExportLogs(options: {
       : "/api/export/logs/stream";
 
   const response = await authFetch(url, {
-    method: "GET",
+    method: "POST",
     headers,
     signal: options.signal,
   });

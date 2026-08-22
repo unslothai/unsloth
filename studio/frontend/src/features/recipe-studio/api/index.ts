@@ -382,7 +382,7 @@ export async function streamRecipeJobEvents(options: {
   const response = await authFetch(
     `${DATA_DESIGNER_API_BASE}/jobs/${options.jobId}/events${query}`,
     {
-      method: "GET",
+      method: "POST",
       headers,
       signal: options.signal,
     },

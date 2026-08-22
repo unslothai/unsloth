@@ -239,11 +239,7 @@ def remote_access_status(app_state) -> dict:
         "can_stop": can_stop,
         "block_reason": block_reason,
         "password_pending": password_pending,
-        # Every tunnel Studio opens is a Cloudflare Quick Tunnel, and Cloudflare
-        # documents that those do not support Server-Sent Events. Measured: an
-        # SSE endpoint returns 200 with text/event-stream through the tunnel but
-        # delivers no events. So responses are only streamable while no tunnel
-        # is carrying them.
+        # this capability tracks standard get sse; studio streams use post through quick tunnels.
         "streaming_supported": status["url"] is None,
     }
 

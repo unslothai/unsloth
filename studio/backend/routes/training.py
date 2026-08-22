@@ -2067,7 +2067,8 @@ async def get_training_metrics(
         )
 
 
-@router.get("/progress")
+@router.post("/progress")
+@router.get("/progress", include_in_schema = False)
 async def stream_training_progress(
     request: Request,
     expected_job_id: Optional[str] = None,

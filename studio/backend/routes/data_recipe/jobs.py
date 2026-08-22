@@ -615,7 +615,8 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
     }
 
 
-@router.get("/jobs/{job_id}/events")
+@router.post("/jobs/{job_id}/events")
+@router.get("/jobs/{job_id}/events", include_in_schema = False)
 async def job_events(request: Request, job_id: str):
     mgr = get_job_manager()
     last_id = request.headers.get("last-event-id")

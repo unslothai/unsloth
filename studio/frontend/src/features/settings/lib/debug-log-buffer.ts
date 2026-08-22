@@ -62,9 +62,8 @@ export interface LogBufferState {
 
 export const EMPTY_BUFFER: LogBufferState = { lines: [], cursor: null };
 
-/** Poll delay for a mode, or null when the user drives it by hand. "live" polls
- * rather than opening a socket: Cloudflare quick tunnels buffer
- * text/event-stream and only flush at close, which is why the export log polls too.
+/** poll delay for a mode, or null when the user drives it by hand. "live" uses
+ * short requests so it remains usable through temporary tunnels and proxies.
  */
 export function pollDelayMs(mode: RefreshMode): number | null {
   switch (mode) {

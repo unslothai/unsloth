@@ -812,7 +812,8 @@ def job_status(job_id: str, subject: str = Depends(get_current_subject)) -> dict
     }
 
 
-@router.get("/jobs/{job_id}/events")
+@router.post("/jobs/{job_id}/events")
+@router.get("/jobs/{job_id}/events", include_in_schema = False)
 def job_events(job_id: str, subject: str = Depends(get_current_subject)) -> StreamingResponse:
     _require_rag()
 
@@ -865,7 +866,8 @@ def folder_job_status(job_id: str, subject: str = Depends(get_current_subject)) 
     return _folder_job_view(row)
 
 
-@router.get("/linked-folder-jobs/{job_id}/events")
+@router.post("/linked-folder-jobs/{job_id}/events")
+@router.get("/linked-folder-jobs/{job_id}/events", include_in_schema = False)
 def folder_job_events(
     job_id: str, subject: str = Depends(get_current_subject)
 ) -> StreamingResponse:

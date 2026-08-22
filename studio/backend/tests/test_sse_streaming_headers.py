@@ -3,11 +3,10 @@
 
 """Regression tests for the shared SSE streaming-response helper.
 
-Streaming endpoints must disable proxy buffering (``X-Accel-Buffering: no``);
-without it a reverse proxy (nginx / cloudflare tunnel) buffers the response and
-tokens stop appearing in real time. The native ``/generate/stream`` and legacy
-``/v1/completions`` streams historically omitted it and now route through the
-shared helper, so locking the helper's headers guards every standard path.
+Streaming endpoints must disable nginx buffering (``X-Accel-Buffering: no``).
+Cloudflare Quick Tunnels also require first-party clients to use POST because
+they buffer streamed GET responses. The native ``/generate/stream`` and legacy
+``/v1/completions`` streams route through this shared header helper.
 """
 
 import routes.inference as inference_route

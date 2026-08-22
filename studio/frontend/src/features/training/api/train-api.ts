@@ -366,7 +366,7 @@ export async function streamTrainingProgress(options: {
   const response = await authFetch(
     `/api/train/progress?expected_job_id=${expectedJobId}`,
     {
-      method: "GET",
+      method: "POST",
       headers,
       signal: options.signal,
     },
