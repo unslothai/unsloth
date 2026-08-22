@@ -855,3 +855,136 @@ def test_a_partial_folder_whose_root_is_denied_stops_saying_partial(tmp_path: Pa
             tmp_path.chmod(stat.S_IRWXU)
     finally:
         bad.chmod(stat.S_IRWXU)
+
+
+def test_dedupe_drops_standalone_gguf_when_directory_indexes_it(tmp_path: Path):
+    from models.models import LocalModelInfo
+    from routes.models import _dedupe_sibling_gguf_folder_entries
+
+    folder = tmp_path / "bge-m3"
+    folder.mkdir()
+    (folder / "bge-m3-q8_0.gguf").write_bytes(b"stub")
+    loose = tmp_path / "bge-m3-q8_0.gguf"
+    loose.write_bytes(b"stub")
+    models = [
+        LocalModelInfo(
+            id = str(folder),
+            display_name = "bge-m3",
+            path = str(folder),
+            source = "custom",
+            model_format = "gguf",
+        ),
+        LocalModelInfo(
+            id = str(loose),
+            display_name = "bge-m3-q8_0",
+            path = str(loose),
+            source = "custom",
+            model_format = "gguf",
+        ),
+    ]
+    kept = _dedupe_sibling_gguf_folder_entries(models)
+    assert [m.display_name for m in kept] == ["bge-m3"]
+
+
+def test_dedupe_drops_gguf_row_that_lives_inside_directory(tmp_path: Path):
+    """A scanner that lists both the dir and a file under it must keep only the dir."""
+    from models.models import LocalModelInfo
+    from routes.models import _dedupe_sibling_gguf_folder_entries
+
+    folder = tmp_path / "bge-m3"
+    folder.mkdir()
+    inside = folder / "bge-m3-q8_0.gguf"
+    inside.write_bytes(b"stub")
+    models = [
+        LocalModelInfo(
+            id = str(folder),
+            display_name = "bge-m3",
+            path = str(folder),
+            source = "custom",
+            model_format = "gguf",
+        ),
+        LocalModelInfo(
+            id = str(inside),
+            display_name = "bge-m3-q8_0",
+            path = str(inside),
+            source = "custom",
+            model_format = "gguf",
+        ),
+    ]
+    kept = _dedupe_sibling_gguf_folder_entries(models)
+    assert [m.display_name for m in kept] == ["bge-m3"]
+
+
+def test_dedupe_keeps_prefix_similar_gguf_not_indexed_by_directory(tmp_path: Path):
+    """A shared name prefix alone must not drop a distinct sibling .gguf."""
+    from models.models import LocalModelInfo
+    from routes.models import _dedupe_sibling_gguf_folder_entries
+
+    folder = tmp_path / "bge-m3"
+    folder.mkdir()
+    (folder / "bge-m3-q4_0.gguf").write_bytes(b"inside")
+    loose = tmp_path / "bge-m3-q8_0.gguf"
+    loose.write_bytes(b"loose")
+    models = [
+        LocalModelInfo(
+            id = str(folder),
+            display_name = "bge-m3",
+            path = str(folder),
+            source = "custom",
+            model_format = "gguf",
+        ),
+        LocalModelInfo(
+            id = str(loose),
+            display_name = "bge-m3-q8_0",
+            path = str(loose),
+            source = "custom",
+            model_format = "gguf",
+        ),
+    ]
+    kept = _dedupe_sibling_gguf_folder_entries(models)
+    assert {m.display_name for m in kept} == {"bge-m3", "bge-m3-q8_0"}
+
+
+def test_dedupe_keeps_unrelated_sibling_ggufs(tmp_path: Path):
+    from models.models import LocalModelInfo
+    from routes.models import _dedupe_sibling_gguf_folder_entries
+
+    alpha = tmp_path / "alpha"
+    alpha.mkdir()
+    beta = tmp_path / "beta.gguf"
+    beta.write_bytes(b"stub")
+    models = [
+        LocalModelInfo(
+            id = str(alpha),
+            display_name = "alpha",
+            path = str(alpha),
+            source = "custom",
+            model_format = "gguf",
+        ),
+        LocalModelInfo(
+            id = str(beta),
+            display_name = "beta",
+            path = str(beta),
+            source = "custom",
+            model_format = "gguf",
+        ),
+    ]
+    assert len(_dedupe_sibling_gguf_folder_entries(models)) == 2
+
+
+def test_custom_folder_scan_dedupes_folder_and_loose_gguf(tmp_path: Path, monkeypatch):
+    from routes.models import collect_local_models
+
+    folder = tmp_path / "custom"
+    model_dir = folder / "bge-m3"
+    model_dir.mkdir(parents = True)
+    (model_dir / "bge-m3-q8_0.gguf").write_bytes(b"stub")
+    (folder / "bge-m3-q8_0.gguf").write_bytes(b"stub")
+    rows = [{"id": 1, "path": str(folder), "created_at": "2026-01-01"}]
+
+    found = [
+        m
+        for m in collect_local_models(tmp_path / "root", custom_folders = list(rows))
+        if m.source == "custom"
+    ]
+    assert [m.display_name for m in found] == ["bge-m3"]
