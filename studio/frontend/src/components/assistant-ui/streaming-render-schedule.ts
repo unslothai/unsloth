@@ -32,10 +32,13 @@ const STALLED_TAIL_CHARACTERS = 8_192;
 const OPEN_FENCE_REPAIR_WINDOW = 4_096;
 // A plain two-line probe. When remend leaves the head alone with ordinary text
 // after it, no marker is pending for it to close, so it cannot append anything
-// beyond the window either. Measured: with this gate the spliced repair is
-// byte-identical to repairing the whole tail on 17,436 adversarial open-fence
-// frames and on every frame of the streamed benchmark corpora; without it a
-// marker left open before the fence gets its closer at the wrong offset.
+// beyond the window either. Without it a marker left open before the fence gets
+// its closer at the wrong offset.
+//
+// Its verdict is a property of the HEAD, while remend decides from the whole
+// string, so on its own it is not enough: text later in the body can flip a
+// global parity the probe assumed and revive a marker it cleared. The body
+// marker refusal below is what closes that gap, and the two only work together.
 const OPEN_FENCE_PROBE = "\nq\n";
 // An index can only be resolved once the two characters after it are known, so
 // the scan keeps that many back from the live edge and re-reads them.
@@ -604,7 +607,9 @@ type OpenFenceState = {
   index: number;
   fenceOpen: boolean;
   bodyStart: number;
-  // The FIRST ` $ or ~ in the current fence body, or -1.
+  // The FIRST ` $ or ~ in the current fence body, or -1. Its mere presence
+  // disqualifies the splice, so only whether one exists ever matters; the index
+  // is kept because it reads better in a test than a bare boolean.
   //
   // remend does not have one notion of "inside a fence"; it has at least three,
   // and they disagree. `isWithinCodeBlock` walks the text and honours a
@@ -717,8 +722,18 @@ const OPEN_FENCE_SYNTHETIC_HEAD = "```\n";
 //     ending in `-`, `--`, `=` or `==` into one carrying a zero-width space
 //     that repairing the whole tail does not add, and that the copy button
 //     would then put on the clipboard;
-//   a ` $ or ~ anywhere in what the cut would elide is a character one of
+//   a ` $ or ~ ANYWHERE in the body, elided or retained, is a character one of
 //     remend's fence notions counts, and the opener cannot stand in for it.
+//
+// The last one deliberately covers the retained window and not just the elided
+// middle, because the probe that licenses the opener reads the head ALONE while
+// remend decides from the whole string. An escaped \``` in the window flips the
+// global triple-run parity, so the whole-tail repair closes an unmatched inline
+// backtick that sits before the opener and the spliced output does not; a `$$`
+// there moves the math parity the other way. Neither is reachable from a
+// refusal on the cut, since the probe runs before the cut is chosen. Keeping
+// the body free of all three characters is what makes the probe's verdict a
+// property of the whole tail rather than of the head it was handed.
 function repairOpenFenceTail(
   tail: string,
   bodyStart: number,
@@ -729,7 +744,7 @@ function repairOpenFenceTail(
     cut < 0 ||
     cut + 1 <= bodyStart ||
     tail.indexOf("\n", cut + 1) < 0 ||
-    (firstBodyMarker >= 0 && firstBodyMarker <= cut)
+    firstBodyMarker >= 0
   ) {
     return null;
   }

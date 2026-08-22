@@ -159,6 +159,43 @@ test("an escaped fence before two overlong lines keeps the whole-tail repair", (
   );
 });
 
+// Built by concatenation, not escapes: a backslash followed by a triple-backtick
+// run is exactly the sequence this bug needs, and writing it inside a template
+// literal produced three ESCAPED backticks instead, which is a different string
+// and quietly stopped covering the case.
+const BACKTICK = String.fromCharCode(96);
+const ESCAPED_FENCE = `\\${BACKTICK}${BACKTICK}${BACKTICK}`;
+const DANGLING_INLINE_BACKTICK = `${BACKTICK}\n\n`;
+const FENCE_OPENER = `${BACKTICK}${BACKTICK}${BACKTICK}\n`;
+
+/**
+ * An unmatched inline backtick BEFORE the opener, and a marker in the part of
+ * the window the splice RETAINS rather than elides.
+ *
+ * The probe that licenses the opener standing in for the head reads the head
+ * alone, and it runs before the cut is chosen. remend decides from the whole
+ * string: an escaped \``` later in the body flips the global triple-run parity,
+ * so repairing the whole tail closes the head's dangling backtick while the
+ * spliced output, whose synthetic head never had one, does not. A `$$` there
+ * moves the math parity the other way and the splice appends where the whole
+ * tail does not. Neither is reachable from a refusal on the cut, which is why
+ * the body-marker refusal covers the retained window and not just the middle.
+ *
+ * Reported on unslothai/unsloth#9517 as review item 3836846709.
+ */
+for (const [name, windowText] of [
+  ["an escaped fence", `${ESCAPED_FENCE} more`],
+  ["display math", "$$odd"],
+  // A `~~` here does NOT reproduce and is deliberately absent: a case that
+  // passes on the broken code documents nothing and reads as coverage.
+] as const) {
+  test(`${name} in the retained window keeps the whole-tail repair`, () => {
+    assertRepairMatches(
+      `${DANGLING_INLINE_BACKTICK}${FENCE_OPENER}${"x".repeat(OVERLONG_BLANK_LINE)}\n${windowText}\n`,
+    );
+  });
+}
+
 test("a fence that never closes stays live and is never committed away", () => {
   const text = `Intro.\n\n\`\`\`python\n${fenceBody(300)}`;
   const cache = new IncrementalMarkdownCache();
