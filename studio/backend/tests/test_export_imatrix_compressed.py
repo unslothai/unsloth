@@ -40,6 +40,12 @@ def test_gguf_request_imatrix_defaults_and_set():
     assert r.imatrix is True and r.imatrix_path == "/i.dat"
 
 
+def test_gguf_request_private_defaults_and_set():
+    assert ExportGGUFRequest(save_directory = "/tmp/x").private is False
+    r = ExportGGUFRequest(save_directory = "/tmp/x", private = True)
+    assert r.private is True
+
+
 def test_merged_request_accepts_compressed_formats():
     for fmt in ("16-bit (FP16)", "FP8 (compressed-tensors)", "NVFP4 (compressed-tensors)"):
         assert ExportMergedModelRequest(save_directory = "/tmp/x", format_type = fmt).format_type == fmt
@@ -282,3 +288,21 @@ def test_orchestrator_and_worker_pass_compressed_method():
 
 def test_route_passes_compressed_method():
     assert "compressed_method = request.compressed_method" in _src("routes/export.py")
+
+
+def test_export_gguf_threads_private_to_push_to_hub():
+    g = _func_src("core/export/export.py", "export_gguf")
+    assert "private: bool = False" in g
+    assert "private = private" in g
+
+
+def test_route_passes_gguf_private():
+    src = _src("routes/export.py")
+    assert "private = request.private" in src
+
+
+def test_orchestrator_and_worker_pass_gguf_private():
+    o = _func_src("core/export/orchestrator.py", "export_gguf")
+    assert "private: bool = False" in o and '"private": private' in o
+    w = _src("core/export/worker.py")
+    assert 'private = cmd.get("private", False)' in w
