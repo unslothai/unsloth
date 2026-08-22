@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { ChatGenerationStatus } from "../api/chat-generation-api";
 import { extractDeltaText } from "./parse-assistant-content";
 
-export type StoredGenerationStatus =
-  | "queued"
-  | "running"
-  | "cancelling"
-  | "cancelled"
-  | "completed"
-  | "failed";
+export type StoredGenerationStatus = ChatGenerationStatus;
 
 const TERMINAL = new Set<StoredGenerationStatus>([
   "cancelled",

@@ -70,6 +70,26 @@ def _model(**overrides):
     )
 
 
+def _tool_messages(arguments):
+    return [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": arguments},
+                }
+            ],
+        }
+    ]
+
+
+def _assert_protected(message):
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message(message)
+
+
 def _create(
     run_id = "run-1",
     owner = "alice",
@@ -99,10 +119,7 @@ def test_create_is_owner_scoped_idempotent_and_binds_placeholder(chat_home):
         "generationStatus": "queued",
         "serverManaged": True,
     }
-    with pytest.raises(studio_db.ChatMessageProtectedError):
-        studio_db.upsert_chat_message(
-            {**message, "content": [{"type": "text", "text": "stale overwrite"}]}
-        )
+    _assert_protected({**message, "content": [{"type": "text", "text": "stale overwrite"}]})
     synced = studio_db.sync_chat_messages("thread-1", [], prune_missing = True)
     assert {message["id"] for message in synced} == {"user-1", "assistant-1"}
     assert runs_db.get_run("run-1", "alice") is not None
@@ -150,8 +167,7 @@ def test_explicit_prune_deletes_terminal_generation_messages(chat_home):
     )
     assert [message["id"] for message in stale_sync] == ["user-1"]
     assert studio_db.get_chat_message("thread-1", "assistant-1") is None
-    with pytest.raises(studio_db.ChatMessageProtectedError):
-        studio_db.upsert_chat_message(stale_assistant)
+    _assert_protected(stale_assistant)
 
 
 def test_generation_message_writes_are_run_bound_and_monotonic(chat_home):
@@ -172,38 +188,33 @@ def test_generation_message_writes_are_run_bound_and_monotonic(chat_home):
             "generationSettled": True,
         },
     }
-    with pytest.raises(studio_db.ChatMessageProtectedError):
-        studio_db.upsert_chat_message(forged_terminal)
+    _assert_protected(forged_terminal)
     for metadata in (
         {**message["metadata"], "generationSeq": 2},
         {**message["metadata"], "generationRunId": "other-run"},
     ):
-        with pytest.raises(studio_db.ChatMessageProtectedError):
-            studio_db.upsert_chat_message(
-                {**message, "content": [{"type": "text", "text": "stale"}], "metadata": metadata}
-            )
+        _assert_protected(
+            {**message, "content": [{"type": "text", "text": "stale"}], "metadata": metadata}
+        )
     runs_db.finish_run("run-1", worker_token = token, status = "completed", finish_reason = "length")
     stale = {
         **message,
         "content": [{"type": "text", "text": "downgraded"}],
         "metadata": {**message["metadata"], "generationStatus": "running"},
     }
-    with pytest.raises(studio_db.ChatMessageProtectedError):
-        studio_db.upsert_chat_message(stale)
+    _assert_protected(stale)
     studio_db.sync_chat_messages("thread-1", [stale])
     stored = studio_db.get_chat_message("thread-1", "assistant-1")
     assert stored["content"] == [{"type": "text", "text": "A"}]
     assert stored["metadata"]["generationStatus"] == "completed"
     stored["metadata"]["generationSettled"] = True
-    with pytest.raises(studio_db.ChatMessageProtectedError):
-        studio_db.upsert_chat_message(stored)
+    _assert_protected(stored)
     stored["metadata"].update(
         {"generationSeq": 4, "generationSettled": True, "responseDetails": {"durationMs": 1}}
     )
     studio_db.upsert_chat_message(stored)
     stored["metadata"]["generationSettled"] = False
-    with pytest.raises(studio_db.ChatMessageProtectedError):
-        studio_db.upsert_chat_message(stored)
+    _assert_protected(stored)
     authoritative = studio_db.get_chat_message("thread-1", "assistant-1")
     stale = {
         **authoritative,
@@ -213,8 +224,7 @@ def test_generation_message_writes_are_run_bound_and_monotonic(chat_home):
             if key not in {"incomplete", "responseDetails"}
         },
     }
-    with pytest.raises(studio_db.ChatMessageProtectedError):
-        studio_db.upsert_chat_message(stale)
+    _assert_protected(stale)
     studio_db.sync_chat_messages("thread-1", [stale])
     preserved = studio_db.get_chat_message("thread-1", "assistant-1")["metadata"]
     assert preserved["incomplete"] == {"reason": "length"}
@@ -240,14 +250,12 @@ def test_settled_generation_response_can_be_explicitly_edited(chat_home):
     edited = {key: value for key, value in authoritative.items() if key != "metadata"}
     edited["content"] = [{"type": "text", "text": "edited"}]
 
-    with pytest.raises(studio_db.ChatMessageProtectedError):
-        studio_db.upsert_chat_message(edited)
+    _assert_protected(edited)
     saved = studio_db.upsert_chat_message(edited, allow_generation_edit = True)
     assert saved["content"] == [{"type": "text", "text": "edited"}]
     assert saved.get("metadata") is None
     assert runs_db.get_run("run-1", "alice") is None
-    with pytest.raises(studio_db.ChatMessageProtectedError):
-        studio_db.upsert_chat_message(authoritative)
+    _assert_protected(authoritative)
 
 
 def test_batched_events_have_gapless_cursor_and_terminal_flush(chat_home):
@@ -337,20 +345,7 @@ def test_deleted_run_id_is_tombstoned_against_stale_tabs(chat_home):
             "Credentials",
         ),
         (
-            {
-                "messages": [
-                    {
-                        "role": "assistant",
-                        "tool_calls": [
-                            {
-                                "id": "call-1",
-                                "type": "function",
-                                "function": {"name": "lookup", "arguments": '{"api_key":"secret"}'},
-                            }
-                        ],
-                    }
-                ]
-            },
+            {"messages": _tool_messages('{"api_key":"secret"}')},
             "Credentials",
         ),
     ],
@@ -377,22 +372,7 @@ def test_request_sanitization_treats_message_text_as_data():
 @pytest.mark.parametrize("key", ["key", "lookup_key", "monkey", "hockey", "keyboard"])
 def test_request_sanitization_accepts_benign_tool_argument_keys(key):
     arguments = json.dumps({key: "value"})
-    sanitized = _sanitize_request(
-        _model(
-            messages = [
-                {
-                    "role": "assistant",
-                    "tool_calls": [
-                        {
-                            "id": "call-1",
-                            "type": "function",
-                            "function": {"name": "lookup", "arguments": arguments},
-                        }
-                    ],
-                }
-            ]
-        )
-    )
+    sanitized = _sanitize_request(_model(messages = _tool_messages(arguments)))
     assert sanitized["messages"][0]["tool_calls"][0]["function"]["arguments"] == arguments
 
 
@@ -403,22 +383,7 @@ def test_request_sanitization_accepts_benign_tool_argument_keys(key):
 def test_request_sanitization_rejects_known_credential_keys(key):
     arguments = json.dumps({key: "secret"})
     with pytest.raises(Exception, match = "Credentials"):
-        _sanitize_request(
-            _model(
-                messages = [
-                    {
-                        "role": "assistant",
-                        "tool_calls": [
-                            {
-                                "id": "call-1",
-                                "type": "function",
-                                "function": {"name": "lookup", "arguments": arguments},
-                            }
-                        ],
-                    }
-                ]
-            )
-        )
+        _sanitize_request(_model(messages = _tool_messages(arguments)))
 
 
 @pytest.mark.parametrize("value", ['{"api_key":"secret"', '"{\\"api_key\\":\\"secret\\"}"'])

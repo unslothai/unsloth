@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
-import test from "node:test";
+import test, { afterEach } from "node:test";
 
 import type { ChatGenerationRun } from "../src/features/chat/api/chat-generation-api.ts";
 import {
@@ -14,6 +14,11 @@ import {
 register("./helpers/settings-api-resolver.mjs", import.meta.url);
 registerBundlerResolver();
 installLocalStorageFake();
+
+const originalFetch = globalThis.fetch;
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+});
 
 const {
   cancelChatGenerationRun,
@@ -61,6 +66,14 @@ const run = (
   completedAt: status === "completed" ? 9 : null,
 });
 
+const createInput = () => ({
+  runId: "run-1",
+  threadId: "thread-1",
+  userMessageId: "user-1",
+  assistantMessageId: "assistant-1",
+  requestPayload: run("queued", 1).requestPayload,
+});
+
 const frame = (
   seq: number,
   type: string,
@@ -90,7 +103,6 @@ function sse(frames: string[]): Response {
 }
 
 test("reconnect resumes from the applied cursor without duplicate chunks", async () => {
-  const original = globalThis.fetch;
   const eventUrls: string[] = [];
   let follows = 0;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -121,34 +133,29 @@ test("reconnect resumes from the applied cursor without duplicate chunks", async
       },
     );
   }) as typeof fetch;
-  try {
-    const sequences: number[] = [];
-    const snapshots: Array<[string, number]> = [];
-    for await (const update of followChatGenerationRun("run-1", {
-      initialRun: run("running", 0),
-      replayFrom: 0,
-    })) {
-      if (update.event) sequences.push(update.event.seq);
-      else snapshots.push([update.run.status, sequences.length]);
-    }
-    assert.deepEqual(sequences, [1, 2, 3, 4]);
-    assert.deepEqual(snapshots, [
-      ["running", 0],
-      ["completed", 2],
-    ]);
-    assert.match(eventUrls[0], /after=0$/);
-    assert.match(eventUrls[1], /after=2$/);
-    assert.equal(
-      eventUrls.some((url) => url.includes("chat/completions")),
-      false,
-    );
-  } finally {
-    globalThis.fetch = original;
+  const sequences: number[] = [];
+  const snapshots: Array<[string, number]> = [];
+  for await (const update of followChatGenerationRun("run-1", {
+    initialRun: run("running", 0),
+    replayFrom: 0,
+  })) {
+    if (update.event) sequences.push(update.event.seq);
+    else snapshots.push([update.run.status, sequences.length]);
   }
+  assert.deepEqual(sequences, [1, 2, 3, 4]);
+  assert.deepEqual(snapshots, [
+    ["running", 0],
+    ["completed", 2],
+  ]);
+  assert.match(eventUrls[0], /after=0$/);
+  assert.match(eventUrls[1], /after=2$/);
+  assert.equal(
+    eventUrls.some((url) => url.includes("chat/completions")),
+    false,
+  );
 });
 
 test("durable replay normalizes reasoning summary control frames", async () => {
-  const original = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     if (String(input).includes("/events")) {
       return sse([
@@ -161,85 +168,53 @@ test("durable replay normalizes reasoning summary control frames", async () => {
       headers: { "content-type": "application/json" },
     });
   }) as typeof fetch;
-  try {
-    const chunks: object[] = [];
-    for await (const update of followChatGenerationRun("run-1", {
-      initialRun: run("running", 0),
-      replayFrom: 0,
-    })) {
-      if (update.event?.type === "chunk") chunks.push(update.event.payload);
-    }
-    assert.deepEqual(chunks, [{ _reasoningDurationMs: 3200 }]);
-  } finally {
-    globalThis.fetch = original;
+  const chunks: object[] = [];
+  for await (const update of followChatGenerationRun("run-1", {
+    initialRun: run("running", 0),
+    replayFrom: 0,
+  })) {
+    if (update.event?.type === "chunk") chunks.push(update.event.payload);
   }
+  assert.deepEqual(chunks, [{ _reasoningDurationMs: 3200 }]);
 });
 
 test("a backend without chat runs selects the legacy path", async () => {
-  const original = globalThis.fetch;
   globalThis.fetch = (async () =>
     new Response(null, { status: 404 })) as typeof fetch;
-  try {
-    assert.equal(await supportsChatGenerationRuns("thread-1"), false);
-  } finally {
-    globalThis.fetch = original;
-  }
+  assert.equal(await supportsChatGenerationRuns("thread-1"), false);
 });
 
 test("tool-enabled durable admission errors select the legacy stream", async () => {
-  const original = globalThis.fetch;
   globalThis.fetch = (async () =>
     new Response(
       JSON.stringify({ detail: "Tool-enabled chat runs use the legacy streaming path" }),
       { status: 400, headers: { "content-type": "application/json" } },
     )) as typeof fetch;
-  try {
-    await assert.rejects(
-      createChatGenerationRun({
-        runId: "run-1",
-        threadId: "thread-1",
-        userMessageId: "user-1",
-        assistantMessageId: "assistant-1",
-        requestPayload: run("queued", 1).requestPayload,
-      }),
-      (error: unknown) => {
-        assert.equal(isToolEnabledChatGenerationAdmissionError(error), true);
-        return true;
-      },
-    );
-  } finally {
-    globalThis.fetch = original;
-  }
+  await assert.rejects(
+    createChatGenerationRun(createInput()),
+    (error: unknown) => {
+      assert.equal(isToolEnabledChatGenerationAdmissionError(error), true);
+      return true;
+    },
+  );
 });
 
 test("credential-safe durable admission errors select the legacy stream", async () => {
-  const original = globalThis.fetch;
   globalThis.fetch = (async () =>
     new Response(JSON.stringify({ detail: "Credentials cannot be persisted" }), {
       status: 400,
       headers: { "content-type": "application/json" },
     })) as typeof fetch;
-  try {
-    await assert.rejects(
-      createChatGenerationRun({
-        runId: "run-1",
-        threadId: "thread-1",
-        userMessageId: "user-1",
-        assistantMessageId: "assistant-1",
-        requestPayload: run("queued", 1).requestPayload,
-      }),
-      (error: unknown) => {
-        assert.equal(isLegacyFallbackChatGenerationAdmissionError(error), true);
-        return true;
-      },
-    );
-  } finally {
-    globalThis.fetch = original;
-  }
+  await assert.rejects(
+    createChatGenerationRun(createInput()),
+    (error: unknown) => {
+      assert.equal(isLegacyFallbackChatGenerationAdmissionError(error), true);
+      return true;
+    },
+  );
 });
 
 test("an ambiguous create retries the same run instead of starting generation twice", async () => {
-  const original = globalThis.fetch;
   const bodies: string[] = [];
   globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
     bodies.push(String(init?.body));
@@ -249,24 +224,13 @@ test("an ambiguous create retries the same run instead of starting generation tw
       headers: { "content-type": "application/json" },
     });
   }) as typeof fetch;
-  try {
-    const created = await createChatGenerationRun({
-      runId: "run-1",
-      threadId: "thread-1",
-      userMessageId: "user-1",
-      assistantMessageId: "assistant-1",
-      requestPayload: run("queued", 1).requestPayload,
-    });
-    assert.equal(created.id, "run-1");
-    assert.equal(bodies.length, 2);
-    assert.equal(JSON.parse(bodies[0]).runId, JSON.parse(bodies[1]).runId);
-  } finally {
-    globalThis.fetch = original;
-  }
+  const created = await createChatGenerationRun(createInput());
+  assert.equal(created.id, "run-1");
+  assert.equal(bodies.length, 2);
+  assert.equal(JSON.parse(bodies[0]).runId, JSON.parse(bodies[1]).runId);
 });
 
 test("Stop cancels the server run while an event reconnect is delayed", async () => {
-  const original = globalThis.fetch;
   const controller = new AbortController();
   let eventCalls = 0;
   let cancelCalls = 0;
@@ -282,55 +246,45 @@ test("Stop cancels the server run while an event reconnect is delayed", async ()
     }
     return new Response(JSON.stringify(run("running", 0)), { status: 200 });
   }) as typeof fetch;
-  try {
-    const following = (async () => {
-      for await (const update of followChatGenerationRun("run-1", {
-        initialRun: run("running", 0),
-        replayFrom: 0,
-        signal: controller.signal,
-      })) {
-        assert.equal(update.run.status, "running");
-      }
-    })();
-    while (eventCalls === 0)
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    await cancelChatGenerationRun("run-1");
-    controller.abort();
-    await following;
-    assert.equal(cancelCalls, 1);
-    assert.equal(eventCalls, 1);
-  } finally {
-    globalThis.fetch = original;
-  }
+  const following = (async () => {
+    for await (const update of followChatGenerationRun("run-1", {
+      initialRun: run("running", 0),
+      replayFrom: 0,
+      signal: controller.signal,
+    })) {
+      assert.equal(update.run.status, "running");
+    }
+  })();
+  while (eventCalls === 0)
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  await cancelChatGenerationRun("run-1");
+  controller.abort();
+  await following;
+  assert.equal(cancelCalls, 1);
+  assert.equal(eventCalls, 1);
 });
 
 test("completed, cancelled, and backend-restarted snapshots are terminal", async () => {
-  const original = globalThis.fetch;
-  try {
-    for (const status of ["completed", "cancelled", "failed"] as const) {
-      const terminal = run(status, 0);
-      globalThis.fetch = (async (input: RequestInfo | URL) =>
-        String(input).includes("/events")
-          ? sse([])
-          : new Response(JSON.stringify(terminal), {
-              status: 200,
-            })) as typeof fetch;
-      const seen: string[] = [];
-      for await (const update of followChatGenerationRun("run-1", {
-        initialRun: terminal,
-        replayFrom: 0,
-      })) {
-        seen.push(update.run.status);
-      }
-      assert.deepEqual(seen, [status]);
+  for (const status of ["completed", "cancelled", "failed"] as const) {
+    const terminal = run(status, 0);
+    globalThis.fetch = (async (input: RequestInfo | URL) =>
+      String(input).includes("/events")
+        ? sse([])
+        : new Response(JSON.stringify(terminal), {
+            status: 200,
+          })) as typeof fetch;
+    const seen: string[] = [];
+    for await (const update of followChatGenerationRun("run-1", {
+      initialRun: terminal,
+      replayFrom: 0,
+    })) {
+      seen.push(update.run.status);
     }
-  } finally {
-    globalThis.fetch = original;
+    assert.deepEqual(seen, [status]);
   }
 });
 
 test("Stop during create cancels the run after its delayed reply", async () => {
-  const original = globalThis.fetch;
   const controller = new AbortController();
   let releaseCreate!: () => void;
   const delayed = new Promise<void>((resolve) => {
@@ -345,24 +299,14 @@ test("Stop during create cancels the run after its delayed reply", async () => {
     await delayed;
     return new Response(JSON.stringify(run("queued", 1)), { status: 202 });
   }) as typeof fetch;
-  try {
-    const creating = createChatGenerationRunUntilAbort(
-      {
-        runId: "run-1",
-        threadId: "thread-1",
-        userMessageId: "user-1",
-        assistantMessageId: "assistant-1",
-        requestPayload: run("queued", 1).requestPayload,
-      },
-      controller.signal,
-    );
-    controller.abort({ detach: false });
-    assert.equal(await creating, null);
-    releaseCreate();
-    while (cancelled === 0)
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(cancelled, 1);
-  } finally {
-    globalThis.fetch = original;
-  }
+  const creating = createChatGenerationRunUntilAbort(
+    createInput(),
+    controller.signal,
+  );
+  controller.abort({ detach: false });
+  assert.equal(await creating, null);
+  releaseCreate();
+  while (cancelled === 0)
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(cancelled, 1);
 });
