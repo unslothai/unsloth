@@ -286,7 +286,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install the Kaggle client
-        run: python -m pip install --quiet 'kaggle==1.7.4.5'
+        run: python -m pip install --quiet 'kaggle==2.2.4'
 
       # The gate itself is shared with the notebook leg, unchanged. Only the
       # numbers differ.
@@ -349,7 +349,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install the Kaggle client
-        run: python -m pip install --quiet 'kaggle==1.7.4.5'
+        run: python -m pip install --quiet 'kaggle==2.2.4'
 
       # The ref the kernel clones and tests. For a pull request that is the
       # head SHA, so the kernel exercises the proposed code and not the merge
