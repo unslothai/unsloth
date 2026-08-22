@@ -530,3 +530,16 @@ def test_a_padded_flag_is_carried_over_by_dropping_it_with_its_value():
     assert dropped == ["--top-k"]
     kept, _dropped = _lsa.drop_managed_flags(["--verbose ", "--numa", "distribute"])
     assert kept == ["--numa", "distribute"]
+
+
+@pytest.mark.parametrize("flag", ["--parallel", "-np", "--n-parallel"])
+def test_parallel_denials_point_at_the_supported_knob(flag):
+    # Why (#9510): the parallel slot count IS user-settable, just not through extra args --
+    # refusing `--parallel 1` without naming n_parallel sent users to undocumented env hacks.
+    with pytest.raises(ValueError, match = "managed by Unsloth Studio.*n_parallel"):
+        _lsa.validate_extra_args([flag, "1"])
+
+
+def test_other_denials_stay_terse():
+    with pytest.raises(ValueError, match = "cannot be passed as an extra arg$"):
+        _lsa.validate_extra_args(["--model", "/etc/passwd"])

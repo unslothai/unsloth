@@ -280,10 +280,15 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
             raise ValueError("extra llama-server args cannot contain control characters")
         flag = _flag_name(token)
         if flag is not None and flag in _DENYLIST:
-            raise ValueError(
+            message = (
                 f"llama-server flag '{flag}' is managed by Unsloth Studio "
                 f"and cannot be passed as an extra arg"
             )
+            # Why (#9510): users reaching for `--parallel 1` to cap concurrent predictions on a
+            # local model hit this refusal with no pointer to the supported knob; name it.
+            if flag in {"-np", "--parallel", "--n-parallel"}:
+                message += "; set n_parallel on the load request (parallel decode slots) instead"
+            raise ValueError(message)
         if flag is None:
             # A token belonging to no flag. Today's llama-server answers "invalid
             # argument" and refuses to start, which is a failed load rather than a
