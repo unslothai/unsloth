@@ -1593,3 +1593,79 @@ def test_a_visible_floor_from_the_SAME_tier_still_applies(tmp_path, capsys):
     assert "FLOOR REFUSED" not in out, out
     assert "differ against an identical build" in out, out
     assert code == 0, out
+
+
+# ── a resumed cell is judged on the attempt that survived, gates included ──
+
+
+def _resumed_completeness_shard(tmp_path, name, *, retry_passes):
+    """A payload where attempt 1 of a cell FAILED `thread_complete` and `--resume` re-ran it.
+
+    `make_cell_id` is deterministic, so the retry carries the SAME `cell_id` and is told apart
+    only by `session_id`, exactly as `latest_attempt_rows` documents.
+    """
+    import json
+
+    rows = [{"row_type": "run_meta", "tier": "standard", "session_id": "s1"}]
+    for side in ("base", "treatment"):
+        cid = f"r100K.{side}.rep0"
+        rows.append({"row_type": "cell", "cell_id": cid, "session_id": "s1"})
+        rows.append(
+            {
+                "row_type": "gate",
+                "name": "thread_complete",
+                "passed": False,
+                "cell_id": cid,
+                "session_id": "s1",
+                "detail": {"reason": "the head marker never mounted"},
+            }
+        )
+    for side in ("base", "treatment"):
+        cid = f"r100K.{side}.rep0"
+        rows.append({"row_type": "cell", "cell_id": cid, "session_id": "s2"})
+        rows.append(
+            {
+                "row_type": "gate",
+                "name": "thread_complete",
+                "passed": bool(retry_passes),
+                "cell_id": cid,
+                "session_id": "s2",
+                "detail": {"reason": "" if retry_passes else "still short"},
+            }
+        )
+        act = _action(
+            "select_text",
+            cid,
+            parity = _capture(mounted = 18, total = 18),
+            visible = _visible([1], [1]),
+        )
+        act["session_id"] = "s2"
+        rows.append(act)
+    shard = tmp_path / name
+    shard.mkdir()
+    (shard / "payload.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding = "utf-8")
+    return shard
+
+
+def test_a_successful_resume_clears_the_dead_attempts_completeness_failure(tmp_path):
+    """THE SUPERSEDED GATE MUST NOT OUTLIVE ITS ATTEMPT. `latest_attempt_rows` drops a dead
+    attempt's rows everywhere else, but its ATTEMPT_ROW_TYPES is {cell, action, window} and a gate
+    is none of those, so `incomplete_cells` scanned raw rows and kept the failure from the attempt
+    that died. `collect` then stamped `_incomplete` on the RETRY's action rows and `_refused`
+    withheld a verdict from a cell that had just been re-measured successfully.
+    """
+    from studiobench.sweep import ui_parity as U
+
+    shard = _resumed_completeness_shard(tmp_path, "resumed_ok", retry_passes = True)
+    assert U.incomplete_cells([shard / "payload.jsonl"]) == {}
+
+
+def test_a_resume_that_failed_again_is_still_refused(tmp_path):
+    """The positive control: scoping the gate to the surviving attempt must not lose a real
+    refusal when the retry failed too."""
+    from studiobench.sweep import ui_parity as U
+
+    shard = _resumed_completeness_shard(tmp_path, "resumed_bad", retry_passes = False)
+    bad = U.incomplete_cells([shard / "payload.jsonl"])
+    assert set(bad) == {"r100K.base.rep0", "r100K.treatment.rep0"}, bad
+    assert "still short" in bad["r100K.base.rep0"], bad

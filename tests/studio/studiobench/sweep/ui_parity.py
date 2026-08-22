@@ -47,7 +47,7 @@ import collections
 import json
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 if __package__ in (None, ""):  # pragma: no cover
     # Running the file directly rather than as a module, which is the first thing anyone tries.
@@ -138,16 +138,36 @@ def incomplete_cells(paths: list[Path]) -> dict[str, str]:
     A gate row with no `cell_id` is ignored here rather than applied run-wide. Only the per-cell
     writer emits this name, and attributing a nameless one to every cell would let one malformed
     row silence a whole payload -- the mirror of the defect being fixed.
+
+    AND ONLY THE ATTEMPT THAT SURVIVED. `--resume` re-runs a cell that did not complete under the
+    SAME `cell_id`, because `make_cell_id` is deterministic, so a payload can hold a failed gate
+    from the attempt that died and a passing one from the retry that worked. `latest_attempt_rows`
+    already drops the superseded attempt everywhere else, but its `ATTEMPT_ROW_TYPES` is
+    `{cell, action, window}` and a gate is none of those, so scanning raw rows here kept the dead
+    attempt's failure forever: `collect` then stamped `_incomplete` on the RETRY's action rows and
+    `_refused` withheld a verdict from a cell that had been successfully re-measured. An attempt is
+    `(cell_id, session_id)` and the last `cell` row for an id names the one that won, which is the
+    same rule `latest_attempt_rows` uses. A gate with no session id is still honoured, for the same
+    reason that function keeps unstamped rows: a payload written before the recorder stamped them
+    cannot be split into attempts, and ignoring it would lose a real refusal.
     """
     out: dict[str, str] = {}
     for path in paths:
-        for r in rows(path):
+        payload = rows(path)
+        winner: dict[str, Any] = {}
+        for r in payload:
+            if r.get("row_type") == "cell" and r.get("cell_id") is not None:
+                winner[str(r.get("cell_id"))] = r.get("session_id")
+        for r in payload:
             if r.get("row_type") != "gate" or r.get("passed") is not False:
                 continue
             if str(r.get("name") or "") != COMPLETENESS_GATE:
                 continue
             cid = str(r.get("cell_id") or "")
             if not cid:
+                continue
+            keep = winner.get(cid)
+            if keep is not None and r.get("session_id") not in (None, keep):
                 continue
             detail = r.get("detail") if isinstance(r.get("detail"), dict) else {}
             out[cid] = (
