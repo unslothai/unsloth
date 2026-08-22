@@ -2914,9 +2914,7 @@ def test_start_studio_server_forwards_reasoning_effort(monkeypatch):
     assert captured["kwargs"]["env"]["LLAMA_ARG_REASONING_EFFORT"] == "medium"
 
 
-def test_require_studio_warns_on_explicit_reasoning_effort_when_reusing_server(
-    monkeypatch, capsys
-):
+def test_require_studio_warns_on_explicit_reasoning_effort_when_reusing_server(monkeypatch, capsys):
     monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
     base, server = start._require_studio(
         "unsloth/M-GGUF",
