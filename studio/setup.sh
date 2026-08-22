@@ -2041,6 +2041,45 @@ _setup_amd_detected=false
 _setup_nvidia_usable=false
 _setup_gfx_all=""
 _setup_mkt=""
+_setup_amd_records=""
+
+# Pair each rocminfo GPU gfx id with its marketing name instead of using the CPU-first
+# global name (#7307). Blank names keep device ordinals; no GPU keeps the old fallback.
+# Keep in sync with install.sh.
+_setup_rocminfo_gpu_records() {
+    awk '
+        # Split at the first colon so embedded colons survive.
+        function value(line,   v) {
+            v = line
+            sub(/^[^:]*:[[:space:]]*/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            return v
+        }
+        /^[[:space:]]*Name:/ {
+            # Keep a slot for a nameless GPU.
+            if (gfx != "" && !named) { print gfx "|"; gpus++ }
+            gfx = ""; named = 0
+            name = value($0)
+            # Accept target suffixes such as gfx90a:sramecc+, but reject ISA names.
+            if (match(name, /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) {
+                rest = substr(name, RLENGTH + 1)
+                if (rest == "" || rest ~ /^[^0-9a-z]/) gfx = substr(name, 1, RLENGTH)
+            }
+            next
+        }
+        /^[[:space:]]*Marketing Name:/ {
+            mkt = value($0)
+            if (gfx != "" && !named) { print gfx "|" mkt; gpus++; named = 1 }
+            else if (first == "") first = mkt
+            next
+        }
+        END {
+            if (gfx != "" && !named) { print gfx "|"; gpus++ }
+            if (gpus == 0 && first != "") print "|" first
+        }
+    '
+}
+
 # Intel XPU. There is no vendor probe here like nvidia-smi / rocminfo -- Linux Intel support is
 # an explicit index pin, not autodetection -- so the installed runtime IS the signal. The local
 # label is read off disk first so a CPU-only host never pays for an `import torch`.
@@ -2107,15 +2146,17 @@ if _setup_has_usable_nvidia_gpu; then
     _setup_nvidia_usable=true
 fi
 if [ "$_setup_nvidia_usable" != true ]; then
-    if command -v rocminfo >/dev/null 2>&1 && \
-       _setup_run_smi rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
+    if command -v rocminfo >/dev/null 2>&1; then
+        _setup_amd_records=$(_setup_run_smi rocminfo 2>/dev/null | _setup_rocminfo_gpu_records || true)
+        _setup_gfx_all=$(printf '%s\n' "$_setup_amd_records" | awk -F'|' '$1 != "" { print $1 }')
+    fi
+    if [ -n "$_setup_gfx_all" ]; then
         _setup_amd_detected=true
-        _setup_gfx_all=$(_setup_run_smi rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-        _setup_mkt=$(_setup_run_smi rocminfo 2>/dev/null | awk -F': ' \
-            '/Marketing Name:/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
     elif command -v amd-smi >/dev/null 2>&1 && \
          _setup_run_smi amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
         _setup_amd_detected=true
+        # amd-smi now owns the device list, so discard rocminfo's fallback name.
+        _setup_amd_records=""
         _setup_gfx_all=$(_setup_run_smi amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         [ -z "$_setup_gfx_all" ] && \
             _setup_gfx_all=$(_setup_run_smi amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
@@ -2131,6 +2172,7 @@ if [ "$_setup_nvidia_usable" != true ]; then
         # nor a marketing name is available from this path, so the report below
         # reads lspci rather than _setup_mkt when it needs to name the card.
         _setup_amd_detected=true
+        _setup_amd_records=""
     fi
 fi
 
@@ -2143,8 +2185,16 @@ elif [ "$_setup_amd_detected" = true ]; then
         _setup_first="${_setup_vis%%,*}"
         case "$_setup_first" in ''|*[!0-9]*) ;; *) _setup_vis_idx=$_setup_first ;; esac
     fi
-    _setup_gfx=$(printf '%s\n' "$_setup_gfx_all" | awk -v idx="$_setup_vis_idx" \
-        'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+    if [ -n "$_setup_amd_records" ]; then
+        # Records already preserve device ordinals, including duplicate arches.
+        _setup_amd_record=$(printf '%s\n' "$_setup_amd_records" | awk -v idx="$_setup_vis_idx" \
+            'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+        _setup_gfx=${_setup_amd_record%%|*}
+        _setup_mkt=${_setup_amd_record#*|}
+    else
+        _setup_gfx=$(printf '%s\n' "$_setup_gfx_all" | awk -v idx="$_setup_vis_idx" \
+            'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+    fi
     # UNSLOTH_ROCM_GFX_ARCH env override (mirrors setup.ps1)
     if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
         _setup_gfx="${UNSLOTH_ROCM_GFX_ARCH}"
