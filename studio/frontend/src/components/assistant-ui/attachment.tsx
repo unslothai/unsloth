@@ -276,6 +276,7 @@ const AttachmentUI: FC = () => {
   const pastedText = usePastedTextAttachment();
 
   const isImage = useAuiState(({ attachment }) => attachment.type === "image");
+  const attachmentId = useAuiState(({ attachment }) => attachment.id);
   const name = useAuiState(({ attachment }) => attachment.name);
   const typeLabel = useAuiState(({ attachment }) => {
     const type = attachment.type;
@@ -304,6 +305,7 @@ const AttachmentUI: FC = () => {
   if (pastedText) {
     return (
       <PastedTextAttachmentUI
+        key={attachmentId}
         attachment={pastedText}
         isComposer={isComposer}
         name={name ?? "Pasted text"}
@@ -314,6 +316,7 @@ const AttachmentUI: FC = () => {
   return (
     <Tooltip>
       <AttachmentPrimitive.Root
+        key={attachmentId}
         className={cn(
           "aui-attachment-root relative",
           isImage &&

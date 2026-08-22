@@ -22,6 +22,13 @@ const { assertDocumentAttachmentSize } = await import(
   "../src/features/chat/attachment-content.ts"
 );
 
+const ATTACHMENT_ID_SELECTOR_RE =
+  /const attachmentId = useAuiState\(\(\{ attachment \}\) => attachment\.id\)/;
+const ATTACHMENT_ID_ROOT_KEY_RE =
+  /<AttachmentPrimitive\.Root\s+key=\{attachmentId\}/;
+const PASTED_TEXT_ID_KEY_RE =
+  /<PastedTextAttachmentUI\s+key=\{attachmentId\}/;
+
 function source(path: string): string {
   return readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
 }
@@ -111,6 +118,30 @@ test("the attachment selector still resolves text and image attachments", () => 
   assert.equal(image.kind, "image");
   assert.equal(image.image, "data:image/png;base64,AAA");
   assert.equal(image.audio, undefined);
+});
+
+// ComposerPrimitive.Attachments keys its providers by list index. Removing the
+// first attachment therefore reuses AttachmentUI for the next attachment, so
+// every stateful preview/source branch needs the attachment identity as its own
+// reset boundary.
+test("attachment previews reset when an index is reused for another attachment", () => {
+  const attachment = source("components/assistant-ui/attachment.tsx");
+  const ui = attachment.slice(
+    attachment.indexOf("const AttachmentUI"),
+    attachment.indexOf("const AttachmentRemove"),
+  );
+
+  assert.match(ui, ATTACHMENT_ID_SELECTOR_RE);
+  assert.match(
+    ui,
+    ATTACHMENT_ID_ROOT_KEY_RE,
+    "index reuse can carry the previous dialog and object URL state into the successor tile",
+  );
+  assert.match(
+    ui,
+    PASTED_TEXT_ID_KEY_RE,
+    "index reuse can carry an in-progress pasted-text conversion into the successor tile",
+  );
 });
 
 // The composer runs _emptyTextAndAttachments() before it awaits adapter.send(),
