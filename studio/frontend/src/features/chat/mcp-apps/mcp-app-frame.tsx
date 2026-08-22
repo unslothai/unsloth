@@ -52,6 +52,44 @@ function isJsonRpc(data: unknown): data is JsonRpcMessage {
 // reported size always wins over it.
 const RESIZE_FALLBACK = `<script>(()=>{const post=()=>parent.postMessage({mcpAppHeight:document.documentElement.scrollHeight},"*");new ResizeObserver(post).observe(document.documentElement);window.addEventListener("load",post);post();})();</script>`;
 
+// Stamped into every message the seeded document sends, because nothing else can
+// tell that document apart from one the frame navigated itself to: the iframe
+// keeps a single contentWindow and an opaque "null" origin across a navigation,
+// and the replacement document's inline scripts run BEFORE the iframe's load
+// event, so revoking on load is already too late. A navigated document never
+// receives this shim, so its messages carry no token and are refused.
+//
+// window.parent is a cross-origin WindowProxy and cannot be monkey-patched, but
+// it CAN be shadowed on the frame's own window -- the same move the sandbox shell
+// makes for localStorage. Shadowing top too: a view reaching for either gets the
+// wrapper, and there is no other handle on the host from inside the sandbox.
+export function bridgeShim(token: string): string {
+  return `<script>(()=>{try{
+  const real = window.parent;
+  const post = real.postMessage.bind(real);
+  const proxy = Object.freeze({
+    postMessage: (message, targetOrigin, transfer) =>
+      post({ __unslothMcpApp: ${JSON.stringify(token)}, message }, targetOrigin || "*", transfer),
+  });
+  for (const name of ["parent", "top"]) {
+    try { Object.defineProperty(window, name, { value: proxy, configurable: true }); } catch (e) {}
+  }
+}catch(e){}})();</script>`;
+}
+
+/** Put `shim` where it runs before any of the view's own script, doctype intact. */
+export function withBridgeShim(html: string, shim: string): string {
+  for (const opener of [/<head\b[^>]*>/i, /<html\b[^>]*>/i, /<!doctype[^>]*>/i]) {
+    const match = opener.exec(html);
+    if (match) {
+      const at = match.index + match[0].length;
+      return html.slice(0, at) + shim + html.slice(at);
+    }
+  }
+  // A bare fragment: the parser builds html/head around it, so leading is first.
+  return shim + html;
+}
+
 /** Comma-joined declared domains for one CSP directive, or "" when undeclared. */
 function domainParam(values: string[] | undefined): string {
   return Array.isArray(values) ? values.filter(Boolean).join(",") : "";
@@ -128,27 +166,31 @@ export function McpAppFrame({
     );
   }, [resource]);
 
-  const html = useMemo(
-    () => (resource ? `${resource.text}\n${RESIZE_FALLBACK}` : null),
+  // One token per fetched template, so re-seeding cannot be replayed either.
+  const bridgeToken = useMemo(
+    () => (resource ? crypto.randomUUID() : null),
     [resource],
+  );
+
+  const html = useMemo(
+    () =>
+      resource && bridgeToken
+        ? withBridgeShim(
+            `${resource.text}\n${RESIZE_FALLBACK}`,
+            bridgeShim(bridgeToken),
+          )
+        : null,
+    [resource, bridgeToken],
   );
 
   // Only a parent-initiated load is fed, so a self-navigated frame can't ask to
   // be re-seeded.
   const pendingPostRef = useRef(false);
-  // The bridge answers the document WE loaded the template into, and nothing
-  // else. A sandboxed frame keeps one contentWindow and reports origin "null"
-  // whatever it navigates to, so neither check below can tell a widget from the
-  // page an ordinary in-widget link just moved it to -- and that page would
-  // otherwise inherit the server's app-visible tools. The second load is the
-  // signal: the first is ours, any after it is a document we did not seed.
-  const bridgeLiveRef = useRef(false);
   // Once the view reports its own size the measured fallback is ignored for
   // good, or it would drag a self-sized widget back on every content change.
   const viewOwnsSizeRef = useRef(false);
   useEffect(() => {
     pendingPostRef.current = true;
-    bridgeLiveRef.current = false;
     viewOwnsSizeRef.current = false;
     setHeight(DEFAULT_HEIGHT);
   }, [src, html]);
@@ -205,14 +247,8 @@ export function McpAppFrame({
   ]);
 
   const onLoad = useCallback(() => {
-    if (!pendingPostRef.current || !html) {
-      // A load we did not initiate: the frame navigated itself away from the
-      // template. Whatever answers now is not the widget, so it gets no bridge.
-      bridgeLiveRef.current = false;
-      return;
-    }
+    if (!pendingPostRef.current || !html) return;
     pendingPostRef.current = false;
-    bridgeLiveRef.current = true;
     postToView({ type: "unsloth:artifact-html", html });
   }, [html, postToView]);
 
@@ -240,10 +276,20 @@ export function McpAppFrame({
       // Every sandboxed frame reports origin "null", so identity is the check.
       if (event.source !== iframeRef.current?.contentWindow) return;
       if (event.origin !== "null") return;
-      // ...and identity survives navigation, so it is not the whole check.
-      if (!bridgeLiveRef.current) return;
+      // Identity survives a navigation and so does the opaque origin, so the
+      // token the shim stamps into the seeded document is what actually names
+      // the sender. A page the frame navigated to has no shim and no token.
+      const envelope = event.data as { __unslothMcpApp?: unknown; message?: unknown };
+      if (
+        !bridgeToken ||
+        typeof envelope !== "object" ||
+        envelope === null ||
+        envelope.__unslothMcpApp !== bridgeToken
+      ) {
+        return;
+      }
 
-      const data = event.data;
+      const data = envelope.message as typeof event.data;
       // The resize fallback, which is not part of the widget protocol.
       if (typeof data?.mcpAppHeight === "number") {
         if (viewOwnsSizeRef.current) return;
@@ -422,7 +468,16 @@ export function McpAppFrame({
 
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, [postToView, seedView, serverId, threadId, sessionId, theme, toolName]);
+  }, [
+    bridgeToken,
+    postToView,
+    seedView,
+    serverId,
+    threadId,
+    sessionId,
+    theme,
+    toolName,
+  ]);
 
   if (error) {
     return (

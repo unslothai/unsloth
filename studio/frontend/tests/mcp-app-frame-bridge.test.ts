@@ -41,41 +41,48 @@ function declarationText(name: string): string {
   return found as unknown as string;
 }
 
-test("a load the host did not seed revokes the bridge", () => {
+test("only the document the host seeded can reach the bridge", () => {
   // A sandboxed frame keeps one contentWindow and reports origin "null" whatever
-  // it navigates to, so the source/origin pair cannot tell the widget from the
-  // page an ordinary in-widget link moved it to. Verified in Chromium: a document
-  // fetched from another site passes both checks. Without a third gate that page
-  // inherits the server's app-visible tools through tools/call.
-  const onLoad = declarationText("onLoad");
+  // it navigates to, and the replacement document's inline scripts run BEFORE the
+  // iframe's load event -- both verified in Chromium by
+  // tests/studio/playwright_mcp_app_bridge_smoke.py, which also shows a load-flag
+  // gate accepting the navigated document's tools/call. So the token the shim
+  // stamps in is what names the sender.
   assert.ok(
-    /bridgeLiveRef\.current\s*=\s*false/.test(onLoad),
-    "onLoad must revoke the bridge on a load it did not initiate",
+    /envelope\.__unslothMcpApp !== bridgeToken/.test(text),
+    "the handler must require the seeded document's token",
   );
   assert.ok(
-    /bridgeLiveRef\.current\s*=\s*true/.test(onLoad),
-    "onLoad must arm the bridge for the document it seeds",
+    /const data = envelope\.message/.test(text),
+    "the handled payload must be the envelope's message, not the raw event data",
   );
-  // Revocation before the early return, arming only after it.
+  // bridgeShim is a function declaration, not a const, so slice it out directly.
+  const shimStart = text.indexOf("export function bridgeShim");
+  assert.ok(shimStart >= 0, "bridgeShim is no longer declared in mcp-app-frame.tsx");
+  const shim = text.slice(shimStart, text.indexOf("\n}\n", shimStart));
   assert.ok(
-    onLoad.indexOf("bridgeLiveRef.current = false") <
-      onLoad.indexOf("bridgeLiveRef.current = true"),
-    "the revoking branch must be the early return, not the seeded path",
+    /Object\.defineProperty\(window, name, \{ value: proxy, configurable: true \}\)/.test(
+      shim,
+    ),
+    "the shim must shadow the frame's handle on the host so every message is stamped",
+  );
+  assert.ok(
+    /for \(const name of \["parent", "top"\]\)/.test(shim),
+    "shadowing parent alone leaves top as an unstamped handle on the host",
   );
 });
 
-test("the message handler refuses a frame whose bridge is not armed", () => {
+test("the token is minted per fetched template", () => {
+  // A token reused across re-seeds would let a document that captured one earlier
+  // keep talking after the frame moved on.
+  const token = declarationText("bridgeToken");
   assert.ok(
-    /if\s*\(!bridgeLiveRef\.current\)\s*return;/.test(text),
-    "the postMessage handler must drop messages once the bridge is revoked",
+    /crypto\.randomUUID\(\)/.test(token),
+    "the bridge token must be unguessable",
   );
-  // Re-seeding a frame must start from revoked, or a self-navigated document
-  // stays trusted across a template refetch.
   assert.ok(
-    /pendingPostRef\.current\s*=\s*true;\s*\n\s*bridgeLiveRef\.current\s*=\s*false;/.test(
-      text,
-    ),
-    "arming pendingPost must also reset the bridge to revoked",
+    /\[resource\]/.test(token),
+    "the bridge token must be re-minted whenever the template is refetched",
   );
 });
 
