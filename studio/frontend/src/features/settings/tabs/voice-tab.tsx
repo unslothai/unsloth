@@ -30,6 +30,7 @@ import {
   loadSttModel,
   startSttDownload,
   unloadSttModel,
+  useExternalProvidersStore,
   validateSttModel,
 } from "@/features/chat";
 import {
@@ -404,6 +405,12 @@ export function VoiceTab() {
   const setDictationEngine = useVoiceSettingsStore((s) => s.setDictationEngine);
   const sttModel = useVoiceSettingsStore((s) => s.sttModel);
   const setSttModel = useVoiceSettingsStore((s) => s.setSttModel);
+  const sttProviderId = useVoiceSettingsStore((s) => s.sttProviderId);
+  const setSttProviderId = useVoiceSettingsStore((s) => s.setSttProviderId);
+  const sttProviderModel = useVoiceSettingsStore((s) => s.sttProviderModel);
+  const setSttProviderModel = useVoiceSettingsStore(
+    (s) => s.setSttProviderModel,
+  );
   const dictationLanguage = useVoiceSettingsStore((s) => s.dictationLanguage);
   const setDictationLanguage = useVoiceSettingsStore(
     (s) => s.setDictationLanguage,
@@ -420,6 +427,14 @@ export function VoiceTab() {
   const setTtsPitch = useVoiceSettingsStore((s) => s.setTtsPitch);
   const ttsVolume = useVoiceSettingsStore((s) => s.ttsVolume);
   const setTtsVolume = useVoiceSettingsStore((s) => s.setTtsVolume);
+  const sttConnections = useExternalProvidersStore((s) => s.providers);
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
+  const hasSttConnections = sttConnections.length > 0;
+  const hasSelectedSttConnection = sttConnections.some(
+    (connection) => connection.id === sttProviderId,
+  );
 
   const navigate = useNavigate();
   const { devices, hasLabels, requestAccess } = useAudioInputDevices();
@@ -438,6 +453,12 @@ export function VoiceTab() {
   const [selectedDictationId, setSelectedDictationId] = useState<string | null>(
     null,
   );
+
+  useEffect(() => {
+    if (sttProviderId && !hasSelectedSttConnection) {
+      setSttProviderId("");
+    }
+  }, [hasSelectedSttConnection, setSttProviderId, sttProviderId]);
 
   const modelSttSupported = StudioModelDictationAdapter.isSupported();
   const ttsSupported = StudioSpeechSynthesisAdapter.isSupported();
@@ -465,6 +486,7 @@ export function VoiceTab() {
   const [sttDownloadCancelling, setSttDownloadCancelling] = useState(false);
   const [sttUnloading, setSttUnloading] = useState(false);
   const isLocalEngine = dictationEngine === "model";
+  const isCustomEngine = dictationEngine === "custom";
   // The model decides the backend: curated ids run GGML through whisper.cpp,
   // custom repos run through Transformers.
   const isMtmdModel = MTMD_STT_MODELS.has(sttModel);
@@ -886,49 +908,108 @@ export function VoiceTab() {
           description={
             dictationEngine === "model"
               ? t("settings.voice.dictation.engineModelDescription")
-              : t("settings.voice.dictation.engineBrowserDescription")
+              : dictationEngine === "custom"
+                ? t("settings.voice.dictation.engineCustomDescription")
+                : t("settings.voice.dictation.engineBrowserDescription")
           }
         >
-          {isTauri ? (
-            <span className="text-sm text-muted-foreground">
-              {t("settings.voice.dictation.engineModel")}
-            </span>
-          ) : (
-            <Select
-              value={dictationEngine}
-              onValueChange={(value) => {
-                const next = value === "model" ? "model" : "browser";
-                if (next !== dictationEngine) {
-                  // Unload whichever backend was resident for the old engine.
+          <Select
+            value={dictationEngine}
+            onValueChange={(value) => {
+              const next =
+                value === "model"
+                  ? "model"
+                  : value === "custom"
+                    ? "custom"
+                    : "browser";
+              if (next !== dictationEngine) {
+                if (dictationEngine === "model") {
                   void unloadSttModel().catch(() => {});
-                  if (next === "model") {
-                    setSttPhase("checking");
-                    setSttDevice(null);
-                    setSttDownload(null);
-                  }
                 }
-                setDictationEngine(next);
-              }}
+                if (next === "model") {
+                  setSttPhase("checking");
+                  setSttDevice(null);
+                  setSttDownload(null);
+                }
+              }
+              setDictationEngine(next);
+            }}
+          >
+            <SelectTrigger
+              data-testid="dictation-engine-trigger"
+              aria-label={t("settings.voice.dictation.engineLabel")}
+              className="w-56"
+              size="sm"
             >
-              <SelectTrigger
-                data-testid="dictation-engine-trigger"
-                aria-label={t("settings.voice.dictation.engineLabel")}
-                className="w-56"
-                size="sm"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {isTauri ? null : (
                 <SelectItem value="browser">
                   {t("settings.voice.dictation.engineBrowser")}
                 </SelectItem>
-                <SelectItem value="model" data-testid="dictation-engine-model">
-                  {t("settings.voice.dictation.engineModel")}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          )}
+              )}
+              <SelectItem value="model" data-testid="dictation-engine-model">
+                {t("settings.voice.dictation.engineModel")}
+              </SelectItem>
+              <SelectItem
+                value="custom"
+                data-testid="dictation-engine-custom"
+                disabled={!connectionsEnabled}
+              >
+                {t("settings.voice.dictation.engineCustom")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
         </SettingsRow>
+
+        {isCustomEngine ? (
+          <>
+            <SettingsRow
+              label={t("settings.voice.dictation.connectionLabel")}
+              description={t("settings.voice.dictation.connectionDescription")}
+            >
+              <Select
+                value={hasSelectedSttConnection ? sttProviderId : undefined}
+                onValueChange={setSttProviderId}
+                disabled={!connectionsEnabled || !hasSttConnections}
+              >
+                <SelectTrigger
+                  aria-label={t("settings.voice.dictation.connectionLabel")}
+                  className="w-56"
+                  size="sm"
+                >
+                  <SelectValue
+                    placeholder={t(
+                      hasSttConnections
+                        ? "settings.voice.dictation.connectionPlaceholder"
+                        : "settings.voice.dictation.connectionEmpty",
+                    )}
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {sttConnections.map((connection) => (
+                    <SelectItem key={connection.id} value={connection.id}>
+                      {connection.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </SettingsRow>
+            <SettingsRow
+              label={t("settings.voice.dictation.customModelLabel")}
+              description={t("settings.voice.dictation.customModelDescription")}
+            >
+              <Input
+                value={sttProviderModel}
+                onChange={(event) => setSttProviderModel(event.target.value)}
+                placeholder="whisper-1"
+                aria-label={t("settings.voice.dictation.customModelLabel")}
+                className="w-56"
+              />
+            </SettingsRow>
+          </>
+        ) : null}
 
         {isLocalEngine ? (
           modelSttSupported ? (
@@ -1151,7 +1232,11 @@ export function VoiceTab() {
               {DICTATION_LANGUAGES.map(({ value, label }) => (
                 <SelectItem key={value} value={value}>
                   {value === "auto"
-                    ? t("settings.voice.dictation.languageAuto")
+                    ? t(
+                        isCustomEngine
+                          ? "settings.voice.dictation.languageAutoDetect"
+                          : "settings.voice.dictation.languageAuto",
+                      )
                     : label}
                 </SelectItem>
               ))}

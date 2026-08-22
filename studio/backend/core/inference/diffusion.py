@@ -18,6 +18,7 @@ bar. GPU-handoff policy lives in the arbiter the routes call, not here.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import functools
 import inspect
 import json
@@ -1142,12 +1143,22 @@ class DiffusionBackend:
         self._load_token = 0
         # Set by unload() to abort an in-flight download. Replaced, never cleared, so a cancelled worker stays cancelled.
         self._cancel_event = threading.Event()
+        # Keep Stop responsive while a replacement holds _lock.
+        self._generation_cancel_lock = threading.Lock()
         # Cancel Event of the in-flight generation; per-generation so a cancel can't be lost or leak.
         self._active_generate_cancel: Optional[threading.Event] = None
-        # Unloads / superseding loads waiting on _generate_lock to free this pipeline. A generation queued behind the active
-        # one holds no cancel event yet, so without this fence it could win the lock after an eject and denoise anyway. A
-        # count, not a flag, so concurrent teardowns each own their own release.
+        # Queued requests; cancel_generate() decides which Stop may signal.
+        self._queued_generate_cancels: set[threading.Event] = set()
+        # True while a generation owns the slot, including its epilogue.
+        self._generation_owns_slot = False
+
+        # True while a load or unload owns the generation slot.
+        self._transition_owns_slot = False
+        # Teardowns waiting to free this pipeline; a count supports concurrent reservations.
         self._teardown_waiters = 0
+        # Set when no teardown is reserved; an Event keeps waiting independent of _lock.
+        self._teardown_drained = threading.Event()
+        self._teardown_drained.set()
         # Written by the callback, read lock-free by generate_progress().
         self._gen: Optional[_GenState] = None
         # img2img/inpaint pipes built via from_pipe (shared modules, no extra VRAM); cleared on unload.
@@ -1169,6 +1180,106 @@ class DiffusionBackend:
         target = resolve_diffusion_device_target(ordinal = ordinal)
         # The INDEXED string, so _resolve_device_target can rebuild a selection an override would erase.
         return target.torch_device, target.dtype
+
+    def _reserve_teardown_locked(self) -> None:
+        """Fence queued generations off the pipeline this teardown is about to free.
+
+        Call only while holding ``_lock``, so the count and the gate move together.
+        """
+        self._teardown_waiters += 1
+        self._teardown_drained.clear()
+
+    def _release_teardown_locked(self) -> None:
+        """Release one teardown reservation and wake generations when the last one leaves.
+
+        Call only while holding ``_lock``. A count is necessary because an unload and a
+        superseding load can both be queued behind the active generation.
+        """
+        assert self._teardown_waiters > 0, "teardown reservation released without an owner"
+        self._teardown_waiters -= 1
+        if self._teardown_waiters == 0:
+            self._teardown_drained.set()
+
+    @contextmanager
+    def _model_transition_slot(self):
+        """Hold the generation lock and publish that a model transition owns it.
+
+        The teardown fence remains raised until after this context is entered, so queued
+        cancellation always observes either that reservation or this owner flag. Releasing
+        the flag and lock under the cancellation lock makes the handoff equally atomic.
+        """
+        self._generate_lock.acquire()
+        with self._generation_cancel_lock:
+            assert not self._transition_owns_slot, "two model transitions own one slot"
+            self._transition_owns_slot = True
+        try:
+            yield
+        finally:
+            with self._generation_cancel_lock:
+                self._transition_owns_slot = False
+                self._generate_lock.release()
+
+    @contextmanager
+    def _generation_slot(self, cancel: threading.Event):
+        """Hold the generation lock, yielding to teardown and remaining cancellable.
+
+        Lock acquisition is not FIFO. If a generation wins the lock after a load or unload
+        has raised its fence, it must let that teardown run before reading ``_state``. Once
+        the final fence drops, the teardown still owns ``_generate_lock`` until its model
+        transition has settled, so the retried acquisition observes the new truthful state.
+
+        The zero-fence check and active-cancel registration share one ``_lock`` section. A
+        teardown starting after that check therefore either sees this event and cancels it,
+        or reserved before the check and makes this request yield.
+        """
+        admitted = False
+        # Publish before the first acquisition so Stop can reach this request.
+        with self._generation_cancel_lock:
+            self._queued_generate_cancels.add(cancel)
+        try:
+            while True:
+                # Timed acquisition keeps queued requests responsive during replacement.
+                while True:
+                    if cancel.is_set():
+                        raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                    if self._generate_lock.acquire(timeout = 0.1):
+                        break
+                with self._lock:
+                    if not self._teardown_waiters:
+                        # Register atomically with the zero-fence check.
+                        with self._generation_cancel_lock:
+                            cancelled = cancel.is_set()
+                            if not cancelled:
+                                self._queued_generate_cancels.discard(cancel)
+                                self._active_generate_cancel = cancel
+                                self._generation_owns_slot = True
+                                admitted = True
+                    else:
+                        cancelled = cancel.is_set()
+                if admitted:
+                    break
+                self._generate_lock.release()
+                if cancelled:
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                # The gate wait leaves _lock free for the transition.
+                while True:
+                    if cancel.is_set():
+                        raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                    if self._teardown_drained.wait(timeout = 0.1):
+                        break
+            try:
+                yield
+            finally:
+                # Release the slot and lock atomically for cancellation.
+                with self._generation_cancel_lock:
+                    if self._active_generate_cancel is cancel:
+                        self._active_generate_cancel = None
+                    self._generation_owns_slot = False
+                    self._generate_lock.release()
+        finally:
+            if not admitted:
+                with self._generation_cancel_lock:
+                    self._queued_generate_cancels.discard(cancel)
 
     # Memory requests whose offload policy is decided by the REQUEST rather than by the measured
     # footprint. `fast` and `auto` are measurements and so cannot be judged network-free.
@@ -3217,11 +3328,12 @@ class DiffusionBackend:
             # Bail before signalling if this load was superseded, else a stale worker aborts a live one.
             if _load_token is not None and _load_token != self._load_token:
                 raise RuntimeError("Diffusion load was cancelled.")
-            if self._active_generate_cancel is not None:
-                self._active_generate_cancel.set()
+            with self._generation_cancel_lock:
+                if self._active_generate_cancel is not None:
+                    self._active_generate_cancel.set()
             # Same fence unload() takes: a queued generation must not run on the pipeline this load is about to free.
-            self._teardown_waiters += 1
-        with self._generate_lock:
+            self._reserve_teardown_locked()
+        with self._model_transition_slot():
             with self._lock:
                 try:
                     # Re-check: a newer load/unload may have superseded this one while we waited.
@@ -3232,7 +3344,7 @@ class DiffusionBackend:
                     self._unload_locked()
                 finally:
                     # Released here, not at the end of the load: the old pipe is gone and the rest of the load holds _generate_lock.
-                    self._teardown_waiters -= 1
+                    self._release_teardown_locked()
 
                 # Single-file kinds resolve a checkpoint path; the pipeline kind has none.
                 single_file_path = (
@@ -5458,16 +5570,13 @@ class DiffusionBackend:
 
         # Per-generation cancel Event that unload()/a superseding load set (under _lock) to abort just this denoise.
         cancel = threading.Event()
-        with self._generate_lock:
+        with self._generation_slot(cancel):
             with self._lock:
-                # A teardown is waiting for this lock and Python locks are not FIFO, so refuse rather than start a denoise on a pipeline that is already being torn down.
-                if self._teardown_waiters:
-                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                 state = self._state
                 if state is None:
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
-                # Register under _lock so unload()/a load can signal THIS generation.
-                self._active_generate_cancel = cancel
+                if cancel.is_set():
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not read idle.
                 self._gen = _GenState(total_steps = steps)
             try:
@@ -5892,11 +6001,11 @@ class DiffusionBackend:
                 # artifact per shape, so that save is not instant) and the page still shows Stop
                 # for as long as progress reads active, so a Stop landing there was answered
                 # cancelled = true and then contradicted by the image the route persisted.
-                # Check and deregister under _lock, which is the lock cancel_generate takes, so the
+                # Check and deregister under the cancellation lock, which cancel_generate takes, so the
                 # two cannot interleave: a cancel that saw this event registered ran strictly
                 # before the check, and one that arrives after finds nothing to set and answers
                 # false. The finally below repeats the clear for every other exit.
-                with self._lock:
+                with self._generation_cancel_lock:
                     if cancel.is_set():
                         raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                     if self._active_generate_cancel is cancel:
@@ -5927,9 +6036,10 @@ class DiffusionBackend:
                 }
             finally:
                 # Deregister so a later unload/load can't poke a finished generation (if still ours).
-                with self._lock:
+                with self._generation_cancel_lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
+                with self._lock:
                     # Sole clear of the published progress state, on every exit, so a crashed generation never leaves the UI stuck.
                     self._gen = None
 
@@ -5963,11 +6073,24 @@ class DiffusionBackend:
         Best effort by construction: the sampler stops at the NEXT step callback, so a cancel
         during the VAE decode or the encode that precedes step 0 lands when that finishes.
         Same contract as the video backend."""
-        with self._lock:
-            cancel = self._active_generate_cancel
-            if cancel is None:
+        with self._generation_cancel_lock:
+            # Stop targets the denoising generation, not a serialized waiter.
+            active = self._active_generate_cancel
+            if active is not None:
+                active.set()
+                return True
+            if self._generation_owns_slot:
+                # Images are committed; do not report a cancellation after the last-word check.
                 return False
-            cancel.set()
+            # Only teardown or transition ownership makes queued waiters cancellable.
+            if not self._teardown_waiters and not self._transition_owns_slot:
+                return False
+            # Recheck live state so timed waiters observe a replacement handoff.
+            cancels = set(self._queued_generate_cancels)
+            if not cancels:
+                return False
+            for cancel in cancels:
+                cancel.set()
             return True
 
     def unload(self) -> dict[str, Any]:
@@ -5976,23 +6099,25 @@ class DiffusionBackend:
             # rebinds this attribute, so an unlocked read could set an event the current load no longer watches.
             self._cancel_event.set()
             # Abort an in-flight denoise via ITS cancel event.
-            if self._active_generate_cancel is not None:
-                self._active_generate_cancel.set()
-            # Fence queued generations too: they hold no cancel event yet, so the signal above cannot reach them.
-            self._teardown_waiters += 1
+            with self._generation_cancel_lock:
+                if self._active_generate_cancel is not None:
+                    self._active_generate_cancel.set()
+            # Fence queued generations too: they are intentionally not cancelled by model
+            # lifecycle changes, so they must wait and observe the post-teardown state.
+            self._reserve_teardown_locked()
             # Cancel any in-flight load (its worker checks this token) and drop the marker.
             self._load_token += 1
             self._loading = None
         # Wait for the signalled denoise to exit BEFORE tearing down: _unload_locked uninstalls process-wide state
         # (attention patches, GGUF compile hooks, backend flags, compile cache) the denoise still depends on.
-        with self._generate_lock:
+        with self._model_transition_slot():
             with self._lock:
                 try:
                     self._unload_locked()
                 finally:
                     # Released in a finally, exactly like begin_load: _unload_locked ends in clear_gpu_cache(), which raises on a
                     # sticky CUDA fault, and an un-drained fence would refuse every later generation for the life of the process.
-                    self._teardown_waiters -= 1
+                    self._release_teardown_locked()
         return self.status()
 
     def _unload_locked(self) -> None:

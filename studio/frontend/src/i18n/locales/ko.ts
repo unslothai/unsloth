@@ -281,6 +281,17 @@ export const ko = {
         engineModel: "로컬 음성 인식",
         engineModelDescription:
           "음성 인식(STT) 모델을 로컬에서 실행하며 오프라인으로 동작합니다. 다운로드 후 로드하고, 일정 시간 사용하지 않으면 자동으로 해제됩니다.",
+        engineCustom: "사용자 지정 엔드포인트",
+        engineCustomDescription:
+          "연결에 등록된 OpenAI 호환 STT 서버로 녹음된 오디오를 전송합니다.",
+        connectionLabel: "연결",
+        connectionDescription:
+          "연결에서 OpenAI 호환 서버와 선택적 API 키를 추가하세요.",
+        connectionPlaceholder: "연결 선택",
+        connectionEmpty: "사용 가능한 연결이 없습니다",
+        customModelLabel: "모델",
+        customModelDescription:
+          "/v1/audio/transcriptions에 전송할 모델 이름입니다.",
         sttModelLabel: "음성 인식 모델",
         sttModelDescription: "로컬에서 실행할 STT 모델을 선택하거나 검색하세요.",
         sttModelSearchPlaceholder: "모델 검색",
@@ -339,6 +350,7 @@ export const ko = {
         languageLabel: "받아쓰기 언어",
         languageDescription: "인식할 언어",
         languageAuto: "자동(브라우저 언어)",
+        languageAutoDetect: "자동(언어 감지)",
       },
       dictionary: {
         sectionTitle: "받아쓰기 사전",
