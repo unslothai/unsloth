@@ -1225,7 +1225,7 @@ export function AppSidebar() {
   // Projects section renders by, collapsed folders and the per-folder limit
   // included.
   const renderedProjectChatItems = useMemo(() => {
-    if (organizeBy !== "project") return [];
+    if (organizeBy !== "project" || !projectsOpen) return [];
     const out: SidebarItem[] = [];
     for (const project of visibleProjectRecords) {
       if (collapsedProjectIds.has(project.id)) continue;
@@ -1239,19 +1239,26 @@ export function AppSidebar() {
     return out;
   }, [
     organizeBy,
+    projectsOpen,
     visibleProjectRecords,
     collapsedProjectIds,
     expandedChatProjectIds,
     sortedChatsByProjectId,
   ]);
+  // A collapsed section is not on screen either, so its rows are not walked or
+  // selected any more than a collapsed folder's are.
+  const visiblePinnedItems = useMemo(
+    () => (pinnedOpen ? sortedPinnedChatItems : []),
+    [pinnedOpen, sortedPinnedChatItems],
+  );
+  const visibleRecentItems = useMemo(
+    () => (chatOpen ? sortedRecentChatItems : []),
+    [chatOpen, sortedRecentChatItems],
+  );
   // Rows wanting attention, most urgent first. Same rule the Priority sort uses.
   const attentionItemIds = useMemo(
     () =>
-      [
-        ...sortedPinnedChatItems,
-        ...renderedProjectChatItems,
-        ...sortedRecentChatItems,
-      ]
+      [...visiblePinnedItems, ...renderedProjectChatItems, ...visibleRecentItems]
         .filter((item) => chatPriorityRank(item) < 3)
         .sort(
           (a, b) =>
@@ -1260,9 +1267,9 @@ export function AppSidebar() {
         )
         .map((item) => item.id),
     [
-      sortedPinnedChatItems,
+      visiblePinnedItems,
       renderedProjectChatItems,
-      sortedRecentChatItems,
+      visibleRecentItems,
       chatPriorityRank,
     ],
   );
@@ -1270,17 +1277,17 @@ export function AppSidebar() {
   const publishLists = useChatNavigationStore((s) => s.publishLists);
   useEffect(() => {
     publishLists({
-      pinnedItems: sortedPinnedChatItems,
+      pinnedItems: visiblePinnedItems,
       projectItems: renderedProjectChatItems,
-      recentItems: sortedRecentChatItems,
+      recentItems: visibleRecentItems,
       attentionItemIds,
       activeItemId: activeThreadId ?? null,
     });
   }, [
     publishLists,
-    sortedPinnedChatItems,
+    visiblePinnedItems,
     renderedProjectChatItems,
-    sortedRecentChatItems,
+    visibleRecentItems,
     attentionItemIds,
     activeThreadId,
   ]);
@@ -1366,9 +1373,9 @@ export function AppSidebar() {
   /** Select every chat row on screen, pinned block included. */
   const selectAllChats = useCallback(() => {
     const ids = [
-      ...sortedPinnedChatItems,
+      ...visiblePinnedItems,
       ...renderedProjectChatItems,
-      ...sortedRecentChatItems,
+      ...visibleRecentItems,
     ].map((item) => item.id);
     if (ids.length === 0) return;
     dropProjectSelection();
@@ -1376,9 +1383,9 @@ export function AppSidebar() {
     selectionAnchorRef.current = null;
     setSelectedChatIds(new Set(ids));
   }, [
-    sortedPinnedChatItems,
+    visiblePinnedItems,
     renderedProjectChatItems,
-    sortedRecentChatItems,
+    visibleRecentItems,
     dropProjectSelection,
   ]);
 

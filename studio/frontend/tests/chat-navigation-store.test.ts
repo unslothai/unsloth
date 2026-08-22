@@ -77,6 +77,16 @@ test("tapping the chord toggles the two most recent chats", () => {
   assert.deepEqual(taps, ["B", "A", "B"]);
 });
 
+test("a chat outside the stack walks onto the end it started from", () => {
+  seed();
+  // A brand new chat is in no stack, so the first press has to reach the most
+  // recently viewed one rather than stepping past it.
+  useChatNavigationStore.setState({ activeItemId: "unsaved", traversal: null });
+  assert.equal(store().stepRecentlyViewed(1)?.id, "A");
+  useChatNavigationStore.setState({ activeItemId: "unsaved", traversal: null });
+  assert.equal(store().stepRecentlyViewed(-1)?.id, "D");
+});
+
 test("walking backwards is the mirror of walking forwards", () => {
   seed();
   assert.deepEqual([press(-1), press(-1)], ["D", "C"]);

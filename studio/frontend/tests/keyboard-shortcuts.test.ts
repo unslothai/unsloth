@@ -688,6 +688,27 @@ test("the composer chords outlive the recording bar", async () => {
   assert.match(thread, /"sendMessage", \(\) => formRef\.current\?\.requestSubmit\(\)/);
 });
 
+test("a collapsed sidebar section is not published for the chords", async () => {
+  const sidebar = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  // Navigation and Select all walk what is on screen, so a section the user
+  // closed counts as gone, the same as a closed project folder.
+  assert.match(
+    sidebar,
+    /visiblePinnedItems = useMemo\(\s*\(\) => \(pinnedOpen \? sortedPinnedChatItems : \[\]\)/,
+  );
+  assert.match(
+    sidebar,
+    /visibleRecentItems = useMemo\(\s*\(\) => \(chatOpen \? sortedRecentChatItems : \[\]\)/,
+  );
+  assert.match(sidebar, /organizeBy !== "project" \|\| !projectsOpen/);
+  // And the published lists are the filtered ones.
+  assert.match(sidebar, /pinnedItems: visiblePinnedItems,/);
+  assert.match(sidebar, /recentItems: visibleRecentItems,/);
+});
+
 test("every settings tab survives a reload", () => {
   // The persisted-tab check reads this same list, so a tab added to the union
   // alone can no longer be rejected back to General.

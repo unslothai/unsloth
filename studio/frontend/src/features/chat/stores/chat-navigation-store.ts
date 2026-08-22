@@ -154,8 +154,14 @@ export const useChatNavigationStore = create<ChatNavigationState>(
         : state.activeItemId
           ? order.indexOf(state.activeItemId)
           : -1;
-      const base = from === -1 ? 0 : from;
-      const index = (base + delta + order.length) % order.length;
+      // Nothing open, or a chat that never entered the stack: the walk starts
+      // outside it, so the first step lands on the end it is walking from.
+      const index =
+        from === -1
+          ? delta > 0
+            ? 0
+            : order.length - 1
+          : (from + delta + order.length) % order.length;
       set({ traversal: { order, index } });
       return byId.get(order[index]) ?? null;
     },
