@@ -2,11 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { strFromU8, unzipSync } from "fflate";
-
-export const OPEN_DOCUMENT_SPREADSHEET_MIME =
-  "application/vnd.oasis.opendocument.spreadsheet";
-export const OPEN_DOCUMENT_TEXT_MIME =
-  "application/vnd.oasis.opendocument.text";
+import { OPEN_DOCUMENT_SPREADSHEET_MIME } from "./open-document-accept";
 const OFFICE_NAMESPACE = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
 const STYLE_NAMESPACE = "urn:oasis:names:tc:opendocument:xmlns:style:1.0";
 const TABLE_NAMESPACE = "urn:oasis:names:tc:opendocument:xmlns:table:1.0";
