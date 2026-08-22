@@ -218,6 +218,56 @@ def test_structured_call_executes_and_continues(executed):
     assert follow_up[-1]["content"] == "RESULT<web_search>"
 
 
+def test_a_conversation_search_here_gets_the_active_branch(executed):
+    """The provider loops share the local paths' tool catalogue.
+
+    So search_conversation is advertised here once a thread has an archive, and needs the
+    branch for the same reason: the stored rows are the whole DAG, Retry included.
+    """
+    branch = [
+        {"role": "user", "content": "what was the code"},
+        {"role": "assistant", "content": "let me look"},
+        {"role": "user", "content": "please"},
+    ]
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_c",
+                                "function": {
+                                    "name": "search_conversation",
+                                    "arguments": '{"query":"the code"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "It was 5150."}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+
+    _run(transport, tools = [_tool("search_conversation")], messages = branch)
+
+    assert [call["name"] for call in executed] == ["search_conversation"]
+    assert executed[0]["conversation_branch"] == branch
+    # And a budget, or the tool's clamp is skipped and a model-chosen top_k of 8 appends
+    # roughly 4K tokens to a prompt this loop replays. Studio cannot measure an external
+    # model's window, so the cap is one ordinary recall's worth.
+    from core.rag import config as rag_config
+
+    assert (
+        executed[0]["conversation_budget_tokens"]
+        == rag_config.CHUNK_TOKENS * rag_config.CONVERSATION_ARCHIVE_TOP_K
+    )
+
+
 def test_streamed_tool_name_fragments_are_not_concatenated(executed):
     """llama-server re-sends the whole name as it grows: web -> web_search."""
     transport = FakeTransport(

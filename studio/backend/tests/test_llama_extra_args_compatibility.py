@@ -268,7 +268,10 @@ def test_validate_sizes_itself_with_the_arguments_the_caller_sent():
         "_resolve_inherited_extra_args(\n            request, config, model_identifier, None\n        )"
         not in source
     )
-    assert 'model_identifier, getattr(request, "llama_extra_args", None)' in source
+    assert (
+        "_public_model_identifier(request.model_path, model_identifier),\n"
+        '            getattr(request, "llama_extra_args", None),' in source
+    )
 
     class _Request:
         llama_extra_args = ["--ctx-size", "8192"]

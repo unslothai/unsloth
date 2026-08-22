@@ -19,6 +19,7 @@ import { ApiKeyRow } from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
+import { LanAccessSection } from "../components/lan-access-section";
 import { RemoteAccessSection } from "../components/remote-access-section";
 import { UsageExamples } from "../components/usage-examples";
 
@@ -173,7 +174,10 @@ export function ApiKeysTab() {
 
       <MonitorLink />
 
+      {/* Also on the Remote & LAN tab. One panel mounts at a time, so only one polls. */}
       <RemoteAccessSection />
+
+      <LanAccessSection />
 
       <ModelAutoSwitchSection />
 

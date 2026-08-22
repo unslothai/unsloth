@@ -53,6 +53,8 @@ on:
       # makes --local overlay studio.backend*.
       - 'install.sh'
       - 'install.ps1'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
       - 'pyproject.toml'
       # --local also runs the checkout's setup scripts (install.sh picks
       # $_REPO_ROOT/studio/setup.sh, the editable install resolves setup.ps1 to the
@@ -102,6 +104,34 @@ jobs:
         with:
           persist-credentials: false
 
+      # Safe for what this job measures, which is the reason to check rather than
+      # assume: `profile_startup.py` times `import main` and time-to-a-healthy-port
+      # AFTER the install, and the gate is `--max-healthz-seconds`. Install duration
+      # is neither measured nor gated. Under `--api-only` the launched server never
+      # resolves a frontend at all -- `_frontend_serving_mode` returns serve=False
+      # with no Tauri owner, so the mount block is skipped -- so a byte-identical
+      # prebuilt dist and a locally built one are indistinguishable to every number
+      # this job reports.
+      #
+      # All three legs, not just Windows: `fe-dist-Linux` and `fe-dist-macOS` are
+      # already on main from #9375, so ubuntu and macos-15 hit on the first run.
+      #
+      # RESTORE ONLY, and that is a property of this workflow's triggers rather than an
+      # oversight. It runs on `pull_request` and `workflow_dispatch` and nothing else --
+      # no `push`, no `schedule` -- so `github.ref` is `refs/pull/N/merge` on every
+      # automatic run and a save gated on `refs/heads/main` could only ever fire when a
+      # human dispatched it from main by hand. A cache that fills only when somebody
+      # remembers to press a button is not a cache; pairing a save here would be dead
+      # config that reads as a caching decision which is not in force. The producers are
+      # the five workflows that do run on push to main.
+      #
+      # tests/studio/test_frontend_dist_cache.py derives this from the `on:` block rather
+      # than allowlisting the filename, so adding `push:` here without adding the save --
+      # or adding the save without the trigger -- goes red.
+      - name: Restore the built frontend
+        id: fe-dist
+        uses: ./.github/actions/frontend-dist-restore
+
       - name: Install Studio
         shell: bash
         env:
@@ -116,6 +146,18 @@ jobs:
           else
             bash install.sh --local 2>&1 | tee logs/install.log
           fi
+
+      # No save here (see the restore step). The assertion half of the pair is still
+      # worth running: a hit that got rebuilt anyway is the one failure mode of this
+      # cache that nothing else reveals, and this job restores on all three OSes, so it
+      # is a useful place to catch it. `save: 'false'` runs the check and skips the
+      # upload.
+      - name: Check the restored frontend was reused
+        uses: ./.github/actions/frontend-dist-save
+        with:
+          cache-hit: ${{ steps.fe-dist.outputs.cache-hit }}
+          key: ${{ steps.fe-dist.outputs.key }}
+          save: 'false'
 
       - name: Profile startup
         shell: bash

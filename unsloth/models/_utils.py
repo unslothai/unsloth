@@ -636,6 +636,7 @@ def _disable_flash_attention_if_needed(
     supports_flex_attention = False,
     would_use_flash_attention = False,
     disable_reason = None,
+    honor_config_attn_implementation = True,
 ):
     if disable_reason is None:
         disable_reason = _get_flash_attention_disable_reason(config)
@@ -648,11 +649,14 @@ def _disable_flash_attention_if_needed(
     # defaults, so they must not be treated as a deliberate user choice.
     explicit_request = attn_implementation
 
+    # Off for a float32 load: with no flash-specific reason the config never steered the
+    # choice, so a config-seeded "eager" must not drag an fp32 load from sdpa down to eager.
     requested_attn_implementation = attn_implementation
-    if requested_attn_implementation is None:
-        requested_attn_implementation = _config_get(config, "_attn_implementation", None)
-    if requested_attn_implementation is None:
-        requested_attn_implementation = _config_get(config, "attn_implementation", None)
+    if honor_config_attn_implementation:
+        if requested_attn_implementation is None:
+            requested_attn_implementation = _config_get(config, "_attn_implementation", None)
+        if requested_attn_implementation is None:
+            requested_attn_implementation = _config_get(config, "attn_implementation", None)
 
     if requested_attn_implementation == "eager":
         return _set_attn_impl(config, "eager")
@@ -832,6 +836,7 @@ def resolve_attention_implementation(
     config,
     requested_attn_implementation = None,
     supports_sdpa = None,
+    dtype = None,
 ):
     model_type_name = _config_get(config, "model_type", "")
     model_type = model_type_name.lower()
@@ -849,6 +854,10 @@ def resolve_attention_implementation(
     )
     supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
     disable_reason = _get_flash_attention_disable_reason(config)
+    float32_is_only_disable_reason = disable_reason is None and dtype is torch.float32
+    if float32_is_only_disable_reason:
+        # FA2 kernels only accept fp16/bf16, and fp32 generate runs without autocast, so it raises.
+        disable_reason = "the model loads in float32 which Flash Attention does not support"
     flash_attention_disabled = disable_reason is not None
 
     if model_class is None:
@@ -869,8 +878,16 @@ def resolve_attention_implementation(
                 config,
                 supports_sdpa = supports_sdpa,
                 supports_flex_attention = supports_flex_attention,
-                would_use_flash_attention = (HAS_FLASH_ATTENTION and supports_flash_attention),
+                would_use_flash_attention = (
+                    HAS_FLASH_ATTENTION
+                    and supports_flash_attention
+                    # An explicit request is settled below and reports its own downgrade.
+                    and not (
+                        float32_is_only_disable_reason and requested_attn_implementation is not None
+                    )
+                ),
                 disable_reason = disable_reason,
+                honor_config_attn_implementation = not float32_is_only_disable_reason,
             )
         elif supports_sdpa:
             attn_impl = _set_attn_impl(config, "sdpa")
@@ -882,9 +899,17 @@ def resolve_attention_implementation(
         else:
             attn_impl = _set_attn_impl(config, "eager")
 
+    # float32 only rules out flash, unlike config-driven reasons which say something about the
+    # model itself. So an explicit non-flash request must skip the flash fallback ladder, which
+    # answers differently: gemma3 + "sdpa" resolves to eager, but the ladder says flex_attention.
+    reroute_request_through_flash_fallback = flash_attention_disabled and not (
+        float32_is_only_disable_reason
+        and not _is_flash_attention_requested(requested_attn_implementation)
+    )
+
     if requested_attn_implementation is None:
         final_attn_impl = attn_impl
-    elif flash_attention_disabled:
+    elif reroute_request_through_flash_fallback:
         final_attn_impl = _disable_flash_attention_if_needed(
             config,
             requested_attn_implementation,
