@@ -363,6 +363,165 @@ def flux2_pick_mismatch(
     )
 
 
+# GGUF ``general.architecture`` values nothing in Studio can decode. Beside the FLUX.2 check
+# because both ask whether the pick is loadable, off the same prefix.
+_SPEECH_GGUF_ARCHS = frozenset({"llama-csm"})
+_SPEECH_ARCH_CACHE: dict[
+    tuple[str, str, str, Optional[tuple]], tuple[Optional[str], Optional[float]]
+] = {}
+_SPEECH_ARCH_CACHE_MAX = 256
+# An uncached remote verdict is keyed on a local identity of None, so a republish under the same
+# filename changes nothing about the key and a cached-forever answer would keep refusing a
+# checkpoint that is runnable now. Snapshot-backed entries need no TTL: their key carries the
+# file identity, and _revalidated_speech_arch asks the Hub for them. Matches the variant
+# listing's own freshness window for moved revisions.
+_SPEECH_REMOTE_TTL_SECONDS = 60.0
+
+
+def _arch_from_prefix(prefix: bytes, gguf_filename: str) -> Optional[str]:
+    """``general.architecture`` out of a header prefix, or None when it says nothing."""
+    # Magic, version and the two counts: anything shorter is not a GGUF at all.
+    if len(prefix) < 24:
+        return None
+    try:
+        import tempfile
+
+        from utils.models.gguf_metadata import read_gguf_architecture
+        with tempfile.TemporaryDirectory(prefix = "unsloth-speech-probe-") as probe_dir:
+            # Named after the real file, like the chat-side probe: a GGUF declaring no
+            # architecture is judged by its name, which a temp name would lose.
+            probe_path = os.path.join(probe_dir, os.path.basename(gguf_filename))
+            with open(probe_path, "wb") as handle:
+                handle.write(prefix)
+            return (read_gguf_architecture(probe_path) or "").strip().lower() or None
+    except Exception:  # noqa: BLE001 -- a probe that failed is not a verdict
+        return None
+
+
+def _revalidated_speech_arch(
+    repo_id: str,
+    gguf_filename: str,
+    token: Optional[str],
+    local: Optional[str],
+    arch: Optional[str],
+    allow_network: bool = True,
+) -> Optional[str]:
+    """*arch* again, re-read off the Hub when the cached copy it came from is behind.
+
+    ``try_to_load_from_cache`` resolves the LOCAL ``refs/main``, so a republished checkpoint is
+    judged off bytes ``hf_hub_download`` is about to replace. BOTH directions, unlike the size
+    pairing (refusals only): a stale allow hands csm bytes to a media loader after the download
+    and the teardown, the very outcome this preflight exists to prevent. An unknown revision or
+    an unreadable live header keeps *arch*, so an offline host never flips a verdict, and no
+    CACHED copy means no revision to be behind -- an uncached remote pick and an On Device file
+    both skip the HEAD. Memoised by the caller: one HEAD per cached copy per token per session."""
+    cached = _snapshot_revision(local)
+    if cached is None:
+        return arch
+    if not allow_network:
+        # A cache-only caller cannot wear the HEAD; the caller declines to memoise this answer,
+        # so the next one that CAN reach the Hub still revalidates it.
+        return arch
+    live = _hub_revision(repo_id, gguf_filename, token)
+    if live is None or live == cached:
+        return arch
+    return _arch_from_prefix(_read_gguf_header(repo_id, gguf_filename, token), gguf_filename)
+
+
+def _speech_probe_architecture(
+    repo_id: str,
+    gguf_filename: str,
+    hf_token: Optional[str],
+    allow_network: bool = True,
+) -> Optional[str]:
+    """``general.architecture`` of a pick, from a cached copy or one range request.
+
+    Keyed like the inner-dim memo beside it, for the same two reasons: the token fingerprint,
+    because a probe that failed on an expired credential caches "no verdict" and the retry with a
+    working one would read that back and let the speech file through to the download; the file
+    identity, because a checkpoint replaced under the same name is a different checkpoint."""
+    token = (hf_token or "").strip() or None
+    # Resolved BEFORE the memo is consulted, because the file's identity is part of the key.
+    local = _local_gguf_path(repo_id, gguf_filename)
+    key = (repo_id, gguf_filename, _token_fingerprint(token), _file_identity(local))
+    with _CACHE_LOCK:
+        memo = _SPEECH_ARCH_CACHE.get(key)
+        if memo is not None:
+            arch, expires_at = memo
+            if expires_at is None or time.monotonic() < expires_at:
+                return arch
+            del _SPEECH_ARCH_CACHE[key]
+    if local is None and not allow_network:
+        # Memo or local header only, as the size pairing does. Nothing is memoised, so the next
+        # caller that CAN wait still gets a real answer instead of this one's silence.
+        return None
+    prefix = (
+        _read_local_header(local) if local else _read_gguf_header(repo_id, gguf_filename, token)
+    )
+    arch = _arch_from_prefix(prefix, gguf_filename)
+    # Inside the memo, so a republished checkpoint is caught in either direction and the HEAD is
+    # spent once per cached copy rather than on every pick.
+    arch = _revalidated_speech_arch(repo_id, gguf_filename, token, local, arch, allow_network)
+    # A cached copy whose revision check was skipped is only HALF an answer, so it must not be
+    # memoised: the network-allowed caller behind it would read this back and never revalidate.
+    if not allow_network and _snapshot_revision(local) is not None:
+        return arch
+    with _CACHE_LOCK:
+        if len(_SPEECH_ARCH_CACHE) >= _SPEECH_ARCH_CACHE_MAX:
+            _SPEECH_ARCH_CACHE.clear()
+        _SPEECH_ARCH_CACHE[key] = (
+            arch,
+            None if local else time.monotonic() + _SPEECH_REMOTE_TTL_SECONDS,
+        )
+    return arch
+
+
+def speech_pick_refusal(
+    repo_id: str,
+    gguf_filename: Optional[str],
+    hf_token: Optional[str] = None,
+    allow_network: bool = True,
+) -> Optional[str]:
+    """Why this diffusion pick cannot load, when it names a speech GGUF, else None.
+
+    The variant listing drops the speech quants whose bytes are on disk, but an UNDOWNLOADED one
+    has none to read and stays offered -- and ``detect_family_for_pick`` resolves its family from
+    the folder name, so a csm file beside a FLUX denoiser answers flux.1, and the pick pulls the
+    checkpoint and tears the resident pipeline down before the loader finds out.
+
+    Metadata only, like the FLUX.2 pairing above: a cached copy answers with no request, else one
+    range request. Fails open on everything -- no filename, an unreadable header, an offline host,
+    a server that ignores Range -- because refusing a pick that works is worse than the download
+    this saves.
+    """
+    # A ".gguf" name only, as the size pairing does: a single_file pick names a .safetensors,
+    # which has no GGUF header, and a range request to learn that on every such load is waste.
+    if not repo_id or not gguf_filename or not gguf_filename.lower().endswith(".gguf"):
+        return None
+    arch = _speech_probe_architecture(repo_id, gguf_filename, hf_token, allow_network)
+    if arch is not None and arch in _SPEECH_GGUF_ARCHS:
+        return (
+            f"'{os.path.basename(gguf_filename)}' is a {arch} speech checkpoint, which no image "
+            "or video backend can decode. Pick one of this folder's media GGUFs instead."
+        )
+    return None
+
+
+def assert_pick_is_not_speech(
+    repo_id: str,
+    gguf_filename: Optional[str],
+    hf_token: Optional[str] = None,
+    allow_network: bool = True,
+) -> None:
+    """Refuse a speech GGUF pick before anything is downloaded or unloaded.
+
+    ``ValueError`` like the FLUX.2 assert: /images/load maps it to 400 and the download-plan
+    catches it, whereas a RuntimeError escapes the plan as a bare 500."""
+    reason = speech_pick_refusal(repo_id, gguf_filename, hf_token, allow_network)
+    if reason is not None:
+        raise ValueError(reason)
+
+
 def assert_flux2_pick_compatible(
     fam: Any,
     repo_id: str,
@@ -383,3 +542,4 @@ def _reset_inner_dim_cache() -> None:
     """Drop the memoised header probes. Tests only."""
     with _CACHE_LOCK:
         _INNER_DIM_CACHE.clear()
+        _SPEECH_ARCH_CACHE.clear()

@@ -12297,6 +12297,9 @@ class LlamaCppBackend:
     _DIFFUSION_ARCHES = (
         _IMAGE_ARCHES | _AMBIGUOUS_IMAGE_ARCHES | _VIDEO_ARCHES | _UNRUNNABLE_MEDIA_ARCHES
     )
+    # TTS archs llama.cpp cannot load ("llama-csm" is only on an unmerged upstream branch);
+    # Studio runs them from the Audio page. Mirrors routes.models._SPEECH_GGUF_ARCHS.
+    _SPEECH_ARCHES = frozenset(("llama-csm",))
 
     # Not architectures: the literal placeholders gguf-connector writes into
     # general.architecture for its diffusion GGUFs (gguf-org/flux2-dev-gguf and
@@ -12398,13 +12401,23 @@ class LlamaCppBackend:
         # so the remote probe's prefix can carry it even where bulkier later metadata leaves
         # the walk unfinished. The walk still gates the no-architecture fallback below, the
         # one case where an incomplete read is indistinguishable from declaring nothing.
-        if arch not in self._DIFFUSION_ARCHES and not getattr(self, "_gguf_header_parsed", False):
+        if (
+            arch not in self._DIFFUSION_ARCHES
+            and arch not in self._SPEECH_ARCHES
+            and not getattr(self, "_gguf_header_parsed", False)
+        ):
             return None
         if arch in self._PLACEHOLDER_ARCHES:
             # Names no architecture, so treat it like a GGUF that declares none and let the
             # name-based branch below name a page.
             arch = ""
         if arch:
+            if arch in self._SPEECH_ARCHES:
+                return (
+                    f"This is a text-to-speech GGUF (architecture '{arch}'), which "
+                    "llama.cpp cannot load. Open the Audio page and pick a speech model "
+                    "there."
+                )
             if arch in self._UNRUNNABLE_MEDIA_ARCHES:
                 return (
                     f"This is an image / video generation GGUF (architecture '{arch}'), "
@@ -13181,6 +13194,12 @@ class LlamaCppBackend:
         arch_match = re.search(r"unknown model architecture:\s*'([^']+)'", lowered)
         if arch_match:
             arch = arch_match.group(1)
+            if arch in LlamaCppBackend._SPEECH_ARCHES:
+                return (
+                    f"'{arch}' is a text-to-speech GGUF, which llama-server cannot run as "
+                    "a chat/completion model. Use Unsloth's Audio page to run speech "
+                    "models."
+                )
             if arch in LlamaCppBackend._UNRUNNABLE_MEDIA_ARCHES:
                 return (
                     f"'{arch}' is an image / video generation GGUF, which llama-server "

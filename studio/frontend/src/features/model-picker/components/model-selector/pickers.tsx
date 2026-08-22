@@ -3425,14 +3425,26 @@ export function HubModelPicker({
   const sortedCachedGguf = useMemo(
     () =>
       sortCachedRepos(
-        cachedGguf.filter((c) =>
-          passesTaskGate(
-            c.task,
-            c.repo_id,
-            task,
-            catalog,
-            activeCatalogArtifactIds,
-          ),
+        cachedGguf.filter(
+          (c) =>
+            passesTaskGate(
+              c.task,
+              c.repo_id,
+              task,
+              catalog,
+              activeCatalogArtifactIds,
+            ) &&
+            // A speech GGUF no backend here can decode (CSM) would otherwise be listed as
+            // a chat model and only fail in llama-server. Non-audio rows always pass.
+            audioPickIsRoutable({
+              id: c.repo_id,
+              task: c.task,
+              isGguf: true,
+              isCurated: artifactForRepoId(c.repo_id, AUDIO_CATALOG) !== null,
+              // _repo_gguf_task reads these off the arch too, so the same rule holds: a
+              // speech tag means llama-csm even when the repo id names another family.
+              taskFromGgufArch: true,
+            }),
         ),
         downloadedSort,
         loadTimes,
@@ -3525,6 +3537,18 @@ export function HubModelPicker({
         lmStudioModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
+            // The same speech gate the cached GGUF rows get: a CSM file found in LM
+            // Studio, ./models or a scan folder is just as undecodable, and routing it to
+            // Audio evicts the chat model before the row is reported unsupported.
+            audioPickIsRoutable({
+              id: m.model_id ?? m.id,
+              task: m.task,
+              isGguf: localModelIsGguf(m),
+              isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
+              // These rows are tasked by _local_model_task reading the GGUF's own arch,
+              // so a text-to-speech tag here means llama-csm, whatever the file is named.
+              taskFromGgufArch: true,
+            }) &&
             // The backend tags every local model with its task for exactly this: on the Images/Video pages a chat GGUF must not be offered.
             passesTaskGate(
               m.task,
@@ -3559,6 +3583,18 @@ export function HubModelPicker({
         localDirModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
+            // The same speech gate the cached GGUF rows get: a CSM file found in LM
+            // Studio, ./models or a scan folder is just as undecodable, and routing it to
+            // Audio evicts the chat model before the row is reported unsupported.
+            audioPickIsRoutable({
+              id: m.model_id ?? m.id,
+              task: m.task,
+              isGguf: localModelIsGguf(m),
+              isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
+              // These rows are tasked by _local_model_task reading the GGUF's own arch,
+              // so a text-to-speech tag here means llama-csm, whatever the file is named.
+              taskFromGgufArch: true,
+            }) &&
             passesTaskGate(
               m.task,
               m.model_id ?? m.id,
@@ -3596,6 +3632,18 @@ export function HubModelPicker({
         customFolderModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
+            // The same speech gate the cached GGUF rows get: a CSM file found in LM
+            // Studio, ./models or a scan folder is just as undecodable, and routing it to
+            // Audio evicts the chat model before the row is reported unsupported.
+            audioPickIsRoutable({
+              id: m.model_id ?? m.id,
+              task: m.task,
+              isGguf: localModelIsGguf(m),
+              isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
+              // These rows are tasked by _local_model_task reading the GGUF's own arch,
+              // so a text-to-speech tag here means llama-csm, whatever the file is named.
+              taskFromGgufArch: true,
+            }) &&
             passesTaskGate(
               m.task,
               m.model_id ?? m.id,

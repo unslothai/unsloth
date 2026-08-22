@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import os
 import sys
 import threading
 import time
@@ -2807,6 +2808,14 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     assert not missing, f"diffusion archs would still show in chat: {missing}"
 
 
+def test_arch_to_task_tags_speech_archs_as_speech():
+    # llama.cpp cannot load these at all, so chat must not claim them.
+    for arch in models_route._SPEECH_GGUF_ARCHS:
+        assert models_route._arch_to_task(arch) == models_route._SPEECH_TASK
+    from core.inference.llama_cpp import LlamaCppBackend
+    assert models_route._SPEECH_GGUF_ARCHS == set(LlamaCppBackend._SPEECH_ARCHES)
+
+
 def test_arch_to_task_tags_the_h3_gguf_bundle_as_video():
     # The published MiniMax-H3 GGUFs carry kv_count 0, so general.architecture is absent and the
     # arch read alone leaves the downloaded repo without a task -- dropped from the Video picker's
@@ -5193,6 +5202,343 @@ def test_the_classify_order_is_the_same_wherever_the_folder_lives(tmp_path):
     assert models_route._gguf_folder_task(first, hints) == models_route._gguf_folder_task(
         second, hints
     )
+
+
+def test_a_runnable_media_checkpoint_outranks_a_speech_gguf(tmp_path):
+    """Nothing loads a ``llama-csm`` GGUF, so returning speech the moment it sorts first would
+    hide the runnable denoiser beside it."""
+    folder = tmp_path / "mixed-speech"
+    # "csm" sorts before "flux" and cannot load here; the FLUX denoiser beside it can.
+    _arch_gguf(folder / "csm-1b-Q4_0.gguf", "llama-csm")
+    _arch_gguf(folder / "flux1-dev-Q4_K_M.gguf", "flux")
+    assert models_route._gguf_folder_task(folder, ("someone/mixed-GGUF",)) == "text-to-image"
+
+    # Nothing runnable beside it: still speech, so the chat picker keeps leaving it out.
+    speech = tmp_path / "speech-only"
+    _arch_gguf(speech / "csm-1b-Q4_0.gguf", "llama-csm")
+    assert (
+        models_route._gguf_folder_task(speech, ("someone/csm-GGUF",)) == models_route._SPEECH_TASK
+    )
+
+
+def test_a_runnable_chat_checkpoint_outranks_a_speech_gguf(tmp_path):
+    """Ranking speech with the unsupported diffusion archs saved a runnable image/video sibling
+    but not a chat one: a chat GGUF answers ``fallback``, which ``unsupported`` outranked, so a
+    csm + qwen3 folder tagged speech and the gate hid the qwen3. Speech is the last resort now."""
+    folder = tmp_path / "mixed-chat-speech"
+    # "csm" sorts first and cannot load here; the qwen3 chat checkpoint beside it can.
+    _arch_gguf(folder / "csm-1b-Q4_0.gguf", "llama-csm")
+    _arch_gguf(folder / "qwen3-8b-Q4_K_M.gguf", "llama")
+    assert models_route._gguf_folder_task(folder, ("someone/mixed-GGUF",)) == "text-generation"
+
+    # Unsupported diffusion still outranks the text fallback; the demotion did not change that.
+    diffusion = tmp_path / "mixed-diffusion-speech"
+    _arch_gguf(diffusion / "csm-1b-Q4_0.gguf", "llama-csm")
+    _arch_gguf(diffusion / "sd3-Q4_0.gguf", "sd3")
+    assert (
+        models_route._gguf_folder_task(diffusion, ("someone/sd3-GGUF",))
+        == models_route._UNSUPPORTED_DIFFUSION_TASK
+    )
+
+
+def test_a_cached_row_listed_from_the_hub_still_drops_its_speech_quant(monkeypatch, tmp_path):
+    """An online listing leaves ``context_source`` empty and a cached row names its REPO
+    directory, not a snapshot, so ``context_model`` fell back to the repo id and the filter
+    skipped exactly the rows most likely to hold a downloaded CSM file. The answering snapshot is
+    resolved now."""
+    repo_dir = tmp_path / "models--someone--mixed-GGUF"
+    snapshot = repo_dir / "snapshots" / "abc123"
+    _arch_gguf(snapshot / "csm-1b-Q4_0.gguf", "llama-csm")
+    _arch_gguf(snapshot / "flux1-dev-Q4_K_M.gguf", "flux")
+
+    async def hub_answer(repo_id, **kwargs):
+        # source=None is the point: a successful Hub listing names no on-disk copy.
+        return _speech_mix_answer(repo_id, snapshot, default_variant = "Q4_K_M", source = None)
+
+    monkeypatch.setattr(GV, "get_gguf_variants_answer", hub_answer)
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: 4096
+    )
+
+    result = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "someone/mixed-GGUF",
+            local_path = str(repo_dir),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+
+    assert [v.quant for v in result.variants] == ["Q4_K_M"]
+    # The runnable quant was the default here, so it survives untouched.
+    assert result.default_variant == "Q4_K_M"
+
+
+_UNSET = object()
+
+
+def test_a_speech_quant_in_an_older_snapshot_is_dropped_too(monkeypatch, tmp_path):
+    """The CSM quant lives only in an older sibling revision, which a single-snapshot read could
+    not see -- yet the listing and ``cached_gguf_for_load`` both span snapshots, so it stayed
+    listed and loadable. Every cached revision is read now."""
+    repo_dir = tmp_path / "models--someone--mixed-GGUF"
+    older = repo_dir / "snapshots" / "old111"
+    newest = repo_dir / "snapshots" / "new222"
+    _arch_gguf(older / "csm-1b-Q4_0.gguf", "llama-csm")
+    _arch_gguf(newest / "flux1-dev-Q4_K_M.gguf", "flux")
+    os.utime(older, (1, 1))
+    os.utime(newest, (9, 9))
+
+    async def hub_answer(repo_id, **kwargs):
+        return _speech_mix_answer(repo_id, newest, default_variant = "Q4_K_M", source = None)
+
+    monkeypatch.setattr(GV, "get_gguf_variants_answer", hub_answer)
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: 4096
+    )
+
+    result = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "someone/mixed-GGUF",
+            local_path = str(repo_dir),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+
+    assert [v.quant for v in result.variants] == ["Q4_K_M"]
+
+    # A pinned row resolves inside its own snapshot, so an older revision is not its business.
+    pinned = models_route._cached_snapshot_roots("someone/mixed-GGUF", str(newest))
+    assert pinned == [str(newest)]
+
+
+def test_every_listed_variant_reaches_the_architecture_gate(tmp_path):
+    """A positional cap exempted whatever sorted past it, so a CSM entry at 65 was copied through
+    unread and stayed selectable. The budget is time now, so position alone never buys a pass."""
+    folder = tmp_path / "big-mixed-GGUF"
+    variants = []
+    # One CSM first, one well past where the old positional cap cut off.
+    _arch_gguf(folder / "csm-first-Q4_0.gguf", "llama-csm")
+    variants.append(SimpleNamespace(filename = "csm-first-Q4_0.gguf", quant = "Q4_0"))
+    for i in range(models_route._MAX_TASK_CLASSIFY_GGUFS + 6):
+        _arch_gguf(folder / f"llama-{i:03d}.gguf", "llama")
+        variants.append(SimpleNamespace(filename = f"llama-{i:03d}.gguf", quant = f"Q{i:03d}"))
+    _arch_gguf(folder / "csm-last-Q8_0.gguf", "llama-csm")
+    variants.append(SimpleNamespace(filename = "csm-last-Q8_0.gguf", quant = "Q8_0"))
+
+    kept = [
+        v.quant for v in models_route._without_mixed_folder_speech_variants([str(folder)], variants)
+    ]
+
+    assert "Q4_0" not in kept
+    # The one the positional cap used to wave through.
+    assert "Q8_0" not in kept
+    assert len(kept) == len(variants) - 2
+
+
+def test_a_windows_spelled_local_root_is_normalized_before_the_headers_are_read(monkeypatch):
+    """``get_gguf_variants_answer`` works off ``_loader_normalize_path(repo_id)`` but reports the
+    ORIGINAL spelling, and ``Path`` does not treat "C:\\models\\x" as absolute off Windows, so
+    every header read missed and the CSM quant survived a directory that listed fine. The root is
+    normalized the way the listing normalized it."""
+    from utils.paths import normalize_path
+
+    seen: list = []
+
+    def record(roots, variants):
+        seen.append(list(roots))
+        return list(variants)
+
+    monkeypatch.setattr(models_route, "_without_mixed_folder_speech_variants", record)
+
+    async def local_answer(repo_id, **kwargs):
+        # The listing answers from the normalized copy but names the raw spelling, as it does.
+        return _answer(
+            repo_id,
+            [
+                SimpleNamespace(
+                    filename = "csm-1b-Q4_0.gguf",
+                    quant = "Q4_0",
+                    size_bytes = 10,
+                    download_size_bytes = 10,
+                    downloaded = True,
+                )
+            ],
+            default_variant = "Q4_0",
+            source = "C:\\models\\mixed",
+        )
+
+    monkeypatch.setattr(GV, "get_gguf_variants_answer", local_answer)
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: 4096
+    )
+
+    asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "C:\\models\\mixed", hf_token = None, current_subject = "test-user"
+        )
+    )
+
+    assert seen and seen[0] == [normalize_path("C:\\models\\mixed")]
+    # The raw spelling is exactly what could not be read off Windows.
+    assert seen[0] != ["C:\\models\\mixed"] or os.name == "nt"
+
+
+def test_the_snapshot_roots_break_mtime_ties_the_way_the_loader_does(tmp_path):
+    """mtime alone is not a total order, and breaking ties by ``iterdir`` order could read a
+    different copy than the loader picks -- for a filename replaced between revisions, either
+    retaining the unrunnable quant or hiding the runnable one."""
+    from hub.utils.hf_cache_state import snapshot_selection_key
+
+    repo_dir = tmp_path / "models--someone--mixed-GGUF"
+    first = repo_dir / "snapshots" / "aaa111"
+    second = repo_dir / "snapshots" / "bbb222"
+    first.mkdir(parents = True)
+    second.mkdir(parents = True)
+    os.utime(first, (5, 5))
+    os.utime(second, (5, 5))
+
+    roots = models_route._cached_snapshot_roots("someone/mixed-GGUF", str(repo_dir))
+
+    assert roots == [
+        str(entry) for entry in sorted([first, second], key = snapshot_selection_key, reverse = True)
+    ]
+
+
+def test_a_hung_speech_probe_leaves_the_loop_running_and_lists_unfiltered(monkeypatch):
+    """``is_file()`` and the header read block indefinitely on an unresponsive mount, which
+    inline froze the loop for every request. Off-loop under one budget now, timing out to the
+    UNFILTERED listing: a mount too slow to answer is one the loader cannot read either."""
+    monkeypatch.setattr(models_route, "_SPEECH_FILTER_HARD_TIMEOUT_SECONDS", 0.1)
+
+    def hang(roots, variants):
+        time.sleep(5)
+        return []
+
+    monkeypatch.setattr(models_route, "_without_mixed_folder_speech_variants", hang)
+    variants = [SimpleNamespace(filename = "csm-1b-Q4_0.gguf", quant = "Q4_0")]
+
+    async def scenario():
+        ticks = 0
+
+        async def heartbeat():
+            nonlocal ticks
+            for _ in range(5):
+                await asyncio.sleep(0.01)
+                ticks += 1
+
+        beating = asyncio.ensure_future(heartbeat())
+        listed = await models_route._without_mixed_folder_speech_variants_bounded(
+            ["/mnt/hung"], variants
+        )
+        await beating
+        return listed, ticks
+
+    listed, ticks = asyncio.run(scenario())
+
+    assert [v.quant for v in listed] == ["Q4_0"]
+    # The loop kept scheduling while the probe hung, which is the whole point.
+    assert ticks == 5
+
+
+def _speech_mix_answer(
+    repo_id,
+    folder,
+    *,
+    default_variant,
+    source = _UNSET,
+):
+    """A two-quant listing for *folder*: the CSM file first, the FLUX denoiser beside it.
+    *source* defaults to *folder*; pass None for the online Hub path, which names no copy."""
+    if source is _UNSET:
+        source = str(folder)
+    return _answer(
+        repo_id,
+        [
+            SimpleNamespace(
+                filename = "csm-1b-Q4_0.gguf",
+                quant = "Q4_0",
+                size_bytes = 10,
+                download_size_bytes = 10,
+                downloaded = True,
+            ),
+            SimpleNamespace(
+                filename = "flux1-dev-Q4_K_M.gguf",
+                quant = "Q4_K_M",
+                size_bytes = 10,
+                download_size_bytes = 10,
+                downloaded = True,
+            ),
+        ],
+        default_variant = default_variant,
+        source = source,
+    )
+
+
+def test_the_variant_listing_drops_a_speech_gguf_the_media_folder_outranked(monkeypatch, tmp_path):
+    """The ranking above keeps the row, and its expander lists every GGUF in the folder with no
+    per-variant task, so the undecodable ``llama-csm`` file stayed clickable under Images -- and a
+    pick resolves its family from the folder name, which answers "flux.1" here, so it reached the
+    image loader and died there. The listing drops it instead."""
+    folder = tmp_path / "flux1-dev-GGUF"
+    _arch_gguf(folder / "csm-1b-Q4_0.gguf", "llama-csm")
+    _arch_gguf(folder / "flux1-dev-Q4_K_M.gguf", "flux")
+
+    async def scoped_variants(repo_id, **kwargs):
+        return _speech_mix_answer(repo_id, folder, default_variant = "Q4_0")
+
+    monkeypatch.setattr(GV, "get_gguf_variants_answer", scoped_variants)
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: 4096
+    )
+
+    result = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = str(folder), hf_token = None, current_subject = "test-user"
+        )
+    )
+
+    assert [v.quant for v in result.variants] == ["Q4_K_M"]
+    # It was also the default: preselecting a quant the row no longer lists is a dead click.
+    assert result.default_variant is None
+
+
+def test_the_variant_listing_keeps_a_speech_only_folders_own_quant(monkeypatch, tmp_path):
+    """Control. A speech-only folder is already filtered a row earlier, so emptying its listing
+    too would only report "no variants" for a folder that plainly has one."""
+    folder = tmp_path / "csm-1b-GGUF"
+    _arch_gguf(folder / "csm-1b-Q4_0.gguf", "llama-csm")
+
+    async def scoped_variants(repo_id, **kwargs):
+        return _answer(
+            repo_id,
+            [
+                SimpleNamespace(
+                    filename = "csm-1b-Q4_0.gguf",
+                    quant = "Q4_0",
+                    size_bytes = 10,
+                    download_size_bytes = 10,
+                    downloaded = True,
+                )
+            ],
+            default_variant = "Q4_0",
+            source = str(folder),
+        )
+
+    monkeypatch.setattr(GV, "get_gguf_variants_answer", scoped_variants)
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: 4096
+    )
+
+    result = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = str(folder), hf_token = None, current_subject = "test-user"
+        )
+    )
+
+    assert [v.quant for v in result.variants] == ["Q4_0"]
+    assert result.default_variant == "Q4_0"
 
 
 def test_a_buildable_denoiser_outranks_an_arch_the_backend_cannot_assemble(tmp_path):
