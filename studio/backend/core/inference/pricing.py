@@ -244,11 +244,14 @@ def calculate_cost(provider: str, model: str, usage: dict[str, Any]) -> dict[str
         return out
 
     # Long-context tier: whole-turn flip (not per-token blend) once
-    # billable_input_tokens crosses the threshold.
+    # billable_input_tokens crosses the threshold. Strictly above: OpenAI bills
+    # "prompts with >272K input tokens" at the higher rate, so a prompt of
+    # exactly 272,000 stays on the standard rate -- which is also what the
+    # "(long-context >{lc_thresh})" label emitted below already claims.
     lc_thresh = prices.get("long_context_threshold")
     in_long_context_tier = (
         lc_thresh is not None
-        and out["billable_input_tokens"] >= int(lc_thresh)
+        and out["billable_input_tokens"] > int(lc_thresh)
         and "long_context_input_per_mtok" in prices
         and "long_context_output_per_mtok" in prices
     )
