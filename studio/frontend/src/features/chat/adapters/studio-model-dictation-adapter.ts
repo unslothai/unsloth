@@ -79,6 +79,13 @@ export function sttEngineFor(model: string): SttEngine {
   return isCuratedSttModel(model) ? "gguf" : "transformers";
 }
 
+/** A transcribed span with its audio-time bounds, in seconds. */
+export interface SttSegment {
+  start: number;
+  end: number;
+  text: string;
+}
+
 function externalSttLanguage(language: string): string | undefined {
   const normalized = language.trim().replaceAll("_", "-").toLowerCase();
   if (!normalized || normalized === "auto") {
@@ -108,8 +115,14 @@ async function sttErrorDetail(response: Response): Promise<string> {
   return body?.detail ?? body?.error?.message ?? `HTTP ${response.status}`;
 }
 
-/** post recorded audio to the selected STT backend and return its transcript. */
-export async function transcribeAudioBlob(
+/** POST audio to the STT sidecar and return the transcript with whatever
+ * segment timing the serving engine can report. whisper.cpp (`gguf`) reports
+ * its own per-utterance segments; the Transformers engine reports one segment
+ * per 30s decoding window; the mtmd engine (Qwen3-ASR and similar chat-style
+ * models) transcribes as free-form generation and has no alignment to report,
+ * so `segments` is `null` there. The external-provider path has no alignment
+ * either, so `segments` is `null` there too. */
+export async function transcribeAudioBlobDetailed(
   blob: Blob,
   options: {
     model?: string;
@@ -118,7 +131,7 @@ export async function transcribeAudioBlob(
     providerId?: string;
     signal?: AbortSignal;
   } = {},
-): Promise<string> {
+): Promise<{ text: string; segments: SttSegment[] | null }> {
   const settings = useVoiceSettingsStore.getState();
   const usesExternalEndpoint = options.providerId !== undefined;
   const providerId = options.providerId?.trim() ?? "";
@@ -173,7 +186,7 @@ export async function transcribeAudioBlob(
     if (typeof data.text !== "string") {
       throw new Error("The transcription endpoint returned no text.");
     }
-    return data.text.trim();
+    return { text: data.text.trim(), segments: null };
   }
 
   const language = resolveModelDictationLanguage(model, languageSetting);
@@ -198,8 +211,29 @@ export async function transcribeAudioBlob(
     }
     throw sttRequestError(response.status, detail);
   }
-  const data = (await response.json()) as { text?: string };
-  return (data.text ?? "").trim();
+  const data = (await response.json()) as {
+    text?: string;
+    segments?: SttSegment[] | null;
+  };
+  return {
+    text: (data.text ?? "").trim(),
+    segments: Array.isArray(data.segments) ? data.segments : null,
+  };
+}
+
+/** POST audio to the STT sidecar and return the transcript. */
+export async function transcribeAudioBlob(
+  blob: Blob,
+  options: {
+    model?: string;
+    language?: string;
+    engine?: SttEngine;
+    providerId?: string;
+    signal?: AbortSignal;
+  } = {},
+): Promise<string> {
+  const { text } = await transcribeAudioBlobDetailed(blob, options);
+  return text;
 }
 
 export interface SttDownloadStatus {

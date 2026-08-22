@@ -1049,6 +1049,10 @@ class MtmdSttSidecar:
             "language": normalize_whisper_language(language),
             "duration": audio_seconds,
             "model": model_id,
+            # An mtmd model transcribes as free-form chat generation, not aligned
+            # decoding, so there is no per-segment timing to report here the way
+            # the whisper.cpp and Transformers sidecars can.
+            "segments": None,
         }
 
     def cancel_transcription(self, cancel_event: threading.Event) -> bool:

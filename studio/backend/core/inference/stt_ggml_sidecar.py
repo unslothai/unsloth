@@ -709,6 +709,36 @@ def _pcm_to_wav_bytes(decoded_audio) -> bytes:
     return buf.getvalue()
 
 
+def _parse_verbose_json_segments(raw_segments: object) -> Optional[list[dict]]:
+    """Normalize whisper.cpp's verbose_json segments to {start, end, text}.
+
+    whisper-server reports segment offsets in centiseconds under
+    ``t0``/``t1`` (its own ``offsets``/``timestamps`` fields are display
+    strings, not seconds), alongside plain ``start``/``end`` seconds on some
+    builds. Either is accepted; a segment missing usable bounds is dropped
+    rather than raising, since a partial timeline is still useful.
+    """
+    if not isinstance(raw_segments, list):
+        return None
+    segments: list[dict] = []
+    for raw in raw_segments:
+        if not isinstance(raw, dict):
+            continue
+        text = raw.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        start = raw.get("start")
+        end = raw.get("end")
+        if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+            t0, t1 = raw.get("t0"), raw.get("t1")
+            if isinstance(t0, (int, float)) and isinstance(t1, (int, float)):
+                start, end = t0 / 100.0, t1 / 100.0
+            else:
+                continue
+        segments.append({"start": float(start), "end": float(end), "text": text.strip()})
+    return segments or None
+
+
 # ---------------------------------------------------------------------------
 # Sidecar
 # ---------------------------------------------------------------------------
@@ -1086,7 +1116,9 @@ class GgmlSttSidecar:
         """Transcribe encoded audio bytes via whisper-server.
 
         Accepts any container PyAV can decode (same validation and caps as the
-        Transformers sidecar). Returns {text, language, duration, model}.
+        Transformers sidecar). Returns {text, language, duration, model, segments},
+        where ``segments`` is a list of {start, end, text} in seconds, taken directly
+        from whisper.cpp's own segmentation.
         """
         self._raise_if_update_in_progress()
         ensure_engine_available()
@@ -1112,7 +1144,7 @@ class GgmlSttSidecar:
                     self.load(model_id)
                 else:
                     self.load(model_id, request_cancel_event = cancel_event)
-                text = self._post_inference(wav_bytes, lang, fast, cancel_event)
+                text, segments = self._post_inference(wav_bytes, lang, fast, cancel_event)
                 if cancel_event is not None and cancel_event.is_set():
                     raise SttTranscriptionCancelledError("Transcription cancelled.")
             except Exception:
@@ -1127,6 +1159,7 @@ class GgmlSttSidecar:
             "language": lang,
             "duration": duration,
             "model": model_id,
+            "segments": segments,
         }
 
     def cancel_transcription(self, cancel_event: threading.Event) -> bool:
@@ -1140,11 +1173,14 @@ class GgmlSttSidecar:
         lang: Optional[str],
         fast: bool,
         cancel_event: Optional[threading.Event] = None,
-    ) -> str:
+    ) -> tuple[str, Optional[list[dict]]]:
         boundary = uuid.uuid4().hex
         fields = {
             "temperature": "0.0",
-            "response_format": "json",
+            # verbose_json carries whisper.cpp's own per-segment start/end times
+            # alongside the same "text" field the plain json format returns, so
+            # this costs nothing and gives the Studio transcript timestamps.
+            "response_format": "verbose_json",
             # Match the Transformers sidecar: 5-way beam search, greedy for fast.
             "beam_size": "1" if fast else "5",
             "language": lang or "auto",
@@ -1211,8 +1247,10 @@ class GgmlSttSidecar:
             raise SttAudioDecodeError("Could not decode the audio.")
         # It served a transcription, so whatever failed earlier was transient.
         clear_runtime_inference_failure()
+        segments = _parse_verbose_json_segments(payload.get("segments"))
         # whisper.cpp joins segments with newlines; dictation wants one line.
-        return " ".join(part.strip() for part in text.splitlines() if part.strip()).strip()
+        joined = " ".join(part.strip() for part in text.splitlines() if part.strip()).strip()
+        return joined, segments
 
 
 _sidecar: Optional[GgmlSttSidecar] = None

@@ -1608,13 +1608,18 @@ class WhisperSttSidecar:
         decoded_audio,
         generate_kwargs: dict,
         cancel_event: Optional[threading.Event] = None,
-    ) -> str:
-        """Run Whisper on already-decoded 16 kHz mono PCM and return text.
+    ) -> tuple[str, Optional[list[dict]]]:
+        """Run Whisper on already-decoded 16 kHz mono PCM and return (text, segments).
 
         Splits into 30s windows (Whisper's receptive field) and sends one window
         at a time to the worker; short clips take one pass. Windowing stays here
         so a cancelled dictation stops between windows even while the worker is
         busy, and so no single message carries more than 30 seconds of audio.
+
+        ``segments`` marks each window's own audio bounds. That is coarser than
+        whisper.cpp's native per-utterance segmentation (see the ggml sidecar),
+        since asking Transformers for finer timestamps means changing the
+        generation call itself, but it is still real audio-time, not fabricated.
         """
         import numpy as np
 
@@ -1633,6 +1638,7 @@ class WhisperSttSidecar:
             effective_generate_kwargs.pop("language", None)
         window = 30 * _TARGET_SAMPLE_RATE
         parts: list[str] = []
+        segments: list[dict] = []
         for start in range(0, max(len(decoded_audio), 1), window):
             if cancel_event is not None and cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -1640,10 +1646,21 @@ class WhisperSttSidecar:
             if segment.size == 0:
                 continue
             pcm = np.ascontiguousarray(segment, dtype = np.float32).tobytes()
-            parts.append(engine.transcribe_window(pcm, effective_generate_kwargs, cancel_event))
+            text = engine.transcribe_window(pcm, effective_generate_kwargs, cancel_event)
             if cancel_event is not None and cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
-        return " ".join(part.strip() for part in parts if part.strip()).strip()
+            stripped = text.strip() if text else ""
+            if stripped:
+                parts.append(stripped)
+                segments.append(
+                    {
+                        "start": start / _TARGET_SAMPLE_RATE,
+                        "end": min(start + window, len(decoded_audio)) / _TARGET_SAMPLE_RATE,
+                        "text": stripped,
+                    }
+                )
+        joined = " ".join(parts).strip()
+        return joined, (segments or None)
 
     def transcribe(
         self,
@@ -1656,7 +1673,9 @@ class WhisperSttSidecar:
         """Transcribe encoded audio bytes to text.
 
         Accepts any container PyAV can decode: wav, mp3, opus/webm, ogg,
-        m4a/aac. Returns {text, language, duration, model}.
+        m4a/aac. Returns {text, language, duration, model, segments}, where
+        ``segments`` is a list of {start, end, text} at window granularity
+        (see ``_transcribe_decoded``).
         """
         # Reject a missing runtime up front, before the cache and bounded decode.
         ensure_stt_available()
@@ -1697,9 +1716,11 @@ class WhisperSttSidecar:
         with self._lock:
             try:
                 if cancel_event is None:
-                    text = self._transcribe_decoded(model_id, decoded_audio, generate_kwargs)
+                    text, segments = self._transcribe_decoded(
+                        model_id, decoded_audio, generate_kwargs
+                    )
                 else:
-                    text = self._transcribe_decoded(
+                    text, segments = self._transcribe_decoded(
                         model_id,
                         decoded_audio,
                         generate_kwargs,
@@ -1713,6 +1734,7 @@ class WhisperSttSidecar:
             "language": lang,
             "duration": duration,
             "model": model_id,
+            "segments": segments,
         }
 
     def cancel_transcription(self, cancel_event: threading.Event) -> bool:

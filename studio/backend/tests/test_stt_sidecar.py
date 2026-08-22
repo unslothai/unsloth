@@ -84,7 +84,7 @@ class _CaptureInference:
         self.generate_kwargs = generate_kwargs
         if self.mutate is not None:
             self.mutate()
-        return self.text
+        return self.text, None
 
 
 def test_five_curated_whisper_models_are_offered():
@@ -327,7 +327,7 @@ def test_english_only_model_omits_forbidden_generation_controls(monkeypatch):
     sidecar = WhisperSttSidecar()
     monkeypatch.setattr(sidecar, "load", lambda _model: FakeWorker())
 
-    text = sidecar._transcribe_decoded(
+    text, segments = sidecar._transcribe_decoded(
         "owner/whisper-small.en",
         np.zeros(160, dtype = np.float32),
         {
@@ -339,6 +339,8 @@ def test_english_only_model_omits_forbidden_generation_controls(monkeypatch):
     )
 
     assert text == "hello"
+    rate = stt_sidecar_module._TARGET_SAMPLE_RATE
+    assert segments == [{"start": 0.0, "end": 160 / rate, "text": "hello"}]
     assert calls == [{"condition_on_prev_tokens": False, "num_beams": 1}]
 
 
@@ -1232,7 +1234,7 @@ def test_unload_waits_for_inflight_transcription(monkeypatch):
     def transcribe(*_args):
         started.set()
         assert release.wait(timeout = 2)
-        return "hello"
+        return "hello", None
 
     monkeypatch.setattr(sidecar, "_transcribe_decoded", transcribe)
     transcribe_thread = threading.Thread(target = lambda: sidecar.transcribe(b"audio"))

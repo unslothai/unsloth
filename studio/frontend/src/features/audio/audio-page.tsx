@@ -53,13 +53,14 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat";
 import {
+  type SttSegment,
   SttModelNotDownloadedError,
   StudioModelDictationAdapter,
   fetchSttStatus,
   loadSttModel,
   startSttDownload,
   sttEngineStatusFor,
-  transcribeAudioBlob,
+  transcribeAudioBlobDetailed,
   unloadSttModel,
 } from "@/features/chat/adapters/studio-model-dictation-adapter";
 import { useStagedDownload } from "@/features/hub/download-manager";
@@ -121,6 +122,13 @@ import {
   sttRepoIdForSidecarKey,
   sttSidecarKeyFor,
 } from "./catalog";
+import {
+  TRANSCRIPT_EXPORT_EXTENSION,
+  TRANSCRIPT_EXPORT_LABEL,
+  TRANSCRIPT_EXPORT_MIME,
+  type TranscriptExportFormat,
+  renderTranscriptExport,
+} from "./transcript-export";
 
 const MODELS_BY_MODE: Record<CreateMode, ModelOption[]> = {
   speak: audioModelsForTask("tts"),
@@ -134,6 +142,17 @@ function audioModelLabel(id: string): string {
   const leaf = id.split(/[\\/]/).filter(Boolean).pop() ?? id;
   // Training stamps the output directory with an epoch; it means nothing to a reader.
   return leaf.replace(/_\d{10,}$/, "");
+}
+
+/** `MM:SS` for a segment start, or `H:MM:SS` past the first hour. */
+function formatSegmentTimestamp(seconds: number): string {
+  const clamped = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(clamped / 3600);
+  const minutes = Math.floor((clamped % 3600) / 60);
+  const secs = clamped % 60;
+  const mm = String(minutes).padStart(hours > 0 ? 2 : 1, "0");
+  const ss = String(secs).padStart(2, "0");
+  return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
 function deviceSizeBytes(label: string): number {
@@ -318,6 +337,9 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     SttDownloadedArtifact[]
   >([]);
   const [transcript, setTranscript] = useState("");
+  const [transcriptSegments, setTranscriptSegments] = useState<
+    SttSegment[] | null
+  >(null);
   const [transcribedName, setTranscribedName] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [micRequestPending, setMicRequestPending] = useState(false);
@@ -1557,7 +1579,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       setBusy("transcribing");
       setTranscribedName(name);
       try {
-        const text = await transcribeAudioBlob(blob, {
+        const { text, segments } = await transcribeAudioBlobDetailed(blob, {
           model: key,
           engine,
           language: "",
@@ -1565,6 +1587,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         });
         if (controller.signal.aborted || !activeRef.current) return;
         setTranscript(text);
+        setTranscriptSegments(segments);
         if (!text) toast.info("The model heard no speech in that audio.");
       } catch (error) {
         if (controller.signal.aborted) return;
@@ -1713,17 +1736,22 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     );
   }, [transcript]);
 
-  const handleDownloadTranscript = useCallback(() => {
-    const blob = new Blob([transcript], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${(transcribedName ?? "transcript").replace(/\.[^.]+$/, "")}.txt`;
-    anchor.click();
-    // Deferred like the gallery download below: browsers that resolve the synthetic
-    // navigation asynchronously were left with a revoked URL and no file.
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
-  }, [transcript, transcribedName]);
+  const handleExportTranscript = useCallback(
+    (format: TranscriptExportFormat) => {
+      const content = renderTranscriptExport(format, transcript, transcriptSegments);
+      const blob = new Blob([content], { type: TRANSCRIPT_EXPORT_MIME[format] });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      const stem = (transcribedName ?? "transcript").replace(/\.[^.]+$/, "");
+      anchor.download = `${stem}.${TRANSCRIPT_EXPORT_EXTENSION[format]}`;
+      anchor.click();
+      // Deferred like the gallery download below: browsers that resolve the synthetic
+      // navigation asynchronously were left with a revoked URL and no file.
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    },
+    [transcript, transcriptSegments, transcribedName],
+  );
 
   // --- Gallery actions ----------------------------------------------------
 
@@ -2177,21 +2205,86 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                     >
                       Copy
                     </Button>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={handleDownloadTranscript}
-                    >
-                      <HugeiconsIcon
-                        icon={Download01Icon}
-                        className="mr-2 size-3.5"
-                      />
-                      Download .txt
-                    </Button>
+                    {transcriptSegments && transcriptSegments.length > 0 ? (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="secondary" size="sm">
+                            <HugeiconsIcon
+                              icon={Download01Icon}
+                              className="mr-2 size-3.5"
+                            />
+                            Download
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start">
+                          <DropdownMenuItem
+                            onSelect={() => handleExportTranscript("txt")}
+                          >
+                            {TRANSCRIPT_EXPORT_LABEL.txt}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onSelect={() =>
+                              handleExportTranscript("timestamped-txt")
+                            }
+                          >
+                            {TRANSCRIPT_EXPORT_LABEL["timestamped-txt"]}
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onSelect={() => handleExportTranscript("srt")}
+                          >
+                            {TRANSCRIPT_EXPORT_LABEL.srt}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onSelect={() => handleExportTranscript("vtt")}
+                          >
+                            {TRANSCRIPT_EXPORT_LABEL.vtt}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onSelect={() => handleExportTranscript("json")}
+                          >
+                            {TRANSCRIPT_EXPORT_LABEL.json}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onSelect={() => handleExportTranscript("csv")}
+                          >
+                            {TRANSCRIPT_EXPORT_LABEL.csv}
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    ) : (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => handleExportTranscript("txt")}
+                      >
+                        <HugeiconsIcon
+                          icon={Download01Icon}
+                          className="mr-2 size-3.5"
+                        />
+                        Download .txt
+                      </Button>
+                    )}
                   </div>
-                  <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
-                    {transcript}
-                  </p>
+                  {transcriptSegments && transcriptSegments.length > 0 ? (
+                    <div className="flex flex-col gap-1.5">
+                      {transcriptSegments.map((segment, index) => (
+                        <p
+                          key={index}
+                          className="whitespace-pre-wrap text-sm leading-relaxed text-foreground"
+                        >
+                          <span className="mr-2 text-ui-11p5 tabular-nums text-muted-foreground">
+                            {formatSegmentTimestamp(segment.start)}
+                          </span>
+                          {segment.text}
+                        </p>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
+                      {transcript}
+                    </p>
+                  )}
                 </>
               ) : busy !== "transcribing" ? (
                 <p className="text-ui-13 text-muted-foreground">
