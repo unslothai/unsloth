@@ -287,9 +287,7 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
             # Why (#9510): users reaching for `--parallel 1` to cap concurrent predictions on a
             # local model hit this refusal with no pointer to the supported knob; name it.
             if flag in {"-np", "--parallel", "--n-parallel"}:
-                message += (
-                    "; set n_parallel on the load request (parallel decode slots) instead"
-                )
+                message += "; set n_parallel on the load request (parallel decode slots) instead"
             raise ValueError(message)
         if flag is None:
             # A token belonging to no flag. Today's llama-server answers "invalid
