@@ -758,6 +758,106 @@ def test_a_parity_payload_with_no_session_ids_pairs_exactly_as_before(tmp_path):
     assert U.report([path], "t", U.UNSTABLE_ACTIONS) == 1
 
 
+# ── ui parity: a superseded attempt is not an observation ────────────
+
+
+def parity_cell(cid: str, arm: str, sid: str, rep: str, completed: bool) -> dict:
+    """The `cell` row the recorder closes an attempt with, which is what names the attempt.
+
+    `CellRunner.run` emits it from a `finally`, so it lands AFTER every action row the scene
+    wrote and it lands whether the cell completed or not.
+    """
+    return {
+        "row_type": "cell",
+        "cell_id": cid,
+        "session_id": sid,
+        "cell": {"arm": arm, "rep": int(rep.removeprefix("rep"))},
+        "target_tokens": 100_000,
+        "completed": completed,
+    }
+
+
+def drained_arm(rows: list[dict], arm: str, rep: str, sid: str, digest: str, completed: bool):
+    """Append one arm's attempt: its action row, then the cell row that closes it."""
+    cid = f"r100K.{arm}.{rep}"
+    rows.append(in_session(parity_action(cid, "settings", digest), sid))
+    rows.append(parity_cell(cid, arm, sid, rep, completed))
+
+
+def resumed_both_arms(tmp_path: Path, name: str) -> Path:
+    """A null control interrupted mid-pair and resumed the way `skippable_cells` resumes.
+
+    A pair is skipped only when EVERY arm of it completed, so an interruption between the two
+    adjacent cells of one repetition re-runs BOTH arms under one new session. The treatment arm
+    died inside `stream:drain`, which the scene reaches only AFTER its action rows are written, so
+    the dead attempt sits in the append-only payload carrying a full set of digests -- and one of
+    them differs, because it was captured off an arm that was already on its way down.
+
+    So the file holds a complete base/treatment pair under `s1` and another under `s2`, and they
+    are one logical repetition, not two.
+    """
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "session_id": "s1"}]
+    drained_arm(rows, "base", "rep0", "s1", "STABLE", True)
+    drained_arm(rows, "treatment", "rep0", "s1", "DYING", False)
+    rows.append({"row_type": "run_meta", "tier": "standard", "session_id": "s2"})
+    drained_arm(rows, "base", "rep0", "s2", "STABLE", True)
+    drained_arm(rows, "treatment", "rep0", "s2", "STABLE", True)
+    return write(tmp_path, name, rows)
+
+
+def test_a_superseded_attempt_is_not_a_second_parity_observation(tmp_path):
+    # One repetition ran twice, so the payload holds two comparable pairs for it. Counted as two,
+    # the differing dead attempt and the matching retry are exactly `min_observations` and
+    # `derive_unstable` marks `settings` unstable at 100K on the strength of a reading the run
+    # itself threw away.
+    null = resumed_both_arms(tmp_path, "null_both_arms")
+    assert len(U.collect([null])["pairs"]) == 1
+
+    unstable, derived, _checks = U.unstable_set([null])
+    assert derived["settings@r100K"]["observations"] == 1
+    assert derived["settings@r100K"]["differed"] == 0
+    assert ("r100K", "settings") not in unstable
+    assert "settings" not in unstable
+
+
+def test_a_superseded_attempt_does_not_silence_a_real_parity_regression(tmp_path):
+    # The consequence, end to end. Scored against that unstable set, a genuine DOM difference on
+    # `settings` at 100K prints under "expected to vary" and the gate exits 0 on a regression.
+    unstable, _derived, _checks = U.unstable_set([resumed_both_arms(tmp_path, "null_silencer")])
+    regressed = parity_run(tmp_path, "mine_both_arms", [("r100K", "rep0", "X", "REGRESSED")])
+    assert U.report([regressed], "t", unstable) == 1
+
+
+def test_two_repetitions_of_one_pair_are_still_two_parity_observations(tmp_path):
+    # The control: superseding is keyed on the ATTEMPT, not on the cell id, so two repetitions of
+    # one rung inside one session remain two independent observations and still derive as
+    # unstable. A filter that kept only one reading per cell would pass the two tests above by
+    # deleting the evidence they are meant to preserve.
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "session_id": "s1"}]
+    for rep, treat in (("rep0", "Y"), ("rep1", "Z")):
+        drained_arm(rows, "base", rep, "s1", "X", True)
+        drained_arm(rows, "treatment", rep, "s1", treat, True)
+    null = write(tmp_path, "two_reps", rows)
+
+    assert len(U.collect([null])["pairs"]) == 2
+    unstable, derived, _checks = U.unstable_set([null])
+    assert derived["settings@r100K"]["observations"] == 2
+    assert ("r100K", "settings") in unstable
+
+
+def test_an_attempt_that_was_never_re_run_still_carries_its_parity_verdict(tmp_path):
+    # The other control: a cell that died and was never resumed is the LATEST attempt at itself,
+    # so its rows stay. Dropping every incomplete cell instead would blind the tool to the runs
+    # that have the most to say, and would silence the difference below rather than report it.
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "session_id": "s1"}]
+    drained_arm(rows, "base", "rep0", "s1", "STABLE", True)
+    drained_arm(rows, "treatment", "rep0", "s1", "DIFFERENT", False)
+    path = write(tmp_path, "never_resumed", rows)
+
+    assert len(U.collect([path])["pairs"]) == 1
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS) == 1
+
+
 # ── ui parity: one set, one tier ─────────────────────────────────────
 
 
