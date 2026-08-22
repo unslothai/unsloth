@@ -6460,6 +6460,52 @@ function assistantMessageText(content: readonly unknown[] | undefined): string {
 }
 
 /**
+ * Whether the last assistant turn is in a state a continuation run can resume from —
+ * shared by the auto-shown ContinueMessageBar (via ContinueMessageBarForLastMessage,
+ * stopped-early turns) and the manual "Save & Continue" edit action (via
+ * SaveAndContinueButton, any turn the user has trimmed and wants to extend). Both start
+ * the same kind of sibling run, so they gate on the same set of conditions: only the
+ * newest turn (older ones would strand replies after them), no run or research already
+ * in flight, a turn a continuation can actually resume from (no tool call, no audio
+ * in/out, no deep research armed).
+ *
+ * This runs several `useAuiState` subscriptions, each re-evaluated on every store
+ * update, so both call sites mount it only where that cost is bounded: behind an
+ * `isLast` pre-check in the ContinueMessageBar split (thread.tsx above), and behind the
+ * edit textarea being open in SaveAndContinueButton (thread.tsx below) -- never
+ * unconditionally in a component that renders once per message.
+ */
+function useContinuationAvailability(
+  content: readonly unknown[] | undefined,
+): boolean {
+  const isLast = useAuiState(({ message }) => message.isLast);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const researchRunId = useResearchMessageRunId();
+  const researchActive = useThreadResearchActive();
+  const fromAudioInput = useAuiState(({ thread }) =>
+    Boolean(findLatestUserAudioBase64(thread.messages, false)),
+  );
+  const audioOutputModel = useChatRuntimeStore((s) => {
+    const activeModel = s.models.find((m) => m.id === s.params.checkpoint);
+    return Boolean(activeModel?.isAudio && !activeModel.hasAudioInput);
+  });
+  const deepResearchArmed = useChatRuntimeStore((s) => s.deepResearchEnabled);
+
+  return (
+    isLast &&
+    !isRunning &&
+    !researchRunId &&
+    !researchActive &&
+    isContinuableContent(content) &&
+    modeAllowsContinuation({
+      fromAudioInput,
+      audioOutputModel,
+      deepResearchArmed,
+    })
+  );
+}
+
+/**
  * Resume a response that stopped early instead of regenerating it. Shown under the last
  * assistant turn when Max Tokens ran out, Stop was pressed, or the stream dropped.
  * Retry keeps its old meaning: drop the partial and start over.
@@ -6484,37 +6530,20 @@ const ContinueMessageBar: FC = () => {
 const ContinueMessageBarForLastMessage: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
-  const isLast = useAuiState(({ message }) => message.isLast);
-  const isRunning = useAuiState(({ thread }) => thread.isRunning);
-  const researchRunId = useResearchMessageRunId();
-  const researchActive = useThreadResearchActive();
+  const messageContent = useAuiState(({ message }) => message.content);
   const status = useAuiState(({ message }) => message.status);
   const metadata = useAuiState(({ message }) => message.metadata);
   const partial = useAuiState(({ message }) =>
     assistantMessageText(message.content),
-  );
-  // A tool-calling turn cannot be resumed: the continuation runs as a sibling, so the
-  // call and its result would be missing from the outbound history.
-  const continuable = useAuiState(({ message }) =>
-    isContinuableContent(message.content),
   );
   // Gemini signs its text parts, and the resumed turn is replayed from this branch,
   // so the signature travels with the partial.
   const thoughtSignature = useAuiState(({ message }) =>
     readTextThoughtSignature(message.content),
   );
-  // Audio input re-listens to the recording and answers afresh rather than resuming,
-  // so continuing there would append a second answer.
-  const fromAudioInput = useAuiState(({ thread }) =>
-    Boolean(findLatestUserAudioBase64(thread.messages, false)),
-  );
-  // An audio-output model regenerates the whole clip and never reads the request.
-  const audioOutputModel = useChatRuntimeStore((s) => {
-    const activeModel = s.models.find((m) => m.id === s.params.checkpoint);
-    return Boolean(activeModel?.isAudio && !activeModel.hasAudioInput);
-  });
-  // Research armed after the cut owns no run yet, so the gates above stay clear.
-  const deepResearchArmed = useChatRuntimeStore((s) => s.deepResearchEnabled);
+  // Same gates the manual "Save & Continue" edit action uses: only the newest turn,
+  // no run or research in flight, a turn a continuation can actually resume from.
+  const canContinue = useContinuationAvailability(messageContent);
 
   // Cancelled comes through status (the adapter yields nothing after an abort); the
   // other two are stamped on metadata so they survive a reload.
@@ -6523,21 +6552,10 @@ const ContinueMessageBarForLastMessage: FC = () => {
     status?.type === "incomplete" && status?.reason === "cancelled";
   const reason = cancelled ? ("cancelled" as const) : stamped?.reason;
 
-  // Every gate the bar itself answers to. Resuming without asking has to clear the same
-  // ones, or it would resume a turn the bar would have refused to offer.
-  const resumable =
-    Boolean(reason) &&
-    isLast &&
-    !isRunning &&
-    !researchRunId &&
-    !researchActive &&
-    continuable &&
-    modeAllowsContinuation({
-      fromAudioInput,
-      audioOutputModel,
-      deepResearchArmed,
-    }) &&
-    Boolean(partial.trim());
+  // Every gate the bar itself answers to (`useContinuationAvailability`, shared with
+  // it). Resuming without asking has to clear the same ones, or it would resume a turn
+  // the bar would have refused to offer.
+  const resumable = Boolean(reason) && canContinue && Boolean(partial.trim());
 
   // The parent is what every round of one logical turn shares; the message id changes
   // each round, because a continuation runs as a sibling.
@@ -6893,6 +6911,76 @@ function useActionBarFocusReveal() {
 }
 
 /**
+ * "Continue Generation" from #9284, offered from the edit textarea: lets the user trim
+ * or rewrite the tail of an assistant reply and resume generation from exactly that
+ * point, instead of regenerating the whole answer. Saves the edit, then starts a
+ * continuation run (a sibling of the edited turn) seeded with the just-saved text as
+ * the partial — the same mechanism the auto-shown "stopped early" Continue bar uses
+ * (`useContinuationAvailability`, shared with it), just triggered manually instead of
+ * gated on a truncation reason.
+ *
+ * A component of its own, mounted only while the edit textarea is open (see
+ * `AssistantMessage` below), so `useContinuationAvailability`'s `useAuiState`
+ * subscriptions run for the one message being edited rather than for every assistant
+ * message in the thread -- the same reason `ContinueMessageBar` is split off from
+ * `ContinueMessageBarForLastMessage`.
+ */
+const SaveAndContinueButton: FC<{
+  aui: ReturnType<typeof useAui>;
+  messageId: string;
+  textareaRef: RefObject<HTMLTextAreaElement | null>;
+  saveEditedText: (finalText: string) => Promise<boolean>;
+  setEditingId: (id: string | null) => void;
+}> = ({ aui, messageId, textareaRef, saveEditedText, setEditingId }) => {
+  const messageContent = useAuiState(({ message }) => message.content);
+  const canContinueEdit = useContinuationAvailability(messageContent);
+  const thoughtSignature = useAuiState(({ message }) =>
+    readTextThoughtSignature(message.content),
+  );
+
+  if (!canContinueEdit) {
+    return null;
+  }
+
+  const handleSaveAndContinue = async () => {
+    const finalText = textareaRef.current?.value || "";
+    if (!finalText.trim()) return;
+    const saved = await saveEditedText(finalText);
+    setEditingId(null);
+    if (!saved) return;
+
+    const messages = aui.thread().getState().messages;
+    const index = messages.findIndex((message) => message.id === messageId);
+    if (index < 0) return;
+    // Sibling of the edited turn, so the branch picker can still reach the original.
+    const parentId = index > 0 ? messages[index - 1].id : null;
+    aui.thread().startRun({
+      parentId,
+      runConfig: {
+        custom: {
+          [CONTINUATION_RUN_CONFIG_KEY]: {
+            partial: finalText,
+            thoughtSignature,
+          },
+        },
+      },
+    });
+  };
+
+  return (
+    <Button
+      size="sm"
+      variant="secondary"
+      onClick={handleSaveAndContinue}
+      className="h-8 gap-1.5 text-xs"
+    >
+      <FastForwardIcon strokeWidth={1.75} className="size-3.5" />
+      Save &amp; Continue
+    </Button>
+  );
+};
+
+/**
  * AssistantMessage handles the display and inline-editing of AI responses.
  *
  * It utilizes a "Tagged Text" system (<THINK> and <TOOL> tags) to allow users
@@ -6972,17 +7060,17 @@ const AssistantMessage: FC = () => {
     if (isEditing) setTimeout(adjustHeight, 0);
   }, [isEditing]);
 
-  const handleSave = async () => {
-    const finalText = textareaRef.current?.value || "";
-
+  // Shared by Save and Save & Continue: persists the textarea's text onto the message.
+  // Returns whether it succeeded, so Save & Continue knows whether it is safe to start
+  // a continuation run off the saved text.
+  const saveEditedText = async (finalText: string): Promise<boolean> => {
     // Prioritize the specific thread item ID, then fallback to the global active thread ID
     const remoteId = aui.threadListItem().getState().remoteId
                   || useChatRuntimeStore.getState().activeThreadId;
 
     if (!remoteId || remoteId === "" || remoteId === "/") {
       toast.error("Save failed: No thread ID found.");
-      setEditingId(null);
-      return;
+      return false;
     }
 
     try {
@@ -6996,12 +7084,18 @@ const AssistantMessage: FC = () => {
         newText: finalText,
         isIncognito: incognito,
       });
+      return true;
     } catch (error) {
       console.error("UI: Error during save:", error);
       toast.error("Failed to save message edits.");
-    } finally {
-      setEditingId(null);
+      return false;
     }
+  };
+
+  const handleSave = async () => {
+    const finalText = textareaRef.current?.value || "";
+    await saveEditedText(finalText);
+    setEditingId(null);
   };
 
   return (
@@ -7048,6 +7142,16 @@ const AssistantMessage: FC = () => {
             <div className="flex justify-end gap-2">
               <Button size="sm" variant="ghost" onClick={() => setEditingId(null)} className="h-8 text-xs">Cancel</Button>
               <Button size="sm" onClick={handleSave} className="h-8 text-xs">Save</Button>
+              {/* Only mounted while the editor is open, so its `useContinuationAvailability`
+                  subscriptions run for the one message being edited, not for every assistant
+                  message in the thread. */}
+              <SaveAndContinueButton
+                aui={aui}
+                messageId={messageId}
+                textareaRef={textareaRef}
+                saveEditedText={saveEditedText}
+                setEditingId={setEditingId}
+              />
             </div>
           </div>
         ) : (
