@@ -460,6 +460,136 @@ def test_a_cell_that_streamed_every_planned_turn_still_completes(cell_runner):
     assert [s["tag"] for s in row["pacer"]["streams"]] == [CELL_ID, f"{CELL_ID}#turn1"]
 
 
+def _scene_with(rows: list[dict]):
+    """A scene runner that emits exactly the action rows given."""
+
+    class _Fixed:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+        def run(self, scene, t0) -> list:
+            out = []
+            for spec in rows:
+                row = {
+                    "row_type": "action",
+                    "cell_id": self.kwargs["cell"].cell_id,
+                    "slot_missed": False,
+                    "timings": {},
+                    "expect": {},
+                    "census": dict(CENSUS),
+                    **spec,
+                }
+                self.kwargs["recorder"].emit(dict(row))
+                out.append(row)
+            return out
+
+    return _Fixed
+
+
+#: A `send_turn` that RAN, loaded the pacer and pressed Enter, and whose own assertion failed.
+SEND_TURN_THAT_FAILED = {
+    "action": "send_turn",
+    "ran": True,
+    "expect_ok": False,
+    "expect": {"turn_index": 1, "streamed_chars": 1_500, "pacer_tag": f"{CELL_ID}#turn1"},
+    "reason": "the send did not start a new streaming reply",
+}
+
+
+def test_a_follow_up_that_was_sent_but_never_streamed_fails_the_cell(cell_runner, monkeypatch):
+    """`ran = True, expect_ok = False` is an ATTEMPTED turn that did not stream, not an unattempted
+    one. Skipping it let the cell pass the stream check with `planned_turns: 1`, complete, and
+    score against a thread one turn short of its rung."""
+
+    monkeypatch.setattr(session_mod, "SceneRunner", _scene_with([SEND_TURN_THAT_FAILED]))
+    runner = cell_runner(
+        [{"tag": CELL_ID, "chars_sent": 10_000, "completed": True, "disconnected": False}]
+    )
+
+    row = runner.run(_cell(), _plan())
+
+    assert row["completed"] is False
+    assert row["pacer"]["check"]["planned_turns"] == 2
+    assert f"{CELL_ID}#turn1" in row["failure"]["message"]
+    assert "never reached the pacer" in row["failure"]["message"]
+
+
+def test_a_follow_up_that_streamed_but_never_joined_the_thread_fails_the_cell(
+    cell_runner, monkeypatch
+):
+    """The other half. The pacer served every byte, so the stream check alone passes; the thread
+    did not grow, so every later action, the peak census and the equivalence mirror still read a
+    thread one turn short."""
+
+    monkeypatch.setattr(session_mod, "SceneRunner", _scene_with([SEND_TURN_THAT_FAILED]))
+    runner = cell_runner(
+        [
+            {"tag": CELL_ID, "chars_sent": 10_000, "completed": True, "disconnected": False},
+            {
+                "tag": f"{CELL_ID}#turn1",
+                "chars_sent": 1_500,
+                "completed": True,
+                "disconnected": False,
+            },
+        ]
+    )
+
+    row = runner.run(_cell(), _plan())
+
+    assert row["pacer"]["check"]["ok"] is True, "the bytes did go out; that is not the complaint"
+    assert row["completed"] is False
+    assert "follow-up turn 1 was sent but" in row["failure"]["message"]
+    assert "did not start a new streaming reply" in row["failure"]["message"]
+
+
+def test_an_ordinary_action_whose_assertion_failed_does_not_fail_the_cell(cell_runner, monkeypatch):
+    """THE SCOPE OF THE RULE, deliberately. `select_text` selecting nothing voids its own timing --
+    `scoring.from_payload._action_measure` already returns `Measure.failed` for it -- but it does
+    not change the workload the rest of the cell measured, and failing the cell would throw away a
+    whole cell's frame readings for a gesture that missed."""
+
+    monkeypatch.setattr(
+        session_mod,
+        "SceneRunner",
+        _scene_with(
+            [
+                {
+                    "action": "select_text",
+                    "ran": True,
+                    "expect_ok": False,
+                    "reason": "the selection did not cover the message",
+                },
+                {
+                    "action": "send_turn",
+                    "ran": True,
+                    "expect_ok": True,
+                    "expect": {
+                        "turn_index": 1,
+                        "streamed_chars": 1_500,
+                        "pacer_tag": f"{CELL_ID}#turn1",
+                    },
+                },
+            ]
+        ),
+    )
+    runner = cell_runner(
+        [
+            {"tag": CELL_ID, "chars_sent": 10_000, "completed": True, "disconnected": False},
+            {
+                "tag": f"{CELL_ID}#turn1",
+                "chars_sent": 1_500,
+                "completed": True,
+                "disconnected": False,
+            },
+        ]
+    )
+
+    row = runner.run(_cell(), _plan())
+
+    assert row["completed"] is True
+    assert row["expect_failures"] == 1
+
+
 def test_a_send_turn_that_did_not_run_is_not_demanded_of_the_pacer(cell_runner, monkeypatch):
     """The other control, and the reason the planned list is built from the ACTION rows. At the
     small rungs the queue is empty and `send_turn` reports NOT RUN; nothing was streamed for it and

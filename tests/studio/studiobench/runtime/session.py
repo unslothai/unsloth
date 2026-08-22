@@ -385,6 +385,36 @@ class CellRunner:
         if check["checked"] and not check["ok"]:
             self.log(f"  the cell did not stream what it planned: {check['reason']}")
             raise RuntimeError(f"the cell did not stream what it planned: {check['reason']}")
+        # AND THE SAME RULE FOR THE TURN THAT STREAMED BUT NEVER LANDED.
+        #
+        # The stream check asks whether the bytes went out. `send_turn` asserts something the pacer
+        # cannot see: that the thread GREW. A send whose bytes were served in full but whose reply
+        # never joined the thread leaves every later action, the peak census and the equivalence
+        # mirror reading a thread one turn short, and the stream check alone would pass it.
+        #
+        # Scoped to `send_turn` DELIBERATELY, and this is the whole of the generalisation. An
+        # action whose own assertion fails already has its own timing voided by
+        # `scoring/from_payload._action_measure`, which returns `Measure.failed` for
+        # `expect_ok is False` and says so. What that does NOT cover is an action whose failure
+        # changed the workload the REST of the cell measured, and `send_turn` is the only one that
+        # can: it is the only action whose outcome decides how much content the thread carries for
+        # everything after it. A `select_text` that selected nothing or a `message_menu` that did
+        # not open leaves the workload intact, and failing the cell for those would throw away a
+        # whole cell's frame readings -- which really were taken, over the real thread -- for a
+        # gesture that missed.
+        missed_turns = [
+            a
+            for a in (row["actions"] or [])
+            if a.get("action") == "send_turn" and a.get("ran") and a.get("expect_ok") is False
+        ]
+        if missed_turns:
+            reason = "; ".join(
+                f"follow-up turn {(a.get('expect') or {}).get('turn_index')} was sent but "
+                f"{a.get('reason') or 'its own assertion failed'}"
+                for a in missed_turns
+            )
+            self.log(f"  the cell did not stream what it planned: {reason}")
+            raise RuntimeError(f"the cell did not stream what it planned: {reason}")
         row["census_after"] = dom_signature(page)
         row["cdp"] = cdp_counters(before_metrics, cdp_metrics(s.ctx.cdp))
 
@@ -466,10 +496,18 @@ class CellRunner:
     def _planned_streams(cell: Cell, plan: RungPlan, row: dict) -> list[dict]:
         """The turns this cell MEANT to stream, each with its tag and its character count.
 
-        The opening reply, plus one entry per `send_turn` that actually ran -- taken from the
-        recorded action rows and from the tag the action itself reports, so a turn that did not run
-        (an exhausted queue at the small rungs, a missed slot on a slow machine) is not demanded of
-        the pacer, and the naming rule lives in one place rather than two.
+        The opening reply, plus one entry per `send_turn` that was ATTEMPTED -- taken from the
+        recorded action rows and from the tag the action itself reports, so the naming rule lives
+        in one place rather than two.
+
+        THE TWO KINDS OF "DID NOT RUN" ARE NOT THE SAME, and treating them alike was a hole in the
+        first version of this check. `ran = False` means the turn was never attempted: an exhausted
+        queue at the small rungs, a slot missed on a slow machine. Nothing was loaded into the
+        pacer, the cell simply has fewer turns, and demanding one would fail every small rung.
+        `ran = True, expect_ok = False` is the opposite: the turn WAS attempted, `send_turn` loaded
+        the pacer with it and pressed Enter, and no reply started. That is a planned turn that did
+        not stream, and skipping it let a cell whose follow-up never arrived pass the check with
+        `planned_turns: 1`, complete, and score 91.6 against a thread one turn short of its rung.
         """
         planned: list[dict] = []
         unit = plan.streamed_unit
@@ -484,7 +522,7 @@ class CellRunner:
         for action in row.get("actions") or []:
             if action.get("action") != "send_turn":
                 continue
-            if not action.get("ran") or action.get("expect_ok") is False:
+            if not action.get("ran"):
                 continue
             expect = action.get("expect") or {}
             tag = expect.get("pacer_tag")
