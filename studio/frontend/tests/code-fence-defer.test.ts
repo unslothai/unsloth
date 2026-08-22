@@ -67,6 +67,64 @@ test("printing latches the mounted fences and records nothing at module scope", 
   );
 });
 
+test("the print path does more than latch React state", () => {
+  // Latching alone commits `<Block>`, but `<Block>` renders `<Suspense>` around a `React.lazy`
+  // chunk and asks the plugin for tokens from an effect, so a synchronous snapshot can still
+  // catch the plain fallback. Three things close it and all three have to be present.
+  const flushes = SOURCE.match(/flushSync\(/g) ?? [];
+  assert.ok(
+    flushes.length >= 2,
+    "a second, empty flushSync is what lets the highlight effect the first one scheduled land " +
+      `before the snapshot; found ${flushes.length}`,
+  );
+  assert.ok(
+    SOURCE.includes("claimChunkWarm"),
+    "one fence per document must render eagerly so the lazy highlighted body is fetched",
+  );
+  assert.ok(
+    MARKDOWN_TEXT.includes("warmedGrammars") &&
+      MARKDOWN_TEXT.includes("requestIdleCallback"),
+    "every language present must have its grammar warmed at idle, or the tokenizer cannot " +
+      "answer synchronously when the printer asks",
+  );
+});
+
+test("the chunk warm-up claims exactly one fence, and never releases it", () => {
+  const fn = SOURCE.slice(
+    SOURCE.indexOf("export const claimChunkWarm"),
+    SOURCE.indexOf("export const claimChunkWarm") + 260,
+  );
+  assert.ok(fn.includes("if (chunkWarmClaimed) return false;"), "second caller must get false");
+  assert.ok(fn.includes("chunkWarmClaimed = true;"), "first caller must take the claim");
+  assert.ok(
+    !/chunkWarmClaimed\s*=\s*false/.test(SOURCE.replace("let chunkWarmClaimed = false;", "")),
+    "releasing the claim would let a second fence become eager later",
+  );
+  assert.ok(
+    MARKDOWN_TEXT.includes("useState(() => mode !== \"off\" && claimChunkWarm())"),
+    "the claim must be taken in a lazy initialiser, once per mount, not on every render",
+  );
+});
+
+test("the grammar warm-up tokenizes nothing real and is skipped when the flag is off", () => {
+  const block = MARKDOWN_TEXT.slice(
+    MARKDOWN_TEXT.indexOf("GRAMMAR WARM-UP"),
+    MARKDOWN_TEXT.indexOf("GRAMMAR WARM-UP") + 900,
+  );
+  assert.ok(
+    block.includes('if (mode === "off" || reached) return;'),
+    "no warm-up on the shipped default, and none for a fence that is already highlighted",
+  );
+  assert.ok(
+    /code:\s*" "/.test(block),
+    "warm with a one-character source: the point is to load the grammar, not to tokenize a fence",
+  );
+  assert.ok(
+    block.includes("warmedGrammars.has(lang)") && block.includes("warmedGrammars.add(lang)"),
+    "one call per language, not one per fence",
+  );
+});
+
 test("a completing stream cannot downgrade a fence that was highlighted while it streamed", () => {
   // `streaming` goes true -> FALSE at the closing delimiter. Deriving `reached` from it alone
   // hands a finished fence back the plain shell, which is the reverse edge in miniature.
@@ -127,7 +185,7 @@ test("the flag defaults off, and off means today's behaviour", () => {
     "any value that is not an understood mode must fall through to off",
   );
   assert.ok(
-    MARKDOWN_TEXT.includes('useFenceReached(host, mode !== "off", Boolean(isIncomplete))'),
+    /useFenceReached\(\s*host,\s*mode !== "off" && !warmsChunk,/.test(MARKDOWN_TEXT),
     "with the flag off every fence must render immediately, exactly as it does today",
   );
 });

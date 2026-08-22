@@ -41,6 +41,7 @@ import {
   type StreamdownProps,
 } from "streamdown";
 import {
+  claimChunkWarm,
   DeferredFenceShell,
   fenceMode,
   trimTrailingNewlines,
@@ -72,6 +73,10 @@ const STREAMDOWN_CONTROLS = {
     panZoom: true,
   },
 } satisfies NonNullable<StreamdownProps["controls"]>;
+// Languages whose Shiki grammar has already been warmed. Module scope because the grammar cache
+// inside the plugin is module scope too: warming "python" once serves every python fence in every
+// thread for the life of the page.
+const warmedGrammars = new Set<string>();
 const STREAMDOWN_SHIKI_THEME = [
   unslothLightTheme,
   unslothDarkTheme,
@@ -436,9 +441,43 @@ function FenceBlock({
 }) {
   const host = useRef<HTMLDivElement | null>(null);
   const mode = fenceMode();
+  // ONE fence per document renders eagerly so streamdown's lazily imported highlighted body is
+  // fetched. Claimed in a lazy initialiser so the claim is taken once per mount and never
+  // re-taken on a re-render, and held for the life of this fence so it cannot flip back.
+  const [warmsChunk] = useState(() => mode !== "off" && claimChunkWarm());
   // A streaming fence is the one the reader is watching, so it never defers, and the hook latches
   // it so that finishing the stream cannot hand it back the plain shell.
-  const reached = useFenceReached(host, mode !== "off", Boolean(isIncomplete));
+  const reached = useFenceReached(
+    host,
+    mode !== "off" && !warmsChunk,
+    Boolean(isIncomplete),
+  );
+
+  // GRAMMAR WARM-UP, at idle, one call per LANGUAGE and not one per fence.
+  //
+  // A print snapshot needs the tokenizer to answer synchronously, and it only can once the
+  // grammar for that language has been loaded. Warming with a one-character source loads the
+  // grammar and tokenizes nothing that matters, so the per-fence tokenization this change exists
+  // to avoid is still avoided: the cost is the same grammar fetch the unflagged build pays.
+  useEffect(() => {
+    if (mode === "off" || reached) return;
+    const lang = language ?? "text";
+    if (warmedGrammars.has(lang)) return;
+    warmedGrammars.add(lang);
+    const warm = () => {
+      code.highlight(
+        { code: " ", language: lang as never, themes: STREAMDOWN_SHIKI_THEME },
+        () => {},
+      );
+    };
+    const idle = window.requestIdleCallback;
+    if (typeof idle === "function") {
+      const handle = idle(warm, { timeout: 4000 });
+      return () => window.cancelIdleCallback?.(handle);
+    }
+    const timer = window.setTimeout(warm, 1000);
+    return () => window.clearTimeout(timer);
+  }, [mode, reached, language]);
 
   // MEASUREMENT ARM ONLY. See `FenceMode`: this puts the tokenizer work back while leaving the
   // document at the deferred size, so the two costs can be told apart. `code.highlight` caches

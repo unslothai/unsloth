@@ -161,6 +161,22 @@ const CAN_OBSERVE =
  * from it lands after. `flushSync` is what makes the upgrade part of the same task, so the
  * document the printer serialises is the upgraded one.
  *
+ * LATCHING IS NOT ENOUGH ON ITS OWN, and this is the part that was wrong before. The swap commits
+ * `<Block>`, but `<Block>` renders `<Suspense>` around a `React.lazy` import of streamdown's
+ * highlighted body, and that body asks the plugin for tokens from an EFFECT. So a snapshot taken
+ * in the same task can still catch the plain Suspense fallback whenever the highlighter chunk or
+ * the fence's grammar was never loaded. Three things together close it:
+ *
+ *   1. one fence per document renders eagerly, which loads the lazy chunk (see `claimChunkWarm`);
+ *   2. every language present in the thread has its grammar warmed at idle, with a one-character
+ *      source, so no real fence is tokenized for it (see `warmGrammar` in markdown-text);
+ *   3. a SECOND, empty `flushSync` below, because `flushSync` flushes pending passive effects
+ *      before it renders. The first flush swaps the shells for blocks and schedules streamdown's
+ *      own highlight effect; the second is what lets that effect's state update land.
+ *
+ * With the grammar warm the plugin returns tokens synchronously, so step 3 has something real to
+ * commit rather than another pending promise.
+ *
  * SCOPED TO WHAT IS MOUNTED. Each mounted fence latches itself; nothing is recorded at module
  * scope. A module-global "we have printed" flag would be read by every fence mounted afterwards,
  * so one Ctrl+P would silently switch deferral off for the rest of the session, including in
@@ -177,6 +193,32 @@ const upgradeEverythingForPrint = (): void => {
   flushSync(() => {
     for (const notify of printListeners) notify();
   });
+  // The second flush. See the note above: this one renders nothing and exists only so that the
+  // passive effect the first flush scheduled -- streamdown asking the plugin for tokens -- is
+  // flushed before the printer serialises the page.
+  flushSync(() => {});
+};
+
+/*
+ * THE LAZY CHUNK, warmed by letting exactly one fence per document render eagerly.
+ *
+ * streamdown's highlighted body arrives through `React.lazy`, so nothing can render highlighted
+ * until that chunk has been fetched, and the only thing that fetches it is a `<Block>` mounting.
+ * On a thread where no fence is anywhere near the viewport at mount, deferral would mean the
+ * chunk is never requested at all, and the first thing that needs it would be a print.
+ *
+ * So the first fence to mount pays for it. ONE fence, once per document, and it is monotonic: the
+ * claim is never released, so this can only ever make one fence expensive and never a second.
+ * That is a different thing from the module-global print flag that was removed here, which fed
+ * into every later fence's `reached` decision and switched the feature off for the session.
+ */
+let chunkWarmClaimed = false;
+
+/** True for the first caller only. The caller that gets it renders eagerly. */
+export const claimChunkWarm = (): boolean => {
+  if (chunkWarmClaimed) return false;
+  chunkWarmClaimed = true;
+  return true;
 };
 
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
