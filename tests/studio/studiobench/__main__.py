@@ -248,6 +248,25 @@ def side_specs(args, ab_ref) -> list:
     return specs
 
 
+def watchdog_deadline_s(tier: str, specs: list) -> float:
+    """The hard-exit deadline for a whole run: the measurement budget PLUS the setup it must sit
+    through.
+
+    THE MEASUREMENT BUDGET IS THE MEASUREMENT'S. `TIER_BUDGET_S` is the wall clock of the cells --
+    the README's table says so, and says the install is not in it -- and three times that is the
+    generous margin the watchdog wants around them. Arming it before `install_studio` charged a
+    multi-gigabyte clone and build, which this tool itself allows 45 minutes for, against a fast
+    tier's 15 minutes; an A/B does that twice, serially, before the first cell. The watchdog then
+    fired during setup on a perfectly healthy run, and it fires through `os._exit`, so the `finally`
+    that stops the Studios it started never ran either. Every side this run INSTALLS adds its own
+    documented budget; an attached side installs nothing and adds nothing.
+    """
+    from .runtime.lifecycle import INSTALL_TIMEOUT_S
+
+    owned = sum(1 for spec in specs if not spec[2])
+    return TIER_BUDGET_S[tier] * 3 + INSTALL_TIMEOUT_S * owned
+
+
 def completion_exit_code(rows: list, resumed: int = 0) -> int:
     """0 when every cell this run asked for is complete, whether it ran them or found them.
 
@@ -314,14 +333,16 @@ def run(args, ab_ref = None) -> int:
     paths = Paths.under(out)
     _log(f"studiobench {TOOL_VERSION}  tier={args.tier}  out={paths.out}")
 
-    watchdog = browser_mod.install_wall_clock_watchdog(
-        TIER_BUDGET_S[args.tier] * 3, "studiobench", _log
-    )
-
     corpus = Corpus.load()
     _log(f"  corpus_hash {corpus.corpus_hash}")
 
     specs = side_specs(args, ab_ref)
+    # Armed AFTER the sides are known, because what it has to cover depends on them: see
+    # `watchdog_deadline_s`. Nothing between here and there can hang -- `Corpus.load` reads a
+    # generated fixture and `side_specs` builds a list.
+    watchdog = browser_mod.install_wall_clock_watchdog(
+        watchdog_deadline_s(args.tier, specs), "studiobench", _log
+    )
     if ab_ref:
         if args.attach and not args.attach_b:
             _log("  --ab with --attach needs --attach-b URL: the second build has to be somewhere.")
@@ -678,6 +699,16 @@ def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
             except ValueError:
                 continue
 
+    out = paths.out / "ab.md"
+    # A FULLY RESUMED A/B MEASURED NOTHING OF ITS OWN. `--resume` against a finished output skips
+    # every cell and is a success, but the ratio is scoped to THIS session, so re-rendering here
+    # replaced a real table with NO READING and exited 0 while doing it. The run that measured
+    # keeps its report; a run with no prior table still gets one, since there is nothing to lose.
+    if not any(r.get("row_type") == "cell" and r.get("session_id") == session_id for r in records):
+        if out.exists():
+            _log(f"\nno cell ran in this session; keeping the A/B table already at {out}")
+            return
+
     # Detected, not declared. `--ab main` IS a null control whether or not the caller says so, and
     # a null control that renders as an ordinary A/B invites somebody to quote "7.7% faster" from a
     # build compared with itself. See `is_null_control`.
@@ -705,7 +736,6 @@ def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
 
     text = render_ab_table(result)
     print("\n" + text)
-    out = paths.out / "ab.md"
     out.write_text(text, encoding = "utf-8")
     _log(f"A/B table written to {out}")
     if is_null:
