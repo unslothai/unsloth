@@ -211,6 +211,7 @@ export {
   listStoredChatThreads,
   markThreadIncognito,
 } from "./utils/chat-history-storage";
+export { estimateMessagesTokenCount } from "./utils/estimate-chat-tokens";
 export { recordedSandboxSessionId } from "./utils/recorded-sandbox-session";
 export {
   markChatThreadDeleted,

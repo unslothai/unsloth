@@ -22,6 +22,7 @@ export type ContextUsageBarInput = {
   cacheWrites?: number;
   promptTokens?: number;
   completionTokens?: number;
+  estimated?: boolean;
 };
 
 export type ContextUsageBarState = {
@@ -33,6 +34,7 @@ export type ContextUsageBarState = {
   percent: number | null;
   // whether any per-turn row renders, so the tooltip rule never floats above nothing
   hasUsageDetails: boolean;
+  estimated?: boolean;
 };
 
 // a counted zero and an uncounted chat differ: an unmeasured prompt must not read as 0% of the window
@@ -43,20 +45,35 @@ export function deriveContextUsageBar({
   cacheWrites,
   promptTokens,
   completionTokens,
+  estimated,
 }: ContextUsageBarInput): ContextUsageBarState | null {
   const limit = typeof total === "number" && total > 0 ? total : null;
   const usedTokens =
     typeof used === "number" && Number.isFinite(used) ? used : null;
   const hasUsageDetails =
-    promptTokens !== undefined ||
-    completionTokens !== undefined ||
-    (cached !== undefined && cached > 0) ||
-    (cacheWrites !== undefined && cacheWrites > 0);
+    !estimated &&
+    (promptTokens !== undefined ||
+      completionTokens !== undefined ||
+      (cached !== undefined && cached > 0) ||
+      (cacheWrites !== undefined && cacheWrites > 0));
 
   if (limit === null) {
     // nothing to show: no window to name, and no counted usage to report against one
     if (usedTokens === null) return null;
     if (usedTokens <= 0 && !hasUsageDetails) return null;
+
+    if (estimated) {
+      return {
+        face: `~${formatTokenCount(usedTokens)} tokens`,
+        label: `Estimated context usage: ~${formatTokenCount(usedTokens)} tokens`,
+        totalRowName: "Estimated tokens",
+        totalRowValue: `~${formatTokenCountFull(usedTokens)}`,
+        percent: null,
+        hasUsageDetails: false,
+        estimated: true,
+      };
+    }
+
     return {
       face: `${formatTokenCount(usedTokens)} tokens`,
       label: `Token usage: ${formatTokenCount(usedTokens)} tokens`,
@@ -64,6 +81,7 @@ export function deriveContextUsageBar({
       totalRowValue: formatTokenCountFull(usedTokens),
       percent: null,
       hasUsageDetails,
+      estimated: false,
     };
   }
 
@@ -75,6 +93,19 @@ export function deriveContextUsageBar({
       totalRowValue: formatTokenCountFull(limit),
       percent: null,
       hasUsageDetails,
+      estimated: false,
+    };
+  }
+
+  if (estimated) {
+    return {
+      face: `~${formatTokenCount(usedTokens)} / ${formatTokenCount(limit)}`,
+      label: `Estimated context usage: ~${formatTokenCount(usedTokens)} of ${formatTokenCount(limit)} tokens`,
+      totalRowName: "Estimated total",
+      totalRowValue: `~${formatTokenCountFull(usedTokens)} / ${formatTokenCountFull(limit)}`,
+      percent: Math.min((usedTokens / limit) * 100, 100),
+      hasUsageDetails: false,
+      estimated: true,
     };
   }
 
@@ -85,5 +116,6 @@ export function deriveContextUsageBar({
     totalRowValue: `${formatTokenCountFull(usedTokens)} / ${formatTokenCountFull(limit)}`,
     percent: Math.min((usedTokens / limit) * 100, 100),
     hasUsageDetails,
+    estimated: false,
   };
 }
