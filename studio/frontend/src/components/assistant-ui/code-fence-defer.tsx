@@ -10,7 +10,6 @@ import {
   useLayoutEffect,
   useState,
 } from "react";
-import { flushSync } from "react-dom";
 
 /*
  * MONOTONIC fence highlighting: a fence is rendered as a plain shell until the
@@ -152,84 +151,31 @@ const CAN_OBSERVE =
   typeof globalThis !== "undefined";
 
 /*
- * PRINT. A print or a PDF export renders the WHOLE document at once, so every fence is on the
- * page whether or not the reader ever scrolled to it, and a fence that prints without its
- * colours is a defect the reader can see and keep. Selection, clipboard and find-in-page all
- * survive deferral on their own because the text is a live text node; colour does not.
+ * PRINT: NOT HANDLED, and measured rather than assumed.
  *
- * `beforeprint` fires before the print snapshot is taken, but a React state update scheduled
- * from it lands after. `flushSync` is what makes the upgrade part of the same task, so the
- * document the printer serialises is the upgraded one.
+ * A print renders the whole document, so every deferred fence is on the page whether or not the
+ * reader reached it. Colour is the only thing deferral costs there: the text is a live text node,
+ * so it prints complete, in order, correctly laid out and in the right font.
  *
- * LATCHING IS NOT ENOUGH ON ITS OWN, and this is the part that was wrong before. The swap commits
- * `<Block>`, but `<Block>` renders `<Suspense>` around a `React.lazy` import of streamdown's
- * highlighted body, and that body asks the plugin for tokens from an EFFECT. So a snapshot taken
- * in the same task can still catch the plain Suspense fallback whenever the highlighter chunk or
- * the fence's grammar was never loaded. Three things together close it:
+ * There WAS a `beforeprint` path here that latched every mounted fence, warmed each language's
+ * grammar at idle and flushed twice. It has been removed because it did not work, and the
+ * measurement is the reason. Synchronous dispatch and read in one task, 100K rung, cold open:
  *
- *   1. one fence per document renders eagerly, which loads the lazy chunk (see `claimChunkWarm`);
- *   2. every language present in the thread has its grammar warmed at idle, with a one-character
- *      source, so no real fence is tokenized for it (see `warmGrammar` in markdown-text);
- *   3. a SECOND, empty `flushSync` below, because `flushSync` flushes pending passive effects
- *      before it renders. The first flush swaps the shells for blocks and schedules streamdown's
- *      own highlight effect; the second is what lets that effect's state update land.
+ *   delay after open   flag off: blocks on the raw fallback   flag on
+ *   1.5 s              56 of 56                               56 of 56
+ *   3 s and beyond     0                                      53 of 56
  *
- * With the grammar warm the plugin returns tokens synchronously, so step 3 has something real to
- * commit rather than another pending promise.
+ * The shipped build has a real window of about three seconds and is fully highlighted after it.
+ * With the flag on, 53 of 56 blocks stayed on streamdown's raw fallback at every delay out to
+ * twenty seconds. Neither a warm grammar nor a second `flushSync` makes a lazily imported,
+ * effect-driven highlighter produce tokens inside the synchronous print task, because
+ * `beforeprint` returns and the browser snapshots before any of that can land.
  *
- * SCOPED TO WHAT IS MOUNTED. Each mounted fence latches itself; nothing is recorded at module
- * scope. A module-global "we have printed" flag would be read by every fence mounted afterwards,
- * so one Ctrl+P would silently switch deferral off for the rest of the session, including in
- * conversations opened later. Upgrading a thread the reader printed is the intent; disabling the
- * feature for the process is not.
- *
- * Still one-way: a latched fence stays latched. Nothing listens for `afterprint`, because putting
- * a printed thread back to shells is exactly the bidirectional edge this design exists to avoid.
+ * So the honest position is that this is a stated limitation, not a solved problem: with the flag
+ * on, printing a long thread prints unreached fences without syntax colour. Keeping the machinery
+ * would have meant maintaining a module-global claim, two bookkeeping sets and an idle scheduler
+ * for a benefit that was measured at zero.
  */
-const printListeners = new Set<() => void>();
-
-const upgradeEverythingForPrint = (): void => {
-  if (printListeners.size === 0) return;
-  flushSync(() => {
-    for (const notify of printListeners) notify();
-  });
-  // The second flush. See the note above: this one renders nothing and exists only so that the
-  // passive effect the first flush scheduled -- streamdown asking the plugin for tokens -- is
-  // flushed before the printer serialises the page.
-  flushSync(() => {});
-};
-
-/*
- * THE LAZY CHUNK, warmed by letting exactly one fence per document render eagerly.
- *
- * streamdown's highlighted body arrives through `React.lazy`, so nothing can render highlighted
- * until that chunk has been fetched, and the only thing that fetches it is a `<Block>` mounting.
- * On a thread where no fence is anywhere near the viewport at mount, deferral would mean the
- * chunk is never requested at all, and the first thing that needs it would be a print.
- *
- * So the first fence to mount pays for it. ONE fence, once per document, and it is monotonic: the
- * claim is never released, so this can only ever make one fence expensive and never a second.
- * That is a different thing from the module-global print flag that was removed here, which fed
- * into every later fence's `reached` decision and switched the feature off for the session.
- */
-let chunkWarmClaimed = false;
-
-/** True for the first caller only. The caller that gets it renders eagerly. */
-export const claimChunkWarm = (): boolean => {
-  if (chunkWarmClaimed) return false;
-  chunkWarmClaimed = true;
-  return true;
-};
-
-if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
-  window.addEventListener("beforeprint", upgradeEverythingForPrint);
-  // Headless Chromium's `page.pdf()` and DevTools' print emulation change the media query
-  // without ever firing `beforeprint`, and a PDF export is exactly the path a reader uses to
-  // keep a copy. Both doors are covered.
-  window.matchMedia?.("print")?.addEventListener?.("change", (event) => {
-    if (event.matches) upgradeEverythingForPrint();
-  });
-}
 
 /*
  * THE NEAREST SCROLLING ANCESTOR, found rather than named.
@@ -299,15 +245,6 @@ export function useFenceReached(
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLatched(true);
   }, [enabled, latched, streaming]);
-
-  useEffect(() => {
-    if (reached) return;
-    const notify = () => setLatched(true);
-    printListeners.add(notify);
-    return () => {
-      printListeners.delete(notify);
-    };
-  }, [reached]);
 
   /*
    * THE FIRST FRAME, which the observer cannot cover.

@@ -41,7 +41,6 @@ import {
   type StreamdownProps,
 } from "streamdown";
 import {
-  claimChunkWarm,
   DeferredFenceShell,
   fenceMode,
   trimTrailingNewlines,
@@ -73,13 +72,6 @@ const STREAMDOWN_CONTROLS = {
     panZoom: true,
   },
 } satisfies NonNullable<StreamdownProps["controls"]>;
-// Languages whose Shiki grammar has already been warmed. Module scope because the grammar cache
-// inside the plugin is module scope too: warming "python" once serves every python fence in every
-// thread for the life of the page.
-const warmedGrammars = new Set<string>();
-// Scheduled or in flight, so a second fence of the same language does not schedule its own.
-// Separate from `warmedGrammars` on purpose: see the note in `FenceBlock`.
-const pendingGrammars = new Set<string>();
 const STREAMDOWN_SHIKI_THEME = [
   unslothLightTheme,
   unslothDarkTheme,
@@ -444,76 +436,10 @@ function FenceBlock({
 }) {
   const host = useRef<HTMLDivElement | null>(null);
   const mode = fenceMode();
-  // ONE fence per document renders eagerly so streamdown's lazily imported highlighted body is
-  // fetched. Claimed in a lazy initialiser so the claim is taken once per mount and never
-  // re-taken on a re-render, and held for the life of this fence so it cannot flip back.
-  const [warmsChunk] = useState(() => mode !== "off" && claimChunkWarm());
   // A streaming fence is the one the reader is watching, so it never defers, and the hook latches
   // it so that finishing the stream cannot hand it back the plain shell.
-  const reached = useFenceReached(
-    host,
-    mode !== "off" && !warmsChunk,
-    Boolean(isIncomplete),
-  );
+  const reached = useFenceReached(host, mode !== "off", Boolean(isIncomplete));
 
-  // GRAMMAR WARM-UP, one call per LANGUAGE and not one per fence.
-  //
-  // A print snapshot needs the tokenizer to answer synchronously, and it only can once the Shiki
-  // grammar for that language has been loaded. Warming with a one-character source loads the
-  // grammar and tokenizes nothing that matters, so the per-fence tokenization this change exists
-  // to avoid is still avoided: the cost is the same grammar fetch the unflagged build pays.
-  //
-  // TWO SETS, because "scheduled" and "loaded" are different facts and conflating them is what
-  // makes a print snapshot lie. `pendingGrammars` stops a second fence scheduling the same
-  // language. `warmedGrammars` is written only from the highlighter's own completion, so nothing
-  // is ever recorded as warm on the strength of a callback merely having been entered:
-  // `code.highlight` returns null while the grammar is still loading and calls back later.
-  //
-  // A cancelled or still-loading warm-up clears its PENDING claim, so the next fence of that
-  // language retries. Leaving the claim behind is how one cancelled callback used to mean the
-  // language was never warmed at all.
-  useEffect(() => {
-    if (mode === "off" || reached) return;
-    const lang = language ?? "text";
-    if (warmedGrammars.has(lang) || pendingGrammars.has(lang)) return;
-    pendingGrammars.add(lang);
-    let confirmed = false;
-    const confirm = () => {
-      confirmed = true;
-      pendingGrammars.delete(lang);
-      warmedGrammars.add(lang);
-    };
-    const warm = () => {
-      // A synchronous return means the grammar was already loaded; otherwise the plugin calls
-      // back once it is. Either way the confirmation comes from the highlighter, not from here.
-      const ready = code.highlight(
-        { code: " ", language: lang as never, themes: STREAMDOWN_SHIKI_THEME },
-        confirm,
-      );
-      if (ready) confirm();
-    };
-    const release = () => {
-      if (!confirmed) pendingGrammars.delete(lang);
-    };
-    // 1,500 ms rather than 4,000. The window between opening a thread and the grammar being ready
-    // is time in which a print still catches the plain fallback, so it is kept short. It cannot
-    // be closed: `beforeprint` is synchronous and cannot await a grammar fetch. Neither can the
-    // unflagged build, which loads grammars asynchronously too and prints plain inside its own
-    // window; what this bounds is how much longer that window is here.
-    const idle = window.requestIdleCallback;
-    if (typeof idle === "function") {
-      const handle = idle(warm, { timeout: 1500 });
-      return () => {
-        window.cancelIdleCallback?.(handle);
-        release();
-      };
-    }
-    const timer = window.setTimeout(warm, 300);
-    return () => {
-      window.clearTimeout(timer);
-      release();
-    };
-  }, [mode, reached, language]);
 
   // MEASUREMENT ARM ONLY. See `FenceMode`: this puts the tokenizer work back while leaving the
   // document at the deferred size, so the two costs can be told apart. `code.highlight` caches

@@ -43,140 +43,9 @@ test("the latch is only ever set to true", () => {
   }
 });
 
-test("printing latches the mounted fences and records nothing at module scope", () => {
-  // A module-global "we have printed" flag is read by every fence mounted afterwards, so one
-  // Ctrl+P would switch deferral off for the rest of the session, including in conversations
-  // opened later. The upgrade has to be scoped to what was mounted at the time.
-  assert.ok(
-    !/^\s*let\s+printed\b/m.test(SOURCE),
-    "no module-scope print flag: printing must not disable deferral for later mounts",
-  );
-  assert.ok(
-    !/reached\s*=[^;]*\bprinted\b/.test(SOURCE),
-    "the derived value must not consult a process-wide print flag",
-  );
-  assert.ok(
-    SOURCE.includes("printListeners") && SOURCE.includes("flushSync"),
-    "print must latch the mounted fences synchronously, before the snapshot is taken",
-  );
-  // The word appears in the comment that explains why there is no listener, so the assertion is
-  // on the registration rather than on the string.
-  assert.ok(
-    !/addEventListener\(\s*["']afterprint/.test(SOURCE),
-    "reverting on afterprint would reintroduce the bidirectional edge",
-  );
-});
 
-test("the print path does more than latch React state", () => {
-  // Latching alone commits `<Block>`, but `<Block>` renders `<Suspense>` around a `React.lazy`
-  // chunk and asks the plugin for tokens from an effect, so a synchronous snapshot can still
-  // catch the plain fallback. Three things close it and all three have to be present.
-  const flushes = SOURCE.match(/flushSync\(/g) ?? [];
-  assert.ok(
-    flushes.length >= 2,
-    "a second, empty flushSync is what lets the highlight effect the first one scheduled land " +
-      `before the snapshot; found ${flushes.length}`,
-  );
-  assert.ok(
-    SOURCE.includes("claimChunkWarm"),
-    "one fence per document must render eagerly so the lazy highlighted body is fetched",
-  );
-  assert.ok(
-    MARKDOWN_TEXT.includes("warmedGrammars") &&
-      MARKDOWN_TEXT.includes("requestIdleCallback"),
-    "every language present must have its grammar warmed at idle, or the tokenizer cannot " +
-      "answer synchronously when the printer asks",
-  );
-});
 
-test("the chunk warm-up claims exactly one fence, and never releases it", () => {
-  const fn = SOURCE.slice(
-    SOURCE.indexOf("export const claimChunkWarm"),
-    SOURCE.indexOf("export const claimChunkWarm") + 260,
-  );
-  assert.ok(fn.includes("if (chunkWarmClaimed) return false;"), "second caller must get false");
-  assert.ok(fn.includes("chunkWarmClaimed = true;"), "first caller must take the claim");
-  assert.ok(
-    !/chunkWarmClaimed\s*=\s*false/.test(SOURCE.replace("let chunkWarmClaimed = false;", "")),
-    "releasing the claim would let a second fence become eager later",
-  );
-  assert.ok(
-    MARKDOWN_TEXT.includes("useState(() => mode !== \"off\" && claimChunkWarm())"),
-    "the claim must be taken in a lazy initialiser, once per mount, not on every render",
-  );
-});
 
-test("the grammar warm-up tokenizes nothing real and is skipped when the flag is off", () => {
-  const block = MARKDOWN_TEXT.slice(
-    MARKDOWN_TEXT.indexOf("GRAMMAR WARM-UP"),
-    MARKDOWN_TEXT.indexOf("GRAMMAR WARM-UP") + 2600,
-  );
-  assert.ok(
-    block.includes('if (mode === "off" || reached) return;'),
-    "no warm-up on the shipped default, and none for a fence that is already highlighted",
-  );
-  assert.ok(
-    /code:\s*" "/.test(block),
-    "warm with a one-character source: the point is to load the grammar, not to tokenize a fence",
-  );
-  assert.ok(
-    block.includes("warmedGrammars.has(lang)") && block.includes("warmedGrammars.add(lang)"),
-    "one call per language, not one per fence",
-  );
-});
-
-test("a language is recorded warm only when the highlighter says so", () => {
-  // "the callback ran" and "the grammar loaded" are different facts. `code.highlight` returns
-  // null while a grammar is still loading and calls back later, so marking the language warm on
-  // entry to the callback records something that has not happened, and a print snapshot then
-  // trusts a grammar that is not there.
-  const block = MARKDOWN_TEXT.slice(
-    MARKDOWN_TEXT.indexOf("GRAMMAR WARM-UP"),
-    MARKDOWN_TEXT.indexOf("GRAMMAR WARM-UP") + 2600,
-  );
-  assert.ok(
-    MARKDOWN_TEXT.includes("const pendingGrammars = new Set<string>();"),
-    "scheduled and loaded need separate sets or the two facts get conflated",
-  );
-  const confirm = block.slice(block.indexOf("const confirm ="), block.indexOf("const warm ="));
-  assert.ok(
-    confirm.includes("warmedGrammars.add(lang)"),
-    "the warm set must be written from the confirmation path only",
-  );
-  const warm = block.slice(block.indexOf("const warm ="), block.indexOf("const release ="));
-  assert.ok(
-    !warm.includes("warmedGrammars.add(lang)"),
-    "nothing may be recorded warm merely because the idle callback was entered",
-  );
-  assert.ok(
-    warm.includes("confirm,") && warm.includes("if (ready) confirm();"),
-    "both the asynchronous callback and the synchronous return must confirm",
-  );
-});
-
-test("a cancelled grammar warm-up releases its claim", () => {
-  // The claim is taken before the callback is scheduled, or every fence of a language schedules
-  // its own. But a cleanup can cancel a callback that never ran, and a claim left behind then
-  // means no later fence ever warms that grammar, so a print in a later thread is back to
-  // snapshotting the asynchronous plain fallback.
-  const block = MARKDOWN_TEXT.slice(
-    MARKDOWN_TEXT.indexOf("GRAMMAR WARM-UP"),
-    MARKDOWN_TEXT.indexOf("GRAMMAR WARM-UP") + 2900,
-  );
-  assert.ok(block.includes("let confirmed = false;"), "completion must be tracked");
-  assert.ok(
-    /const release = \(\) => \{\s*if \(!confirmed\) pendingGrammars\.delete\(lang\);/.test(block),
-    "cancelling a warm-up that never completed must release the pending claim so a later fence retries",
-  );
-  for (const path of ["cancelIdleCallback", "clearTimeout"]) {
-    const i = block.indexOf(path);
-    assert.ok(i > 0, `expected the ${path} cleanup path`);
-    assert.ok(
-      block.slice(i, i + 90).includes("release()"),
-      `the ${path} cleanup must release the claim`,
-    );
-  }
-});
 
 test("a completing stream cannot downgrade a fence that was highlighted while it streamed", () => {
   // `streaming` goes true -> FALSE at the closing delimiter. Deriving `reached` from it alone
@@ -255,7 +124,7 @@ test("the flag defaults off, and off means today's behaviour", () => {
     "any value that is not an understood mode must fall through to off",
   );
   assert.ok(
-    /useFenceReached\(\s*host,\s*mode !== "off" && !warmsChunk,/.test(MARKDOWN_TEXT),
+    MARKDOWN_TEXT.includes('useFenceReached(host, mode !== "off", Boolean(isIncomplete))'),
     "with the flag off every fence must render immediately, exactly as it does today",
   );
 });
@@ -317,5 +186,34 @@ test("the tokenize arm is measurement only and is not reachable from a boolean f
   assert.ok(
     MARKDOWN_TEXT.includes('const pretokenize = mode === "tokenize" && !reached'),
     "pretokenizing must be confined to the tokenize arm",
+  );
+});
+
+test("there is no print machinery left to leak", () => {
+  // A `beforeprint` path that latched every mounted fence, warmed grammars at idle and flushed
+  // twice was removed after it was measured: synchronous dispatch and read in one task, 53 of 56
+  // blocks still printed on streamdown's raw fallback at every delay out to twenty seconds. The
+  // shipped build is fully highlighted after about three seconds. Neither a warm grammar nor a
+  // second flushSync makes an effect-driven, lazily imported highlighter produce tokens inside
+  // the synchronous print task.
+  //
+  // Three review rounds went on leaks inside that machinery. This test exists so it does not come
+  // back without a measurement showing it works.
+  for (const gone of ["flushSync", "printListeners", "claimChunkWarm", "beforeprint"]) {
+    assert.ok(
+      !new RegExp(`(addEventListener|const|let)[^\\n]*${gone}`).test(SOURCE),
+      `${gone} was removed because it did not work; re-adding it needs a measurement first`,
+    );
+  }
+  assert.ok(
+    !/warmedGrammars|pendingGrammars/.test(MARKDOWN_TEXT),
+    "the grammar warm-up was removed with the rest of the print path",
+  );
+});
+
+test("the print limitation is written down where it is decided", () => {
+  assert.ok(
+    SOURCE.includes("PRINT: NOT HANDLED") && SOURCE.includes("53 of 56"),
+    "the measured limitation belongs next to the code that causes it, with its number",
   );
 });
