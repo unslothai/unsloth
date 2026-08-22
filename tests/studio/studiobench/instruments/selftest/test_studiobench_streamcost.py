@@ -159,7 +159,11 @@ class _FakeStreamCostPage:
         self.overhead_ms = 0.0
         self.scans = 0
 
-    def evaluate(self, expr, arg = None):
+    def evaluate(
+        self,
+        expr,
+        arg = None,
+    ):
         if "reset()" in expr:
             self.overhead_ms = 0.0
             return None

@@ -218,7 +218,9 @@ def test_a_long_tail_really_does_outlast_the_standard_film(corpus: Corpus):
     default_s = plan_rung(corpus, "100K").streamed_chars / field_chars_per_sec
     assert default_s < stop.t_start_ms / 1000.0, default_s
 
-    long_s = plan_rung(corpus, "100K", stream_tail_chars = 96_000).streamed_chars / field_chars_per_sec
+    long_s = (
+        plan_rung(corpus, "100K", stream_tail_chars = 96_000).streamed_chars / field_chars_per_sec
+    )
     assert long_s > STANDARD.duration_ms / 1000.0, long_s
     assert long_s > stop.t_start_ms / 1000.0
 
@@ -246,7 +248,11 @@ class _FakePage:
         self.clicked = 0
         self.keyboard = _FakeKeyboard(self)
 
-    def evaluate(self, script, arg = None):
+    def evaluate(
+        self,
+        script,
+        arg = None,
+    ):
         if "isRunning" in script:
             return self.running
         if "composerText" in script:
@@ -279,7 +285,6 @@ class _FakePage:
 
 def _stop_ctx(page: _FakePage):
     from studiobench.runtime.types import ActionContext
-
     return ActionContext(
         page = page,
         cdp = None,
