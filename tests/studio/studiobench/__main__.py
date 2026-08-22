@@ -45,6 +45,20 @@ def _log(msg: str = "") -> None:
     print(msg, flush = True)
 
 
+def engines_installed(probe_text: str) -> list:
+    """The engines the doctor's probe reported as PRESENT, from its one-line answer.
+
+    The probe prints `chromium, webkit (not installed), firefox (unavailable)`; anything carrying a
+    parenthesised note is a name without an executable behind it.
+    """
+    out = []
+    for part in str(probe_text).split(","):
+        name = part.strip()
+        if name and "(" not in name:
+            out.append(name)
+    return out
+
+
 # ── doctor ──────────────────────────────────────────────────────────
 
 
@@ -101,7 +115,18 @@ def doctor(args) -> int:
         )
         if got.returncode != 0:
             raise RuntimeError((got.stderr or "the engine probe failed").strip().splitlines()[-1])
-        return got.stdout.strip()
+        text = got.stdout.strip()
+        # THE PACKAGE IS NOT THE ENGINE. `pip install playwright` and `playwright install` are two
+        # steps and the README says so, so the machine with the package and no downloaded binary is
+        # the ordinary case rather than an exotic one. Reporting `[ok]` and PASS on it, then
+        # failing at `factory.launch()` minutes later, is the one failure a doctor may not have:
+        # the exit status is what a script reads, and it said the prerequisites were met.
+        if not engines_installed(text):
+            raise RuntimeError(
+                f"{text}; no engine is downloaded. Run `playwright install webkit` "
+                "(chromium on Windows)"
+            )
+        return text
 
     def _psutil():
         import psutil
@@ -181,6 +206,84 @@ def doctor(args) -> int:
 # ── the run ─────────────────────────────────────────────────────────
 
 
+def side_home(explicit, out, label: str, *, ab: bool) -> Path:
+    """`UNSLOTH_STUDIO_HOME` for one side. THE TWO A/B SIDES NEVER SHARE ONE.
+
+    With `--ab` and `--home` together, both iterations used to select the same directory, so the
+    treatment's `install.sh` ran into the base's home -- and into the base's clone, which is
+    derived from it -- while the base server was already running out of it. The two arms then
+    shared or overwrote each other's binaries, which is the one thing an A/B may not do: whatever
+    it reported afterwards was one build measured against itself, wearing two labels.
+    """
+    if not explicit:
+        return Path(out) / f"studio_home_{label}"
+    return Path(explicit) / label if ab else Path(explicit)
+
+
+def side_specs(args, ab_ref) -> list:
+    """`(label, ref, attach url, port, password)` per side. One without `--ab`, two with it.
+
+    EACH SIDE CARRIES ITS OWN PASSWORD. Studio mints a bootstrap password per home, so two Studios
+    the caller booted separately have two different ones; authenticating both with the single
+    `--password` meant the base logged in and the treatment answered 401 every time, which made the
+    advertised `--attach` + `--attach-b` A/B unusable unless both servers had been preconfigured
+    with the same secret. `--password-b` defaults to `--password`, so one Studio, one home or two
+    homes already rotated to the bench password all behave as before.
+    """
+    specs = [("base", args.branch, args.attach, args.port, args.password)]
+    if ab_ref:
+        specs.append(
+            (
+                "treatment",
+                ab_ref,
+                args.attach_b,
+                args.port + 1,
+                getattr(args, "password_b", "") or args.password,
+            )
+        )
+    return specs
+
+
+def completion_exit_code(rows: list, resumed: int = 0) -> int:
+    """0 when every cell this run asked for is complete, whether it ran them or found them.
+
+    A RUN WHOSE WORK WAS ALREADY DONE IS A SUCCESS. `--resume` against a finished output skips
+    every work item and leaves `rows` empty, and requiring at least one newly executed row then
+    reported the finished output as exit 1 -- which makes an idempotent retry fail in automation
+    after paying the whole install-and-launch cost. An EMPTY run with nothing resumed is still a
+    failure: a payload with no cells passing every check is the same false negative in a costume.
+    """
+    completed = sum(1 for r in rows if r.get("completed"))
+    if not rows and not resumed:
+        return 1
+    return 0 if completed == len(rows) else 1
+
+
+def is_null_control(sides: list) -> bool:
+    """Is this A/B the same build against itself?
+
+    DETECTED, NOT DECLARED, and detected by BUILD IDENTITY rather than by URL. A self-managed null
+    control -- `--branch main --ab main` -- installs the same ref twice and launches the two copies
+    on different ports, so their base URLs necessarily differ; keying on the URL classified the one
+    calibration run this tool exists to support as an ordinary A/B, skipped
+    `noise_floor_from_null_control()`, and printed "no null control ran" underneath a table
+    comparing a build with itself. Equal refs on two builds this run installed itself is a null
+    control whatever ports they landed on.
+
+    Two ATTACHED Studios are a different matter: the refs are whatever the caller typed and the
+    harness cannot see what is deployed at either URL, so those are only a null control when both
+    sides are the same URL.
+    """
+    if len(sides) < 2:
+        return False
+    base, treatment = sides[0], sides[1]
+    if base.get("ref") != treatment.get("ref"):
+        return False
+    if base.get("base_url") == treatment.get("base_url"):
+        return True
+    return bool(base.get("owns") and treatment.get("owns"))
+
+
 def run(args, ab_ref = None) -> int:
     from .fixture.corpus import Corpus
     from .instruments import build as build_instruments  # noqa: F401
@@ -232,10 +335,9 @@ def run(args, ab_ref = None) -> int:
             )
             return 2
 
-    # One spec per side. Without --ab there is exactly one and everything below is the old path.
-    specs = [("base", args.branch, args.attach, args.port)]
+    # One spec per side, with its own home and password. Without --ab there is exactly one.
+    specs = side_specs(args, ab_ref)
     if ab_ref:
-        specs.append(("treatment", ab_ref, args.attach_b, args.port + 1))
         if args.attach and not args.attach_b:
             _log("  --ab with --attach needs --attach-b URL: the second build has to be somewhere.")
             return 2
@@ -243,20 +345,22 @@ def run(args, ab_ref = None) -> int:
 
     installs = []
     sides = []
-    for label, ref, attach, port in specs:
+    for label, ref, attach, port, password in specs:
         if attach:
             side_url = attach.rstrip("/")
             side_install, owns = None, False
             _log(f"  {label}: attaching to {side_url}")
         else:
-            home = Path(args.home or (out / f"studio_home_{label}"))
+            home = side_home(args.home, out, label, ab = bool(ab_ref))
             _log(f"  {label}: installing Studio from {ref} into {home} (this takes a while)")
             side_install = install_studio(ref, home)
             launch_studio(side_install, port, out / "logs" / f"studio_{label}.log")
             side_url, owns = side_install.base_url, True
             _log(f"  {label}: Studio up at {side_url}")
         installs.append((side_install, owns))
-        sides.append({"label": label, "ref": ref, "base_url": side_url})
+        sides.append(
+            {"label": label, "ref": ref, "base_url": side_url, "owns": owns, "password": password}
+        )
 
     base_url = sides[0]["base_url"]
     install, owns_studio = installs[0]
@@ -301,7 +405,7 @@ def run(args, ab_ref = None) -> int:
         side_auth = authenticate(
             side["base_url"],
             args.username,
-            args.password or (side_install.bootstrap_password if side_install else ""),
+            side["password"] or (side_install.bootstrap_password if side_install else ""),
         )
         _log(f"  {side['label']}: authenticated as {side_auth.username}")
 
@@ -436,6 +540,10 @@ def run(args, ab_ref = None) -> int:
         bundle, base_url, args.tier, args.instrument_level, paths, _log, procs
     )
     rec = ctx.recorder
+    # The ladder this run PROMISED, resolved before it is announced. Recorded rather than left to
+    # be re-derived from the tier later: `--report` reads it back to decide which rungs a payload
+    # owes, and a `--rungs` override the payload did not carry made that answer wrong.
+    rungs = args.rungs.split(",") if args.rungs else TIER_RUNGS[args.tier]
     rec.emit(
         {
             "row_type": "run_meta",
@@ -454,7 +562,9 @@ def run(args, ab_ref = None) -> int:
             "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "pacer_base_url": pacer.base_url,
             "cadence": args.cadence,
-            "rungs": TIER_RUNGS[args.tier],
+            "rungs": rungs,
+            "tier_rungs": TIER_RUNGS[args.tier],
+            "reps": args.reps,
             "instrument_level": args.instrument_level,
             # In the payload, not only in the log. Two runs with different fixtures are
             # not comparable, and a fixture difference that is not recorded is one a later
@@ -546,7 +656,6 @@ def run(args, ab_ref = None) -> int:
     if args.surfaces:
         _sweep_surfaces(sides, ctx, paths)
 
-    rungs = args.rungs.split(",") if args.rungs else TIER_RUNGS[args.tier]
     cells = build_cells(
         rungs,
         corpus,
@@ -606,10 +715,12 @@ def run(args, ab_ref = None) -> int:
         work = [(None, cell, plan) for cell, plan in cells]
 
     rows = []
+    resumed = 0
     try:
         for target, cell, plan in work:
             if cell.cell_id in done:
                 _log(f"  skipping {cell.cell_id} (already recorded)")
+                resumed += 1
                 continue
             active = target.runner if target is not None else runner
             if target is not None:
@@ -634,8 +745,12 @@ def run(args, ab_ref = None) -> int:
 
     _summarise(rows, paths)
     completed = sum(1 for r in rows if r.get("completed"))
-    _log(f"\n{completed} of {len(rows)} cells completed. payload: {paths.payload_jsonl}")
-    return 0 if completed == len(rows) and rows else 1
+    _log(
+        f"\n{completed} of {len(rows)} cells completed"
+        + (f", {resumed} already complete in the payload" if resumed else "")
+        + f". payload: {paths.payload_jsonl}"
+    )
+    return completion_exit_code(rows, resumed)
 
 
 def _sweep_surfaces(sides: list, ctx, paths) -> None:
@@ -735,10 +850,10 @@ def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
             except ValueError:
                 continue
 
-    # Detected, not declared. `--ab main` against the same Studio IS a null control whether or not
-    # the caller says so, and a null control that renders as an ordinary A/B invites somebody to
-    # quote "7.7% faster" from a build compared with itself.
-    is_null = sides[0]["ref"] == sides[1]["ref"] and sides[0]["base_url"] == sides[1]["base_url"]
+    # Detected, not declared. `--ab main` IS a null control whether or not the caller says so, and
+    # a null control that renders as an ordinary A/B invites somebody to quote "7.7% faster" from a
+    # build compared with itself. See `is_null_control`.
+    is_null = is_null_control(sides)
     label = (
         f"null control: {sides[0]['ref']} vs itself"
         if is_null
@@ -864,6 +979,33 @@ def _rung_tokens(labels: list) -> list:
     return out
 
 
+def recorded_ladder(path) -> list:
+    """The rungs the RUN promised, read from its own `run_meta` row. `[]` when it did not say.
+
+    A payload knows which ladder it was collecting; the CLI only knows which tier the caller
+    happened to type. Reporting a standard run that was killed before its top cell under the
+    default tier scored the surviving low rungs and never mentioned the missing one, which is the
+    crash-beats-limp failure `report/build.py` exists to refuse, arriving through the front door.
+    """
+    try:
+        with Path(path).open(encoding = "utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if row.get("row_type") != "run_meta":
+                    continue
+                rungs = row.get("rungs") or TIER_RUNGS.get(str(row.get("tier")))
+                return [str(r) for r in rungs] if rungs else []
+    except OSError:
+        return []
+    return []
+
+
 def report_only(args) -> int:
     """Score and render a payload that already exists. No browser, no Studio, no network.
 
@@ -878,9 +1020,17 @@ def report_only(args) -> int:
         _log(f"no payload at {path}")
         return 2
 
-    declared = (
-        _rung_tokens(args.rungs.split(",")) if args.rungs else _rung_tokens(TIER_RUNGS[args.tier])
-    )
+    # `--rungs` first, then the payload's own ladder, then the tier. An explicit `--tier` still
+    # wins over the recording, so a reader can deliberately score a payload against another tier's
+    # ladder; what is gone is the DEFAULT tier silently shortening somebody else's run.
+    recorded = [] if getattr(args, "tier_explicit", True) else recorded_ladder(path)
+    if args.rungs:
+        declared = _rung_tokens(args.rungs.split(","))
+    elif recorded:
+        declared = _rung_tokens(recorded)
+        _log(f"scoring against the ladder this run recorded: {','.join(recorded)}")
+    else:
+        declared = _rung_tokens(TIER_RUNGS[args.tier])
     out = path.parent / "summary.md"
     try:
         text, ladder, _payload = build_report(path, declared)
@@ -998,14 +1148,18 @@ def assert_liveness(args) -> int:
     return 1 if (problems or over) else 0
 
 
-def main(argv: list) -> int:
+def parse_args(argv: list):
+    """The CLI surface, split out of `main` so the option contract can be asserted directly."""
     ap = argparse.ArgumentParser(
         prog = "studiobench", description = "A real-path performance benchmark for Unsloth Studio."
     )
     ap.add_argument(
         "--tier",
         choices = TIERS,
-        default = "quick",
+        # No default here, and `quick` is applied below instead. `--report` needs to tell "the
+        # caller asked for this ladder" apart from "the caller said nothing", because a payload
+        # records the ladder its run promised and that answer beats a CLI default.
+        default = None,
         help = (
             "fast ~5min (100K only, the iteration loop), quick ~5min (1K,10K, a wiring check), "
             "standard ~20min (1K,10K,100K), full ~60min (+500K,1M)"
@@ -1141,6 +1295,14 @@ def main(argv: list) -> int:
     # sends you looking in the wrong place.
     ap.add_argument("--username", default = "unsloth")
     ap.add_argument("--password", default = "")
+    ap.add_argument(
+        "--password-b",
+        dest = "password_b",
+        default = "",
+        help = "the treatment Studio's password, when --ab is used together with --attach-b. "
+        "Two Studios booted separately mint two different bootstrap passwords, so one "
+        "--password cannot authenticate both. Defaults to --password",
+    )
     ap.add_argument("--out", help = "output directory")
     ap.add_argument(
         "--surfaces",
@@ -1161,6 +1323,16 @@ def main(argv: list) -> int:
         "investigation by about 3.2x",
     )
     args = ap.parse_args(argv)
+    # Whether the ladder was ASKED FOR or merely defaulted. Only `--report` cares; everything else
+    # sees the tier it always saw.
+    args.tier_explicit = args.tier is not None
+    if args.tier is None:
+        args.tier = "quick"
+    return args
+
+
+def main(argv: list) -> int:
+    args = parse_args(argv)
 
     if args.doctor:
         return doctor(args)

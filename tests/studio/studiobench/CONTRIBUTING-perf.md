@@ -12,13 +12,17 @@ answer was produced by not having it.
 
 ```
 # 1. Screen: about 5 minutes, direction only
-python -m tests.studio.studiobench --tier fast --ab YOUR_REF --out outputs/mine
+python -m tests.studio.studiobench --tier fast --ab YOUR_REF --out outputs/screen
 
-# 2. Confirm: about 20 minutes
+# 2. Confirm: about 20 minutes. A NEW --out: the payload is append-only, so writing a standard
+#    run into the screen's directory leaves one file holding two films.
 python -m tests.studio.studiobench --tier standard --reps 4 --ab YOUR_REF --out outputs/mine
 
-# ... and the same command with --ab pointing at the BASE, as your null control
-python -m tests.studio.studiobench --tier standard --reps 4 --ab BASE_REF --out outputs/null
+# ... and the same film with BOTH arms on the base, as your null control. --ab sets the
+#    TREATMENT ref only; --branch is the base arm and defaults to main, so passing --ab BASE_REF
+#    alone measures main against BASE_REF and calls the difference noise.
+python -m tests.studio.studiobench --tier standard --reps 4 \
+    --branch BASE_REF --ab BASE_REF --out outputs/null
 
 # 3. Gate: per-metric floor, sign consistency, stability
 python -m tests.studio.studiobench.sweep.floor_table --floor outputs/null outputs/mine

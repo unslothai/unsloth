@@ -140,6 +140,15 @@ def _action_measure(metric_key: str, actions: Mapping[str, Mapping[str, Any]]) -
         reason = row.get("reason") or "no reason recorded"
         # Attempted-and-did-not-run, which is a fact about the run, not an absent instrument.
         return Measure.failed(unit, f"{action_name} did not run: {reason}")
+    if row.get("expect_ok") is False:
+        # RAN IS NOT DID WHAT IT CLAIMED. An action carries its own assertion -- the composer's
+        # value grew by the characters that were typed, the menu that was opened has items, the
+        # panes that were expanded are open -- and when that assertion fails the timing describes
+        # something other than the action. `report/payload.py` already lists these cells under
+        # EXCLUDED CELLS with "its timings exist and must not be quoted"; scoring them anyway let
+        # the same number be excluded in the report and load-bearing in the headline.
+        reason = row.get("reason") or "no reason recorded"
+        return Measure.failed(unit, f"{action_name} ran but its own assertion failed: {reason}")
 
     value = (row.get("timings") or {}).get(timing_key)
     if value is None:
