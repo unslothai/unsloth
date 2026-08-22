@@ -3545,9 +3545,35 @@ _rocm_tag_from_version_file() {
     awk -F. '{print "rocm"$1"."$2; exit}' /opt/rocm/.info/version || return 0
 }
 
+# Install line for the package manager this host actually has. Naming pacman
+# unconditionally told the unslothai#8731 reporter to run it on an immutable Fedora
+# image, where it does not exist and rpm-ostree would have cost a reboot.
+_rocm_sdk_install_hint() {
+    if command -v pacman >/dev/null 2>&1; then
+        echo "sudo pacman -S rocm-hip-sdk"
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "sudo dnf install rocm-hip rocm-runtime   (rpm-ostree install ... on atomic images)"
+    elif command -v zypper >/dev/null 2>&1; then
+        echo "sudo zypper install rocm-hip"
+    elif command -v apt-get >/dev/null 2>&1; then
+        echo "see https://rocm.docs.amd.com/en/latest/deploy/linux/index.html for the AMD apt repo"
+    else
+        echo "https://rocm.docs.amd.com/en/latest/deploy/linux/index.html"
+    fi
+}
+
 _rocm_tag_from_hipconfig() {
-    command -v hipconfig >/dev/null 2>&1 || return 0
-    hipconfig --version 2>/dev/null \
+    # Fedora and friends ship hipconfig under /opt/rocm without putting it on PATH,
+    # so a PATH-only lookup misses a ROCm install that is right there (unslothai#8731).
+    _rt_hipconfig=""
+    if command -v hipconfig >/dev/null 2>&1; then
+        _rt_hipconfig=hipconfig
+    elif [ -x "${ROCM_PATH:-/opt/rocm}/bin/hipconfig" ]; then
+        _rt_hipconfig="${ROCM_PATH:-/opt/rocm}/bin/hipconfig"
+    else
+        return 0
+    fi
+    "$_rt_hipconfig" --version 2>/dev/null \
         | awk 'NR==1 && /^[0-9]/{split($1,a,"."); if(a[1]+0>0){print "rocm"a[1]"."a[2]}}' || return 0
 }
 
@@ -3580,7 +3606,15 @@ _rocm_tag_from_rpm() {
     # against a running dnf (rhbz#2463435). A version probe must not hang the
     # installer, and a timed-out probe is just a source that declined to answer.
     # _run_bounded no-ops where `timeout` is absent, so this adds no dependency.
-    _rt_ver=$(_run_bounded rpm -q --qf '%{VERSION}\n' rocm-core 2>/dev/null) || return 0
+    # rocm-core is the AMD-repo package name. Fedora builds ROCm itself and ships no
+    # such package, so an rpm host with a working /opt/rocm answered nothing at all
+    # and the whole version detection came up empty (unslothai#8731). Ask about
+    # Fedora's names in the SAME query rather than looping: the wedged-rpm cases this
+    # probe is bounded for would otherwise cost the timeout once per name. rpm prints
+    # "package X is not installed" on stdout for a miss, so take the first line that
+    # actually starts with a digit; argument order keeps rocm-core's precedence.
+    _rt_ver=$(_run_bounded rpm -q --qf '%{VERSION}\n' rocm-core rocm-runtime rocm-hip 2>/dev/null \
+        | awk '/^[0-9]/{print; exit}') || return 0
     [ -n "$_rt_ver" ] || return 0
     printf '%s\n' "$_rt_ver" | awk -F'[.-]' '{print "rocm"$1"."$2; exit}' || return 0
 }
@@ -3775,21 +3809,41 @@ get_torch_index_url() {
         # fresh-install case: the GPU is real, but with no ROCm userspace the
         # correct PyTorch build can't be selected. Warn with an actionable fix
         # rather than silently installing CPU PyTorch.
-        # A user-set UNSLOTH_ROCM_GFX_ARCH seeded the probe above, so rocminfo/
-        # amd-smi may still be unable to see the GPU; when the named arch maps to
-        # a wheel family, the runtime-less reroute (gated on the override) will
-        # install the AMD per-arch wheels -- a CPU-only warning here would be
-        # false for that path. Defer like the inferable-arch branch does.
-        if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && \
-           _amd_arch_index_family_for_gfx "$_amd_gfx_probe" >/dev/null 2>&1; then
-            echo "[WARN] AMD GPU detected with no readable ROCm version, but UNSLOTH_ROCM_GFX_ARCH=$_amd_gfx_probe is set -- routing to AMD per-arch wheels." >&2
+        # The version is only needed to choose between the generic rocmX.Y leaves.
+        # When the arch maps to a dedicated repo.amd.com/rocm/whl/gfx* index,
+        # _amd_arch_index_family_for_gfx has the answer from the arch alone, so an
+        # unreadable version is not a reason to fall back to CPU (unslothai#8731).
+        # This used to require UNSLOTH_ROCM_GFX_ARCH, which left readable-arch +
+        # unreadable-version -- Fedora's exact shape -- as the one combination
+        # nothing covered. The runtime-less reroute below installs the wheels; a
+        # CPU-only warning here would be false for that path, so defer like the
+        # inferable-arch branch does.
+        # First token only: rocminfo names each agent twice, so a single-GPU host
+        # already reads "gfx1201\ngfx1201" and the whole string matches no case arm.
+        _amd_gfx_first=$(printf '%s\n' "$_amd_gfx_probe" | sed 's/:.*$//' \
+            | tr '[:upper:]' '[:lower:]' | awk 'NF{print; exit}')
+        if [ -n "$_amd_gfx_first" ] && \
+           _amd_arch_index_family_for_gfx "$_amd_gfx_first" >/dev/null 2>&1; then
+            if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
+                echo "[WARN] AMD GPU detected with no readable ROCm version, but UNSLOTH_ROCM_GFX_ARCH=$_amd_gfx_first is set -- routing to AMD per-arch wheels." >&2
+            else
+                echo "[WARN] AMD $_amd_gfx_first detected but no ROCm version could be read -- routing to AMD per-arch wheels, which do not need one." >&2
+            fi
             echo "$_base/cpu"; return
         fi
-        echo "[WARN] AMD GPU detected, but no ROCm/HIP install was found to select the matching GPU PyTorch build -- falling back to CPU-only PyTorch." >&2
-        echo "[WARN] Install the ROCm/HIP SDK, then re-run this installer:" >&2
-        echo "[WARN]   Arch / CachyOS : sudo pacman -S rocm-hip-sdk" >&2
-        echo "[WARN]   other distros  : https://rocm.docs.amd.com/en/latest/deploy/linux/index.html" >&2
-        echo "[WARN] Minimum required for version detection: amd-smi, hipconfig, /opt/rocm/.info/version, or the rocm-core package." >&2
+        # Arch unreadable, or readable with no per-arch index: the generic rocmX.Y
+        # leaves are all that is left and picking one needs a version.
+        echo "[WARN] AMD GPU detected, but no ROCm version could be read to select the matching GPU PyTorch build -- falling back to CPU-only PyTorch." >&2
+        if [ -d "${ROCM_PATH:-/opt/rocm}" ]; then
+            # Saying "no ROCm install was found" on a host with /opt/rocm sent the
+            # unslothai#8731 reporter off to install a package he already had.
+            echo "[WARN] ${ROCM_PATH:-/opt/rocm} exists, so ROCm is likely installed but not reporting a version this installer can read." >&2
+            echo "[WARN] Pin the wheels and re-run: UNSLOTH_TORCH_INDEX_FAMILY=rocm6.4   (a PyTorch wheel leaf: rocm6.0-6.4, rocm7.0-7.2)" >&2
+        else
+            echo "[WARN] Install the ROCm/HIP SDK, then re-run this installer:" >&2
+            echo "[WARN]   $(_rocm_sdk_install_hint)" >&2
+        fi
+        echo "[WARN] Version sources checked: amd-smi, /opt/rocm/.info/version, hipconfig, dpkg, rpm." >&2
         echo "$_base/cpu"; return
     fi
     # Parse CUDA version from nvidia-smi output (POSIX-safe, no grep -P).
@@ -4356,15 +4410,44 @@ TORCH_INDEX_URL=$(get_torch_index_url)
 # env-independent KFD topology while rocminfo/amd-smi can't read its arch
 # (KFD-only host, unslothai#7314 -- before the KFD detection fix these hosts
 # reached this reroute via the false branch, so the empty-probe condition
-# preserves that routing). A */cpu index chosen WITH a readable gfx
-# (unsupported/unreadable ROCm version, after its own warning) is a deliberate
-# fallback -- rerouting it would contradict that decision, and stays excluded
-# because the shared probe returns its gfx. An explicit UNSLOTH_ROCM_GFX_ARCH
+# preserves that routing). A */cpu index chosen WITH a readable gfx and a readable
+# but UNSUPPORTED ROCm version is a deliberate fallback -- rerouting it would
+# contradict that decision, and stays excluded because the shared probe returns its
+# gfx. An UNREADABLE version is not a decision at all, just a detection miss, so it
+# gets its own way in below (unslothai#8731). An explicit UNSLOTH_ROCM_GFX_ARCH
 # override stays authoritative either way.
+
+# Readable arch, no readable ROCm version: get_torch_index_url deferred to this
+# reroute rather than settling on CPU. Computed here, behind the */cpu check,
+# because _detect_rocm_version_tag re-runs amd-smi and rpm and a healthy ROCm host
+# (whose index is not */cpu) must not pay for a question it already answered.
+_amd_no_rocm_version_reroute=false
+_amd_probed_gfx_first=""
+case "$TORCH_INDEX_URL" in
+    */cpu)
+        if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
+           [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && \
+           ! _has_usable_nvidia_gpu && _has_amd_rocm_gpu; then
+            # Same first-token reduction get_torch_index_url makes, so the state means
+            # "that function deferred on THIS arch" and the reroute below can route on it.
+            _amd_probed_gfx_first=$(_probe_amd_gfx_arch | sed 's/:.*$//' \
+                | tr '[:upper:]' '[:lower:]' | awk 'NF{print; exit}')
+            # Mapping checked here, not just downstream: an unmappable probe never made
+            # get_torch_index_url defer, so it must not claim this state either.
+            # _detect_rocm_version_tag last -- it is the only expensive test.
+            if [ -n "${_amd_probed_gfx_first:-}" ] && \
+               _amd_arch_index_family_for_gfx "$_amd_probed_gfx_first" >/dev/null 2>&1 && \
+               [ -z "$(_detect_rocm_version_tag 2>/dev/null)" ]; then
+                _amd_no_rocm_version_reroute=true
+            fi
+        fi
+        ;;
+esac
 if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
    ! _has_usable_nvidia_gpu && \
    { [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] || ! _has_amd_rocm_gpu || \
-     [ -z "$(_probe_amd_gfx_arch)" ]; } && \
+     [ -z "$(_probe_amd_gfx_arch)" ] || \
+     [ "${_amd_no_rocm_version_reroute:-false}" = true ]; } && \
    case "$(uname -s)" in Linux) true ;; *) false ;; esac && \
    case "$_ARCH" in x86_64|amd64) true ;; *) false ;; esac; then
     # ROCm torch wheels are x86_64-only; get_torch_index_url returns CPU on other
@@ -4372,6 +4455,18 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
     case "$TORCH_INDEX_URL" in
         */cpu)
             _linux_inferred_gfx=$(_infer_linux_amd_gfx_arch 2>/dev/null || true)
+            # The no-version host reached this reroute BECAUSE rocminfo/amd-smi read
+            # its arch, and that reading is what the decision was made on, so it is
+            # what gets routed on. Marketing-name inference is a lookup table over
+            # lspci and can name a different card on a mixed APU + discrete host --
+            # taking its answer here would install arch-specific wheels for a GPU the
+            # decision never looked at, and export that arch to setup.sh as well.
+            # Only this path is affected: every host that reached the reroute before
+            # had an empty probe and still gets the inferred arch (unslothai#8731).
+            if [ "${_amd_no_rocm_version_reroute:-false}" = true ] && \
+               [ -n "${_amd_probed_gfx_first:-}" ]; then
+                _linux_inferred_gfx="$_amd_probed_gfx_first"
+            fi
             if [ -n "$_linux_inferred_gfx" ]; then
                 _amd_family=$(_amd_arch_index_family_for_gfx "$_linux_inferred_gfx") || _amd_family=""
                 if [ -n "$_amd_family" ]; then
@@ -4398,7 +4493,13 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
                     echo "" >&2
                     # KFD-only hosts reach this reroute with /dev/kfd present
                     # (that's what detected them), so don't claim it's missing.
-                    if _has_amd_rocm_gpu; then
+                    if [ "${_amd_no_rocm_version_reroute:-false}" = true ]; then
+                        # This host read its arch fine; only the VERSION was missing,
+                        # and a per-arch index does not need one. Saying the arch was
+                        # unreadable would send the user off repairing rocminfo.
+                        echo "  [WARN] AMD $_linux_inferred_gfx detected, but no ROCm version could be read (checked amd-smi, /opt/rocm/.info/version, hipconfig, dpkg, rpm)." >&2
+                        echo "  [WARN] The per-arch index is keyed on the arch alone, so the version is not needed." >&2
+                    elif _has_amd_rocm_gpu; then
                         echo "  [WARN] AMD GPU visible via the kernel driver (KFD) but rocminfo/amd-smi can't read its gfx arch; using $_linux_inferred_gfx." >&2
                     else
                         echo "  [WARN] ROCm runtime not visible (/dev/kfd, rocminfo, amd-smi) but $_linux_inferred_gfx inferred." >&2
