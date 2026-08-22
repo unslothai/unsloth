@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import List, Optional
 
 NON_CHAT_TASKS = frozenset(
-    {"text-to-image", "text-to-video", "text-to-speech", "image-diffusion-unsupported"}
+    {
+        "automatic-speech-recognition",
+        "text-to-image",
+        "text-to-video",
+        "text-to-speech",
+        "image-diffusion-unsupported",
+    }
 )
 LOCAL_SOURCES = frozenset({"models_dir", "lmstudio", "custom"})
 
@@ -94,12 +100,16 @@ def _path_can_chat(path: str, base_model: Optional[str] = None) -> Optional[bool
     return _local_path_can_chat(path, base_model)
 
 
-def _gguf_export_task(path: str, name: str) -> Optional[str]:
+def _gguf_export_task(
+    path: str,
+    name: str,
+    base_model: Optional[str] = None,
+) -> Optional[str]:
     try:
         from hub.services.models.catalog_classification import _gguf_path_task
     except ImportError:
         return None
-    return _gguf_path_task(path, (name,))
+    return _gguf_path_task(path, (name, base_model))
 
 
 def trained_entries() -> List[ModelEntry]:
@@ -124,9 +134,10 @@ def exported_entries() -> List[ModelEntry]:
     for name, path, export_type, base in scan_exported_models():
         if _path_can_chat(path, base if export_type == "lora" else None) is False:
             continue
-        if export_type == "gguf" and _gguf_export_task(path, name) in NON_CHAT_TASKS:
+        if export_type == "gguf" and _gguf_export_task(path, name, base) in NON_CHAT_TASKS:
             continue
-        entries.append(ModelEntry("Exports", name, export_type, path))
+        load_id = _preferred_complete_gguf(path) if export_type == "gguf" else None
+        entries.append(ModelEntry("Exports", name, export_type, load_id or path))
     return entries
 
 
@@ -146,24 +157,31 @@ def _quant_labels(repo_id: str, repo_path: str) -> str:
     return ", ".join(quants)
 
 
-def _cached_gguf_load_id(row: dict) -> str:
-    load_id = row.get("load_id") or row["repo_id"]
-    snapshot = Path(load_id)
+def _preferred_complete_gguf(path: str) -> Optional[str]:
+    model_path = Path(path)
     try:
-        if not row.get("load_id") or not snapshot.is_dir():
-            return load_id
+        root = model_path.parent if model_path.is_file() else model_path
+        if not root.is_dir():
+            return None
         from hub.utils.gguf import list_local_gguf_variants, pick_best_gguf
         from hub.utils.inventory_scan import complete_snapshot_variants
 
-        variants, _ = list_local_gguf_variants(str(snapshot))
-        complete = complete_snapshot_variants(str(snapshot))
+        variants, _ = list_local_gguf_variants(str(root))
+        complete = complete_snapshot_variants(str(root))
         ready = [variant for variant in variants if variant.quant in complete]
-        root = [variant for variant in ready if "/" not in variant.quant]
-        best = pick_best_gguf([variant.filename for variant in root or ready])
-        candidate = snapshot / best if best else None
-        return str(candidate) if candidate is not None and candidate.is_file() else load_id
+        root_variants = [variant for variant in ready if "/" not in variant.quant]
+        best = pick_best_gguf([variant.filename for variant in root_variants or ready])
+        candidate = root / best if best else None
+        return str(candidate) if candidate is not None and candidate.is_file() else None
     except Exception:
+        return None
+
+
+def _cached_gguf_load_id(row: dict) -> str:
+    load_id = row.get("load_id") or row["repo_id"]
+    if not row.get("load_id"):
         return load_id
+    return _preferred_complete_gguf(load_id) or load_id
 
 
 def _cached_catalog_rows() -> tuple[list[dict], list[dict]]:
@@ -279,10 +297,47 @@ def _local_catalog_rows():
     return response.models
 
 
+def _registered_custom_hf_cache(model) -> bool:
+    if model.source != "hf_cache":
+        return False
+    try:
+        from hub.storage.scan_folders import list_scan_folders
+        from hub.utils.hf_cache_state import hf_cache_roots
+        from hub.utils.paths import path_is_same_or_child
+
+        model_path = Path(model.path)
+        repo_dir = next(
+            (
+                path
+                for path in (model_path, *model_path.parents)
+                if path.name.startswith("models--")
+            ),
+            None,
+        )
+        if repo_dir is None:
+            return False
+        cache_root = repo_dir.parent
+
+        def same_path(left: Path, right: Path) -> bool:
+            return path_is_same_or_child(left, right) and path_is_same_or_child(right, left)
+
+        if any(same_path(cache_root, root) for root in hf_cache_roots()):
+            return False
+        return any(
+            same_path(cache_root, Path(folder["path"]).expanduser())
+            for folder in list_scan_folders()
+            if folder.get("path")
+        )
+    except Exception:
+        return False
+
+
 def local_folder_entries() -> List[ModelEntry]:
     entries = []
     for model in _local_catalog_rows():
-        if model.source not in LOCAL_SOURCES or model.partial:
+        if (
+            model.source not in LOCAL_SOURCES and not _registered_custom_hf_cache(model)
+        ) or model.partial:
             continue
         is_gguf = model.model_format == "gguf" or model.path.lower().endswith(".gguf")
         # No format gate: _dir_model_format reports only "gguf" or None, so a safetensors

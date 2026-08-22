@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -31,6 +32,10 @@ _LOADABLE_MEDIA_GGUF_TASKS = frozenset({"text-to-image", _VIDEO_GEN_TASK})
 _MAX_TASK_CLASSIFY_GGUFS = 64
 _TASK_CLASSIFY_WALK_SECONDS = 0.75
 _TASK_CLASSIFY_READ_SECONDS = 1.5
+_QWEN3_ASR_HINT = re.compile(
+    r"(?<![a-z0-9])qwen3[-_. ]*asr[-_. ]*(?:0[._]6|1[._]7)b(?![a-z0-9])",
+    re.IGNORECASE,
+)
 
 
 def _is_h3_bundle_gguf_hint(hint: Optional[str]) -> bool:
@@ -80,6 +85,10 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
     if arch is None:
         return None
     normalized = arch.lower()
+    if normalized == "qwen3" and any(
+        _QWEN3_ASR_HINT.search(str(hint)) for hint in name_hints if hint
+    ):
+        return "automatic-speech-recognition"
     if normalized in _PLACEHOLDER_DIFFUSION_GGUF_ARCHS:
         from core.inference.video_families import detect_video_family
 

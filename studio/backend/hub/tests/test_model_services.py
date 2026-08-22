@@ -4152,6 +4152,19 @@ def test_local_inventory_filters_custom_embedder_hf_cache_row(monkeypatch, tmp_p
     assert [row.model_id for row in rows] == ["org/chat-model"]
 
 
+def test_qwen3_asr_gguf_name_hint_is_not_classified_as_chat(monkeypatch, tmp_path):
+    from hub.services.models import catalog_classification
+
+    asr = tmp_path / "Qwen3-ASR-0.6B-Q8_0.gguf"
+    chat = tmp_path / "Qwen3-0.6B-Q8_0.gguf"
+    asr.write_bytes(b"gguf")
+    chat.write_bytes(b"gguf")
+    monkeypatch.setattr(catalog_classification, "_gguf_architecture", lambda _path: "qwen3")
+
+    assert catalog_classification._gguf_path_task(asr) == "automatic-speech-recognition"
+    assert catalog_classification._gguf_path_task(chat) == "text-generation"
+
+
 def test_local_inventory_filters_embedder_configured_by_snapshot_path(monkeypatch, tmp_path):
     from core.rag import config as rag_config
 

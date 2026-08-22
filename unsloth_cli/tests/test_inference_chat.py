@@ -499,6 +499,75 @@ def test_catalog_pinned_cached_gguf_uses_the_preferred_complete_quant(monkeypatc
     assert cat.cached_entries()[0].model == str(first)
 
 
+def test_catalog_exported_gguf_uses_the_preferred_complete_quant(monkeypatch, tmp_path):
+    from unsloth_cli._inference import ensure_studio_backend_path
+    from unsloth_cli import _model_catalog as cat
+
+    ensure_studio_backend_path()
+    export = tmp_path / "exports" / "multi-quant"
+    export.mkdir(parents = True)
+    f16 = export / "Model-F16.gguf"
+    f16.write_bytes(b"f" * 1024)
+    first = export / "Model-Q4_K_M-00001-of-00002.gguf"
+    first.write_bytes(b"q" * 256)
+    (export / "Model-Q4_K_M-00002-of-00002.gguf").write_bytes(b"q" * 256)
+
+    fake_models = types.ModuleType("utils.models")
+    fake_models.scan_exported_models = lambda: [
+        ("multi-quant", str(f16), "gguf", None),
+    ]
+    monkeypatch.setitem(sys.modules, "utils.models", fake_models)
+    monkeypatch.setattr(cat, "_path_can_chat", lambda *_args: None)
+    monkeypatch.setattr(cat, "_gguf_export_task", lambda *_args: "text-generation")
+
+    assert cat.exported_entries()[0].model == str(first)
+
+
+def test_catalog_keeps_only_custom_unconfigured_hf_cache_rows(monkeypatch, tmp_path):
+    from unsloth_cli._inference import ensure_studio_backend_path
+    from unsloth_cli import _model_catalog as cat
+
+    ensure_studio_backend_path()
+    from hub.storage import scan_folders
+    from hub.utils import hf_cache_state
+
+    class _LocalModelInfo:
+        def __init__(self, path):
+            self.id = path
+            self.load_id = path
+            self.display_name = Path(path).parents[1].name.rsplit("--", 1)[-1]
+            self.path = path
+            self.source = "hf_cache"
+            self.model_format = "safetensors"
+            self.partial = False
+
+    custom_root = tmp_path / "custom-cache"
+    custom_snapshot = custom_root / "models--org--Custom" / "snapshots" / "revision"
+    custom_snapshot.mkdir(parents = True)
+    (custom_snapshot / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+    (custom_snapshot / "model.safetensors").write_bytes(b"weights")
+    configured_root = tmp_path / "configured-cache"
+    configured_snapshot = configured_root / "models--org--Configured" / "snapshots" / "revision"
+    configured_snapshot.mkdir(parents = True)
+    (configured_snapshot / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+    (configured_snapshot / "model.safetensors").write_bytes(b"weights")
+
+    monkeypatch.setattr(
+        cat,
+        "_local_catalog_rows",
+        lambda: [_LocalModelInfo(str(custom_snapshot)), _LocalModelInfo(str(configured_snapshot))],
+    )
+    monkeypatch.setattr(scan_folders, "list_scan_folders", lambda: [{"path": str(custom_root)}])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [configured_root])
+    monkeypatch.setattr(cat, "_local_model_task", lambda _model: None)
+    monkeypatch.setattr(cat, "_local_model_can_chat", lambda _model: None)
+    monkeypatch.setattr(cat, "_local_is_a_diffusers_pipeline", lambda _model: False)
+
+    entries = cat.local_folder_entries()
+
+    assert [(entry.name, entry.model) for entry in entries] == [("Custom", str(custom_snapshot))]
+
+
 def test_catalog_inventory_works_without_fastapi_or_routes():
     script = """
 import builtins
@@ -1865,6 +1934,9 @@ def test_catalog_trained_and_exported_entries_drop_non_chat_checkpoints(monkeypa
     exported_image_gguf = tmp_path / "exports" / "run-image-gguf" / "model-Q4_K_M.gguf"
     exported_image_gguf.parent.mkdir(parents = True)
     exported_image_gguf.write_bytes(b"\0" * 8)
+    exported_asr_gguf = tmp_path / "exports" / "dictation" / "model-Q8_0.gguf"
+    exported_asr_gguf.parent.mkdir(parents = True)
+    exported_asr_gguf.write_bytes(b"\0" * 8)
 
     fake_models = types.ModuleType("utils.models")
     fake_models.scan_trained_models = lambda: [
@@ -1880,6 +1952,12 @@ def test_catalog_trained_and_exported_entries_drop_non_chat_checkpoints(monkeypa
         ("whisper-adapter", str(exported_whisper_adapter), "lora", str(trained_whisper)),
         ("gguf-export", str(exported_gguf), "gguf", None),
         ("image-gguf-export", str(exported_image_gguf), "gguf", None),
+        (
+            "dictation",
+            str(exported_asr_gguf),
+            "gguf",
+            "Qwen/Qwen3-ASR-0.6B",
+        ),
     ]
     monkeypatch.setitem(sys.modules, "utils.models", fake_models)
     monkeypatch.setattr(
@@ -1891,7 +1969,13 @@ def test_catalog_trained_and_exported_entries_drop_non_chat_checkpoints(monkeypa
     monkeypatch.setattr(
         catalog_classification,
         "_gguf_architecture",
-        lambda path: "flux" if Path(path) == exported_image_gguf else "llama",
+        lambda path: (
+            "flux"
+            if Path(path) == exported_image_gguf
+            else "qwen3"
+            if Path(path) == exported_asr_gguf
+            else "llama"
+        ),
     )
 
     assert [e.name for e in cat.trained_entries()] == ["qwen-finetune", "qwen-adapter"]
