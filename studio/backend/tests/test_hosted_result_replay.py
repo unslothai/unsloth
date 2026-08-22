@@ -150,6 +150,7 @@ def _run(transport):
                 confirm_calls = False,
                 bypass_permissions = False,
                 rag_scope = None,
+                nudge_tool_calls = True,
             ),
             cancel_event = threading.Event(),
         )
@@ -618,6 +619,7 @@ def test_a_stalled_continuation_stays_one_assistant_turn(executed):
                 confirm_calls = False,
                 bypass_permissions = False,
                 rag_scope = None,
+                nudge_tool_calls = True,
             ),
             cancel_event = threading.Event(),
         )

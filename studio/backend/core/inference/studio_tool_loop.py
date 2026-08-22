@@ -55,7 +55,7 @@ from typing import Any, Protocol
 
 from core.inference import tools as tools_module
 from core.inference.chat_template_helpers import append_assistant_turn
-from core.inference.passthrough_healing import StreamToolCallHealer, heal_gate
+from core.inference.passthrough_healing import StreamToolCallHealer, heal_gate, nudge_enabled
 from core.inference.sse_control_frames import sanitize_provider_sse_line
 from core.inference.tool_call_parser import (
     MAX_ACT_REPROMPTS,
@@ -346,6 +346,8 @@ class ToolLoopPolicy:
     rag_scope: dict[str, Any] | None
     # None means "follow the process default"; False disables text-form healing.
     auto_heal: bool | None = None
+    # None follows UNSLOTH_TOOL_CALL_NUDGE; explicit booleans win.
+    nudge_tool_calls: bool | None = None
 
 
 @dataclass
@@ -1042,6 +1044,7 @@ async def stream_with_studio_tools(
             visible_answer = "".join(turn.text)
             if (
                 tools_available
+                and nudge_enabled(policy.nudge_tool_calls)
                 and not controller.force_final_answer
                 and reprompts < max_reprompts
                 and is_short_intent_without_action(visible_answer)
@@ -1050,18 +1053,26 @@ async def stream_with_studio_tools(
                 reprompts += 1
                 last_reprompt_text = visible_answer
                 stalled_hosted = turn.hosted_replay_text()
-                if stalled_hosted:
-                    # A hosted tool did run, the model just did not go on to ask
-                    # for a local one. The replay below never happens on this
-                    # path, so the reprompted request would be told to continue
-                    # from output it can no longer see.
+                leading_whitespace = visible_answer[
+                    : len(visible_answer) - len(visible_answer.lstrip())
+                ]
+                replayable_answer = leading_whitespace + strip_tool_markup(
+                    visible_answer,
+                    final = True,
+                    enabled_tool_names = allowed_tool_names,
+                )
+                stalled_content = (
+                    f"{replayable_answer}\n\n{stalled_hosted}"
+                    if replayable_answer and stalled_hosted
+                    else replayable_answer or stalled_hosted
+                )
+                if stalled_content:
+                    # The retry must see the assistant turn it is being asked to
+                    # continue from. Without this, plain prose stalls are replayed
+                    # as user -> user and the provider answers from scratch.
                     stalled_message: dict[str, Any] = {
                         "role": "assistant",
-                        "content": (
-                            f"{visible_answer}\n\n{stalled_hosted}"
-                            if visible_answer
-                            else stalled_hosted
-                        ),
+                        "content": stalled_content,
                     }
                     if turn.reasoning_extra:
                         # Gemini 3 stows the text part's thoughtSignature here

@@ -771,12 +771,58 @@ def test_a_stalled_model_is_nudged_to_act(executed):
             [_sse({"content": "answer"}), _sse(finish = "stop"), _DONE],
         ]
     )
-    _run(transport)
+    _run(transport, nudge_tool_calls = True)
 
     assert [c["name"] for c in executed] == ["web_search"]
-    # The nudge is a user turn appended after the stall.
+    # The retry sees the assistant stall before the nudge, not user -> user.
     second = transport.requests[1]["messages"]
-    assert second[-1]["role"] == "user"
+    assert [message["role"] for message in second] == ["user", "assistant", "user"]
+    assert second[-2]["content"] == "I'll search for that now."
+
+
+def test_a_stalled_model_is_not_nudged_by_default(executed, monkeypatch):
+    """An API caller that omits the opt-in must not get a hidden retry."""
+    from core.inference import passthrough_healing
+
+    monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", False)
+    transport = FakeTransport(
+        [
+            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "SHOULD NOT APPEAR"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    lines = _run(transport)
+
+    assert executed == []
+    assert len(transport.requests) == 1
+    assert "SHOULD NOT APPEAR" not in _visible_text(lines)
+
+
+def test_a_stalled_model_respects_explicit_nudge_off(executed):
+    transport = FakeTransport(
+        [
+            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "SHOULD NOT APPEAR"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport, nudge_tool_calls = False)
+
+    assert executed == []
+    assert len(transport.requests) == 1
+
+
+def test_nudging_is_independent_of_text_form_healing(executed):
+    """Codex emits structured calls, but still needs plan-without-action recovery."""
+    transport = FakeTransport(
+        [
+            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport, auto_heal = False, nudge_tool_calls = True)
+
+    assert len(transport.requests) == 2
 
 
 def test_a_finished_answer_is_not_nudged(executed):
@@ -786,7 +832,7 @@ def test_a_finished_answer_is_not_nudged(executed):
         "since the tenth century and remains the largest city in the country."
     )
     transport = FakeTransport([[_sse({"content": answer}), _sse(finish = "stop"), _DONE]])
-    _run(transport)
+    _run(transport, nudge_tool_calls = True)
 
     assert executed == []
     assert len(transport.requests) == 1
@@ -896,6 +942,22 @@ def test_replayed_assistant_content_carries_no_markup(executed):
     assistant = [m for m in replayed if m.get("role") == "assistant"][-1]
     assert "<tool_call>" not in (assistant.get("content") or "")
     assert assistant.get("tool_calls")
+
+
+def test_truncated_tool_markup_is_not_replayed_during_a_nudge(executed):
+    """A length-truncated call is visible to the user, but not provider context."""
+    markup = '<tool_call>{"name": "web_search", "arguments": {"query": "x"}}</tool_call>'
+    transport = FakeTransport(
+        [
+            [_sse({"content": f"I'll search now. {markup}"}), _sse(finish = "length"), _DONE],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport, nudge_tool_calls = True)
+
+    replayed = transport.requests[1]["messages"]
+    assistant = [m for m in replayed if m.get("role") == "assistant"][-1]
+    assert assistant["content"] == "I'll search now."
 
 
 def test_conversation_roles_stay_alternating_for_a_strict_server(executed):
