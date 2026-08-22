@@ -762,6 +762,129 @@ def test_the_readme_sequence_no_longer_scores_two_runs_as_one_ladder(tmp_path):
     assert payload["header"]["studio_ref"] == "main"
 
 
+# ── the injection axis ──────────────────────────────────────────────────────────────────────
+#
+# `--inject-stream-cost-ms` burns a known amount of main-thread time per SSE chunk on the TREATMENT
+# arm, so a treatment cell recorded with it is not the same reading as one recorded without it --
+# and `cell_id` carries the rung, the arm and the repetition and nothing that could tell. It is on
+# `IDENTITY_AXES` for the same reason the two fixture axes above are, and for a larger perturbation
+# than either of them makes.
+
+
+def _injected_payload(tmp_path, name, session, **fixture):
+    paths = Paths.under(tmp_path / name)
+    _record(
+        paths,
+        session,
+        [
+            _run_meta("standard", "main", ["10K"], **fixture),
+            _cell("r10K.base.rep0", 10_000, arm = "base"),
+            _cell("r10K.treatment.rep0", 10_000, arm = "treatment"),
+        ],
+    )
+    return paths
+
+
+def _ab_resume_args(*flags):
+    return parse_args(
+        ["--tier", "standard", "--branch", "main", "--ab", "main", "--resume", *flags]
+    )
+
+
+def test_resuming_a_finished_uninjected_run_with_the_injection_on_is_refused(tmp_path):
+    """REGRESSION, and the expensive half of it.
+
+    Every pair in this payload is complete, so `skippable_cells` skips all of them, `rows` comes
+    back empty with `resumed` non-zero and `completion_exit_code` returns 0. The run pays for two
+    installs, measures nothing, and the recovery gate is then answered out of cells that were never
+    injected -- a calibration reporting that the metric cannot see a cost nobody put there.
+    """
+
+    paths = _injected_payload(tmp_path, "clean", "sess-1")
+
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths,
+            requested_identity(_ab_resume_args("--inject-stream-cost-ms", "3"), "main", CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+
+    message = str(excinfo.value)
+    assert "inject_stream_cost_ms" in message
+    assert "3.0" in message
+
+
+def test_resuming_an_injected_run_without_the_injection_is_refused(tmp_path):
+    """The other direction, and the likelier one: an injected A/B dies part way up the ladder and
+    the retry is typed without the flag. The rungs already done stay injected, the rungs still to
+    come are not, and the ladder the recovery fraction is computed from is half of each."""
+
+    paths = _injected_payload(tmp_path, "injected", "sess-1", inject_stream_cost_ms = 3.0)
+
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths,
+            requested_identity(_ab_resume_args(), "main", CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+    assert "inject_stream_cost_ms" in str(excinfo.value)
+
+
+def test_resuming_under_a_changed_injection_amount_is_refused(tmp_path):
+    """The amount is the measurement. A ladder half of which burned 3 ms per chunk and half 40 ms
+    has no recovery fraction at all."""
+
+    paths = _injected_payload(tmp_path, "amount", "sess-1", inject_stream_cost_ms = 3.0)
+
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths,
+            requested_identity(_ab_resume_args("--inject-stream-cost-ms", "40"), "main", CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+    assert "inject_stream_cost_ms" in str(excinfo.value)
+
+
+def test_a_payload_from_before_the_injection_flag_resumes_under_the_default(tmp_path):
+    """THE CONTROL, and the one `HISTORICAL_DEFAULTS` exists for. A payload written before the flag
+    could not have been injected, so absence reads as off and an ordinary resume still works."""
+
+    paths = _injected_payload(tmp_path, "old", "sess-old")
+    assert "inject_stream_cost_ms" not in paths.payload_jsonl.read_text(encoding = "utf-8")
+
+    assert (
+        prepare_payload(
+            paths,
+            requested_identity(_ab_resume_args(), "main", CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+        is None
+    )
+    assert _resume_set(paths) == {"r10K.base.rep0", "r10K.treatment.rep0"}
+
+
+def test_an_unchanged_injection_resumes(tmp_path):
+    """THE SECOND CONTROL. An injected run that died is meant to be resumable AS an injected run;
+    a refusal on every value would make the axis useless rather than safe."""
+
+    paths = _injected_payload(tmp_path, "same", "sess-1", inject_stream_cost_ms = 3.0)
+
+    assert (
+        prepare_payload(
+            paths,
+            requested_identity(_ab_resume_args("--inject-stream-cost-ms", "3"), "main", CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+        is None
+    )
+    assert _resume_set(paths) == {"r10K.base.rep0", "r10K.treatment.rep0"}
+
+
 def test_a_fresh_run_into_a_new_directory_archives_nothing(tmp_path):
     paths = Paths.under(tmp_path / "out")
     assert archive_payload(paths, log = lambda *_a: None) is None

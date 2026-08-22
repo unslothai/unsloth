@@ -366,6 +366,59 @@ def reasoning_toggle(ctx: ActionContext) -> ActionResult:
 #: what happened is that this action was still cleaning up its scaffolding.
 OWN_TURN_FIXED_MS = 80 + 600 + 400 + 200
 
+#: What the SAME throwaway turn costs BEYOND those sleeps: two polls and the driver round trips
+#: underneath them, neither of which is free.
+#:
+#: MEASURED, because the first version of this reserve was not. It was sized from a page shim whose
+#: `evaluate` is a Python call and whose clock only moves when `wait_for_timeout` is called, so the
+#: waits it recorded were `[100 x29, 80, 600, 400, 200]` and the two polls cost nothing. Driving
+#: the same shipped action against real chromium and a real clock, with a page standing in for the
+#: five calls it makes, the stretch after the drain costs:
+#:
+#:   a page that answers instantly            1,394 - 1,451 ms   (13 - 17% over the fixed 1,280)
+#:   120 ms to start, 90 ms to stop, 60 ms
+#:   to delete -- an unremarkable local app     1,723 - 1,938 ms   (35 - 51% over)
+#:
+#: The gap is nine to thirteen CDP round trips (43 - 130 ms of pure driver time), the 50 ms
+#: granularity of both poll loops, and the app's own latency in answering them. Against a 1,280 ms
+#: reserve that put the action 506 - 516 ms past the end of its slot on the fast and quick films,
+#: whose gaps before `scroll_after` opens are 300 ms and 500 ms, so `scroll_after` recorded
+#: `slot_missed` and its reason blamed the machine.
+#:
+#: 700 ms covers the measured 443 - 658 ms with margin and still leaves every film a real drain
+#: wait: the smallest stop slot is 3,000 ms, which keeps 1,020 ms of waiting after the reserve,
+#: and the worst-case drain overhang the fast film has to absorb is 400 ms.
+OWN_TURN_POLL_MS = 700
+
+#: What the throwaway turn needs in the slot, in total.
+#:
+#: RESERVED OUT OF THE DRAIN WAIT rather than spent past the deadline. The drain wait below is
+#: bounded by the slot's remaining budget, so a reply that finishes at the last moment of the slot
+#: used to leave nothing at all for the ~1.7 s that follows. `stop_generation` closes 300 ms before
+#: `scroll_after` opens on the fast film and 500 ms before it on the quick one, and the runner is
+#: sequential -- every slot has an absolute start, but nothing enters it until the previous action
+#: returns. So the overrun came out of `scroll_after`'s own 1,200 ms window on the fast film and
+#: recorded `slot_missed` there, whose reason blames the machine for reaching the slot late when
+#: what happened is that this action was still cleaning up its scaffolding.
+#:
+#: A RESERVE IS NOT ENOUGH ON ITS OWN, which is why `stop_generation` also re-reads the clock
+#: before it commits. The drain loop tests its deadline at the TOP, so one iteration -- a 100 ms
+#: wait plus a round trip -- lands past it, and no constant chosen here can pay for time that has
+#: already been spent. The reserve decides how much of the slot the drain may have; the check
+#: decides whether what is actually left is enough to start a turn that cannot be abandoned once
+#: it is running.
+OWN_TURN_RESERVE_MS = OWN_TURN_FIXED_MS + OWN_TURN_POLL_MS
+
+#: How long to wait for the throwaway turn to start, when the slot has that much left to give.
+#: BOUNDED BY THE SLOT, not only by this: 8 s is 2.7x the whole budget of the fast film's stop
+#: slot, so a turn that was slow to start used to overrun by seconds whatever was reserved for it.
+#: Cutting this wait short is the one bounded wait here that costs nothing to cut -- nothing has
+#: been committed yet, and the action already reports `not_run` on this path. The stop-settle poll
+#: and `STOP_CLEANUP_JS` are deliberately NOT bounded that way: once Enter is pressed the turn has
+#: to be stopped and removed or the thread every later action measures keeps the scaffolding, and
+#: a settle poll cut short would report a stop that worked as `still_running`.
+TURN_START_TIMEOUT_MS = 8000
+
 #: Remove the throwaway turn `stop_generation` created, so the thread it leaves behind is the
 #: thread it found. Deletes the assistant turn and then the user turn that prompted it, in that
 #: order, because deleting the user message first can take the reply with it and leave the count
@@ -409,6 +462,14 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
     Queue control at the same position with the same class. Pressing it queues a message and the
     stream carries on, and the action reports a fast, precise, entirely wrong number.
     """
+    # THE SLOT, ON THE CLOCK THE ACTION ITSELF RUNS ON. Everything below that is bounded is
+    # bounded against this rather than against a constant, because a budget spent is not a budget
+    # available: `ctx.budget_ms` is what the slot HAD when the runner entered it.
+    slot_deadline = time.monotonic() + ctx.budget_ms / 1000.0
+
+    def remaining_ms() -> float:
+        return (slot_deadline - time.monotonic()) * 1000.0
+
     text = _ev(ctx, "() => window.__sb.dom.composerText()")
     if text:
         ctx.page.fill('textarea[aria-label="Message input"]', "")
@@ -439,8 +500,8 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
     # reported as a clean run is the most expensive failure shape this harness has.
     #
     # So the reply is given the rest of this slot's budget LESS what the throwaway turn then costs
-    # (`OWN_TURN_FIXED_MS`) to finish on its own, which is all a marginally slow drain needs (the
-    # fast film opens this slot 0.4 s after the worst-case drain on the ladder, and 1.7 s of the
+    # (`OWN_TURN_RESERVE_MS`) to finish on its own, which is all a marginally slow drain needs (the
+    # fast film opens this slot 0.4 s after the worst-case drain on the ladder, and 1.0 s of the
     # fast film's 3 s budget is still left over for it). If it has not finished by then, NOTHING IS
     # STOPPED and the row says why. An honest `not_run` costs a column; stopping the reply costs
     # the whole cell, and spending the rest of the slot draining and THEN starting a turn of our
@@ -448,7 +509,7 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
     # -- the packing test in fixture/selftest holds every film to that -- so this path is
     # unreachable on an unmodified run and the behaviour there is exactly what it was.
     if _ev(ctx, "() => window.__sb.dom.isRunning()"):
-        drain_ms = max(0.0, ctx.budget_ms - OWN_TURN_FIXED_MS)
+        drain_ms = max(0.0, ctx.budget_ms - OWN_TURN_RESERVE_MS)
         settle_deadline = time.monotonic() + drain_ms / 1000.0
         running: Any = True
         while time.monotonic() < settle_deadline:
@@ -460,25 +521,49 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
             return not_run(
                 "the cell's own reply was still streaming when this slot opened and had not "
                 f"drained {drain_ms:.0f}ms later -- this slot's remaining {ctx.budget_ms}ms less "
-                f"the {OWN_TURN_FIXED_MS}ms it then takes to start, stop and remove a turn of our "
-                "own. Stopping it would permanently truncate the reply the rest of the film and "
-                "the final census measure, so nothing was stopped. Lower --stream-tail-chars or "
-                "move this slot past the drain"
+                f"the {OWN_TURN_RESERVE_MS}ms it then takes to start, stop and remove a turn of "
+                "our own. Stopping it would permanently truncate the reply the rest of the film "
+                "and the final census measure, so nothing was stopped. Lower --stream-tail-chars "
+                "or move this slot past the drain"
+            )
+        # AND THE RESERVE IS CHECKED AGAINST THE CLOCK, not assumed off the budget. The loop above
+        # tests `settle_deadline` at the top, so the iteration that finds the reply drained has
+        # already spent a 100 ms wait and a round trip past it; a drain that lands in the last
+        # iteration therefore leaves LESS than the reserve however the reserve is sized. Starting
+        # the turn anyway is the same overrun by a smaller amount, and the turn cannot be
+        # abandoned halfway -- once Enter is pressed the thread has to be stopped and cleaned up
+        # or every later action measures the scaffolding.
+        if remaining_ms() < OWN_TURN_RESERVE_MS:
+            return not_run(
+                "the cell's own reply drained with only "
+                f"{max(0.0, remaining_ms()):.0f}ms left of this slot's {ctx.budget_ms}ms, and "
+                f"starting, stopping and removing a turn of our own takes about "
+                f"{OWN_TURN_RESERVE_MS}ms. Running it here would finish inside the next slot and "
+                "record a missed slot against it, so nothing was stopped. Lower "
+                "--stream-tail-chars or move this slot past the drain"
             )
 
     ctx.page.fill('textarea[aria-label="Message input"]', "one more")
     ctx.page.wait_for_timeout(80)
     ctx.page.keyboard.press("Enter")
     own_generation = True
-    deadline = time.monotonic() + 8.0
+    # Bounded by the SLOT as well as by `TURN_START_TIMEOUT_MS`: 8 s is 2.7x the whole stop slot on
+    # the fast and quick films, so a turn slow to start overran by seconds no matter what had been
+    # reserved for it. See `TURN_START_TIMEOUT_MS` for why this is the one wait here that may be
+    # cut short.
+    start_wait_ms = max(0.0, min(float(TURN_START_TIMEOUT_MS), remaining_ms() - OWN_TURN_FIXED_MS))
+    deadline = time.monotonic() + start_wait_ms / 1000.0
+    started_late = (
+        f"nothing was generating and a new turn did not start within {start_wait_ms:.0f}ms"
+    )
     while time.monotonic() < deadline:
         if _ev(ctx, "() => window.__sb.dom.isRunning()"):
             break
         ctx.page.wait_for_timeout(50)
     else:
-        return not_run("nothing was generating and a new turn did not start within 8s")
+        return not_run(started_late)
     if not _ev(ctx, "() => window.__sb.dom.isRunning()"):
-        return not_run("nothing was generating and a new turn did not start within 8s")
+        return not_run(started_late)
     # Let it get going, so stop is measured against a live stream rather than a starting one.
     ctx.page.wait_for_timeout(600)
     button = ctx.page.query_selector('button[aria-label="Stop generating"]')

@@ -372,6 +372,29 @@ class CellRunner:
             w.note("drained", drained)
         row["stream"] = drained
         row["pacer"] = self.pacer.last_stats()
+        # A REPLY THAT NEVER FINISHED IS A FAILED CELL, not a completed one with a note.
+        #
+        # `_drain_stream` reports rather than raises, and the value it reports was recorded here
+        # and read by nothing: no gate, no report column, no `--assert-liveness` check and no
+        # exit code. So the one state this tool exists to catch -- the app still generating three
+        # times past its own cadence and 120 s beyond that, after the whole film has run -- came
+        # back as `completed: true`, `ok` in the summary and exit 0, with its actions and its
+        # frame windows scored and paired into the A/B ratio against an arm that DID finish.
+        # That is the crash-beats-limp rule inverted: a build that cannot finish reads as a build
+        # that had nothing to say.
+        #
+        # Raised AFTER the drain reading AND the pacer's own counters are on the row, so the two
+        # facts that say WHY it never finished -- how long was waited, and how much the pacer
+        # actually delivered -- ship in the same row as the failure. `CellRunner.run` catches
+        # this, records `failure`, dumps the diagnostics and keeps the cell as a first-class
+        # incomplete result; the rung then scores INCOMPLETE, which is exactly how this harness
+        # reports a build that died at 500K. The censuses below are not taken, because a census of
+        # a thread that is still growing describes nothing that was measured.
+        if not drained.get("finished"):
+            raise RuntimeError(
+                f"the reply never finished: {drained.get('reason') or 'the run was still going'} "
+                f"({drained.get('drain_ms')}ms waited, {drained.get('expected_ms')}ms expected)"
+            )
         row["census_after"] = dom_signature(page)
         row["cdp"] = cdp_counters(before_metrics, cdp_metrics(s.ctx.cdp))
 
