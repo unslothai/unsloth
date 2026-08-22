@@ -546,6 +546,8 @@ def test_a_null_probe_field_is_the_ordinary_scorable_case(tmp_path):
     assert pooled["message_menu.open_close_ms"]
     pooled, _ = F.load([payload(tmp_path / "absent", "clean", [(1000.0, 900.0)] * 4)])
     assert pooled["message_menu.open_close_ms"]
+
+
 def test_the_composer_click_does_not_set_the_frame_floor(tmp_path):
     """The floor table pools the cell's windows too. An 11 s `setup:composer_click` -- almost all
     of it Playwright's actionability check running on the page's main thread -- would become this
