@@ -39,6 +39,8 @@ type OpeningFence = {
   info: string;
   /** The block after the opening line. */
   body: string;
+  /** The opener's own indentation, which every content line is measured against. */
+  indent: number;
 };
 
 /**
@@ -72,7 +74,32 @@ function openingFence(content: string): OpeningFence | null {
   // `features/chat/artifacts/html-fences` already spells the same rule.
   if (char === "`" && info.includes("`")) return null;
   const body = lineEnd === -1 ? "" : content.slice(lineEnd + 1);
-  return { marker: char.repeat(run), info, body };
+  return { marker: char.repeat(run), info, body, indent: i };
+}
+
+/**
+ * The body with the opener's indentation taken off each line.
+ *
+ * "If the leading code fence is indented N spaces, then up to N spaces of
+ * indentation are removed from each line of the content" (CommonMark 0.31.2).
+ * UP TO: a line indented less than the opener loses only what it has, and a line
+ * indented more keeps the remainder, which is the code's own structure.
+ *
+ * Recognising the indent when opening the fence and then not removing it is the
+ * half of the rule that shows. The rendered block reads `x = 1`, the degraded
+ * one reads `   x = 1`, and a reader who copies that into a file gets an
+ * IndentationError from text their model never wrote. `extractHtmlFences`
+ * already applies the same rule to the same construct.
+ */
+function stripIndent(body: string, indent: number): string {
+  if (indent === 0 || body === "") return body;
+  const lines = body.split("\n");
+  for (let n = 0; n < lines.length; n += 1) {
+    let take = 0;
+    while (take < indent && lines[n][take] === " ") take += 1;
+    lines[n] = lines[n].slice(take);
+  }
+  return lines.join("\n");
 }
 
 /**
@@ -112,7 +139,8 @@ export function markdownBlockFallback(content: string): MarkdownBlockFallback {
     return { text: content, language: null, fenced: false };
   }
   const language = open.info.trim().split(/\s+/)[0] || null;
-  return { text: stripClosingFence(open.body, open.marker), language, fenced: true };
+  const body = stripClosingFence(open.body, open.marker);
+  return { text: stripIndent(body, open.indent), language, fenced: true };
 }
 
 /**

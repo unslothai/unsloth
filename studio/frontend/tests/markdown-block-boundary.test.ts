@@ -213,6 +213,39 @@ test("a tilde fence may carry backticks in its info string", () => {
   assert.equal(fallback.language, "py`ok");
 });
 
+test("an indented fence loses the opener's indentation, as the renderer does", () => {
+  // "If the leading code fence is indented N spaces, then up to N spaces of
+  // indentation are removed from each line of the content" (CommonMark 0.31.2),
+  // and the parser agrees: "   ```python\n   x = 1\n   ```" is code(value="x = 1").
+  // Leaving it on gives the reader text their model did not write, and pasting
+  // it into a file is an IndentationError.
+  const fallback = markdownBlockFallback("   ```python\n   x = 1\n   ```");
+
+  assert.equal(fallback.text, "x = 1");
+  assert.equal(fallback.language, "python");
+  assert.equal(fallback.fenced, true);
+});
+
+test("only the opener's own indentation comes off, never the code's", () => {
+  // UP TO N. A line indented deeper than the opener keeps the remainder, which
+  // in Python is the program, and a line indented less loses only what it has.
+  assert.equal(
+    markdownBlockFallback("  ```py\n  def f():\n      return 1\n  ```").text,
+    "def f():\n    return 1",
+    "an indented fence lost the body's own indentation, so the code changed meaning",
+  );
+  assert.equal(
+    markdownBlockFallback("   ```py\nx = 1\n   ```").text,
+    "x = 1",
+    "a content line shallower than the opener was over-stripped",
+  );
+  assert.equal(
+    markdownBlockFallback("```py\n    x = 1\n```").text,
+    "    x = 1",
+    "an unindented fence must not strip anything at all",
+  );
+});
+
 test("a block with content never degrades to nothing", () => {
   for (const content of [
     "```python\nx = 1\n```",
