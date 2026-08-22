@@ -118,9 +118,7 @@ UNAIDED_WINDOW_KINDS: frozenset[str] = frozenset({"gap", "stream"})
 ATTEMPT_ROW_TYPES: frozenset[str] = frozenset({"cell", "action", "window"})
 
 
-def latest_attempt_rows(
-    records: Sequence[Mapping[str, Any]],
-) -> list[Mapping[str, Any]]:
+def latest_attempt_rows(records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     """Drop the rows of a SUPERSEDED attempt at a cell, keeping every other row untouched.
 
     `--resume` appends to the payload it is continuing and re-runs the cells that DID NOT

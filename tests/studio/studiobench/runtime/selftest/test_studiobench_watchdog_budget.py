@@ -45,7 +45,11 @@ def _armed_deadline(monkeypatch, tmp_path, argv):
 
     seen: list[float] = []
 
-    def _capture(deadline_s, label = "studiobench", log = print):
+    def _capture(
+        deadline_s,
+        label = "studiobench",
+        log = print,
+    ):
         seen.append(float(deadline_s))
         return _FakeWatchdog()
 
@@ -80,10 +84,14 @@ def test_an_attached_run_adds_no_install_budget(monkeypatch, tmp_path):
         monkeypatch,
         tmp_path,
         [
-            "--tier", "fast",
-            "--attach", "http://127.0.0.1:5401",
-            "--attach-b", "http://127.0.0.1:5402",
-            "--ab", "fix",
+            "--tier",
+            "fast",
+            "--attach",
+            "http://127.0.0.1:5401",
+            "--attach-b",
+            "http://127.0.0.1:5402",
+            "--ab",
+            "fix",
         ],
     )
     assert deadline == cli.TIER_BUDGET_S["fast"] * 3
