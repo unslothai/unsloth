@@ -1476,6 +1476,12 @@ class InferenceOrchestrator:
                     raise Exception(error)
 
         except Exception as exc:
+            # cancel_load drops this marker before tearing the worker down, so if
+            # it's already gone the cancel owns the worker. A Stop during a failing
+            # load used to send both threads into _shutdown_subprocess; cancel_load
+            # nulls _cmd_queue at the end of its teardown, and the load thread's
+            # later put() replaced the real timeout with AttributeError.
+            cancelled = model_name not in self.loading_models
             self.loading_models.discard(model_name)
             from utils.transformers_version import SidecarSwapInProgress
 
@@ -1486,6 +1492,18 @@ class InferenceOrchestrator:
                 raise
             self.active_model_name = None
             self.models.clear()
+            # An inactivity timeout waiting for "loaded" (and other post-spawn
+            # failures) used to leave the worker alive: a still-running
+            # causal-conv1d install kept pip/nvcc and GPU memory after Studio
+            # had already reported the load failed (#9398). Stall retries already
+            # tear the child down; do the same for every other failed load, unless
+            # cancel_load already owns that teardown. unload_model wraps its own
+            # teardown the same way, for the same reason.
+            if not cancelled:
+                try:
+                    self._shutdown_subprocess(timeout = 5)
+                except Exception as teardown_exc:
+                    logger.warning("Could not shut the failed load's worker down: %s", teardown_exc)
             raise
 
     def cancel_load(self, model_name: str) -> bool:
