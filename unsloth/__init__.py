@@ -1564,3 +1564,6 @@ else:
                 torch.cuda.empty_cache()
         except Exception:
             pass
+
+    # Re-export for direct access
+    from .trainer import MuonConfig, _MuonAdamWChained
