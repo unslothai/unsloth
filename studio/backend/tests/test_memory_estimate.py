@@ -1008,3 +1008,153 @@ class TestDeviceCount:
         assert ri._guard_device_count([0, 1, 2], None, tensor_parallel = False) == 3
         # Automatic placement lands on one card until the fit says otherwise.
         assert ri._guard_device_count(None, None, tensor_parallel = False) == 1
+
+
+# A hybrid-Mamba target: the recurrent state the verification rollback copies, and the
+# only shape where the draft depth changes the number the panel prints.
+_HYBRID_FIELDS = {
+    **_GQA_FIELDS,
+    "block_count": 24,
+    "full_attention_interval": 4,
+    "ssm.inner_size": 4096,
+    "ssm.state_size": 128,
+    "ssm.group_count": 8,
+    "ssm.conv_kernel": 4,
+}
+
+
+class TestBlankDraftDepth:
+    """Draft Tokens left blank is the launcher's default, not zero.
+
+    ``_build_speculative_flags`` emits its own depth when the field is unset, and
+    ``_estimate_mtp_overhead_bytes`` scales the Hybrid-Mamba rollback state by it, so
+    pricing zero dropped that allocation from both the total and the GPU figure.
+    """
+
+    @pytest.fixture
+    def hybrid(self, tmp_path) -> str:
+        return _write_gguf(tmp_path, "qwen3next", _HYBRID_FIELDS, name = "hybrid.gguf")
+
+    @pytest.fixture
+    def config(self, hybrid, tmp_path):
+        drafter = tmp_path / "mtp-hybrid.gguf"
+        drafter.write_bytes(_make_gguf_bytes("qwen3", {
+            "general.architecture": "qwen3",
+            **{f"qwen3.{k}": v for k, v in _GQA_FIELDS.items()},
+        }))
+        return SimpleNamespace(
+            identifier = "local/hybrid",
+            gguf_file = hybrid,
+            is_gguf = True,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = str(drafter),
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+        )
+
+    @pytest.fixture(autouse = True)
+    def _fixed_files(self, config, monkeypatch):
+        drafter_bytes = os.path.getsize(config.gguf_mtp_file)
+
+        def _files(cfg, *, llama_extra_args = None, **kw):
+            pinned = _draft_on_cpu(list(llama_extra_args or ()))
+            return 1.0 + (0.0 if pinned else drafter_bytes / 1024**3)
+
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", _files)
+
+    def _priced(self, config, hybrid, **kw):
+        return ri._gguf_memory_breakdown(config, hybrid, n_ctx = 8192, n_parallel = 4, **kw)
+
+    def test_blank_prices_the_launch_default_not_zero(self, config, hybrid):
+        # THE regression: the UI sends null for a blank field, which used to reach
+        # _estimate_mtp_overhead_bytes as a depth of 0 and cost the rollback copies.
+        zero = self._priced(config, hybrid, spec_draft_n_max = 0)
+        one = self._priced(config, hybrid, spec_draft_n_max = 1)
+        blank = self._priced(config, hybrid, spec_draft_n_max = None)
+        per_copy = one.total_bytes - zero.total_bytes
+        assert per_copy > 0, "fixture is not hybrid-Mamba; the test would prove nothing"
+        assert blank.total_bytes > zero.total_bytes
+        # 2 on a GPU box, 3 without: the two platform defaults _build_speculative_flags
+        # emits. Not pinned to one, so this passes on a runner with or without a card.
+        assert (blank.total_bytes - zero.total_bytes) // per_copy in (2, 3)
+        # The drafter sits on the GPU here, so the fit verdict moves with it too.
+        assert blank.gpu_bytes > zero.gpu_bytes
+
+    def test_an_explicit_depth_still_wins(self, config, hybrid):
+        zero = self._priced(config, hybrid, spec_draft_n_max = 0)
+        one = self._priced(config, hybrid, spec_draft_n_max = 1)
+        per_copy = one.total_bytes - zero.total_bytes
+        five = self._priced(config, hybrid, spec_draft_n_max = 5)
+        assert five.total_bytes - zero.total_bytes == 5 * per_copy
+
+    def test_an_extras_depth_wins_over_a_blank_field(self, config, hybrid):
+        # Last-wins at launch, so the extras flag is what the child really drafts at.
+        zero = self._priced(config, hybrid, spec_draft_n_max = 0)
+        one = self._priced(config, hybrid, spec_draft_n_max = 1)
+        per_copy = one.total_bytes - zero.total_bytes
+        pinned = self._priced(
+            config,
+            hybrid,
+            spec_draft_n_max = None,
+            llama_extra_args = ["--spec-draft-n-max", "5"],
+        )
+        assert pinned.total_bytes - zero.total_bytes == 5 * per_copy
+
+    def test_depth_resolution_follows_the_launch_precedence(self, config):
+        drafter = config.gguf_mtp_file
+        assert ri._estimate_draft_n_max(config, drafter, requested = 7, extras = []) == 7
+        # Extras beat the field, and an explicit zero is honoured as "draft nothing".
+        assert (
+            ri._estimate_draft_n_max(
+                config, drafter, requested = 7, extras = ["--draft-max", "4"]
+            )
+            == 4
+        )
+        assert ri._estimate_draft_n_max(config, drafter, requested = 0, extras = []) == 0
+        assert ri._estimate_draft_n_max(config, drafter, requested = None, extras = []) in (2, 3)
+        # DSpark launches at 3 regardless of the card, so it is priced at 3.
+        dspark = SimpleNamespace(gguf_dspark_file = "/tmp/dspark-model.gguf")
+        assert (
+            ri._estimate_draft_n_max(
+                dspark, "/tmp/dspark-model.gguf", requested = None, extras = []
+            )
+            == 3
+        )
+
+
+class TestQuantSubdirCompanions:
+    """A cached repo that files each quant under its own directory.
+
+    ``snapshot/UD-Q4_K_XL/model-00001-of-00002.gguf`` with ``mmproj-*.gguf`` and the
+    drafter at ``snapshot/`` is the standard Hugging Face layout for any quant over the
+    per-file limit. Passing the weight's own parent as ``search_root`` gave the
+    detectors nothing to walk up to, so the projector went uncounted.
+    """
+
+    def test_a_projector_at_the_snapshot_root_is_found(self, tmp_path):
+        quant_dir = tmp_path / "UD-Q4_K_XL"
+        quant_dir.mkdir()
+        weight = _write_gguf(
+            quant_dir, "qwen3", _GQA_FIELDS, name = "model-UD-Q4_K_XL-00001-of-00002.gguf"
+        )
+        projector = _write_gguf(tmp_path, "clip", {"block_count": 2}, name = "mmproj-F16.gguf")
+        localized = ri._localized_estimate_config(_repo_config(is_vision = True), weight)
+        assert localized.gguf_mmproj_file == projector
+
+    def test_a_drafter_at_the_snapshot_root_is_found(self, tmp_path):
+        quant_dir = tmp_path / "Q4_K_M"
+        quant_dir.mkdir()
+        weight = _write_gguf(quant_dir, "qwen3", _GQA_FIELDS, name = "model-Q4_K_M.gguf")
+        drafter = _write_gguf(tmp_path, "qwen3", _GQA_FIELDS, name = "mtp-model.gguf")
+        localized = ri._localized_estimate_config(_repo_config(), weight)
+        assert localized.gguf_mtp_file == drafter
+
+    def test_a_flat_layout_still_scans_only_the_weights_directory(self, tmp_path):
+        # The widened root must not reach a sibling model's projector: the quant check
+        # is what keeps a non-quant directory name from being walked out of.
+        model_dir = tmp_path / "some-model"
+        model_dir.mkdir()
+        weight = _write_gguf(model_dir, "qwen3", _GQA_FIELDS, name = "model-Q4_K_M.gguf")
+        _write_gguf(tmp_path, "clip", {"block_count": 2}, name = "mmproj-F16.gguf")
+        localized = ri._localized_estimate_config(_repo_config(is_vision = True), weight)
+        assert localized.gguf_mmproj_file is None

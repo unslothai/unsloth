@@ -7771,6 +7771,7 @@ def _localized_estimate_config(config: ModelConfig, gguf_path: str) -> ModelConf
     if main and Path(main).is_file():
         return config
     from utils.models.model_config import (
+        _local_gguf_companion_search_root,
         detect_dflash_file,
         detect_dspark_file,
         detect_mmproj_file,
@@ -7779,7 +7780,12 @@ def _localized_estimate_config(config: ModelConfig, gguf_path: str) -> ModelConf
 
     local = replace(config, gguf_file = gguf_path)
     # Companions sit beside the weight, or one level up in the quant-subdir layout.
-    search_root = str(Path(gguf_path).parent)
+    # Derived by the load path's own helper rather than by taking the weight's parent:
+    # a cached repo that files each quant under its own directory (snapshot/UD-Q4_K_XL/
+    # model-00001-of-00002.gguf) keeps the projector and the drafter at the snapshot
+    # root, and a search_root equal to start_dir gives the detectors nothing to walk up
+    # to, so the estimate silently dropped a 1-2 GB projector and the drafter's runtime.
+    search_root = _local_gguf_companion_search_root(gguf_path, gguf_path)
     try:
         if getattr(local, "is_vision", False) and not local.gguf_mmproj_file:
             local.gguf_mmproj_file = detect_mmproj_file(gguf_path, search_root)
@@ -7886,6 +7892,42 @@ def _charged_drafter_path(config: ModelConfig, drafter_bytes: int) -> Optional[s
     return None
 
 
+def _estimate_draft_n_max(
+    config: ModelConfig,
+    drafter_path: str,
+    *,
+    requested: Optional[int],
+    extras: list[str],
+) -> int:
+    """The draft depth the launch would really run at, for a blank Draft Tokens field.
+
+    Blank is not zero. ``_build_speculative_flags`` emits its own default when the
+    field is unset (3 for DSpark, else 2 with a GPU and 3 without), and
+    ``_estimate_mtp_overhead_bytes`` multiplies the Hybrid-Mamba rollback state by
+    this number, so pricing zero dropped that whole allocation -- the dominant hidden
+    cost on a hybrid target at several parallel slots -- from both total and GPU bytes.
+
+    Same precedence as the launch and as the loader's own budget: an extras depth wins
+    (last-wins at launch), then the request field, then the platform default. An
+    explicit 0 is honoured, since that is a real request to draft nothing.
+    """
+    from core.inference.llama_cpp import _extra_args_spec_draft_n_max
+
+    depth = _extra_args_spec_draft_n_max(extras)
+    if depth is None:
+        depth = requested
+    if depth is not None:
+        return max(0, int(depth))
+    dspark = getattr(config, "gguf_dspark_file", None)
+    if dspark and str(dspark) == drafter_path:
+        return 3
+    try:
+        gpus = LlamaCppBackend._effective_gpu_count() > 0
+    except Exception:
+        gpus = False
+    return 2 if gpus else 3
+
+
 def _gguf_memory_breakdown(
     config: ModelConfig,
     gguf_path: str,
@@ -7986,7 +8028,9 @@ def _gguf_memory_breakdown(
         drafter_runtime_bytes = (
             probe._estimate_mtp_overhead_bytes(
                 runtime.n_ctx,
-                spec_draft_n_max = spec_draft_n_max or 0,
+                spec_draft_n_max = _estimate_draft_n_max(
+                    config, drafter_path, requested = spec_draft_n_max, extras = extras
+                ),
                 draft_cache_type_k = spec_draft_cache_type,
                 draft_cache_type_v = spec_draft_cache_type,
                 drafter_path = drafter_path,
