@@ -697,11 +697,28 @@ class TracingInstrument:
         )
         try:
             self.capture.start()
-            self.metrics = MetricsWindow(self.cdp)
-            self.metrics.open()
         except Exception:
+            # Nothing was started, so there is nothing to end.
             self.capture = None
             self.metrics = None
+        else:
+            # THE METRICS PROBE MAY NOT TAKE THE TRACE WITH IT. `start_cell` says what losing the
+            # probe is meant to cost -- "the cross-check and nothing else" -- and dropping a
+            # STARTED capture here cost the whole run instead. Tracing is per-browser: with
+            # `self.capture` cleared, `close()` returns early and never sends `Tracing.end`,
+            # `detach()` has nothing to stop, and the next window's `Tracing.start` fails with
+            # "Tracing has already been started (possibly in another tab)" -- so every remaining
+            # window reports `tracing did not start`, while the abandoned session keeps recording
+            # into the browser underneath the numbers this tool is taking. One failed
+            # `Performance.getMetrics` (the domain is enabled under a bare `except` in
+            # `start_cell`, so it can be off) was enough. `close()` and `_analyse` already guard
+            # every use of `self.metrics` with `is not None`, so the cross-check is the only
+            # thing that goes.
+            try:
+                self.metrics = MetricsWindow(self.cdp)
+                self.metrics.open()
+            except Exception:
+                self.metrics = None
         self._overhead_ms += (time.perf_counter() - t0) * 1000.0
 
     def close(self, window: Any) -> dict | None:
