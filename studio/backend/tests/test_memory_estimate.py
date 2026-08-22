@@ -1038,10 +1038,15 @@ class TestBlankDraftDepth:
     @pytest.fixture
     def config(self, hybrid, tmp_path):
         drafter = tmp_path / "mtp-hybrid.gguf"
-        drafter.write_bytes(_make_gguf_bytes("qwen3", {
-            "general.architecture": "qwen3",
-            **{f"qwen3.{k}": v for k, v in _GQA_FIELDS.items()},
-        }))
+        drafter.write_bytes(
+            _make_gguf_bytes(
+                "qwen3",
+                {
+                    "general.architecture": "qwen3",
+                    **{f"qwen3.{k}": v for k, v in _GQA_FIELDS.items()},
+                },
+            )
+        )
         return SimpleNamespace(
             identifier = "local/hybrid",
             gguf_file = hybrid,
@@ -1056,7 +1061,12 @@ class TestBlankDraftDepth:
     def _fixed_files(self, config, monkeypatch):
         drafter_bytes = os.path.getsize(config.gguf_mtp_file)
 
-        def _files(cfg, *, llama_extra_args = None, **kw):
+        def _files(
+            cfg,
+            *,
+            llama_extra_args = None,
+            **kw,
+        ):
             pinned = _draft_on_cpu(list(llama_extra_args or ()))
             return 1.0 + (0.0 if pinned else drafter_bytes / 1024**3)
 
@@ -1105,19 +1115,14 @@ class TestBlankDraftDepth:
         assert ri._estimate_draft_n_max(config, drafter, requested = 7, extras = []) == 7
         # Extras beat the field, and an explicit zero is honoured as "draft nothing".
         assert (
-            ri._estimate_draft_n_max(
-                config, drafter, requested = 7, extras = ["--draft-max", "4"]
-            )
-            == 4
+            ri._estimate_draft_n_max(config, drafter, requested = 7, extras = ["--draft-max", "4"]) == 4
         )
         assert ri._estimate_draft_n_max(config, drafter, requested = 0, extras = []) == 0
         assert ri._estimate_draft_n_max(config, drafter, requested = None, extras = []) in (2, 3)
         # DSpark launches at 3 regardless of the card, so it is priced at 3.
         dspark = SimpleNamespace(gguf_dspark_file = "/tmp/dspark-model.gguf")
         assert (
-            ri._estimate_draft_n_max(
-                dspark, "/tmp/dspark-model.gguf", requested = None, extras = []
-            )
+            ri._estimate_draft_n_max(dspark, "/tmp/dspark-model.gguf", requested = None, extras = [])
             == 3
         )
 

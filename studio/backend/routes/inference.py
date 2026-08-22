@@ -7893,11 +7893,7 @@ def _charged_drafter_path(config: ModelConfig, drafter_bytes: int) -> Optional[s
 
 
 def _estimate_draft_n_max(
-    config: ModelConfig,
-    drafter_path: str,
-    *,
-    requested: Optional[int],
-    extras: list[str],
+    config: ModelConfig, drafter_path: str, *, requested: Optional[int], extras: list[str]
 ) -> int:
     """The draft depth the launch would really run at, for a blank Draft Tokens field.
 
