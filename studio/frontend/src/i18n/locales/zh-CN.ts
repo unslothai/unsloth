@@ -558,6 +558,7 @@ export const zhCN = {
         embeddingModel: "Embedding 模型",
         embeddingModelDescription:
           "用于为文档建立索引和搜索的 Hugging Face 模型或本地路径。默认值为 {defaultModel}。",
+        searchPlaceholder: "搜索嵌入模型",
         reindexWarning:
           "仅影响新建立索引的文档。更改模型后请重新上传已有文档。",
         emptyError: "请输入 Hugging Face 模型 ID 或本地路径。",
