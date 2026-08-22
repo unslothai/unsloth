@@ -77,8 +77,13 @@ on:
       - 'unsloth/__init__.py'
       - 'unsloth/_gpu_init.py'
       - 'studio/backend/utils/hardware/**'
+      - 'studio/backend/core/training/training.py'
       - 'studio/backend/core/training/worker.py'
       - 'studio/backend/core/inference/mlx_inference.py'
+      - 'unsloth-cli.py'
+      - 'unsloth_cli/_inference.py'
+      - 'unsloth_cli/commands/train.py'
+      - 'unsloth_cli/tests/test_train_mlx_ddp_launch.py'
       # The capability verdict is decided across these three: hardware/** measures it,
       # mlx_repair.py says whether a self-heal can still overturn it, and main.py holds
       # it back while one can. main.py is the studio's front door and is edited often,
@@ -109,6 +114,10 @@ on:
       - 'studio/backend/utils/hardware/**'
       - 'studio/backend/core/training/worker.py'
       - 'studio/backend/core/inference/mlx_inference.py'
+      - 'unsloth-cli.py'
+      - 'unsloth_cli/_inference.py'
+      - 'unsloth_cli/commands/train.py'
+      - 'unsloth_cli/tests/test_train_mlx_ddp_launch.py'
       - 'studio/backend/main.py'
       - 'studio/backend/utils/mlx_repair.py'
       - 'tests/studio/test_mlx_training_worker_behaviors.py'
@@ -321,6 +330,14 @@ jobs:
         run: |
           python -m pytest -v --tb=short \
             tests/studio/test_mlx_training_worker_behaviors.py
+
+      - name: MLX CLI DDP tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/studio/backend
+          UNSLOTH_COMPILE_DISABLE: '1'
+        run: |
+          python -m pytest -v --tb=short \
+            unsloth_cli/tests/test_train_mlx_ddp_launch.py
 
       # Real MLX training + inference smoke test. Trains
       # unsloth/gemma-3-270m-it for 7 deterministic LoRA steps

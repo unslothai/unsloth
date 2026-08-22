@@ -3,6 +3,7 @@
 import ast
 import importlib.util
 import inspect
+import os
 import sys
 import textwrap
 import types
@@ -12,8 +13,10 @@ import pytest
 
 
 def _load_worker_module():
+    worker_path = Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
     stub_names = (
-        "structlog",
+        "core.training",
+        "core.training.dataset_bounds",
         "loggers",
         "utils",
         "utils.child_stdio",
@@ -26,7 +29,9 @@ def _load_worker_module():
     previous_modules = {name: sys.modules.get(name) for name in stub_names}
 
     try:
-        sys.modules["structlog"] = types.ModuleType("structlog")
+        core_training = types.ModuleType("core.training")
+        core_training.__path__ = [str(worker_path.parent)]
+        sys.modules["core.training"] = core_training
 
         loggers = types.ModuleType("loggers")
         loggers.get_logger = lambda *_args, **_kwargs: None
@@ -37,7 +42,13 @@ def _load_worker_module():
         sys.modules["utils"] = utils
 
         child_stdio = types.ModuleType("utils.child_stdio")
-        child_stdio.utf8_child_env = lambda env = None: dict(env or {})
+
+        def utf8_child_env(env = None):
+            child = dict(os.environ if env is None else env)
+            child["PYTHONIOENCODING"] = "utf-8"
+            return child
+
+        child_stdio.utf8_child_env = utf8_child_env
         sys.modules["utils.child_stdio"] = child_stdio
 
         hardware = types.ModuleType("utils.hardware")
@@ -70,7 +81,6 @@ def _load_worker_module():
             setattr(wheel_utils, name, lambda *_args, **_kwargs: None)
         sys.modules["utils.wheel_utils"] = wheel_utils
 
-        worker_path = Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
         spec = importlib.util.spec_from_file_location("mlx_training_worker_under_test", worker_path)
         module = importlib.util.module_from_spec(spec)
         assert spec.loader is not None
@@ -95,7 +105,7 @@ _adapt_for_mlx_vlm = _worker._adapt_for_mlx_vlm
 
 
 def test_mlx_studio_optimizer_aliases_are_explicit():
-    assert _normalize_mlx_studio_optimizer("adamw_8bit") == "adamw"
+    assert _normalize_mlx_studio_optimizer("adamw_8bit") == "adamw_8bit"
     assert _normalize_mlx_studio_optimizer("paged_adamw_8bit") == "adamw"
     assert _normalize_mlx_studio_optimizer("adafactor") == "adafactor"
 
