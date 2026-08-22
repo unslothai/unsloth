@@ -508,6 +508,38 @@ def test_a_declared_template_is_fetched(tmp_path, monkeypatch):
     assert res.text == "<p/>" and res.mime_type == "text/html;profile=mcp-app"
 
 
+def test_concurrent_cold_reads_share_one_discovery(tmp_path, monkeypatch):
+    """Reopening a stored conversation mounts every widget in it at once. On a cold
+    cache each frame would otherwise probe: one stdio subprocess per widget."""
+    from core.inference import mcp_client
+
+    _reset_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    mcp_servers_db.create_server(id = "s1", display_name = "Sys", url = "https://x/mcp", is_enabled = True)
+    import routes.mcp_servers as routes_mcp
+
+    probes = []
+
+    async def slow_list_tools(url, headers, timeout, use_oauth):
+        probes.append(url)
+        # Long enough that every waiter is already inside the route.
+        await asyncio.sleep(0.05)
+        return [_DASH_TOOL]
+
+    monkeypatch.setattr(routes_mcp, "list_tools_async", slow_list_tools)
+    monkeypatch.setattr(routes_mcp, "_discovery_locks", {})
+
+    server = mcp_servers_db.get_server("s1")
+
+    async def race():
+        return await asyncio.gather(*(routes_mcp._declared_ui_resources(server) for _ in range(6)))
+
+    results = asyncio.run(race())
+    assert len(probes) == 1, f"one probe should have warmed all six reads, saw {len(probes)}"
+    # And every waiter still gets the declaration, not an empty map.
+    assert all(r == {"dashboard": UI} for r in results)
+
+
 def test_a_cold_cache_rediscovers_the_declaration(tmp_path, monkeypatch):
     """Reopening a stored chat never runs the chat path, so after a restart the
     declaration cache is empty and the widget would 404 without a rediscovery."""

@@ -432,6 +432,20 @@ def _row_still_matches(server_id: str, server: dict) -> bool:
     )
 
 
+# One discovery per server at a time. Reopening a stored conversation mounts every
+# widget in it at once, and on a cold cache each frame's request would otherwise
+# see None and probe: for a stdio server that is one subprocess per widget, and
+# for a remote one a burst of identical discovery traffic.
+_discovery_locks: dict = {}
+
+
+def _discovery_lock(server_id: str):
+    lock = _discovery_locks.get(server_id)
+    if lock is None:
+        lock = _discovery_locks[server_id] = asyncio.Lock()
+    return lock
+
+
 async def _declared_ui_resources(server: dict) -> dict:
     """tool name -> ui:// template, from this server's discovered tools. The uri
     arrives from the browser, so only what the server declared is fetchable.
@@ -444,27 +458,39 @@ async def _declared_ui_resources(server: dict) -> dict:
     server_id = server["id"]
     tools = get_cached_tools(server_id)
     if tools is None and not in_failure_cooloff(server_id):
-        use_oauth = bool(server.get("use_oauth"))
-        try:
-            probed = await list_tools_async(
-                url = server["url"],
-                headers = parse_server_headers(server),
-                timeout = probe_timeout(server["url"], use_oauth),
-                use_oauth = use_oauth,
-            )
-        except Exception:  # noqa: BLE001 - a probe failure reads as "nothing declared"
-            probed = None
-            if _row_still_matches(server_id, server):
-                record_probe_failure(server_id, use_oauth)
-        else:
-            if _row_still_matches(server_id, server):
-                cache_tools(server_id, probed)
-            else:
-                # The row moved while the probe was awaiting, so these declarations
-                # belong to the old endpoint and must not authorize a read.
-                probed = None
-        tools = probed
+        async with _discovery_lock(server_id):
+            tools = await _discover_ui_tools(server, server_id)
     return ui_resource_uris_for_tools(tools or [])
+
+
+async def _discover_ui_tools(server: dict, server_id: str):
+    """One probe, under the server's lock. Re-reads the cache first: the request
+    that waited here is usually behind one that just warmed it."""
+    from core.inference.mcp_client import get_cached_tools, in_failure_cooloff
+
+    tools = get_cached_tools(server_id)
+    if tools is not None or in_failure_cooloff(server_id):
+        return tools
+    use_oauth = bool(server.get("use_oauth"))
+    try:
+        probed = await list_tools_async(
+            url = server["url"],
+            headers = parse_server_headers(server),
+            timeout = probe_timeout(server["url"], use_oauth),
+            use_oauth = use_oauth,
+        )
+    except Exception:  # noqa: BLE001 - a probe failure reads as "nothing declared"
+        probed = None
+        if _row_still_matches(server_id, server):
+            record_probe_failure(server_id, use_oauth)
+    else:
+        if _row_still_matches(server_id, server):
+            cache_tools(server_id, probed)
+        else:
+            # The row moved while the probe was awaiting, so these declarations
+            # belong to the old endpoint and must not authorize a read.
+            probed = None
+    return probed
 
 
 def _config_check_for(server_id: str, url: str, headers: Optional[dict]):
