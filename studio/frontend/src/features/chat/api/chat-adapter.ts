@@ -6842,9 +6842,14 @@ export function createOpenAIStreamAdapter(
           projectRagEnabled ||
           messagesUsePrivateContent(messages) ||
           toolCallParts.some((part) => part.toolName === "search_knowledge_base");
-        const toolCallsNeedApproval =
-          useChatRuntimeStore.getState().confirmToolCalls &&
-          useChatRuntimeStore.getState().permissionMode === "ask";
+        // This run's own values, destructured from the runtime it started with,
+        // not the store as it stands now. Both are per-chat, and a run finishing
+        // after the user moved to a chat on "auto" would read that chat's
+        // permission level and look images up for an answer whose own chat had
+        // asked to be consulted first. (searchImages stays a live read: it
+        // describes the installation, so navigating cannot change it, and a user
+        // who has just switched it off should not get one last lookup.)
+        const toolCallsNeedApproval = confirmToolCalls && permissionMode === "ask";
         if (
           incompleteReason === null &&
           !isExternalRequest &&

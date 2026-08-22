@@ -794,3 +794,27 @@ test("the run flushes those settings before it hydrates and sends", () => {
   // Awaited, not fired and forgotten, or the run races the patch it just sent.
   assert.match(adapterSource.slice(start - 6, start + 34), /await flushPendingChatSettings\(\);/);
 });
+
+test("the automatic lookup reads this run's approval level, not the open chat's", () => {
+  const gate = adapterSource.slice(
+    adapterSource.indexOf("const toolCallsNeedApproval ="),
+    adapterSource.indexOf("const subjects = missingListSubjects("),
+  );
+  assert.ok(gate.length > 0, "the automatic-lookup gate moved");
+  // confirmToolCalls and permissionMode are per-chat, and a background run can
+  // finish after the user has opened a chat on "auto": reading the store here
+  // would look images up for an answer whose own chat asked to be consulted.
+  assert.match(
+    gate,
+    /const toolCallsNeedApproval = confirmToolCalls && permissionMode === "ask";/,
+  );
+  assert.doesNotMatch(gate, /getState\(\)\.confirmToolCalls/);
+  assert.doesNotMatch(gate, /getState\(\)\.permissionMode/);
+  // Both come out of the runtime the run captured before it started.
+  const captured = adapterSource.slice(
+    adapterSource.indexOf("let runtime = useChatRuntimeStore.getState();"),
+    adapterSource.indexOf("const toolCallsNeedApproval ="),
+  );
+  assert.match(captured, /\n\s*confirmToolCalls,\n/);
+  assert.match(captured, /\n\s*permissionMode,\n/);
+});
