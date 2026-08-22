@@ -2788,6 +2788,12 @@ _APPLE_UNIFIED_MEMORY_FRACTION = 0.85
 _FIT_MIN_CTX = 4096
 _FIT_FLOOR_MIN_CTX = 256
 
+# Auto only reaches this path when no discrete-GPU subset can hold the model.
+# llama.cpp must offload layers to host RAM either way, so prefer a context that
+# remains useful for chat. Separate from _FIT_MIN_CTX: that value is also a search
+# and Apple unified-memory safety floor.
+_AUTO_OFFLOAD_CTX = 8192
+
 # How far amd-smi's total VRAM may sit from HIP's before the two are reporting
 # different memory scopes rather than one pool (an APU carve-out against the GTT
 # pool, a partition against the whole card). Same 10% margin
@@ -17452,10 +17458,10 @@ class LlamaCppBackend:
                                 use_fit = False
                                 break
                             else:
-                                # Native ctx doesn't fit. Drop to 4096 and
-                                # re-check before --fit on: a model overflowing
-                                # at 131k may pin fine with a 4096 KV (#5106).
-                                effective_ctx = min(4096, effective_ctx)
+                                # No discrete-GPU subset holds the model at a fitted
+                                # context. Prefer a useful chat context before
+                                # handing placement to --fit on and host offload.
+                                effective_ctx = min(_AUTO_OFFLOAD_CTX, effective_ctx)
                                 if effective_ctx > 0:
                                     for n_gpus in range(_auto_min_gpus, len(ranked) + 1):
                                         subset = ranked[:n_gpus]
@@ -17501,9 +17507,13 @@ class LlamaCppBackend:
                             min_gpus = _layer_min_gpus,
                         )
                         if use_fit and not explicit_ctx:
-                            # Weights don't fit on any subset; default UI to 4096
-                            # so the slider isn't on an unusable native ctx.
-                            effective_ctx = min(4096, effective_ctx) if effective_ctx > 0 else 4096
+                            # Without KV metadata, llama.cpp owns the fit. Keep the
+                            # same useful Auto default as the measured offload path.
+                            effective_ctx = (
+                                min(_AUTO_OFFLOAD_CTX, effective_ctx)
+                                if effective_ctx > 0
+                                else _AUTO_OFFLOAD_CTX
+                            )
 
                     elif _apple_budget_mib > 0 and effective_ctx > 0:
                         # No GPU on Metal: the branches above are skipped and the context

@@ -1084,6 +1084,46 @@ def test_override_route_rejects_managed_flag_and_removes(monkeypatch):
     assert "unsloth/B-GGUF" not in resp2.overrides
 
 
+def test_override_route_stores_llama_server_tuning(override_store):
+    """Load mode, draft KV dtype, checkpoints and cache RAM survive the route.
+
+    The picker has a control for each and mirrors all four, and
+    ``model_override_load_kwargs`` already applies them off a stored row, so a
+    payload that drops them leaves the setting reaching a picker load and nothing
+    else -- and the panel, which hydrates from this row, reads it back as unset.
+    """
+    _put(
+        "unsloth/B-GGUF",
+        load_mode = "mmap+mlock",
+        speculative_type = "dspark",
+        spec_draft_cache_type = "q8_0",
+        # Both meaningful at their falsy values: no checkpoints, and no cache limit.
+        ctx_checkpoints = 0,
+        cache_ram = -1,
+    )
+    stored = settings.get_model_override("unsloth/B-GGUF")
+    assert stored["load_mode"] == "mmap+mlock"
+    assert stored["spec_draft_cache_type"] == "q8_0"
+    assert stored["ctx_checkpoints"] == 0
+    assert stored["cache_ram"] == -1
+    # And they reach a load, rather than being stored where nothing reads them.
+    kwargs = settings.model_override_load_kwargs(stored, is_gguf = True)
+    assert kwargs["load_mode"] == "mmap+mlock"
+    assert kwargs["spec_draft_cache_type"] == "q8_0"
+    assert kwargs["ctx_checkpoints"] == 0
+    assert kwargs["cache_ram"] == -1
+
+
+def test_override_route_keeps_a_row_holding_only_tuning(override_store):
+    """One of the four on its own is a saved field, not an empty payload.
+
+    ``is_removal`` counts what the payload carries, so a field it did not declare
+    would read as "nothing set" and delete the model's row instead of writing it.
+    """
+    _put("unsloth/B-GGUF", cache_ram = 0)
+    assert settings.get_model_override("unsloth/B-GGUF") == {"cache_ram": 0}
+
+
 def test_model_override_rejects_zero_max_seq_length():
     # 0 is not a valid sequence length and the setter drops a falsy value, so the
     # payload must reject it at the boundary instead of accepting then discarding it.
