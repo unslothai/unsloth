@@ -463,6 +463,42 @@ def test_catalog_cached_entries_filter_non_chat_rows(monkeypatch, tmp_path):
     ]
 
 
+def test_catalog_pinned_cached_gguf_uses_the_preferred_complete_quant(monkeypatch, tmp_path):
+    from unsloth_cli._inference import ensure_studio_backend_path
+    from unsloth_cli import _model_catalog as cat
+
+    ensure_studio_backend_path()
+    from utils.models.model_config import detect_gguf_model
+
+    repo = tmp_path / "legacy" / "models--org--Multi-GGUF"
+    snapshot = repo / "snapshots" / "revision"
+    snapshot.mkdir(parents = True)
+    (snapshot / "Model-F16.gguf").write_bytes(b"f" * 1024)
+    first = snapshot / "Model-Q4_K_M-00001-of-00002.gguf"
+    first.write_bytes(b"q" * 256)
+    (snapshot / "Model-Q4_K_M-00002-of-00002.gguf").write_bytes(b"q" * 256)
+    (snapshot / "mmproj-F16.gguf").write_bytes(b"m" * 2048)
+
+    monkeypatch.setattr(
+        cat,
+        "_cached_catalog_rows",
+        lambda: (
+            [
+                {
+                    "repo_id": "org/Multi-GGUF",
+                    "cache_path": str(repo),
+                    "load_id": str(snapshot),
+                    "task": "text-generation",
+                }
+            ],
+            [],
+        ),
+    )
+
+    assert Path(detect_gguf_model(str(snapshot))).name == "Model-F16.gguf"
+    assert cat.cached_entries()[0].model == str(first)
+
+
 def test_catalog_inventory_works_without_fastapi_or_routes():
     script = """
 import builtins

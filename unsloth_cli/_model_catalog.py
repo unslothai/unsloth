@@ -146,6 +146,26 @@ def _quant_labels(repo_id: str, repo_path: str) -> str:
     return ", ".join(quants)
 
 
+def _cached_gguf_load_id(row: dict) -> str:
+    load_id = row.get("load_id") or row["repo_id"]
+    snapshot = Path(load_id)
+    try:
+        if not row.get("load_id") or not snapshot.is_dir():
+            return load_id
+        from hub.utils.gguf import list_local_gguf_variants, pick_best_gguf
+        from hub.utils.inventory_scan import complete_snapshot_variants
+
+        variants, _ = list_local_gguf_variants(str(snapshot))
+        complete = complete_snapshot_variants(str(snapshot))
+        ready = [variant for variant in variants if variant.quant in complete]
+        root = [variant for variant in ready if "/" not in variant.quant]
+        best = pick_best_gguf([variant.filename for variant in root or ready])
+        candidate = snapshot / best if best else None
+        return str(candidate) if candidate is not None and candidate.is_file() else load_id
+    except Exception:
+        return load_id
+
+
 def _cached_catalog_rows() -> tuple[list[dict], list[dict]]:
     from hub.services.models.cache_inventory import (
         _scan_cached_gguf,
@@ -183,7 +203,7 @@ def cached_entries() -> List[ModelEntry]:
                 "Downloaded",
                 row["repo_id"],
                 _quant_labels(row["repo_id"], row["cache_path"]),
-                row.get("load_id") or row["repo_id"],
+                _cached_gguf_load_id(row),
             )
         )
     for row in model_rows:
