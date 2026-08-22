@@ -33,7 +33,11 @@ class _Session:
         self.opened: list[tuple] = []
 
     @contextlib.contextmanager
-    def window(self, name, kind = "action"):
+    def window(
+        self,
+        name,
+        kind = "action",
+    ):
         self.opened.append((name, kind))
         time.sleep(TEARDOWN_S)  # the `open` hooks
         try:
@@ -43,10 +47,18 @@ class _Session:
 
 
 class _Page:
-    def wait_for_selector(self, selector, timeout = None):
+    def wait_for_selector(
+        self,
+        selector,
+        timeout = None,
+    ):
         return None
 
-    def click(self, selector, timeout = None):
+    def click(
+        self,
+        selector,
+        timeout = None,
+    ):
         time.sleep(CLICK_S)
 
     def fill(self, selector, value):
@@ -95,7 +107,11 @@ class _ProbePage(_Page):
     code blocks, and `performance.now()` is coarsened to 100 us in a page that is not
     cross-origin isolated, so a sub-100 us operation genuinely reads 0."""
 
-    def evaluate(self, expr, arg = None):
+    def evaluate(
+        self,
+        expr,
+        arg = None,
+    ):
         return 0
 
     def query_selector(self, selector):

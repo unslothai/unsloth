@@ -275,14 +275,11 @@ def test_setup_windows_are_excluded_so_the_click_does_not_become_the_worst_frame
     assert with_click["max_frame_ms"].value == pytest.approx(200.0)
     assert with_click["max_frame_ms"].value == pytest.approx(without["max_frame_ms"].value)
     assert with_click["jank_index"].value == pytest.approx(without["jank_index"].value)
-    assert with_click["time_in_jank_pct"].value == pytest.approx(
-        without["time_in_jank_pct"].value
-    )
+    assert with_click["time_in_jank_pct"].value == pytest.approx(without["time_in_jank_pct"].value)
 
 
 def test_setup_is_a_declared_window_kind():
     from studiobench.runtime.types import WINDOW_KINDS
-
     assert "setup" in WINDOW_KINDS
 
 
