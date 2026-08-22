@@ -571,6 +571,7 @@ export const ko = {
         embeddingModel: "임베딩 모델",
         embeddingModelDescription:
           "문서를 색인하고 검색하는 데 사용되는 Hugging Face 모델 또는 로컬 경로입니다. 기본값은 {defaultModel}입니다.",
+        searchPlaceholder: "임베딩 모델 검색",
         reindexWarning:
           "새로 색인되는 문서에만 적용됩니다. 모델을 변경한 후 기존 문서를 다시 업로드하세요.",
         emptyError: "Hugging Face 모델 ID 또는 로컬 경로를 입력하세요.",

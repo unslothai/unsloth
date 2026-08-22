@@ -577,6 +577,7 @@ export const ru = {
         embeddingModel: "Модель эмбеддингов",
         embeddingModelDescription:
           "Модель Hugging Face или локальный путь для индексации и поиска по вашим документам. По умолчанию {defaultModel}.",
+        searchPlaceholder: "Поиск embedding-моделей",
         reindexWarning:
           "Влияет только на вновь индексируемые документы. После смены модели загрузите существующие документы заново.",
         emptyError: "Введите ID модели Hugging Face или локальный путь.",

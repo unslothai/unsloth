@@ -565,6 +565,7 @@ export const it = {
         embeddingModel: "Modello di embedding",
         embeddingModelDescription:
           "Modello Hugging Face o percorso locale usato per indicizzare e cercare nei tuoi documenti. Il valore predefinito è {defaultModel}.",
+        searchPlaceholder: "Cerca modelli di embedding",
         reindexWarning:
           "Vale solo per i documenti indicizzati da ora in poi. Ricarica quelli esistenti dopo aver cambiato modello.",
         emptyError:

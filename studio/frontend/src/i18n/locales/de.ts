@@ -594,6 +594,7 @@ export const de = {
         embeddingModel: "Embedding-Modell",
         embeddingModelDescription:
           "Hugging-Face-Modell oder lokaler Pfad zum Indexieren und Durchsuchen Ihrer Dokumente. Standard ist {defaultModel}.",
+        searchPlaceholder: "Embedding-Modelle suchen",
         reindexWarning:
           "Betrifft nur neu indexierte Dokumente. Laden Sie bestehende nach einer Modelländerung erneut hoch.",
         emptyError:
