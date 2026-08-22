@@ -25,6 +25,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -2261,3 +2262,32 @@ def test_a_box_without_nvidia_smi_reports_no_gpu_rather_than_crashing(tmp_path, 
     assert module.gpu_inventory() == []
     assert module.nvidia_used_mib() is None
     assert module.nvidia_compute_apps() is None
+
+
+def test_the_kaggle_client_is_new_enough_to_read_the_only_credential_we_have():
+    """A client that cannot read KAGGLE_API_TOKEN makes this workflow report green forever.
+
+    The gate is handed exactly one credential, KAGGLE_API_TOKEN, and nothing in
+    the workflow or under .github/scripts/kaggle_t4_ci writes a kaggle.json. On
+    2.x, authenticate() tries _authenticate_with_access_token() first, which
+    reaches kagglesdk.get_access_token_from_env() and reads that variable. On
+    1.7.4.5 it does not: KAGGLE_API_TOKEN appears only in
+    kagglesdk/kaggle_http_client.py, whose own header says that client "is not
+    currently usable by the CLI", so authenticate() falls through to
+    read_config_file() and raises IOError, which IS OSError on Python 3.
+
+    That error is not loud. gate.py turns any error into a skip unless
+    --no-soft-fail is passed, and a skip exits 0, so the run is green with the
+    GPU job skipped: identical on the surface to the ~95% of invocations the
+    5% sampler declines. Observed on run 32605377065, dispatched with
+    force=true to bypass the sampler, which still reported
+    "could not authenticate to Kaggle: OSError" and a green workflow.
+
+    The notebook leg has carried this guard since it was written; this leg had
+    no equivalent and sat on 1.7.4.5, so it had never authenticated once.
+    """
+    packaging_version = pytest.importorskip("packaging.version")
+    pins = re.findall(r"pip install [^\n]*'kaggle==([0-9][^']*)'", WORKFLOW.read_text(encoding = "utf-8"))
+    assert pins, "no pinned kaggle client in the workflow"
+    assert len(set(pins)) == 1, f"jobs disagree on the kaggle client: {pins}"
+    assert packaging_version.Version(pins[0]) >= packaging_version.Version("2.2.0"), pins[0]
