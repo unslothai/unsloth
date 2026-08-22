@@ -570,9 +570,7 @@ class _RealSendTurnScene:
                 page = page,
                 cdp = None,
                 cell = self.kwargs["cell"],
-                window = Window(
-                    name = "action:send_turn", kind = "action", cell = None, t_open_ms = 0.0
-                ),
+                window = Window(name = "action:send_turn", kind = "action", cell = None, t_open_ms = 0.0),
                 args = dict(self.kwargs["base_args"]),
                 budget_ms = 20_000,
                 dom = None,
@@ -628,9 +626,7 @@ def test_a_healthy_multi_turn_cell_passes_the_check_over_real_wire_bytes(monkeyp
             session = Session(ctx = ctx),
             pacer = pacer,
             seeder = types.SimpleNamespace(
-                seed = lambda plan: types.SimpleNamespace(
-                    thread_id = "t1", seconds = 0.5, messages = 0
-                ),
+                seed = lambda plan: types.SimpleNamespace(thread_id = "t1", seconds = 0.5, messages = 0),
                 auth = None,
             ),
             corpus = None,
