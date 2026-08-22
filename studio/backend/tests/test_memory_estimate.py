@@ -27,6 +27,7 @@ No GPU, no network, no model load: every GGUF here is a synthetic header on
 tmp_path. Cross-platform.
 """
 
+import os
 import sys
 import types as _types
 from pathlib import Path
@@ -332,16 +333,35 @@ class TestMemoryBreakdown:
     """Composition of files + runtime into the panel's itemization."""
 
     WEIGHTS_GB = 4.0
+    # Of that files total, the main weight and everything beside it. Pinned because
+    # the synthetic header on tmp_path is a few hundred bytes, which would leave the
+    # whole 4 GB looking like companions and make the offload split meaningless.
+    MAIN_BYTES = 3 * 1024**3
+    COMPANION_BYTES = int(WEIGHTS_GB * 1024**3) - MAIN_BYTES
 
     @pytest.fixture
     def config(self, gqa_gguf):
-        return SimpleNamespace(identifier = "local/model", gguf_file = gqa_gguf, is_gguf = True)
+        return SimpleNamespace(
+            identifier = "local/model",
+            gguf_file = gqa_gguf,
+            is_gguf = True,
+            gguf_mmproj_file = None,
+        )
 
     @pytest.fixture(autouse = True)
     def _fixed_files(self, monkeypatch):
         # Pin the files term so every assertion below is about the composition,
         # not about repository listing (which would want the network).
         monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: self.WEIGHTS_GB)
+        real_size = ri.LlamaCppBackend._get_gguf_size_bytes
+
+        def _size(path):
+            name = os.path.basename(str(path))
+            return self.MAIN_BYTES if name == "model.gguf" else real_size(path)
+
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_get_gguf_size_bytes", staticmethod(_size)
+        )
 
     def test_weights_do_not_move_with_context(self, config, gqa_gguf):
         # THE invariant the subtraction approach exists to keep. If the context
@@ -366,7 +386,7 @@ class TestMemoryBreakdown:
         assert b.kv_on_gpu is True
         assert b.gpu_layers is None
 
-    def test_manual_split_divides_weights_but_not_the_cache(self, config, gqa_gguf):
+    def test_manual_split_divides_the_weights_but_not_the_cache(self, config, gqa_gguf):
         # llama.cpp keeps the whole KV cache on the GPU under a partial layer
         # offload (only --no-kv-offload moves it), so only the weights split.
         b = ri._gguf_memory_breakdown(
@@ -375,8 +395,49 @@ class TestMemoryBreakdown:
         fraction = 6 / float(_GQA_FIELDS["block_count"] + 1)
         assert b.layer_count == _GQA_FIELDS["block_count"]
         assert b.gpu_layers == 6
-        assert b.gpu_bytes == int(b.weights_bytes * fraction) + b.kv_bytes + b.compute_bytes
+        assert b.gpu_bytes == (
+            int(self.MAIN_BYTES * fraction) + self.COMPANION_BYTES + b.kv_bytes + b.compute_bytes
+        )
         assert b.gpu_bytes < b.total_bytes
+
+    def test_a_partial_offload_splits_only_the_main_weight(self, config, gqa_gguf):
+        # --gpu-layers splits the model, not the companions beside it: a projector
+        # and a drafter are placed by their own flags. Scaling the whole files term
+        # let --gpu-layers 0 report an empty GPU while both sat in VRAM.
+        zero = ri._gguf_memory_breakdown(
+            config, gqa_gguf, n_ctx = 8192, gpu_memory_mode = "manual", gpu_layers = 0
+        )
+        assert zero.gpu_bytes == self.COMPANION_BYTES
+        # KV and compute do follow the layers, so nothing else survives ngl 0.
+        assert zero.kv_on_gpu is False
+        full = ri._gguf_memory_breakdown(
+            config,
+            gqa_gguf,
+            n_ctx = 8192,
+            gpu_memory_mode = "manual",
+            gpu_layers = _GQA_FIELDS["block_count"] + 1,
+        )
+        assert full.gpu_bytes == full.total_bytes
+
+    def test_no_mmproj_offload_moves_the_projector_and_only_it(
+        self, config, gqa_gguf, tmp_path
+    ):
+        # The drafter is the other companion, and it is only ever charged when it
+        # lands on the GPU, so this flag must not sweep it off with the projector.
+        projector = tmp_path / "mmproj-model.gguf"
+        projector.write_bytes(b"\0" * 1024)
+        config.gguf_mmproj_file = str(projector)
+        expected = self.COMPANION_BYTES - projector.stat().st_size
+        pinned = ri._gguf_memory_breakdown(
+            config,
+            gqa_gguf,
+            n_ctx = 8192,
+            gpu_memory_mode = "manual",
+            gpu_layers = 0,
+            llama_extra_args = ["--no-mmproj-offload"],
+        )
+        # Exactly the projector leaves; the rest of the companion bytes stay.
+        assert pinned.gpu_bytes == expected
 
     def test_no_kv_offload_moves_the_cache_off_the_gpu(self, config, gqa_gguf):
         # At a long context the cache is most of the footprint, so ignoring
@@ -630,9 +691,22 @@ class TestTokenFingerprint:
 # G. The route
 
 
-def _estimate(**kwargs):
+def _estimate(fastapi_request = None, **kwargs):
     """Call the route directly, bypassing the auth dependency."""
-    return asyncio.run(ri.estimate_memory(EstimateMemoryRequest(**kwargs), current_subject = "test"))
+    return asyncio.run(
+        ri.estimate_memory(
+            EstimateMemoryRequest(**kwargs),
+            fastapi_request = fastapi_request,
+            current_subject = "test",
+        )
+    )
+
+
+def _request_with_slots(slots: int):
+    """A stand-in for the FastAPI request carrying the server's slot default."""
+    return SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(
+        llama_parallel_slots = slots,
+    )))
 
 
 class TestEstimateMemoryRoute:
@@ -730,3 +804,93 @@ class TestEstimateMemoryRoute:
         assert resp.layer_count == _GQA_FIELDS["block_count"]
         assert resp.weights_bytes > 0
         assert resp.n_ctx == 4096
+
+
+class TestParallelSlotResolution:
+    """Blank Parallel Slots means the server default, not one.
+
+    /load resolves the field through ``_resolve_parallel_slots`` and normally
+    inherits ``app.state.llama_parallel_slots`` (four in a standard launch). Pricing
+    one slot for the default UI state underestimated both the KV cache and the
+    slot-scaled compute buffers, which is the configuration most people load.
+    """
+
+    @pytest.fixture(autouse = True)
+    def _local_model(self, monkeypatch, gqa_gguf):
+        config = SimpleNamespace(
+            identifier = "local/model", gguf_file = gqa_gguf, is_gguf = True,
+            gguf_mmproj_file = None,
+        )
+        monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
+        monkeypatch.setattr(ri, "_local_gguf_main_path", lambda cfg: gqa_gguf)
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: 1.0)
+
+    def test_omitted_slots_inherit_the_server_default(self):
+        resp = _estimate(
+            model_path = "local/model", n_ctx = 8192,
+            fastapi_request = _request_with_slots(4),
+        )
+        assert resp.n_parallel == 4
+
+    def test_an_explicit_count_still_wins(self):
+        resp = _estimate(
+            model_path = "local/model", n_ctx = 8192, n_parallel = 1,
+            fastapi_request = _request_with_slots(4),
+        )
+        assert resp.n_parallel == 1
+
+    def test_more_slots_cost_more(self):
+        one = _estimate(
+            model_path = "local/model", n_ctx = 8192,
+            fastapi_request = _request_with_slots(1),
+        )
+        four = _estimate(
+            model_path = "local/model", n_ctx = 8192,
+            fastapi_request = _request_with_slots(4),
+        )
+        # The compute buffer takes an output buffer per extra slot, so it always
+        # grows. The cache only does on architectures whose slots get their own
+        # cells: under unified KV a plain GQA model shares one set, which is why
+        # this asserts >= there rather than pretending otherwise.
+        assert four.compute_bytes > one.compute_bytes
+        assert four.kv_bytes >= one.kv_bytes
+        assert four.total_bytes > one.total_bytes
+
+    def test_a_missing_app_state_falls_back_to_one(self):
+        # No FastAPI request at all (the shape older test doubles pass) must not
+        # raise; it just loses the default, as _resolve_parallel_slots specifies.
+        resp = _estimate(model_path = "local/model", n_ctx = 8192)
+        assert resp.n_parallel == 1
+
+
+class TestNativeLeaseOperation:
+    """The route must verify leases under the operation the client can mint.
+
+    Leases are signed for one operation and ``_validate_payload`` compares it
+    exactly. "estimate-memory" is not a mintable ``NativePathOperation``, so
+    verifying under that name rejected every picked or drag-dropped GGUF and the
+    row never appeared for them.
+    """
+
+    def test_the_route_verifies_the_validate_model_grant(self, monkeypatch):
+        seen = {}
+
+        def _resolve(request, *, operation, resolved_ollama_path = None):
+            seen["operation"] = operation
+            return ("/tmp/dropped.gguf", "dropped.gguf", True)
+
+        monkeypatch.setattr(ri, "_resolve_model_identifier_for_request", _resolve)
+        monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: None)
+        _estimate(model_path = "dropped.gguf", native_path_lease = "signed")
+        assert seen["operation"] == "validate-model"
+
+    def test_the_operation_is_one_the_client_can_mint(self):
+        # Guards the pairing rather than the string: the frontend mints through
+        # consumeNativePathToken(token, "validate-model"), and this is the list
+        # that call is typed against.
+        types_ts = (
+            Path(__file__).resolve().parents[2]
+            / "frontend/src/features/native-intents/types.ts"
+        ).read_text()
+        assert '"validate-model"' in types_ts
+        assert "estimate-memory" not in types_ts

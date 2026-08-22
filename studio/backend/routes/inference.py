@@ -7911,8 +7911,25 @@ def _gguf_memory_breakdown(
 
     layer_count = runtime.layer_count
     gpu_fraction = _gguf_offloaded_layer_fraction(gpu_memory_mode, gpu_layers, layer_count)
-    gpu_weights = int(weights_bytes * gpu_fraction)
-    from core.inference.llama_cpp import _kv_offload_from_args
+    from core.inference.llama_cpp import _kv_offload_from_args, _resolved_mmproj_offload
+
+    # Only the main weight is split by --gpu-layers. A projector and a drafter are
+    # placed by their own flags, so scaling them by the model's layer fraction let
+    # --gpu-layers 0 report zero GPU bytes while both sat in VRAM.
+    main_bytes = min(weights_bytes, LlamaCppBackend._get_gguf_size_bytes(gguf_path))
+    companion_bytes = max(0, weights_bytes - main_bytes)
+    # A drafter is only charged when it lands on the GPU (a CPU-pinned one is dropped
+    # from the total upstream), so the projector is the single companion that can be
+    # charged and off-GPU: --no-mmproj-offload keeps it in host RAM. Priced by itself
+    # rather than by moving every companion, which would strand a resident drafter.
+    host_companion_bytes = 0
+    if _resolved_mmproj_offload(llama_extra_args) is False:
+        mmproj = getattr(config, "gguf_mmproj_file", None)
+        if mmproj and Path(mmproj).is_file():
+            host_companion_bytes = min(
+                companion_bytes, LlamaCppBackend._get_gguf_size_bytes(str(mmproj))
+            )
+    gpu_weights = int(main_bytes * gpu_fraction) + companion_bytes - host_companion_bytes
 
     # -nkvo puts the cache in host RAM. At a long context that is most of the
     # footprint, so ignoring it would report VRAM pressure the load never creates.
@@ -11435,7 +11452,9 @@ def _cached_estimate_config(
 
 @router.post("/estimate-memory", response_model = EstimateMemoryResponse)
 async def estimate_memory(
-    request: EstimateMemoryRequest, current_subject: str = Depends(get_current_subject)
+    request: EstimateMemoryRequest,
+    fastapi_request: Request = None,
+    current_subject: str = Depends(get_current_subject),
 ):
     """Price a prospective GGUF load from its header, before anything is allocated.
 
@@ -11454,11 +11473,23 @@ async def estimate_memory(
         return EstimateMemoryResponse(available = False, reason = "unsupported_source")
     try:
         model_identifier, _model_log_label, native_grant_backed = (
-            _resolve_model_identifier_for_request(request, operation = "estimate-memory")
+            # "validate-model", not an operation of this route's own: leases are
+            # verified against the exact operation they were signed for, and
+            # "estimate-memory" is not one a client can mint. This is the same
+            # read-only header probe /validate performs, so it is the right grant.
+            _resolve_model_identifier_for_request(request, operation = "validate-model")
         )
     except HTTPException:
         # An expired lease is not worth a red error under a settings panel.
         return EstimateMemoryResponse(available = False, reason = "unsupported_source")
+
+    # Blank Parallel Slots means the server default (4 in a standard launch), not
+    # one. /load resolves it the same way, so pricing 1 here underestimated the KV
+    # cache and the slot-scaled compute buffers for the default configuration.
+    resolved_slots = _effective_parallel_slots(
+        _resolve_parallel_slots(request, fastapi_request),
+        diffusion_kind = False,
+    )
 
     def _estimate() -> EstimateMemoryResponse:
         config = _cached_estimate_config(
@@ -11486,15 +11517,18 @@ async def estimate_memory(
             n_ctx = request.n_ctx or 0,
             llama_extra_args = request.llama_extra_args,
             speculative_type = request.speculative_type,
-            n_parallel = max(1, request.n_parallel or 1),
+            n_parallel = resolved_slots,
             cache_type_kv = request.cache_type_kv,
             tensor_parallel = bool(request.tensor_parallel),
             n_batch = request.n_batch,
             n_ubatch = request.n_ubatch,
             ctx_checkpoints = request.ctx_checkpoints,
             # Only tensor mode spreads the buffers, and only it is worth the probe.
+            # A pin counts the cards it names, not every card on the host.
             n_devices = (
-                _guard_device_count(None, None, tensor_parallel = True)
+                _guard_device_count(
+                    request.selected_gpu_ids or None, None, tensor_parallel = True
+                )
                 if request.tensor_parallel
                 else 1
             ),

@@ -758,6 +758,11 @@ class EstimateMemoryRequest(BaseModel):
         description = "Expert layers held on the CPU (--n-cpu-moe). Not priced; echoed "
         "back so the panel can say the GPU figure reads high.",
     )
+    selected_gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "GPUs the load is pinned to. Tensor mode replicates its compute "
+        "buffers per device, so the pinned count changes the footprint.",
+    )
     llama_extra_args: Optional[List[str]] = Field(
         None,
         description = "Pass-through llama-server flags. Read, not just carried: -c, "

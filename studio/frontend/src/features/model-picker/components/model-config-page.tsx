@@ -2617,19 +2617,31 @@ export function ModelConfigPage({
               ? runtimeConfig.gpuLayers
               : null,
           nCpuMoe: runtimeConfig.nCpuMoe ?? null,
+          selectedGpuIds: runtimeConfig.selectedGpuIds ?? null,
           llamaExtraArgs: runtimeConfig.llamaExtraArgs ?? null,
         }
       : null;
   const memoryEstimate = useMemoryEstimate(memoryEstimateRequest);
   const [memoryBreakdownOpen, setMemoryBreakdownOpen] = useState(false);
   const inferenceGpu = useInferenceGpuInfo();
+  // A pin can only draw on the cards it names, so the verdict is measured against
+  // those. Judging a one-card pin against a two-card total called an 8 GB load a fit
+  // on 16 GB of VRAM it could not reach.
+  const pinnedGpuIds = runtimeConfig.selectedGpuIds;
+  const pinnedCapacityGb =
+    pinnedGpuIds && pinnedGpuIds.length > 0
+      ? gpuDevices
+          .filter((device) => pinnedGpuIds.includes(device.index))
+          .reduce((sum, device) => sum + device.memoryTotalGb, 0)
+      : 0;
   // The pool a layer split spreads over, and the ceiling once layers spill to host
   // RAM. Both 0 when the probe found nothing, which reads as "no verdict".
-  const memoryGpuCapacityGb = inferenceGpu.memoryTotalGb;
+  const memoryGpuCapacityGb =
+    pinnedCapacityGb > 0 ? pinnedCapacityGb : inferenceGpu.memoryTotalGb;
   const memoryTotalCapacityGb = isUnifiedMemory
     ? // One pool, so adding system RAM to VRAM would count the same bytes twice.
-      inferenceGpu.memoryTotalGb
-    : inferenceGpu.memoryTotalGb + inferenceGpu.systemRamTotalGb;
+      memoryGpuCapacityGb
+    : memoryGpuCapacityGb + inferenceGpu.systemRamTotalGb;
 
   const rememberChanged = remember !== savedRemember;
   const persistenceOnly = isActiveModel && atBaseline && rememberChanged;

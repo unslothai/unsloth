@@ -61,6 +61,7 @@ export interface MemoryEstimateRequest {
   gpuMemoryMode?: string | null;
   gpuLayers?: number | null;
   nCpuMoe?: number | null;
+  selectedGpuIds?: number[] | null;
   llamaExtraArgs?: string[] | null;
 }
 
@@ -121,6 +122,7 @@ function estimateRequestBody(
     gpu_memory_mode: payload.gpuMemoryMode ?? null,
     gpu_layers: payload.gpuLayers ?? null,
     n_cpu_moe: payload.nCpuMoe ?? null,
+    selected_gpu_ids: payload.selectedGpuIds ?? null,
     llama_extra_args: payload.llamaExtraArgs ?? null,
   });
 }

@@ -42,6 +42,7 @@ function estimateKey(request: MemoryEstimateRequest | null): string | null {
     request.gpuMemoryMode ?? null,
     request.gpuLayers ?? null,
     request.nCpuMoe ?? null,
+    request.selectedGpuIds ?? null,
     request.llamaExtraArgs ?? null,
   ]);
 }
