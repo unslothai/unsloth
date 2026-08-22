@@ -125,12 +125,6 @@ backend_dir = Path(__file__).parent
 if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
 
-# Keep the ROCm attention default inside Studio and the workers it launches. Do not persist it in
-# the user's shell or operating-system environment; an explicit value, including "0", still wins.
-_AOTRITON_ENV = "TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL"
-os.environ.setdefault(_AOTRITON_ENV, "1")
-del _AOTRITON_ENV
-
 # First, so these vars land before anything below can size an OpenMP/BLAS pool. Imports stdlib only.
 from utils.cpu_threads import configure_cpu_threads
 

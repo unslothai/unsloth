@@ -16,11 +16,6 @@ import os, importlib.util, platform, sys
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
-# Enable ROCm AOTriton before another import can dispatch attention.
-from ._rocm_attention import enable_rocm_aotriton_attention as _enable_rocm_aotriton_attention
-
-_enable_rocm_aotriton_attention()
-
 # Transformers 4.x imports TensorFlow / Flax merely because they are installed
 # (`processing_utils` -> `image_transforms`), breaking Unsloth, which uses neither.
 # It reads these variables once at its own import, so this has to land first. An

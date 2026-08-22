@@ -12,8 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Compatibility import for the shared ROCm attention gate."""
-
-from unsloth_runtime.rocm_attention import AOTRITON_ENV, enable_rocm_aotriton_attention
-
-__all__ = ("AOTRITON_ENV", "enable_rocm_aotriton_attention")
+"""Small runtime helpers shared by Unsloth and Studio entry points."""
