@@ -13,7 +13,6 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import NamedTuple, Optional
 
-from fastapi import HTTPException
 from loggers import get_logger
 
 from hub.schemas.inventory import ModelFormat
@@ -478,15 +477,24 @@ def _cached_row_task(
     """Pipeline task for a cached row, from the same classifiers the models API uses.
 
     The Images/Video pickers filter On Device rows on this and the chat picker routes a diffusion
-    pick by it, so a row that arrives without one is dropped from those lists entirely. Imported
-    lazily (routes.models imports this package) and best-effort: an unreadable repo just has no
-    task, exactly as before.
+    pick by it, so a row that arrives without one is dropped from those lists entirely.
     """
     try:
-        from routes.models import _cached_repo_task, _repo_gguf_task
+        from hub.services.models.catalog_classification import (
+            _cached_repo_task,
+            _repo_gguf_task,
+        )
         return _repo_gguf_task(repo_info) if gguf else _cached_repo_task(repo_info, selected)
     except Exception:  # noqa: BLE001 -- a classification failure never hides a row
         return None
+
+
+def _cached_row_is_diffusers(repo_info, selected: Optional[Path]) -> bool:
+    try:
+        from hub.services.models.catalog_classification import _repo_is_diffusers
+        return _repo_is_diffusers(repo_info, selected)
+    except Exception:
+        return False
 
 
 def _variant_state_repositories(cache_scans):
@@ -672,6 +680,7 @@ async def list_cached_gguf_response(hf_token: Optional[str] = None):
         cached = await _shared_cached_inventory_scan("gguf", _scan_cached_gguf)
         return {"cached": cached}
     except Exception as e:
+        from fastapi import HTTPException
         logger.error(
             "Error listing cached GGUF repos: %s",
             download_registry.scrub_secrets(str(e), hf_token = hf_token),
@@ -1111,6 +1120,7 @@ def _scan_cached_models(
                     # Listed so tens of GB of companion weights stay visible and deletable, but
                     # flagged so no picker offers a denoiser-less repo as a load.
                     "companion": _cached_row_companion(repo_id),
+                    "diffusers": _cached_row_is_diffusers(repo_info, load_snapshot),
                     **local_metadata,
                 }
                 last_modified = max(
@@ -1155,6 +1165,7 @@ async def list_cached_models_response(hf_token: Optional[str] = None):
         cached = await _shared_cached_inventory_scan("models", _scan_cached_models)
         return {"cached": cached}
     except Exception as e:
+        from fastapi import HTTPException
         logger.error(
             "Error listing cached models: %s",
             download_registry.scrub_secrets(str(e), hf_token = hf_token),

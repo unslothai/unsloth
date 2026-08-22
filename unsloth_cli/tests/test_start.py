@@ -804,9 +804,10 @@ def _parse_toml(text: str) -> dict:
     return tomllib.loads(text)
 
 
-def test_project_declares_direct_click_dependency():
+def test_project_declares_direct_cli_dependencies():
     project = _parse_toml((_REPO_ROOT / "pyproject.toml").read_text(encoding = "utf-8"))
     assert "click>=8.0" in project["project"]["dependencies"]
+    assert "huggingface-hub>=0.34.0" in project["project"]["dependencies"]
 
 
 def test_agent_paths_use_cli_studio_home_without_backend_imports(monkeypatch, tmp_path):

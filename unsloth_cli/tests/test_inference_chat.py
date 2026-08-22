@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -407,9 +408,7 @@ def test_catalog_cached_entries_filter_non_chat_rows(monkeypatch, tmp_path):
     for name in ("Tiny-Q4_K_M.gguf", "Tiny-Q2_K.gguf", "mmproj-F16.gguf"):
         (snap / name).write_bytes(b"")
 
-    fake_routes = types.ModuleType("routes.models")
-    fake_routes._all_hf_cache_scans = lambda: []
-    fake_routes.cached_gguf_rows = lambda scans: [
+    gguf_rows = [
         {"repo_id": "org/Tiny-GGUF", "cache_path": str(repo), "task": "text-generation"},
         {
             "repo_id": "org/Half-GGUF",
@@ -419,21 +418,21 @@ def test_catalog_cached_entries_filter_non_chat_rows(monkeypatch, tmp_path):
         },
         {"repo_id": "org/Flux-GGUF", "cache_path": str(repo), "task": "text-to-image"},
     ]
-    fake_routes.cached_model_rows = lambda scans: [
+    model_rows = [
         {"repo_id": "org/Chat", "task": None},
         {"repo_id": "org/Half", "task": None, "partial": True},
         {"repo_id": "org/Image", "task": "text-to-image"},
         {"repo_id": "org/Pinned", "task": None, "load_id": "/snap/path"},
         # An embedding/CLIP repo carries task None like any chat repo; can_chat separates them.
-        {"repo_id": "org/Embedder", "task": None, "can_chat": False},
+        {"repo_id": "org/Embedder", "task": None, "capabilities": {"can_chat": False}},
         # An untrusted diffusion repo carries no task either, and its pipeline root has no
         # config for can_chat to read, so only its own flag keeps it out of chat.
         {"repo_id": "org/Sdxl", "task": None, "diffusers": True},
     ]
     fake_cfg = types.ModuleType("utils.models.model_config")
     fake_cfg._is_mmproj = lambda name: "mmproj" in name.lower()
-    monkeypatch.setitem(sys.modules, "routes.models", fake_routes)
     monkeypatch.setitem(sys.modules, "utils.models.model_config", fake_cfg)
+    monkeypatch.setattr(cat, "_cached_catalog_rows", lambda: (gguf_rows, model_rows))
 
     entries = cat.cached_entries()
     assert [(e.group, e.name, e.detail, e.model) for e in entries] == [
@@ -443,12 +442,52 @@ def test_catalog_cached_entries_filter_non_chat_rows(monkeypatch, tmp_path):
     ]
 
 
+def test_catalog_inventory_works_without_fastapi_or_routes():
+    script = """
+import builtins
+from unsloth_cli._inference import ensure_studio_backend_path
+
+ensure_studio_backend_path()
+real_import = builtins.__import__
+
+def import_without_server(name, *args, **kwargs):
+    if name == "fastapi" or name.startswith("fastapi.") or name == "routes" or name.startswith("routes."):
+        raise AssertionError(f"server import: {name}")
+    return real_import(name, *args, **kwargs)
+
+builtins.__import__ = import_without_server
+from hub.services.models import cache_inventory, catalog_classification, local_inventory
+from unsloth_cli import _model_catalog
+assert cache_inventory and catalog_classification and local_inventory and _model_catalog
+cache_inventory.all_hf_cache_scans = lambda: []
+cache_inventory._scan_cached_gguf = lambda **kwargs: []
+cache_inventory._scan_cached_models = lambda **kwargs: []
+assert _model_catalog.cached_entries() == []
+
+async def empty_local_models(_models_dir):
+    return type("Response", (), {"models": []})()
+
+local_inventory.list_local_models_response = empty_local_models
+assert _model_catalog.local_folder_entries() == []
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd = _REPO_ROOT,
+        capture_output = True,
+        text = True,
+        check = False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_catalog_local_folder_entries_keep_safetensors_and_use_id(monkeypatch):
+    from unsloth_cli._inference import ensure_studio_backend_path
     from unsloth_cli import _model_catalog as cat
 
+    ensure_studio_backend_path()
+
     class _LocalModelInfo:
-        """Mirrors LocalModelInfo: exposes ``id``, deliberately no ``load_id``. Reading a
-        missing ``load_id`` raised AttributeError and _safe() emptied the whole group."""
+        """Mirrors the catalog fields used from LocalModelInfo."""
 
         def __init__(
             self,
@@ -465,6 +504,7 @@ def test_catalog_local_folder_entries_keep_safetensors_and_use_id(monkeypatch):
             self.source = source
             self.model_format = model_format
             self.partial = partial
+            self.load_id = None
 
     rows = [
         # _dir_model_format reports None for a safetensors folder, never "safetensors".
@@ -474,14 +514,13 @@ def test_catalog_local_folder_entries_keep_safetensors_and_use_id(monkeypatch):
         _LocalModelInfo("/models/MiniLM", "MiniLM", "/models/MiniLM", "models_dir"),
     ]
 
-    fake_routes = types.ModuleType("routes.models")
-    fake_routes.collect_local_models = lambda root: rows
-    fake_routes._local_model_task = lambda model: None
-    # An embedding export scans like any other safetensors folder; only this says otherwise.
-    fake_routes._local_model_can_chat = lambda model: (
-        False if model.display_name == "MiniLM" else None
+    monkeypatch.setattr(cat, "_local_catalog_rows", lambda: rows)
+    monkeypatch.setattr(cat, "_local_model_task", lambda model: None)
+    monkeypatch.setattr(
+        cat,
+        "_local_model_can_chat",
+        lambda model: (False if model.display_name == "MiniLM" else None),
     )
-    monkeypatch.setitem(sys.modules, "routes.models", fake_routes)
 
     entries = cat.local_folder_entries()
     assert [(e.group, e.name, e.detail, e.model) for e in entries] == [
@@ -1640,7 +1679,10 @@ def test_load_chat_backend_forwards_mlx_distributed_options(monkeypatch):
 
 def test_catalog_local_folder_entries_require_loadable_payloads(monkeypatch, tmp_path):
     """Config-only and GGUF-companion directories are not selectable model payloads."""
+    from unsloth_cli._inference import ensure_studio_backend_path
     from unsloth_cli import _model_catalog as cat
+
+    ensure_studio_backend_path()
 
     class _LocalModelInfo:
         def __init__(
@@ -1658,6 +1700,7 @@ def test_catalog_local_folder_entries_require_loadable_payloads(monkeypatch, tmp
             self.source = source
             self.model_format = model_format
             self.partial = partial
+            self.load_id = None
 
     def _dir(name, files):
         d = tmp_path / name
@@ -1691,28 +1734,17 @@ def test_catalog_local_folder_entries_require_loadable_payloads(monkeypatch, tmp
         ),
     ]
 
-    fake_routes = types.ModuleType("routes.models")
-    fake_routes.collect_local_models = lambda root: rows
-    fake_routes._local_model_task = lambda model: None
-    fake_routes._local_model_can_chat = lambda model: None
-    # mirror the real payload and pipeline predicates; backend tests cover their implementations.
-    fake_routes._is_model_directory = lambda d: (d / "config.json").is_file() and any(
-        f.suffix == ".safetensors" for f in d.iterdir() if f.is_file()
+    monkeypatch.setattr(cat, "_local_catalog_rows", lambda: rows)
+    monkeypatch.setattr(cat, "_local_model_task", lambda model: None)
+    monkeypatch.setattr(cat, "_local_model_can_chat", lambda model: None)
+    monkeypatch.setattr(
+        cat,
+        "_local_is_a_diffusers_pipeline",
+        lambda model: (
+            (Path(model.path) / "model_index.json").is_file()
+            or (Path(model.path) / "modular_model_index.json").is_file()
+        ),
     )
-    fake_routes._servable_gguf_names = lambda d: [
-        f.name for f in d.iterdir() if f.is_file() and f.suffix.lower() == ".gguf"
-    ]
-    fake_routes._is_main_gguf_filename = lambda name: not name.lower().startswith(
-        ("mmproj", "mtp-")
-    )
-    fake_routes._local_pipeline_index = (
-        lambda d: (d / "model_index.json").is_file() or (d / "modular_model_index.json").is_file()
-    )
-    fake_routes._local_is_diffusers = lambda model: (
-        (Path(model.path) / "model_index.json").is_file()
-        or (Path(model.path) / "modular_model_index.json").is_file()
-    )
-    monkeypatch.setitem(sys.modules, "routes.models", fake_routes)
 
     # The pipeline still HOLDS a payload; it is excluded from the chat picker for the
     # separate reason that a diffusers pipeline cannot answer a text turn.

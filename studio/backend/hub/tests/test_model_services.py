@@ -22,6 +22,7 @@ from hub.services import snapshot_progress
 from hub.services.datasets import downloads as dataset_downloads
 from hub.services.models import (
     cache_inventory,
+    catalog_classification,
     common as model_common,
     deletion,
     downloads,
@@ -913,10 +914,10 @@ def test_local_inventory_requests_share_scan(monkeypatch, change_kind):
     response.model_copy = lambda update: SimpleNamespace(models = update["models"])
     sources = local_inventory._local_inventory_sources()
     monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: sources)
-    monkeypatch.setitem(
-        sys.modules,
-        "routes.models",
-        SimpleNamespace(_local_model_task = lambda row: task_calls.append(row.id) or "task"),
+    monkeypatch.setattr(
+        catalog_classification,
+        "_local_model_task",
+        lambda row: task_calls.append(row.id) or "task",
     )
 
     async def scan(*_args):
@@ -7197,9 +7198,7 @@ def test_local_inventory_classifies_off_the_event_loop(monkeypatch):
     async def no_folders():
         return []
 
-    monkeypatch.setitem(
-        sys.modules, "routes.models", SimpleNamespace(_local_model_task = classify_row)
-    )
+    monkeypatch.setattr(catalog_classification, "_local_model_task", classify_row)
     monkeypatch.setattr(local_inventory, "_scan_local_models_response", scan)
     monkeypatch.setattr(local_inventory, "_load_custom_folders", no_folders)
     monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: ("roots",))
@@ -7238,12 +7237,10 @@ def test_local_inventory_classifies_a_superseded_result_off_the_event_loop(monke
     async def no_folders():
         return []
 
-    monkeypatch.setitem(
-        sys.modules,
-        "routes.models",
-        SimpleNamespace(
-            _local_model_task = lambda row: idents.append(threading.get_ident()) or "task"
-        ),
+    monkeypatch.setattr(
+        catalog_classification,
+        "_local_model_task",
+        lambda row: idents.append(threading.get_ident()) or "task",
     )
     monkeypatch.setattr(local_inventory, "_scan_local_models_response", always_superseded)
     monkeypatch.setattr(local_inventory, "_load_custom_folders", no_folders)
@@ -7288,9 +7285,7 @@ def test_local_inventory_retries_when_the_cache_changes_during_classification(mo
     async def no_folders():
         return []
 
-    monkeypatch.setitem(
-        sys.modules, "routes.models", SimpleNamespace(_local_model_task = classify_row)
-    )
+    monkeypatch.setattr(catalog_classification, "_local_model_task", classify_row)
     monkeypatch.setattr(local_inventory, "_scan_local_models_response", scan)
     monkeypatch.setattr(local_inventory, "_load_custom_folders", no_folders)
     monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: ("roots",))

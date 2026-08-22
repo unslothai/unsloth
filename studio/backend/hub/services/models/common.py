@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import List, Literal, Optional
 from urllib.parse import quote
@@ -96,6 +97,15 @@ def _is_model_directory(d: Path) -> bool:
         if not has_config:
             return False
         return any(_is_weight_file(f) for f in d.iterdir() if f.is_file())
+    except OSError:
+        return False
+
+
+def _is_diffusers_pipeline_dir(path: Path) -> bool:
+    try:
+        return (path / "model_index.json").is_file() or (
+            path / "modular_model_index.json"
+        ).is_file()
     except OSError:
         return False
 
@@ -562,15 +572,19 @@ def _is_main_gguf_filename(name: str) -> bool:
     )
 
 
-def _iter_gguf_paths(root: Path):
+def _iter_gguf_paths(root: Path, deadline: Optional[float] = None):
     stack = [root]
     while stack:
+        if deadline is not None and time.monotonic() >= deadline:
+            return
         current = stack.pop()
         try:
             entries = list(current.iterdir())
         except OSError:
             continue
         for path in entries:
+            if deadline is not None and time.monotonic() >= deadline:
+                return
             try:
                 if path.is_dir() and not path.is_symlink():
                     stack.append(path)

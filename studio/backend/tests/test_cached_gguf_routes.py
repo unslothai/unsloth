@@ -3473,20 +3473,22 @@ def test_hub_cached_rows_carry_the_task_the_pickers_filter_on(monkeypatch, tmp_p
     task on those rows the Images and Video pickers filtered every one of them out, and the chat
     picker's diffusion routing (which reads the same field) never fired."""
     from hub.schemas.inventory import CachedGgufRepo, CachedModelRepo
-    from hub.services.models import cache_inventory
+    from hub.services.models import cache_inventory, catalog_classification
 
     assert "task" in CachedGgufRepo.model_fields
     assert "task" in CachedModelRepo.model_fields
 
     repo = _pipeline_repo("unsloth/Qwen-Image", tmp_path)
     monkeypatch.setattr(
-        "routes.models._cached_repo_task",
+        catalog_classification,
+        "_cached_repo_task",
         lambda repo_info, selected = None: "text-to-image",
-        raising = True,
     )
     assert cache_inventory._cached_row_task(repo, gguf = False) == "text-to-image"
     monkeypatch.setattr(
-        "routes.models._repo_gguf_task", lambda repo_info: "text-generation", raising = True
+        catalog_classification,
+        "_repo_gguf_task",
+        lambda repo_info: "text-generation",
     )
     assert cache_inventory._cached_row_task(repo, gguf = True) == "text-generation"
 
@@ -5198,16 +5200,18 @@ def test_only_the_first_shard_of_a_split_gguf_is_read_to_classify_a_repo(tmp_pat
         (repo_dir / f"Big-Q4_K_M-{index}-of-00003.gguf").write_bytes(b"not a gguf header")
 
     read: list[str] = []
-    real = models_route._gguf_architecture
+    from hub.services.models import catalog_classification
+
+    real = catalog_classification._gguf_architecture
     monkeypatch.setattr(
-        models_route,
+        catalog_classification,
         "_gguf_architecture",
         lambda path: (read.append(Path(path).name), real(path))[1],
     )
     # Trailing shards first, an order the filesystem is free to hand back: without the skip they
     # are opened and read as unclassifiable before shard 1 is reached.
     monkeypatch.setattr(
-        models_route,
+        catalog_classification,
         "_iter_gguf_paths",
         lambda _root, deadline = None: iter(sorted(repo_dir.rglob("*.gguf"), reverse = True)),
     )

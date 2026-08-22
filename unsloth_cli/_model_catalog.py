@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import asyncio
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -8,7 +9,7 @@ from pathlib import Path
 from typing import List, Optional
 
 NON_CHAT_TASKS = frozenset({"text-to-image", "text-to-video", "image-diffusion-unsupported"})
-LOCAL_SOURCES = frozenset({"models_dir", "lmstudio", "custom"})
+LOCAL_SOURCES = frozenset({"models_dir", "lmstudio", "ollama", "custom"})
 
 
 @dataclass
@@ -175,12 +176,32 @@ def _quant_labels(repo_id: str, repo_path: str) -> str:
     return ", ".join(quants)
 
 
-def cached_entries() -> List[ModelEntry]:
-    from routes.models import _all_hf_cache_scans, cached_gguf_rows, cached_model_rows
+def _cached_catalog_rows() -> tuple[list[dict], list[dict]]:
+    from hub.services.models.cache_inventory import (
+        _scan_cached_gguf,
+        _scan_cached_models,
+        all_hf_cache_scans,
+    )
+    from utils.hf_cache_settings import get_hf_cache_paths
 
-    scans = _all_hf_cache_scans()
+    scans = all_hf_cache_scans()
+    active_hub_cache = get_hf_cache_paths().hub_cache
+
+    def newest_first(rows):
+        return sorted(
+            rows,
+            key = lambda row: (-(row.get("last_modified") or 0.0), row["repo_id"].lower()),
+        )
+
+    gguf_rows = _scan_cached_gguf(cache_scans = scans, active_hub_cache = active_hub_cache)
+    model_rows = _scan_cached_models(cache_scans = scans, active_hub_cache = active_hub_cache)
+    return newest_first(gguf_rows), newest_first(model_rows)
+
+
+def cached_entries() -> List[ModelEntry]:
+    gguf_rows, model_rows = _cached_catalog_rows()
     entries = []
-    for row in cached_gguf_rows(scans):
+    for row in gguf_rows:
         if row.get("partial") or row.get("task") in NON_CHAT_TASKS:
             continue
         entries.append(
@@ -191,13 +212,13 @@ def cached_entries() -> List[ModelEntry]:
                 row.get("load_id") or row["repo_id"],
             )
         )
-    for row in cached_model_rows(scans):
+    for row in model_rows:
         if row.get("partial") or row.get("companion") or row.get("task") in NON_CHAT_TASKS:
             continue
         if row.get("model_format") == "adapter":
             continue
         # A cached embedding/CLIP repo has task None like any chat repo; can_chat is the gate.
-        if row.get("can_chat") is False:
+        if row.get("capabilities", {}).get("can_chat") is False:
             continue
         # An untrusted or unrecognised diffusion repo carries no task either, and its pipeline
         # root has no config for can_chat to read, so neither of the gates above catches it.
@@ -222,22 +243,20 @@ def _local_dir_holds_a_payload(path: Path) -> bool:
             return True
     except OSError:
         return True
-    # Fail open on an import problem too: _safe() turns any raise here into an empty
-    # "Local folders" source, which is how one bad row once hid every local model.
-    try:
-        from routes.models import (
-            _is_main_gguf_filename,
-            _is_model_directory,
-            _local_pipeline_index,
-            _servable_gguf_names,
-        )
-    except ImportError:
-        return True
+    from hub.services.models.common import (
+        _is_diffusers_pipeline_dir,
+        _is_main_gguf_filename,
+        _is_model_directory,
+    )
+    from utils.paths.path_utils import is_appledouble_metadata
 
     return (
-        any(_is_main_gguf_filename(name) for name in _servable_gguf_names(path))
+        any(
+            _is_main_gguf_filename(file.name) and not is_appledouble_metadata(file)
+            for file in path.glob("*.gguf")
+        )
         or _is_model_directory(path)
-        or _local_pipeline_index(path)
+        or _is_diffusers_pipeline_dir(path)
     )
 
 
@@ -248,18 +267,29 @@ def _local_is_a_diffusers_pipeline(model) -> bool:
     gates pass it while the payload check accepts its pipeline index. The cached path says
     this with the row's ``diffusers`` flag; this is the local twin.
     """
-    try:
-        from routes.models import _local_is_diffusers
-    except ImportError:
-        return False
+    from hub.services.models.catalog_classification import _local_is_diffusers
     return bool(_local_is_diffusers(model))
 
 
-def local_folder_entries() -> List[ModelEntry]:
-    from routes.models import _local_model_can_chat, _local_model_task, collect_local_models
+def _local_model_task(model) -> Optional[str]:
+    from hub.services.models.catalog_classification import _local_model_task as classify
+    return classify(model)
 
+
+def _local_model_can_chat(model) -> Optional[bool]:
+    from hub.services.models.catalog_classification import _local_model_can_chat as classify
+    return classify(model)
+
+
+def _local_catalog_rows():
+    from hub.services.models.local_inventory import list_local_models_response
+    response = asyncio.run(list_local_models_response(str(Path("./models").resolve())))
+    return response.models
+
+
+def local_folder_entries() -> List[ModelEntry]:
     entries = []
-    for model in collect_local_models(Path("./models").resolve()):
+    for model in _local_catalog_rows():
         if model.source not in LOCAL_SOURCES or model.partial:
             continue
         is_gguf = model.model_format == "gguf" or model.path.lower().endswith(".gguf")
@@ -279,9 +309,7 @@ def local_folder_entries() -> List[ModelEntry]:
                 "Local folders",
                 model.display_name,
                 "gguf" if is_gguf else "",
-                # LocalModelInfo carries `id`, not `load_id`; reading load_id raised
-                # AttributeError, which _safe() swallowed, dropping the whole source.
-                model.id,
+                model.load_id or model.id,
             )
         )
     return entries
