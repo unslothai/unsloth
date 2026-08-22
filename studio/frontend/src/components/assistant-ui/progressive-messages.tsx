@@ -45,6 +45,10 @@ import {
   initialWindow,
   widen,
 } from "@/components/assistant-ui/progressive-mount-controller";
+import {
+  type ThreadMessageRole,
+  rendersAsRow,
+} from "@/components/assistant-ui/thread-message-slot";
 import { useAdjustForContentInsertedAbove } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 
 /**
@@ -203,8 +207,28 @@ function useProgressiveMountWindow(
     [aui],
   );
 
+  // Which indices actually paint, read IMPERATIVELY off the store for the same reason isRunning is:
+  // a `useAuiState` selector touching the messages array runs on every store write, and the
+  // composer is controlled off store state, so that would walk the thread once per keystroke and
+  // once per streamed token. This is called only where a window is armed -- mount, thread switch,
+  // and the commit that first brings messages in -- so it costs one snapshot each time, not one
+  // per render. See thread-research-presence.ts for the same hazard.
+  const renderableAt = useCallback(() => {
+    const messages = aui.thread().getState().messages as ReadonlyArray<{
+      role?: ThreadMessageRole;
+      composer?: { isEditing?: boolean };
+    }>;
+    return (index: number) => {
+      const message = messages[index];
+      // A shape this cannot read counts as renderable, which degrades to the count-based window
+      // that shipped before. The opposite default would silently stop windowing altogether.
+      if (message?.role == null) return true;
+      return rendersAsRow(message.role, message.composer?.isEditing === true);
+    };
+  }, [aui]);
+
   const [mountWindow, setMountWindow] = useState<MountWindow>(() =>
-    initialWindow(count, isRunningNow()),
+    initialWindow(count, isRunningNow(), renderableAt()),
   );
 
   // Re-arm per thread, adjusting state during render as React documents, so the previous thread's
@@ -218,7 +242,7 @@ function useProgressiveMountWindow(
   const [previousKey, setPreviousKey] = useState(resetKey);
   if (previousKey !== resetKey) {
     setPreviousKey(resetKey);
-    setMountWindow(initialWindow(count, isRunningNow()));
+    setMountWindow(initialWindow(count, isRunningNow(), renderableAt()));
   }
 
   // The commit that puts the FIRST rows into an empty tree.
@@ -239,7 +263,7 @@ function useProgressiveMountWindow(
     setPreviousCount(count);
     // Same call as the mount path, so a run in flight suppresses the window here too.
     if (previousCount === 0 && count > 0) {
-      setMountWindow(initialWindow(count, isRunningNow()));
+      setMountWindow(initialWindow(count, isRunningNow(), renderableAt()));
     }
   }
 

@@ -81,9 +81,33 @@ export const CHUNK_MESSAGES = 32;
  * the same scroll position, and a run starting under a short window would commit its reply into a
  * tree that has not reached it. A mid-run thread was mounted a moment ago anyway.
  */
-export function initialWindow(count: number, isRunning: boolean): MountWindow {
+export function initialWindow(
+  count: number,
+  isRunning: boolean,
+  isRenderable?: (index: number) => boolean,
+): MountWindow {
   if (isRunning || count < MIN_PROGRESSIVE_MESSAGES) return null;
-  return { start: Math.max(0, count - INITIAL_MESSAGES) };
+  // Sized on rows that RENDER, not on messages. A message whose role the thread supplies no
+  // component for paints nothing at all -- `threadMessageKind` returns "none" and `ThreadMessage`
+  // returns null -- so it has no height. Counting those into the tail opens an imported
+  // conversation ending in system messages on sixteen zero-height rows and no conversation, until
+  // a later widening frame rescues it: the exact stall this window exists to remove. Both
+  // importers preserve "system" (chat-import.ts, openwebui-import.ts).
+  //
+  // Optional so the arithmetic stays testable on its own and `stepsToCover` keeps a pure form; a
+  // caller that cannot say what renders gets the old count-based window.
+  if (!isRenderable) return { start: Math.max(0, count - INITIAL_MESSAGES) };
+  // Walk back from the end until the window holds a full tail of renderable rows. Reaching
+  // further back only ever mounts MORE, so this cannot shrink the window or unmount anything.
+  let renderable = 0;
+  for (let index = count - 1; index >= 0; index -= 1) {
+    if (!isRenderable(index)) continue;
+    renderable += 1;
+    if (renderable >= INITIAL_MESSAGES) return { start: index };
+  }
+  // Fewer renderable rows in the whole thread than one tail: there is nothing to withhold, and
+  // withholding anyway would hide part of the little there is to see.
+  return null;
 }
 
 /** True once the window admits every message, which is when the restriction can be dropped. */

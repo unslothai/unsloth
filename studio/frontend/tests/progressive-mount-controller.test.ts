@@ -223,3 +223,95 @@ test("a shrink the browser already clamped is not corrected twice", () => {
     -500,
   );
 });
+
+// A row that does not render is not a row. `threadMessageKind` returns "none" for any role the
+// thread supplies no component for, and `ThreadMessage` renders null for it, so the message
+// occupies no height. Sizing the tail by message COUNT therefore lets a thread open on sixteen
+// invisible rows and paint no conversation at all, which is the stall this window exists to
+// remove rather than cause. Imports keep the roles that do this: chat-import.ts and
+// openwebui-import.ts both preserve "system".
+
+/** Renderable everywhere except a tail of `systemTail` messages. */
+function tailIsUnrenderable(count: number, systemTail: number) {
+  return (index: number) => index < count - systemTail;
+}
+
+/** How many rows the first commit would actually paint. */
+function visibleRows(
+  window: MountWindow,
+  count: number,
+  renders: (index: number) => boolean,
+): number {
+  let visible = 0;
+  for (
+    let index = window == null ? 0 : window.start;
+    index < count;
+    index += 1
+  ) {
+    if (renders(index)) visible += 1;
+  }
+  return visible;
+}
+
+test("the initial tail is sized on rows that render, not on message count", () => {
+  const count = 220;
+  const renders = tailIsUnrenderable(count, INITIAL_MESSAGES);
+  const w = initialWindow(count, false, renders);
+  // The whole point: the first commit paints a full tail of CONVERSATION, not sixteen blanks.
+  assert.equal(visibleRows(w, count, renders), INITIAL_MESSAGES);
+  // And it got there by reaching further back, never by mounting less.
+  assert.ok(w != null && w.start < count - INITIAL_MESSAGES);
+});
+
+test("a tail of unrenderable rows still only ever widens", () => {
+  const count = 220;
+  const renders = tailIsUnrenderable(count, 40);
+  const w = initialWindow(count, false, renders);
+  // Reaching back for renderable rows must not push `start` past the end or below zero, or widen
+  // would unmount what this just mounted.
+  assert.ok(w != null && w.start >= 0 && w.start < count);
+  assert.equal(visibleRows(w, count, renders), INITIAL_MESSAGES);
+  // Still converges.
+  let current: MountWindow = w;
+  let steps = 0;
+  while (current != null) {
+    const next = widen(current, count);
+    assert.ok(
+      next == null || next.start < current.start,
+      "start must only fall",
+    );
+    current = next;
+    steps += 1;
+    assert.ok(steps <= count + 2, "widen made no progress");
+  }
+});
+
+test("a thread with too few renderable rows is not windowed at all", () => {
+  // Nothing to withhold: withholding here would hide part of the little there is to see.
+  const count = 220;
+  assert.equal(
+    initialWindow(count, false, () => false),
+    null,
+  );
+  assert.equal(
+    initialWindow(
+      count,
+      false,
+      (index) => index >= count - (INITIAL_MESSAGES - 1),
+    ),
+    null,
+  );
+});
+
+test("omitting the predicate keeps the count-based window", () => {
+  // Callers that cannot say what renders (the tests above, stepsToCover) must behave as before.
+  assert.deepEqual(initialWindow(220, false), {
+    start: 220 - INITIAL_MESSAGES,
+  });
+  assert.deepEqual(
+    initialWindow(220, false, () => true),
+    {
+      start: 220 - INITIAL_MESSAGES,
+    },
+  );
+});
