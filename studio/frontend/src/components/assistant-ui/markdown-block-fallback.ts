@@ -23,11 +23,8 @@
  * all an empty box where their answer used to be.
  */
 
-/** A fence spanning the whole block, the shape Streamdown splits blocks into. */
-const WHOLE_BLOCK_FENCE = /^ {0,3}(`{3,}|~{3,})([^\r\n]*)\r?\n([\s\S]*?)(?:\r?\n {0,3}\1\s*)?$/;
-
 export type MarkdownBlockFallback = {
-  /** The text to show. Never empty when the block had any content. */
+  /** The text to show. Empty only when the block itself carried no content. */
   text: string;
   /** The fence's language tag, when the block was a fence and named one. */
   language: string | null;
@@ -35,18 +32,98 @@ export type MarkdownBlockFallback = {
   fenced: boolean;
 };
 
+type OpeningFence = {
+  /** The opening run, whose CHARACTER and LENGTH both constrain the close. */
+  marker: string;
+  /** Everything after the run on the opening line, the info string. */
+  info: string;
+  /** The block after the opening line. */
+  body: string;
+};
+
+/**
+ * Scanned rather than matched.
+ *
+ * The regex this replaces put `[^\r\n]*` straight after `` `{3,} ``, and the two
+ * compete for the same backticks, so an opening run with no line break after it
+ * backtracks quadratically. Scanning takes the run greedily once and never
+ * reconsiders, which is linear by construction on any input.
+ */
+function openingFence(content: string): OpeningFence | null {
+  let i = 0;
+  while (i < 3 && content[i] === " ") i += 1;
+  const char = content[i];
+  if (char !== "`" && char !== "~") return null;
+  let run = 0;
+  while (content[i + run] === char) run += 1;
+  if (run < 3) return null;
+  const lineEnd = content.indexOf("\n", i + run);
+  // No line break yet means the fence has not opened; it is still the literal
+  // characters the model has sent so far.
+  if (lineEnd === -1) return null;
+  const info = content.slice(i + run, lineEnd).replace(/\r$/, "");
+  return { marker: char.repeat(run), info, body: content.slice(lineEnd + 1) };
+}
+
+/**
+ * Whether `line` closes a fence opened with `marker`.
+ *
+ * CommonMark 0.31.2 requires the closing fence to use the same character and
+ * "at least as many" of it, so the opening length is a MINIMUM and not a match:
+ * a four-backtick close is how a model closes a fence whose body contains a
+ * three-backtick one. The previous back-reference demanded the exact same run
+ * and left the close on screen as if it were code.
+ */
+function closesFence(line: string, marker: string): boolean {
+  let i = 0;
+  while (i < 3 && line[i] === " ") i += 1;
+  let run = 0;
+  while (line[i + run] === marker[0]) run += 1;
+  if (run < marker.length) return false;
+  // A closing fence carries no info string; only trailing spaces are allowed.
+  return /^[ \t]*$/.test(line.slice(i + run));
+}
+
 /**
  * The readable form of a block that failed to render.
  *
  * Falls back to the block's own source unchanged for anything that is not a
  * whole-block fence: a paragraph, a list or a table is already readable as
  * Markdown, and inventing a renderer here would be a second thing to go wrong.
+ *
+ * This runs only once rendering has ALREADY failed, so it is the last thing
+ * between the reader and a lost block. Getting the fence wrong here does not
+ * cost a nicety, it puts stray backticks in the only view of the answer that
+ * still exists.
  */
 export function markdownBlockFallback(content: string): MarkdownBlockFallback {
-  const match = content.match(WHOLE_BLOCK_FENCE);
-  if (!match) {
+  const open = openingFence(content);
+  if (!open) {
     return { text: content, language: null, fenced: false };
   }
-  const language = match[2].trim().split(/\s+/)[0] || null;
-  return { text: match[3], language, fenced: true };
+  const language = open.info.trim().split(/\s+/)[0] || null;
+  return { text: stripClosingFence(open.body, open.marker), language, fenced: true };
+}
+
+/**
+ * The body with its closing fence removed, or unchanged when it has none.
+ *
+ * Only the block's LAST line is considered, which is what makes an unclosed
+ * fence degrade to all of itself: the failure happens mid-fence, long before it
+ * closes, and that is exactly when the reader needs the characters.
+ */
+function stripClosingFence(body: string, marker: string): string {
+  // The line break before the closing fence belongs to the fence's line, and a
+  // block may or may not carry a trailing one of its own.
+  const withoutTrailingBreak = body.replace(/\r?\n$/, "");
+  const lastBreak = withoutTrailingBreak.lastIndexOf("\n");
+  if (!closesFence(withoutTrailingBreak.slice(lastBreak + 1), marker)) {
+    return body;
+  }
+  // An empty fence closes on the line after it opens, so there is no body at
+  // all. Returning the closing run here is what showed ``` as its own code.
+  if (lastBreak === -1) return "";
+  const end =
+    withoutTrailingBreak[lastBreak - 1] === "\r" ? lastBreak - 1 : lastBreak;
+  return withoutTrailingBreak.slice(0, end);
 }

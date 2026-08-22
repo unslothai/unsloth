@@ -118,16 +118,51 @@ test("prose is handed back unchanged and is not treated as a fence", () => {
   );
 });
 
+test("a closing fence longer than the opening one still closes the block", () => {
+  // CommonMark 0.31.2 requires the close to carry AT LEAST as many characters
+  // as the open, so a four-backtick close is legitimate and is how a model
+  // closes a fence whose body contains a three-backtick one. Demanding the same
+  // run left the close on screen as though it were the last line of the code.
+  const fallback = markdownBlockFallback("```python\n" + FENCE_BODY + "\n````");
+
+  assert.equal(
+    fallback.text,
+    FENCE_BODY,
+    "a longer closing fence was not recognised, so the reader sees stray backticks below their code",
+  );
+  assert.equal(fallback.language, "python");
+  assert.equal(fallback.fenced, true);
+});
+
+test("a fence closed by a longer run keeps an inner fence in the body", () => {
+  // The reason the rule exists: the four-backtick fence is carrying a
+  // three-backtick one, which has to survive as content.
+  const fallback = markdownBlockFallback("````md\n```py\nx = 1\n```\n````");
+
+  assert.equal(fallback.text, "```py\nx = 1\n```");
+  assert.equal(fallback.language, "md");
+});
+
+test("an empty fence degrades to nothing, not to its own closing backticks", () => {
+  const fallback = markdownBlockFallback("```\n```");
+
+  assert.equal(
+    fallback.text,
+    "",
+    "the closing fence was returned as the body, so an empty code block renders ``` as if the model had written it",
+  );
+  assert.equal(fallback.fenced, true);
+});
+
 test("a block with content never degrades to nothing", () => {
   for (const content of [
     "```python\nx = 1\n```",
-    "```\n```",
     "plain",
     "| a | b |\n|---|---|\n| 1 | 2 |",
   ]) {
     const fallback = markdownBlockFallback(content);
     assert.ok(
-      fallback.text.length > 0 || content.trim() === "```\n```",
+      fallback.text.length > 0,
       `a non-empty block degraded to an empty string: ${JSON.stringify(content)}`,
     );
   }
