@@ -178,6 +178,9 @@ huggingfacenotorch = [
 # nothing to resolve and pip fails the whole install rather than skipping audio.
 # Gate on the platforms that have a wheel, matching
 # PLATFORM_LACKS_TORCHCODEC_WHEEL in studio/install_python_stack.py.
+audio-torch211 = [
+    "torchcodec>=0.11.0,<0.12.0 ; python_version >= '3.10' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
+]
 audio-torch210 = [
     "torchcodec>=0.10.0,<0.11.0 ; python_version >= '3.10' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
 ]

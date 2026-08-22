@@ -2,7 +2,10 @@
 descript-audio-codec==1.0.0
 descript-audiotools==0.7.2
 julius==0.2.8
-torchcodec==0.10.0
+# torchcodec is NOT pinned here: its wheels are torch-ABI specific and a
+# requirements file cannot branch on the installed torch minor (environment
+# markers cannot see it). install_python_stack._select_torchcodec_spec picks
+# the matching line right after this file is installed.
 snac==1.2.1
 
 # peft 0.19.0 causes export subprocess shutdown issues in Unsloth;

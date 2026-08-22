@@ -16,8 +16,10 @@ that installs it sits outside every skip.
 from __future__ import annotations
 
 import ast
+import io
 import pathlib
 import re
+import tokenize
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 REQ_ROOT = REPO_ROOT / "studio" / "backend" / "requirements"
@@ -39,6 +41,34 @@ def _requirements(path: pathlib.Path) -> list[str]:
         if text and not text.startswith("-"):
             out.append(text)
     return out
+
+
+def _code_only(source: str) -> str:
+    """`source` with comment text blanked out, offsets preserved.
+
+    The ordering check below is a source scan for requirements filenames, and it has to
+    read them as *installs*. A prose mention of a requirements file in a comment is not
+    one, so counting it fires on documentation rather than on behaviour. Blanking with
+    spaces rather than deleting keeps every remaining index equal to the real offset.
+    Uses tokenize so a `#` inside a string literal is left alone.
+    """
+    lines = source.splitlines(keepends = True)
+    starts, offset = [], 0
+    for line in lines:
+        starts.append(offset)
+        offset += len(line)
+    out = list(source)
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+        comments = [tok for tok in tokens if tok.type == tokenize.COMMENT]
+    except (tokenize.TokenError, IndentationError, SyntaxError):  # pragma: no cover
+        return source
+    for tok in comments:
+        begin = starts[tok.start[0] - 1] + tok.start[1]
+        for index in range(begin, begin + len(tok.string)):
+            if out[index] != "\n":
+                out[index] = " "
+    return "".join(out)
 
 
 def test_the_pin_file_exists_and_names_an_exact_revision():
@@ -115,7 +145,7 @@ def test_the_pin_step_is_not_gated_by_skip_base_or_no_torch():
 def test_the_pin_step_runs_after_every_other_requirements_install():
     """Ordering matters: a later `uv pip install -r ...` can re-resolve diffusers back to a
     release. Keeping the pin last means nothing is left that could walk it forward."""
-    source = STACK.read_text(encoding = "utf-8")
+    source = _code_only(STACK.read_text(encoding = "utf-8"))
     pin_at = source.index("diffusers-pin.txt")
     later = [
         name
@@ -131,6 +161,37 @@ def test_the_pin_step_runs_after_every_other_requirements_install():
         if source.rfind(name) > pin_at
     ]
     assert not later, f"these requirements files are installed after the diffusers pin: {later}"
+
+
+def test_the_ordering_check_reads_installs_not_prose():
+    """_code_only has to blank comments and only comments.
+
+    The torchcodec step sits after the diffusers pin and its comment explains why the
+    spec cannot live in extras-no-deps.txt. That sentence is documentation, so the
+    ordering check above must not read it as a later install -- while a real later
+    install of the same file still has to trip it.
+    """
+    pin = 'pip_install("diffusers pin", "-r", "diffusers-pin.txt")\n'
+
+    prose = _code_only(pin + "# cannot live in extras-no-deps.txt because markers\n")
+    assert prose.rfind("extras-no-deps.txt") < prose.index(
+        "diffusers-pin.txt"
+    ), "a commented mention of a requirements file must not count as an install"
+
+    real = _code_only(pin + 'pip_install("extras", "-r", "extras-no-deps.txt")\n')
+    assert real.rfind("extras-no-deps.txt") > real.index(
+        "diffusers-pin.txt"
+    ), "a genuine later install must still be caught"
+
+    # A `#` inside a string literal is not a comment and must survive intact.
+    kept = _code_only('marker = "extras-no-deps.txt#egg"\n')
+    assert "extras-no-deps.txt#egg" in kept
+
+    # Blanking rather than deleting keeps every surviving offset truthful.
+    source = STACK.read_text(encoding = "utf-8")
+    blanked = _code_only(source)
+    assert len(blanked) == len(source)
+    assert blanked.index("diffusers-pin.txt") == source.index("diffusers-pin.txt")
 
 
 def test_install_sh_still_delegates_the_core_package_skip():

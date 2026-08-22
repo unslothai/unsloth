@@ -100,7 +100,10 @@ COLAB_ORACLE_BASE_URL = "https://raw.githubusercontent.com/googlecolab/backend-i
 
 # torch.minor -> set of compatible torchcodec.minor strings.
 # Source: pytorch/torchcodec compatibility matrix on its README.
+# Mirrors unsloth/import_fixes.py::_TORCH_TORCHCODEC_MINORS (asserted equal by
+# tests/python/test_torchcodec_torch_compat.py).
 TORCH_TORCHCODEC: dict[str, set[str]] = {
+    "2.11": {"0.11"},
     "2.10": {"0.10"},
     "2.9": {"0.8", "0.9"},
     "2.8": {"0.6", "0.7"},
@@ -108,6 +111,12 @@ TORCH_TORCHCODEC: dict[str, set[str]] = {
     "2.6": {"0.2", "0.3"},
     "2.5": {"0.1", "0.2"},
 }
+
+# torchcodec 0.12+ is ABI-stable against torch >= 2.11, so that half of the
+# matrix is open-ended and cannot be written as a finite set of minors. Mirrors
+# unsloth/import_fixes.py::_TORCHCODEC_ABI_STABLE_{TORCH,CODEC}.
+TORCHCODEC_ABI_STABLE_TORCH = "2.11"
+TORCHCODEC_ABI_STABLE_CODEC = "0.12"
 
 # When peft >= trigger is on the resolved set, torchao >= floor must also be.
 PEFT_TORCHAO_FLOOR: list[dict[str, str]] = [
@@ -619,11 +628,31 @@ def rule_inst_004_torchcodec_torch(
     codec_v = res.get("torchcodec")
     if not torch_v or not codec_v:
         return findings
+    if (
+        cmp_versions(torch_v, TORCHCODEC_ABI_STABLE_TORCH) >= 0
+        and cmp_versions(codec_v, TORCHCODEC_ABI_STABLE_CODEC) >= 0
+    ):
+        return findings  # ABI-stable pairing, not locked to one torch minor
     t_minor = version_minor(torch_v)
     c_minor = version_minor(codec_v)
     allowed = TORCH_TORCHCODEC.get(t_minor)
     if allowed is None:
-        return findings  # unknown torch minor — don't flag
+        if cmp_versions(torch_v, TORCHCODEC_ABI_STABLE_TORCH) < 0:
+            return findings  # torch older than the table — don't flag
+        # Torch at or past the ABI-stable floor with a pre-0.12 torchcodec: the
+        # ABI-stable branch above already returned for 0.12+, so this pin is a
+        # legacy build locked to an older torch minor and cannot load.
+        findings.append(
+            Finding(
+                rule = "R-INST-004",
+                file = file,
+                cell = cell_idx,
+                severity = "error",
+                message = f"torch=={torch_v} (minor {t_minor}) is incompatible with torchcodec=={codec_v} (minor {c_minor}); torchcodec <{TORCHCODEC_ABI_STABLE_CODEC} is built against a single older torch minor",
+                hint = f"pin `torchcodec>={TORCHCODEC_ABI_STABLE_CODEC}.0` (the ABI-stable line, which targets torch >={TORCHCODEC_ABI_STABLE_TORCH})",
+            )
+        )
+        return findings
     if c_minor not in allowed:
         findings.append(
             Finding(
