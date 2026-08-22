@@ -139,17 +139,34 @@ test("a completing stream cannot downgrade a fence that was highlighted while it
   );
 });
 
-test("the observer is rooted at the thread scroller, not at the document", () => {
-  // With `root` unset the root is the document viewport and `rootMargin` expands THAT, while the
-  // intersection stays clipped by the nested scroller. The lookahead would be worth nothing.
+test("the observer is rooted at the nearest SCROLLING ancestor, found not named", () => {
+  // Two failures this pins, and they are different from each other.
+  //
+  // `root: null` is the document viewport, so `rootMargin` expands a rectangle that is not the
+  // one clipping and the lookahead is worth nothing. That was the review item.
+  //
+  // Matching two known selectors walks past the reasoning pane, which while streaming is an
+  // `overflow-y-auto` `max-h-64` window holding an arbitrarily long trace. Intersection was still
+  // correct there, because intermediate scrollers clip, but the one-viewport lookahead was not:
+  // measured 3 of 10 fences intersecting with and without the margin when rooted at the thread
+  // viewport, against 5 of 10 rooted at the 256px pane.
   assert.ok(
     /root:\s*scrollerOf\(node\)/.test(SOURCE),
-    "the observer root must be the thread's own scroll container",
+    "the observer root must be the fence's own scrolling ancestor",
   );
   assert.ok(
-    SOURCE.includes("data-slot='thread-viewport'"),
-    "the scroller is found by the thread viewport slot",
+    !/closest<HTMLElement>\("\[data-slot='thread-viewport'\]"\)/.test(SOURCE),
+    "a named-selector lookup walks past the reasoning pane's scroller, which matches neither name",
   );
+  const fn = SOURCE.slice(SOURCE.indexOf("const scrollerOf"), SOURCE.indexOf("const scrollerOf") + 320);
+  assert.ok(
+    fn.includes("el.parentElement") && fn.includes("isScrollable(el)"),
+    "it must WALK to the nearest scrollable ancestor rather than matching known names",
+  );
+  const pred = SOURCE.slice(SOURCE.indexOf("const isScrollable"), SOURCE.indexOf("const scrollerOf"));
+  for (const token of ['"auto"', '"scroll"', '"overlay"', "scrollHeight > el.clientHeight"]) {
+    assert.ok(pred.includes(token), `the scrollable test must consider ${token}`);
+  }
 });
 
 test("with the flag off the hook writes no state, builds no observer and reads no layout", () => {

@@ -231,10 +231,43 @@ if (typeof window !== "undefined" && typeof window.addEventListener === "functio
   });
 }
 
-/** The thread's own scroll container, which is what a fence's visibility is relative to. */
-const scrollerOf = (node: HTMLElement): HTMLElement | null =>
-  node.closest<HTMLElement>("[data-slot='thread-viewport']")
-  ?? node.closest<HTMLElement>(".aui-thread-viewport");
+/*
+ * THE NEAREST SCROLLING ANCESTOR, found rather than named.
+ *
+ * This used to match two known selectors, `[data-slot='thread-viewport']` and
+ * `.aui-thread-viewport`, and `closest()` walks straight past anything that matches neither. The
+ * one that matters is the reasoning pane: while a reply streams, `reasoning.tsx` gives its trace
+ * `overflow-y-auto` and `max-h-64` and pins it to the bottom, so the reader is looking at an
+ * arbitrarily long trace through a 256 px window nested inside the thread scroller.
+ *
+ * What this is NOT. It is not a correctness fix. Intermediate scrollers clip, so intersection was
+ * always computed correctly and fences inside that pane were always deferred properly; measured in
+ * Chromium with ten fences in a 256 px inner scroller inside a 400 px outer one, 3 of 10 reported
+ * intersecting either way. It is a LOOKAHEAD fix. `rootMargin` expands the ROOT's rectangle, so
+ * rooting at the thread viewport expanded a rectangle the reader is not looking through and the
+ * one-viewport warning was worth nothing inside the pane: the "100% 0px" column and the no-margin
+ * column were identical at 3 of 10, while rooting at the inner scroller gave 5 of 10. The
+ * user-visible consequence of getting it wrong is narrow and real: a fence scrolling into the
+ * 256 px window gets no pre-warm and shows the plain shell for the frames the upgrade takes.
+ *
+ * `null` is deliberately still possible and is deliberately NOT the default: a fence with no
+ * scrolling ancestor really is clipped by the document viewport, but assuming that when a scroller
+ * exists is the bug the review caught.
+ */
+const isScrollable = (el: HTMLElement): boolean => {
+  const overflowY = getComputedStyle(el).overflowY;
+  return (
+    (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay")
+    && el.scrollHeight > el.clientHeight
+  );
+};
+
+const scrollerOf = (node: HTMLElement): HTMLElement | null => {
+  for (let el = node.parentElement; el !== null; el = el.parentElement) {
+    if (isScrollable(el)) return el;
+  }
+  return null;
+};
 
 /**
  * @param enabled  false on the shipped default, where this hook must cost nothing at all: no
