@@ -16,7 +16,10 @@ THREE properties, and each of them was a bug in an earlier fixture:
    that repeats one fence pays the highlight cost exactly once and reports the other 99 as free,
    which is how a harness measures a 300K-character thread and finds no highlighting cost in it.
    Every fence here carries its unit index in its identifiers, so no two fences in the whole corpus
-   are byte-identical and the cache never hits.
+   are byte-identical and the cache never hits. Unique units are only half of it: a PLAN that hands
+   one unit to more than one turn restores the caching without changing a byte of the corpus, which
+   is what an index clamp in `plan_rung` used to do at the top rung. `check_streamed_units_are_new`
+   states that half, and the manifest is sized from the ladder so no rung can reach it.
 
 3. **The field's own span density.** The captured 90,262-character reply carried 16,186 highlight
    spans, i.e. 5.6 characters per span, which only happens if the content is nearly all fenced
@@ -528,8 +531,11 @@ def freeze(
     out_dir.mkdir(parents = True, exist_ok = True)
     shipped = units_for_chars(max_chars, seed)
     # The manifest covers every unit any rung can reach, including the ones whose text is not
-    # shipped, so a regenerated unit at the 1M rung is still checked byte for byte.
-    all_units = units_for_chars(RUNGS["1M"] * 4, seed)
+    # shipped, so a regenerated unit at the 1M rung is still checked byte for byte. SIZED FROM THE
+    # LADDER, by `manifest_unit_count`, rather than from a bare character budget: the streamed turn
+    # and its follow-ups live PAST the seeded prefix, and a manifest that stops where the prefix
+    # stops leaves them nothing to point at.
+    all_units = [generate_unit(i, seed) for i in range(manifest_unit_count(seed))]
     with (out_dir / "units.jsonl").open("w", encoding = "utf-8") as fh:
         for u in shipped:
             fh.write(json.dumps(u.as_row(), ensure_ascii = False) + "\n")
@@ -709,6 +715,35 @@ FOLLOW_UP_CHARS = 1_500
 # what a 1K-token conversation actually is.
 MULTI_TURN_MIN_CHARS = 20_000
 
+# The largest characters-per-token the FROZEN CORPUS is sized for, which is not the same number as
+# the provisional ratio used to plan a rung. `plan_rung` takes a measured ratio, and a corpus sized
+# at exactly the provisional 4.0 has no material left the moment a machine measures 4.1. A quarter
+# of headroom costs a handful of extra manifest entries -- the text of an unshipped unit is
+# regenerated only when a rung actually reaches it -- and buys every ratio the seeder can plausibly
+# report. Past it `plan_rung` refuses rather than degrades.
+MANIFEST_CHARS_PER_TOKEN = 5.0
+
+
+def manifest_unit_count(
+    seed: int = CORPUS_SEED, chars_per_token: float = MANIFEST_CHARS_PER_TOKEN
+) -> int:
+    """How many units the frozen manifest must carry, DERIVED FROM THE LADDER.
+
+    The corpus used to be sized by a bare `RUNGS["1M"] * 4` character budget, which is exactly the
+    largest rung's seeded target and therefore one unit short of what the largest rung needs. The
+    streamed turn is the unit AFTER the seeded prefix and each follow-up is one after that, so the
+    top rung's stream ran off the end of the manifest and a `min(index, last_index)` clamp folded
+    all three onto the final unit: the opening stream re-sent text already seeded, both follow-ups
+    were byte-identical, and every fence in them hit Shiki's source-keyed cache instead of missing
+    it. The rung that exists to be the most expensive one on the ladder was measured as the
+    cheapest per character, and nothing failed.
+
+    So the ladder sizes the corpus and not the reverse: the longest seeded prefix any rung can ask
+    for, plus one unit per streamed turn beyond it.
+    """
+    prefix = len(units_for_chars(int(max(RUNGS.values()) * chars_per_token), seed))
+    return prefix + STREAM_TURNS
+
 
 @dataclass
 class RungPlan:
@@ -743,6 +778,66 @@ class RungPlan:
         return self.seeded_chars + self.streamed_chars + self.follow_up_chars
 
 
+def _too_small(rung: str, chars_per_token: float, last_index: int, what: str) -> ValueError:
+    """The one message for every way a rung can outgrow the frozen corpus.
+
+    Deliberately an ERROR and not a clamp. The clamp it replaces is how a 1M rung came to stream
+    the same unit three times and report the cheapest per-character cost on the ladder, and a
+    benchmark that quietly measures something smaller than it says is worse than one that stops.
+    """
+    return ValueError(
+        f"the frozen corpus is too small for the {rung} rung at {chars_per_token} chars per "
+        f"token: {what} runs past the manifest, which ends at index {last_index}. Re-freeze with "
+        "`python -m tests.studio.studiobench.fixture.corpus --freeze` after raising "
+        "MANIFEST_CHARS_PER_TOKEN, and note that a re-freeze changes corpus_hash and so ends "
+        "comparability with everything measured before it."
+    )
+
+
+def unit_text(unit: Unit) -> str:
+    """Everything a unit puts on screen, in the order it arrives."""
+    return unit.reasoning + unit.content
+
+
+def check_streamed_units_are_new(plan: RungPlan) -> None:
+    """Every streamed turn must be material the thread has not seen. Raises when it is not.
+
+    This is the corpus's whole reason for existing, restated at the level of a rung plan. Shiki
+    caches highlighted output keyed on the SOURCE STRING, so a fence that has already been rendered
+    once in this thread costs nothing the second time. Property 2 in the module docstring keeps
+    every unit in the corpus distinct; it says nothing about a PLAN that hands the same unit to
+    three turns, which is exactly what the index clamp used to do at the top rung.
+
+    Checked as a PREFIX relation and not equality, because the streamed turns are clipped and a
+    clipped unit is a prefix of the unit it came from. Two turns clipped from one unit are not
+    equal and would pass an equality check while sharing every fence they have.
+
+    Run on every plan rather than only in a test: this is not a property to discover afterwards
+    from a table of numbers that came out lower than they should have.
+    """
+    streamed: list[tuple[str, str]] = []
+    if plan.streamed_unit is not None:
+        streamed.append(("streamed", unit_text(plan.streamed_unit)))
+    for i, unit in enumerate(plan.follow_up_units):
+        streamed.append((f"follow_up[{i}]", unit_text(unit)))
+
+    def fail(what: str, a: str, b: str) -> None:
+        raise ValueError(
+            f"rung {plan.rung}: {a} and {b} {what}. A streamed turn that repeats material already "
+            "on screen hits Shiki's source-keyed cache instead of missing it, so the rung reports "
+            "less work per character than it does. The corpus is too small for this ladder; "
+            "re-freeze it with `--freeze`."
+        )
+
+    seeded = [(f"seeded unit {u.index}", unit_text(u)) for u in plan.seeded_units]
+    for i, (label, text) in enumerate(streamed):
+        if not text:
+            raise ValueError(f"rung {plan.rung}: {label} is empty")
+        for other_label, other in streamed[i + 1 :] + seeded:
+            if text.startswith(other) or other.startswith(text):
+                fail("share a prefix", label, other_label)
+
+
 def plan_rung(
     corpus: Corpus,
     rung: str,
@@ -757,13 +852,6 @@ def plan_rung(
     """
     tokens = RUNGS[rung]
     target_chars = int(tokens * chars_per_token)
-    units = corpus.units_for_chars(target_chars)
-    if not units:
-        units = [corpus.unit(0)]
-    seeded = units[:-1]
-    # The streamed unit is the LAST one: the turn a user is actually waiting on when a long
-    # thread feels slow.
-    streamed = units[-1]
 
     # THE STREAMED TAIL IS THE SAME SIZE AT EVERY RUNG, and the whole size ladder lives in the
     # seeded prefix. This is not tidiness, it is what makes the film mean anything above 10K.
@@ -787,17 +875,36 @@ def plan_rung(
     # Size the SEEDED PREFIX to the remainder, then trim its last unit to land on the target.
     # Growing it a whole unit at a time instead overshoots by up to one turn, which at the 1K
     # rung means 13,333 characters against a 4,000-character budget.
-    seeded = corpus.units_for_chars(seed_target) if seed_target > 0 else []
+    last_index = max(e["index"] for e in corpus.manifest["units"])
+    try:
+        seeded = corpus.units_for_chars(seed_target) if seed_target > 0 else []
+    except KeyError as exc:
+        # The prefix alone outgrew the manifest, before any streamed turn was even asked for.
+        raise _too_small(rung, chars_per_token, last_index, "its seeded prefix alone") from exc
     if seeded:
         overshoot = sum(u.chars for u in seeded) - seed_target
         if overshoot > 0:
             seeded[-1] = seeded[-1].clipped_to(max(1, seeded[-1].chars - overshoot))
 
-    # The streamed turn is the next one after the prefix, clipped to the fixed tail.
-    # The next turn after the prefix, or the last one the manifest has. At 1M the prefix consumes
-    # nearly the whole frozen corpus, and running off the end must not be a KeyError in the middle
-    # of a 60-minute tier.
-    last_index = max(e["index"] for e in corpus.manifest["units"])
+    # The streamed turn is the next one after the prefix, clipped to the fixed tail, and each
+    # follow-up is the one after that.
+    #
+    # NO CLAMP HERE, deliberately. This used to be `min(index, last_index)`, so a rung whose prefix
+    # reached the end of the manifest silently got the final unit three times over: the opening
+    # stream re-sent text the seeded prefix already held, both follow-ups were byte-identical, and
+    # every fence in all three hit Shiki's source-keyed cache. Running off the end is a corpus that
+    # is too small for the ladder, and the only honest answer is to say so and stop. `--freeze`
+    # sizes the manifest from the ladder (`manifest_unit_count`) precisely so this cannot be
+    # reached by any supported configuration.
+    needed = len(seeded) + turns - 1
+    if needed > last_index:
+        raise _too_small(
+            rung,
+            chars_per_token,
+            last_index,
+            f"its {len(seeded)}-unit seeded prefix plus {turns} streamed turns need units up to "
+            f"index {needed}, which",
+        )
 
     # The streaming budget is SPLIT across the opening turn and the follow-ups, so a cell that
     # streams three times takes the same wall clock as one that streams once. Turns are taken from
@@ -807,13 +914,10 @@ def plan_rung(
     # during-generation slots are timed against the opening stream, so it has to outlast them;
     # splitting the budget between turns left it draining in four seconds and those slots then ran
     # against a finished reply while still being labelled "during generation".
-    streamed = corpus.unit(min(len(seeded), last_index)).clipped_to(tail_target)
-    follow_ups = [
-        corpus.unit(min(len(seeded) + i, last_index)).clipped_to(FOLLOW_UP_CHARS)
-        for i in range(1, turns)
-    ]
+    streamed = corpus.unit(len(seeded)).clipped_to(tail_target)
+    follow_ups = [corpus.unit(len(seeded) + i).clipped_to(FOLLOW_UP_CHARS) for i in range(1, turns)]
 
-    return RungPlan(
+    plan = RungPlan(
         rung = rung,
         target_tokens = tokens,
         target_chars = target_chars,
@@ -821,6 +925,8 @@ def plan_rung(
         streamed_unit = streamed,
         follow_up_units = follow_ups,
     )
+    check_streamed_units_are_new(plan)
+    return plan
 
 
 def _main(argv: list[str]) -> int:
