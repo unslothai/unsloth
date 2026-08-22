@@ -75,8 +75,17 @@ def arm_of(cell_id: str) -> str:
     return "treatment" if ".treatment." in cell_id else "base"
 
 
+def rung_of(cell_id: str) -> str:
+    return cell_id.split(".", 1)[0]
+
+
 def collect(paths: list[Path]) -> dict:
-    """{(shard, rep, action): {arm: action row}} plus a tally of what was captured at all.
+    """{(shard, rung, rep, action): {arm: action row}} plus a tally of what was captured at all.
+
+    THE RUNG IS PART OF THE IDENTITY. A standard-tier run walks 1K, 10K and 100K inside one
+    repetition, so keying on the repetition alone makes every action collide two rungs deep and
+    only the last one read survives. A stable action that rendered differently at 1K was then
+    overwritten by the matching 100K row and the gate reported success.
 
     A row whose parity is missing or failed is KEPT, as the failed capture it is. Dropping it here
     would delete the evidence that the surface went unmeasured, and the comparison layer needs to
@@ -99,15 +108,19 @@ def collect(paths: list[Path]) -> dict:
                 missing += 1
             cid = r.get("cell_id") or ""
             rep = cid.rsplit(".", 1)[-1]
-            out[(shard, rep, r.get("action"))][arm_of(cid)] = r
+            out[(shard, rung_of(cid), rep, r.get("action"))][arm_of(cid)] = r
     return {"pairs": out, "attempted": attempted, "missing": missing}
 
 
 def compare_all(paths: list[Path]) -> tuple[list[tuple], dict]:
-    """[(action, shard, rep, compare-result)] over every base/treatment pair found."""
+    """[(action, shard, cell, compare-result)] over every base/treatment pair found.
+
+    `cell` is `rung rep`, so the two rungs of one repetition stay two observations.
+    """
     got = collect(paths)
     results = []
-    for (shard, rep, action), sides in sorted(got["pairs"].items()):
+    for (shard, rung, rep, action), sides in sorted(got["pairs"].items()):
+        cell = f"{rung} {rep}"
         if "base" not in sides or "treatment" not in sides:
             # One arm never produced this row at all. Recorded rather than skipped: an action that
             # ran on one arm and not the other is itself a difference between the arms.
@@ -115,7 +128,7 @@ def compare_all(paths: list[Path]) -> tuple[list[tuple], dict]:
                 (
                     action,
                     shard,
-                    rep,
+                    cell,
                     {
                         "verdict": P.NOT_COMPARABLE,
                         "moved": [],
@@ -126,7 +139,7 @@ def compare_all(paths: list[Path]) -> tuple[list[tuple], dict]:
                 )
             )
             continue
-        results.append((action, shard, rep, P.compare_rows(sides["base"], sides["treatment"])))
+        results.append((action, shard, cell, P.compare_rows(sides["base"], sides["treatment"])))
     return results, got
 
 
@@ -140,7 +153,7 @@ def unstable_set(paths: list[Path] | None) -> tuple[frozenset[str], dict, dict]:
     if not paths:
         return UNSTABLE_ACTIONS, {}, {}
     results, _ = compare_all(paths)
-    derived = P.derive_unstable([(a, r) for a, _s, _rep, r in results])
+    derived = P.derive_unstable([(a, r) for a, _s, _cell, r in results])
     checks = P.cross_check(derived, UNSTABLE_ACTIONS)
     measured = frozenset(a for a, row in derived.items() if row["unstable"])
     # UNION, not replacement. An action the null control could not reach -- `image_upload` has no
@@ -163,19 +176,19 @@ def report(paths: list[Path], label: str, unstable: frozenset[str]) -> int:
 
     stable_bad, unstable_bad, blind, style_bad, idle = [], [], [], [], []
     matched = 0
-    for action, shard, rep, r in results:
+    for action, shard, cell, r in results:
         if r["verdict"] == P.NOT_EXERCISED:
-            idle.append((action, shard, rep, [r.get("reason", "")]))
+            idle.append((action, shard, cell, [r.get("reason", "")]))
             continue
         if r["verdict"] == P.NOT_COMPARABLE:
-            blind.append((action, shard, rep, [r.get("reason", "")]))
+            blind.append((action, shard, cell, [r.get("reason", "")]))
             continue
         if r["style_verdict"] == P.DIFFER:
-            style_bad.append((action, shard, rep, [r.get("style_reason", "")]))
+            style_bad.append((action, shard, cell, [r.get("style_reason", "")]))
         if r["verdict"] == P.MATCH:
             matched += 1
             continue
-        entry = (action, shard, rep, r["moved"])
+        entry = (action, shard, cell, r["moved"])
         (unstable_bad if action in unstable else stable_bad).append(entry)
 
     print(f"\n{label}")
@@ -192,37 +205,37 @@ def report(paths: list[Path], label: str, unstable: frozenset[str]) -> int:
 
     if stable_bad:
         print("\n  UI PARITY DIFFERENCES ON STABLE ACTIONS -- these need explaining:")
-        for action, shard, rep, moved in stable_bad:
-            print(f"    {action:<26} {shard} {rep}: {', '.join(moved[:4])}")
+        for action, shard, cell, moved in stable_bad:
+            print(f"    {action:<26} {shard} {cell}: {', '.join(moved[:4])}")
     else:
         print("\n  No stable action rendered differently between the two arms.")
 
     if blind:
         print("\n  NOT COMPARABLE -- these surfaces carry no verdict in either direction:")
-        for action, shard, rep, why in blind[:8]:
-            print(f"    {action:<26} {shard} {rep}: {why[0]}")
+        for action, shard, cell, why in blind[:8]:
+            print(f"    {action:<26} {shard} {cell}: {why[0]}")
 
     if idle:
         # Named surfaces, deduplicated: what matters is WHICH actions this run never opened, not
         # that it failed to open one of them sixteen separate times.
-        names = sorted({action for action, _s, _r, _w in idle})
+        names = sorted({action for action, _s, _c, _w in idle})
         print(
             f"\n  NOT EXERCISED -- {len(idle)} pair(s) over {len(names)} action(s) that did not "
             f"run. These surfaces are UNCHECKED, not unchanged:"
         )
         for name in names:
-            why = next(w[0] for a, _s, _r, w in idle if a == name)
+            why = next(w[0] for a, _s, _c, w in idle if a == name)
             print(f"    {name:<26} {why}")
 
     if style_bad:
         print("\n  (advisory) the bounded computed-style probe differed:")
-        for action, shard, rep, why in style_bad[:8]:
-            print(f"    {action:<26} {shard} {rep}: {why[0]}")
+        for action, shard, cell, why in style_bad[:8]:
+            print(f"    {action:<26} {shard} {cell}: {why[0]}")
 
     if unstable_bad:
         print("\n  (reported, not counted) actions that vary between runs of any build:")
-        for action, shard, rep, moved in unstable_bad[:8]:
-            print(f"    {action:<26} {shard} {rep}: {', '.join(moved[:3])}")
+        for action, shard, cell, moved in unstable_bad[:8]:
+            print(f"    {action:<26} {shard} {cell}: {', '.join(moved[:3])}")
     return 1 if stable_bad else 0
 
 

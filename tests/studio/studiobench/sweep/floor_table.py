@@ -42,6 +42,7 @@ if __package__ in (None, ""):  # pragma: no cover
 from tests.studio.studiobench.scoring.from_payload import (  # noqa: E402
     ACTION_SOURCES,
     FRAME_METRICS,
+    IDLE_WINDOW_KINDS,
     _actions_for,
     _frame_measures,
 )
@@ -60,10 +61,16 @@ def _action_timings(records: list[dict], cid: str) -> dict[str, float]:
     `ran` is checked first. An action that did not happen has no timing worth pairing, and folding
     its absence in as a fast number is the single most common way this harness has produced a
     confident wrong answer.
+
+    AN ACTION WHOSE OWN ASSERTION FAILED IS TREATED THE SAME WAY. `report/payload.py` already
+    records `ran = True` with `expect_ok = False` as a note saying its timings "exist and must not
+    be quoted", and this is where they would be quoted. `keystroke` is the case: if half the
+    characters never reach the controlled component the action still ran, its p95 reads lower for
+    exactly that reason, and pairing it would print the failure as `faster`.
     """
     out: dict[str, float] = {}
     for name, row in _actions_for(records, cid).items():
-        if not row.get("ran"):
+        if not row.get("ran") or row.get("expect_ok") is False:
             continue
         for key, value in (row.get("timings") or {}).items():
             if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -84,14 +91,32 @@ def _action_timings(records: list[dict], cid: str) -> dict[str, float]:
 
 
 def cell_metrics(records: list[dict]) -> dict[str, dict[str, float]]:
-    """{cell_id: {metric: value}} for every COMPLETED cell in the payload."""
+    """{cell_id: {metric: value}} for every COMPLETED cell in the payload.
+
+    SCOPED TO THE CELL'S OWN SESSION, not to its cell id. The payload is append-only and a cell id
+    is REUSED: `--resume` re-runs a cell that died, and a second run into the same output directory
+    repeats every id. Selecting on the id alone pools the dead attempt's windows with the retry's
+    and reports the average as the completed cell, which is a number nothing ever measured.
+
+    IDLE WINDOWS ARE EXCLUDED, exactly as `scoring/from_payload` excludes them. Every cell records a
+    1.5 s `idle:calibrate` window with the frame recorder running, and pooling that quiet into the
+    frame metrics dilutes `time_in_jank_pct` and `jank_index` away from the film that was measured.
+    A metric here has to be the same quantity the rest of the tool calls by that name.
+    """
     out: dict[str, dict[str, float]] = {}
     for row in records:
         if row.get("row_type") != "cell" or not row.get("completed"):
             continue
         cid = row["cell_id"]
-        vals: dict[str, float] = _action_timings(records, cid)
-        windows = [w for w in records if w.get("row_type") == "window" and w.get("cell_id") == cid]
+        sid = row.get("session_id")
+        own = [r for r in records if r.get("cell_id") == cid and r.get("session_id") == sid]
+        vals: dict[str, float] = _action_timings(own, cid)
+        windows = [
+            w
+            for w in own
+            if w.get("row_type") == "window"
+            and str(w.get("kind") or "") not in IDLE_WINDOW_KINDS
+        ]
         for key, m in _frame_measures(windows).items():
             if m.value is not None:
                 vals[key] = float(m.value)
@@ -131,6 +156,16 @@ def paired(records: list[dict], shard: str = "") -> dict[str, list[tuple[float, 
     return out
 
 
+def tiers_of(records: list[dict]) -> set[str]:
+    """EVERY tier in one file, not the first.
+
+    One payload can hold more than one run: the recorder appends, so a second invocation into the
+    same output directory writes a second `run_meta` behind the first. Reading only the first is
+    what let a fast-tier film and a standard-tier film sit in one file and pass the refusal below.
+    """
+    return {str(r.get("tier") or "?") for r in records if r.get("row_type") == "run_meta"} or {"?"}
+
+
 def tier_of(records: list[dict]) -> str:
     for r in records:
         if r.get("row_type") == "run_meta":
@@ -156,7 +191,7 @@ def load(paths: list[Path]) -> tuple[dict[str, list[tuple[float, float]]], set[s
     tiers: set[str] = set()
     for path in paths:
         records = read_rows(path)
-        tiers.add(tier_of(records))
+        tiers |= tiers_of(records)
         for metric, rows in paired(records, shard = str(path.parent.name)).items():
             pooled[metric].extend(rows)
     if len(tiers) > 1:

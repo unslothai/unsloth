@@ -18,6 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 from tests.studio.studiobench.sweep import floor_table as F  # noqa: E402
+from tests.studio.studiobench.sweep import ui_parity as U  # noqa: E402
 
 
 # ── building a payload ───────────────────────────────────────────────
@@ -346,6 +347,180 @@ def test_a_shard_pairs_within_itself_and_never_across(tmp_path):
     pooled, _ = F.load([a, b])
     rows = pooled["message_menu.open_close_ms"]
     assert sorted(rows) == [(1000.0, 500.0), (2000.0, 1000.0)]
+
+
+def test_an_action_whose_own_assertion_failed_contributes_no_timing(tmp_path):
+    # `ran = True, expect_ok = False` is the action that happened and did not do its job. Its p95
+    # is lower BECAUSE it failed, so pairing it prints the failure as an improvement. The payload
+    # notes layer already says these timings must not be quoted.
+    rows = [
+        {"row_type": "run_meta", "tier": "standard"},
+        {"row_type": "cell", "cell_id": "100K.base.rep0", "completed": True},
+        {
+            "row_type": "action",
+            "cell_id": "100K.base.rep0",
+            "action": "keystroke",
+            "ran": True,
+            "expect_ok": False,
+            "timings": {"p95_ms": 3.0},
+            "counts": {"typed_chars": 4.0},
+        },
+    ]
+    out = tmp_path / "e"
+    out.mkdir()
+    (out / "payload.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8"
+    )
+    assert F._action_timings(F.read_rows(out / "payload.jsonl"), "100K.base.rep0") == {}
+
+
+def test_an_action_with_no_expectation_recorded_is_still_harvested(tmp_path):
+    # `expect_ok` is None on an action that asserts nothing, and on every payload recorded before
+    # the field existed. Only an explicit False is a failed assertion.
+    rows = [
+        {"row_type": "run_meta", "tier": "standard"},
+        {"row_type": "cell", "cell_id": "100K.base.rep0", "completed": True},
+        {
+            "row_type": "action",
+            "cell_id": "100K.base.rep0",
+            "action": "keystroke",
+            "ran": True,
+            "expect_ok": None,
+            "timings": {"p95_ms": 3.0},
+        },
+    ]
+    out = tmp_path / "n"
+    out.mkdir()
+    (out / "payload.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8"
+    )
+    assert F._action_timings(F.read_rows(out / "payload.jsonl"), "100K.base.rep0") == {
+        "keystroke.p95_ms": 3.0
+    }
+
+
+def write(tmp_path: Path, name: str, rows: list[dict]) -> Path:
+    out = tmp_path / name
+    out.mkdir(parents = True, exist_ok = True)
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    return path
+
+
+def frame_window(cid: str, kind: str, gaps: list[float], duration_ms: float, **extra) -> dict:
+    row = {
+        "row_type": "window",
+        "cell_id": cid,
+        "kind": kind,
+        "name": f"{kind}:w",
+        "duration_ms": duration_ms,
+        "instruments": {
+            "frames": {
+                "frames_attempted": True,
+                "frame_gaps_ms": gaps,
+                "max_frame_ms": max(gaps),
+            }
+        },
+    }
+    row.update(extra)
+    return row
+
+
+def test_the_enforced_idle_window_is_not_pooled_into_the_frame_metrics(tmp_path):
+    # Every cell records a 1.5 s `idle:calibrate` window with the frame recorder running. Pooling
+    # its quiet into the film halves the jank share, so the column would not be the quantity the
+    # rest of the tool prints under that name.
+    cid = "r100K.base.rep0"
+    rows = [
+        {"row_type": "run_meta", "tier": "standard"},
+        {"row_type": "cell", "cell_id": cid, "completed": True},
+        frame_window(cid, "action", [200.0] * 10, 2000.0),
+        frame_window(cid, "idle", [16.0] * 94, 1500.0),
+    ]
+    vals = F.cell_metrics(F.read_rows(write(tmp_path, "c", rows)))[cid]
+    assert vals["time_in_jank_pct"] == 100.0
+    assert vals["max_frame_ms"] == 200.0
+
+
+def test_a_resumed_cell_is_measured_from_its_own_attempt_only(tmp_path):
+    # `--resume` re-runs a cell that died, and the payload is append-only, so the dead attempt's
+    # windows sit in the file under the SAME cell id. Pooling them into the retry reports a number
+    # that no single run of the film ever produced.
+    cid = "r100K.base.rep0"
+    rows = [
+        {"row_type": "run_meta", "tier": "standard", "session_id": "s1"},
+        {"row_type": "cell", "cell_id": cid, "completed": False, "session_id": "s1"},
+        frame_window(cid, "action", [5000.0] * 10, 2000.0, session_id = "s1"),
+        {"row_type": "run_meta", "tier": "standard", "session_id": "s2"},
+        {"row_type": "cell", "cell_id": cid, "completed": True, "session_id": "s2"},
+        frame_window(cid, "action", [16.0] * 100, 1600.0, session_id = "s2"),
+    ]
+    vals = F.cell_metrics(F.read_rows(write(tmp_path, "r", rows)))[cid]
+    assert vals["max_frame_ms"] == 16.0
+    assert vals["time_in_jank_pct"] == 0.0
+
+
+def test_one_file_holding_two_tiers_is_refused_like_two_files(tmp_path):
+    # The recorder appends, so a second run into the same --out leaves both films in one payload.
+    # Reading only the first run_meta let that file through the refusal it was written for.
+    rows = [
+        {"row_type": "run_meta", "tier": "fast"},
+        *cell("100K", "base", "rep0", {"open_close_ms": 1000.0}),
+        *cell("100K", "treatment", "rep0", {"open_close_ms": 900.0}),
+        {"row_type": "run_meta", "tier": "standard"},
+    ]
+    path = write(tmp_path, "mixed", rows)
+    assert F.tiers_of(F.read_rows(path)) == {"fast", "standard"}
+    with pytest.raises(SystemExit) as exc:
+        F.load([path])
+    assert "different tiers" in str(exc.value)
+
+
+# ── ui parity: the rung is part of a pair's identity ──────────────────
+
+
+def parity_action(cid: str, action: str, digest: str) -> dict:
+    capture = {
+        "parity_attempted": True,
+        "root_kind": "thread",
+        "chars": 10,
+        "digest": digest,
+        "messages": [{"i": 0, "role": "assistant", "chars": 10, "digest": digest}],
+        "overlays": [],
+        "style": {"style_attempted": True, "capped": False, "nodes": []},
+    }
+    return {
+        "row_type": "action",
+        "cell_id": cid,
+        "action": action,
+        "ran": True,
+        "timings": {"open_ms": 5.0},
+        "parity": capture,
+    }
+
+
+def test_a_mismatch_at_a_smaller_rung_survives_the_later_rungs(tmp_path):
+    # A standard-tier repetition walks 1K, 10K and 100K. Keyed on the repetition alone, the 100K
+    # rows overwrite the 1K ones and a real difference at 1K is reported as a pass.
+    rows = [{"row_type": "run_meta", "tier": "standard"}]
+    for rung, base_digest, treat_digest in (("r1K", "AAA", "BBB"), ("r100K", "CCC", "CCC")):
+        rows.append(parity_action(f"{rung}.A0.rep0", "settings", base_digest))
+        rows.append(parity_action(f"{rung}.treatment.rep0", "settings", treat_digest))
+    path = write(tmp_path, "mine", rows)
+
+    assert len(U.collect([path])["pairs"]) == 2
+    results, _ = U.compare_all([path])
+    assert sorted(cell for _a, _s, cell, _r in results) == ["r100K rep0", "r1K rep0"]
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS) == 1
+
+
+def test_matching_rungs_still_report_a_pass(tmp_path):
+    rows = [{"row_type": "run_meta", "tier": "standard"}]
+    for rung in ("r1K", "r10K", "r100K"):
+        rows.append(parity_action(f"{rung}.A0.rep0", "settings", "CCC"))
+        rows.append(parity_action(f"{rung}.treatment.rep0", "settings", "CCC"))
+    path = write(tmp_path, "clean", rows)
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS) == 0
 
 
 def test_main_without_a_floor_says_so_and_still_prints(tmp_path, capsys):
