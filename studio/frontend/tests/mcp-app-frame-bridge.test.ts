@@ -75,7 +75,7 @@ test("the view's handle on the host is its own port", () => {
   );
   assert.ok(
     /for \(const name of \["parent", "top"\]\)/.test(shim),
-    "shadowing parent alone leaves top as an unstamped handle on the host",
+    "shadowing parent alone leaves top as a second, unbound handle on the host",
   );
   assert.ok(
     /source: port,/.test(shim),

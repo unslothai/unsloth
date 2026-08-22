@@ -59,17 +59,6 @@ function isJsonRpc(data: unknown): data is JsonRpcMessage {
 // reported size always wins over it.
 const RESIZE_FALLBACK = `<script>(()=>{const post=()=>parent.postMessage({mcpAppHeight:document.documentElement.scrollHeight},"*");new ResizeObserver(post).observe(document.documentElement);window.addEventListener("load",post);post();})();</script>`;
 
-// Stamped into every message the seeded document sends, because nothing else can
-// tell that document apart from one the frame navigated itself to: the iframe
-// keeps a single contentWindow and an opaque "null" origin across a navigation,
-// and the replacement document's inline scripts run BEFORE the iframe's load
-// event, so revoking on load is already too late. A navigated document never
-// receives this shim, so its messages carry no token and are refused.
-//
-// window.parent is a cross-origin WindowProxy and cannot be monkey-patched, but
-// it CAN be shadowed on the frame's own window -- the same move the sandbox shell
-// makes for localStorage. Shadowing top too: a view reaching for either gets the
-// wrapper, and there is no other handle on the host from inside the sandbox.
 export function bridgeShim(token: string): string {
   const hostOrigin = typeof window === "undefined" ? "" : window.location.origin;
   // The view's handle on the host is a MessageChannel port, not the frame's
