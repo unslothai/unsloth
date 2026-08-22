@@ -370,7 +370,8 @@ jobs:
             tests/studio/test_autoscroll_harness_contract.py \
             tests/studio/test_heavy_thread_harness_contract.py \
             tests/studio/test_heavy_thread_measurement_integrity.py \
-            tests/studio/test_heavy_thread_gap_contract.py -q
+            tests/studio/test_heavy_thread_gap_contract.py \
+            tests/studio/test_code_block_flicker_contract.py -q
 
       - name: Browser smoke for ANSI tool output
         working-directory: ${{ github.workspace }}
