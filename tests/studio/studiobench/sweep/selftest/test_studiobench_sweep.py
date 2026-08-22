@@ -821,7 +821,7 @@ def test_a_cross_session_pair_carries_no_verdict_in_either_direction(tmp_path):
     assert U.report([null], "t", U.UNSTABLE_ACTIONS) == 0
 
 
-def test_an_arm_resumed_inside_the_same_session_still_pairs(tmp_path):
+def test_a_parity_arm_resumed_inside_the_same_session_still_pairs(tmp_path):
     # The other direction, so the refusal above cannot pass by rejecting every resumed payload.
     # Two attempts in ONE session are still one session, the pairs are real, and the instability
     # they show is derived exactly as before.
