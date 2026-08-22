@@ -359,9 +359,7 @@ class TestMemoryBreakdown:
             name = os.path.basename(str(path))
             return self.MAIN_BYTES if name == "model.gguf" else real_size(path)
 
-        monkeypatch.setattr(
-            ri.LlamaCppBackend, "_get_gguf_size_bytes", staticmethod(_size)
-        )
+        monkeypatch.setattr(ri.LlamaCppBackend, "_get_gguf_size_bytes", staticmethod(_size))
 
     def test_weights_do_not_move_with_context(self, config, gqa_gguf):
         # THE invariant the subtraction approach exists to keep. If the context
@@ -419,9 +417,7 @@ class TestMemoryBreakdown:
         )
         assert full.gpu_bytes == full.total_bytes
 
-    def test_no_mmproj_offload_moves_the_projector_and_only_it(
-        self, config, gqa_gguf, tmp_path
-    ):
+    def test_no_mmproj_offload_moves_the_projector_and_only_it(self, config, gqa_gguf, tmp_path):
         # The drafter is the other companion, and it is only ever charged when it
         # lands on the GPU, so this flag must not sweep it off with the projector.
         projector = tmp_path / "mmproj-model.gguf"
@@ -704,9 +700,13 @@ def _estimate(fastapi_request = None, **kwargs):
 
 def _request_with_slots(slots: int):
     """A stand-in for the FastAPI request carrying the server's slot default."""
-    return SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(
-        llama_parallel_slots = slots,
-    )))
+    return SimpleNamespace(
+        app = SimpleNamespace(
+            state = SimpleNamespace(
+                llama_parallel_slots = slots,
+            )
+        )
+    )
 
 
 class TestEstimateMemoryRoute:
@@ -818,7 +818,9 @@ class TestParallelSlotResolution:
     @pytest.fixture(autouse = True)
     def _local_model(self, monkeypatch, gqa_gguf):
         config = SimpleNamespace(
-            identifier = "local/model", gguf_file = gqa_gguf, is_gguf = True,
+            identifier = "local/model",
+            gguf_file = gqa_gguf,
+            is_gguf = True,
             gguf_mmproj_file = None,
         )
         monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
@@ -827,25 +829,30 @@ class TestParallelSlotResolution:
 
     def test_omitted_slots_inherit_the_server_default(self):
         resp = _estimate(
-            model_path = "local/model", n_ctx = 8192,
+            model_path = "local/model",
+            n_ctx = 8192,
             fastapi_request = _request_with_slots(4),
         )
         assert resp.n_parallel == 4
 
     def test_an_explicit_count_still_wins(self):
         resp = _estimate(
-            model_path = "local/model", n_ctx = 8192, n_parallel = 1,
+            model_path = "local/model",
+            n_ctx = 8192,
+            n_parallel = 1,
             fastapi_request = _request_with_slots(4),
         )
         assert resp.n_parallel == 1
 
     def test_more_slots_cost_more(self):
         one = _estimate(
-            model_path = "local/model", n_ctx = 8192,
+            model_path = "local/model",
+            n_ctx = 8192,
             fastapi_request = _request_with_slots(1),
         )
         four = _estimate(
-            model_path = "local/model", n_ctx = 8192,
+            model_path = "local/model",
+            n_ctx = 8192,
             fastapi_request = _request_with_slots(4),
         )
         # The compute buffer takes an output buffer per extra slot, so it always
@@ -875,7 +882,12 @@ class TestNativeLeaseOperation:
     def test_the_route_verifies_the_validate_model_grant(self, monkeypatch):
         seen = {}
 
-        def _resolve(request, *, operation, resolved_ollama_path = None):
+        def _resolve(
+            request,
+            *,
+            operation,
+            resolved_ollama_path = None,
+        ):
             seen["operation"] = operation
             return ("/tmp/dropped.gguf", "dropped.gguf", True)
 
@@ -889,8 +901,7 @@ class TestNativeLeaseOperation:
         # consumeNativePathToken(token, "validate-model"), and this is the list
         # that call is typed against.
         types_ts = (
-            Path(__file__).resolve().parents[2]
-            / "frontend/src/features/native-intents/types.ts"
+            Path(__file__).resolve().parents[2] / "frontend/src/features/native-intents/types.ts"
         ).read_text()
         assert '"validate-model"' in types_ts
         assert "estimate-memory" not in types_ts

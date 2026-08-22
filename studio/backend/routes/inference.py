@@ -11526,9 +11526,7 @@ async def estimate_memory(
             # Only tensor mode spreads the buffers, and only it is worth the probe.
             # A pin counts the cards it names, not every card on the host.
             n_devices = (
-                _guard_device_count(
-                    request.selected_gpu_ids or None, None, tensor_parallel = True
-                )
+                _guard_device_count(request.selected_gpu_ids or None, None, tensor_parallel = True)
                 if request.tensor_parallel
                 else 1
             ),
