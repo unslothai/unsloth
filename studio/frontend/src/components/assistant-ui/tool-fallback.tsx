@@ -352,7 +352,6 @@ function ToolFallbackMcpApp({
       toolName={mcpBareToolName(toolName) ?? toolName}
       ui={result.ui as McpUiResult["ui"]}
       toolArgs={toolArgs}
-      resultText={result.text}
       resultImages={result.images}
       threadId={threadId}
       // execute_tool's scope, so the widget reaches the same stdio process.

@@ -64,8 +64,6 @@ export interface McpAppFrameProps {
   ui: McpUiEnvelope;
   /** The arguments the model called the tool with. */
   toolArgs?: Record<string, unknown>;
-  /** The text the tool returned, replayed as the view's result content. */
-  resultText?: string;
   /** Images the tool returned, replayed alongside that text. */
   resultImages?: { data: string; mimeType: string }[];
   /** Scopes stdio sessions to the conversation's own server process. */
@@ -79,7 +77,6 @@ export function McpAppFrame({
   toolName,
   ui,
   toolArgs,
-  resultText,
   resultImages,
   threadId,
   sessionId,
@@ -139,11 +136,19 @@ export function McpAppFrame({
   // Only a parent-initiated load is fed, so a self-navigated frame can't ask to
   // be re-seeded.
   const pendingPostRef = useRef(false);
+  // The bridge answers the document WE loaded the template into, and nothing
+  // else. A sandboxed frame keeps one contentWindow and reports origin "null"
+  // whatever it navigates to, so neither check below can tell a widget from the
+  // page an ordinary in-widget link just moved it to -- and that page would
+  // otherwise inherit the server's app-visible tools. The second load is the
+  // signal: the first is ours, any after it is a document we did not seed.
+  const bridgeLiveRef = useRef(false);
   // Once the view reports its own size the measured fallback is ignored for
   // good, or it would drag a self-sized widget back on every content change.
   const viewOwnsSizeRef = useRef(false);
   useEffect(() => {
     pendingPostRef.current = true;
+    bridgeLiveRef.current = false;
     viewOwnsSizeRef.current = false;
     setHeight(DEFAULT_HEIGHT);
   }, [src, html]);
@@ -163,9 +168,14 @@ export function McpAppFrame({
     });
     // The view is sent the tool's whole result: dropping the images would show
     // it a different result than the card beside it renders.
-    const seedText = ui.text ?? resultText;
-    const content: Record<string, unknown>[] = seedText
-      ? [{ type: "text", text: seedText }]
+    // ui.text only. It is the tool's own text blocks; the flattened body beside
+    // it is the model-facing transcript, where an image-only result reads
+    // "[1 image attached...]" and a structuredContent-only one is a Python repr
+    // of the payload. Neither is something the server put in its CallToolResult,
+    // and a view told otherwise renders host prose as the tool's answer. No text
+    // blocks means no text block.
+    const content: Record<string, unknown>[] = ui.text
+      ? [{ type: "text", text: ui.text }]
       : [];
     for (const image of resultImages ?? []) {
       content.push({
@@ -188,7 +198,6 @@ export function McpAppFrame({
   }, [
     postToView,
     toolArgs,
-    resultText,
     resultImages,
     ui.text,
     ui.structuredContent,
@@ -196,8 +205,14 @@ export function McpAppFrame({
   ]);
 
   const onLoad = useCallback(() => {
-    if (!pendingPostRef.current || !html) return;
+    if (!pendingPostRef.current || !html) {
+      // A load we did not initiate: the frame navigated itself away from the
+      // template. Whatever answers now is not the widget, so it gets no bridge.
+      bridgeLiveRef.current = false;
+      return;
+    }
     pendingPostRef.current = false;
+    bridgeLiveRef.current = true;
     postToView({ type: "unsloth:artifact-html", html });
   }, [html, postToView]);
 
@@ -225,6 +240,8 @@ export function McpAppFrame({
       // Every sandboxed frame reports origin "null", so identity is the check.
       if (event.source !== iframeRef.current?.contentWindow) return;
       if (event.origin !== "null") return;
+      // ...and identity survives navigation, so it is not the whole check.
+      if (!bridgeLiveRef.current) return;
 
       const data = event.data;
       // The resize fallback, which is not part of the widget protocol.
