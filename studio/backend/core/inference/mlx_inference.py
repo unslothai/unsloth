@@ -2070,11 +2070,17 @@ class MLXInferenceBackend:
             "mlx_kv_quant_note": self._kv_quant["note"],
             "chat_template_override_requested": self._template_override["requested"],
             "chat_template_override_reason": self._template_override["reason"],
+            "load_in_4bit": load_in_4bit,
             "mlx_speculative_mode_requested": requested_speculative_mode,
             "mlx_draft_model_requested": mlx_draft_model,
             "mlx_draft_block_size_requested": mlx_draft_block_size,
             "mlx_speculative_effective_mode": "off",
             "mlx_speculative_effective_draft_model": None,
+            "mlx_speculative_effective_block_size": None,
+            # What Auto settled on for this launch. Kept even where the drafter then failed to
+            # load, so asking again is recognised as the same answer rather than a new one.
+            "mlx_speculative_pinned_mode": resolution.method,
+            "mlx_speculative_pinned_draft_model": resolution.draft_model,
             "mlx_speculative_reason": resolution.reason,
             "mlx_speculative_materialization_bytes": 0,
         }

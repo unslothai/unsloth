@@ -2984,7 +2984,6 @@ from core.inference.mlx_speculative import (
     mlx_speculative_request_reason,
     mlx_speculative_refusal,
     mlx_speculative_target_ineligible,
-    mlx_speculative_target_is_adapter,
     resolve_mlx_speculative_request,
 )
 from models.inference import (
@@ -13029,17 +13028,39 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
         return True
     from core.inference.mlx_inference import _normalize_mlx_kv_bits
 
-    from core.inference.mlx_speculative import mlx_speculative_request_identity
+    from core.inference.mlx_speculative import (
+        mlx_speculative_request_identity,
+        resolve_mlx_speculative_request,
+    )
 
-    # Without a reload the drafter is never attached and the request looks honoured. Auto
-    # compares as requested, not as resolved, so asking twice survives a changed cache.
-    speculative = mlx_speculative_request_identity(
-        entry.get("mlx_speculative_mode_requested"),
-        entry.get("mlx_draft_model_requested"),
-        entry.get("mlx_draft_block_size_requested"),
-    ) == mlx_speculative_request_identity(
+    # Without a reload the drafter is never attached and the request looks honoured.
+    requested = mlx_speculative_request_identity(
         request.mlx_speculative_mode, request.mlx_draft_model, request.mlx_draft_block_size
     )
+    speculative = (
+        mlx_speculative_request_identity(
+            entry.get("mlx_speculative_mode_requested"),
+            entry.get("mlx_draft_model_requested"),
+            entry.get("mlx_draft_block_size_requested"),
+        )
+        == requested
+    )
+    # Auto is compared as resolved, not as asked: the cache decides its drafter, and only a
+    # reload can attach or drop one.
+    if speculative and requested[0] == "auto":
+        resolution = resolve_mlx_speculative_request(
+            backend.active_model_name,
+            "auto",
+            request.mlx_draft_model,
+            # The resident target, so one no drafter can attach to compares equal to its Off.
+            is_vision = entry.get("is_vision", False),
+            is_lora = entry.get("is_lora", False),
+        )
+        # Against what Auto pinned, not what survived the load: a drafter that failed to load
+        # resolves to the same answer, not a new one.
+        speculative = resolution.method == (entry.get("mlx_speculative_pinned_mode") or "off") and (
+            resolution.draft_model or None
+        ) == (entry.get("mlx_speculative_pinned_draft_model") or None)
     return (
         entry["mlx_kv_bits_requested"] == _normalize_mlx_kv_bits(request.mlx_kv_bits)
         and (entry.get("chat_template_override_requested") or None)
@@ -13570,7 +13591,7 @@ async def _load_model_impl(
         if not (request.gguf_variant or is_direct_gguf_request):
             if (
                 _same_loaded_identifier(backend.active_model_name, model_identifier)
-                and _mlx_runtime_settings_match(backend, request)
+                and await asyncio.to_thread(_mlx_runtime_settings_match, backend, request)
                 and _non_gguf_runtime_settings_match(backend, request)
                 and _resident_context_satisfies(
                     backend.models.get(backend.active_model_name) or {},
@@ -13813,6 +13834,19 @@ async def _load_model_impl(
                     "sizing and loading in 16-bit (4-bit is disabled for brand-new "
                     "architectures)"
                 )
+
+        # Pinned here, not in the worker, so one view of the cache decides it.
+        _mlx_resolution = await asyncio.to_thread(
+            resolve_mlx_speculative_request,
+            model_identifier,
+            request.mlx_speculative_mode,
+            request.mlx_draft_model,
+            is_vision = getattr(config, "is_vision", False),
+            is_lora = getattr(config, "is_lora", False),
+        )
+        _mlx_refusal = mlx_speculative_refusal(request.mlx_speculative_mode, _mlx_resolution)
+        if _mlx_refusal is not None:
+            raise HTTPException(status_code = 400, detail = _mlx_refusal)
 
         placement = await _preflight_native_audio_placement(config, request, placement)
 
@@ -14890,6 +14924,19 @@ async def validate_model(
                 request.hf_token,
             ):
                 effective_load_in_4bit = False
+        # Settled by the target alone, so it is asked of every request. Auto resolves to ordinary
+        # MLX generation rather than being refused.
+        _mlx_ineligible = mlx_speculative_target_ineligible(
+            is_vision = getattr(config, "is_vision", False),
+            is_lora = getattr(config, "is_lora", False),
+        )
+        if _mlx_ineligible is not None and normalize_mlx_speculative_mode(
+            request.mlx_speculative_mode
+        ) not in {"off", "auto"}:
+            raise HTTPException(
+                status_code = 400, detail = mlx_speculative_refusal_text(_mlx_ineligible)
+            )
+
         # A metadata-only probe reads the GGUF header and allocates no VRAM, so the
         # training guard must not refuse it. Real loads omit include_context_length /
         # include_chat_template, and /load applies the guard again.

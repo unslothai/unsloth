@@ -545,11 +545,15 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "mlx_kv_quant_note",
                         "chat_template_override_requested",
                         "chat_template_override_reason",
+                        "load_in_4bit",
                         "mlx_speculative_mode_requested",
                         "mlx_draft_model_requested",
                         "mlx_draft_block_size_requested",
                         "mlx_speculative_effective_mode",
                         "mlx_speculative_effective_draft_model",
+                        "mlx_speculative_effective_block_size",
+                        "mlx_speculative_pinned_mode",
+                        "mlx_speculative_pinned_draft_model",
                         "mlx_speculative_reason",
                     )
                     if k in _entry

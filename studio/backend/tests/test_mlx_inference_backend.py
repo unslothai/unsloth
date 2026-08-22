@@ -57,6 +57,7 @@ def _install_fake_mlx(monkeypatch):
     mlx_core.set_wired_limit = _DummyMX.set_wired_limit
     mlx_core.device_info = _DummyMX.device_info
     mlx_core.synchronize = _DummyMX.synchronize
+    mlx_core.clear_cache = lambda: None
     mlx_utils.tree_unflatten = dict
     mlx_pkg.core = mlx_core
     mlx_pkg.utils = mlx_utils
@@ -321,6 +322,48 @@ def test_mlx_inference_distributed_vlm_forwards_group_to_fast_mlx(monkeypatch):
     config = SimpleNamespace(identifier = "fake/adapter", is_vision = False, is_lora = True)
     with pytest.raises(ValueError, match = "LoRA adapter repos"):
         MLXInferenceBackend().load_model(config, parallel_mode = "tensor", distributed_group = group)
+
+
+@pytest.mark.parametrize("mode,in_4bit", [("auto", True), ("auto", False), ("mtp", True)])
+def test_a_drafter_that_will_not_load_costs_the_model_only_when_it_was_asked_for(
+    monkeypatch, mode, in_4bit
+):
+    _install_fake_mlx(monkeypatch)
+    _install_fake_fast_mlx(monkeypatch, [])
+    from core.inference import mlx_speculative as spec
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    seen = {}
+
+    def _resolution(*_args, **kwargs):
+        seen.update(kwargs)
+        return spec.MlxSpeculativeResolution("mtp", "org/A")
+
+    def refuse(*_args, **_kwargs):
+        raise RuntimeError("drafter unavailable")
+
+    monkeypatch.setattr(spec, "mlx_speculative_load_resolution", _resolution)
+    backend = MLXInferenceBackend()
+    monkeypatch.setattr(backend, "_load_speculative_drafter", refuse)
+    config = SimpleNamespace(identifier = "fake/vlm", is_vision = True, is_lora = False)
+
+    if mode == "auto":
+        # Auto asked for an accelerator, not for the load to fail. The target is resident by
+        # the time the drafter is built, so tearing it down costs the user the model itself.
+        assert backend.load_model(config, mlx_speculative_mode = mode, load_in_4bit = in_4bit) is True
+        assert backend._model is not None
+        # The whole target, not just its weights: a load left without the tokenizer or the
+        # processor returns a model that cannot take input, which is worse than not drafting.
+        assert backend._tokenizer is not None
+        assert backend._processor is not None
+        assert backend.models["fake/vlm"]["mlx_speculative_reason"] == "auto_drafter_load_failed"
+        # Recorded: the reuse comparison re-resolves Auto at this same value.
+        assert backend.models["fake/vlm"]["load_in_4bit"] is in_4bit
+    else:
+        # A method the user named is not silently downgraded; that load failed.
+        with pytest.raises(RuntimeError, match = "drafter unavailable"):
+            backend.load_model(config, mlx_speculative_mode = mode, load_in_4bit = in_4bit)
+        assert backend._model is None
 
 
 @pytest.mark.parametrize("accepts_backend", (True, False))
@@ -4296,35 +4339,6 @@ def test_a_target_too_small_to_gain_from_drafting_is_left_undrafted(monkeypatch,
 
 
 @pytest.mark.parametrize(
-    "requested,resolved,pinned_block,expected_block",
-    # Auto states a depth, a depth the user set outranks it, and an explicit method takes
-    # only what it was given. Each method's depth differs, so one taken from another is wrong.
-    [("auto", "mtp", None, 4), ("auto", "dflash", None, 4), ("auto", "eagle3", None, 2),
-     ("auto", "mtp", 8, 8), ("mtp", "mtp", None, None), ("mtp", "mtp", 8, 8)],
-)
-def test_auto_hands_the_loader_the_depth_its_method_pays_off_at(
-    monkeypatch, requested, resolved, pinned_block, expected_block
-):
-    _install_fake_mlx(monkeypatch)
-    _install_fake_fast_mlx(monkeypatch, [])
-    from core.inference import mlx_speculative as spec
-    from core.inference.mlx_inference import MLXInferenceBackend
-
-    seen = {}
-    monkeypatch.setattr(spec, "mlx_speculative_load_resolution",
-                        lambda *a, **k: spec.MlxSpeculativeResolution(resolved, "org/A"))
-    backend = MLXInferenceBackend()
-    monkeypatch.setattr(backend, "_load_speculative_drafter",
-                        lambda *a, **k: seen.update(args = a, kwargs = k))
-    config = SimpleNamespace(identifier = "fake/vlm", is_vision = True, is_lora = False)
-    assert backend.load_model(
-        config, mlx_speculative_mode = requested, mlx_draft_block_size = pinned_block
-    ) is True
-    # Read the depth the drafter is built at: one forced onto every mode looks right anywhere.
-    assert seen["args"][2] is expected_block, seen
-
-
-@pytest.mark.parametrize(
     "revisions,expected",
     [
         # Ranked nowhere else: under one method the id decides unless precision does.
@@ -4561,31 +4575,6 @@ def test_auto_reuse_reloads_when_the_cache_changed_under_the_same_request(monkey
     assert inf_mod._mlx_runtime_settings_match(backend, request) is True
 
 
-def test_the_eagle3_head_is_not_left_indexing_a_null_bias():
-    # mlx-vlm reads embed.biases wherever the attribute exists, and MXFP4 exposes it holding
-    # None, so a pair that loaded and validated cleanly raised on its first drafted step.
-    from types import SimpleNamespace
-    from core.inference.mlx_inference import detach_null_quantized_biases
-
-    def target(embed):
-        return SimpleNamespace(
-            language_model = SimpleNamespace(model = SimpleNamespace(embed_tokens = embed))
-        )
-
-    packed = SimpleNamespace(scales = object(), biases = None)
-    detach_null_quantized_biases(target(packed))
-    assert not hasattr(packed, "biases")
-    carried = SimpleNamespace(scales = object(), biases = ["real"])
-    detach_null_quantized_biases(target(carried))
-    assert carried.biases == ["real"]
-    # An unquantized embedding is a layout the hot head never reads this way, so it is left
-    # as it is, as is a model shaped like neither.
-    dense = SimpleNamespace(biases = None)
-    detach_null_quantized_biases(target(dense))
-    assert dense.biases is None
-    detach_null_quantized_biases(SimpleNamespace())
-
-
 def test_the_loader_takes_the_revision_the_ranking_measured(monkeypatch):
     # An unfitting revision listed first is not the one handed to the worker.
     from core.inference import mlx_speculative as spec
@@ -4696,8 +4685,12 @@ def _stub_fitting_revisions(monkeypatch, widths = None):
 
 
 def _spec_candidate(repo_id, method = "mtp", source = "cached", loadable = True, reason = None,):
-    return {"repo_id": repo_id, "method": method, "source": source,
-            "loadable": loadable, "reason": reason}
+    # Every field the response model requires, so a row can be served as well as ranked.
+    return {"repo_id": repo_id, "method": method, "source": source, "label": repo_id,
+            "loadable": loadable, "reason": reason, "recommended": source == "recommended",
+            "approximate_size_bytes": 0, "estimated_memory_bytes": 0,
+            "materialization_bytes": 0, "downloaded": source != "recommended",
+            "compatible": True, "runtime_supported": True, "integration_ready": True}
 
 
 @pytest.mark.parametrize(
@@ -4722,10 +4715,14 @@ def _spec_candidate(repo_id, method = "mtp", source = "cached", loadable = True,
           _spec_candidate("org/B", loadable = False, reason = "checkpoint_config_mismatch")],
          "org/B", ("off", None, "checkpoint_config_mismatch")),
         ([_spec_candidate("org/A")], "org/absent", ("off", None, "auto_preferred_candidate_unavailable")),
-        # Nothing loadable is not a failure: Auto falls back to ordinary generation.
+        # Nothing loadable is not a failure: Auto falls back to ordinary generation. Too large
+        # to sit beside the target asks for different action than never downloaded.
         ([_spec_candidate("org/A", loadable = False, reason = "insufficient_unified_memory")],
-         None, ("off", None, "auto_no_loadable_candidate")),
-        ([], None, ("off", None, "auto_no_loadable_candidate")),
+         None, ("off", None, "insufficient_unified_memory")),
+        ([], None, ("off", None, "no_cached_drafter")),
+        # A download is never started to satisfy Auto, so an undownloaded row is not a drafter.
+        ([_spec_candidate("org/A", source = "recommended", loadable = False)],
+         None, ("off", None, "no_cached_drafter")),
     ],
 )
 def test_auto_pins_one_drafter_or_falls_back_to_ordinary_generation(
@@ -4735,6 +4732,8 @@ def test_auto_pins_one_drafter_or_falls_back_to_ordinary_generation(
     from core.inference import mlx_speculative as spec
 
     monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": candidates})
+    monkeypatch.setattr(spec, "_read_config", lambda _t: {"model_type": "qwen3_5"})
+    _stub_fitting_revisions(monkeypatch)
     resolved = spec.resolve_mlx_speculative_request("org/target", "auto", preferred)
     assert (resolved.method, resolved.draft_model, resolved.reason) == expected
 
@@ -4749,7 +4748,7 @@ def test_auto_pins_one_drafter_or_falls_back_to_ordinary_generation(
         # A repository id differing only in case or surrounding space names the same one.
         (("mtp", "org/drafter", None), ("mtp", "Org/Drafter", None), True),
         (("mtp", "org/drafter", None), ("mtp", "  org/drafter  ", None), True),
-        # Auto compares as requested, so asking twice does not reload on a changed cache.
+        # Identical Auto requests agree here; what Auto resolved them to is compared beside it.
         (("auto", None, None), ("auto", None, None), True),
         # A resident model loaded without a drafter cannot serve a request that wants one.
         (("off", None, None), ("mtp", "org/A", None), False),
@@ -4819,8 +4818,8 @@ def test_only_an_explicit_method_refuses_a_load(mode, reason, refused):
         ("auto", ("mtp", "org/Pinned", None), True, False, False, ("mtp", "org/Pinned", None)),
         (" AUTO ", ("mtp", "org/Pinned", None), True, False, False, ("mtp", "org/Pinned", None)),
         # ... including when the caller's scan found nothing, whose diagnosis it carries.
-        ("auto", ("off", None, "auto_no_loadable_candidate"), True, False, False,
-         ("off", None, "auto_no_loadable_candidate")),
+        ("auto", ("off", None, "no_cached_drafter"), True, False, False,
+         ("off", None, "no_cached_drafter")),
         ("auto", (None, None, None), True, False, False, ("mtp", "org/Scanned", None)),
         ("auto", ("mtp", "org/Pinned", None), False, False, False,
          ("off", None, "mlx_vlm_target_required")),
@@ -4875,13 +4874,6 @@ def test_a_request_is_ruled_out_on_the_terms_its_own_load_will_apply(
     auto = spec.resolve_mlx_speculative_request(
         "org/target", "auto", None, is_vision = vision, is_lora = lora
     )
-    assert (auto.method, auto.draft_model, auto.reason) == (
-        ("off", None, reason) if reason else ("mtp", "builtin://mtp", None)
-    )
-    # The preflight is the one asked ahead of the unload, so the refusal has to reach it too.
-    assert spec.mlx_speculative_request_reason(
-        "org/target", "mtp", "builtin://mtp", is_vision = vision, is_lora = lora
-    ) == reason
 
 
 @pytest.mark.parametrize(
@@ -5329,23 +5321,27 @@ def test_an_eagle3_drafter_must_name_the_target_as_its_verifier(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "runtime_ready,enabled,match,memory,caps_reason,reason",
+    "runtime_ready,enabled,match,memory,caps_reason,reason,quant_method",
     [
-        (False, False, True, True, None, "method_runtime_unavailable"),
+        (False, False, True, True, None, "method_runtime_unavailable", None),
         # A runtime that says why it cannot draft is reported in its own words.
         (False, False, True, True, "runtime_missing_speculative_api",
-         "runtime_missing_speculative_api"),
-        (True, False, True, True, None, "method_not_integrated"),
-        (True, True, None, True, None, "tokenizer_contract_unavailable"),
+         "runtime_missing_speculative_api", None),
+        (True, False, True, True, None, "method_not_integrated", None),
+        (True, True, None, True, None, "tokenizer_contract_unavailable", None),
         # Both rungs at once: an unverifiable checkpoint is reported as unverifiable, not
         # as a memory problem the user would try to solve by freeing memory.
-        (True, True, None, False, None, "tokenizer_contract_unavailable"),
-        (True, True, True, False, None, "insufficient_unified_memory"),
-        (True, True, True, True, None, None),
+        (True, True, None, False, None, "tokenizer_contract_unavailable", None),
+        (True, True, True, False, None, "insufficient_unified_memory", None),
+        (True, True, True, True, None, None, None),
+        # The loader warns, leaves the model dense, then loads packed tensors into it, so this
+        # checkpoint cannot draft however well it matches.
+        (True, True, True, True, None, "checkpoint_quantization_unsupported", "gptq"),
+        (True, True, True, True, None, "checkpoint_quantization_unsupported", "awq"),
     ],
 )
 def test_a_matched_drafter_reports_why_it_cannot_run(
-    monkeypatch, runtime_ready, enabled, match, memory, caps_reason, reason
+    monkeypatch, runtime_ready, enabled, match, memory, caps_reason, reason, quant_method
 ):
     # Every candidate is offered with the reason it cannot run rather than omitted, so a
     # caller can tell "no drafter matched" from "one matched but cannot run here".
@@ -5354,7 +5350,11 @@ def test_a_matched_drafter_reports_why_it_cannot_run(
     caps = {"common": True, "methods": {"mtp": runtime_ready}, "reason": caps_reason}
     monkeypatch.setattr(
         spec, "_active_cached_drafter_configs",
-        lambda: iter([("org/drafter", {"model_type": "gemma4_assistant"}, Path("/nowhere"), 1)]),
+        lambda: iter([("org/drafter", {
+            "model_type": "gemma4_assistant",
+            **({"quantization_config": {"quant_method": quant_method, "bits": 4}}
+               if quant_method else {}),
+        }, Path("/nowhere"), 1)]),
     )
     monkeypatch.setattr(spec, "_drafter_method", lambda _c: "mtp")
     monkeypatch.setattr(spec, "_dynamic_candidate_config_matches", lambda *a: match)

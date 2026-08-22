@@ -95,7 +95,12 @@ def test_empty_runtime_error_falls_back_to_generic(monkeypatch):
     assert http.detail == "Invalid model"
 
 
-def _drive_validate(monkeypatch, *, is_gguf: bool):
+def _drive_validate(
+    monkeypatch,
+    *,
+    is_gguf: bool,
+    mlx_speculative_mode: str = "off",
+):
     """Run validate_model with both security helpers forced True; return the response."""
     from types import SimpleNamespace
 
@@ -121,7 +126,9 @@ def _drive_validate(monkeypatch, *, is_gguf: bool):
     monkeypatch.setattr(inf, "_requires_trust_remote_code_for_model", lambda *_a, **_k: True)
     monkeypatch.setattr(inf, "_requires_security_review_for_model", lambda *_a, **_k: True)
 
-    req = ValidateModelRequest(model_path = "org/mixed-repo")
+    req = ValidateModelRequest(
+        model_path = "org/mixed-repo", mlx_speculative_mode = mlx_speculative_mode
+    )
     return asyncio.run(inf.validate_model(req, current_subject = "tester"))
 
 
@@ -139,6 +146,19 @@ def test_non_gguf_load_still_runs_trc_and_security_review(monkeypatch):
     assert resp.is_gguf is False
     assert resp.requires_trust_remote_code is True
     assert resp.requires_security_review is True
+
+
+def test_a_target_no_drafter_can_attach_to_is_refused_before_the_model_is_unloaded(monkeypatch):
+    # This is the preflight the picker runs before /load frees the resident model, so a
+    # pairing the load will refuse has to be refused here rather than after the unload. The
+    # drafter itself is sound, which is the case that reaches the target's own rules at all.
+    monkeypatch.setattr(inf, "mlx_speculative_request_reason", lambda *_a, **_k: None)
+    with pytest.raises(HTTPException) as excinfo:
+        _drive_validate(monkeypatch, is_gguf = False, mlx_speculative_mode = "mtp")
+    assert excinfo.value.status_code == 400
+    assert "vision-language" in excinfo.value.detail
+    # Auto is not a request to refuse: it falls back to ordinary MLX generation instead.
+    assert _drive_validate(monkeypatch, is_gguf = False, mlx_speculative_mode = "auto")
 
 
 def test_resolve_loaded_trc_prefers_stored_value():

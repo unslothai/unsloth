@@ -43,8 +43,14 @@ MLX_SPECULATIVE_REFUSALS: dict[str, str] = {
     "target_config_unavailable": "This model's configuration could not be read.",
     "verifier_contract_unavailable": "The chosen draft checkpoint does not say which model it verifies.",
     "tokenizer_contract_unavailable": "The chosen draft checkpoint's tokenizer could not be compared with this model's.",
-    "auto_no_loadable_candidate": "No draft checkpoint for this model is downloaded and ready.",
+    "no_cached_drafter": "No draft checkpoint for this model is downloaded.",
+    "checkpoint_quantization_unsupported": "This draft checkpoint is quantized in a format the MLX runtime cannot load.",
+    "target_too_small_to_draft": "This model is small enough that drafting for it would not speed it up.",
+    "auto_drafter_load_failed": "The draft checkpoint could not be loaded, so this model is running without speculative decoding.",
     "auto_preferred_candidate_unavailable": "The chosen draft checkpoint is not available, so this model runs without speculative decoding.",
+    "mlx_vlm_target_required": "Speculative decoding runs on the MLX vision-language path, which this model does not use.",
+    "mlx_speculative_lora_unsupported": "Speculative decoding does not run on a LoRA adapter.",
+    "mlx_speculative_distributed_unsupported": "Speculative decoding does not run on a distributed load.",
 }
 
 # A code with no entry of its own still has to reach the client as a 400 rather than as the
@@ -277,6 +283,15 @@ _RECOMMENDATIONS = (
 def mlx_speculative_refusal_text(reason: str) -> str:
     """The sentence for a refusal, as an error detail. Unknown reasons read generically."""
     return MLX_SPECULATIVE_REFUSALS.get(reason, MLX_SPECULATIVE_GENERIC_REFUSAL)
+
+
+def mlx_speculative_reason_text(reason: Optional[str]) -> Optional[str]:
+    """The sentence a client shows for a load that ended without a drafter.
+
+    Auto never fails a load, so its outcomes arrive on a successful response rather than as
+    an error detail.
+    """
+    return None if not reason else mlx_speculative_refusal_text(reason)
 
 
 def normalize_mlx_speculative_mode(value: Any) -> str:
@@ -1012,6 +1027,195 @@ def _dynamic_materialization_bytes(config: dict[str, Any]) -> int:
 
 BUILTIN_MTP_ID = "builtin://mtp"
 
+# Draft tokens Auto runs each method at. The drafter's own configuration declares either
+# nothing or its block size, neither near where the method pays off.
+MLX_AUTO_DRAFT_TOKENS: dict[str, int] = {"mtp": 3, "dflash": 3, "eagle3": 1}
+
+# A target's own head ranks with MTP because it is MTP, and needs no download to get there.
+_AUTO_METHOD_RANK: dict[str, int] = {"mtp": 0, "dflash": 1, "eagle3": 2}
+
+
+def _precision_rank(bits: Optional[int]) -> tuple[int, int]:
+    """How a drafter's width ranks: 8-bit, then full precision, then the rest widest-first.
+
+    8-bit first because a narrower drafter leaves more memory to the target it drafts for
+    at little cost in acceptance; below full precision the widths order themselves.
+    """
+    if bits == 8:
+        return (0, 0)
+    if bits is None:
+        return (1, 0)
+    return (2, -bits)
+
+
+def mlx_auto_draft_block_size(method: str) -> Optional[int]:
+    """Block size for the depth Auto runs ``method`` at, or None for a method it does not run.
+
+    mlx-vlm counts the verified token alongside the drafted ones, so a block is one longer
+    than the depth.
+    """
+    depth = MLX_AUTO_DRAFT_TOKENS.get(normalize_mlx_speculative_method(method))
+    return None if depth is None else depth + 1
+
+
+# Below this, verification costs about what the drafted tokens save.
+MLX_AUTO_MIN_TARGET_PARAMETERS = 4_000_000_000
+
+
+def _largest_int(value: Any) -> Optional[int]:
+    """The largest of a field some configurations state per layer and others state once.
+
+    Over-counting leaves a target the drafter it has; under-counting takes one away.
+    """
+    if type(value) is int:
+        return value
+    if isinstance(value, list):
+        widths = [entry for entry in value if type(entry) is int]
+        return max(widths) if widths else None
+    return None
+
+
+def _target_parameter_estimate(config: dict[str, Any]) -> Optional[int]:
+    """Roughly how large the target is, or None when its shape does not say.
+
+    From declared dimensions, so a quantized checkpoint and its full-precision twin estimate
+    alike. Tables indexed by token id are excluded, since counting Gemma's per-layer embeddings
+    would rate an E2B checkpoint above 4B; every expert is counted, since counting only the
+    routed ones would rate a 35B mixture below a dense 4B.
+    """
+    text = _text_config(config)
+    hidden = _largest_int(text.get("hidden_size"))
+    layers = _largest_int(text.get("num_hidden_layers"))
+    vocab = _largest_int(text.get("vocab_size"))
+    if hidden is None or layers is None or vocab is None:
+        return None
+    experts = _largest_int(text.get("num_experts")) or _largest_int(text.get("n_routed_experts"))
+    dense_width = _largest_int(text.get("intermediate_size")) or 4 * hidden
+    if experts:
+        width = _largest_int(text.get("moe_intermediate_size")) or dense_width
+        feed_forward = experts * 3 * hidden * width
+    else:
+        feed_forward = 3 * hidden * dense_width
+    return 2 * vocab * hidden + layers * (4 * hidden * hidden + feed_forward)
+
+
+def _target_carries_quantization(config: dict[str, Any]) -> bool:
+    """Whether the checkpoint is already quantized on disk.
+
+    A load asked for 4-bit leaves such a checkpoint alone and quantizes a full-precision one
+    as it loads, which is what decides whether the target's own head still matches it.
+    """
+    return bool(config.get("quantization") or config.get("quantization_config"))
+
+
+def _fitting_cached_revision(
+    repo_id: str,
+    target_id: Optional[str],
+    target_config: Optional[dict[str, Any]],
+    method: Optional[str],
+) -> tuple[Optional[dict[str, Any]], Optional[Path]]:
+    """The cached revision of ``repo_id`` a load would choose for this target.
+
+    One repository is often cached in several revisions, so ranking and loading share this:
+    ranking one revision and loading another picks a drafter for a precision it lacks.
+    """
+    for cached_repo_id, config, snapshot, _size in _active_cached_drafter_configs():
+        if cached_repo_id.casefold() != repo_id.casefold():
+            continue
+        if target_config is None or (
+            _drafter_method(config) == method
+            and _dynamic_candidate_config_matches(
+                method, target_id, target_config, config, snapshot, cached_repo_id
+            )
+            is True
+        ):
+            return config, snapshot
+    return None, None
+
+
+# Widths mlx-vlm derives from a method name, so a checkpoint ranks at the width it loads at.
+_QUANT_METHOD_BITS: dict[str, int] = {"mxfp4": 4, "compressed-tensors": 4}
+# The runtime warns, leaves the model dense, then loads the packed tensors into it strictly.
+_QUANT_METHODS_REFUSED = frozenset({"awq", "gptq", "bitnet"})
+
+
+def _loader_quantization(config: dict[str, Any]) -> tuple[Optional[dict[str, Any]], bool]:
+    """The one declaration mlx-vlm will apply, and whether it settled the question by itself.
+
+    A top-level "quantization" is applied as it stands, so a stale method left elsewhere decides
+    nothing. Without one it falls to "quantization_config", top level then nested; the nested
+    "quantization" spelling it never reads.
+    """
+    if "quantization" in config:
+        block = config["quantization"]
+        return (block if isinstance(block, dict) else None), True
+    for source in (config, _text_config(config)):
+        block = source.get("quantization_config")
+        if isinstance(block, dict):
+            return block, False
+    return None, False
+
+
+def _declared_quant_method(block: dict[str, Any]) -> Optional[str]:
+    """The method a block names, or None where it names nothing usable.
+
+    Configurations carry whatever they carry: a non-string used as a lookup key raises and takes
+    the resolution with it, failing the target's load over a drafter it did not need.
+    """
+    method = block.get("quant_method")
+    return method if isinstance(method, str) else None
+
+
+def _refuses_quantization(config: dict[str, Any]) -> bool:
+    """Whether the loader will decline this checkpoint's quantization, or break on it."""
+    block, settled = _loader_quantization(config)
+    if settled:
+        # The loader subscripts both fields, so a block missing either fails the load.
+        return not (
+            isinstance(block, dict)
+            and type(block.get("bits")) is int
+            and type(block.get("group_size")) is int
+        )
+    if block is None:
+        return False
+    return _declared_quant_method(block) in _QUANT_METHODS_REFUSED
+
+
+def _sidecar_quantization_bits(snapshot: Optional[Path]) -> Optional[int]:
+    """The width a checkpoint declares beside its configuration rather than inside it."""
+    if snapshot is None:
+        return None
+    try:
+        with open(snapshot / "hf_quant_config.json", encoding = "utf-8") as handle:
+            beside = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    # Well-formed JSON that is not an object still has to leave the target loadable.
+    declared = beside.get("quantization") if isinstance(beside, dict) else None
+    return 4 if isinstance(declared, dict) and declared.get("quant_algo") == "NVFP4" else None
+
+
+def _config_precision_rank(
+    config: dict[str, Any], snapshot: Optional[Path] = None
+) -> tuple[int, int]:
+    """How the width one cached revision would load at ranks.
+
+    Read every way the loader reads it: a declaration missed reads as full precision, which is
+    how a quantized drafter outranks the one it should lose to. DeepSeek's fp8 and a bare width
+    under "quantization_config" rank full precision, neither being one it can answer.
+    """
+    block, settled = _loader_quantization(config)
+    if block is None:
+        # Only where the configuration declares nothing does the loader look beside it.
+        return _precision_rank(None if settled else _sidecar_quantization_bits(snapshot))
+    if not settled:
+        # The runtime replaces the whole block, so a derived width beats one declared beside it.
+        implied = _QUANT_METHOD_BITS.get(_declared_quant_method(block))
+        if implied is not None:
+            return _precision_rank(implied)
+    bits = block.get("bits")
+    return _precision_rank(bits if type(bits) is int else None)
+
 
 @dataclass(frozen = True)
 class NativeMtpEvidence:
@@ -1658,17 +1862,9 @@ def mlx_speculative_snapshot_path(
     no matching revision raises, so a stale snapshot cannot be handed to the worker.
     """
     target_config = _read_config(target_id) if target_id else None
-    for cached_repo_id, config, snapshot, _size in _active_cached_drafter_configs():
-        if cached_repo_id.casefold() != repo_id.casefold():
-            continue
-        if target_config is None or (
-            _drafter_method(config) == method
-            and _dynamic_candidate_config_matches(
-                method, target_id, target_config, config, snapshot, cached_repo_id
-            )
-            is True
-        ):
-            return snapshot
+    _config, snapshot = _fitting_cached_revision(repo_id, target_id, target_config, method)
+    if snapshot is not None:
+        return snapshot
     if target_config is not None:
         raise FileNotFoundError(f"No compatible MLX speculative checkpoint: {repo_id}")
     config_path = _cached_config_path(repo_id)
@@ -1839,6 +2035,8 @@ def _cached_candidate_rows(target_id, target_config, caps, enabled):
 
         if not upstream_ready:
             reason = caps["reason"] or "method_runtime_unavailable"
+        elif _refuses_quantization(draft_config):
+            reason = "checkpoint_quantization_unsupported"
         elif not locally_ready:
             reason = "method_not_integrated"
         elif match is None:
@@ -1933,19 +2131,18 @@ def _pinned_drafter(
 
 def mlx_speculative_request_reason(
     target_id: str,
-    method: Any,
-    draft_model: Optional[str],
+    mode: Any,
+    draft_model: Optional[str] = None,
+    *,
     is_vision: bool = True,
     is_lora: bool = False,
 ) -> Optional[str]:
     """Why an MLX speculative request cannot be served, or None when it can.
 
-    Off and Auto always resolve: Auto falls back to ordinary MLX generation when no
-    drafter can run. An explicit method is refused unless the named drafter is one the
-    candidate list reports as loadable, so an unsupported request never reaches model
-    teardown, and the refusal carries the candidate's own reason rather than a generic one.
+    Off and Auto always resolve; an explicit method is refused unless the candidate list reports
+    its drafter loadable, carrying that candidate's own reason.
     """
-    mode = normalize_mlx_speculative_mode(method)
+    mode = normalize_mlx_speculative_mode(mode)
     if mode in {"off", "auto"}:
         return None
     return resolve_mlx_speculative_request(
@@ -2034,8 +2231,10 @@ def resolve_mlx_speculative_request(
     target_id: str,
     mode: Any,
     draft_model: Optional[str] = None,
+    *,
     is_vision: bool = True,
     is_lora: bool = False,
+    options: Optional[dict[str, Any]] = None,
 ) -> MlxSpeculativeResolution:
     """Pin one concrete local drafter, or ordinary MLX when Auto finds none.
 
@@ -2062,8 +2261,21 @@ def resolve_mlx_speculative_request(
             requested, *_pinned_drafter(target_id, requested, draft_model)
         )
 
-    available = mlx_speculative_options(target_id)["candidates"]
+    # No readable configuration is a different answer from having matched no drafter.
+    if target_config is None:
+        return MlxSpeculativeResolution("off", None, "target_config_unavailable")
+
+    # Answered about the list the caller holds, rather than rescanning the cache.
+    available = (options or mlx_speculative_options(target_id))["candidates"]
     _, preferred, _ = mlx_speculative_request_identity(requested, draft_model, None)
+    # Ahead of the pin below, since a drafter named by hand is still one this target cannot
+    # profit from. An unmeasurable target is not refused on ignorance.
+    parameters = _target_parameter_estimate(target_config)
+    if parameters is not None and parameters < MLX_AUTO_MIN_TARGET_PARAMETERS:
+        return MlxSpeculativeResolution("off", None, "target_too_small_to_draft")
+
+    builtin = next((row for row in available if row["source"] == "builtin"), None)
+
     if preferred:
         selected = next(
             (candidate for candidate in available if candidate["repo_id"].casefold() == preferred),
@@ -2077,15 +2289,34 @@ def resolve_mlx_speculative_request(
             )
         return MlxSpeculativeResolution(selected["method"], selected["repo_id"])
 
-    candidates = [candidate for candidate in available if candidate["loadable"]]
-    if not candidates:
-        return MlxSpeculativeResolution("off", None, "auto_no_loadable_candidate")
+    if builtin is not None and builtin["loadable"]:
+        return MlxSpeculativeResolution("mtp", builtin["repo_id"])
 
-    method_priority = {"mtp": 1, "dflash": 2, "eagle3": 3}
+    downloaded = [row for row in available if row["source"] != "recommended"]
+    # Ranked by the revision a load would take. A row with none that fits is one the loader
+    # would refuse, whatever the list said when it was built.
+    precision = {}
+    for row in downloaded:
+        if not row["loadable"] or row is builtin:
+            continue
+        config, snapshot = _fitting_cached_revision(
+            row["repo_id"], target_id, target_config, row["method"]
+        )
+        if snapshot is not None:
+            precision[row["repo_id"]] = _config_precision_rank(config, snapshot)
+    candidates = [row for row in downloaded if row["repo_id"] in precision]
+    if candidates:
 
-    def priority(candidate: dict[str, Any]) -> tuple[int, str]:
-        rank = 0 if candidate["source"] == "builtin" else method_priority[candidate["method"]]
-        return rank, candidate["repo_id"].casefold()
+        def priority(candidate: dict[str, Any]) -> tuple[int, tuple[int, int], str]:
+            return (
+                _AUTO_METHOD_RANK[candidate["method"]],
+                precision[candidate["repo_id"]],
+                candidate["repo_id"].casefold(),
+            )
 
-    selected = min(candidates, key = priority)
-    return MlxSpeculativeResolution(selected["method"], selected["repo_id"])
+        selected = min(candidates, key = priority)
+        return MlxSpeculativeResolution(selected["method"], selected["repo_id"])
+
+    # Which way it failed matters: too large asks different action than never downloaded.
+    refused = next((row["reason"] for row in downloaded if row.get("reason")), None)
+    return MlxSpeculativeResolution("off", None, refused or "no_cached_drafter")
