@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// Straight to the defining modules, not the chat barrel. The barrel pulls
+// chat-page -> thread -> tool-fallback, and tool-fallback reads the runtime
+// store, so going through it closes a module cycle that leaves `ToolFallback`
+// in its temporal dead zone on entry points that reach this file first.
+import { GPU_LAYERS_AUTO } from "@/features/chat/lib/gpu-placement";
+import { defaultInferenceParams } from "@/features/chat/presets/preset-policy";
 import {
-  GPU_LAYERS_AUTO,
-  defaultInferenceParams,
   normalizeSpeculativeType,
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
   reconcilePersistedGpuSelection,
   useChatRuntimeStore,
-} from "@/features/chat";
+} from "@/features/chat/stores/chat-runtime-store";
 // Its own module so hosts needing only the signature skip the chat runtime store.
 import { gpuFieldsSignature } from "./config-signature";
 import {

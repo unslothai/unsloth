@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// The defining module, not the model-picker barrel, which is a UI surface: the
+// barrel reaches the chat barrel and back into the thread, so a store importing
+// it drags the whole tree in and closes cycles across the two features.
 import {
   applyPerModelConfigToRuntime,
   currentRuntimePerModelConfig,
   perModelConfigsEqual,
-} from "@/features/model-picker";
+} from "@/features/model-picker/model-config/apply-per-model-config";
 import {
   CONTEXT_LENGTH_MIN,
   DEFAULT_PER_MODEL_CONFIG,
