@@ -3370,11 +3370,22 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
         except Exception:
             pass
 
-    # Distro package-manager fallbacks. Mirrors install.sh::get_torch_index_url
-    # and _detect_rocm_version() in install_python_stack.py so package-managed
-    # ROCm hosts without /opt/rocm/.info/version still report a usable version
-    # and the <= host version filter in resolve_upstream_asset_choice picks
-    # the correct upstream prebuilt instead of the newest-regardless fallback.
+    # Distro package-manager fallbacks, so package-managed ROCm hosts without
+    # /opt/rocm/.info/version still report a usable version and the <= host version
+    # filter in resolve_upstream_asset_choice picks the correct upstream prebuilt
+    # instead of the newest-regardless fallback.
+    #
+    # NO LONGER in sync with install.sh::get_torch_index_url or _detect_rocm_version()
+    # in install_python_stack.py. Those now gate dpkg readings on the "installed" status
+    # word, read Debian's libhsa-runtime64-1 (Debian ships no rocm-core at all), and take
+    # the HIGHEST reading across every source instead of the first to answer. This copy
+    # still stops at the first answer, so on a split Debian stack it reports the 5.7
+    # hipconfig while the torch stack resolves 6.1: the filter below then drops every
+    # published rocm-6.x/7.x prebuilt and the no-compatible-candidate fallback takes the
+    # newest regardless, which is the behaviour that filter exists to avoid.
+    # Deliberately left to a follow-up: it moves llama.cpp asset selection rather than
+    # the torch family, so it wants its own coverage rather than riding along with a
+    # ROCm wheel-routing change.
     for _cmd in (
         ["dpkg-query", "-W", "-f=${Version}\n", "rocm-core"],
         ["rpm", "-q", "--qf", "%{VERSION}\n", "rocm-core"],

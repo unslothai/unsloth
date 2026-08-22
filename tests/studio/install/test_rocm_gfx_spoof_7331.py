@@ -70,8 +70,10 @@ def _reset_torch_runtime_probe():
     """The torch classification is memoized for the life of an install run, so one
     test's mocked probe must not leak into the next."""
     stack_mod._invalidate_torch_runtime_probe()
+    stack_mod._invalidate_rocm_version_probe()
     yield
     stack_mod._invalidate_torch_runtime_probe()
+    stack_mod._invalidate_rocm_version_probe()
 
 
 def _run_install(
