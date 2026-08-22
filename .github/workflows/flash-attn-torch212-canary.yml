@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+name: flash-attn torch 2.12 canary
+
+# Polls Dao-AILab/flash-attention releases weekly. The job goes red once a wheel
+# built against torch >= 2.12 appears, signalling that unsloth can raise the
+# modern-CUDA torch ceiling past 2.11. See
+# studio/backend/tests/test_flash_attn_torch212_canary.py for the rationale.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"  # Mondays ~06:17 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: flash-attn-torch212-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: python -m pip install --upgrade pytest
+
+      - name: Poll flash-attn releases for a torch >= 2.12 wheel
+        id: poll
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UNSLOTH_RUN_FLASH_ATTN_CANARY: "1"
+        run: |
+          python -m pytest studio/backend/tests/test_flash_attn_torch212_canary.py -v
+
+      # Only when the poll step itself failed (canary fired), not on infra/setup
+      # failures in earlier steps -- otherwise a transient checkout/pip failure
+      # would open a false "flash-attn ships torch 2.12" issue.
+      - name: Open a tracking issue if the canary fired
+        if: failure() && steps.poll.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          title="flash-attn now ships a torch 2.12 wheel: raise the Studio torch ceiling"
+          existing=$(gh issue list --state open --search "$title in:title" --json number --jq 'length')
+          if [ "${existing:-0}" -eq 0 ]; then
+            gh issue create \
+              --title "$title" \
+              --body "The flash-attn torch 2.12 canary fired. flash-attn published a prebuilt wheel built against torch >= 2.12, so the pre-2.12 c10 ABI blocker is resolved. Next steps: extend studio/backend/utils/wheel_utils.py prebuilt_wheel_torch_mm for torch 2.12, raise the install.sh modern-CUDA ceiling from <2.12.0 toward <2.13.0 (once causal-conv1d and mamba also ship torch 2.12 wheels), re-run the Blackwell accelerator smoke, and bump the canary threshold. See the failing run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          else
+            echo "Tracking issue already open; skipping."
+          fi
