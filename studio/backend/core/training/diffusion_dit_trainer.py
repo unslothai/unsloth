@@ -1867,7 +1867,11 @@ def run_dit_lora_training(
     device = "cuda"
     if not torch.cuda.is_available():
         xpu = getattr(torch, "xpu", None)
-        device = "xpu" if (callable(getattr(xpu, "is_available", None)) and xpu.is_available()) else "cpu"
+        device = (
+            "xpu"
+            if (callable(getattr(xpu, "is_available", None)) and xpu.is_available())
+            else "cpu"
+        )
     # The flow-matching + 4-bit path is bf16 throughout (fp32 on a CPU-only box, to keep import/unit tests architecture-agnostic).
     # Fail fast on pre-Ampere CUDA, gating on NATIVE bf16 (capability major >= 8), since is_bf16_supported() counts emulation. An XPU device without native bf16 is refused the same way.
     if device == "cuda" and not native_bf16_supported():

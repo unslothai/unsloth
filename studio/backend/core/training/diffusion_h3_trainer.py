@@ -517,7 +517,11 @@ def run_h3_lora_training(
     device = "cuda"
     if not torch.cuda.is_available():
         xpu = getattr(torch, "xpu", None)
-        device = "xpu" if (callable(getattr(xpu, "is_available", None)) and xpu.is_available()) else "cpu"
+        device = (
+            "xpu"
+            if (callable(getattr(xpu, "is_available", None)) and xpu.is_available())
+            else "cpu"
+        )
     if device == "cuda" and not native_bf16_supported():
         raise ValueError(
             "This trainer requires a bfloat16-capable GPU (Ampere or newer); "
