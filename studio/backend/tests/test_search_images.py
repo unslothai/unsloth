@@ -496,7 +496,12 @@ def test_clear_all_chats_invalidates_the_plain_query_image_sweep(monkeypatch, tm
     release = threading.Event()
 
     class BlockingClient:
-        def images(self, query, max_results = 5, **kwargs):
+        def images(
+            self,
+            query,
+            max_results = 5,
+            **kwargs,
+        ):
             started.set()
             release.wait(2)
             return RAW_IMAGES
