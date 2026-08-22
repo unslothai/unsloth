@@ -36,7 +36,15 @@ NOW = "s-now"
 OLD = "s-before"
 
 
-def _cell(cell_id, arm, *, completed, session, tokens = 10_000, rep = 0):
+def _cell(
+    cell_id,
+    arm,
+    *,
+    completed,
+    session,
+    tokens = 10_000,
+    rep = 0,
+):
     row = {
         "row_type": "cell",
         "cell_id": cell_id,
@@ -62,7 +70,13 @@ def _keystroke(cell_id, session, p95):
     }
 
 
-def _window(cell_id, session, max_frame, gaps, duration_ms = 1000.0):
+def _window(
+    cell_id,
+    session,
+    max_frame,
+    gaps,
+    duration_ms = 1000.0,
+):
     return {
         "row_type": "window",
         "cell_id": cell_id,
@@ -95,9 +109,12 @@ def test_the_dead_attempts_frames_are_not_the_retrys_frames():
     reading = readings_by_arm(records, session_id = NOW)["base"][(10_000, 0)]
     assert reading["max_frame_ms"].value == 17.0
     # The 100 ms gap is out of the pooled distribution too, not just out of the maximum.
-    assert reading["jank_index"].value == readings_by_arm(
-        [records[2], records[3]], session_id = NOW
-    )["base"][(10_000, 0)]["jank_index"].value
+    assert (
+        reading["jank_index"].value
+        == readings_by_arm([records[2], records[3]], session_id = NOW)["base"][(10_000, 0)][
+            "jank_index"
+        ].value
+    )
 
 
 def test_two_windows_of_the_same_attempt_are_still_pooled():
@@ -123,7 +140,12 @@ def _payload(directory, rows):
     return path
 
 
-def _finished(session, *, tokens = 10_000, rep = 0):
+def _finished(
+    session,
+    *,
+    tokens = 10_000,
+    rep = 0,
+):
     cell_id = f"r{tokens}.A0.rep{rep}"
     return [
         _cell(cell_id, "A0", completed = True, session = session, tokens = tokens, rep = rep),
@@ -132,7 +154,12 @@ def _finished(session, *, tokens = 10_000, rep = 0):
     ]
 
 
-def _died(session, *, tokens = 10_000, rep = 0):
+def _died(
+    session,
+    *,
+    tokens = 10_000,
+    rep = 0,
+):
     cell_id = f"r{tokens}.A0.rep{rep}"
     return [
         _cell(cell_id, "A0", completed = False, session = session, tokens = tokens, rep = rep),

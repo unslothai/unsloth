@@ -62,9 +62,7 @@ def _payload(out: Path, session: str) -> Paths:
         _keystroke("r10K.treatment.rep0", session, 50.0),
     ]
     paths.payload_jsonl.parent.mkdir(parents = True, exist_ok = True)
-    paths.payload_jsonl.write_text(
-        "".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8"
-    )
+    paths.payload_jsonl.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
     return paths
 
 
