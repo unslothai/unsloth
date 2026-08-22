@@ -307,6 +307,78 @@ def is_null_control(sides: list) -> bool:
     return bool(base.get("owns") and treatment.get("owns"))
 
 
+def arm_origins(specs: list) -> list:
+    """Each side's ORIGIN, resolved exactly as the acquisition loop resolves its base URL.
+
+    An attached side is the URL the caller typed; one this run installs is launched by
+    `launch_studio` on the port `side_specs` handed it and `StudioInstall.base_url` is
+    `http://127.0.0.1:{port}`. Read from the specs rather than from the sides so the answer is
+    available BEFORE anything is cloned, built or launched.
+
+    CANONICALISED, because a typed URL is not an origin. `origin_scoped` gates on
+    `window.location.origin`, which lower-cases the scheme and host, drops a port the scheme
+    implies and keeps no path -- so `http://studio:80` and `http://studio` are ONE origin to the
+    browser and were two to a comparison on the strings. See `browser_origin`, which is what
+    `origin_scoped` now gates on too, so the refusal below and the predicate it protects are
+    reading the same thing.
+    """
+    from .runtime.ab import browser_origin
+    return [
+        (browser_origin(attach) if attach else f"http://127.0.0.1:{port}")
+        for _label, _ref, attach, port, _password in specs
+    ]
+
+
+def stream_cost_injection_problem(specs: list, inject_ms) -> str | None:
+    """Why `--inject-stream-cost-ms` cannot be honoured against these sides. `None` when it can.
+
+    THE INJECTION IS GATED BY ORIGIN AND NOTHING ELSE. Both arms are driven by one browser
+    context and one page, so the init scripts assembled in `run` are the context's, not an arm's:
+    `add_init_script` fires on every document. `origin_scoped` is the only discriminator available
+    and it discriminates on `window.location.origin`, so two arms served from ONE origin both
+    match the treatment's predicate and both burn the injected cost.
+
+    That configuration is not a mistake the caller has to be warned off in general -- one attached
+    Studio driven twice is a null control `is_null_control` detects on purpose, and
+    `test_one_attached_studio_driven_twice_is_a_null_control` pins it. It is only fatal WITH the
+    injection, and it is fatal quietly: `evaluate_stream_cost_recovery_gate` reads back
+    `(injected_rate - base_rate) * chars`, both rates carry the burn, the difference is zero, and
+    the gate fails with "the accumulator is under-attributing" -- a verdict against a metric that
+    was working, delivered by the one flag whose entire job is to tell those two apart.
+
+    ONE ORIGIN CAN BE TWO SPELLINGS, which is why `arm_origins` canonicalises rather than
+    comparing what was typed. `--attach http://studio --attach-b http://studio:80` is one server
+    under two names and a browser reports `http://studio` for both, so the treatment's injection is
+    gated on an origin no document has: it burns on NEITHER arm and the difference is zero for the
+    other reason. Spelled the other way round the base's predicate is the dead one, the treatment's
+    matches every document, and both arms burn. Either way the run reaches the same false verdict,
+    and neither is visible in the two URLs the caller typed -- so the refusal names the origin both
+    resolve to alongside the spellings.
+
+    Refused rather than isolated. Isolating by arm would mean toggling the burn at every cell
+    boundary from the driver, which puts the injection's own timing inside the measured window;
+    the cheap and honest answer is to give the two arms two origins.
+    """
+    if not inject_ms or len(specs) < 2:
+        return None
+    origins = arm_origins(specs)
+    if origins[0] != origins[1]:
+        return None
+    typed = [spec[2] for spec in specs[:2]]
+    spelling = (
+        f" ({typed[0]} and {typed[1]} are one origin under two names)"
+        if all(typed) and typed[0].rstrip("/") != typed[1].rstrip("/")
+        else ""
+    )
+    return (
+        f"--inject-stream-cost-ms needs the two arms on DIFFERENT origins, and both are "
+        f"{origins[0]}{spelling}. The injection is installed as a context init script gated on "
+        f"window.location.origin, so one origin means both arms burn the cost, the difference "
+        f"between them is zero and the recovery gate blames the metric for it. Point --attach and "
+        f"--attach-b at two Studios, or drop --attach and let this run install both."
+    )
+
+
 def stop_owned_sides(
     installs: list,
     stop,
@@ -373,6 +445,15 @@ def run(args, ab_ref = None) -> int:
     if ab_ref:
         if args.attach and not args.attach_b:
             _log("  --ab with --attach needs --attach-b URL: the second build has to be somewhere.")
+            return 2
+        # Here rather than beside the init script it guards, because by then two Studios have been
+        # cloned, built and launched to run a validation that cannot say anything. See
+        # `stream_cost_injection_problem`.
+        injection_problem = stream_cost_injection_problem(
+            specs, getattr(args, "inject_stream_cost_ms", None)
+        )
+        if injection_problem:
+            _log(f"  {injection_problem}")
             return 2
         _log(f"  A/B: base={args.branch} vs treatment={ab_ref}, interleaved in ONE session")
 
@@ -516,6 +597,24 @@ def run(args, ab_ref = None) -> int:
             # the same code and the gate cannot rot while unused.
             init_scripts.append(origin_scoped(side["base_url"], seed))
 
+            if getattr(args, "inject_stream_cost_ms", None) and side is not sides[0]:
+                # VALIDATION, not a measurement mode. Burns a known amount of main-thread time per
+                # SSE chunk on the TREATMENT side only, so an A/B whose two arms are otherwise the
+                # same build has a known answer. It is origin-gated like the seed above, because a
+                # context init script fires on every document and burning on both sides would
+                # inject the cost into the control as well and read back a recovery of zero.
+                from .instruments.selfcheck import stream_cost_injection_init_script
+                init_scripts.append(
+                    origin_scoped(
+                        side["base_url"],
+                        stream_cost_injection_init_script(args.inject_stream_cost_ms),
+                    )
+                )
+                _log(
+                    f"  {side['label']}: INJECTING {args.inject_stream_cost_ms} ms of main-thread "
+                    f"time per SSE chunk. This arm is not a measurement of the build."
+                )
+
         auth = sides[0]["auth"]
         init_scripts.append(resources.read_text("scene/dom.js"))
         init_scripts.append(resources.read_text("scene/parity.js"))
@@ -574,6 +673,17 @@ def run(args, ab_ref = None) -> int:
                 "tier_rungs": TIER_RUNGS[args.tier],
                 "reps": args.reps,
                 "instrument_level": args.instrument_level,
+                # In the payload, not only in the log. Two runs with different fixtures are
+                # not comparable, and a fixture difference that is not recorded is one a later
+                # reader has no way to notice before quoting a ratio across it.
+                "stream_tail_chars": args.stream_tail_chars,
+                "corpus_dollars": bool(args.corpus_dollars),
+                # AN ARM RUNNING THIS IS NOT A MEASUREMENT OF THE BUILD, and the payload has to
+                # say so itself. A reader who finds a treatment arm 40% slower has no other way
+                # to discover that the harness put the 40% there on purpose, and `--resume` reads
+                # it back as an identity axis so a calibration cannot be continued as an ordinary
+                # run or the other way round. See `IDENTITY_AXES`.
+                "inject_stream_cost_ms": getattr(args, "inject_stream_cost_ms", None),
             }
         )
         rec.gate("production_build", verdict.production, verdict.as_dict())
@@ -634,10 +744,28 @@ def run(args, ab_ref = None) -> int:
             _sweep_surfaces(sides, ctx, paths)
 
         cells = build_cells(
-            rungs, corpus, args.tier, ctx.session_id, args.instrument_level, reps = args.reps
+            rungs,
+            corpus,
+            args.tier,
+            ctx.session_id,
+            args.instrument_level,
+            reps = args.reps,
+            stream_tail_chars = args.stream_tail_chars,
+            corpus_dollars = args.corpus_dollars,
         )
+        if args.stream_tail_chars or args.corpus_dollars:
+            # Loud, because both change the fixture. A payload produced under either of them is
+            # not comparable with one produced without, and the pair that says so is printed here
+            # and written into the run manifest above.
+            _log(
+                f"  FIXTURE CHANGED: stream tail {args.stream_tail_chars or 'default'}, "
+                f"dollars {'on' if args.corpus_dollars else 'off'}. Compare only against a run "
+                f"with the same pair."
+            )
 
         done = _resume_set(paths) if args.resume else set()
+        if done:
+            _log(f"  resuming: {len(done)} cells already in {paths.payload_jsonl.name}")
 
         if ab_ref:
             from .runtime.ab import Target, interleave, order_is_balanced
@@ -869,11 +997,48 @@ IDENTITY_AXES = (
     "studio_ref",
     "treatment_ref",
     "treatment_url",
+    # Added by this branch with `--stream-tail-chars` / `--corpus-dollars`: both change the reply
+    # the cell streams without moving its id, so they belong to the identity for the same reason
+    # the tier does. Recorded already, so no schema change and a payload from before them reads
+    # back as the defaults (see `HISTORICAL_DEFAULTS`).
+    "stream_tail_chars",
+    "corpus_dollars",
+    # `--inject-stream-cost-ms`, on the same rule and for a larger perturbation than either of
+    # those two. It burns a known amount of main-thread time per SSE chunk on the TREATMENT arm,
+    # so a treatment cell recorded with it is a different reading from one recorded without it,
+    # under a cell id that cannot tell -- the id carries the rung, the arm and the repetition and
+    # stops there. Off it, `--resume` had two ways to lie about a calibration: against a FINISHED
+    # uninjected payload every pair is skippable, the run exits 0 having measured nothing, and the
+    # recovery gate is answered from cells that were never injected; against a HALF-FINISHED
+    # injected one the resume drops the flag and the ladder ends up part injected and part not.
+    # Both land as a recovery fraction near zero, which reads as "the metric is blind" and is the
+    # single verdict this flag exists to make trustworthy.
+    "inject_stream_cost_ms",
 )
 
 #: The axes that describe the SECOND side, which only exist when a run has one. See
 #: `identity_problems`: an A/B judged against a run that is not one may not differ on them.
 TREATMENT_AXES = ("treatment_ref", "treatment_url")
+
+#: The axes whose ABSENCE from a payload is itself a reading, and what it reads as.
+#:
+#: `identity_problems` otherwise skips an axis the payload never declared, because an axis a row
+#: never declared cannot be a difference. That is right for the axes `run_meta` has always carried:
+#: a payload missing one of those is a payload this check has nothing to say about.
+#:
+#: It is WRONG for these three. They arrived with the flags that set them, so a payload written
+#: before them did not decline to record a value -- there was no way to ask for anything but the
+#: default, and it ran under `stream_tail_chars = None`, `corpus_dollars = False` and
+#: `inject_stream_cost_ms = None` by construction. Skipping them therefore accepted `--resume
+#: --stream-tail-chars 24000` against such a payload, skipped its completed cells, and recorded the
+#: rest under a different streamed fixture beneath the same cell ids: one ladder built from two
+#: films, which is what this check exists to refuse. Absence proves the value here, so it is read
+#: as the value.
+HISTORICAL_DEFAULTS = {
+    "stream_tail_chars": None,
+    "corpus_dollars": False,
+    "inject_stream_cost_ms": None,
+}
 
 #: THE BUILD, as opposed to the name it was asked for by. A ref is a POINTER: `main`, a topic
 #: branch and a movable tag all resolve afresh on every install, and `checkout_ref` is the only
@@ -907,6 +1072,9 @@ def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
         # the identity check, skipped every completed treatment cell and reported B's measurements
         # as C's result. Empty for a treatment this run installs itself, whose ref IS its identity.
         "treatment_url": attach_b if (ab_ref and attach_b) else "",
+        "stream_tail_chars": args.stream_tail_chars,
+        "corpus_dollars": bool(args.corpus_dollars),
+        "inject_stream_cost_ms": getattr(args, "inject_stream_cost_ms", None),
     }
 
 
@@ -954,16 +1122,26 @@ def identity_problems(recorded: dict, requested: dict) -> list:
     # attached one on the axis where the two of them do differ.
     both_ab = bool(requested.get("treatment_ref")) and bool(recorded.get("treatment_ref"))
     for axis in IDENTITY_AXES:
-        if axis not in recorded:
+        declared = axis in recorded
+        if declared:
+            got = recorded[axis]
+        elif axis in HISTORICAL_DEFAULTS:
+            # Not declared, but not silent either: this axis postdates the payload, so the payload
+            # ran under the default. See `HISTORICAL_DEFAULTS`.
+            got = HISTORICAL_DEFAULTS[axis]
+        else:
             # An axis this payload never declared. See `recorded_identities`.
             continue
         if axis in TREATMENT_AXES and not both_ab:
             continue
-        want, got = requested.get(axis), recorded[axis]
+        want = requested.get(axis)
         if str(want) != str(got):
-            problems.append(
-                f"{axis}: the payload was recorded with {got!r}, this run asks {want!r}"
+            where = (
+                f"the payload was recorded with {got!r}"
+                if declared
+                else f"the payload predates this axis and therefore ran with {got!r}"
             )
+            problems.append(f"{axis}: {where}, this run asks {want!r}")
     return problems
 
 
@@ -1417,6 +1595,40 @@ def parse_args(argv: list):
         "film is designed to roll on through one. Default 0, which is right for a "
         "quiet measurement machine; raise it only on a contended runner, where the "
         "gate is proving the plumbing works rather than that the runner is fast",
+    )
+    ap.add_argument(
+        "--stream-tail-chars",
+        type = int,
+        dest = "stream_tail_chars",
+        help = "override how many characters of the last turn STREAM. The rung ladder "
+        "pins this at 6,000 on every rung so that the thread is the only thing that "
+        "varies, which means a cost scaling with the length of the reply being streamed "
+        "is constant across the whole ladder and reads as a floor. This is the axis that "
+        "can see one. Raising it makes the film's after-generation slots run mid-stream, "
+        "so check the payload with --assert-liveness rather than trusting the labels",
+    )
+    ap.add_argument(
+        "--inject-stream-cost-ms",
+        type = float,
+        dest = "inject_stream_cost_ms",
+        help = "VALIDATION. Burn this many milliseconds of main-thread time per SSE chunk on the "
+        "treatment side, inside the task chain the chunk starts. Needs --ab. The point is to "
+        "check that the streaming-cost metric reads back a cost this harness injected itself: a "
+        "metric that cannot see a known cost cannot see an unknown one, and the recovery fraction "
+        "is what says which of the two a null result was. An arm running this is not a "
+        "measurement of the build",
+    )
+    ap.add_argument(
+        "--corpus-dollars",
+        action = "store_true",
+        dest = "corpus_dollars",
+        help = "give the STREAMED turns the CURRENCY AND SHELL dollars a real reply has "
+        "($HOME, $12.99). Not the same thing as the LaTeX the frozen corpus carries since "
+        "corpus v2: that is well-formed math in the SEEDED thread, which exercises the "
+        "renderer, and this is malformed-on-purpose dollars in the turn that STREAMS, "
+        "which exercises preprocessLaTeX's currency-escape and code-region heuristics. "
+        "Measured over one 96,000 character reply, the cheap regime is 15.3 ms and the "
+        "expensive one 281.3 ms. The frozen units on disk and their hashes are untouched",
     )
     ap.add_argument("--rungs", help = "comma-separated rung override, e.g. 1K,10K")
     ap.add_argument("--reps", type = int, default = 1)
