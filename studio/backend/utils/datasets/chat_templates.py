@@ -259,11 +259,30 @@ def apply_chat_template_to_dataset(
                     "errors": errors
                 }
 
+    # Only the alpaca branch renders from custom_prompt_template. Saying so beats
+    # dropping the caller's template without a word on every other format.
+    if custom_prompt_template is not None and final_format != "alpaca":
+        warnings.append(
+            f"custom_prompt_template is only applied to the alpaca format; this dataset is "
+            f"{final_format}, so the template was not used."
+        )
+
     # ALPACA FORMAT
     if final_format == "alpaca":
 
         # Set alpaca chat template (if unset) so it's saved for inference.
-        if not (hasattr(tokenizer, 'chat_template') and tokenizer.chat_template):
+        # Not when the caller supplied their own template: get_chat_template
+        # mutates the tokenizer in place, so the saved tokenizer would advertise
+        # "### Instruction:" / "### Response:" while the text was rendered from
+        # something else, and inference would not match training.
+        if custom_prompt_template is not None:
+            if not (hasattr(tokenizer, 'chat_template') and tokenizer.chat_template):
+                warnings.append(
+                    "A custom prompt template was given, so the tokenizer is left without a "
+                    "chat template rather than being stamped with the stock alpaca one it "
+                    "would not match at inference."
+                )
+        elif not (hasattr(tokenizer, 'chat_template') and tokenizer.chat_template):
             try:
                 from unsloth.chat_templates import get_chat_template
                 tokenizer = get_chat_template(
@@ -275,6 +294,37 @@ def apply_chat_template_to_dataset(
             except Exception as e:
                 logger.info(f"⚠️ Could not set alpaca template on tokenizer: {e}")
 
+        # Render the template once here, in the parent process, before any row is
+        # touched. A template is one caller-supplied constant, so if it cannot
+        # render it cannot render for any row, and catching that per row only
+        # turned one mistake into a dataset of blank rows reported as a success.
+        # Anything raised here reaches the handler below, which returns
+        # success False with the message attached and no "text" column.
+        if custom_prompt_template is not None:
+            if not custom_prompt_template.strip():
+                errors.append(
+                    "custom_prompt_template is empty; pass None to use the default alpaca template."
+                )
+                return {
+                    "dataset": dataset,
+                    "success": False,
+                    "warnings": warnings,
+                    "errors": errors
+                }
+            try:
+                custom_prompt_template.format(instruction = "", input = "", output = "")
+            except Exception as e:
+                errors.append(
+                    f"custom_prompt_template does not render: {type(e).__name__}: {e}. "
+                    f"It takes the named fields {{instruction}}, {{input}} and {{output}}."
+                )
+                return {
+                    "dataset": dataset,
+                    "success": False,
+                    "warnings": warnings,
+                    "errors": errors
+                }
+
         def _format_alpaca_custom(examples):
             texts = []
             for i in range(len(examples["instruction"])):
@@ -284,13 +334,12 @@ def apply_chat_template_to_dataset(
                     "output": examples["output"][i]
                 }
 
-                try:
+                if custom_prompt_template is not None:
+                    # Named placeholders, which is the shape `fields` is built for.
+                    text = custom_prompt_template.format(**fields)
+                else:
                     text = DEFAULT_ALPACA_TEMPLATE.format(fields["instruction"], fields["input"], fields["output"])
-                    text += eos_token
-                    texts.append(text)
-                except KeyError as e:
-                    errors.append(f"Custom template missing field: {e}")
-                    texts.append("")
+                texts.append(text + eos_token)
 
             return {"text": texts}
 
