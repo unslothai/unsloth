@@ -274,10 +274,6 @@ class _FakePage:
         class _Button:
             def click(self_inner) -> None:
                 page.clicked += 1
-
-        class _Button:
-            def click(self_inner) -> None:
-                page.clicked += 1
                 page.running = False
 
         return _Button() if "Stop generating" in selector else None
