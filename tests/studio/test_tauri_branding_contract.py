@@ -192,7 +192,14 @@ def test_desktop_release_asset_names_are_human_readable() -> None:
         assert f"f'{{base_name}}-{suffix}'" in workflow
 
 
+LOCALES = FRONTEND / "src/i18n/locales"
+
+
 def test_desktop_surfaces_do_not_restore_studio_branding() -> None:
+    # The desktop app displays itself as "Unsloth", never "Unsloth Studio". The i18n
+    # locale files are exempt because they also have to name the *remote server* a user
+    # points the app at, which genuinely is an Unsloth Studio; that prose is not this
+    # app's display name. Everything else under src is still swept.
     display_sources = [
         TAURI / "Info.plist",
         TAURI / "capabilities/default.json",
@@ -203,8 +210,12 @@ def test_desktop_surfaces_do_not_restore_studio_branding() -> None:
         TAURI / "windows/sign-with-trusted-signing.ps1",
         REPO / ".github/workflows/release-desktop.yml",
         FRONTEND / "index.html",
-        *sorted((FRONTEND / "src").rglob("*.ts")),
-        *sorted((FRONTEND / "src").rglob("*.tsx")),
+        *sorted(
+            path
+            for suffix in ("*.ts", "*.tsx")
+            for path in (FRONTEND / "src").rglob(suffix)
+            if LOCALES not in path.parents
+        ),
     ]
     offenders = [
         str(path.relative_to(REPO)) for path in display_sources if "Unsloth Studio" in read(path)
@@ -214,3 +225,25 @@ def test_desktop_surfaces_do_not_restore_studio_branding() -> None:
     workflow = read(REPO / ".github/workflows/release-desktop.yml")
     assert "Desktop app for Unsloth." in workflow
     assert '--title "Unsloth Desktop updater channel"' not in workflow
+
+
+def test_the_branding_sweep_still_covers_the_frontend() -> None:
+    """The locale exemption must stay narrow.
+
+    A sweep that matches nothing passes this contract while proving nothing, which is the
+    failure mode the exemption above could quietly introduce: rename the locale directory,
+    or move src, and the rglob goes empty with the test still green.
+    """
+    swept = [
+        path
+        for suffix in ("*.ts", "*.tsx")
+        for path in (FRONTEND / "src").rglob(suffix)
+        if LOCALES not in path.parents
+    ]
+    exempt = sorted(LOCALES.rglob("*.ts"))
+
+    assert LOCALES.is_dir(), f"the exempt directory moved: {LOCALES}"
+    assert len(exempt) >= 10, f"locales look wrong, found {len(exempt)}"
+    # Two orders of magnitude between the two is the point: the exemption is a dozen
+    # translation files, not the frontend.
+    assert len(swept) > 20 * len(exempt), f"sweep collapsed to {len(swept)} files"
