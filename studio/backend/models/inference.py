@@ -1440,28 +1440,47 @@ class LoadResponse(_InferenceRuntimeFields):
 
 
 class MlxSpeculativeCandidate(BaseModel):
+    """One drafter a target could run, with why it can or cannot.
+
+    Grouped as identity, then what it costs, then the four questions that decide it, then the
+    verdict. ``loadable`` is exactly ``reason is None``, carried so a client need not re-derive it.
+    """
+
     method: Literal["mtp", "dflash", "eagle3"]
     repo_id: str
     label: str
     source: Literal["builtin", "cached", "recommended"] = "recommended"
     recommended: bool = False
+
     approximate_size_bytes: int = Field(ge = 0)
     estimated_memory_bytes: int = Field(ge = 0)
     materialization_bytes: int = Field(ge = 0)
+
     downloaded: bool
     compatible: bool
     runtime_supported: bool
     integration_ready: bool
+
     loadable: bool
     reason: Optional[str] = None
 
 
 class MlxSpeculativeOptionsResponse(BaseModel):
+    """The drafters one target can run, and what Auto would pick among them."""
+
     target_model: str
+    # Reserved: this contract may still change between releases. Kept so that settling it
+    # later is a value change rather than a new field.
     experimental: bool = True
+
     runtime_supported: bool
     runtime_reason: Optional[str] = None
     candidates: List[MlxSpeculativeCandidate] = Field(default_factory = list)
+
+    # What Auto would run, so a client names its pick without re-deriving the target's rules.
+    auto_method: MlxSpeculativeResolvedMode = "off"
+    auto_draft_model: Optional[str] = None
+    auto_reason: Optional[str] = None
 
 
 class UnloadResponse(BaseModel):

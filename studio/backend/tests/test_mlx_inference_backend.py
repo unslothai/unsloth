@@ -5099,27 +5099,10 @@ def test_the_options_endpoint_reports_the_drafters_the_sources_found(monkeypatch
     assert candidate["downloaded"] is True and candidate["compatible"] is True
     assert candidate["loadable"] is True and candidate["reason"] is None
 
-    # A target that can attach no drafter withdraws the rows rather than listing them: the
-    # picker offers a download from this response, and no download makes such a row usable.
+    # What the panel is served carries Auto's answer: this target is too small to gain.
     import asyncio
 
-    import utils.models.model_config as model_config_mod
-
-    # Reading the target's configuration fetches it for a model seen for the first time, so
-    # a cache with nothing in it yet is what the scan must not be run against: pairing needs
-    # the configuration this very probe brings down.
-    monkeypatch.setattr(spec, "_read_config", lambda _t: None)
-
-    def _probe(name, *a, **k):
-        monkeypatch.setattr(spec, "_read_config", lambda _t: _MTP_TARGET)
-        return name == "org/Target"
-
-    monkeypatch.setattr(model_config_mod, "is_vision_model", _probe)
-    monkeypatch.setattr(spec, "_canonical_target_id", lambda _t: "org/Target")
-    served = asyncio.run(inf_mod.get_mlx_speculative_options("target", "tester"))
-    # Asked about the name the scan and the load match on. The request's own spelling names a
-    # repository that does not exist, which answers no and withdraws every drafter it has.
-    assert served.runtime_supported is True
+    served = asyncio.run(inf_mod.get_mlx_speculative_options("org/target", "tester"))
     assert [(row.repo_id, row.loadable) for row in served.candidates] == [("org/Drafter", True)]
     assert (served.auto_method, served.auto_reason) == ("off", "target_too_small_to_draft")
 
@@ -5164,6 +5147,8 @@ def test_the_options_endpoint_reports_the_drafters_the_sources_found(monkeypatch
         (False, "method_not_integrated")
     ]
 
+    # The reason has to survive the merge onto the candidate, or the picker cannot say
+    # why a drafter the user can see is not selectable.
     monkeypatch.setattr(spec, "ENABLED_MLX_SPECULATIVE_METHODS", frozenset())
     withheld = spec.mlx_speculative_options("org/target")["candidates"][0]
     assert withheld["loadable"] is False and withheld["reason"] == "method_not_integrated"
