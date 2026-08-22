@@ -7034,26 +7034,10 @@ def _estimate_gguf_kv_gb(
         if ctx <= 0:
             return 0.0
         slots = max(1, n_parallel or 1)
-        planned_cache_types = _planned_main_cache_types(
-            cache_type_kv,
-            llama_extra_args,
+        cache_type_for_budget = max(
+            _planned_main_cache_types(cache_type_kv, llama_extra_args),
+            key = _kv_bytes_per_elem,
         )
-        if tensor_parallel and any(
-            cache_type not in LlamaCppBackend._TENSOR_PARALLEL_KV_TYPES
-            for cache_type in planned_cache_types
-        ):
-            # Tensor mode strips quantized axes, but a layer fallback restores
-            # the original settings. Size for the larger successful outcome.
-            tensor_cache_types = _planned_main_cache_types(None, None)
-            cache_type_for_budget = max(
-                (*planned_cache_types, *tensor_cache_types, "f16"),
-                key = _kv_bytes_per_elem,
-            )
-        else:
-            cache_type_for_budget = max(
-                planned_cache_types,
-                key = _kv_bytes_per_elem,
-            )
         # the loader raises --batch-size to max(slots, 2) before launch, and llama.cpp
         # caps the micro-batch against it, so budget from the emitted value. Diffusion
         # takes neither flag, and SWA metadata prices the KV against the micro-batch,

@@ -9,8 +9,10 @@ any mmproj/MTP GGUF that fit on one card. The fix makes the skip self-healing:
 tensor is tried by default and recorded per (binary, model) only on a real abort.
 
 load_model is too entangled to drive end-to-end, so these tests inspect the
-source / drive the pure helpers. The headline test pins the set of TP-drop
-conditions, so a new silent drop fails CI. No GPU; fully deterministic.
+source / drive the pure helpers. That holds for ordering and binding invariants;
+anything observable in the launched argv belongs in test_llama_cpp_placement.py
+instead, driven through its _launch harness. The headline test pins the set of
+TP-drop conditions, so a new silent drop fails CI. No GPU; fully deterministic.
 """
 
 from __future__ import annotations
@@ -123,7 +125,8 @@ def _tensor_parallel_false_drop_guards() -> list[str]:
 
 
 # Every condition that may flip a requested tensor_parallel back to False. Adding
-# one must be conscious: update this allowlist and keep multi-GPU where possible.
+# one must be conscious: update this allowlist, keep multi-GPU where possible, and
+# strip the extras split-mode group so the drop cannot be undone by a user flag.
 _ALLOWED_TP_DROP_GUARDS = {
     # Capability: --split-mode tensor aborted for this (binary, model) (#6415).
     # Self-healing -- tried by default, skipped only after a real abort (vs #6416).
@@ -134,8 +137,7 @@ _ALLOWED_TP_DROP_GUARDS = {
     # Capacity: pooled usable VRAM can't hold weights + MTP reserve -> layer split.
     "_tp_weight_budget_mib <= _tp_required_mib",
     # Manual mode, Auto layers: --fit owns memory and is incompatible with a
-    # tensor split, so TP is dropped (surfaced via logger.info) before the
-    # cache-drop, so a quantized KV survives into the --fit load (#6414).
+    # tensor split, so TP is dropped (surfaced via logger.info) (#6414).
     "tensor_parallel and gpu_memory_mode == 'manual' and (gpu_layers < 0)",
     # Manual mode, explicit layers: a tensor split still needs >= 2 GPUs in use.
     "tensor_parallel and gpu_memory_mode == 'manual' and (gpu_layers >= 0) and (self._effective_gpu_count(sorted(gpu_ids) if gpu_ids else None) < 2)",
@@ -161,8 +163,9 @@ def test_tensor_parallel_drop_sites_match_allowlist():
         f"  unexpected (new) : {sorted(found - _ALLOWED_TP_DROP_GUARDS)}\n"
         f"  missing (removed): {sorted(_ALLOWED_TP_DROP_GUARDS - found)}\n"
         "A new drop means a user's TP request is ignored for a new reason -- "
-        "review it, keep multi-GPU where possible, surface it, then update "
-        "_ALLOWED_TP_DROP_GUARDS."
+        "review it, keep multi-GPU where possible, surface it, strip the extras "
+        "split-mode group with strip_split_mode_only so the drop cannot be undone "
+        "by a user flag, then update _ALLOWED_TP_DROP_GUARDS."
     )
 
 

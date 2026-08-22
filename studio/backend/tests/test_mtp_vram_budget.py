@@ -1086,28 +1086,6 @@ class TestExtraArgsMtpDetection:
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_extra_args_main_cache_type_for_budget(extra_args)" in load
 
-    def test_load_model_tensor_drops_any_quantized_cache_axis(self):
-        # The heavier-by-bytes budget type can mask a quantized axis (an f16
-        # budget hides a paired q4_0), so the tensor-safety drop must test each
-        # --cache-type-k/-v extra, not just cache_type_kv -- else the quantized
-        # axis survives into tensor mode and crashes the load (#6312).
-        load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert "_ck_extra,_cv_extra=parse_cache_override_per_axis(extra_args)" in load
-        assert "forcin(cache_type_kv,_ck_extra,_cv_extra)" in load
-        assert "iftensor_paralleland_cache_non_tensor_safe:" in load
-
-    def test_load_model_layer_downgrade_restores_original_cache_extras(self):
-        # Tensor mode strips asymmetric --cache-type-k/-v (it rejects quantized),
-        # but layer split supports them, so a downgrade must restore the ORIGINAL
-        # extras, not just the scalar heavier type (else q4_0/f16 silently becomes
-        # f16/f16 on the layer fallback) (#6312).
-        load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert "_tensor_dropped_extra_args=list(extra_args)" in load
-        # The original extras are restored via one shared closure, called at all
-        # three tensor->layer downgrade points.
-        assert "strip_split_mode_only(_tensor_dropped_extra_argsif" in load
-        assert load.count("_restore_after_tensor_downgrade()") >= 3
-
     def test_load_model_tensor_skips_reserve_for_cpu_drafter(self):
         # A separate CPU-offloaded drafter (no embedded head) uses no GPU, so the
         # tensor reserve must be suppressed like the layer path -- else tensor mode
@@ -1156,16 +1134,6 @@ class TestExtraArgsMtpDetection:
         assert '_inherited_sm!="layer"' in compact
         assert 'env.pop("LLAMA_ARG_SPLIT_MODE",None)' in compact
         assert 'env.pop("LLAMA_ARG_TENSOR_SPLIT",None)' in compact
-
-    def test_load_model_clears_quantized_kv_env_for_tensor(self):
-        # Cluster B: tensor mode aborts on quantized KV. An inherited quantized
-        # LLAMA_ARG_CACHE_TYPE_K/_V must be popped from the child env so it cannot
-        # crash the tensor child (and matches the tensor-safe budget).
-        # Whitespace-stripped for formatter.
-        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert '("LLAMA_ARG_CACHE_TYPE_K","LLAMA_ARG_CACHE_TYPE_V")' in compact
-        assert "_ct_rawnotinself._TENSOR_PARALLEL_KV_TYPES" in compact
-        assert "env.pop(_ct_var,None)" in compact
 
     def test_load_model_clears_tensor_split_env_in_tensor_mode(self):
         # review run3 #2: Unsloth owns the tensor split. When it emits no

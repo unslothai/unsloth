@@ -1699,13 +1699,7 @@ def test_load_model_reserves_pipeline_per_device_overhead():
     assert "_subset_model_size(n_gpus)" in compact  # used in the layer-split fit
 
 
-def test_load_model_restores_quantized_kv_on_tensor_downgrade():
-    # A quantized KV dropped for the tensor attempt must be restored if tensor
-    # downgrades to layer split (Finding D); captured once, restored at both the
-    # GPU-count and capacity-gate downgrades.
-    compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-    assert "_tensor_dropped_cache_type_kv=cache_type_kv" in compact  # captured pre-null
-    # Restore is shared in one closure, called at every tensor->layer downgrade.
-    assert "cache_type_kv=_tensor_dropped_cache_type_kv" in compact  # restored in the closure
-    assert "def_restore_after_tensor_downgrade():" in compact  # one shared restore helper
-    assert compact.count("_restore_after_tensor_downgrade()") >= 3  # called at each downgrade
+def test_load_model_does_not_gate_the_kv_cache_on_tensor_mode():
+    # llama.cpp runs a quantized KV cache under --split-mode tensor (ggml-org/
+    # llama.cpp#23792), so Unsloth must not carry its own whitelist.
+    assert not hasattr(LlamaCppBackend, "_TENSOR_PARALLEL_KV_TYPES")
