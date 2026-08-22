@@ -29,7 +29,15 @@ SESSION = "s-now"
 OLD_SESSION = "s-before"
 
 
-def _cell(cell_id, arm, *, completed = True, session = SESSION, tokens = 10_000, rep = 0):
+def _cell(
+    cell_id,
+    arm,
+    *,
+    completed = True,
+    session = SESSION,
+    tokens = 10_000,
+    rep = 0,
+):
     return {
         "row_type": "cell",
         "cell_id": cell_id,
@@ -40,7 +48,12 @@ def _cell(cell_id, arm, *, completed = True, session = SESSION, tokens = 10_000,
     }
 
 
-def _keystroke(cell_id, p95, *, session = SESSION):
+def _keystroke(
+    cell_id,
+    p95,
+    *,
+    session = SESSION,
+):
     return {
         "row_type": "action",
         "cell_id": cell_id,

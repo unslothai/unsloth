@@ -31,7 +31,11 @@ from studiobench.runtime.lifecycle import checkout_ref  # noqa: E402
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason = "git is not installed")
 
 
-def _git(*args, cwd, check = True):
+def _git(
+    *args,
+    cwd,
+    check = True,
+):
     return subprocess.run(
         ["git", *args],
         cwd = str(cwd),
@@ -77,8 +81,9 @@ def test_clone_branch_cannot_take_a_commit(tmp_path):
     """The reason this module does not use `git clone --branch <ref>`, asserted rather than said."""
 
     bare, first, _second = _origin(tmp_path)
-    got = _git("clone", "--branch", first, str(bare), str(tmp_path / "byclone"),
-               cwd = tmp_path, check = False)
+    got = _git(
+        "clone", "--branch", first, str(bare), str(tmp_path / "byclone"), cwd = tmp_path, check = False
+    )
     assert got.returncode != 0
     assert "not found in upstream origin" in (got.stderr + got.stdout)
 
