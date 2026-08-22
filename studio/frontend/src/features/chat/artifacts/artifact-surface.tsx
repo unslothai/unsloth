@@ -11,6 +11,12 @@ import {
 } from "@/components/assistant-ui/code-themes";
 import { MascotImg } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
@@ -29,22 +35,22 @@ import {
 import { Streamdown } from "streamdown";
 import { ArtifactHtmlFrame, type ArtifactViewMode } from "./html-frame";
 import { useChatArtifactsStore } from "./store";
-import type { ChatArtifact } from "./types";
-import { buildArtifactSourceKey, getArtifactFilename } from "./types";
+import type { ArtifactDownloadFormat, ChatArtifact } from "./types";
+import {
+  ARTIFACT_DOWNLOAD_FORMATS,
+  buildArtifactDownloadContent,
+  buildArtifactHtmlFence,
+  buildArtifactSourceKey,
+  getArtifactDownloadExtension,
+  getArtifactDownloadFormatLabel,
+  getArtifactDownloadMimeType,
+  getArtifactFilename,
+} from "./types";
 
 const COPY_RESET_MS = 2000;
 const artifactSourceCodePlugin = createCodePlugin({
   themes: [unslothLightTheme, unslothDarkTheme],
 });
-
-function buildHtmlFence(source: string): string {
-  const longestBacktickRun = Math.max(
-    2,
-    ...(source.match(/`+/g) ?? []).map((match) => match.length),
-  );
-  const fence = "`".repeat(longestBacktickRun + 1);
-  return `${fence}html\n${source}\n${fence}`;
-}
 // Sandboxed canvas iframes are deliberately outside the overlay focus trap:
 // granting same-origin sandbox privileges would weaken isolation, so reaching
 // interactive canvas content via keyboard is a known sandbox limitation.
@@ -111,14 +117,27 @@ export function ArtifactSurface({
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const surfaceRef = useRef<HTMLElement>(null);
   const previousFocusRef = useRef<Element | null>(null);
-  const filename = getArtifactFilename(artifact);
   const sourceMarkdown = useMemo(
-    () => buildHtmlFence(artifact.code),
+    () => buildArtifactHtmlFence(artifact.code),
     [artifact.code],
   );
   const hasArtifactCode = artifact.code.trim().length > 0;
   const isLoadingArtifact = Boolean(artifact.isStreaming);
   const effectiveViewMode = isLoadingArtifact ? "preview" : viewMode;
+
+  const handleDownload = async (format: ArtifactDownloadFormat) => {
+    try {
+      await downloadFile(
+        buildArtifactDownloadContent(artifact.code, format),
+        getArtifactFilename(artifact, format),
+        getArtifactDownloadMimeType(format),
+      );
+    } catch (err) {
+      if (!isDownloadCancelled(err)) {
+        toast.error("Failed to save canvas file");
+      }
+    }
+  };
 
   useEffect(() => {
     return () => {
@@ -261,29 +280,33 @@ export function ArtifactSurface({
           })}
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="size-8"
-            disabled={isLoadingArtifact || !hasArtifactCode}
-            onClick={() => {
-              // Route through the native save dialog on desktop; the plain
-              // blob-anchor download is silently dropped by the Tauri WebView2.
-              void downloadFile(
-                artifact.code,
-                filename,
-                "text/html;charset=utf-8",
-              ).catch((err) => {
-                if (!isDownloadCancelled(err)) {
-                  toast.error("Failed to save canvas HTML");
-                }
-              });
-            }}
-            aria-label="Download canvas HTML"
-          >
-            <HugeiconsIcon icon={Download01Icon} className="size-4" />
-          </Button>
+          {/* Route through the native save dialog on desktop; the plain
+              blob-anchor download is silently dropped by the Tauri WebView2. */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild={true}>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-8"
+                disabled={isLoadingArtifact || !hasArtifactCode}
+                aria-label="Download canvas"
+              >
+                <HugeiconsIcon icon={Download01Icon} className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {ARTIFACT_DOWNLOAD_FORMATS.map((format) => (
+                <DropdownMenuItem
+                  key={format}
+                  onSelect={() => void handleDownload(format)}
+                >
+                  {getArtifactDownloadFormatLabel(format)} (.
+                  {getArtifactDownloadExtension(format)})
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button
             type="button"
             variant="ghost"
