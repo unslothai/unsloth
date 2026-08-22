@@ -23,10 +23,7 @@ Adding a case here widens the proof for free; the driver iterates this dict.
 from __future__ import annotations
 
 #: A 1x1 transparent GIF, left unclosed so a caller appends its own `alt="..."` attribute.
-IMG = (
-    '<img src="data:image/gif;base64,'
-    'R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" '
-)
+IMG = '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" '
 
 CONSTRUCTS = {
     "plain": "<p>plain line</p>",
@@ -52,8 +49,7 @@ CONSTRUCTS = {
     "input_checkbox": '<p><input type="checkbox" checked></p>',
     "textarea": "<p><textarea>textarea body</textarea></p>",
     "select": (
-        "<p><select><option>option one</option>"
-        "<option selected>option two</option></select></p>"
+        "<p><select><option>option one</option><option selected>option two</option></select></p>"
     ),
     "user_select_none": '<p style="user-select:none;-webkit-user-select:none">unselectable</p>',
     "display_none": '<p style="display:none">hidden line</p>',
@@ -73,9 +69,7 @@ CONSTRUCTS = {
 
 #: The only constructs the serialiser is allowed to refuse on a mapped engine. Everything else
 #: must be answered AND must match the clipboard byte for byte.
-MUST_REFUSE = frozenset(
-    {"input_text", "input_password", "input_checkbox", "textarea", "select"}
-)
+MUST_REFUSE = frozenset({"input_text", "input_password", "input_checkbox", "textarea", "select"})
 
 #: Constructs where the engine copies nothing at all, so there is no clipboard to compare with.
 NO_COPY = frozenset({"user_select_none", "display_none", "visibility_hidden"})
