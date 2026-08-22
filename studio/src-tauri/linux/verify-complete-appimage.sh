@@ -113,8 +113,13 @@ grep -Fq '@APPDIR@/usr/share/unsloth/fonts' "$fontconfig_file" || {
   echo "Complete AppImage fontconfig does not name its font directory absolutely" >&2
   exit 1
 }
-grep -Fq 'sed "s|@APPDIR@|$APPDIR|g" "$unsloth_fonts_template"' "${launchers[@]}" || {
+grep -Fq 'sed "s|@APPDIR@|$unsloth_fonts_appdir|g" "$unsloth_fonts_template"' "${launchers[@]}" || {
   echo "Complete AppImage does not pin fontconfig to its safe emoji policy" >&2
+  exit 1
+}
+# A mount path carries the AppImage's own file name, so it reaches the policy encoded.
+grep -Fq "s,&,\\&amp;,g" "${launchers[@]}" || {
+  echo "Complete AppImage does not encode its mount path for the fontconfig policy" >&2
   exit 1
 }
 
@@ -122,7 +127,11 @@ grep -Fq 'sed "s|@APPDIR@|$APPDIR|g" "$unsloth_fonts_template"' "${launchers[@]}
 if command -v fc-match >/dev/null && command -v fc-query >/dev/null &&
   fc-query "$safe_emoji_font" >/dev/null 2>&1; then
   fc_root="$(mktemp -d "${RUNNER_TEMP:-/tmp}/unsloth-appimage-fc.XXXXXX")"
-  sed "s|@APPDIR@|$appdir|g" "$fontconfig_file" >"$fc_root/fonts.conf"
+  # Encode the AppDir exactly as AppRun does, so this exercises the shipped policy.
+  fc_appdir="$(printf '%s' "$appdir" | sed \
+    -e 's,&,\&amp;,g' -e 's,<,\&lt;,g' -e 's,>,\&gt;,g' \
+    -e 's,\\,\\\\,g' -e 's,&,\\&,g' -e 's,|,\\|,g')"
+  sed "s|@APPDIR@|$fc_appdir|g" "$fontconfig_file" >"$fc_root/fonts.conf"
   selected="$(FONTCONFIG_FILE="$fc_root/fonts.conf" XDG_CACHE_HOME="$fc_root" \
     fc-match -f '%{file}' 'sans-serif:charset=1f680')"
   if [[ "$selected" != "$safe_emoji_font" ]]; then

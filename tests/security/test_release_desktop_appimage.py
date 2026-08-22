@@ -309,7 +309,8 @@ def _fake_complete_appdir(tmp_path: Path) -> Path:
         "#!/bin/sh\n"
         '. "$APPDIR/apprun-hooks/linuxdeploy-plugin-gtk.sh"\n'
         "unset LD_LIBRARY_PATH\n"
-        'sed "s|@APPDIR@|$APPDIR|g" "$unsloth_fonts_template"\n'
+        "sed -e 's,&,\\&amp;,g'\n"
+        'sed "s|@APPDIR@|$unsloth_fonts_appdir|g" "$unsloth_fonts_template"\n'
         "exit 0\n",
         encoding = "utf-8",
     )
@@ -547,6 +548,50 @@ def test_apprun_retires_only_the_font_policies_whose_mount_is_gone(tmp_path):
     later_policy = state / "unsloth-studio/fonts-mount-later.conf"
     assert f"FONTCONFIG_FILE={later_policy}" in result.stdout.splitlines()
     assert later_policy.is_file()
+
+
+def test_apprun_encodes_a_mount_path_carrying_xml_and_sed_metacharacters(tmp_path):
+    """The AppImage runtime copies the file's own name into the mount path."""
+
+    # An AppImage named "R&D<x>.AppImage" mounts under /tmp/.mount_R&D<x>XXXXXX.
+    appdir = _apprun_mount(tmp_path, "mount-R&D<x>|y\\z")
+    state = tmp_path / "state"
+
+    result = subprocess.run(
+        [appdir / "AppRun"],
+        check = True,
+        capture_output = True,
+        text = True,
+        env = {"PATH": "/usr/bin:/bin", "XDG_RUNTIME_DIR": str(state)},
+    )
+
+    materialized = state / f"unsloth-studio/fonts-{appdir.name}.conf"
+    assert f"FONTCONFIG_FILE={materialized}" in result.stdout.splitlines()
+    policy = materialized.read_text(encoding = "utf-8")
+    assert "@APPDIR@" not in policy
+
+    # Fontconfig drops a whole policy it cannot parse, which puts host COLRv1
+    # fonts back in front of Skia.
+    root = ElementTree.fromstring(policy)
+    directories = [element.text for element in root.findall("dir")]
+    assert directories == [f"{appdir}/usr/share/unsloth/fonts"]
+    assert root.find("selectfont/rejectfont") is not None
+
+
+def test_apprun_keeps_a_live_policy_whose_mount_path_needed_encoding(tmp_path):
+    """Cleanup compares mounts on disk, so it has to decode what it wrote."""
+
+    state = tmp_path / "state"
+    env = {"PATH": "/usr/bin:/bin", "XDG_RUNTIME_DIR": str(state)}
+    live = _apprun_mount(tmp_path, "mount-R&D<x>")
+    subprocess.run([live / "AppRun"], check = True, capture_output = True, env = env)
+    live_policy = state / f"unsloth-studio/fonts-{live.name}.conf"
+    assert live_policy.is_file()
+
+    later = _apprun_mount(tmp_path, "mount-later")
+    subprocess.run([later / "AppRun"], check = True, capture_output = True, env = env)
+
+    assert live_policy.is_file(), "a running instance lost its font policy"
 
 
 def test_apprun_falls_back_to_the_shipped_font_policy_when_it_cannot_write(tmp_path):
