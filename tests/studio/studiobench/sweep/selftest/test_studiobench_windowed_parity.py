@@ -1408,3 +1408,188 @@ def test_only_the_cell_that_failed_is_refused(tmp_path, capsys):
     assert code == 0, out
     assert "visible region matched:     1" in out, out
     assert "NOT COMPARABLE:             1" in out, out
+
+
+# ── one glob pools separate runs, and a declaration belongs to the run that made it ──
+
+
+def _legacy_capture(digest):
+    """A capture from a checkout that predates `mounted_messages` / `thread_total`.
+
+    `parity.windowed_mount` reads those two numbers and says of their absence: captures taken
+    before they existed report neither and are treated as full-mount, which is what they were.
+    Such a payload digests perfectly well and carries NO mount measurement, so every one of its
+    pairs falls through to the declaration fallback.
+    """
+    return {
+        "parity_attempted": True,
+        "root_kind": "thread",
+        "digest": digest,
+        "chars": 100,
+        "messages": [
+            {"i": i, "role": "assistant", "digest": f"{digest}{i}", "chars": 10} for i in range(18)
+        ],
+        "overlays": [],
+        "styles": {"elements": 18, "digest": "s", "capped": False},
+    }
+
+
+def _two_run_glob(tmp_path):
+    """Two SEPARATE runs under one glob: `sb_win` was launched with `--windowed-arm treatment`,
+    `sb_old` was an ordinary A/B from an older checkout whose treatment arm has a DOM regression."""
+    win = [
+        {
+            "row_type": "gate",
+            "name": "windowed_readiness:treatment",
+            "passed": True,
+            "detail": {"arm": "treatment"},
+        }
+    ]
+    for side in ("base", "treatment"):
+        win.append(
+            _action(
+                "select_all_copy",
+                f"r100K.{side}.rep0",
+                parity = _capture(mounted = 9 if side == "treatment" else 18, total = 18),
+                visible = _visible([1], [1]),
+                expect = _copy_expect(
+                    clipboard = 200_000,
+                    selected = 66_000 if side == "treatment" else 200_000,
+                    mounted = 9 if side == "treatment" else 18,
+                ),
+            )
+        )
+    _write(tmp_path, "sb_win", win)
+    old = [
+        _action(
+            "select_all_copy",
+            f"r1K.{side}.rep0",
+            parity = _legacy_capture("regressed" if side == "treatment" else "shipped"),
+            visible = _visible([1], [1]),
+            expect = _copy_expect(clipboard = 200_000, selected = 200_000, mounted = 18),
+        )
+        for side in ("base", "treatment")
+    ]
+    _write(tmp_path, "sb_old", old)
+
+
+def _modes_by_shard_action(decided):
+    """{(shard, action): mode}, so an assertion does not have to spell the whole pair key."""
+    return {(key[0], key[-1]): mode for key, (mode, _why) in decided.items()}
+
+
+def test_a_windowed_declaration_does_not_leak_into_another_run_under_one_glob(tmp_path, capsys):
+    """DECLARATIONS ARE PER SHARD. `outputs/sbench_*` pools separate runs, and `cell_id` and arm
+    label repeat identically in every one of them, so a `--windowed-arm treatment` gate row in one
+    run became the fallback for every unmeasured pair in an ordinary run beside it. The ordinary
+    run's pairs were scored on the visible region and on behavioural invariants instead, the
+    structural digest they were owed never ran, and its DOM regression exited 0 because of a flag
+    passed to a DIFFERENT run.
+    """
+    from studiobench.sweep import ui_parity as U
+
+    _two_run_glob(tmp_path)
+    modes = _modes_by_shard_action(U.decide_modes(U.shards_of(f"{tmp_path}/sb_*")))
+    assert modes[("sb_old", "select_all_copy")] == U.STRUCTURAL, modes
+    assert modes[("sb_win", "select_all_copy")] == U.WINDOWED, modes
+
+    code = U.main([f"{tmp_path}/sb_*"])
+    out = capsys.readouterr().out
+    assert "UI PARITY DIFFERENCES ON STABLE ACTIONS" in out, out
+    assert "sb_old" in out.split("UI PARITY DIFFERENCES ON STABLE ACTIONS")[1], out
+    assert code == 1, out
+
+
+def test_the_declaration_still_decides_the_run_that_made_it(tmp_path):
+    """The positive control for the scoping above: a run's own declaration must still reach its own
+    unmeasured pairs, which is the whole reason the fallback exists."""
+    from studiobench.sweep import ui_parity as U
+
+    shard = _declared_windowed_shard(tmp_path, "still_declared")
+    assert all(mode == U.WINDOWED for mode, _why in U.decide_modes([shard]).values())
+    other = _write(
+        tmp_path,
+        "unrelated",
+        [
+            _action("settings", f"r1K.{side}.rep0", parity = _capture(mounted = 18, total = 18))
+            for side in ("base", "treatment")
+        ],
+    )
+    modes = _modes_by_shard_action(U.decide_modes([shard, other]))
+    assert modes[("still_declared", "select_all_copy")] == U.WINDOWED, modes
+    assert modes[("unrelated", "settings")] == U.STRUCTURAL, modes
+
+
+# ── a visible floor measured on another film tier is not this payload's floor ──
+
+
+def _tiered_visible_shard(tmp_path, name, tier, differ_actions, windowed):
+    """A visible-region payload that records the FILM TIER it was shot on, as `run_meta` does."""
+    import json
+
+    rows = [{"row_type": "run_meta", "tier": tier}]
+    for action in ("copy_markdown", "select_text"):
+        for rep in range(2):
+            for side in ("base", "treatment"):
+                digest = "X" if (action in differ_actions and side == "treatment") else "same"
+                mounted = 9 if (windowed and side == "treatment") else 18
+                rows.append(
+                    _action(
+                        action,
+                        f"r100K.{side}.rep{rep}",
+                        parity = _capture(mounted = mounted, total = 18),
+                        visible = _visible([1], [1], digest = digest),
+                        expect = {
+                            "clipboard_chars": 5000,
+                            "selected_chars": 100,
+                            "visible_chars": 100,
+                        },
+                    )
+                )
+    shard = tmp_path / name
+    shard.mkdir()
+    (shard / "payload.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding = "utf-8")
+    return shard
+
+
+def test_a_visible_floor_from_another_film_tier_is_not_applied(tmp_path, capsys):
+    """THE INCOMPARABLE CONTROL. `tier_of` states the mechanism: on the fast film `copy_markdown`
+    opens 2.7 s after a `send_turn` and lands inside that turn's stream, so it differs against
+    itself; on the standard film it opens 26 s later against a finished reply. `--tier fast` then
+    `--tier standard` is the documented way to work, so a stale fast null control on a standard
+    run's command line is the ordinary mistake, not an exotic one.
+
+    The floor derived from it was keyed by `(rung, action)` with no tier in it, so it silenced the
+    standard payload's real visible difference, and an ALL-WINDOWED payload returns before the
+    structural section that would have warned about the mismatch, so the command exited 0 without
+    a word about the tier.
+    """
+    from studiobench.sweep import ui_parity as U
+
+    null = _tiered_visible_shard(tmp_path, "null_fast", "fast", {"copy_markdown"}, windowed = False)
+    arm = _tiered_visible_shard(
+        tmp_path, "arm_standard", "standard", {"copy_markdown"}, windowed = True
+    )
+    assert U.visible_unstable_set(U.shards_of(str(null))) == frozenset({("r100K", "copy_markdown")})
+
+    code = U.main([str(arm), "--null", str(null)])
+    out = capsys.readouterr().out
+    assert "FLOOR REFUSED" in out, out
+    assert "DIFFERENCES INSIDE THE VIEWPORT" in out, out
+    assert code == 1, out
+
+
+def test_a_visible_floor_from_the_SAME_tier_still_applies(tmp_path, capsys):
+    """The positive control, and the verdict this must not change: a null control shot on the same
+    film still silences the action it measured differing against itself."""
+    from studiobench.sweep import ui_parity as U
+
+    null = _tiered_visible_shard(
+        tmp_path, "null_std", "standard", {"copy_markdown"}, windowed = False
+    )
+    arm = _tiered_visible_shard(tmp_path, "arm_std", "standard", {"copy_markdown"}, windowed = True)
+    code = U.main([str(arm), "--null", str(null)])
+    out = capsys.readouterr().out
+    assert "FLOOR REFUSED" not in out, out
+    assert "differ against an identical build" in out, out
+    assert code == 0, out

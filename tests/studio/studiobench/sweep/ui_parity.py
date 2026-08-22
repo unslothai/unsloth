@@ -246,29 +246,42 @@ def collect(paths: list[Path], select: Optional[set] = None) -> dict:
     return {"pairs": out, "attempted": attempted, "missing": missing}
 
 
-def declared_windowed(paths: list[Path]) -> tuple[dict[str, str], dict[str, str]]:
-    """What the RUN SAID about windowing, per cell and per arm: ({cell_id: why}, {arm: why}).
+def declared_windowed(
+    paths: list[Path],
+) -> tuple[dict[tuple[str, str], str], dict[tuple[str, str], str]]:
+    """What the RUN SAID about windowing: ({(shard, cell_id): why}, {(shard, arm): why}).
 
     The declaration is the fallback for a pair the measurement cannot answer, and only that. It is
     never allowed to override a capture that did succeed, because the arm named by `--windowed-arm`
     still mounts its whole thread at the small rungs and those pairs are owed a structural digest.
+
+    SCOPED TO THE SHARD THAT DECLARED IT, for the same reason `incomplete_cells` is read per path.
+    One glob pools separate runs -- that is what `outputs/sbench_*` is for -- and `cell_id` and arm
+    label repeat identically in every one of them, so keying on those alone let a
+    `--windowed-arm treatment` declaration from one run become the fallback for an unmeasured pair
+    in an ordinary run beside it. The ordinary run's pairs were then scored on the visible region
+    and on behavioural invariants, the structural digest they were owed never ran, and a plain DOM
+    regression in a payload that declared nothing exited 0 because of a flag passed to a different
+    run. A payload recorded before `mounted_messages` existed carries no mount measurement at all,
+    so every one of its pairs takes that fallback.
     """
-    cells: dict[str, str] = {}
-    arms: dict[str, str] = {}
+    cells: dict[tuple[str, str], str] = {}
+    arms: dict[tuple[str, str], str] = {}
     for path in paths:
+        shard = path.parent.name
         for r in rows(path):
             kind = r.get("row_type")
             if kind == "gate":
                 name = str(r.get("name") or "")
                 if name.startswith(WINDOWED_GATE):
                     arm = name[len(WINDOWED_GATE) :] or "?"
-                    arms[arm] = f"the run declared the {arm} arm windowed (gate row {name})"
+                    arms[(shard, arm)] = f"the run declared the {arm} arm windowed (gate row {name})"
             elif kind == "cell":
                 readiness = r.get("readiness")
                 mode = readiness.get("mode") if isinstance(readiness, dict) else None
                 if mode == MODE_WINDOWED:
                     cid = str(r.get("cell_id") or "")
-                    cells[cid] = f"cell {cid} was admitted by the WINDOWED readiness gate"
+                    cells[(shard, cid)] = f"cell {cid} was admitted by the WINDOWED readiness gate"
     return cells, arms
 
 
@@ -351,10 +364,13 @@ def decide_modes(paths: list[Path]) -> dict[tuple, tuple[str, str]]:
         # mixed-rung payload the fully mounted pairs then supply `matched > 0`, the missing windowed
         # pair is filed as structurally NOT COMPARABLE, and the command exits 0 without ever running
         # a windowed report for the rung that has no verdict at all.
+        #
+        # AND ONLY THIS PAIR'S OWN SHARD DECLARES IT. See `declared_windowed`.
         why = ""
+        shard = key[0]
         for label in ARMS:
             cid = _cell_id_for(sides, label)
-            why = (cells.get(cid) if cid else "") or arms.get(label) or ""
+            why = (cells.get((shard, cid)) if cid else "") or arms.get((shard, label)) or ""
             if why:
                 break
         decided[key] = (
@@ -1155,6 +1171,7 @@ def main(argv: list[str] | None = None) -> int:
     worst = 0
     scored_windowed = 0
     vis_unstable: Optional[frozenset[tuple[str, str]]] = None
+    vis_null_tiers: set[str] = set()
     for entry in plan:
         win, struct = entry["windowed"], entry["structural"] or set()
         if not win and not entry.get("forced"):
@@ -1193,9 +1210,33 @@ def main(argv: list[str] | None = None) -> int:
                 for pat in args.null:
                     vis_null.extend(shards_of(pat))
                 vis_unstable = visible_unstable_set(vis_null)
+                vis_null_tiers = one_tier(vis_null, "null control")
+            # A FLOOR FROM ANOTHER FILM TIER IS NOT THIS PAYLOAD'S FLOOR. `tier_of` states the
+            # mechanism: the slot spacing decides which actions land inside a live stream and so
+            # differ against themselves, and `--tier fast` then `--tier standard` is the documented
+            # way to work, which is exactly how a stale fast null control ends up on the command
+            # line of a standard run. `one_tier` above refuses a null control that is internally
+            # mixed; this refuses one that is internally consistent but belongs to a different
+            # film. The structural section further down says this out loud, and an ALL-WINDOWED
+            # payload returns before it ever reaches that warning -- so a floor measured on the
+            # wrong film silenced a real visible difference and the command exited 0 without a
+            # word about it. Refused rather than applied: an unfloored report says what it is
+            # missing, a wrongly floored one does not.
+            floor = vis_unstable
+            payload_tiers = one_tier(paths, "payload")
+            if floor and vis_null_tiers and payload_tiers and vis_null_tiers != payload_tiers:
+                print(
+                    f"\n  FLOOR REFUSED: the null control was recorded at tier "
+                    f"{sorted(vis_null_tiers)} and this payload at {sorted(payload_tiers)}. Which "
+                    f"actions differ against an identical build depends on the film's slot "
+                    f"spacing, so this floor does not transfer and is NOT applied. The visible "
+                    f"differences below are unfloored: record a null control at "
+                    f"{sorted(payload_tiers)} before reading them as findings."
+                )
+                floor = frozenset()
             worst = max(
                 worst,
-                visible_report(paths, f"UI PARITY: {pattern}", vis_unstable, select = win),
+                visible_report(paths, f"UI PARITY: {pattern}", floor, select = win),
             )
         if args.mode in ("auto", "behaviour"):
             worst = max(
