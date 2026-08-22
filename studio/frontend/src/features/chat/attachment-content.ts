@@ -4,10 +4,12 @@
 import { type Unzipped, strFromU8, unzipSync, zipSync } from "fflate";
 
 import {
-  MAX_OPEN_DOCUMENT_ARCHIVE_BYTES,
-  MAX_OPEN_DOCUMENT_XML_BYTES,
   OPEN_DOCUMENT_SPREADSHEET_MIME,
   OPEN_DOCUMENT_TEXT_MIME,
+} from "./open-document-accept";
+import {
+  MAX_OPEN_DOCUMENT_ARCHIVE_BYTES,
+  MAX_OPEN_DOCUMENT_XML_BYTES,
   readOpenDocumentAttachmentContent,
 } from "./open-document";
 
