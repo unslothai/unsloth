@@ -86,6 +86,12 @@ def _text(content: str) -> str:
     return "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": content}}]})
 
 
+def _reasoning(content: str) -> str:
+    return "data: " + json.dumps(
+        {"choices": [{"index": 0, "delta": {"reasoning_content": content}}]}
+    )
+
+
 def _finish(reason: str = "tool_calls") -> str:
     return "data: " + json.dumps({"choices": [{"index": 0, "delta": {}, "finish_reason": reason}]})
 
@@ -132,7 +138,12 @@ def executed(monkeypatch):
     return calls
 
 
-def _run(transport):
+def _run(
+    transport,
+    *,
+    provider_type = None,
+    model = None,
+):
     async def _collect():
         out: list[str] = []
         agen = stream_with_studio_tools(
@@ -141,6 +152,8 @@ def _run(transport):
                 messages = [{"role": "user", "content": "hi"}],
                 session_id = "s1",
                 thread_id = "t1",
+                provider_type = provider_type,
+                model = model,
             ),
             policy = ToolLoopPolicy(
                 tools = [WEB],
@@ -252,6 +265,39 @@ def test_the_models_own_prose_is_kept_alongside(executed):
     replayed = _replayed(transport)
     assert "Searching now." in replayed
     assert "hosted output" in replayed
+
+
+def test_kimi_k3_reasoning_reaches_the_local_tool_follow_up(executed):
+    transport = FakeTransport(
+        [
+            [_reasoning("plan "), _reasoning("then act"), _call_line(), _finish()],
+            [_text("done"), _finish("stop")],
+            [_DONE],
+        ]
+    )
+    _run(transport, provider_type = "kimi", model = "kimi-k3")
+    assistant = next(
+        message
+        for message in transport.requests[1]["messages"]
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )
+    assert assistant["reasoning_content"] == "plan then act"
+
+
+@pytest.mark.parametrize(
+    ("provider_type", "model"),
+    [("kimi", "kimi-k2.6"), ("openrouter", "moonshotai/kimi-k3")],
+)
+def test_other_tool_loops_do_not_replay_kimi_reasoning(executed, provider_type, model):
+    transport = FakeTransport(
+        [
+            [_reasoning("private"), _call_line(), _finish()],
+            [_text("done"), _finish("stop")],
+            [_DONE],
+        ]
+    )
+    _run(transport, provider_type = provider_type, model = model)
+    assert "reasoning_content" not in _replayed(transport)
 
 
 # ── what must not be replayed ────────────────────────────────────────

@@ -171,6 +171,8 @@ import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
+  isKimiK3Selection,
+  kimiSearchRequiresThinkingOff,
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
@@ -2286,6 +2288,10 @@ export function ChatPage({
     // Responses-API tools). Everyone else "medium". Overridable via Think.
     const isAnthropic = provider?.providerType === "anthropic";
     const isOpenAI = provider?.providerType === "openai";
+    const isKimiK3 = isKimiK3Selection(
+      provider?.providerType,
+      selection.modelId,
+    );
     const anthropicTopEffort = effortLevels.includes("xhigh")
       ? "xhigh"
       : effortLevels.includes("high")
@@ -2301,9 +2307,11 @@ export function ChatPage({
         ? anthropicTopEffort
         : isOpenAI
           ? openaiDefaultEffort
-          : effortLevels.includes("medium")
-            ? "medium"
-            : clampedEffort
+          : isKimiK3 && effortLevels.includes("max")
+            ? "max"
+            : effortLevels.includes("medium")
+              ? "medium"
+              : clampedEffort
       : state.reasoningEffort;
     const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
       provider?.providerType,
@@ -2370,7 +2378,10 @@ export function ChatPage({
       supportsStudioTools: supportsStudioToolsHere,
     });
     const nextToolsEnabled = canSearch
-      ? isKimi
+      ? kimiSearchRequiresThinkingOff(
+          provider?.providerType,
+          selection.modelId,
+        )
         ? false
         : (storedToolsEnabled ?? searchOnByDefault)
       : false;
@@ -2838,6 +2849,10 @@ export function ChatPage({
         // Anthropic highest level, OpenAI "high", everyone else "medium".
         const isAnthropic = selectedProvider?.providerType === "anthropic";
         const isOpenAI = selectedProvider?.providerType === "openai";
+        const isKimiK3 = isKimiK3Selection(
+          selectedProvider?.providerType,
+          selectedExternal?.modelId,
+        );
         const anthropicTopEffort = effortLevels.includes("xhigh")
           ? "xhigh"
           : effortLevels.includes("high")
@@ -2853,9 +2868,11 @@ export function ChatPage({
             ? anthropicTopEffort
             : isOpenAI
               ? openaiDefaultEffort
-              : effortLevels.includes("medium")
-                ? "medium"
-                : clampedEffort
+              : isKimiK3 && effortLevels.includes("max")
+                ? "max"
+                : effortLevels.includes("medium")
+                  ? "medium"
+                  : clampedEffort
           : store.reasoningEffort;
         // Clear any cached router-picked openrouter/free model unless staying
         // on openrouter/free, else the chip keeps a stale ":<chosen>" suffix.
@@ -2924,7 +2941,10 @@ export function ChatPage({
           supportsStudioTools: supportsStudioToolsHere,
         });
         const nextToolsEnabled = canSearch
-          ? isKimi
+          ? kimiSearchRequiresThinkingOff(
+              selectedProvider?.providerType,
+              selectedExternal?.modelId,
+            )
             ? false
             : (storedToolsEnabled ?? searchOnByDefault)
           : false;

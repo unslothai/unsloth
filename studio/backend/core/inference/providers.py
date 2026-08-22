@@ -219,12 +219,9 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "kimi": {
         "display_name": "Kimi",
         "base_url": "https://api.moonshot.ai/v1",
-        # Surface only the two SoTA multimodal models (kimi-k2.6/k2.5);
-        # moonshot-v1-* and dated k2 previews are filtered by the allowlist.
-        # Docs: https://platform.kimi.ai/docs/models
-        # Listing/overview: https://platform.kimi.ai/docs/api/list-models
-        #                   https://platform.kimi.ai/docs/api/overview
+        # model catalog: https://platform.kimi.ai/docs/models
         "default_models": [
+            "kimi-k3",
             "kimi-k2.6",
             "kimi-k2.5",
         ],
@@ -237,10 +234,9 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": "Moonshot API key. China: use base URL https://api.moonshot.cn/v1",
-        "model_id_allowlist": re.compile(r"^kimi-k2\.[56]$"),
-        # Reasoning-class: the API rejects custom temperature/top_p ("only 1
-        # is allowed"). Strip both so the server uses its required defaults.
-        "body_omit": ("temperature", "top_p"),
+        "model_id_allowlist": re.compile(r"^kimi-(?:k3|k2\.[56])$"),
+        # reasoning-class models require fixed sampling values.
+        "body_omit": ("temperature", "top_p", "presence_penalty"),
     },
     "qwen": {
         "display_name": "Qwen",
@@ -386,6 +382,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "openrouter/owl-alpha",
             "poolside/laguna-xs.2:free",
             "~google/gemini-pro-latest",
+            "moonshotai/kimi-k3",
             "~moonshotai/kimi-latest",
         ],
         "supports_streaming": True,

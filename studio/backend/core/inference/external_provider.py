@@ -47,6 +47,7 @@ _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 # "openai" is absent because it never reaches this body: it routes to /v1/responses,
 # which reports usage on its own.
 _USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
+_MAX_KIMI_WEB_SEARCH_ROUNDS = 8
 
 # structlog so INFO diagnostics reach the backend's JSON log stream (the
 # stdlib root logger defaults to WARNING with no handlers). It accepts the
@@ -1047,8 +1048,7 @@ class ExternalProviderClient:
                 yield line
             return
 
-        # Kimi $web_search needs a 2-call round-trip + thinking off; route to
-        # a helper. Forced-function tool_choice suppresses it.
+        # kimi $web_search uses internal server-tool round trips.
         # https://platform.kimi.ai/docs/guide/use-web-search
         _kimi_tool_choice_forced_function = (
             isinstance(tool_choice, dict)
@@ -1067,6 +1067,7 @@ class ExternalProviderClient:
                 messages,
                 model,
                 max_tokens,
+                reasoning_effort,
             ):
                 yield line
             return
@@ -1117,6 +1118,8 @@ class ExternalProviderClient:
             # Newer OpenAI models (gpt-4o, gpt-5.x) reject max_tokens
             if self.provider_type == "openai":
                 body["max_completion_tokens"] = max_tokens
+            elif self.provider_type == "kimi" and model == "kimi-k3":
+                body["max_completion_tokens"] = max_tokens
             else:
                 body["max_tokens"] = max_tokens
 
@@ -1129,17 +1132,14 @@ class ExternalProviderClient:
         for field in provider_info.get("body_omit", ()):
             body.pop(field, None)
 
-        # Kimi thinking is a top-level body field. kimi-k2-thinking is always
-        # on (ignore the toggle); kimi-k2.6 defaults on, can be disabled.
-        # `keep: all` preserves every chunk for the UI panel.
-        if self.provider_type == "kimi" and enable_thinking is not None:
-            if model == "kimi-k2-thinking":
-                # Always on; ignore client toggle to avoid an API-level reject.
-                pass
-            elif enable_thinking:
-                body["thinking"] = {"type": "enabled", "keep": "all"}
-            else:
-                body["thinking"] = {"type": "disabled"}
+        if self.provider_type == "kimi":
+            if model == "kimi-k3":
+                if reasoning_effort in ("low", "high", "max"):
+                    body["reasoning_effort"] = reasoning_effort
+            elif enable_thinking is not None and model != "kimi-k2-thinking":
+                body["thinking"] = (
+                    {"type": "enabled", "keep": "all"} if enable_thinking else {"type": "disabled"}
+                )
         elif self.provider_type == "mistral":
             _apply_mistral_reasoning_controls(body, model, enable_thinking, reasoning_effort)
         elif self.provider_type == "vllm" and enable_thinking is not None:
@@ -1155,7 +1155,7 @@ class ExternalProviderClient:
         # https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
         if self.provider_type == "openrouter":
             normalized_or_model = model.strip().lower()
-            if reasoning_effort in ("low", "medium", "high"):
+            if reasoning_effort in ("low", "medium", "high", "max"):
                 body["reasoning"] = {"effort": reasoning_effort}
             elif enable_thinking is True:
                 body["reasoning"] = {"enabled": True}
@@ -1451,46 +1451,30 @@ class ExternalProviderClient:
             )
 
     async def _stream_kimi_web_search(
-        self, messages: list[dict[str, Any]], model: str, max_tokens: Optional[int]
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        max_tokens: Optional[int],
+        reasoning_effort: Optional[str] = None,
+        _search_count: int = 0,
     ) -> AsyncGenerator[str, None]:
-        """
-        Kimi $web_search round-trip.
-
-        Wire flow (per https://platform.kimi.ai/docs/guide/use-web-search):
-          1. POST messages with tools=[{type: "builtin_function",
-             function: {name: "$web_search"}}] and thinking=disabled.
-          2. Stream the first response — accumulate function.arguments across
-             tool_call deltas until finish_reason="tool_calls". Do NOT forward
-             those tool_call chunks to the client (internal protocol step, not
-             user-visible output).
-          3. Build a second request: original messages + the assistant message
-             carrying the tool_calls + a role=tool message echoing the same
-             arguments verbatim (per Kimi docs, the caller "just needs to
-             submit tool_call.function.arguments to Kimi as they are" — the
-             server actually runs the search).
-          4. Stream the second response — the final answer the user sees, with
-             search results already incorporated.
-
-        We synthesize tool_start (with the parsed query) when step (2)
-        completes, and tool_end (with any url_citation annotations the second
-        stream emits) before [DONE], so the chat UI shows the same web-search
-        tool card as other providers.
-        """
+        """Run Kimi's server-side web search round-trip."""
         url = f"{self.base_url}/chat/completions"
+        is_kimi_k3 = model == "kimi-k3"
         body: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "stream": True,
-            # $web_search forbids thinking; sending the toggle would make the
-            # server reject the request with 400.
-            "thinking": {"type": "disabled"},
             "tools": [{"type": "builtin_function", "function": {"name": "$web_search"}}],
         }
+        if is_kimi_k3:
+            if reasoning_effort in ("low", "high", "max"):
+                body["reasoning_effort"] = reasoning_effort
+        else:
+            body["thinking"] = {"type": "disabled"}
         if max_tokens is not None:
-            body["max_tokens"] = max_tokens
+            body["max_completion_tokens" if is_kimi_k3 else "max_tokens"] = max_tokens
 
-        # Strip body fields the Kimi registry declares unusable
-        # (temperature/top_p — see body_omit in providers.py).
         from core.inference.providers import get_provider_info
 
         provider_info = get_provider_info(self.provider_type) or {}
@@ -1510,14 +1494,65 @@ class ExternalProviderClient:
             }
             return f"data: {_json.dumps(chunk)}"
 
+        def _capture_chunk(
+            parsed: dict[str, Any],
+            tool_calls: dict[int, dict[str, Any]],
+            content_parts: list[str],
+            reasoning_parts: list[str],
+        ) -> Optional[str]:
+            if "error" in parsed:
+                return sanitize_provider_sse_line(f"data: {_json.dumps(parsed)}")
+            visible_choices: list[dict[str, Any]] = []
+            for choice in parsed.get("choices") or []:
+                if not isinstance(choice, dict):
+                    continue
+                visible_choice = dict(choice)
+                delta = choice.get("delta")
+                visible_delta = dict(delta) if isinstance(delta, dict) else {}
+                if is_kimi_k3 and isinstance(visible_delta.get("content"), str):
+                    content_parts.append(visible_delta["content"])
+                if is_kimi_k3 and isinstance(visible_delta.get("reasoning_content"), str):
+                    reasoning_parts.append(visible_delta["reasoning_content"])
+                for tool_call in visible_delta.pop("tool_calls", []) or []:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    index = tool_call.get("index", 0)
+                    slot = tool_calls.setdefault(
+                        index,
+                        {
+                            "id": tool_call.get("id") or f"call_{index}",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        },
+                    )
+                    if tool_call.get("id"):
+                        slot["id"] = tool_call["id"]
+                    function = tool_call.get("function") or {}
+                    if function.get("name"):
+                        slot["function"]["name"] = function["name"]
+                    if function.get("arguments"):
+                        slot["function"]["arguments"] += function["arguments"]
+                visible_choice["delta"] = visible_delta
+                if visible_choice.get("finish_reason") == "tool_calls":
+                    visible_choice["finish_reason"] = None
+                if visible_delta or visible_choice.get("finish_reason") is not None:
+                    visible_choices.append(visible_choice)
+            if not visible_choices and not isinstance(parsed.get("usage"), dict):
+                return None
+            visible_payload = dict(parsed)
+            visible_payload["choices"] = visible_choices
+            return sanitize_provider_sse_line(f"data: {_json.dumps(visible_payload)}")
+
         logger.info(
             "Kimi $web_search round-trip starting (model=%s, url=%s)",
             model,
             url,
         )
 
-        # ---- First call: collect the model's $web_search tool_call ----
         tool_calls_acc: dict[int, dict[str, Any]] = {}
+        assistant_content_parts: list[str] = []
+        assistant_reasoning_parts: list[str] = []
+        first_call_visible_lines: list[str] = []
         try:
             async with _http_client.stream(
                 "POST",
@@ -1553,31 +1588,16 @@ class ExternalProviderClient:
                             parsed = _json.loads(data_str)
                         except Exception:
                             continue
-                        for choice in parsed.get("choices") or []:
-                            if not isinstance(choice, dict):
-                                continue
-                            delta = choice.get("delta") or {}
-                            for tc in delta.get("tool_calls") or []:
-                                if not isinstance(tc, dict):
-                                    continue
-                                idx = tc.get("index", 0)
-                                slot = tool_calls_acc.setdefault(
-                                    idx,
-                                    {
-                                        "id": tc.get("id") or f"call_{idx}",
-                                        "type": "function",
-                                        "function": {"name": "", "arguments": ""},
-                                    },
-                                )
-                                if tc.get("id"):
-                                    slot["id"] = tc["id"]
-                                fn = tc.get("function") or {}
-                                if fn.get("name"):
-                                    slot["function"]["name"] = fn["name"]
-                                if fn.get("arguments"):
-                                    slot["function"]["arguments"] += fn["arguments"]
-                            if choice.get("finish_reason") == "tool_calls":
-                                break
+                        if not isinstance(parsed, dict):
+                            continue
+                        visible_line = _capture_chunk(
+                            parsed,
+                            tool_calls_acc,
+                            assistant_content_parts,
+                            assistant_reasoning_parts,
+                        )
+                        if visible_line is not None:
+                            first_call_visible_lines.append(visible_line)
                 except GeneratorExit:
                     await response.aclose()
                     await lines_gen.aclose()
@@ -1594,20 +1614,20 @@ class ExternalProviderClient:
             )
             return
 
-        # If the model decided not to search, fall back to a plain streaming
-        # call without the builtin tool. Mirrors the UX of every other
-        # provider when web_search is on but the model didn't need it.
         search_calls = [
             tc for tc in tool_calls_acc.values() if tc["function"]["name"] == "$web_search"
         ]
         if not search_calls:
+            if _search_count:
+                for visible_line in first_call_visible_lines:
+                    yield visible_line
+                yield "data: [DONE]"
+                return
             logger.info(
                 "Kimi $web_search: model did not invoke search; falling back to plain stream"
             )
             fallback_body = dict(body)
             fallback_body.pop("tools", None)
-            # This path returns before the common body injection, and Kimi reports no
-            # engine timings, so without this the row has neither tokens nor a speed.
             fallback_body["stream_options"] = {"include_usage": True}
             try:
                 async with _http_client.stream(
@@ -1627,9 +1647,6 @@ class ExternalProviderClient:
                         )
                         yield _error_sse_line(response.status_code, error_text, self.provider_type)
                         return
-                    # Manual __anext__ loop instead of `async for` — see the
-                    # stream_chat_completion comment for the Python 3.13 +
-                    # httpcore 1.0.x GeneratorExit interaction this avoids.
                     lines_gen = response.aiter_lines().__aiter__()
                     try:
                         while True:
@@ -1638,8 +1655,6 @@ class ExternalProviderClient:
                             except StopAsyncIteration:
                                 break
                             if line.strip():
-                                # Same rule as the main relay: never let the
-                                # endpoint speak Studio's control vocabulary.
                                 relayed = sanitize_provider_sse_line(line)
                                 if relayed is not None:
                                     yield relayed
@@ -1659,15 +1674,20 @@ class ExternalProviderClient:
                 )
             return
 
-        # Synthesize tool_start with the parsed search query so the chat UI's
-        # web-search card shows "Searching for: ...".
+        if _search_count >= _MAX_KIMI_WEB_SEARCH_ROUNDS:
+            yield _error_sse_line(
+                502,
+                "Kimi web search exceeded the maximum number of rounds",
+                self.provider_type,
+            )
+            return
+        search_count = _search_count + 1
+
         first_args_raw = search_calls[0]["function"]["arguments"] or "{}"
         try:
             first_args = _json.loads(first_args_raw)
         except Exception:
             first_args = {}
-        # Args are an opaque receipt (`{"search_result":..., "usage":{"total_tokens":N}}`),
-        # not a query — Kimi runs the search server-side and bakes results into context.
         logger.info(
             "Kimi $web_search: %d tool_call(s), args[0]=%s",
             len(search_calls),
@@ -1688,16 +1708,15 @@ class ExternalProviderClient:
                 "arguments": first_args if isinstance(first_args, dict) else {},
             }
         )
-        # The search already ran server-side, so emit tool_end now — otherwise the
-        # UI card sits in "running" through the whole second-call answer.
         yield _build_kimi_tool_end(_synthetic_chunk, tool_call_id, [])
 
-        # ---- Second call: echo the tool_calls back and stream answer ----
         assistant_msg = {
             "role": "assistant",
-            "content": "",
+            "content": "".join(assistant_content_parts) if is_kimi_k3 else "",
             "tool_calls": list(tool_calls_acc.values()),
         }
+        if is_kimi_k3 and assistant_reasoning_parts:
+            assistant_msg["reasoning_content"] = "".join(assistant_reasoning_parts)
         tool_msgs = [
             {
                 "role": "tool",
@@ -1709,11 +1728,11 @@ class ExternalProviderClient:
         ]
         followup_body = dict(body)
         followup_body["messages"] = list(messages) + [assistant_msg] + tool_msgs
-        # Request a final `usage` block (OAI-compat streams omit it otherwise) so
-        # we can see prompt_tokens jump when search context is injected.
         followup_body["stream_options"] = {"include_usage": True}
-        # Keep the tool on the second call so the model can search again mid-turn.
 
+        next_tool_calls: dict[int, dict[str, Any]] = {}
+        next_content_parts: list[str] = []
+        next_reasoning_parts: list[str] = []
         try:
             async with _http_client.stream(
                 "POST",
@@ -1734,8 +1753,6 @@ class ExternalProviderClient:
                     return
 
                 lines_gen = response.aiter_lines().__aiter__()
-                # Latch final usage; a big prompt_tokens is evidence the server
-                # injected search results into context.
                 last_usage: Optional[dict[str, Any]] = None
                 annotation_shapes: set[str] = set()
                 try:
@@ -1748,35 +1765,39 @@ class ExternalProviderClient:
                             continue
                         if line.startswith("data:"):
                             data_str = line[len("data:") :].strip()
-                            if data_str and data_str != "[DONE]":
-                                try:
-                                    parsed = _json.loads(data_str)
-                                except Exception:
-                                    parsed = None
-                                if isinstance(parsed, dict):
-                                    usage = parsed.get("usage")
-                                    if isinstance(usage, dict):
-                                        last_usage = usage
-                                    # Scan annotations for diagnostics only; Kimi
-                                    # doesn't emit url_citation today, but a future
-                                    # version's type name would show in the log.
-                                    for choice in parsed.get("choices") or []:
-                                        if not isinstance(choice, dict):
-                                            continue
-                                        for envelope in (
-                                            choice.get("delta"),
-                                            choice.get("message"),
-                                        ):
-                                            if not isinstance(envelope, dict):
-                                                continue
-                                            for ann in envelope.get("annotations") or []:
-                                                if isinstance(ann, dict):
-                                                    annotation_shapes.add(
-                                                        str(ann.get("type") or "?")
-                                                    )
-                        # Same rule as the main relay: never let the endpoint
-                        # speak Studio's control vocabulary.
-                        relayed = sanitize_provider_sse_line(line)
+                            if not data_str or data_str == "[DONE]":
+                                continue
+                            try:
+                                parsed = _json.loads(data_str)
+                            except Exception:
+                                continue
+                            if not isinstance(parsed, dict):
+                                continue
+                            usage = parsed.get("usage")
+                            if isinstance(usage, dict):
+                                last_usage = usage
+                            for choice in parsed.get("choices") or []:
+                                if not isinstance(choice, dict):
+                                    continue
+                                for envelope in (
+                                    choice.get("delta"),
+                                    choice.get("message"),
+                                ):
+                                    if not isinstance(envelope, dict):
+                                        continue
+                                    for annotation in envelope.get("annotations") or []:
+                                        if isinstance(annotation, dict):
+                                            annotation_shapes.add(
+                                                str(annotation.get("type") or "?")
+                                            )
+                            relayed = _capture_chunk(
+                                parsed,
+                                next_tool_calls,
+                                next_content_parts,
+                                next_reasoning_parts,
+                            )
+                        else:
+                            relayed = sanitize_provider_sse_line(line)
                         if relayed is None:
                             continue
                         yield relayed
@@ -1804,6 +1825,78 @@ class ExternalProviderClient:
                 f"Error communicating with kimi: {exc}",
                 self.provider_type,
             )
+            return
+
+        if not next_tool_calls:
+            yield "data: [DONE]"
+            return
+        next_search_calls = [
+            call for call in next_tool_calls.values() if call["function"]["name"] == "$web_search"
+        ]
+        if len(next_search_calls) != len(next_tool_calls):
+            yield _error_sse_line(
+                502,
+                "Kimi returned an unsupported tool call during web search",
+                self.provider_type,
+            )
+            return
+        if search_count >= _MAX_KIMI_WEB_SEARCH_ROUNDS:
+            yield _error_sse_line(
+                502,
+                "Kimi web search exceeded the maximum number of rounds",
+                self.provider_type,
+            )
+            return
+
+        for search_call in next_search_calls:
+            arguments_raw = search_call["function"]["arguments"] or "{}"
+            try:
+                arguments = _json.loads(arguments_raw)
+            except Exception:
+                arguments = {}
+            repeated_tool_call_id = search_call["id"]
+            yield _synthetic_chunk(
+                {
+                    "type": "tool_start",
+                    "tool_name": "web_search",
+                    "tool_call_id": repeated_tool_call_id,
+                    "arguments": arguments if isinstance(arguments, dict) else {},
+                }
+            )
+            yield _build_kimi_tool_end(
+                _synthetic_chunk,
+                repeated_tool_call_id,
+                [],
+            )
+
+        next_assistant_message: dict[str, Any] = {
+            "role": "assistant",
+            "content": "".join(next_content_parts) if is_kimi_k3 else "",
+            "tool_calls": list(next_tool_calls.values()),
+        }
+        if is_kimi_k3 and next_reasoning_parts:
+            next_assistant_message["reasoning_content"] = "".join(next_reasoning_parts)
+        next_tool_messages = [
+            {
+                "role": "tool",
+                "tool_call_id": call["id"],
+                "name": call["function"]["name"],
+                "content": call["function"]["arguments"],
+            }
+            for call in next_tool_calls.values()
+        ]
+        next_messages = followup_body["messages"] + [
+            next_assistant_message,
+            *next_tool_messages,
+        ]
+        async for line in self._stream_kimi_web_search(
+            next_messages,
+            model,
+            max_tokens,
+            reasoning_effort,
+            search_count + 1,
+        ):
+            yield line
 
     async def _stream_anthropic(
         self,
