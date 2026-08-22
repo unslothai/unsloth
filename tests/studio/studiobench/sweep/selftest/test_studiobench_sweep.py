@@ -335,6 +335,47 @@ def test_a_payload_with_no_corpus_hash_is_not_silently_pooled_with_one_that_has_
     assert "different corpora" in str(exc.value)
 
 
+def test_a_resumed_payload_carrying_two_corpora_is_refused(tmp_path):
+    # The recorder appends, so `--resume` into the same --out leaves the first run's completed
+    # cells next to a SECOND run_meta. If the corpus changed in between, that one file holds a
+    # base recorded on the old film and a treatment recorded on the new one, and `paired` matches
+    # them on (shard, rung, rep) without noticing. Reading only the first header would pass this
+    # payload and print the corpus change as a performance change.
+    out = tmp_path / "resumed"
+    out.mkdir(parents = True, exist_ok = True)
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "corpus_hash": "aaaa1111"}]
+    rows += cell("100K", "base", "rep0", {"open_close_ms": 1000.0})
+    rows += [{"row_type": "run_meta", "tier": "standard", "corpus_hash": "bbbb2222"}]
+    rows += cell("100K", "treatment", "rep0", {"open_close_ms": 100.0})
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+
+    assert F.corpora_of(F.read_rows(path)) == {"aaaa1111", "bbbb2222"}
+    with pytest.raises(SystemExit) as exc:
+        F.load([path])
+    assert "more than one corpus" in str(exc.value)
+    # And the floor-vs-result path refuses it too, rather than scoring it under the first hash.
+    with pytest.raises(SystemExit) as exc:
+        F.render([path], "t", floors = {}, floor_corpus = "aaaa1111")
+    assert "more than one corpus" in str(exc.value)
+
+
+def test_a_payload_with_repeated_headers_on_one_corpus_still_loads(tmp_path):
+    # A plain resume, nothing changed in between: two headers, one hash, no refusal.
+    out = tmp_path / "plain"
+    out.mkdir(parents = True, exist_ok = True)
+    meta = {"row_type": "run_meta", "tier": "standard", "corpus_hash": "aaaa1111"}
+    rows: list[dict] = [dict(meta)]
+    rows += cell("100K", "base", "rep0", {"open_close_ms": 1000.0})
+    rows += [dict(meta)]
+    rows += cell("100K", "treatment", "rep0", {"open_close_ms": 900.0})
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+
+    pooled, _tiers = F.load([path])
+    assert pooled["message_menu.open_close_ms"] == [(1000.0, 900.0)]
+
+
 def test_an_action_that_did_not_run_contributes_no_timing(tmp_path):
     # The rule the whole harness turns on: an absent action is not a fast one.
     rows = [
@@ -505,3 +546,44 @@ def test_a_null_probe_field_is_the_ordinary_scorable_case(tmp_path):
     assert pooled["message_menu.open_close_ms"]
     pooled, _ = F.load([payload(tmp_path / "absent", "clean", [(1000.0, 900.0)] * 4)])
     assert pooled["message_menu.open_close_ms"]
+def test_the_composer_click_does_not_set_the_frame_floor(tmp_path):
+    """The floor table pools the cell's windows too. An 11 s `setup:composer_click` -- almost all
+    of it Playwright's actionability check running on the page's main thread -- would become this
+    table's `max_frame_ms` floor and swallow every regression smaller than itself."""
+
+    def _frames(gaps):
+        return {
+            "frames": {
+                "frames_attempted": True,
+                "frame_gaps_ms": gaps,
+                "frame_gaps_truncated": False,
+                "max_frame_ms": max(gaps),
+            }
+        }
+
+    rows = [
+        {"row_type": "run_meta", "tier": "standard"},
+        {"row_type": "cell", "cell_id": "100K.base.rep0", "completed": True},
+        {
+            "row_type": "window",
+            "cell_id": "100K.base.rep0",
+            "kind": "action",
+            "duration_ms": 2000.0,
+            "instruments": _frames([120.0] * 10),
+        },
+        {
+            "row_type": "window",
+            "cell_id": "100K.base.rep0",
+            "name": "setup:composer_click",
+            "kind": "setup",
+            "duration_ms": 11_000.0,
+            "instruments": _frames([11_000.0]),
+        },
+    ]
+    out = tmp_path / "click"
+    out.mkdir()
+    (out / "payload.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8"
+    )
+    metrics = F.cell_metrics(F.read_rows(out / "payload.jsonl"))["100K.base.rep0"]
+    assert metrics["max_frame_ms"] == 120.0
