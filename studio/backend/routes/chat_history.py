@@ -428,6 +428,8 @@ class ChatSettingsPayload(BaseModel):
     preserveThinking: Optional[bool] = None
     collapseHtmlArtifacts: Optional[bool] = None
     allowArtifactNetworkAccess: Optional[bool] = None
+    # Read by the web_search tool at call time, so it lives with the install, not one browser.
+    searchImages: Optional[bool] = None
     autoHealToolCalls: Optional[bool] = None
     nudgeToolCalls: Optional[bool] = None
     maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 1)
@@ -1380,6 +1382,14 @@ async def clear_history(
     # delete_files matches DELETE /threads: off by default, since the files are
     # the user's, but a caller clearing everything can ask for them too.
     removed, kept = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)
+    # Search thumbnails are keyed by id, not thread, so this is the one place they
+    # can be reaped; they reveal what was searched for. Unconditional because this
+    # route is clear-all either way -- both _clear_rows branches call
+    # clear_chat_history(), which drops every thread -- and the frontend always
+    # sends a body, so gating on `payload is None` never reaped anything.
+    from core.inference.search_images import clear_cache
+
+    await run_in_threadpool(clear_cache)
     return {
         "status": "deleted",
         "deletedThreadIds": cleared,

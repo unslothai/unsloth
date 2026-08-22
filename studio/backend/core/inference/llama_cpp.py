@@ -23582,6 +23582,7 @@ class LlamaCppBackend:
         from core.inference.tool_stream_exec import (
             accepts_kwarg,
             accepts_output_callback,
+            search_images_kwargs,
             stream_tool_execution,
         )
         from core.inference.tools import (
@@ -25291,6 +25292,7 @@ class LlamaCppBackend:
                                 )
                             if accepts_output_callback(execute_tool):
                                 kwargs["output_callback"] = _output_callback
+                            kwargs.update(search_images_kwargs(execute_tool, _decision.tool_name))
                             return execute_tool(
                                 _decision.tool_name,
                                 _decision.arguments,

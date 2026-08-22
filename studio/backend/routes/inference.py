@@ -2401,6 +2401,7 @@ from models.inference import (
     _InferenceRuntimeFields,
     LoadRequest,
     UnloadRequest,
+    SearchImagesLookupRequest,
     TranscribeRequest,
     SttLoadRequest,
     GenerateRequest,
@@ -3694,6 +3695,15 @@ _TOOL_BASE_NUDGE = (
     "format."
 )
 _TOOL_WEB_COMPACT_TIP = "When using web_search, do not repeat the same search query."
+# Only with the Search images setting on. Small models call the tool before they know
+# their list, so the answer-first path is spelled out.
+_TOOL_IMAGES_TIP = (
+    "When your answer names specific things worth seeing (breeds, products, places, "
+    "dishes, people), call web_search with image_queries listing those exact names, one "
+    "per entry, never a list title. If you only know the names after writing the list, "
+    "write the answer first, then call web_search with image_queries alone. Put each "
+    "returned [[img:...]] token on its own line directly under its item."
+)
 _TOOL_WEB_EXPANDED_TIP = (
     "When using web_search and a result URL is relevant, fetch its full content "
     "by calling web_search with the url parameter. Do not repeat the same search "
@@ -3759,6 +3769,12 @@ def _build_tool_action_nudge(
         if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
     }
     has_web = "web_search" in tool_names
+    has_images = any(
+        "image_queries"
+        in ((tool.get("function") or {}).get("parameters") or {}).get("properties", {})
+        for tool in tools
+        if isinstance(tool, dict) and (tool.get("function") or {}).get("name") == "web_search"
+    )
     code_tools = [name for name in _LOCAL_CODE_TOOLS if name in tool_names]
     has_code = bool(code_tools)
     has_artifact = "render_html" in tool_names
@@ -3772,6 +3788,8 @@ def _build_tool_action_nudge(
     tool_tip_parts: list[str] = []
     if has_web:
         tool_tip_parts.append(_TOOL_WEB_COMPACT_TIP if compact_web_tip else _TOOL_WEB_EXPANDED_TIP)
+    if has_images:
+        tool_tip_parts.append(_TOOL_IMAGES_TIP)
     if has_code:
         tool_tip_parts.append(_TOOL_CODE_TIP)
         if full_access:
@@ -3976,6 +3994,7 @@ async def _select_request_tools(
             # meeting a large catalogue at a compaction boundary have been seen calling a
             # guessed tool name. Read-only and always-safe, so it prompts for nothing.
             tools = [t for t in tools if t["function"]["name"] == "search_conversation"]
+    tools = _tools_for_search_images(tools)
     # Built-ins only, so this runs before the MCP append: an MCP tool's
     # description is the server's to write, and Full access says nothing about
     # how that server runs.
@@ -3984,6 +4003,25 @@ async def _select_request_tools(
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()
     return tools
+
+
+def _search_images_enabled() -> bool:
+    from core.inference.search_images import search_images_enabled
+    return search_images_enabled()
+
+
+def _tools_for_search_images(tools: list[dict]) -> list[dict]:
+    # web_search also takes image_queries while the setting is on; every path that
+    # hands the model a schema swaps it here. Name check first: the setting hits SQLite.
+    if not any(t["function"]["name"] == "web_search" for t in tools):
+        return tools
+    if not _search_images_enabled():
+        return tools
+    from core.inference.tools import web_search_tool_with_images
+
+    return [
+        web_search_tool_with_images() if t["function"]["name"] == "web_search" else t for t in tools
+    ]
 
 
 _COMPACTED_SESSION_NUDGE = (
@@ -21567,8 +21605,10 @@ async def anthropic_messages(
     if _server_tools_requested_pre:
         from core.inference.tools import ALL_TOOLS as _ALL_TOOLS_PRE
 
-        _selected_pre = _select_anthropic_server_tools(
-            _ALL_TOOLS_PRE, requested_studio_tools, payload.enabled_tools
+        _selected_pre = _tools_for_search_images(
+            _select_anthropic_server_tools(
+                _ALL_TOOLS_PRE, requested_studio_tools, payload.enabled_tools
+            )
         )
         _perm_mode_pre = getattr(payload, "permission_mode", None)
         _confirm_opt_out_pre = getattr(payload, "confirm_tool_calls", None) is False
@@ -22051,10 +22091,12 @@ async def anthropic_messages(
         # tool) were already rejected before the auto-switch above, so an invalid
         # confirm-gated request never evicts the resident model; the selection
         # here just picks the tools for the actual server-tool loop.
-        openai_tools = _select_anthropic_server_tools(
-            ALL_TOOLS,
-            requested_studio_tools,
-            payload.enabled_tools,
+        openai_tools = _tools_for_search_images(
+            _select_anthropic_server_tools(
+                ALL_TOOLS,
+                requested_studio_tools,
+                payload.enabled_tools,
+            )
         )
         # Mirrors _select_request_tools: this path builds its own selection, so
         # the Full access swap has to be repeated rather than inherited.
@@ -26157,6 +26199,44 @@ async def get_gallery_image_file(
         content = data,
         media_type = "image/png",
         headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+    )
+
+
+@studio_router.post("/search-images/lookup")
+async def lookup_search_images(
+    payload: SearchImagesLookupRequest, current_subject: str = Depends(get_current_subject)
+):
+    # Illustrates a finished answer whose model never asked; same lookup as the tool.
+    from core.inference import search_images
+    from core.inference.tools import IMAGE_SEARCH_DISABLED, _image_search
+
+    if not search_images.search_images_enabled():
+        raise HTTPException(status_code = 403, detail = IMAGE_SEARCH_DISABLED)
+    raw = await asyncio.to_thread(_image_search, payload.subjects, 20)
+    text, images = search_images.split_images_envelope(raw)
+    return {"text": text, "images": images}
+
+
+@studio_router.get("/search-images/{image_id}")
+async def get_search_image_thumbnail(
+    image_id: str, current_subject: str = Depends(get_current_subject)
+):
+    # Id-only on purpose: no URL parameter, so this cannot become a generic image proxy.
+    from core.inference import search_images
+
+    if not search_images.IMAGE_ID_RE.match(image_id or ""):
+        raise HTTPException(status_code = 404, detail = "Image not found.")
+    data = await asyncio.to_thread(search_images.thumbnail_bytes, image_id)
+    if data is None:
+        raise HTTPException(status_code = 404, detail = "Image not found.")
+    return Response(
+        content = data,
+        media_type = "image/jpeg",
+        headers = {
+            "Cache-Control": "private, max-age=86400",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": f'inline; filename="{image_id}.jpg"',
+        },
     )
 
 

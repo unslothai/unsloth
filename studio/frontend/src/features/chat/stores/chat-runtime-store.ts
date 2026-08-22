@@ -101,6 +101,7 @@ export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
   "unsloth_chat_collapse_html_artifacts";
 export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
   "unsloth_chat_allow_artifact_network_access";
+export const CHAT_SEARCH_IMAGES_KEY = "unsloth_chat_search_images";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
 export const CHAT_EXPAND_QUANTIZATIONS_KEY =
@@ -650,6 +651,7 @@ const MIRRORED_SETTINGS = {
     storageKey: CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
     ...BOOLEAN_SETTING,
   },
+  searchImages: { storageKey: CHAT_SEARCH_IMAGES_KEY, ...BOOLEAN_SETTING },
   mcpEnabledForChat: { storageKey: CHAT_MCP_ENABLED_KEY, ...BOOLEAN_SETTING },
   confirmToolCalls: {
     storageKey: CHAT_CONFIRM_TOOL_CALLS_KEY,
@@ -2487,6 +2489,8 @@ type ChatRuntimeStore = {
   showCanvasMenuItem: boolean;
   collapseHtmlArtifacts: boolean;
   allowArtifactNetworkAccess: boolean;
+  // web_search also returns images the model can place inline; read by the backend per call.
+  searchImages: boolean;
   mcpEnabledForChat: boolean;
   ragEnabled: boolean;
   ragSource: RagSource;
@@ -2843,6 +2847,7 @@ type ChatRuntimeStore = {
   setShowCanvasMenuItem: (enabled: boolean) => void;
   setCollapseHtmlArtifacts: (enabled: boolean) => void;
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
+  setSearchImages: (enabled: boolean) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
   setConfirmToolCalls: (enabled: boolean) => void;
   setBypassPermissions: (enabled: boolean) => void;
@@ -2944,6 +2949,7 @@ type ScalarSettingKey =
   | "preserveThinking"
   | "collapseHtmlArtifacts"
   | "allowArtifactNetworkAccess"
+  | "searchImages"
   | "autoHealToolCalls"
   | "nudgeToolCalls"
   | "maxToolCallsPerMessage"
@@ -2993,6 +2999,7 @@ const SCALAR_SETTING_KEYS = [
   "preserveThinking",
   "collapseHtmlArtifacts",
   "allowArtifactNetworkAccess",
+  "searchImages",
   "autoHealToolCalls",
   "nudgeToolCalls",
   "maxToolCallsPerMessage",
@@ -3687,6 +3694,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
     false,
   ),
+  searchImages: loadBool(CHAT_SEARCH_IMAGES_KEY, false),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
   // Mirrors permissionMode (gate requested for ask/auto) so both controls
   // agree on load.
@@ -4719,6 +4727,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         allowArtifactNetworkAccess,
       );
       return { allowArtifactNetworkAccess };
+    }),
+  setSearchImages: (searchImages) =>
+    set(() => {
+      saveBool(CHAT_SEARCH_IMAGES_KEY, searchImages);
+      return { searchImages };
     }),
   setMcpEnabledForChat: (mcpEnabledForChat) =>
     set((state) => {
