@@ -8768,10 +8768,6 @@ class LlamaCppBackend:
     # tight layer split can't advertise a context that OOMs at load.
     _PIPELINE_PER_DEVICE_OVERHEAD_MIB = 1024
 
-    # KV cache types llama.cpp accepts in tensor mode. A quantized KV cache
-    # aborts a --split-mode tensor load, so it's dropped for the tensor attempt.
-    _TENSOR_PARALLEL_KV_TYPES = frozenset({"f16", "bf16", "f32"})
-
     # V cache types that llama.cpp can run WITHOUT flash attention. Only the V
     # axis has the dependency: a quantized V cache (q8_0/q4_0/q4_1/q5_0/q5_1/
     # iq4_nl) aborts init with "V cache quantization requires flash_attn", while
@@ -13712,12 +13708,10 @@ class LlamaCppBackend:
         # replicates the compute graph on EVERY device (measured: the per-device
         # buffer grows a flat n_ubatch*2 bytes/token, ~1024 B/tok on Qwen3.5-9B at
         # f16, independent of n_embd), so the growth is n_dev x the per-device
-        # term. cache_type_kv here is always non-quantized (tensor forces f16), so
-        # _compute_buffer_ctx_bytes returns the light KQ-mask term, not the heavy
-        # quantized dequant scratch. The flat reserve_mib above only covers ctx->0;
-        # without this the fit over-pins and OOMs at high context on a tight pool
-        # (0.5-4 GiB unreserved at 262k-1M across 2-4 GPUs), the tensor-mode analog
-        # of the layer-split compute bug.
+        # term. The flat reserve_mib above only covers ctx->0; without this the fit
+        # over-pins and OOMs at high context on a tight pool (0.5-4 GiB unreserved
+        # at 262k-1M across 2-4 GPUs), the tensor-mode analog of the layer-split
+        # compute bug.
         n_dev = len(gpu_indices)
 
         def _cc_ctx(ctx: int) -> int:
@@ -15730,7 +15724,6 @@ class LlamaCppBackend:
                 # Manual offload skips the TP planner but still emits --split-mode
                 # tensor at launch; drop it when fewer than 2 GPUs are in use --
                 # tensor split is a no-op there and aborts on some architectures.
-                # Done before the cache-drop below so a quantized KV survives.
                 if (
                     tensor_parallel
                     and gpu_memory_mode == "manual"
@@ -15742,9 +15735,6 @@ class LlamaCppBackend:
                         "than 2 GPUs are in use; ignoring (needs >= 2)."
                     )
                     tensor_parallel = False
-                # Drop TP for manual + Auto layers before the cache-drop below (like
-                # the <2-GPU guard above), so a requested quantized KV survives into
-                # the --fit load rather than being stripped for a tensor attempt.
                 if tensor_parallel and gpu_memory_mode == "manual" and gpu_layers < 0:
                     logger.info(
                         "Manual mode with Auto layers hands memory management to "
@@ -15752,54 +15742,6 @@ class LlamaCppBackend:
                         "parallelism; ignoring the tensor split."
                     )
                     tensor_parallel = False
-                # Tensor mode aborts on a quantized KV cache, so drop it for the
-                # tensor attempt (and strip any inherited/explicit --cache-type
-                # that would re-impose it when appended last). Layer split does
-                # support it, so remember the dropped type and the original extras
-                # to restore (verbatim, incl. an asymmetric K/V) if we later fall
-                # back to layer split below.
-                _tensor_dropped_cache_type_kv: Optional[str] = None
-                _tensor_dropped_extra_args: Optional[list] = None
-                # Tensor mode rejects any quantized axis. cache_type_kv is the
-                # heavier-by-bytes budget type, which can mask a quantized axis (an
-                # f16 budget hides a paired q4_0), so also test each explicit
-                # --cache-type-k/-v extra, not just the budget type.
-                _ck_extra, _cv_extra = parse_cache_override_per_axis(extra_args)
-                _cache_non_tensor_safe = any(
-                    c and c.strip().lower() not in self._TENSOR_PARALLEL_KV_TYPES
-                    for c in (cache_type_kv, _ck_extra, _cv_extra)
-                )
-                if tensor_parallel and _cache_non_tensor_safe:
-                    logger.info(
-                        "Tensor parallelism requires a non-quantized KV cache; "
-                        "ignoring cache type %s for the tensor attempt.",
-                        cache_type_kv,
-                    )
-                    _tensor_dropped_cache_type_kv = cache_type_kv
-                    cache_type_kv = None
-                    if extra_args:
-                        # Keep the originals so a layer downgrade restores the real
-                        # (possibly asymmetric) --cache-type-k/-v the layer path
-                        # supports, not just the scalar heavier type.
-                        _tensor_dropped_extra_args = list(extra_args)
-                        extra_args = strip_shadowing_flags(
-                            extra_args,
-                            strip_context = False,
-                            strip_cache = True,
-                            strip_spec = False,
-                            strip_template = False,
-                            strip_split_mode = False,
-                        )
-                    # The launch keeps an inherited tensor-safe env cache type (the
-                    # env cleanup only pops quantized ones), so re-adopt a heavier
-                    # env type (f32) for the budget here too -- mirrors the initial
-                    # adoption, which was skipped because the param/extras set the
-                    # (now-dropped) quantized type. Else the child allocates f32 KV
-                    # against an f16 budget.
-                    _env_tensor_cache = _env_main_cache_type_for_budget()
-                    if _env_tensor_cache is not None:
-                        cache_type_kv = _env_tensor_cache
-                        _cache_type_from_env = True
                 if ctx_override is not None and ctx_override > 0:
                     logger.info(f"User --ctx-size {ctx_override} honored; skipping auto-reduce")
                 if cache_override is not None:
@@ -16129,8 +16071,6 @@ class LlamaCppBackend:
                     # True. An explicit context is honored (--fit optimizes around
                     # it); 0 lets --fit size it.
                     if gpu_memory_mode == "manual" and gpu_layers < 0:
-                        # Tensor parallelism was already dropped above (before the
-                        # cache-drop), so a quantized KV survives into this --fit load.
                         gpus = []
                         effective_ctx = requested_ctx if requested_ctx > 0 else 0
                         original_ctx = effective_ctx
@@ -16535,20 +16475,7 @@ class LlamaCppBackend:
 
                     # The two tensor -> layer downgrades that need nothing the probe
                     # decides run BEFORE it: the probe is gated on `not tensor_parallel`
-                    # and must answer for any load that ends up layer-split. Running them
-                    # first also hands it the restored KV type that load will use.
-                    def _restore_after_tensor_downgrade():
-                        # Restore the quantized KV + extras tensor dropped (layer
-                        # split supports them), minus --split-mode.
-                        nonlocal cache_type_kv, _cache_type_from_env, extra_args
-                        if _tensor_dropped_cache_type_kv is not None:
-                            cache_type_kv = _tensor_dropped_cache_type_kv
-                            _cache_type_from_env = False
-                        extra_args = strip_split_mode_only(
-                            _tensor_dropped_extra_args
-                            if _tensor_dropped_extra_args is not None
-                            else extra_args
-                        )
+                    # and must answer for any load that ends up layer-split.
 
                     # The route fallback retry is tensor-off; keep it multi-GPU.
                     if preserve_multi_gpu_on_layer:
@@ -16564,9 +16491,10 @@ class LlamaCppBackend:
                             len(gpus),
                         )
                         tensor_parallel = False
-                        # Keep the multi-GPU request (gated on it, not the cache).
+                        # The abort says nothing about capacity, so keep multi-GPU.
                         _layer_min_gpus = max(_layer_min_gpus, len(gpus))
-                        _restore_after_tensor_downgrade()
+                        # An extras --split-mode tensor would re-engage tensor mode.
+                        extra_args = strip_split_mode_only(extra_args)
 
                     # Tensor mode replicates a compute buffer on every GPU, so drop
                     # GPUs below that reserve from the set up front (gpu_indices
@@ -16615,10 +16543,7 @@ class LlamaCppBackend:
                         # _select_gpus caps unusable cards.
                         if len(gpus) >= 2:
                             _layer_min_gpus = max(_layer_min_gpus, len(gpus))
-                        # Layer split supports a quantized KV the tensor attempt
-                        # dropped; restore the original cache type + extras (minus
-                        # --split-mode) so the layer launch re-emits them.
-                        _restore_after_tensor_downgrade()
+                        extra_args = strip_split_mode_only(extra_args)
 
                     # Normalize the speculative reserve BEFORE anything prices it.
                     # _mtp_bytes reads mtp_overhead_fn at call time, so leaving this
@@ -17187,37 +17112,16 @@ class LlamaCppBackend:
                             # usable tensor GPUs.
                             if len(tp_gpus) >= 2:
                                 _layer_min_gpus = max(_layer_min_gpus, len(tp_gpus))
-                            # Restore the dropped quantized KV + cache extras (minus
-                            # --split-mode); layer split supports them.
-                            _restore_after_tensor_downgrade()
-                            # Layer split now, so the withheld verdict applies -- but
-                            # only where it is still true. It was measured before two
-                            # things this arm changes underneath it.
-                            #
-                            # _restore_after_tensor_downgrade just above put back a
-                            # quantized KV cache that tensor mode had dropped, and the
-                            # probe priced its floor against the heavier f16 the tensor
-                            # attempt ran with. That verdict is pessimistic by exactly
-                            # the cache difference, and acting on it would pin a
-                            # projector that fits, buying an 8.8x image encode for
-                            # nothing -- the one outcome this whole probe exists to
-                            # avoid.
-                            #
-                            # And the drafter-drop probe carries the same tensor
-                            # exclusion this one did, so it has not run either. The
-                            # documented order is projector first and drafter second;
-                            # pinning here without being able to re-ask the second half
-                            # pays the encoder cost AND still reaches --fit on.
-                            #
-                            # Re-running both probes against the restored cache is the
-                            # complete fix and is a larger change than this one. Until
-                            # then these two cases keep main's behaviour rather than act
-                            # on a stale answer.
-                            if (
-                                _mm_pin_deferred
-                                and _tensor_dropped_cache_type_kv is None
-                                and not _mtp_reserves_gpu
-                            ):
+                            extra_args = strip_split_mode_only(extra_args)
+                            # Layer split now, so the withheld verdict applies -- but not
+                            # when a GPU drafter is still in play. The drafter-drop probe
+                            # is gated off under tensor parallelism, so it has not run;
+                            # the documented order is projector first and drafter second,
+                            # and pinning here without being able to re-ask the second
+                            # half pays the encoder cost AND still reaches --fit on.
+                            # Re-running that probe after this downgrade is the complete
+                            # fix.
+                            if _mm_pin_deferred and not _mtp_reserves_gpu:
                                 _apply_mmproj_cpu_pin(_mm_floor_ctx)
                                 _mm_pin_deferred = False
                                 # Rebuild what was derived from model_size before the
@@ -18946,7 +18850,7 @@ class LlamaCppBackend:
 
                 # Reconcile the inherited LLAMA_ARG_* env with Unsloth's final
                 # decision: stripping CLI extras on a tensor->layer downgrade
-                # can't remove env vars, so the child could run a mode/KV Unsloth
+                # can't remove env vars, so the child could run a mode Unsloth
                 # didn't budget.
                 if not tensor_parallel:
                     # Layer split: clear a non-layer inherited split mode (and any
@@ -18962,12 +18866,6 @@ class LlamaCppBackend:
                     # case can't be overridden by a stale env (the layer branch above
                     # clears it too).
                     env.pop("LLAMA_ARG_TENSOR_SPLIT", None)
-                    # Tensor split aborts on a quantized KV; clear an inherited
-                    # quantized cache type so the child uses the tensor-safe default.
-                    for _ct_var in ("LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"):
-                        _ct_raw = (env.get(_ct_var) or "").strip().lower()
-                        if _ct_raw and _ct_raw not in self._TENSOR_PARALLEL_KV_TYPES:
-                            env.pop(_ct_var, None)
 
                 # A gpu_ids pin also owns inherited device placement.
                 if gpu_ids is not None:
