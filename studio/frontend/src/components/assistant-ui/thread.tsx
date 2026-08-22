@@ -63,6 +63,7 @@ import {
   notifyStudioDictationUnavailable,
   YoutubeTranscriptPrompt,
   useChatActive,
+  useInComparePane,
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
@@ -7254,8 +7255,11 @@ const ForkMessageButton: FC = () => {
   // Only the last message answers: any other would fork mid-thread.
   const isLast = useAuiState(({ message }) => message.isLast);
   const chatActive = useChatActive();
+  // Compare mounts this button in both panes, and the chord would go to
+  // whichever registered first. Fork from the button there.
+  const inComparePane = useInComparePane();
   useShortcut("forkChat", () => void forkMessage(), {
-    enabled: chatActive && isLast && !forkDisabled,
+    enabled: chatActive && !inComparePane && isLast && !forkDisabled,
   });
 
   return (

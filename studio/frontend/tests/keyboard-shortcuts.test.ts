@@ -643,6 +643,30 @@ test("a cleared alternate keeps its row, so it can be restored", async () => {
   );
 });
 
+test("the chords that need one target do not fire where there are two", async () => {
+  // No React renderer here, so this asserts on source, like its siblings.
+  const read = async (path: string) =>
+    readFile(new URL(path, import.meta.url), "utf8");
+  const chatPage = await read("../src/features/chat/chat-page.tsx");
+  const thread = await read("../src/components/assistant-ui/thread.tsx");
+  const toolCard = await read(
+    "../src/components/assistant-ui/tool-confirmation-controls.tsx",
+  );
+
+  // Compare drops the header pickers and gives each pane its own, so the
+  // header chord would toggle state nothing renders.
+  assert.match(
+    chatPage,
+    /const headerPickersShown = active && view\.mode !== "compare";/,
+  );
+  assert.match(chatPage, /enabled: headerPickersShown \}/);
+  // Both panes mount the last message's fork button, and the chord would go
+  // to whichever registered its listener first.
+  assert.match(thread, /enabled: chatActive && !inComparePane && isLast/);
+  // Same for a second parked tool request: neither card claims the keys.
+  assert.match(toolCard, /soleRequest &&\n\s*showControls &&/);
+});
+
 test("every settings tab survives a reload", () => {
   // The persisted-tab check reads this same list, so a tab added to the union
   // alone can no longer be rejected back to General.

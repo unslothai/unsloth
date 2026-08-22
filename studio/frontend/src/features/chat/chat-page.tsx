@@ -3108,13 +3108,17 @@ export function ChatPage({
 
   // --- Chat page shortcuts ----------------------------------------------
   // The controls these drive are owned by this page.
+  // Both controls are the header's, and the header drops them in Compare,
+  // where each pane carries its own picker instead. Without the check the
+  // chord would toggle state nothing renders.
+  const headerPickersShown = active && view.mode !== "compare";
   useShortcut(
     "openModelPicker",
     () => (modelSelectorOpen ? closeModelSelector() : openModelSelector()),
-    { enabled: active },
+    { enabled: headerPickersShown },
   );
   useShortcut("openProjectPicker", () => setProjectPickerOpen(true), {
-    enabled: active && Boolean(currentProjectId),
+    enabled: headerPickersShown && Boolean(currentProjectId),
   });
 
   /** Step the effort level, clamped at both ends unless we are cycling. */
