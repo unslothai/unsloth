@@ -89,8 +89,9 @@ def run_anthropic() -> list[str]:
             model = "default",
             max_tokens = MAX_TOKENS,
             messages = history,
-            temperature = 0.0,
-            extra_body = {"seed": SEED, "enable_thinking": False},
+            # Anthropic 1.x removed sampling parameters from the typed signature;
+            # extra_body preserves the same request JSON.
+            extra_body = {"temperature": 0.0, "seed": SEED, "enable_thinking": False},
         )
         text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
         replies.append(text)

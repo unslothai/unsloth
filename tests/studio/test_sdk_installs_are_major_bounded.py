@@ -31,6 +31,12 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO / ".github" / "workflows"
+ANTHROPIC_PROBES = (
+    REPO / ".github" / "scripts" / "studio_smoke" / "multi_turn_chat.py",
+    WORKFLOWS / "studio-inference-smoke.yml",
+    WORKFLOWS / "studio-mac-ui-smoke.yml",
+    WORKFLOWS / "studio-windows-inference-smoke.yml",
+)
 
 # Packages our probe code calls directly by keyword, each with the first major it must
 # NOT reach. Asserting the boundary rather than "some upper bound exists" is what makes
@@ -40,8 +46,8 @@ WORKFLOWS = REPO / ".github" / "workflows"
 # Bump a number here in the same commit that widens the pin, and only once CI has run
 # against that major.
 GUARDED = {
-    # v1 removed temperature, top_p and top_k from messages.create().
-    "anthropic": (1,),
+    # Sampling parameters moved to extra_body for v1; guard the next major now.
+    "anthropic": (2,),
     # 3.3.1 resolves today and the probes pass, so the bound sits above it, not at <2.
     "openai": (4,),
     # Still 1.x upstream.
@@ -173,6 +179,28 @@ def _specs_for(package: str) -> list[tuple[Path, int, str]]:
     return hits
 
 
+def _anthropic_create_blocks() -> list[tuple[Path, str]]:
+    blocks = []
+    for path in ANTHROPIC_PROBES:
+        lines = path.read_text(encoding = "utf-8").splitlines()
+        for index, line in enumerate(lines):
+            if ".messages.create(" not in line:
+                continue
+            indent = len(line) - len(line.lstrip())
+            block = [line]
+            for continuation in lines[index + 1 :]:
+                block.append(continuation)
+                if (
+                    continuation.strip() == ")"
+                    and len(continuation) - len(continuation.lstrip()) == indent
+                ):
+                    break
+            else:
+                raise AssertionError(f"unterminated messages.create call in {path}")
+            blocks.append((path, "\n".join(block)))
+    return blocks
+
+
 def _release(raw: str) -> tuple[int, ...]:
     """Release segment as ints, every component kept.
 
@@ -252,6 +280,23 @@ def test_the_sdk_is_pinned_below_the_next_major(package: str) -> None:
         f" anthropic 1.0.0 broke 75 jobs. Pin below {wanted}, or move the boundary in this"
         " file in the same commit once CI has run against that major."
     )
+
+
+def test_anthropic_sampling_parameters_use_extra_body() -> None:
+    blocks = _anthropic_create_blocks()
+    assert len(blocks) == 4, blocks
+    for path, block in blocks:
+        assert not re.search(r"\btemperature\s*=", block), path
+        assert re.search(r'extra_body\s*=\s*\{[^\n]*["\']temperature["\']', block), path
+
+
+def test_anthropic_smokes_install_v1() -> None:
+    not_v1 = [
+        (path, number, spec)
+        for path, number, spec in _specs_for("anthropic")
+        if not re.search(r"(?:^|,)>=1(?:\.\d+)*(?:,|$)", spec)
+    ]
+    assert not not_v1, not_v1
 
 
 def test_a_bound_above_the_next_major_is_not_accepted() -> None:
