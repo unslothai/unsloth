@@ -740,7 +740,7 @@ export function GeneralTab() {
                 }}
                 accessToken={hfToken || undefined}
                 disabled={!embeddingModel}
-                placeholder={embeddingModel?.defaultEmbeddingModel ?? ""}
+                placeholder={t("settings.general.rag.searchPlaceholder")}
                 ariaLabel={t("settings.general.rag.embeddingModel")}
                 className="w-[220px] max-[360px]:min-w-0 max-[360px]:flex-1"
               />
