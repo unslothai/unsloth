@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
+import { consumeNativePathToken, useNativeFileDrop } from "@/features/native-intents";
 import {
   CloudUploadIcon,
   Cancel01Icon,
@@ -16,6 +17,13 @@ import {
 } from "./upload-limits";
 
 const ACCEPTED_EXTENSIONS = [".txt", ".pdf", ".docx", ".md"];
+
+/** One queued upload: browser bytes, or a desktop drop the backend redeems. */
+type UploadCandidate = {
+  name: string;
+  size: number;
+  source: File | { token: string };
+};
 
 type FileEntry = {
   id: string;
@@ -56,7 +64,6 @@ export function UnstructuredDropZone({
   const filesRef = useRef(files);
   const blockIdRef = useRef(blockId);
   const mountedRef = useRef(true);
-  const [isDragOver, setIsDragOver] = useState(false);
 
   useEffect(() => {
     filesRef.current = files;
@@ -68,9 +75,9 @@ export function UnstructuredDropZone({
 
   const totalSize = files.reduce((sum, f) => sum + f.size, 0);
 
-  const handleFiles = useCallback(
-    async (newFiles: File[]) => {
-      const valid = newFiles.filter((f) => {
+  const uploadCandidates = useCallback(
+    async (candidates: UploadCandidate[]) => {
+      const valid = candidates.filter((f) => {
         if (!isValidExtension(f.name)) return false;
         if (f.size > UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES) return false;
         return true;
@@ -94,14 +101,25 @@ export function UnstructuredDropZone({
       onFilesChange((prev) => [...prev, ...entries]);
 
       for (let i = 0; i < valid.length; i++) {
-        const file = valid[i];
+        const candidate = valid[i];
         const entry = entries[i];
         let updatedId = "";
         let updatedStatus: FileEntry["status"] = "error";
         let updatedError: string | undefined;
         try {
+          // Leases are short-lived, so mint one per upload, not at drop time.
+          const source =
+            candidate.source instanceof File
+              ? candidate.source
+              : {
+                  nativePathLease: (
+                    await consumeNativePathToken(candidate.source.token, "attach")
+                  ).nativePathLease,
+                  name: candidate.name,
+                  size: candidate.size,
+                };
           const result = await uploadUnstructuredFile(
-            file,
+            source,
             blockId,
             entry.abortController?.signal,
           );
@@ -130,6 +148,18 @@ export function UnstructuredDropZone({
       }
     },
     [blockId, onFilesChange],
+  );
+
+  const handleFiles = useCallback(
+    (newFiles: File[]) =>
+      uploadCandidates(
+        newFiles.map((file) => ({
+          name: file.name,
+          size: file.size,
+          source: file,
+        })),
+      ),
+    [uploadCandidates],
   );
 
   const deletedIdsRef = useRef(new Set<string>());
@@ -170,26 +200,24 @@ export function UnstructuredDropZone({
     [blockId, onFilesChange],
   );
 
-  const handleDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      setIsDragOver(false);
-      if (disabled) return;
-      const dropped = Array.from(e.dataTransfer.files);
-      handleFiles(dropped);
-    },
-    [disabled, handleFiles],
-  );
-
-  const handleDragOver = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      if (!disabled) setIsDragOver(true);
-    },
-    [disabled],
-  );
-
-  const handleDragLeave = useCallback(() => setIsDragOver(false), []);
+  // Tauri suppresses webview drop events, so the plain `onDrop` this zone
+  // carried was dead on desktop (#9036).
+  const { ref: dropRef, dragging: isDragOver, dragHandlers } = useNativeFileDrop({
+    onFiles: handleFiles,
+    // A seed corpus can run to hundreds of MB, so the backend redeems the
+    // signed path itself rather than routing bytes through the webview.
+    onNativeIntents: (intents) =>
+      uploadCandidates(
+        intents.map((intent) => ({
+          name: intent.path.displayLabel,
+          size: intent.path.sizeBytes ?? 0,
+          source: { token: intent.path.token },
+        })),
+      ),
+    accept: ACCEPTED_EXTENSIONS.join(","),
+    disabled,
+    disabledReason: "This block is busy. Try the drop again in a moment.",
+  });
 
   const handleClick = useCallback(() => {
     if (!disabled) inputRef.current?.click();
@@ -209,14 +237,16 @@ export function UnstructuredDropZone({
   return (
     <div className="space-y-2">
       <div
-        className={`nodrag flex cursor-pointer flex-col items-center justify-center rounded-md border-2 border-dashed px-4 py-6 text-center transition-colors ${
+        // Stays hit-testable while disabled: pointer-events-none hides it from
+        // elementFromPoint, so a native drop misses this target and falls
+        // through to the window instead of saying the block is busy.
+        className={`nodrag flex flex-col items-center justify-center rounded-md border-2 border-dashed px-4 py-6 text-center transition-colors ${
           isDragOver
             ? "border-ring-strong bg-primary/5"
             : "border-muted-foreground/25 hover:border-muted-foreground/50"
-        } ${disabled ? "pointer-events-none opacity-50" : ""}`}
-        onDrop={handleDrop}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
+        } ${disabled ? "cursor-default opacity-50" : "cursor-pointer"}`}
+        ref={dropRef}
+        {...dragHandlers}
         onClick={handleClick}
       >
         <HugeiconsIcon

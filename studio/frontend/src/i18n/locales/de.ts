@@ -197,11 +197,56 @@ export const de = {
       chat: "Chat",
       connections: "Verbindungen",
       apiKeys: "API",
+      remoteLan: "Remote & LAN",
       about: "Info",
       data: "Daten",
       agents: "Agenten",
       debugging: "Protokolle",
       voice: "Sprachfunktionen",
+      keyboardShortcuts: "Kürzel",
+    },
+    keyboardShortcuts: {
+      title: "Tastenkürzel",
+      description:
+        "Ändere ein Kürzel oder lösche es, um die Tastenkombination für Browser oder Betriebssystem freizugeben.",
+      searchPlaceholder: "Kürzel suchen…",
+      noResults: "Keine Kürzel passen zu dieser Suche.",
+      unassigned: "Nicht zugewiesen",
+      recording: "Tasten drücken…",
+      recordingHint: "Neue Tastenkombination drücken oder Esc zum Abbrechen.",
+      needsModifier: "⌘, Strg oder Alt hinzufügen. Eine einzelne Taste würde die Eingabe verschlucken.",
+      conflict: "Wird auch von einem anderen Kürzel verwendet",
+      conflictShadowed: "Ein anderes Kürzel belegt diese Kombination und läuft stattdessen",
+      edit: "Kürzel ändern",
+      clear: "Kürzel entfernen",
+      reset: "Standard wiederherstellen",
+      resetAll: "Alle auf Standard zurücksetzen",
+      groups: {
+        general: "Allgemein",
+        chat: "Chat",
+      },
+      actions: {
+        newChat: {
+          label: "Neuer Chat",
+          description: "Einen neuen Chat starten",
+        },
+        searchChats: {
+          label: "Chats durchsuchen",
+          description: "Die Chat-Suche öffnen",
+        },
+        toggleSidebar: {
+          label: "Seitenleiste umschalten",
+          description: "Seitenleiste ein- oder ausblenden",
+        },
+        openSettings: {
+          label: "Einstellungen öffnen",
+          description: "Den Einstellungsdialog öffnen",
+        },
+        openKeyboardShortcuts: {
+          label: "Tastenkürzel",
+          description: "Diese Kürzelliste öffnen",
+        },
+      },
     },
     debugging: {
       logSection: "Protokolldatei",
@@ -239,6 +284,17 @@ export const de = {
         engineModel: "Lokale Transkription",
         engineModelDescription:
           "Führt ein Spracherkennungsmodell (STT) lokal aus und funktioniert offline. Zuerst herunterladen und laden; nach einer Zeit ohne Nutzung wird es automatisch wieder entladen.",
+        engineCustom: "Benutzerdefinierter Endpunkt",
+        engineCustomDescription:
+          "Sendet Audioaufnahmen an einen OpenAI-kompatiblen STT-Server aus Ihren Verbindungen.",
+        connectionLabel: "Verbindung",
+        connectionDescription:
+          "Fügen Sie unter Verbindungen einen OpenAI-kompatiblen Server und optional einen API-Schlüssel hinzu.",
+        connectionPlaceholder: "Verbindung auswählen",
+        connectionEmpty: "Keine Verbindungen verfügbar",
+        customModelLabel: "Modell",
+        customModelDescription:
+          "Modellname, der an /v1/audio/transcriptions gesendet wird.",
         sttModelLabel: "Spracherkennungsmodell",
         sttModelDescription:
           "Wählen oder suchen Sie ein STT-Modell für die lokale Ausführung.",
@@ -302,6 +358,7 @@ export const de = {
         languageLabel: "Diktatsprache",
         languageDescription: "Zu erkennende Sprache",
         languageAuto: "Automatisch (Browsersprache)",
+        languageAutoDetect: "Automatisch (Sprache erkennen)",
       },
       dictionary: {
         sectionTitle: "Diktatwörterbuch",
@@ -369,6 +426,7 @@ export const de = {
         modelLabel: "TTS-Modell",
         modelDescription:
           "Laden Sie ein Audiomodell über die Modellauswahl (z. B. Orpheus TTS)",
+        openAudioAction: "Audio öffnen",
         voiceLabel: "Stimme",
         voiceDescription: "Beste Stimmen auf diesem Gerät",
         speedLabel: "Geschwindigkeit",
@@ -378,6 +436,7 @@ export const de = {
         previewDescription: "Eine kurze Hörprobe abspielen",
         previewFailed: "Die TTS-Vorschau ist fehlgeschlagen",
         previewAction: "Anhören",
+        preparingAction: "Wird erzeugt…",
         stopAction: "Stopp",
         ttsLabel: "Sprachausgabe",
         notSupported: "In diesem Browser nicht unterstützt",
@@ -840,6 +899,24 @@ export const de = {
         switchFailed: "Das llama.cpp-Backend konnte nicht geändert werden.",
         switchInterrupted: "Der Wechsel wurde vor dem Abschluss unterbrochen.",
         envLocked: "Durch die Umgebungsvariable UNSLOTH_LLAMA_CPP_BACKEND auf {backend} festgelegt; sie überschreibt diese Einstellung.",
+        customPath: {
+          label: "Benutzerdefinierter llama.cpp-Ordner",
+          description: "Verwende deinen eigenen llama-server-Build.",
+          hint: "Wähle den llama.cpp-Ordner mit llama-server oder einen Build, in dem er unter build/bin liegt. Die benutzerdefinierte Laufzeit wird für GGUF-Chat, Einbettungen und unterstützte Sprachmodelle verwendet. Umgebungsvariablen haben weiterhin Vorrang.",
+          automatic: "Automatisch (mitgeliefert)",
+          bundled: "Verwendet die von Unsloth installierte llama.cpp-Laufzeit.",
+          active: "Dein eigener llama-server wird beim nächsten Laden eines Modells verwendet.",
+          environmentManaged: "Wird durch die Umgebungsvariable {variable} verwaltet.",
+          missingBinary: "llama-server ist in diesem Ordner nicht mehr verfügbar. Wähle einen anderen Ordner oder verwende die mitgelieferte Laufzeit.",
+          reloadRequired: "Lade das Modell neu, um den ausgewählten llama-server zu verwenden.",
+          change: "Ändern",
+          saving: "Speichern...",
+          useBundled: "Mitgelieferte Version verwenden",
+          chooseTitle: "llama.cpp-Ordner auswählen",
+          chooseAction: "Diesen Ordner verwenden",
+          saved: "llama.cpp-Ordner aktualisiert",
+          saveError: "Der llama.cpp-Ordner konnte nicht aktualisiert werden",
+        },
         backends: {
           auto: "Automatisch",
           cpu: "CPU",
@@ -852,6 +929,7 @@ export const de = {
           notInstalled: "Es wurde keine von Unsloth verwaltete llama.cpp-Installation gefunden, daher gibt es kein Backend zum Wechseln.",
           localLink: "llama.cpp ist ein selbst verknüpftes lokales Verzeichnis, das Unsloth nicht ersetzt.",
           sourceBuild: "Dieses llama.cpp wurde aus dem Quellcode gebaut; sein Backend lässt sich hier nicht wechseln.",
+          customPath: "Ein benutzerdefinierter llama.cpp-Ordner ist ausgewählt. Dessen Build bestimmt das Compute-Backend.",
           unresolved: "Die verfügbaren Backends konnten nicht geprüft werden. Prüfe deine Verbindung und versuche es erneut.",
         },
         // Wird nicht angezeigt: zusätzliche Begriffe für die Einstellungssuche.
@@ -1201,6 +1279,11 @@ export const de = {
     connections: {
       title: "Verbindungen",
       description: "Verwalten Sie Anbieter und externe Verbindungen.",
+    },
+    remoteLan: {
+      title: "Remote & LAN",
+      description:
+        "Erreiche dieses Unsloth von deinen anderen Geräten über dein lokales Netzwerk oder eine temporäre öffentliche URL.",
     },
     apiKeys: {
       title: "API",

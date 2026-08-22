@@ -1590,13 +1590,20 @@ def test_free_vram_offsets_the_charge(tmp_path, monkeypatch):
     assert "--fit" in _launch(backend, gguf)["cmd"]
 
 
-def test_vulkan_igpu_shared_memory_is_not_counted_twice(tmp_path, monkeypatch):
-    """A Vulkan iGPU's free memory and MemAvailable describe the same unified pool.
-    Crediting both let a 20 GiB model through on a 14 GiB host (12 + 14 on paper)."""
+@pytest.mark.parametrize(
+    "memory",
+    [
+        [(0, 12 * 1024, 0)],
+        [(0, 12 * 1024, 0), (1, 12 * 1024, 0)],
+    ],
+    ids = ["one-shared-device", "two-shared-devices"],
+)
+def test_vulkan_igpu_shared_memory_is_not_counted_twice(tmp_path, monkeypatch, memory):
+    """Shared Vulkan rows and host RAM describe one pool."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
-        memory = [(0, 12 * 1024, 0)],
+        memory = memory,
     )
     _restore_host_guard(backend)
     backend._get_gguf_size_bytes = lambda _path: 20 * 1024**3
@@ -1604,9 +1611,302 @@ def test_vulkan_igpu_shared_memory_is_not_counted_twice(tmp_path, monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 14 * 1024)
     )
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
 
     with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
         _launch(backend, gguf)
+
+
+def test_vulkan_igpu_heap_can_hold_weights_missing_from_host_available(tmp_path, monkeypatch):
+    """A firmware carve-out remains usable when host-available RAM is low."""
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 107 * 1024, 0)],
+    )
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(16.5 * 1024**3)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 13 * 1024)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 32 * 1024)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
+
+    assert _launch(backend, gguf)["cmd"]
+
+
+@pytest.mark.parametrize(
+    "gguf_mib,admitted",
+    [(4096, True), (8192, True), (8256, False), (8704, False), (9216, False)],
+    ids = ["4-gib", "8-gib", "8.06-gib", "8.5-gib", "9-gib"],
+)
+def test_vulkan_igpu_backing_bound_preserves_placement_and_host_headroom(
+    tmp_path, monkeypatch, gguf_mib, admitted
+):
+    """The raw planner reading never lets host-backed credit lose system headroom."""
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 15 * 1024, 0)])
+    _restore_host_guard(backend)
+    backend._get_gpu_memory = (
+        lambda _binary = None, **_kw: LlamaCppBackend._get_gpu_free_memory_vulkan(_binary)
+    )
+    backend._get_gguf_size_bytes = lambda _path: gguf_mib * 1024**2
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_run_vulkan_probe",
+        staticmethod(
+            lambda _binary = None: [
+                {
+                    "index": 0,
+                    "free_mib": 16 * 1024,
+                    "is_igpu": True,
+                    "total_mib": 16 * 1024,
+                    "name": "Vulkan0",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 10 * 1024)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 16 * 1024)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
+
+    if not admitted:
+        with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+            _launch(backend, gguf)
+        return
+
+    cmd = _launch(backend, gguf)["cmd"]
+    assert cmd[cmd.index("-ngl") + 1] == "-1"
+    assert cmd[cmd.index("--fit") + 1] == "off"
+    assert cmd[cmd.index("--device") + 1] == "Vulkan0"
+
+
+@pytest.mark.parametrize(
+    "placement",
+    [
+        {"gpu_memory_mode": "manual", "gpu_layers": 0},
+        {"gpu_memory_mode": "manual", "gpu_layers": 8},
+        {"extra_args": ["--device", "none"]},
+        {"extra_args": ["-ngl", "0"]},
+    ],
+    ids = ["manual-zero-offload", "manual-partial-offload", "device-none", "extras-zero-offload"],
+)
+def test_vulkan_igpu_heap_is_not_credited_to_a_host_resident_launch(
+    tmp_path, monkeypatch, placement
+):
+    """Only a full GPU offload may credit the shared heap."""
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 107 * 1024, 0)])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(16.5 * 1024**3)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 13 * 1024)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 32 * 1024)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf, **placement)
+
+
+def test_a_device_pin_decides_whether_the_shared_heap_is_reachable(tmp_path, monkeypatch):
+    """Only a selected shared device contributes its heap."""
+
+    def _mixed():
+        backend, gguf = _backend(
+            tmp_path, vulkan = True, memory = [(0, 6 * 1024, 8 * 1024), (1, 94641, 0)]
+        )
+        _restore_host_guard(backend)
+        backend._get_gguf_size_bytes = lambda _path: 30 * 1024**3
+        # gpu_layers=33 fully offloads this 32-layer model.
+        backend._n_layers = 32
+        return backend, gguf
+
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 13 * 1024)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 32 * 1024)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
+    manual = {"gpu_memory_mode": "manual", "gpu_layers": 33}
+
+    backend, gguf = _mixed()
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf, extra_args = ["--device", "Vulkan0"], **manual)
+
+    backend, gguf = _mixed()
+    assert _launch(backend, gguf, extra_args = ["--device", "Vulkan1"], **manual)["cmd"]
+
+
+def test_an_unselected_card_does_not_shrink_what_the_shared_heap_must_hold(tmp_path, monkeypatch):
+    """Only selected cards reduce the bytes assigned to the shared heap."""
+    backend, gguf = _backend(
+        tmp_path, vulkan = True, memory = [(0, 24 * 1024, 24 * 1024), (1, 10 * 1024, 0)]
+    )
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: 30 * 1024**3
+    backend._n_layers = 32
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 4 * 1024)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 32 * 1024)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(
+            backend,
+            gguf,
+            gpu_memory_mode = "manual",
+            gpu_layers = 33,
+            extra_args = ["--device", "Vulkan1"],
+        )
+
+
+@pytest.mark.parametrize(
+    "split",
+    [{"tensor_split": [1.0, 0.0]}, {"extra_args": ["--tensor-split", "1,0"]}],
+    ids = ["picker-share", "user-flag"],
+)
+def test_an_explicit_tensor_split_leaves_the_shared_heap_uncredited(tmp_path, monkeypatch, split):
+    """An ambiguous tensor split must not credit a shared heap."""
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 6 * 1024, 8 * 1024), (1, 94641, 0)])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: 30 * 1024**3
+    backend._n_layers = 32
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 4 * 1024)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 32 * 1024)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(
+            backend,
+            gguf,
+            gpu_memory_mode = "manual",
+            gpu_layers = 33,
+            gpu_ids = [0, 1],
+            **split,
+        )
+
+
+def _mixed_vulkan(tmp_path, monkeypatch, memory):
+    """A 30 GiB GGUF on a host with 4 GiB of RAM left, full manual offload."""
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = memory)
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: 30 * 1024**3
+    backend._n_layers = 32
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 4 * 1024)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 32 * 1024)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
+    return backend, gguf
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [["--split-mode", "none", "--main-gpu", "0"], ["-sm", "none"]],
+    ids = ["with-main-gpu", "bare"],
+)
+def test_split_mode_none_leaves_a_second_device_heap_uncredited(tmp_path, monkeypatch, extras):
+    """Split mode none cannot select a shared heap among multiple devices."""
+    backend, gguf = _mixed_vulkan(tmp_path, monkeypatch, [(0, 6 * 1024, 8 * 1024), (1, 94641, 0)])
+
+    # Both devices pinned, so the split mode is the only thing left to decide.
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(
+            backend,
+            gguf,
+            gpu_memory_mode = "manual",
+            gpu_layers = 33,
+            extra_args = ["--device", "Vulkan0,Vulkan1", *extras],
+        )
+
+
+def test_an_unpinned_launch_beside_a_discrete_card_leaves_the_heap_uncredited(
+    tmp_path, monkeypatch
+):
+    """llama.cpp drops integrated GPUs when its own device list finds a discrete one."""
+    backend, gguf = _mixed_vulkan(tmp_path, monkeypatch, [(0, 94641, 0), (1, 6 * 1024, 8 * 1024)])
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf, gpu_memory_mode = "manual", gpu_layers = 33)
+
+
+def test_a_pin_still_reaches_the_heap_beside_a_discrete_card(tmp_path, monkeypatch):
+    """Naming the shared device puts it back in llama.cpp's list."""
+    backend, gguf = _mixed_vulkan(tmp_path, monkeypatch, [(0, 94641, 0), (1, 6 * 1024, 8 * 1024)])
+
+    assert _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = 33,
+        extra_args = ["--device", "Vulkan0"],
+    )["cmd"]
+
+
+def test_split_mode_none_still_credits_a_lone_shared_device(tmp_path, monkeypatch):
+    """A lone shared device remains reachable under split mode none."""
+    backend, gguf = _mixed_vulkan(tmp_path, monkeypatch, [(0, 94641, 0)])
+
+    assert _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = 33,
+        extra_args = ["--split-mode", "none"],
+    )["cmd"]
+
+
+def test_vulkan_igpu_heap_does_not_bypass_a_cgroup_limit(tmp_path, monkeypatch):
+    """A shared Vulkan heap remains subject to the process cgroup limit."""
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 64 * 1024, 0)],
+    )
+    _restore_host_guard(backend)
+    backend._apu_ram_shortfall_message = LlamaCppBackend._apu_ram_shortfall_message
+    backend._get_gguf_size_bytes = lambda _path: 20 * 1024**3
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 64 * 1024)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: 8 * 1024)
+    )
+
+    with pytest.raises(RuntimeError, match = "unified-memory APU"):
+        _launch(backend, gguf)
+
+
+def test_a_card_resident_model_is_not_refused_by_a_container_ceiling(tmp_path, monkeypatch):
+    """A card-resident model is independent of the cgroup memory budget."""
+    backend, gguf = _offload_backend(
+        tmp_path,
+        gguf_gb = 23.4,
+        free_mib = 24 * 1024,
+        avail_mib = 1024,
+        monkeypatch = monkeypatch,
+    )
+    backend._apu_ram_shortfall_message = LlamaCppBackend._apu_ram_shortfall_message
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: 1024))
+
+    assert _launch(backend, gguf)["cmd"]
 
 
 def test_unknown_available_ram_abstains(tmp_path, monkeypatch):

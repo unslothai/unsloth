@@ -27,6 +27,7 @@ from utils.hf_dataset_options import (
     HF_DATASET_SPLIT_NAME_PATTERN,
     has_unsafe_hf_dataset_option_characters,
 )
+from utils.paths.path_utils import is_appledouble_metadata
 
 
 _MAX_METADATA_BYTES = 2 * 1024 * 1024
@@ -196,6 +197,7 @@ def _processed_options(path: Path) -> set[tuple[str, str]]:
             name.lower().endswith(".arrow")
             and not (base / name).is_symlink()
             and (base / name).is_file()
+            and not is_appledouble_metadata(base / name)
             for name in filenames
         ):
             continue
