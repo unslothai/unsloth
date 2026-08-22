@@ -685,9 +685,7 @@ def test_a_declared_unstable_action_still_holds_at_every_rung(tmp_path):
 def test_main_prints_a_mixed_unstable_set_without_dying(tmp_path, capsys):
     # The set now holds bare action names and (rung, action) pairs together, and `sorted()` over
     # the two raises TypeError. The one place that formats it is the run header.
-    null = parity_run(
-        tmp_path, "nullm", [("r1K", "rep0", "X", "Y"), ("r1K", "rep1", "X", "Z")]
-    )
+    null = parity_run(tmp_path, "nullm", [("r1K", "rep0", "X", "Y"), ("r1K", "rep1", "X", "Z")])
     mine = parity_run(tmp_path, "minem", [("r1K", "rep0", "Q", "Q")])
     assert U.main([str(mine.parent), "--null", str(null.parent)]) == 0
     assert "settings@r1K" in capsys.readouterr().out

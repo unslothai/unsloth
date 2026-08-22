@@ -256,8 +256,11 @@ def checkout_ref(repo: Path, ref: str) -> str:
     candidates = [] if fetched.returncode != 0 else ["FETCH_HEAD"]
     candidates += [f"origin/{ref}", ref]
     for candidate in candidates:
-        got = _run(["git", "rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}"],
-                   cwd = repo, check = False)
+        got = _run(
+            ["git", "rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}"],
+            cwd = repo,
+            check = False,
+        )
         commit = got.stdout.strip()
         if got.returncode == 0 and commit:
             _run(["git", "checkout", "--force", "--detach", commit], cwd = repo)
