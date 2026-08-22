@@ -111,6 +111,22 @@ class Session:
             self._open = None
             self.ctx.recorder.emit(w.row())
 
+    def each_instrument(self, method: str, *args) -> dict:
+        """Run one lifecycle hook on every instrument, and collect what each returned.
+
+        OVER A SNAPSHOT, not the live list. `_safe` drops an instrument that raises, and removing
+        from the list being iterated makes Python skip whichever instrument shifted into the freed
+        index, so one broken optional instrument silently cost its neighbour's hook as well --
+        `heap` failing took `input`, and with it the highest-weight metric in the table, while the
+        cell still completed and reported.
+        """
+        out: dict = {}
+        for inst in list(self.instruments):
+            got = self._safe(inst, method, *args)
+            if got is not None:
+                out[inst.name] = got
+        return out
+
     def _safe(self, inst, method: str, *args):
         """One broken instrument never costs the window."""
         fn = getattr(inst, method, None)
@@ -158,8 +174,7 @@ class CellRunner:
             f"\n=== cell {cell.cell_id}: {plan.rung} "
             f"({plan.seeded_chars:,} seeded + {plan.streamed_chars:,} streamed chars)"
         )
-        for inst in s.instruments:
-            s._safe(inst, "start_cell", cell)
+        s.each_instrument("start_cell", cell)
 
         row: dict = {
             "row_type": "cell",
@@ -187,10 +202,7 @@ class CellRunner:
             with contextlib.suppress(Exception):
                 dump_diagnostics(page, self.paths.logs, f"fail_{cell.cell_id}", self.log)
         finally:
-            for inst in s.instruments:
-                got = s._safe(inst, "end_cell", cell)
-                if got is not None:
-                    row["instruments"][inst.name] = got
+            row["instruments"].update(s.each_instrument("end_cell", cell))
             # A cell that could not complete is a FIRST-CLASS RESULT with its failure mode and its
             # RSS at death, not a gap in the table.
             rss = row["instruments"].get("rss") or {}
