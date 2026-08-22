@@ -198,7 +198,9 @@ def unstable_set(paths: list[Path] | None) -> tuple[frozenset, dict, dict]:
     # The cross-check stays pooled ON PURPOSE. It audits the DECLARED list, whose entries claim to
     # hold at every rung, so the question it answers -- did this run ever see this action differ --
     # is an action-level question. It is advisory output and carries no verdict.
-    checks = P.cross_check(P.derive_unstable([(a, r) for a, _s, _c, r in results]), UNSTABLE_ACTIONS)
+    checks = P.cross_check(
+        P.derive_unstable([(a, r) for a, _s, _c, r in results]), UNSTABLE_ACTIONS
+    )
     # UNION, not replacement. An action the null control could not reach -- `image_upload` has no
     # visible attachments button on this fixture -- would otherwise silently move from "declared
     # unstable" to "stable" on the strength of a measurement that never happened.

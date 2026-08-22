@@ -100,7 +100,9 @@ def order_is_balanced(plan: list[tuple[Target, Cell, RungPlan]]) -> bool:
     return len(labels) > 1 and len(set(first_counts.values())) == 1
 
 
-def readings_by_arm(records: list[dict], session_id: Optional[str] = None) -> dict[str, dict[int, dict]]:
+def readings_by_arm(
+    records: list[dict], session_id: Optional[str] = None
+) -> dict[str, dict[int, dict]]:
     """Split one payload's cell rows into `{arm: {rung_tokens: {metric: Measure}}}`.
 
     A CELL THAT DID NOT COMPLETE IS NOT AN ARM'S READING. The ladder scores an incomplete cell on
