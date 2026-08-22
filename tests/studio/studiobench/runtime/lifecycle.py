@@ -24,6 +24,7 @@ import re
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import time
 import urllib.error
@@ -42,6 +43,10 @@ class StudioInstall:
     bootstrap_password: Optional[str] = None
     port: Optional[int] = None
     pid: Optional[int] = None
+    #: The commit `branch` RESOLVED TO, which is the build that was installed. `branch` is what
+    #: the caller typed, and a branch or a movable tag is not a build. See
+    #: `__main__.commit_problems`.
+    commit: Optional[str] = None
 
     @property
     def base_url(self) -> str:
@@ -295,7 +300,9 @@ def install_studio(
         # Cloned WITHOUT `--branch`, then moved onto the ref locally, so one code path serves a
         # branch, a tag and a commit sha instead of two that disagree about what a ref is.
         _run(["git", "clone", remote, str(repo)])
-    checkout_ref(repo, branch)
+    # KEPT, not discarded. `checkout_ref` is the only place that knows which commit a ref names,
+    # and the ref alone cannot tell a resumed run that `main` moved underneath it.
+    commit = checkout_ref(repo, branch)
     install_sh = repo / "install.sh"
     if not install_sh.exists():
         raise FileNotFoundError(f"install.sh missing at {install_sh}")
@@ -305,7 +312,7 @@ def install_studio(
         env = {"UNSLOTH_STUDIO_HOME": str(home)},
         timeout = INSTALL_TIMEOUT_S,
     )
-    return StudioInstall(home = home, repo = repo, branch = branch)
+    return StudioInstall(home = home, repo = repo, branch = branch, commit = commit)
 
 
 def _find_unsloth_bin(install: StudioInstall) -> str:
@@ -377,6 +384,25 @@ def _discover_pid(port: int, timeout_s: Optional[float] = None) -> Optional[int]
         time.sleep(0.5)
 
 
+def port_is_busy(
+    port: int,
+    host: str = "127.0.0.1",
+    timeout_s: float = 1.0,
+) -> bool:
+    """Is something already accepting connections on `port`?
+
+    A plain connect, not a bind: the server we are about to launch is DETACHED and binds in a
+    process of its own, so the only question this can answer is whether the port is already
+    somebody's -- and if it is, it will not be ours.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(timeout_s)
+        try:
+            return sock.connect_ex((host, int(port))) == 0
+        except OSError:
+            return False
+
+
 def launch_studio(
     install: StudioInstall,
     port: int,
@@ -385,6 +411,29 @@ def launch_studio(
     healthz_timeout_s: int = 240,
     password_timeout_s: int = 30,
 ) -> StudioInstall:
+    # AN OCCUPIED PORT IS REFUSED BEFORE ANYTHING IS LAUNCHED, and this is the half of the
+    # abandoned-server failure that no cleanup can reach. `--keep-studio` asks for a Studio to be
+    # LEFT RUNNING on this port, so the next run's `unsloth studio -p <port>` finds one of our own
+    # servers there and aborts rather than binding (`studio/backend/run.py`, `_resolve_port` with
+    # `avoid_own_studio`); when the pid record is not readable it falls back to the NEXT port
+    # instead. Either way nothing this run launched is on `port`.
+    #
+    # Everything downstream then agrees that the launch worked. `_discover_pid` pgreps for
+    # `unsloth studio.*-p <port>` and finds the OLD process; `wait_for_healthz` takes its 200 from
+    # it; and `authenticate` retries with `BENCH_PASSWORD`, which a previous studiobench run has
+    # already rotated that Studio to, so the login succeeds as well. The run then measures the
+    # build the PREVIOUS invocation installed while `run_meta` records the ref this one asked for,
+    # and `stop_studio` kills the server the caller asked to keep. There is no reading anywhere
+    # that says which build answered, so this is refused rather than reported.
+    if port_is_busy(port):
+        holder = _discover_pid(port, 0.0)
+        raise RuntimeError(
+            f"port {port} is already in use"
+            + (f" by Studio pid {holder}" if holder else "")
+            + ". A Studio launched here would abort or land on another port while this harness "
+            "measured whatever is already answering. Stop it (`unsloth studio stop`, or the "
+            "Studio a previous --keep-studio run left behind) or pass --port."
+        )
     log_path = Path(log_path).resolve()
     log_path.parent.mkdir(parents = True, exist_ok = True)
     log_path.write_text("")
