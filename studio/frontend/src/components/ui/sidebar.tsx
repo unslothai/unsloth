@@ -28,6 +28,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { PanelResizeHandle } from "@/components/ui/panel-resize-handle"
+import { PANEL_RESIZE_SCOPED_VARS_ENABLED } from "@/components/ui/panel-resize-recalc-flags"
 import { useT } from "@/i18n"
 import { useIsMobile } from "@/hooks/use-mobile"
 import {
@@ -189,7 +190,14 @@ function SidebarProvider({
         style={
           {
             // The drag handle writes this same property live while resizing.
-            "--sidebar-width": `${width}px`,
+            // Under PANEL_RESIZE_SCOPED_VARS_ENABLED it moves DOWN to
+            // [data-slot="sidebar"], which holds every consumer, and cannot
+            // also stay here: this wrapper is an ancestor of the chat thread,
+            // so a declaration left behind would keep restyling the thread on
+            // every render even once the drag-time write had moved.
+            ...(PANEL_RESIZE_SCOPED_VARS_ENABLED
+              ? null
+              : { "--sidebar-width": `${width}px` }),
             "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
             ...style,
           } as React.CSSProperties
@@ -221,12 +229,21 @@ function Sidebar({
   collapsible?: "offcanvas" | "icon" | "none"
   collapseToZero?: boolean
 }) {
-  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned } = useSidebar()
+  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned, width } =
+    useSidebar()
+
+  // The scoped home for --sidebar-width: every consumer (this element,
+  // sidebar-gap, sidebar-container) is inside it and the chat thread is not.
+  // Empty with the flag off, where the wrapper keeps the declaration.
+  const scopedWidthStyle = (
+    PANEL_RESIZE_SCOPED_VARS_ENABLED ? { "--sidebar-width": `${width}px` } : {}
+  ) as React.CSSProperties
 
   if (collapsible === "none") {
     return (
       <div
         data-slot="sidebar"
+        style={scopedWidthStyle}
         className={cn(
           "bg-sidebar text-sidebar-foreground flex h-full w-(--sidebar-width) flex-col",
           className
@@ -281,6 +298,7 @@ function Sidebar({
       data-variant={variant}
       data-side={side}
       data-slot="sidebar"
+      style={scopedWidthStyle}
       aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}
       inert={(hasPinMode && !pinned && collapseToZero) || undefined}
     >
@@ -387,6 +405,18 @@ function SidebarResizeHandle({
         cssVar="--sidebar-width"
         // The custom titlebar renders outside the wrapper and cannot inherit it.
         rootVar="--studio-sidebar-live-width"
+        // Both used only under PANEL_RESIZE_SCOPED_VARS_ENABLED. The rail sits
+        // inside sidebar-container, so [data-slot="sidebar"] always encloses it.
+        scopedTarget={() =>
+          ref.current?.closest<HTMLElement>('[data-slot="sidebar"]') ?? null
+        }
+        // Empty on every build without a custom titlebar: nothing reads the
+        // property there, so nothing needs writing.
+        rootVarTargets={() =>
+          Array.from(
+            document.querySelectorAll<HTMLElement>("[data-titlebar-live-width-scope]"),
+          )
+        }
         measure={() =>
           ref.current
             ?.closest<HTMLElement>('[data-slot="sidebar-container"]')

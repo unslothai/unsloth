@@ -521,12 +521,16 @@ def repo_remote_code_files(
 
         from huggingface_hub import hf_hub_download, list_repo_files
         from huggingface_hub.utils import EntryNotFoundError
+        from utils.hf_probe import hf_file_definitely_absent
 
         # Collect auto_map refs from EVERY config that can declare one. A 404
         # (EntryNotFoundError) means the config is absent -> skip; any other failure is
         # transient/auth and could hide an auto_map, so fail closed (unscannable).
         refs = set()
         for cfg_name in remote_code_config_paths(load_subdirs):
+            # Avoid caching expected 404s; other failures still reach the fail-closed path.
+            if hf_file_definitely_absent(model_name, cfg_name, token = hf_token):
+                continue
             try:
                 cfg_path = hf_hub_download(
                     model_name,
@@ -687,8 +691,12 @@ def external_auto_map_repos(
 
         from huggingface_hub import hf_hub_download
         from huggingface_hub.utils import EntryNotFoundError
+        from utils.hf_probe import hf_file_definitely_absent
 
         for cfg_name in remote_code_config_paths(load_subdirs):
+            # Same guard as the scanner above; see utils/hf_probe.py.
+            if hf_file_definitely_absent(model_name, cfg_name, token = hf_token):
+                continue
             try:
                 cfg_path = hf_hub_download(
                     model_name,

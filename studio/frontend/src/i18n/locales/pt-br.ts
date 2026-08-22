@@ -195,6 +195,7 @@ export const ptBR = {
       chat: "Chat",
       connections: "Conexões",
       apiKeys: "API",
+      remoteLan: "Remoto e LAN",
       about: "Sobre",
       voice: "Voz",
       data: "Dados",
@@ -281,6 +282,17 @@ export const ptBR = {
         engineModel: "Transcrição local",
         engineModelDescription:
           "Executa um modelo de conversão de fala em texto (STT) localmente e funciona offline. Baixe e carregue o modelo; ele é descarregado após um período sem uso.",
+        engineCustom: "Endpoint personalizado",
+        engineCustomDescription:
+          "Envia o áudio gravado a um servidor STT compatível com OpenAI das suas conexões.",
+        connectionLabel: "Conexão",
+        connectionDescription:
+          "Adicione um servidor compatível com OpenAI e uma chave de API opcional em Conexões.",
+        connectionPlaceholder: "Selecione uma conexão",
+        connectionEmpty: "Nenhuma conexão disponível",
+        customModelLabel: "Modelo",
+        customModelDescription:
+          "Nome do modelo enviado para /v1/audio/transcriptions.",
         sttModelLabel: "Modelo de reconhecimento de fala",
         sttModelDescription:
           "Escolha ou busque um modelo STT para executar localmente.",
@@ -341,6 +353,7 @@ export const ptBR = {
         languageLabel: "Idioma do ditado",
         languageDescription: "Idioma a ser reconhecido",
         languageAuto: "Automático (idioma do navegador)",
+        languageAutoDetect: "Automático (detectar idioma)",
       },
       dictionary: {
         sectionTitle: "Dicionário de ditado",
@@ -1239,6 +1252,11 @@ export const ptBR = {
     connections: {
       title: "Conexões",
       description: "Gerencie provedores e conexões externas.",
+    },
+    remoteLan: {
+      title: "Remoto e LAN",
+      description:
+        "Acesse este Unsloth dos seus outros dispositivos, pela rede local ou por uma URL pública temporária.",
     },
     apiKeys: {
       title: "API",

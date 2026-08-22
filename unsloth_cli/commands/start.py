@@ -48,6 +48,25 @@ start_app = typer.Typer(
 
 _CODEX_PROFILE = "unsloth_api"
 _CODEX_ENV_KEY = "UNSLOTH_STUDIO_AUTH_TOKEN"
+# Codex treats an SSE stream with no bytes for this long as lost, cancels it, and
+# reconnects. Its default is 300000 (5 minutes), which is measured against the WHOLE
+# quiet period -- and llama-server sends nothing at all while it processes the prompt.
+#
+# That is not a corner case on the hardware Unsloth is for. A local CPU host chews
+# through a prompt at low tens of tokens a second, and Codex's own preamble is several
+# thousand tokens before the user has typed anything: 16.1 tok/s measured on a 2-core
+# box means ~460s of silence for a ~7300-token first turn, so the default trips before
+# the first token exists. The reconnect is worse than the wait, because llama-server
+# hands the retry a different parallel slot whose KV cache shares no prefix, so each
+# attempt restarts prompt processing from zero and the five retries can never converge.
+# Observed as a request completing in exactly 300056ms with `Reconnecting... 1/5` and
+# no turn ever finishing.
+#
+# 20 minutes. Sized to be longer than a slow local first turn rather than to any
+# server-side budget: nothing here bounds generation, and a genuinely dead stream is
+# still caught, just later. Same reason the Codex docs' own local-model example raises
+# it for Ollama.
+_CODEX_STREAM_IDLE_TIMEOUT_MS = 1_200_000
 _HERMES_ENV_KEY = "UNSLOTH_API_KEY"
 _HERMES_PROVIDER = "unsloth"
 # Skip the installer's interactive setup wizard: `unsloth start hermes` runs
@@ -2475,6 +2494,7 @@ def _merge_codex_config(existing: str, base: str) -> str:
         f'env_key = "{_CODEX_ENV_KEY}"\n'
         'wire_api = "responses"\n'
         "requires_openai_auth = false\n"
+        f"stream_idle_timeout_ms = {_CODEX_STREAM_IDLE_TIMEOUT_MS}\n"
     )
 
 

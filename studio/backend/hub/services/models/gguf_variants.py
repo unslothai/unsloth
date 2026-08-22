@@ -50,6 +50,7 @@ from hub.utils.paths import (
 # Loader's normalizer, not the hub's: they disagree on WSL, and only it names what the load opens.
 from utils.paths import normalize_path as _loader_normalize_path
 from hub.services.models.common import (
+    _is_imatrix_filename,
     _is_mmproj_filename,
     _is_mtp_drafter_path,
     _iter_gguf_paths,
@@ -516,6 +517,10 @@ def _local_main_gguf_blobs_by_quant(
                 normalized = str(path).replace("\\", "/")
                 if not hashes:
                     continue
+                if _is_imatrix_filename(normalized):
+                    # Not a companion either: nothing fetches an imatrix, so a stale copy
+                    # on disk must not vouch for a variant's blobs.
+                    continue
                 if _is_mmproj_filename(normalized) or _is_mtp_drafter_path(normalized):
                     companion_blobs.setdefault(normalized, set()).update(
                         str(blob) for blob in hashes if blob
@@ -724,6 +729,7 @@ def _direct_gguf_loads(path: Path) -> bool:
     return not (
         _is_mmproj_filename(path.name)
         or _is_mtp_drafter_path(context)
+        or _is_imatrix_filename(path.name)
         or is_big_endian_gguf_path(context, _extract_quant_label(context))
         or is_appledouble_metadata(path)
     )
@@ -1399,7 +1405,11 @@ async def get_gguf_variants_answer(
                         continue
                     key = rel.lower()
                     by_filename[key] = max(by_filename.get(key, 0), size)
-                    if _is_mmproj_filename(f.name) or _is_mtp_drafter_path(rel):
+                    if (
+                        _is_mmproj_filename(f.name)
+                        or _is_mtp_drafter_path(rel)
+                        or _is_imatrix_filename(f.name)
+                    ):
                         continue
                     q = gguf_variant_key(rel)
                     if is_big_endian_gguf_path(rel, extract_quant_label(rel)):
