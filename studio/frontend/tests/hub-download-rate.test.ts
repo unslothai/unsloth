@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The hub download manager now derives its rate from the shared rolling-window
+// The hub download manager derives its rate from the shared rolling-window
 // estimator instead of an EMA seeded by the first sample (#7667). These pin the
-// gating the progress bar relies on: no rate (and so no ETA) until the window is
-// trustworthy, and no tiny positive rate while a transfer is stalled.
+// gating the progress bar relies on and the smoothing needed when backend byte
+// observations arrive in disk-allocation bursts (#9378).
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -45,11 +45,26 @@ test("a steady transfer reports its true rate", () => {
   assert.ok(Math.abs(rate - 20 * MB) < 1);
 });
 
-test("a stall reports no rate instead of decaying toward zero", () => {
+test("bursty byte observations stay close to the underlying transfer rate", () => {
+  const samples: TransferSample[] = [];
+  const rates: number[] = [];
+  // Model a steady 100 MB/s transfer whose on-disk counter only becomes visible
+  // in 1 GB allocation/write bursts every 10 seconds.
+  for (let t = 0; t <= 60; t++) {
+    const observedBytes = Math.floor(t / 10) * 1_000 * MB;
+    const rate = publishedRate(samples, t, observedBytes);
+    if (t >= 20 && rate > 0) rates.push(rate);
+  }
+  assert.ok(rates.length > 0);
+  assert.ok(Math.min(...rates) > 75 * MB);
+  assert.ok(Math.max(...rates) < 125 * MB);
+});
+
+test("a stall reports no rate instead of carrying an old window forward", () => {
   const samples: TransferSample[] = [];
   for (let t = 0; t <= 10; t++) publishedRate(samples, t, t * 20 * MB);
   let rate = 0;
-  for (let t = 11; t <= 40; t++) rate = publishedRate(samples, t, 10 * 20 * MB);
+  for (let t = 11; t <= 26; t++) rate = publishedRate(samples, t, 10 * 20 * MB);
   assert.equal(rate, 0);
 });
 
