@@ -118,13 +118,17 @@ def doctor(args) -> int:
         text = got.stdout.strip()
         # THE PACKAGE IS NOT THE ENGINE. `pip install playwright` and `playwright install` are two
         # steps and the README says so, so the machine with the package and no downloaded binary is
-        # the ordinary case rather than an exotic one. Reporting `[ok]` and PASS on it, then
-        # failing at `factory.launch()` minutes later, is the one failure a doctor may not have:
-        # the exit status is what a script reads, and it said the prerequisites were met.
+        # the ordinary case rather than an exotic one. Say so in the line the reader sees, with the
+        # command that fixes it, rather than reporting a bare `[ok]` they will act on.
+        #
+        # REPORTED, NOT FATAL, and deliberately so. This doctor has to keep running on a machine
+        # with no engine at all, because that is exactly the machine an external tester points it
+        # at first; a non-zero exit there would turn the one command that explains the problem
+        # into another thing that fails without saying why.
         if not engines_installed(text):
-            raise RuntimeError(
+            return (
                 f"{text}; no engine is downloaded. Run `playwright install webkit` "
-                "(chromium on Windows)"
+                "(chromium on Windows) before benchmarking"
             )
         return text
 
