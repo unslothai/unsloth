@@ -272,6 +272,13 @@ def checkout_ref(repo: Path, ref: str) -> str:
     )
 
 
+#: What `install.sh` is allowed. A multi-gigabyte download and build, documented in the README as
+#: "budgeted at up to 45 minutes" and explicitly NOT part of a tier's wall clock. Named rather
+#: than inlined because the run's watchdog has to add it to a deadline it would otherwise fire in
+#: the middle of: see `watchdog_deadline_s`.
+INSTALL_TIMEOUT_S = 60 * 45
+
+
 def install_studio(
     branch: str,
     home: Path,
@@ -296,7 +303,7 @@ def install_studio(
         ["bash", str(install_sh), "--local"],
         cwd = repo,
         env = {"UNSLOTH_STUDIO_HOME": str(home)},
-        timeout = 60 * 45,
+        timeout = INSTALL_TIMEOUT_S,
     )
     return StudioInstall(home = home, repo = repo, branch = branch)
 

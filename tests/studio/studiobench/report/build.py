@@ -20,7 +20,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from ..scoring.from_payload import measures_from_records
+from ..scoring.from_payload import latest_attempt_rows, measures_from_records
 from ..scoring.score import LadderScore, RungScore, score_ladder, score_rung
 from .payload import assemble_rows
 from .render import render_summary
@@ -67,7 +67,12 @@ def _completion_by_rung(records: Sequence[Mapping[str, Any]]) -> dict[int, tuple
 def score_payload(path: str | Path, declared_rungs: Sequence[int] | None = None) -> LadderScore:
     """Score one run. `declared_rungs` is the ladder the tier promised, in tokens."""
 
-    records = _records(path)
+    # A CELL THAT WAS RE-RUN IS SCORED ON THE RUN THAT FINISHED IT. `--resume` re-runs the cells
+    # that died, under the same `cell_id`, into the same file; scoring both attempts as one cell
+    # kept the crash forever, so a rung that had since been re-run successfully still came out
+    # INCOMPLETE and zero. The dead attempt is still in the payload and still in EXCLUDED CELLS,
+    # which is where a superseded crash belongs -- it is only kept out of the score.
+    records = latest_attempt_rows(_records(path))
     measures = measures_from_records(records)
     completion = _completion_by_rung(records)
 
