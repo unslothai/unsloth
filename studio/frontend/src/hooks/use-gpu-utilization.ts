@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { useEffect, useRef, useState } from "react";
+import {
+    createSingleFlight,
+    startSerialPolling,
+} from "@/hooks/gpu-utilization-polling";
+import { useEffect, useState } from "react";
 
 export interface GpuUtilization {
     available: boolean;
@@ -33,43 +37,43 @@ const DEFAULT: GpuUtilization = {
     power_utilization_pct: null,
 };
 
-/**
- * Poll `GET /api/train/hardware` for live GPU utilization stats while
- * `enabled` (training running). Interval defaults to 10 000 ms.
- */
+const fetchGpuUtilization = createSingleFlight(async () => {
+    const response = await authFetch("/api/train/hardware");
+    if (!response.ok) return null;
+    return (await response.json()) as GpuUtilization;
+});
+
 export function useGpuUtilization(
     enabled: boolean,
     intervalMs = 10_000,
 ): GpuUtilization {
     const [data, setData] = useState<GpuUtilization>(DEFAULT);
-    const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
     useEffect(() => {
         if (!enabled) {
-            // Reset when training stops so the cards show "--" again
-            setData(DEFAULT);
-            return;
+            let cancelled = false;
+            queueMicrotask(() => {
+                if (!cancelled) setData(DEFAULT);
+            });
+            return () => {
+                cancelled = true;
+            };
         }
 
         let cancelled = false;
 
-        async function poll() {
+        const stopPolling = startSerialPolling(async () => {
             try {
-                const res = await authFetch("/api/train/hardware");
-                if (!res.ok || cancelled) return;
-                const json = (await res.json()) as GpuUtilization;
-                if (!cancelled) setData(json);
+                const nextData = await fetchGpuUtilization();
+                if (!cancelled && nextData) setData(nextData);
             } catch {
-                // Retry on the next poll.
+                return;
             }
-        }
-
-        void poll();
-        timerRef.current = setInterval(() => void poll(), intervalMs);
+        }, intervalMs);
 
         return () => {
             cancelled = true;
-            if (timerRef.current) clearInterval(timerRef.current);
+            stopPolling();
         };
     }, [enabled, intervalMs]);
 
