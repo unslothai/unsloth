@@ -1,0 +1,491 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Does this pull request change what is on screen?
+#
+# The merge base and the head are installed side by side, driven through the
+# same eighteen scripted actions inside ONE browser session, and their DOM
+# digests compared. A second, CONCURRENT run compares the merge base against
+# ITSELF, and that null control is what the result is scored against.
+#
+# WHY THE NULL IS NOT OPTIONAL. `sweep/ui_parity.py` ships a hand-written list
+# of actions expected to vary between two runs of any build. Declared is not
+# measured: a base-vs-base run scored against that declared list reported
+# ELEVEN stable actions differing. Every one of them would have been read as
+# "this PR changed the UI". So the unstable set this job scores against is the
+# one MEASURED here, on this runner, in the same wave -- `--null` derives it per
+# rung and unions the declared list back in, so an action the null could not
+# reach does not silently become "stable". The null's own score is printed
+# beside the verdict on every run, passing or failing. A parity verdict quoted
+# without the null beside it is not a result.
+#
+# WHY THIS IS A SEPARATE FILE FROM studiobench-ci.yml. `paths:` is per-workflow,
+# not per-job. studiobench-ci.yml is gated on `studio/backend/**`, which fires
+# on video export and RAG changes; a DOM-parity job that runs on those is noise,
+# and a gate people learn to ignore is worse than no gate. The filter below is
+# derived from what actually reaches the browser rather than from where the
+# files live.
+#
+# WHAT THIS WORKFLOW DELIBERATELY DOES NOT DO: gate on a timing, for the reasons
+# studiobench-ci.yml sets out at length. A shared two-core runner cannot resolve
+# the effects studiobench measures; the detection floors this tool derives on a
+# quiet 100-core box are already wider than most of the real effects found in a
+# 40-PR audit, and a floor measured under one contention level does not transfer
+# to another. Measured today on a QUIET machine, one change read -33.6% in one
+# wave and -20.6% in another. STRUCTURE does not do that: a digest of the DOM is
+# the same on a busy runner and an idle one, which is the whole reason this job
+# can exist here and a timing job cannot.
+#
+# Contention reaches this job by one route only, and it is handled: a runner too
+# slow to reach a slot records the action as not run, and `derive_unstable`
+# counts a not-run pair as BLIND, never as evidence that the action is stable.
+# So a contended null control can fail to excuse a genuinely unstable action --
+# which costs a false alarm, loudly -- but it cannot silence a real difference.
+#
+# AND IT MUST FAIL IF THE SCENES DID NOT RUN. Three separate times this harness
+# produced a confident "no effect" from code that could never fire, including
+# four scene actions recording NOT RUN on 312 of 312 attempts, every one exiting
+# 0. Two blank pages have identical digests. `--assert-liveness` runs on BOTH
+# payloads, before either is read, and this job cannot report parity without it.
+
+name: studiobench UI parity
+
+on:
+  pull_request:
+    paths:
+      # What the browser renders. `src/**` rather than an extension list: the
+      # locale files under src/i18n are .ts and ARE the visible text, and the
+      # two .css files it sweeps in are cheap. Note the digest is CSS-BLIND by
+      # construction (scene/parity.js says so at the top of the file): a
+      # stylesheet-only change reaches this gate and passes it vacuously. That
+      # is a known hole, not a claim of coverage.
+      - 'studio/frontend/src/**'
+      # Served near-verbatim: studio/backend/main.py reads index.html as bytes
+      # and injects into it, so a script or title edit lands in the DOM.
+      - 'studio/frontend/index.html'
+      # Classic scripts index.html loads BEFORE the module graph.
+      - 'studio/frontend/public/crypto-boot.js'
+      - 'studio/frontend/public/theme-boot.js'
+      # A Radix or assistant-ui bump changes emitted markup and the
+      # data-slot/data-state attributes the digest keys on. The lock file is
+      # what actually pins the version a caret range resolves to.
+      - 'studio/frontend/package.json'
+      - 'studio/frontend/package-lock.json'
+      - 'studio/frontend/vite.config.ts'
+      # The backend half, and it is not optional: PR 8222 took the GGUF picker
+      # from 22 rows to 63 touching ZERO frontend files, because the rows come
+      # from the backend. scene/parity.js digests the model picker and the
+      # settings dialog as named overlays, so those rows are inside the measured
+      # surface. This is the 8222 blast radius and no wider -- routes/video.py
+      # and routes/rag.py are deliberately absent.
+      - 'studio/backend/hub/**'
+      - 'studio/backend/picker/**'
+      - 'studio/backend/utils/models/**'
+      - 'studio/backend/routes/models.py'
+      - 'studio/backend/routes/settings.py'
+      - 'studio/backend/models/models.py'
+      # Decides WHICH dist is served and rewrites the HTML on the way out.
+      - 'studio/backend/main.py'
+      - 'studio/backend/run.py'
+      # The gate itself, and the tooling it runs, or the filter rots silently.
+      - 'tests/studio/studiobench/**'
+      - '.github/workflows/studiobench-ui-parity.yml'
+      # Executed by this job. install.sh is what builds both sides, so a change
+      # that breaks it should be able to trigger the job it breaks.
+      - 'install.sh'
+      - '.github/scripts/parity-install-side.sh'
+      - '.github/scripts/parity-find-unsloth.sh'
+      - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/wait-for-health.sh'
+      - '.github/scripts/retry-with-apt-lock.sh'
+
+# No `push:` trigger. This job compares a merge base against a head; a push to
+# main has no such pair. It therefore never SAVES a cache either, and does not
+# need to: every key below is one studiobench-ci.yml already writes on main, so
+# this workflow reads that entry rather than minting a second copy of the same
+# bytes against a cache budget measured 99.3% full.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  arms:
+    # Two arms, in parallel, on two runners. The alternative -- one job running
+    # the null and then the result -- is three installs and two films end to
+    # end, measured at roughly twice this wall clock. Sharding the SCENES
+    # instead is not available: `runtime/ab.py` interleaves both builds inside
+    # one browser session on purpose, and `sweep/ui_parity.py` refuses to pair
+    # two arms recorded under different session ids, so a run split across two
+    # machines produces NOT COMPARABLE for every action rather than a verdict.
+    name: ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    # Backstop only. Every blocking step below carries its own cap, and they sum
+    # to 44: 12 Chromium + 10 + 10 installs + 3 boot/health + 9 film. That is
+    # the point -- a step cap names the step in the log, a job cap reports the
+    # word "cancelled" and nothing, which is how a deadlocked test held main red
+    # for forty hours in this repo.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arm: result
+            label: Merge base vs head
+          - arm: null-control
+            label: Merge base vs itself, the null
+    env:
+      PORT_A: '18904'
+      PORT_B: '18905'
+      HOME_A: ${{ github.workspace }}/.parity/home_a
+      HOME_B: ${{ github.workspace }}/.parity/home_b
+      OUT_DIR: outputs/parity-${{ matrix.arm }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Both sides have to be checked out as trees, so the objects behind
+          # both refs have to be here.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      # THE MERGE BASE, NOT THE BASE BRANCH TIP. `base.sha` is where the base
+      # branch happened to be, so comparing against it credits this pull request
+      # with everything else that landed there since it was opened.
+      - name: Resolve the merge base and the head
+        id: refs
+        run: |
+          set -euo pipefail
+          BASE_TIP='${{ github.event.pull_request.base.sha }}'
+          HEAD_SHA='${{ github.event.pull_request.head.sha }}'
+          # Fetched by sha explicitly rather than trusting the checkout's refs: a
+          # fork head is not on origin under any branch name.
+          git fetch --no-tags origin "+${BASE_TIP}:refs/parity/base-tip" \
+                                     "+${HEAD_SHA}:refs/parity/head" 2> /dev/null \
+            || echo "::notice::fetch by sha declined; relying on the checkout's own objects"
+          MERGE_BASE="$(git merge-base "$BASE_TIP" "$HEAD_SHA")"
+          if [ "${{ matrix.arm }}" = "result" ]; then
+            SIDE_B="$HEAD_SHA"
+          else
+            SIDE_B="$MERGE_BASE"
+          fi
+          echo "merge_base=$MERGE_BASE" >> "$GITHUB_OUTPUT"
+          echo "head=$HEAD_SHA"        >> "$GITHUB_OUTPUT"
+          echo "side_b=$SIDE_B"        >> "$GITHUB_OUTPUT"
+          echo "side A (base)      = $MERGE_BASE"
+          echo "side B (treatment) = $SIDE_B"
+          if [ "$MERGE_BASE" = "$SIDE_B" ]; then
+            echo "this arm is the NULL CONTROL: both sides are the same commit"
+          fi
+
+      - name: Check the two sides out as separate trees
+        run: |
+          set -euo pipefail
+          # Separate trees, not one tree with a checkout between: install.sh
+          # --local overlays the tree it is run from as an editable install, so a
+          # single tree would leave both Studios serving whichever build was
+          # written last. runtime/ab.py refuses to let two arms share a home for
+          # exactly this reason.
+          git worktree add --detach "$RUNNER_TEMP/side_a" "${{ steps.refs.outputs.merge_base }}"
+          git worktree add --detach "$RUNNER_TEMP/side_b" "${{ steps.refs.outputs.side_b }}"
+
+      # Same key and the same reasoning as .github/actions/install-unsloth-local,
+      # so this job starts from the entry main already saved. A download cache is
+      # content-addressed by URL and hash, so the worst a stale entry can do is
+      # miss. Restore only: this workflow never runs on main and so never writes.
+      - name: Point uv's cache somewhere cacheable
+        run: |
+          echo "UV_CACHE_DIR=${{ github.workspace }}/.uv-cache" >> "$GITHUB_ENV"
+          mkdir -p "${{ github.workspace }}/.uv-cache"
+
+      - name: Restore the uv download cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ${{ github.workspace }}/.uv-cache
+          key: uv-${{ runner.os }}-${{ hashFiles('studio/backend/requirements/**', 'pyproject.toml') }}
+          restore-keys: |
+            uv-${{ runner.os }}-
+
+      # No frontend-dist cache here, and that is not an oversight. Its key hashes
+      # the ROOT checkout's frontend, and the two sides of this job are two
+      # different trees by construction, so one key cannot serve both. Each side
+      # therefore pays the frontend build, measured at a median 36s.
+      - name: Install the base side
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on pull_request: this runs checked-out PR code. studiobench
+          # needs no model, so nothing here depends on an authenticated fetch.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: bash .github/scripts/parity-install-side.sh "$RUNNER_TEMP/side_a" "$HOME_A" logs/install_a.log
+
+      - name: Install the treatment side
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: bash .github/scripts/parity-install-side.sh "$RUNNER_TEMP/side_b" "$HOME_B" logs/install_b.log
+
+      - name: Pin the Playwright version so the browser cache has a key
+        id: pw
+        run: |
+          pip install 'playwright>=1.45,<2' psutil
+          echo "version=$(python -c 'import playwright; from importlib.metadata import version; print(version("playwright"))')" >> "$GITHUB_OUTPUT"
+
+      # Deliberately the SAME key studiobench-ci.yml uses. Diverging it would buy
+      # a second ~300 MB copy of identical bytes and nothing else.
+      - name: Restore the Playwright browser cache
+        id: pw-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-sbench-v1
+
+      # Chromium alone, bounded and retried through the shared helper, with the
+      # CDN download kept separate from the apt transaction because they are two
+      # different failures. `--with-deps` is deliberately absent: it makes
+      # playwright run its own `apt-get update`, the one apt call in this repo
+      # that cannot be restructured to try the image's lists first.
+      #
+      # 2 attempts x 300s + one 125s lock wait = 725s, inside 12 minutes, inside
+      # the job's 45.
+      - name: Install the Chromium engine
+        id: pw-install
+        timeout-minutes: 12
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '300'
+          APT_ACQUIRE_RETRIES: '0'
+        run: |
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" != "true" ]; then
+            bash .github/scripts/retry-with-apt-lock.sh \
+              python -m playwright install chromium
+          fi
+
+          probe() {
+            python - <<'PY'
+          import sys
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              try:
+                  browser = p.chromium.launch()
+                  browser.close()
+              except Exception as exc:
+                  print(f"chromium will not start: {type(exc).__name__}: {exc}")
+                  sys.exit(1)
+          print("chromium launches; system libraries are present")
+          PY
+          }
+
+          if probe; then
+            echo "::notice::skipped playwright install-deps; the runner image already has the libraries"
+          else
+            echo "system libraries are missing, installing them"
+            bash .github/scripts/retry-with-apt-lock.sh \
+              python -m playwright install-deps chromium
+            probe
+          fi
+
+      # Two Studios, two homes, two ports. The shared boot helper is reused
+      # rather than reimplemented -- it wipes the auth directory so a fresh
+      # bootstrap password is minted, which is the part that is easy to get
+      # wrong -- but each invocation puts that side's own venv at the front of
+      # PATH, because `unsloth` names one binary and there are two installs.
+      - name: Boot both Studios
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          boot() {
+            local home="$1" port="$2" label="$3"
+            local bin
+            bin="$(bash .github/scripts/parity-find-unsloth.sh "$home")"
+            UNSLOTH_STUDIO_HOME="$home" PATH="$(dirname "$bin"):$PATH" \
+              bash .github/scripts/boot-studio-api-only.sh \
+                --port "$port" --log "logs/studio_${label}.log" --pid-var "STUDIO_${label}_PID"
+            bash .github/scripts/wait-for-health.sh --port "$port" --log "logs/studio_${label}.log"
+          }
+          boot "$HOME_A" "$PORT_A" a
+          boot "$HOME_B" "$PORT_B" b
+
+      # --reps 2, not 1, and this is load-bearing rather than a comfort margin.
+      # `analysis/parity.derive_unstable` needs min_observations=2 before it will
+      # call an action unstable at a rung; at --reps 1 every action comes back
+      # UNDETERMINED, the measured set is EMPTY, and the run silently falls back
+      # to scoring against exactly the declared list this job exists to replace.
+      # A null that derives nothing looks identical in the log to a null that
+      # derived a clean set, which is why the verdict job asserts on it.
+      #
+      # 100K because it is the first rung where everything except image_upload
+      # runs on every cell; fast tier because its 57.3s film is the whole film.
+      # Four cells (2 arms x 2 reps) at ~57s is the measurement budget here.
+      - name: Drive both sides through one session
+        timeout-minutes: 9
+        run: |
+          set -euo pipefail
+          python -m tests.studio.studiobench \
+            --tier fast --rungs 100K --reps 2 \
+            --attach "http://127.0.0.1:${PORT_A}" \
+            --attach-b "http://127.0.0.1:${PORT_B}" \
+            --branch "${{ steps.refs.outputs.merge_base }}" \
+            --ab "${{ steps.refs.outputs.side_b }}" \
+            --password "$(cat "$HOME_A/auth/.bootstrap_password")" \
+            --password-b "$(cat "$HOME_B/auth/.bootstrap_password")" \
+            --engine chromium \
+            --out "$OUT_DIR"
+
+      # THE GATE, and it runs on the null arm exactly as it runs on the result
+      # arm. A null control that never opened a surface reports that surface as
+      # blind rather than as stable, so the unstable set derived from it is
+      # narrower than the truth and the result arm then raises a false alarm --
+      # loud, but wrong, and a gate that cries wolf is the failure mode this
+      # whole file is written against. image_upload is the one excused name:
+      # this fixture loads no model, so Studio never mounts the attachments
+      # button. Every name here is a hole in the gate.
+      - name: Every scheduled action ran
+        run: |
+          python -m tests.studio.studiobench \
+            --assert-liveness "$OUT_DIR/payload.jsonl" \
+            --allow-not-run image_upload \
+            --allow-slot-misses 2
+
+      - name: Stop both Studios
+        if: always()
+        run: |
+          kill "${STUDIO_a_PID:-0}" 2> /dev/null || true
+          kill "${STUDIO_b_PID:-0}" 2> /dev/null || true
+
+      # Always, not on failure: the verdict job is a different runner and the
+      # payload is the only thing it can read.
+      - name: Upload the payload
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: studiobench-parity-${{ matrix.arm }}
+          path: |
+            ${{ env.OUT_DIR }}/**
+            logs/studio_*.log
+            logs/install_*.log
+          retention-days: 7
+          if-no-files-found: warn
+
+  verdict:
+    name: Parity verdict, scored against the null
+    needs: arms
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Collect both payloads
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          pattern: studiobench-parity-*
+          path: artifacts
+
+      - name: Lay the shards out where ui_parity looks for them
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/parity-result outputs/parity-null-control
+          cp artifacts/studiobench-parity-result/payload.jsonl outputs/parity-result/
+          cp artifacts/studiobench-parity-null-control/payload.jsonl outputs/parity-null-control/
+
+      # THE NULL'S OWN SCORE, ALWAYS, AND FIRST. Scored against the DECLARED
+      # list, which is what makes it readable: this is the number that says how
+      # much of the declared list is fiction on this runner today. A base-vs-base
+      # run measured here reported eleven stable actions differing against the
+      # declared list, which is the entire reason the verdict below is scored
+      # against the measured set instead. A non-zero exit is EXPECTED and is not
+      # a failure -- it is the reading.
+      - name: The null control's own score
+        run: |
+          set -uo pipefail
+          # NOT `set -e`, and the exit code is swallowed on purpose. ui_parity
+          # exits 1 when a stable action differed, and here that is the READING
+          # rather than a failure: this invocation exists to measure how much of
+          # the declared list is fiction on this runner today.
+          python -m tests.studio.studiobench.sweep.ui_parity outputs/parity-null-control \
+            > null_score.txt 2>&1
+          echo "null control exit ${?} (1 means it found stable actions differing; that is the point)"
+          cat null_score.txt
+          echo
+          echo "^ the null control scored against the DECLARED unstable list. Every"
+          echo "  'stable action differing' above is an action the declared list calls"
+          echo "  trustworthy and that differed against ITSELF, on this runner, in this"
+          echo "  wave. That count is why the verdict below is not scored this way."
+          {
+            echo '### studiobench UI parity'
+            echo
+            echo 'Null control (base vs base), scored against the DECLARED list:'
+            echo '```'
+            grep -E 'action pairs|matched:|stable actions differing|unstable actions|NOT COMPARABLE|NOT EXERCISED' null_score.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # THE ONE WAY THIS JOB CAN LOOK LIKE IT WORKED AND BE WORTH NOTHING.
+      # `derive_unstable` needs two observations of a (rung, action) before it
+      # will decide anything about it. Below that it returns UNDETERMINED for
+      # every action, the measured set comes back EMPTY, and `unstable_set`
+      # falls back to the union with the declared list -- while still printing
+      # the words "UNSTABLE SET DERIVED", because the derivation ran. The
+      # verdict then scores against exactly the declared list this job exists to
+      # replace, and reports the null's own eleven differences as regressions.
+      #
+      # So the assertion is on a MEASURED entry, which is the only thing that
+      # cannot be produced by an empty derivation: `unstable_set` writes those
+      # as `action@rung` and declared entries as a bare name.
+      - name: The null measured a set, rather than only attempting one
+        run: |
+          set -uo pipefail
+          python -m tests.studio.studiobench.sweep.ui_parity \
+            --null outputs/parity-null-control outputs/parity-null-control \
+            > derived.txt 2>&1
+          grep -E 'undetermined|scoring against' derived.txt || true
+          if ! grep -Eq '[a-z_]+@[0-9]+[KM]' derived.txt; then
+            echo "::error::the null control decided nothing: the derived unstable set holds no"
+            echo "MEASURED (action@rung) entry, only the declared names it unions back in."
+            echo "The verdict would then be scored against the declared list, which is the"
+            echo "thing this job exists to replace, and the null's own differences would be"
+            echo "reported as this pull request's regressions."
+            echo "First thing to check is --reps on the arms job: analysis/parity.py sets"
+            echo "min_observations = 2, and a single repetition gives one observation per"
+            echo "(rung, action), so every action comes back undetermined."
+            exit 1
+          fi
+
+      # Exit 1 when a STABLE action rendered differently, 2 when there was no
+      # parity data to read at all -- an empty comparison is reported as an
+      # empty comparison rather than as a pass, which is the shape a job like
+      # this fails silently in.
+      - name: The verdict
+        run: |
+          set -uo pipefail
+          python -m tests.studio.studiobench.sweep.ui_parity \
+            --null outputs/parity-null-control \
+            outputs/parity-result > verdict.txt 2>&1
+          rc=$?
+          cat verdict.txt
+          {
+            echo
+            echo "Merge base vs head, scored against the MEASURED set above:"
+            echo '```'
+            grep -E 'action pairs|matched:|stable actions differing|unstable actions|NOT COMPARABLE|NOT EXERCISED|No stable action' verdict.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
