@@ -1,319 +1,219 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Build the Studio notebook catalog from model_defaults YAML and notebooks_index.json."""
+"""Build the Studio notebook catalog from the upstream index and local metadata."""
 
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
-from functools import lru_cache
+import threading
+import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
 from utils.models.model_config import MODEL_NAME_MAPPING
 
-NOTEBOOKS_REPO = "unslothai/notebooks"
-NOTEBOOKS_NB_DIR = "nb"
+_REPO = "unslothai/notebooks"
+_NB_DIR = "nb"
+NOTEBOOKS_INDEX_URL = f"https://api.github.com/repos/{_REPO}/contents/{_NB_DIR}?ref=main"
 
-_BASED_ON_RE = re.compile(
-    r"#\s*Based on\s+(.+?\.ipynb|.+?\.py)",
-    re.IGNORECASE,
+_CONFIG_DIR = Path(__file__).resolve().parents[2] / "assets" / "configs"
+_OVERRIDES_PATH = _CONFIG_DIR / "notebooks_index.json"
+_DEFAULTS_DIR = _CONFIG_DIR / "model_defaults"
+
+_FETCH_TIMEOUT = 5.0
+_MAX_INDEX_BYTES = 2 * 1024 * 1024
+_CACHE_TTL = 15 * 60
+_FAILURE_TTL = 60
+_OFFLINE_VALUES = {"1", "true", "yes", "on"}
+
+_BASED_ON_RE = re.compile(r"#\s*Based on\s+(.+)", re.IGNORECASE)
+_MODEL_RE = re.compile(r"#\s*Model defaults for\s+(\S+)", re.IGNORECASE)
+_CATEGORY_RULES = (
+    ("grpo", ("grpo", "gspo")),
+    ("vision", ("vision", "_vl_", "ocr", "pixtral", "deepseek")),
+    ("audio", ("tts", "whisper", "orpheus", "llasa", "csm", "spark_tts", "oute")),
+    ("embedding", ("embedding", "minilm", "bge", "modernbert")),
+    ("inference", ("inference", "deployment", "phone")),
+    ("reasoning", ("thinking", "reasoning", "codeforces")),
+    ("code", ("tool_calling", "coder", "codegemma", "code")),
+    ("raft", ("raft",)),
+    ("classification", ("classification", "bert")),
 )
-_MODEL_DEFAULTS_FOR_RE = re.compile(
-    r"#\s*Model defaults for\s+(\S+)",
-    re.IGNORECASE,
-)
+
+logger = logging.getLogger(__name__)
+_cache_lock = threading.Lock()
+_cached_files: tuple[str, ...] | None = None
+_cache_until = 0.0
 
 
-def _assets_dir() -> Path:
-    return Path(__file__).resolve().parent.parent.parent / "assets"
-
-
-def _defaults_dir() -> Path:
-    return _assets_dir() / "configs" / "model_defaults"
-
-
-def _index_path() -> Path:
-    return _assets_dir() / "configs" / "notebooks_index.json"
-
-
-def notebook_colab_url(notebook_file: str) -> str:
+def _is_public(name: str) -> bool:
     return (
-        f"https://colab.research.google.com/github/{NOTEBOOKS_REPO}/blob/main/"
-        f"{NOTEBOOKS_NB_DIR}/{notebook_file}"
+        name.endswith(".ipynb")
+        and "/" not in name
+        and "\\" not in name
+        and not name.startswith(("AMD-", "Kaggle-"))
     )
 
 
-def notebook_github_url(notebook_file: str) -> str:
-    return f"https://github.com/{NOTEBOOKS_REPO}/blob/main/" f"{NOTEBOOKS_NB_DIR}/{notebook_file}"
+def _text(value: Any) -> str | None:
+    return value if isinstance(value, str) and value.strip() else None
 
 
-def _notebook_id(notebook_file: str) -> str:
-    stem = notebook_file.removesuffix(".ipynb").removesuffix(".py")
-    return re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-")
+def _category(name: str) -> str:
+    lowered = name.lower()
+    return next(
+        (category for category, tokens in _CATEGORY_RULES if any(token in lowered for token in tokens)),
+        "sft",
+    )
 
 
-def _human_title(notebook_file: str) -> str:
-    stem = notebook_file.removesuffix(".ipynb").removesuffix(".py")
-    return stem.replace("_", " ")
-
-
-def _normalize_search(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
-
-
-def _infer_category(notebook_file: str) -> str:
-    name = notebook_file.lower()
-    if "grpo" in name or "gspo" in name:
-        return "grpo"
-    if any(token in name for token in ("vision", "_vl_", "ocr", "pixtral", "deepseek")):
-        return "vision"
-    if any(
-        token in name
-        for token in ("tts", "whisper", "orpheus", "llasa", "csm", "spark_tts", "oute")
-    ):
-        return "audio"
-    if any(token in name for token in ("embedding", "minilm", "bge", "modernbert")):
-        return "embedding"
-    if any(token in name for token in ("inference", "deployment", "phone")):
-        return "inference"
-    if any(token in name for token in ("thinking", "reasoning", "codeforces")):
-        return "reasoning"
-    if any(token in name for token in ("tool_calling", "coder", "codegemma", "code")):
-        return "code"
-    if "raft" in name:
-        return "raft"
-    if "classification" in name or "bert" in name:
-        return "classification"
-    return "sft"
-
-
-def _is_public_notebook_file(name: str) -> bool:
-    if not name.endswith(".ipynb"):
-        return False
-    if name.startswith("Kaggle-"):
-        return False
-    if name.startswith("AMD-"):
-        return False
-    return True
-
-
-def _studio_model_for_yaml(yaml_filename: str, header_lines: list[str]) -> str | None:
-    mapped = MODEL_NAME_MAPPING.get(yaml_filename)
-    if mapped:
-        return mapped[0]
-    for line in header_lines[:5]:
-        match = _MODEL_DEFAULTS_FOR_RE.match(line.strip())
-        if match:
-            return match.group(1)
-    return None
-
-
-def _extract_notebook_files(header_text: str) -> list[str]:
-    files: list[str] = []
-    for match in _BASED_ON_RE.finditer(header_text):
-        raw = match.group(1).strip()
-        for part in re.split(r"\s+and\s+", raw, flags = re.IGNORECASE):
-            part = part.strip().strip('"').strip("'")
-            if not part:
-                continue
-            if part.endswith(".ipynb"):
-                files.append(part)
-            elif part.endswith(".py"):
-                files.append(part.replace(".py", ".ipynb"))
-            else:
-                files.append(f"{part}.ipynb")
-    return files
-
-
-def _make_entry(
-    notebook_file: str,
-    *,
-    title: str | None = None,
-    category: str | None = None,
-    featured: bool | None = None,
-    studio_model: str | None = None,
-    entry_id: str | None = None,
-) -> dict[str, Any]:
+def _load_overrides() -> dict[str, dict[str, Any]]:
+    if not _OVERRIDES_PATH.is_file():
+        return {}
+    with open(_OVERRIDES_PATH, encoding = "utf-8") as handle:
+        data = json.load(handle)
+    overrides = data.get("overrides", {}) if isinstance(data, dict) else {}
     return {
-        "id": entry_id or _notebook_id(notebook_file),
-        "title": title or _human_title(notebook_file),
-        "notebook_file": notebook_file,
-        "category": category or _infer_category(notebook_file),
-        "featured": bool(featured),
-        "studio_model": studio_model,
-        "colab_url": notebook_colab_url(notebook_file),
-        "github_url": notebook_github_url(notebook_file),
+        name: fields
+        for name, fields in overrides.items()
+        if isinstance(name, str) and _is_public(name) and isinstance(fields, dict)
     }
 
 
-def _merge_entries(
-    existing: dict[str, Any] | None, incoming: dict[str, Any] | None
-) -> dict[str, Any]:
-    if not existing:
-        return dict(incoming or {})
-    if not incoming:
-        return existing
-    merged = {**existing, **incoming}
-    if existing.get("studio_model") and not incoming.get("studio_model"):
-        merged["studio_model"] = existing["studio_model"]
-    notebook_file = incoming.get("notebook_file") or existing.get("notebook_file")
-    if (
-        existing.get("title")
-        and isinstance(notebook_file, str)
-        and incoming.get("title") == _human_title(notebook_file)
-    ):
-        merged["title"] = existing["title"]
-    merged["featured"] = bool(existing.get("featured")) or bool(incoming.get("featured"))
-    return merged
+def _load_studio_models() -> dict[str, str]:
+    models: dict[str, str] = {}
+    if not _DEFAULTS_DIR.is_dir():
+        return models
+
+    for path in sorted(_DEFAULTS_DIR.rglob("*.yaml")):
+        if path.name == "default.yaml":
+            continue
+        with open(path, encoding = "utf-8") as handle:
+            header = "".join(handle.readline() for _ in range(3))
+
+        based_on = _BASED_ON_RE.search(header)
+        mapped = MODEL_NAME_MAPPING.get(path.name)
+        model_match = _MODEL_RE.search(header)
+        model = mapped[0] if mapped else model_match.group(1) if model_match else None
+        if not based_on or not model:
+            continue
+
+        for name in re.findall(
+            r"(?:^|\s+and\s+)(.+?\.(?:ipynb|py))",
+            based_on.group(1),
+            re.IGNORECASE,
+        ):
+            notebook = re.sub(r"\.py$", ".ipynb", name.strip("\"'"), flags = re.IGNORECASE)
+            if _is_public(notebook):
+                models[notebook] = model
+    return models
 
 
-def _load_notebooks_index() -> tuple[list[str], frozenset[str], dict[str, dict[str, Any]]]:
-    path = _index_path()
-    if not path.is_file():
-        return [], frozenset(), {}
-    with open(path, encoding = "utf-8") as handle:
-        data = json.load(handle)
-    if not isinstance(data, dict):
-        return [], frozenset(), {}
-
-    raw_files = data.get("notebook_files")
-    files = sorted(
-        {
-            name
-            for name in (raw_files if isinstance(raw_files, list) else [])
-            if isinstance(name, str) and _is_public_notebook_file(name)
+def _fetch_repo_notebook_files() -> list[str] | None:
+    request = urllib.request.Request(
+        NOTEBOOKS_INDEX_URL,
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "Accept-Encoding": "identity",
+            "User-Agent": "unsloth-studio-notebooks",
+            "X-GitHub-Api-Version": "2022-11-28",
         },
     )
+    try:
+        with urllib.request.urlopen(request, timeout = _FETCH_TIMEOUT) as response:
+            body = response.read(_MAX_INDEX_BYTES + 1)
+        if len(body) > _MAX_INDEX_BYTES:
+            return None
+        payload = json.loads(body)
+    except Exception as exc:
+        logger.debug("Could not fetch notebook index: %s", exc)
+        return None
 
-    raw_featured = data.get("featured")
-    featured = frozenset(
-        name
-        for name in (raw_featured if isinstance(raw_featured, list) else [])
-        if isinstance(name, str)
+    if not isinstance(payload, list):
+        return None
+    files = sorted(
+        {
+            item["name"]
+            for item in payload
+            if (
+                isinstance(item, dict)
+                and item.get("type") == "file"
+                and isinstance(item.get("name"), str)
+                and _is_public(item["name"])
+            )
+        }
     )
-
-    raw_overrides = data.get("overrides")
-    overrides: dict[str, dict[str, Any]] = {}
-    if isinstance(raw_overrides, dict):
-        for notebook_file, fields in raw_overrides.items():
-            if isinstance(notebook_file, str) and isinstance(fields, dict):
-                overrides[notebook_file] = fields
-
-    return files, featured, overrides
+    return files or None
 
 
-def _normalize_override(
-    notebook_file: str, fields: dict[str, Any], *, featured_names: frozenset[str]
+def _repo_notebook_files() -> list[str]:
+    global _cached_files, _cache_until
+
+    offline = any(
+        os.environ.get(name, "").strip().lower() in _OFFLINE_VALUES
+        for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    )
+    if offline:
+        return list(_cached_files or ())
+
+    with _cache_lock:
+        if time.monotonic() < _cache_until:
+            return list(_cached_files or ())
+
+        files = _fetch_repo_notebook_files()
+        if files is not None:
+            _cached_files = tuple(files)
+        _cache_until = time.monotonic() + (_CACHE_TTL if files is not None else _FAILURE_TTL)
+        return list(_cached_files or ())
+
+
+def _entry(
+    notebook: str,
+    overrides: dict[str, dict[str, Any]],
+    studio_models: dict[str, str],
 ) -> dict[str, Any]:
-    title = fields.get("title")
-    if not isinstance(title, str) or not title.strip():
-        title = None
-    category = fields.get("category")
-    if not isinstance(category, str) or not category.strip():
-        category = None
-    studio_model = fields.get("studio_model")
-    if studio_model is not None and not isinstance(studio_model, str):
-        studio_model = None
-    featured = bool(fields.get("featured")) or notebook_file in featured_names
-    return _make_entry(
-        notebook_file,
-        title = title,
-        category = category,
-        featured = featured,
-        studio_model = studio_model,
-    )
-
-
-def _build_enriched_map(
-    *, featured_names: frozenset[str], overrides: dict[str, dict[str, Any]]
-) -> dict[str, dict[str, Any]]:
-    by_file: dict[str, dict[str, Any]] = {}
-
-    defaults_dir = _defaults_dir()
-    if defaults_dir.is_dir():
-        for config_path in sorted(defaults_dir.rglob("*.yaml")):
-            if config_path.name == "default.yaml":
-                continue
-            yaml_filename = config_path.name
-            with open(config_path, encoding = "utf-8") as handle:
-                header_lines = [handle.readline() for _ in range(12)]
-            header_text = "".join(header_lines)
-            notebook_files = _extract_notebook_files(header_text)
-            if not notebook_files:
-                continue
-            studio_model = _studio_model_for_yaml(yaml_filename, header_lines)
-            for notebook_file in notebook_files:
-                if not _is_public_notebook_file(notebook_file):
-                    continue
-                entry = _make_entry(
-                    notebook_file,
-                    studio_model = studio_model,
-                    featured = notebook_file in featured_names,
-                )
-                by_file[notebook_file] = _merge_entries(by_file.get(notebook_file), entry)
-
-    for notebook_file, fields in overrides.items():
-        if not _is_public_notebook_file(notebook_file):
-            continue
-        entry = _normalize_override(
-            notebook_file,
-            fields,
-            featured_names = featured_names,
-        )
-        by_file[notebook_file] = _merge_entries(by_file.get(notebook_file), entry)
-
-    return by_file
+    fields = overrides.get(notebook, {})
+    stem = notebook.removesuffix(".ipynb")
+    return {
+        "id": re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-"),
+        "title": _text(fields.get("title")) or stem.replace("_", " "),
+        "notebook_file": notebook,
+        "category": _text(fields.get("category")) or _category(notebook),
+        "featured": bool(fields.get("featured")),
+        "studio_model": _text(fields.get("studio_model")) or studio_models.get(notebook),
+        "colab_url": (
+            f"https://colab.research.google.com/github/{_REPO}/blob/main/{_NB_DIR}/{notebook}"
+        ),
+        "github_url": f"https://github.com/{_REPO}/blob/main/{_NB_DIR}/{notebook}",
+    }
 
 
 def notebook_matches_query(entry: dict[str, Any], query: str | None) -> bool:
-    normalized_query = _normalize_search(query or "")
-    if not normalized_query:
-        return True
+    needle = re.sub(r"[^a-z0-9]+", "", (query or "").lower())
     haystack = "".join(
-        [
-            _normalize_search(str(entry.get("title", ""))),
-            _normalize_search(str(entry.get("notebook_file", ""))),
-            _normalize_search(str(entry.get("studio_model") or "")),
-            _normalize_search(str(entry.get("category", ""))),
-        ],
+        str(entry.get(key) or "")
+        for key in ("title", "notebook_file", "studio_model", "category")
     )
-    return normalized_query in haystack
+    return not needle or needle in re.sub(r"[^a-z0-9]+", "", haystack.lower())
 
 
-@lru_cache(maxsize = 8)
 def build_notebook_catalog(query: str | None = None) -> list[dict[str, Any]]:
-    public_files, featured_names, overrides = _load_notebooks_index()
-    enriched = _build_enriched_map(
-        featured_names = featured_names,
-        overrides = overrides,
-    )
-
-    by_file: dict[str, dict[str, Any]] = {}
-    if public_files:
-        for notebook_file in public_files:
-            entry = _make_entry(
-                notebook_file,
-                featured = notebook_file in featured_names,
-            )
-            by_file[notebook_file] = _merge_entries(entry, enriched.get(notebook_file))
-    else:
-        by_file = dict(enriched)
-
-    for notebook_file, entry in enriched.items():
-        if notebook_file not in by_file:
-            by_file[notebook_file] = entry
-
-    catalog = list(by_file.values())
+    overrides = _load_overrides()
+    studio_models = _load_studio_models()
+    files = _repo_notebook_files() or sorted(overrides.keys() | studio_models.keys())
+    catalog = [_entry(name, overrides, studio_models) for name in files]
     if query:
         catalog = [entry for entry in catalog if notebook_matches_query(entry, query)]
-
-    catalog.sort(
-        key = lambda item: (
-            not item.get("featured", False),
-            item.get("category", ""),
-            item.get("title", "").lower(),
+    return sorted(
+        catalog,
+        key = lambda entry: (
+            not entry["featured"],
+            entry["category"],
+            entry["title"].lower(),
         ),
     )
-    return catalog

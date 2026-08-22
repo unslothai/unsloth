@@ -1747,7 +1747,7 @@ export function AppSidebar() {
       label: t("shell.navigation.notebooks"),
       active: pathname === "/notebooks" || pathname.startsWith("/notebooks/"),
       onClick: () => {
-        navigate({ to: "/notebooks/" });
+        navigate({ to: "/notebooks" });
         closeMobileIfOpen();
       }
     },

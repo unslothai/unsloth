@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import asyncio 
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -33,7 +34,7 @@ async def list_notebooks(
     q: Optional[str] = Query(None), _current_subject: str = Depends(get_current_subject)
 ) -> NotebookCatalogResponse:
     normalized_query = q.strip() if isinstance(q, str) and q.strip() else None
-    raw_entries = build_notebook_catalog(normalized_query)
+    raw_entries = await asyncio.to_thread(build_notebook_catalog, normalized_query)
     notebooks = [NotebookCatalogEntry.model_validate(entry) for entry in raw_entries]
     categories = sorted({entry.category for entry in notebooks})
     return NotebookCatalogResponse(notebooks = notebooks, categories = categories)
