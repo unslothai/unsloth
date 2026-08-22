@@ -314,9 +314,17 @@ def arm_origins(specs: list) -> list:
     `launch_studio` on the port `side_specs` handed it and `StudioInstall.base_url` is
     `http://127.0.0.1:{port}`. Read from the specs rather than from the sides so the answer is
     available BEFORE anything is cloned, built or launched.
+
+    CANONICALISED, because a typed URL is not an origin. `origin_scoped` gates on
+    `window.location.origin`, which lower-cases the scheme and host, drops a port the scheme
+    implies and keeps no path -- so `http://studio:80` and `http://studio` are ONE origin to the
+    browser and were two to a comparison on the strings. See `browser_origin`, which is what
+    `origin_scoped` now gates on too, so the refusal below and the predicate it protects are
+    reading the same thing.
     """
+    from .runtime.ab import browser_origin
     return [
-        (attach.rstrip("/") if attach else f"http://127.0.0.1:{port}")
+        (browser_origin(attach) if attach else f"http://127.0.0.1:{port}")
         for _label, _ref, attach, port, _password in specs
     ]
 
@@ -338,6 +346,15 @@ def stream_cost_injection_problem(specs: list, inject_ms) -> str | None:
     the gate fails with "the accumulator is under-attributing" -- a verdict against a metric that
     was working, delivered by the one flag whose entire job is to tell those two apart.
 
+    ONE ORIGIN CAN BE TWO SPELLINGS, which is why `arm_origins` canonicalises rather than
+    comparing what was typed. `--attach http://studio --attach-b http://studio:80` is one server
+    under two names and a browser reports `http://studio` for both, so the treatment's injection is
+    gated on an origin no document has: it burns on NEITHER arm and the difference is zero for the
+    other reason. Spelled the other way round the base's predicate is the dead one, the treatment's
+    matches every document, and both arms burn. Either way the run reaches the same false verdict,
+    and neither is visible in the two URLs the caller typed -- so the refusal names the origin both
+    resolve to alongside the spellings.
+
     Refused rather than isolated. Isolating by arm would mean toggling the burn at every cell
     boundary from the driver, which puts the injection's own timing inside the measured window;
     the cheap and honest answer is to give the two arms two origins.
@@ -347,9 +364,15 @@ def stream_cost_injection_problem(specs: list, inject_ms) -> str | None:
     origins = arm_origins(specs)
     if origins[0] != origins[1]:
         return None
+    typed = [spec[2] for spec in specs[:2]]
+    spelling = (
+        f" ({typed[0]} and {typed[1]} are one origin under two names)"
+        if all(typed) and typed[0].rstrip("/") != typed[1].rstrip("/")
+        else ""
+    )
     return (
         f"--inject-stream-cost-ms needs the two arms on DIFFERENT origins, and both are "
-        f"{origins[0]}. The injection is installed as a context init script gated on "
+        f"{origins[0]}{spelling}. The injection is installed as a context init script gated on "
         f"window.location.origin, so one origin means both arms burn the cost, the difference "
         f"between them is zero and the recovery gate blames the metric for it. Point --attach and "
         f"--attach-b at two Studios, or drop --attach and let this run install both."

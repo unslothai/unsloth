@@ -364,7 +364,12 @@ def reasoning_toggle(ctx: ActionContext) -> ActionResult:
 #: returns. So the overrun came out of `scroll_after`'s own 1,200 ms window on the fast film and
 #: recorded `slot_missed` there, whose reason blames the machine for reaching the slot late when
 #: what happened is that this action was still cleaning up its scaffolding.
-OWN_TURN_FIXED_MS = 80 + 600 + 400 + 200
+#:
+#: SPLIT, because the two halves are reserved at different moments. The 80 ms that settles the fill
+#: is spent BEFORE the turn is sent, so it is already gone by the time the turn-start wait is
+#: bounded and a bound that subtracts the whole figure charges it twice.
+OWN_TURN_FIXED_AFTER_SEND_MS = 600 + 400 + 200
+OWN_TURN_FIXED_MS = 80 + OWN_TURN_FIXED_AFTER_SEND_MS
 
 #: What the SAME throwaway turn costs BEYOND those sleeps: two polls and the driver round trips
 #: underneath them, neither of which is free.
@@ -388,7 +393,26 @@ OWN_TURN_FIXED_MS = 80 + 600 + 400 + 200
 #: 700 ms covers the measured 443 - 658 ms with margin and still leaves every film a real drain
 #: wait: the smallest stop slot is 3,000 ms, which keeps 1,020 ms of waiting after the reserve,
 #: and the worst-case drain overhang the fast film has to absorb is 400 ms.
-OWN_TURN_POLL_MS = 700
+#:
+#: SPLIT AT THE MOMENT THE TURN STARTS, because that is where the wait below is bounded and a total
+#: is not a bound. The stop-settle poll, the cleanup delete's own round trips and the driver calls
+#: between them are ALL still ahead at that point, and a bound that reserves only the fixed sleeps
+#: leaves the action exactly `OWN_TURN_FIXED_MS` for a stretch that costs more than that. Measured
+#: against real chromium on the same page as the totals above, with the turn starting on the last
+#: millisecond the bound allows and the fast film's 3,000 ms stop slot:
+#:
+#:   a page that answers instantly            60 ms after the sleeps    slot + 0.0 s
+#:   90 ms to stop, 60 ms to delete          227 ms after the sleeps    slot + 0.15 s
+#:   200 ms to stop, 150 ms to delete        424 ms after the sleeps    slot + 0.34 s
+#:
+#: The fast film leaves 300 ms between this slot's deadline and `scroll_after`, so the last row
+#: overran into `scroll_after`'s own window and was recorded there as `slot_missed` -- the same
+#: symptom, one action later, that the reserve above was written to remove. 500 ms covers the
+#: measured 60 - 424 ms; the 200 ms left over is the start poll's own share, which is what the
+#: turn-start wait is allowed to spend.
+OWN_TURN_STOP_POLL_MS = 500
+OWN_TURN_START_POLL_MS = 200
+OWN_TURN_POLL_MS = OWN_TURN_START_POLL_MS + OWN_TURN_STOP_POLL_MS
 
 #: What the throwaway turn needs in the slot, in total.
 #:
@@ -409,15 +433,35 @@ OWN_TURN_POLL_MS = 700
 #: it is running.
 OWN_TURN_RESERVE_MS = OWN_TURN_FIXED_MS + OWN_TURN_POLL_MS
 
-#: How long to wait for the throwaway turn to start, when the slot has that much left to give.
-#: BOUNDED BY THE SLOT, not only by this: 8 s is 2.7x the whole budget of the fast film's stop
-#: slot, so a turn that was slow to start used to overrun by seconds whatever was reserved for it.
-#: Cutting this wait short is the one bounded wait here that costs nothing to cut -- nothing has
-#: been committed yet, and the action already reports `not_run` on this path. The stop-settle poll
-#: and `STOP_CLEANUP_JS` are deliberately NOT bounded that way: once Enter is pressed the turn has
-#: to be stopped and removed or the thread every later action measures keeps the scaffolding, and
-#: a settle poll cut short would report a stop that worked as `still_running`.
+#: How long to wait for the throwaway turn to start, in total. The wait for a turn this action will
+#: still MEASURE is bounded by the slot on top of this -- 8 s is 2.7x the whole budget of the fast
+#: film's stop slot, so a turn that was slow to start used to overrun by seconds whatever had been
+#: reserved for it -- but the turn does not stop existing when the slot runs out.
+#:
+#: ENTER IS PRESSED BEFORE THIS WAIT, which is what an earlier version of this comment had wrong
+#: when it called cutting the wait short free. Something IS committed by then: the send is
+#: accepted, the user turn is in the thread, and the reply starts whenever the relay gets round to
+#: it. Returning at the slot bound left exactly the scaffolding the paragraph below refuses to
+#: leave -- measured in chromium on a page that took 1,800 ms to start against the fast film's
+#: 3,000 ms slot, the action returned `not_run` after 1,759 ms and the thread it handed on had two
+#: extra messages in it and a live stream running through the next action's window.
+#:
+#: So the slot bounds how long the turn is WORTH MEASURING, and this bounds how long it is worth
+#: waiting for so it can be taken back: `_reclaim_pending_turn` polls on to this deadline, stops
+#: the turn if it ever becomes stoppable and deletes it, then reports `not_run`. The total spent
+#: waiting for a start is therefore what it was before the slot bound existed, and the slot bound
+#: still does its job on every run where the turn arrives.
+#:
+#: The stop-settle poll and `STOP_CLEANUP_JS` are deliberately NOT bounded by the slot at all: once
+#: Enter is pressed the turn has to be stopped and removed or the thread every later action
+#: measures keeps the scaffolding, and a settle poll cut short would report a stop that worked as
+#: `still_running`.
 TURN_START_TIMEOUT_MS = 8000
+
+#: The composer text the throwaway turn is sent with. Read back as well as written: a composer that
+#: still holds it is a send the app REFUSED, and that is the one case on the timeout path where
+#: nothing was committed and there is nothing to take back.
+OWN_TURN_TEXT = "one more"
 
 #: Remove the throwaway turn `stop_generation` created, so the thread it leaves behind is the
 #: thread it found. Deletes the assistant turn and then the user turn that prompted it, in that
@@ -451,6 +495,104 @@ async (timeoutMs) => {
   };
 }
 """
+
+
+def _own_turn_was_accepted(ctx: ActionContext, messages_before: Any) -> bool:
+    """Did Enter actually SEND the throwaway turn?
+
+    Two signals, either of which is enough, because they become true at different moments and the
+    question is asked at whichever one the timeout landed on. The composer clears on send, so text
+    still in it is a refusal -- `queueDisabled` turns Send into Queue whenever something is already
+    running, and a Queue press leaves the box alone. The thread grows on send too, and it can grow
+    before the composer's own re-render lands.
+
+    ASKED IN THE CONSERVATIVE DIRECTION: anything that is not clearly a refusal counts as accepted,
+    including a page call that threw, because the cost of treating a refusal as a send is a wait
+    this action was going to spend anyway and the cost of the reverse is a live turn left in the
+    thread.
+    """
+    if _ev(ctx, "() => window.__sb.dom.composerText()") != OWN_TURN_TEXT:
+        return True
+    after = _ev(ctx, "() => window.__sb.dom.messageCount()")
+    return not (
+        isinstance(messages_before, int) and isinstance(after, int) and after <= messages_before
+    )
+
+
+def _reclaim_pending_turn(
+    ctx: ActionContext, messages_before: Any, reason: str, deadline: float
+) -> ActionResult:
+    """Take back the throwaway turn Enter has ALREADY submitted, then report `not_run`.
+
+    THE SLOT RAN OUT, THE TURN DID NOT. `stop_generation` presses Enter and then waits for the
+    reply to start, and that wait is bounded by the slot -- but returning at the bound abandons a
+    turn the app has accepted. It starts a second or two later, streams through the windows the
+    next actions are being timed in, and leaves a user message and an assistant message in the
+    thread that the rest of the film, the final census and the seeded-versus-streamed comparison
+    all then measure. That is the same scaffolding `STOP_CLEANUP_JS` exists to remove, arrived at
+    by giving up rather than by finishing.
+
+    SO THE WAIT IS SPLIT RATHER THAN SHORTENED. Up to the slot's bound the turn is still worth
+    measuring; past it, up to `deadline`, it is only worth catching, and this polls on for it,
+    stops it and deletes it. Nothing here is bounded by the slot, for the reason the stop-settle
+    poll is not either: an overrun costs the next action's window, and a turn left generating costs
+    every window after that plus the census.
+
+    DELETES ONLY WHAT IT ADDED. `STOP_CLEANUP_JS` removes the LAST assistant message, so running it
+    when the send was refused or when the app never rendered the turn would take a seeded reply out
+    of the thread and every count after this point would be wrong in the other direction. The
+    message count is read before Enter and again here, and the delete runs only if the thread grew.
+    """
+    if not _own_turn_was_accepted(ctx, messages_before):
+        return not_run(f"{reason}, and the composer still held it, so nothing was sent")
+
+    running = _ev(ctx, "() => window.__sb.dom.isRunning()")
+    while running is not True and time.monotonic() < deadline:
+        ctx.page.wait_for_timeout(50)
+        running = _ev(ctx, "() => window.__sb.dom.isRunning()")
+
+    stopped = False
+    if running is True:
+        button = ctx.page.query_selector('button[aria-label="Stop generating"]')
+        if button is not None:
+            button.click()
+            settle_deadline = time.monotonic() + SETTLE_TIMEOUT_MS / 1000.0
+            while time.monotonic() < settle_deadline:
+                if not _ev(ctx, "() => window.__sb.dom.isRunning()"):
+                    stopped = True
+                    break
+                ctx.page.wait_for_timeout(50)
+            # The chunks already in flight, as on the measured path.
+            ctx.page.wait_for_timeout(400)
+
+    messages_after = _ev(ctx, "() => window.__sb.dom.messageCount()")
+    grew = (
+        isinstance(messages_before, int)
+        and isinstance(messages_after, int)
+        and messages_after > messages_before
+    )
+    removed = _ev(ctx, STOP_CLEANUP_JS, SETTLE_TIMEOUT_MS) if grew else None
+    if removed is not None:
+        ctx.page.wait_for_timeout(200)
+
+    # BOTH HALVES, REPORTED SEPARATELY. A turn that was deleted but never stopped and one that was
+    # stopped but not deleted leave the film in different states, and a row that says only "cleaned
+    # up" cannot be read in the light of either.
+    if running is not True:
+        state = f"never started within the {TURN_START_TIMEOUT_MS}ms it was worth waiting for"
+    elif stopped:
+        state = "was stopped"
+    else:
+        state = f"could not be stopped within {SETTLE_TIMEOUT_MS}ms"
+    if removed is None:
+        cleaned = "left nothing in the thread to remove"
+    elif removed.get("removed"):
+        cleaned = "was deleted from the thread"
+    else:
+        cleaned = f"is still in the thread ({removed.get('reason')})"
+    return not_run(
+        f"{reason}. Nothing was measured; the turn it had already sent {state} and {cleaned}"
+    )
 
 
 @register_action(name = "stop_generation", default_budget_ms = 8000)
@@ -543,16 +685,35 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
                 "--stream-tail-chars or move this slot past the drain"
             )
 
-    ctx.page.fill('textarea[aria-label="Message input"]', "one more")
+    # READ BEFORE ENTER, because it is the only way to tell the turn this action added from the
+    # thread it was handed. `_reclaim_pending_turn` deletes only if this number grew.
+    messages_before = _ev(ctx, "() => window.__sb.dom.messageCount()")
+    ctx.page.fill('textarea[aria-label="Message input"]', OWN_TURN_TEXT)
     ctx.page.wait_for_timeout(80)
     ctx.page.keyboard.press("Enter")
     own_generation = True
-    # Bounded by the SLOT as well as by `TURN_START_TIMEOUT_MS`: 8 s is 2.7x the whole stop slot on
-    # the fast and quick films, so a turn slow to start overran by seconds no matter what had been
-    # reserved for it. See `TURN_START_TIMEOUT_MS` for why this is the one wait here that may be
-    # cut short.
-    start_wait_ms = max(0.0, min(float(TURN_START_TIMEOUT_MS), remaining_ms() - OWN_TURN_FIXED_MS))
+    sent_at = time.monotonic()
+    # HOW LONG THE TURN IS WORTH MEASURING. Bounded by the SLOT as well as by
+    # `TURN_START_TIMEOUT_MS`: 8 s is 2.7x the whole stop slot on the fast and quick films, so a
+    # turn slow to start overran by seconds no matter what had been reserved for it.
+    #
+    # WHAT IS RESERVED OUT OF IT is the rest of the turn, not only its sleeps. A turn starting on
+    # the last millisecond this allows still has the stop-settle poll, the delete and the driver
+    # calls between them ahead of it, and reserving `OWN_TURN_FIXED_MS` left 424 ms of that unpaid
+    # against real chromium -- 344 ms past a 3,000 ms slot with 300 ms before `scroll_after` opens,
+    # recorded there as a missed slot. `OWN_TURN_FIXED_MS` also counts the 80 ms above, which is
+    # already spent. See `OWN_TURN_STOP_POLL_MS`.
+    start_wait_ms = max(
+        0.0,
+        min(
+            float(TURN_START_TIMEOUT_MS),
+            remaining_ms() - OWN_TURN_FIXED_AFTER_SEND_MS - OWN_TURN_STOP_POLL_MS,
+        ),
+    )
     deadline = time.monotonic() + start_wait_ms / 1000.0
+    # HOW LONG IT IS WORTH WAITING FOR, which is a different question and is NOT bounded by the
+    # slot. See `_reclaim_pending_turn`.
+    reclaim_deadline = sent_at + TURN_START_TIMEOUT_MS / 1000.0
     started_late = (
         f"nothing was generating and a new turn did not start within {start_wait_ms:.0f}ms"
     )
@@ -561,9 +722,9 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
             break
         ctx.page.wait_for_timeout(50)
     else:
-        return not_run(started_late)
+        return _reclaim_pending_turn(ctx, messages_before, started_late, reclaim_deadline)
     if not _ev(ctx, "() => window.__sb.dom.isRunning()"):
-        return not_run(started_late)
+        return _reclaim_pending_turn(ctx, messages_before, started_late, reclaim_deadline)
     # Let it get going, so stop is measured against a live stream rather than a starting one.
     ctx.page.wait_for_timeout(600)
     button = ctx.page.query_selector('button[aria-label="Stop generating"]')

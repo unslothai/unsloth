@@ -24,14 +24,17 @@ python -m tests.studio.studiobench --tier standard --reps 4 --ab YOUR_REF --out 
 python -m tests.studio.studiobench --tier standard --reps 4 \
     --branch BASE_REF --ab BASE_REF --out outputs/null
 
+# ... and, before you read any timing at all, that the run actually ran. Here rather than at
+#    the end: floor_table DROPS a repetition whose action did not run instead of refusing it, so
+#    a missed slot leaves the paired table quietly and the repetitions that survive print as a
+#    clean win on a smaller n.
+python -m tests.studio.studiobench --assert-liveness outputs/mine/payload.jsonl
+
 # 3. Gate: per-metric floor, sign consistency, stability
 python -m tests.studio.studiobench.sweep.floor_table --floor outputs/null outputs/mine
 
 # 4. Parity: prove you did not change what is rendered
 python -m tests.studio.studiobench.sweep.ui_parity --null outputs/null outputs/mine
-
-# and, before you read any timing at all, that the run actually ran
-python -m tests.studio.studiobench --assert-liveness outputs/mine/payload.jsonl
 
 # 5. Read the payload back as a scored report. No Studio, no browser, no network.
 python -m tests.studio.studiobench --report outputs/mine/payload.jsonl --tier standard
