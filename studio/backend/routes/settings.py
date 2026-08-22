@@ -2009,6 +2009,8 @@ class LanAccessResponse(BaseModel):
     can_start: bool
     can_stop: bool
     block_reason: Optional[str] = None
+    bind_host: Optional[str] = None
+    wildcard_bind: bool = False
     serves_web_ui: bool = True
 
 

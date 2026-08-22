@@ -59,6 +59,7 @@ def configure_lan_access(
     from utils.host_policy import is_external_host
 
     app_state.lan_access_port = port
+    app_state.lan_access_bind_host = bind_host
     app_state.lan_access_wildcard_bind = bind_host in ("0.0.0.0", "::")
     app_state.lan_access_launch_managed = app_state.lan_access_wildcard_bind or is_external_host(
         bind_host
@@ -152,6 +153,8 @@ def lan_access_status(app) -> dict:
         "can_start": controllable and not running,
         "can_stop": controllable and running,
         "block_reason": block_reason,
+        "bind_host": getattr(app_state, "lan_access_bind_host", None),
+        "wildcard_bind": bool(getattr(app_state, "lan_access_wildcard_bind", False)),
         "serves_web_ui": frontend_served,
     }
 
