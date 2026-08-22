@@ -17,9 +17,10 @@ under-measures and still reports success. It is worse than no measurement, becau
 it. So the stats for every planned turn are kept and checked, and a cell that did not stream what
 it planned fails by name.
 
-Two levels, because the bug spans two files. The first drives the REAL pacer over a REAL socket
-through the REAL `send_turn`. The second drives the shipped `CellRunner` and asserts the
-consequence a reader sees.
+Three levels. The first drives the REAL pacer over a REAL socket through the REAL `send_turn`. The
+second drives the shipped `CellRunner` over dictated streams and asserts the consequence a reader
+sees. The third runs the whole cell against a real pacer over real wire bytes, so the control --
+an ordinary multi-turn cell still completes -- is not taken on trust either.
 """
 
 from __future__ import annotations
@@ -490,6 +491,183 @@ def test_a_send_turn_that_did_not_run_is_not_demanded_of_the_pacer(cell_runner, 
 
     assert row["completed"] is True
     assert row["pacer"]["check"]["planned_turns"] == 1
+
+
+# ── level 3: the whole cell, against a real pacer over real wire bytes ───────────────────────
+
+
+class _WirePage:
+    """A page whose sends really do fetch a stream off the pacer, so `isRunning` is true for
+    exactly as long as bytes are arriving. Everything the browser does with them is out of scope
+    here; what is in scope is that a healthy multi-turn cell passes the new check when the streams
+    are real rather than dictated by the test."""
+
+    def __init__(self, pacer: Pacer) -> None:
+        self.pacer = pacer
+        self.running = False
+        self.messages = 4
+        self._thread: threading.Thread | None = None
+
+    def goto(self, *a, **k) -> None:
+        pass
+
+    def wait_for_selector(self, *a, **k) -> None:
+        pass
+
+    def click(self, *a, **k) -> None:
+        pass
+
+    def fill(self, *a, **k) -> None:
+        pass
+
+    def wait_for_timeout(self, ms) -> None:
+        time.sleep(min(ms, 200) / 1000.0)
+
+    def query_selector(self, selector):
+        if "Send message" in selector:
+            return types.SimpleNamespace(click = lambda: self.send())
+        return object() if "Message input" in selector else None
+
+    @property
+    def keyboard(self):
+        return types.SimpleNamespace(press = lambda key: self.send())
+
+    def send(self) -> None:
+        self.running = True
+        self.messages += 2
+
+        def run() -> None:
+            _consume(self.pacer)
+            self.running = False
+
+        self._thread = threading.Thread(target = run, daemon = True)
+        self._thread.start()
+
+    def evaluate(self, expr, *args):
+        if "isRunning" in expr:
+            return self.running
+        if "messageCount" in expr:
+            return self.messages
+        if "assistantChars" in expr:
+            return CENSUS["assistant_chars"]
+        return 0
+
+
+class _RealSendTurnScene:
+    """The film, reduced to the two `send_turn` slots that matter here, running the SHIPPED action
+    against the shipped base_args the session builds."""
+
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+
+    def run(self, scene, t0) -> list:
+        page = self.kwargs["page"]
+        rows = []
+        for _ in range(2):
+            while page.running:
+                time.sleep(0.05)
+            ctx = ActionContext(
+                page = page,
+                cdp = None,
+                cell = self.kwargs["cell"],
+                window = Window(
+                    name = "action:send_turn", kind = "action", cell = None, t_open_ms = 0.0
+                ),
+                args = dict(self.kwargs["base_args"]),
+                budget_ms = 20_000,
+                dom = None,
+                log = lambda msg: None,
+            )
+            result = send_turn(ctx)
+            row = result.row("send_turn", "action:send_turn", self.kwargs["cell"].cell_id)
+            row["census"] = dict(CENSUS)
+            self.kwargs["recorder"].emit(dict(row))
+            rows.append(row)
+        while page.running:
+            time.sleep(0.05)
+        return rows
+
+
+def test_a_healthy_multi_turn_cell_passes_the_check_over_real_wire_bytes(monkeypatch, tmp_path):
+    """The control the fix most needs: a cell that streamed everything it planned, with the pacer,
+    the action and the check all real, must still complete. The dictated-stream tests above prove
+    the failure path; this proves the ordinary path was not broken to get it."""
+
+    from studiobench.runtime.session import CellRunner, Session
+    from studiobench.runtime.types import BenchContext, Paths, Recorder
+
+    monkeypatch.setattr(session_mod, "paint_floor_ms", lambda page: 8.0)
+    monkeypatch.setattr(session_mod, "dom_signature", lambda page: dict(CENSUS))
+    monkeypatch.setattr(
+        session_mod,
+        "measure_chars_per_token",
+        lambda *a, **k: {"chars_per_token": 3.7, "source": "stubbed"},
+    )
+    monkeypatch.setattr(session_mod, "cdp_metrics", lambda cdp: {})
+    monkeypatch.setattr(session_mod, "cdp_counters", lambda before, after: {})
+    monkeypatch.setattr(session_mod, "SceneRunner", _RealSendTurnScene)
+    monkeypatch.setattr(session_mod, "dump_diagnostics", lambda *a, **k: None)
+    monkeypatch.setattr(session_mod, "EQUIVALENCE_RUNG", "1K")
+
+    pacer = Pacer().start()
+    try:
+        paths = Paths.under(tmp_path / "out")
+        recorder = Recorder(paths.payload_jsonl, "sess-1")
+        page = _WirePage(pacer)
+        ctx = BenchContext(
+            page = page,
+            cdp = None,
+            base_url = "http://127.0.0.1:5399",
+            session_id = "sess-1",
+            tier = "quick",
+            paths = paths,
+            recorder = recorder,
+            log = lambda msg: None,
+        )
+        runner = CellRunner(
+            session = Session(ctx = ctx),
+            pacer = pacer,
+            seeder = types.SimpleNamespace(
+                seed = lambda plan: types.SimpleNamespace(
+                    thread_id = "t1", seconds = 0.5, messages = 0
+                ),
+                auth = None,
+            ),
+            corpus = None,
+            base_url = "http://127.0.0.1:5399",
+            model_id = "studiobench-pacer",
+            tier = "quick",
+            paths = paths,
+            log = lambda msg: None,
+            cadence = "fast",
+        )
+        unit = types.SimpleNamespace(reasoning = "R" * 400, content = "C" * 1_200, kind = "tail")
+        follow = types.SimpleNamespace(reasoning = "r" * 100, content = "c" * 300, kind = "prose")
+        plan = types.SimpleNamespace(
+            rung = "10K",
+            streamed_unit = unit,
+            seeded_units = [],
+            follow_up_units = [follow, follow],
+            seeded_chars = 0,
+            streamed_chars = 1_600,
+            target_chars = 2_400,
+            target_tokens = 10_000,
+        )
+
+        row = runner.run(_cell(), plan)
+
+        assert row["completed"] is True, row.get("failure")
+        check = row["pacer"]["check"]
+        assert check["ok"] is True and check["planned_turns"] == 3
+        # Every planned turn delivered EXACTLY what it was loaded with, over the wire.
+        assert [t["chars_sent"] for t in check["turns"]] == [1_600, 400, 400]
+        assert [t["tag"] for t in check["turns"]] == [
+            CELL_ID,
+            f"{CELL_ID}#turn1",
+            f"{CELL_ID}#turn2",
+        ]
+    finally:
+        pacer.stop()
 
 
 if __name__ == "__main__":
