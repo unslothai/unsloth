@@ -42,7 +42,10 @@ See **"You need a Studio, and you need its password"** in [README.md](README.md)
 run the first one: a missing `--password` fails as an HTTP 401 only after the browser has
 already started, and `--doctor` reports PASS on that exact configuration. If you drive the wave
 against Studios you started yourself rather than letting studiobench install them, `--ab` needs
-`--attach` **and** `--attach-b`, one URL per arm, or it exits before measuring anything.
+`--attach` **and** `--attach-b`, one URL per arm, or it exits before measuring anything. It also
+needs `--password` **and** `--password-b`, one per arm: two separately booted Studios mint two
+different bootstrap passwords, so a single `--password` is a 401 on the treatment alone, after
+the browser is already up.
 
 `--assert-liveness` is strict on purpose and an action that could not run is a real finding, not
 noise. But two of the eighteen are unreachable on a fixture that loads no model (`image_upload`
