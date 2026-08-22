@@ -36,6 +36,7 @@ import {
   notifyStudioDictationUnavailable,
 } from "@/features/chat/adapters/studio-dictation-adapter";
 import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
+import { useShortcut } from "@/features/settings";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import {
   AUDIO_ACCEPT,
@@ -77,6 +78,7 @@ import {
   PencilRulerIcon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
+import { useChatActive } from "./runtime-provider";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "@/lib/toast";
 import {
@@ -1889,6 +1891,31 @@ export function SharedComposer({
     !busy &&
     !isComposing &&
     !isDictating;
+
+  // Compare mode swaps this composer in for the single-chat one, and only one
+  // of the two is ever on screen, so the chords register in both. Both gate on
+  // the chat tab being visible: off-route the pane is hidden, not unmounted.
+  const chatActive = useChatActive();
+  useShortcut(
+    "startDictation",
+    () => {
+      if (isDictating) stopDictation();
+      else startDictation();
+    },
+    { enabled: chatActive },
+  );
+  // Through the existing sendRef: `send` is render-scoped, which the React
+  // compiler will not let a hook outlive.
+  useShortcut(
+    "sendMessage",
+    () => {
+      sendRef.current?.();
+    },
+    { enabled: chatActive && canSend },
+  );
+  useShortcut("attachFiles", () => fileInputRef.current?.click(), {
+    enabled: chatActive,
+  });
 
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top
   // level; the rest fall into the "More" overflow submenu. Core items (photos,

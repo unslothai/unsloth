@@ -69,6 +69,7 @@ import {
 import { WORKFLOW_TABS, type WorkflowId } from "@/features/images/workflows";
 /* eslint-enable no-restricted-imports */
 import { cn } from "@/lib/utils";
+import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import {
@@ -168,6 +169,12 @@ import {
   CONVERSATION_MARKDOWN_LABEL,
   type ProjectRecord,
   type SidebarItem,
+  type ChatNavigationState,
+  adjacentChatItem,
+  nextAttentionChatItem,
+  openChatItemById,
+  recentChatItemAtSlot,
+  useChatNavigationStore,
 } from "@/features/chat";
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
 import {
@@ -179,6 +186,9 @@ import {
   useAppearanceCustomStore,
   useSettingsDialogStore,
   useShortcutLabel,
+  Shortcut,
+  type ShortcutId,
+  useShortcut,
 } from "@/features/settings";
 import type { SidebarNavItemId } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
@@ -214,6 +224,9 @@ import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { translate, useT, type TranslationKey } from "@/i18n";
+
+/** The ⌥⌘1-6 Recents slots, as a constant so the list below is fixed-length. */
+const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
 
 const EMPHASIS_MARKER = "__UNSLOTH_I18N_EMPHASIS_MARKER__";
 
@@ -1108,9 +1121,14 @@ export function AppSidebar() {
       undefined
     : undefined;
   const queueByThreadId = usePromptQueueUI((s) => s.byThreadId);
-  const [unreadThreadIds, setUnreadThreadIds] = useState<Set<string>>(
-    () => new Set(),
+  // In the navigation store, not local state: the unread chords register
+  // outside this tree.
+  const unreadThreadIds = useChatNavigationStore((s) => s.unreadThreadIds);
+  const markThreadsUnread = useChatNavigationStore((s) => s.markThreadsUnread);
+  const clearThreadsUnread = useChatNavigationStore(
+    (s) => s.clearThreadsUnread,
   );
+  const noteViewed = useChatNavigationStore((s) => s.noteViewed);
   const previousRunningByThreadIdRef = useRef<Record<string, boolean>>({});
   const activeVisibleThreadIds = useMemo(() => {
     if (!activeThreadId) {
@@ -1163,6 +1181,23 @@ export function AppSidebar() {
     () => sortChatItems(pinnedChatItems, PINNED_ORDER_SCOPE, pinnedSort),
     [pinnedChatItems, sortChatItems, pinnedSort],
   );
+  // The open chat heads the ⌃Tab stack, however it was opened.
+  useEffect(() => {
+    if (activeThreadId) noteViewed(activeThreadId);
+  }, [activeThreadId, noteViewed]);
+  // A walk through the stack ends when its modifiers come up, as an app
+  // switcher's does. A no-op when no walk is running.
+  useEffect(() => {
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
+        return;
+      }
+      useChatNavigationStore.getState().endTraversal();
+    };
+    window.addEventListener("keyup", onKeyUp);
+    return () => window.removeEventListener("keyup", onKeyUp);
+  }, []);
+
   const sortedChatsByProjectId = useMemo(() => {
     const map = new Map<string, SidebarItem[]>();
     for (const [projectId, items] of chatsByProjectId) {
@@ -1185,6 +1220,78 @@ export function AppSidebar() {
   );
   // Whole lists, not the visible slices, so a drop cannot lose what a
   // collapsed "Show more" is hiding.
+  // The project chats actually on screen: grouping by project keeps them out of
+  // Recents, so without these the chords cannot see them at all. Same rule the
+  // Projects section renders by, collapsed folders and the per-folder limit
+  // included.
+  const renderedProjectChatItems = useMemo(() => {
+    if (organizeBy !== "project" || !projectsOpen) return [];
+    const out: SidebarItem[] = [];
+    for (const project of visibleProjectRecords) {
+      if (collapsedProjectIds.has(project.id)) continue;
+      const chats = sortedChatsByProjectId.get(project.id) ?? [];
+      out.push(
+        ...(expandedChatProjectIds.has(project.id)
+          ? chats
+          : chats.slice(0, PROJECT_CHAT_LIMIT)),
+      );
+    }
+    return out;
+  }, [
+    organizeBy,
+    projectsOpen,
+    visibleProjectRecords,
+    collapsedProjectIds,
+    expandedChatProjectIds,
+    sortedChatsByProjectId,
+  ]);
+  // A collapsed section is not on screen either, so its rows are not walked or
+  // selected any more than a collapsed folder's are.
+  const visiblePinnedItems = useMemo(
+    () => (pinnedOpen ? sortedPinnedChatItems : []),
+    [pinnedOpen, sortedPinnedChatItems],
+  );
+  const visibleRecentItems = useMemo(
+    () => (chatOpen ? sortedRecentChatItems : []),
+    [chatOpen, sortedRecentChatItems],
+  );
+  // Rows wanting attention, most urgent first. Same rule the Priority sort uses.
+  const attentionItemIds = useMemo(
+    () =>
+      [...visiblePinnedItems, ...renderedProjectChatItems, ...visibleRecentItems]
+        .filter((item) => chatPriorityRank(item) < 3)
+        .sort(
+          (a, b) =>
+            chatPriorityRank(a) - chatPriorityRank(b) ||
+            b.updatedAt - a.updatedAt,
+        )
+        .map((item) => item.id),
+    [
+      visiblePinnedItems,
+      renderedProjectChatItems,
+      visibleRecentItems,
+      chatPriorityRank,
+    ],
+  );
+  // Publish the finished order, so the chords cannot disagree with the screen.
+  const publishLists = useChatNavigationStore((s) => s.publishLists);
+  useEffect(() => {
+    publishLists({
+      pinnedItems: visiblePinnedItems,
+      projectItems: renderedProjectChatItems,
+      recentItems: visibleRecentItems,
+      attentionItemIds,
+      activeItemId: activeThreadId ?? null,
+    });
+  }, [
+    publishLists,
+    visiblePinnedItems,
+    renderedProjectChatItems,
+    visibleRecentItems,
+    attentionItemIds,
+    activeThreadId,
+  ]);
+
   const projectRowIds = useMemo(
     () => sidebarProjectRecords.map((project) => project.id),
     [sidebarProjectRecords],
@@ -1262,6 +1369,25 @@ export function AppSidebar() {
     dropChatSelection();
     dropProjectSelection();
   }, [dropChatSelection, dropProjectSelection]);
+
+  /** Select every chat row on screen, pinned block included. */
+  const selectAllChats = useCallback(() => {
+    const ids = [
+      ...visiblePinnedItems,
+      ...renderedProjectChatItems,
+      ...visibleRecentItems,
+    ].map((item) => item.id);
+    if (ids.length === 0) return;
+    dropProjectSelection();
+    // No anchor: a shift click after this one has no row to reach back to.
+    selectionAnchorRef.current = null;
+    setSelectedChatIds(new Set(ids));
+  }, [
+    visiblePinnedItems,
+    renderedProjectChatItems,
+    visibleRecentItems,
+    dropProjectSelection,
+  ]);
 
   // Escape is the way out of a selection, as it is for the menus.
   useEffect(() => {
@@ -1378,11 +1504,7 @@ export function AppSidebar() {
   function markSelectedUnread() {
     const threadIds = selectedChatItems.flatMap(getSidebarItemThreadIds);
     clearSelection();
-    setUnreadThreadIds((current) => {
-      const next = new Set(current);
-      for (const threadId of threadIds) next.add(threadId);
-      return next;
-    });
+    markThreadsUnread(threadIds);
   }
 
   async function archiveSelected() {
@@ -1555,31 +1677,18 @@ export function AppSidebar() {
 
     if (completedThreadIds.length > 0 || activeVisibleThreadIdSet.size > 0) {
       queueMicrotask(() => {
-        setUnreadThreadIds((current) => {
-          let next: Set<string> | null = null;
-          const mutable = () => {
-            next ??= new Set(current);
-            return next;
-          };
-
-          for (const threadId of completedThreadIds) {
-            if (!current.has(threadId)) {
-              mutable().add(threadId);
-            }
-          }
-
-          for (const threadId of activeVisibleThreadIdSet) {
-            if (current.has(threadId)) {
-              mutable().delete(threadId);
-            }
-          }
-
-          return next ?? current;
-        });
+        // A run that finished in the open chat is read, so clear after mark.
+        markThreadsUnread(completedThreadIds);
+        clearThreadsUnread([...activeVisibleThreadIdSet]);
       });
     }
     previousRunningByThreadIdRef.current = runningByThreadId;
-  }, [activeVisibleThreadIdKey, runningByThreadId]);
+  }, [
+    activeVisibleThreadIdKey,
+    runningByThreadId,
+    markThreadsUnread,
+    clearThreadsUnread,
+  ]);
 
   // Training runs surface as sidebar "Recents" on Train/Recipes/Export, else chat recents.
   const trainingRecentsRoute = isStudioRoute || isRecipesRoute || isExportRoute;
@@ -2211,18 +2320,236 @@ export function AppSidebar() {
   }
 
   function clearChatNotifications(item: SidebarItem) {
-    const threadIds = getSidebarItemThreadIds(item);
-    setUnreadThreadIds((current) => {
-      if (!threadIds.some((threadId) => current.has(threadId))) {
-        return current;
-      }
-      const next = new Set(current);
-      for (const threadId of threadIds) {
-        next.delete(threadId);
-      }
-      return next;
-    });
+    clearThreadsUnread(getSidebarItemThreadIds(item));
   }
+
+  /** The chat as markdown, on the clipboard rather than in a download. */
+  async function copyChatItemAsMarkdown(item: SidebarItem) {
+    const threadIds = getSidebarItemThreadIds(item);
+    const empty = { value: false };
+    // The read runs inside the write: Safari drops the gesture across an
+    // await, and a chord has no second one to fall back on.
+    const copied = await copyToClipboardFrom(async () => {
+      const { buildConversationMarkdownForThread } = await import(
+        "@/features/chat/prompt-storage/prompt-storage-dialog"
+      );
+      // A compare row is two threads: keep both, labelled.
+      const parts: string[] = [];
+      for (const threadId of threadIds) {
+        const markdown = await buildConversationMarkdownForThread(threadId);
+        if (markdown) parts.push(markdown);
+      }
+      if (parts.length === 0) {
+        empty.value = true;
+        throw new Error("nothing to copy");
+      }
+      return parts.join("\n---\n\n");
+    });
+    if (copied) {
+      toast.success("Chat copied as Markdown");
+    } else if (empty.value) {
+      toast.info("No exportable content.");
+    }
+  }
+
+  /** The sandbox sessions this chat's stored tool results name, if any. */
+  async function recordedSandboxSessionIds(ids: string[]): Promise<string[]> {
+    const recorded: (string | undefined)[] = [];
+    // One at a time, not Promise.all: this file's export contract forbids a
+    // concurrent await here, and two panes win nothing.
+    for (const threadId of ids) {
+      recorded.push(
+        recordedSandboxSessionId(await listStoredChatMessages(threadId)),
+      );
+    }
+    return [...new Set(recorded.filter((id): id is string => Boolean(id)))];
+  }
+
+  /** The sandbox session this chat's tool calls write into. */
+  async function copyChatSessionId(item: SidebarItem) {
+    const threadIds = getSidebarItemThreadIds(item);
+    const ids = threadIds.length > 0 ? threadIds : [item.id];
+    // The chat's own history names the folder it wrote to, which is not where
+    // current membership points once it has moved between projects. Same read
+    // as "Open chat folder", and the same answer when a compare row's panes
+    // wrote to two.
+    const refusal: { value: { title: string; description?: string } | null } = {
+      value: null,
+    };
+    // Read inside the write, for the same reason as the markdown copy above.
+    const copied = await copyToClipboardFrom(async () => {
+      let sessionId: string | undefined;
+      try {
+        const distinct = await recordedSandboxSessionIds(ids);
+        if (distinct.length > 1) {
+          refusal.value = {
+            title: "This chat wrote to more than one folder.",
+            description: "Copy the session id from a tool card instead.",
+          };
+          throw new Error("more than one folder");
+        }
+        sessionId = distinct[0];
+      } catch (error) {
+        refusal.value ??= {
+          title: "Could not read this chat's session id.",
+          description: error instanceof Error ? error.message : String(error),
+        };
+        throw error;
+      }
+      // Nothing recorded means no tool has run yet, so the id it would get is
+      // the one current membership gives it.
+      sessionId ??=
+        item.type === "single" || item.projectId
+          ? sandboxSessionIdFor(ids[0], item.projectId)
+          : undefined;
+      if (!sessionId) {
+        refusal.value = { title: "This chat has no single session id" };
+        throw new Error("no session id");
+      }
+      return sessionId;
+    });
+    if (copied) {
+      toast.success("Session id copied");
+      return;
+    }
+    if (refusal.value) {
+      toast.error(refusal.value.title, {
+        description: refusal.value.description,
+      });
+    }
+  }
+
+  /** Open a chat row. Shared by the row and the navigation chords. */
+  function openChatItem(item: SidebarItem) {
+    clearChatNotifications(item);
+    noteViewed(item.id);
+    navigate({
+      to: "/chat",
+      search:
+        item.type === "single"
+          ? {
+              thread: item.id,
+              ...(item.projectId ? { project: item.projectId } : {}),
+            }
+          : {
+              compare: item.id,
+              ...(item.projectId ? { project: item.projectId } : {}),
+            },
+    });
+    closeMobileIfOpen();
+  }
+  // Through a ref: openChatItem is render-scoped, so registering it directly
+  // would rewrite the store every render.
+  const openChatItemRef = useRef(openChatItem);
+  useEffect(() => {
+    openChatItemRef.current = openChatItem;
+  });
+  useEffect(() => {
+    const setOpenChatItem = useChatNavigationStore.getState().setOpenChatItem;
+    setOpenChatItem((item) => openChatItemRef.current(item));
+    return () => setOpenChatItem(null);
+  }, []);
+
+  // --- Chat shortcuts ----------------------------------------------------
+  // The sidebar is on every shell route and holds the list, the handlers and
+  // the router, so the chat chords register here.
+  const activeChatItem = useMemo(
+    () => allChatItems.find((item) => item.id === activeThreadId) ?? null,
+    [allChatItems, activeThreadId],
+  );
+  /** Run `fn` on the open chat, or say why nothing happened. */
+  const withActiveChat = (fn: (item: SidebarItem) => void) => {
+    if (!activeChatItem) {
+      toast.info("Open a chat first");
+      return;
+    }
+    fn(activeChatItem);
+  };
+  const goToChat = (pick: (state: ChatNavigationState) => SidebarItem | null) =>
+    openChatItemById(pick(useChatNavigationStore.getState()));
+
+  // With rows selected these act on the selection, matching the context menu;
+  // otherwise on the open chat.
+  useShortcut("archiveChat", () => {
+    if (selectionCount > 0) {
+      void archiveSelected();
+      return;
+    }
+    withActiveChat((item) => void handleArchiveThread(item));
+  });
+  useShortcut("markChatUnread", () => {
+    if (selectionCount > 0) {
+      markSelectedUnread();
+      return;
+    }
+    withActiveChat((item) => markThreadsUnread(getSidebarItemThreadIds(item)));
+  });
+  useShortcut("togglePinChat", () => {
+    if (selectionCount > 0) {
+      pinSelected(!allSelectedPinned);
+      return;
+    }
+    withActiveChat((item) => togglePinnedChat(item.id));
+  });
+  useShortcut("selectAllChats", selectAllChats);
+  useShortcut("clearChatSelection", clearSelection);
+  useShortcut("deleteSelectedChats", () => {
+    if (selectionCount > 0) deleteSelected();
+  });
+  useShortcut("renameChat", () => withActiveChat(openRenameChat));
+  useShortcut("copyChatAsMarkdown", () =>
+    withActiveChat((item) => void copyChatItemAsMarkdown(item)),
+  );
+  useShortcut("copySessionId", () =>
+    withActiveChat((item) => void copyChatSessionId(item)),
+  );
+
+  useShortcut("nextChat", () => goToChat((s) => adjacentChatItem(s, 1)));
+  useShortcut("previousChat", () => goToChat((s) => adjacentChatItem(s, -1)));
+  // The walk holds the stack still while it runs, so a modifier held down
+  // reaches the third chat back and beyond; releasing it ends the walk and
+  // puts the chat it landed on at the top.
+  const walkRecentlyViewed = (delta: number) =>
+    openChatItemById(useChatNavigationStore.getState().stepRecentlyViewed(delta));
+  useShortcut("nextRecentlyViewedChat", () => walkRecentlyViewed(1));
+  useShortcut("previousRecentlyViewedChat", () => walkRecentlyViewed(-1));
+  useShortcut("nextChatNeedingAttention", () =>
+    goToChat(nextAttentionChatItem),
+  );
+  useShortcut("clearAllUnreads", () =>
+    useChatNavigationStore.getState().clearAllUnreads(),
+  );
+
+  // The six slots register as <Shortcut> elements: a loop of hooks would
+  // break the rules of hooks.
+  const slotShortcuts = (
+    <>
+      {RECENT_SLOT_NUMBERS.map((slot) => (
+        <Shortcut
+          key={`recent-${slot}`}
+          id={`goToRecentChat${slot}` as ShortcutId}
+          onTrigger={() => goToChat((s) => recentChatItemAtSlot(s, slot))}
+        />
+      ))}
+    </>
+  );
+
+  useShortcut(
+    "logOut",
+    () => {
+      // Desktop signs out through the OS account menu, not here.
+      if (isTauri) return;
+      void (async () => {
+        try {
+          await logout();
+        } catch {
+          clearAuthTokens();
+        }
+        void navigate({ to: "/login" });
+      })();
+    },
+    { enabled: !isTauri },
+  );
 
   // The "..." every list header carries. Only chat lists regroup, so that half
   // is opt-in; Pinned takes the sort half alone.
@@ -2498,21 +2825,7 @@ export function AppSidebar() {
               onClick={(event) => {
                 if (list && handleSelectionClick(event, item, list)) return;
                 clearSelection();
-                clearChatNotifications(item);
-                navigate({
-                  to: "/chat",
-                  search:
-                    item.type === "single"
-                      ? {
-                          thread: item.id,
-                          ...(item.projectId ? { project: item.projectId } : {}),
-                        }
-                      : {
-                          compare: item.id,
-                          ...(item.projectId ? { project: item.projectId } : {}),
-                        },
-                });
-                closeMobileIfOpen();
+                openChatItem(item);
               }}
             >
               {isPinned && variant !== "project" && (
@@ -2621,26 +2934,14 @@ export function AppSidebar() {
                           try {
                             // A chat moved between projects keeps the sandbox it
                             // wrote to, so its own history names the folder, not
-                            // current membership. Every pane is read, since a
-                            // compare row can hold one folder per pane.
-                            // One at a time, not Promise.all: this file's export
-                            // contract forbids a concurrent await here, and two
-                            // panes win nothing. A failed read stops the loop and
-                            // is reported below rather than being caught per pane,
-                            // which would read as "never ran a tool" and fall back
-                            // to current membership, the answer the recorded id
-                            // exists to override.
+                            // current membership. A failed read is reported
+                            // below rather than caught per pane, which would
+                            // read as "never ran a tool" and fall back to
+                            // membership, the answer the recorded id overrides.
                             const ids =
                               threadIds.length > 0 ? threadIds : [item.id];
-                            const recorded: (string | undefined)[] = [];
-                            for (const threadId of ids) {
-                              recorded.push(
-                                recordedSandboxSessionId(
-                                  await listStoredChatMessages(threadId),
-                                ),
-                              );
-                            }
-                            let distinct = [...new Set(recorded.filter(Boolean))];
+                            let distinct =
+                              await recordedSandboxSessionIds(ids);
                             if (distinct.length === 0 && item.projectId) {
                               // Chats stored before results carried a session
                               // recorded nothing, so one that ran loose and has
@@ -2813,6 +3114,7 @@ export function AppSidebar() {
 
   return (
     <>
+      {slotShortcuts}
     <Sidebar
       collapsible="icon"
       collapseToZero={isTauri}

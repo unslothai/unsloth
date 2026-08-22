@@ -6,11 +6,13 @@
 import { Button } from "@/components/ui/button";
 import { resolveToolConfirmation } from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useShortcut } from "@/features/settings";
 import type {
   ToolCallMessagePartComponent,
   ToolCallMessagePartStatus,
 } from "@assistant-ui/react";
 import { useCallback, useEffect, useState } from "react";
+import { useChatActive } from "@/features/chat";
 
 /**
  * Allow / Always allow / Deny controls for a tool call paused awaiting the
@@ -97,6 +99,32 @@ export function ToolConfirmationControls({
       void resolve("allow");
     }
   }, [showControls, autoAllowed, pending, failed, resolve]);
+
+  // ⏎ / Esc, only while this card is asking: an auto-approved one answers
+  // itself. Off route the chat pane is hidden rather than unmounted, so
+  // without the active check a bare key would decide a request nobody can
+  // see. With a second request parked, in the other Compare pane or further
+  // up the thread, the chord has no way to say which one it means, so both
+  // cards fall back to their buttons.
+  const chatActive = useChatActive();
+  const soleRequest = useChatRuntimeStore(
+    (s) => Object.keys(s.toolConfirmations).length === 1,
+  );
+  const keyboardReady =
+    chatActive &&
+    soleRequest &&
+    showControls &&
+    pending === null &&
+    !(autoAllowed && !failed);
+  useShortcut("approveToolRequest", () => void resolve("allow"), {
+    enabled: keyboardReady,
+    // Enter belongs to the composer while it has focus.
+    skipInTextFields: true,
+  });
+  useShortcut("declineToolRequest", () => void resolve("deny"), {
+    enabled: keyboardReady,
+    skipInTextFields: true,
+  });
 
   if (!showControls) return null;
   // Auto-approved tools resolve silently unless the post fails.
