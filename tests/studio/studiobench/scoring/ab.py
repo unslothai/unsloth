@@ -133,8 +133,7 @@ class Pair:
     @property
     def usable(self) -> bool:
         return (
-            self._divisible(self.base) is not None
-            and self._divisible(self.treatment) is not None
+            self._divisible(self.base) is not None and self._divisible(self.treatment) is not None
         )
 
     @property

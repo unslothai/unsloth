@@ -559,9 +559,7 @@ JANKY = Measure.read(5.0, "%", floor = JANK_FLOOR)
 
 
 def _jank_pair(base: Measure, treatment: Measure) -> Pair:
-    return Pair(
-        rung_tokens = 100_000, metric_key = "time_in_jank_pct", base = base, treatment = treatment
-    )
+    return Pair(rung_tokens = 100_000, metric_key = "time_in_jank_pct", base = base, treatment = treatment)
 
 
 def test_a_zero_jank_base_still_pairs_against_a_treatment_that_introduced_jank():
@@ -617,9 +615,10 @@ def test_a_reading_that_was_never_taken_is_still_not_a_zero():
     assert _jank_pair(failed, JANKY).usable is False
     assert _jank_pair(JANKY, never).usable is False
     assert _jank_pair(JANKY, failed).usable is False
-    assert compare("x", [_jank_pair(never, JANKY)], _identity(), _identity()).metrics[
-        0
-    ].verdict == "no_reading"
+    assert (
+        compare("x", [_jank_pair(never, JANKY)], _identity(), _identity()).metrics[0].verdict
+        == "no_reading"
+    )
 
 
 def test_a_zero_with_no_declared_floor_stays_unusable():
