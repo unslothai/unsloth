@@ -95,3 +95,110 @@ def test_optional_block_falsy_but_present_gating_value_still_renders():
     merged_prompt = "Count: [[{n}]]!"
     out = _render(merged_prompt, ["n"], {"n": [0]})
     assert out[0] == "Count: 0!"
+
+
+def _load_to_sharegpt():
+    # Same trick as above: pull to_sharegpt and the two helpers it calls out of
+    # the source without importing unsloth.
+    source = Path(__file__).parents[2] / "unsloth" / "chat_templates.py"
+    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    wanted = {"_parse_combined_prompt", "_create_formatter", "to_sharegpt"}
+    funcs = [
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted
+    ]
+    namespace = {"re": re}
+    module = ast.Module(body = funcs, type_ignores = [])
+    ast.fix_missing_locations(module)
+    exec(compile(module, str(source), "exec"), namespace)
+    return namespace["to_sharegpt"]
+
+
+def _alpaca():
+    from datasets import Dataset
+    return Dataset.from_dict(
+        {
+            "instruction": ["What is 2+2?", "Capital of France?"],
+            "output": ["4", "Paris"],
+        }
+    )
+
+
+def test_default_merged_prompt_keeps_the_input_column():
+    # merged_prompt is optional: without one, merged_column_name names a column
+    # that is already there. The merging map used to run anyway and overwrite it
+    # with empty strings, so every human turn came out blank.
+    to_sharegpt = _load_to_sharegpt()
+    converted = to_sharegpt(_alpaca())
+    users = [row["conversations"][0]["value"] for row in converted]
+    assert users == ["What is 2+2?", "Capital of France?"]
+
+
+def test_default_merged_prompt_with_renamed_columns():
+    from datasets import Dataset
+
+    to_sharegpt = _load_to_sharegpt()
+    dataset = Dataset.from_dict({"Query": ["123?"], "Answer": ["456"]})
+    converted = to_sharegpt(
+        dataset,
+        merged_column_name = "Query",
+        output_column_name = "Answer",
+    )
+    assert converted[0]["conversations"] == [
+        {"from": "human", "value": "123?"},
+        {"from": "gpt", "value": "456"},
+    ]
+
+
+def test_explicit_merged_prompt_still_merges():
+    from datasets import Dataset
+
+    to_sharegpt = _load_to_sharegpt()
+    dataset = Dataset.from_dict({"instruction": ["Sum"], "input": ["2+2"], "output": ["4"]})
+    converted = to_sharegpt(dataset, merged_prompt = "{instruction}\n{input}")
+    assert converted[0]["conversations"][0]["value"] == "Sum\n2+2"
+
+
+def test_missing_input_column_says_which_column_is_missing():
+    from datasets import Dataset
+
+    to_sharegpt = _load_to_sharegpt()
+    dataset = Dataset.from_dict({"prompt": ["hi"], "output": ["yo"]})
+    try:
+        to_sharegpt(dataset)
+    except KeyError as error:
+        assert "instruction" in str(error)
+        assert "prompt" in str(error)
+    else:
+        raise AssertionError("expected a KeyError naming the missing input column")
+
+
+def test_conversation_extension_keeps_the_real_prompts():
+    to_sharegpt = _load_to_sharegpt()
+    converted = to_sharegpt(_alpaca(), conversation_extension = 2)
+    values = [turn["value"] for turn in converted[0]["conversations"]]
+    assert "" not in values
+    assert len(converted[0]["conversations"]) == 4
+
+
+def test_null_cells_do_not_render_as_the_word_none():
+    from datasets import Dataset
+
+    to_sharegpt = _load_to_sharegpt()
+    dataset = Dataset.from_dict({"instruction": ["ok", None], "output": [None, "fine"]})
+    converted = to_sharegpt(dataset)
+    values = [turn["value"] for row in converted for turn in row["conversations"]]
+
+    assert "None" not in values
+    assert values == ["ok", "", "", "fine"]
+
+
+def test_null_cells_match_the_merged_prompt_path():
+    from datasets import Dataset
+
+    to_sharegpt = _load_to_sharegpt()
+    rows = {"instruction": ["ok", None], "output": ["a", "b"]}
+
+    merged = to_sharegpt(Dataset.from_dict(rows), merged_prompt = "{instruction}")
+    plain = to_sharegpt(Dataset.from_dict(rows))
+
+    assert [r["conversations"] for r in merged] == [r["conversations"] for r in plain]
