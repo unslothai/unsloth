@@ -235,6 +235,40 @@ def _run(
     )
 
 
+def checkout_ref(repo: Path, ref: str) -> str:
+    """Put `repo` on `ref`, whatever kind of ref it is. Returns the commit checked out.
+
+    NOT `git clone --branch <ref>` AND NOT `reset --hard origin/<ref>`. `--branch` resolves against
+    the remote's advertised branches and tags -- `git clone -h` calls it "checkout <branch> instead
+    of the remote's HEAD" -- so a commit sha fails with `Remote branch <sha> not found in upstream
+    origin` before anything is installed, and `origin/<sha>` is not a name that exists either.
+    CONTRIBUTING-perf.md asks for exactly that ref: a change that has already merged is measured as
+    `merge commit` against `merge commit^1`, and neither of those is a branch.
+
+    So the ref is fetched and then resolved locally: `FETCH_HEAD` when the fetch could name it,
+    `origin/<ref>` when it is a branch, and the ref itself when it is already an object here.
+    """
+    fetched = _run(["git", "fetch", "--tags", "origin", ref], cwd = repo, check = False)
+    if fetched.returncode != 0:
+        # A ref the remote will not serve by name (an old server, or `ref^1`, which is a local
+        # expression rather than something to ask for). Fetch everything and resolve it here.
+        _run(["git", "fetch", "--tags", "origin"], cwd = repo, check = False)
+    candidates = [] if fetched.returncode != 0 else ["FETCH_HEAD"]
+    candidates += [f"origin/{ref}", ref]
+    for candidate in candidates:
+        got = _run(["git", "rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}"],
+                   cwd = repo, check = False)
+        commit = got.stdout.strip()
+        if got.returncode == 0 and commit:
+            _run(["git", "checkout", "--force", "--detach", commit], cwd = repo)
+            _run(["git", "reset", "--hard", commit], cwd = repo)
+            return commit
+    raise RuntimeError(
+        f"{ref!r} could not be resolved in {repo}: it is not a branch, a tag or a commit this "
+        "remote will serve"
+    )
+
+
 def install_studio(
     branch: str,
     home: Path,
@@ -245,14 +279,13 @@ def install_studio(
     home = Path(home).resolve()
     home.mkdir(parents = True, exist_ok = True)
     repo = (repo or (home.parent / f"{home.name}_repo")).resolve()
-    if reuse_clone and (repo / ".git").exists():
-        _run(["git", "fetch", "origin", branch], cwd = repo)
-        _run(["git", "checkout", branch], cwd = repo)
-        _run(["git", "reset", "--hard", f"origin/{branch}"], cwd = repo)
-    else:
+    if not (reuse_clone and (repo / ".git").exists()):
         if repo.exists():
             shutil.rmtree(repo)
-        _run(["git", "clone", "--branch", branch, remote, str(repo)])
+        # Cloned WITHOUT `--branch`, then moved onto the ref locally, so one code path serves a
+        # branch, a tag and a commit sha instead of two that disagree about what a ref is.
+        _run(["git", "clone", remote, str(repo)])
+    checkout_ref(repo, branch)
     install_sh = repo / "install.sh"
     if not install_sh.exists():
         raise FileNotFoundError(f"install.sh missing at {install_sh}")
