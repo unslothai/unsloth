@@ -1729,11 +1729,10 @@ class ChatCompletionRequest(BaseModel):
     nudge_tool_calls: Optional[bool] = Field(
         None,
         description = (
-            "[x-unsloth] Opt-in, non-streaming client-tool passthrough only: when the "
-            "model emitted a tool signal that healing could not repair, retry ONCE with "
-            "a short nudge appended (the retry shares the full prompt prefix, so the "
-            "server's KV cache is reused). Default off; UNSLOTH_TOOL_CALL_NUDGE=1 flips "
-            "the process default."
+            "[x-unsloth] Opt-in tool-call recovery: when a model stalls with a short "
+            "plan instead of calling an available tool, or passthrough healing cannot "
+            "repair a malformed call, retry with a short nudge. Default off; "
+            "UNSLOTH_TOOL_CALL_NUDGE=1 flips the process default."
         ),
     )
     context_overflow: Optional[Literal["error", "truncate_middle", "truncate_oldest"]] = Field(
@@ -2897,7 +2896,7 @@ class AnthropicMessagesRequest(BaseModel):
     )
     nudge_tool_calls: Optional[bool] = Field(
         None,
-        description = "[x-unsloth] Opt-in, non-streaming only: retry once with a nudge when the model emitted a tool signal healing could not repair (mirrors the Chat Completions field).",
+        description = "[x-unsloth] Opt-in tool-call recovery; mirrors the Chat Completions nudge_tool_calls field and defaults off.",
     )
     model_config = {"extra": "allow"}
 

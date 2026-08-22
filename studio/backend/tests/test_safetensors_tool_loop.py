@@ -4401,7 +4401,10 @@ class TestPlanWithoutActionReprompt:
         assert any("I'll search the web for that." in t for t in texts)
         assert not any("SHOULD NOT APPEAR" in t for t in texts)
 
-    def test_explicit_nudge_off_is_not_reprompted(self):
+    def test_explicit_nudge_off_is_not_reprompted(self, monkeypatch):
+        from core.inference import passthrough_healing
+
+        monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", True)
         loop, exec_fn = _make_loop(
             turns = [
                 ["I'll search the web for that."],
@@ -4415,9 +4418,10 @@ class TestPlanWithoutActionReprompt:
         assert any("I'll search the web for that." in t for t in texts)
         assert not any("SHOULD NOT APPEAR" in t for t in texts)
 
-    def test_omitted_nudge_flag_is_not_reprompted(self):
-        # The retry is new on this loop: API callers who do not send the flag
-        # must keep today's behavior. Unsloth opts in explicitly.
+    def test_omitted_nudge_flag_follows_disabled_process_default(self, monkeypatch):
+        from core.inference import passthrough_healing
+
+        monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", False)
         loop, exec_fn = _make_loop(
             turns = [
                 ["I'll search the web for that."],
@@ -4429,6 +4433,21 @@ class TestPlanWithoutActionReprompt:
         texts = [e["text"] for e in events if e["type"] == "content"]
         assert any("I'll search the web for that." in t for t in texts)
         assert not any("SHOULD NOT APPEAR" in t for t in texts)
+
+    def test_omitted_nudge_flag_follows_enabled_process_default(self, monkeypatch):
+        from core.inference import passthrough_healing
+
+        monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", True)
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["I'll search the web for that."],
+                ["SECOND TURN"],
+            ],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert any("SECOND TURN" in t for t in texts)
 
     def test_rag_autoinject_counts_as_executed_tool(self, monkeypatch):
         # Autoinject already ran a KB search outside the controller; a short

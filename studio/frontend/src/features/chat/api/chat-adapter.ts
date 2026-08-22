@@ -5420,10 +5420,10 @@ export function createOpenAIStreamAdapter(
                     // emitting structured tool_calls, so the external loop heals
                     // like the local one. Omitting this left the backend on its
                     // process default, which is not what the user set in Settings.
-                    // nudge_tool_calls is deliberately absent: it is the
-                    // non-streaming client-tool passthrough retry, which this
-                    // streaming server-side loop does not perform.
                     auto_heal_tool_calls: runtime.autoHealToolCalls,
+                    // Keep the external server-side loop under the same user
+                    // setting as the local inference paths.
+                    nudge_tool_calls: runtime.nudgeToolCalls,
                     // This branch runs the tools here, so say so by name:
                     // enabled_tools ["web_search"] is byte-identical to what an
                     // older bundle sent meaning hosted search, so without this

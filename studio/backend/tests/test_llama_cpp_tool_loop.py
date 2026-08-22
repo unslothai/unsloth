@@ -2141,6 +2141,7 @@ def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
             max_tool_iterations = 1,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2207,6 +2208,7 @@ def test_post_tool_stall_still_nudged_after_a_pre_tool_reprompt(monkeypatch):
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2275,6 +2277,7 @@ def test_post_tool_reprompt_budget_is_one(monkeypatch):
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2340,6 +2343,7 @@ def test_repeat_guard_resets_after_a_tool_runs(monkeypatch):
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2502,6 +2506,7 @@ def test_forced_turn_answer_with_an_intent_lead_in_survives_after_a_tool(monkeyp
             messages = [{"role": "user", "content": "What is the capital of Japan?"}],
             tools = tools,
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2551,6 +2556,7 @@ def test_forced_turn_answer_with_an_intent_lead_in_survives_pre_tool(monkeypatch
             messages = [{"role": "user", "content": "What is the capital of Japan?"}],
             tools = tools,
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2597,6 +2603,7 @@ def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
                 }
             ],
             max_tool_iterations = 1,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2902,6 +2909,7 @@ def test_reprompted_tool_call_still_streams_final_answer(monkeypatch):
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
             max_tool_iterations = 1,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2972,6 +2980,7 @@ def test_plan_without_action_nudge_is_announced_on_the_status_channel(monkeypatc
             messages = [{"role": "user", "content": "What colour is the square?"}],
             tools = [_WEB_SEARCH_TOOL],
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2998,6 +3007,7 @@ def test_plan_without_action_nudge_status_clears_when_the_retry_just_answers(mon
             messages = [{"role": "user", "content": "What colour is the square?"}],
             tools = [_WEB_SEARCH_TOOL],
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -3074,6 +3084,22 @@ def test_nudge_status_absent_when_nudging_is_disabled(monkeypatch):
             tools = [_WEB_SEARCH_TOOL],
             max_tool_iterations = 2,
             nudge_tool_calls = False,
+        )
+    )
+
+    assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
+    assert len(payloads) == 1
+
+
+def test_nudge_is_off_when_the_request_flag_is_omitted(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, _nudge_then_search_streams(), payloads)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "What colour is the square?"}],
+            tools = [_WEB_SEARCH_TOOL],
+            max_tool_iterations = 2,
         )
     )
 
@@ -3218,6 +3244,7 @@ def test_rag_autoinject_counts_as_a_prior_tool_execution(monkeypatch):
             messages = [{"role": "user", "content": "summarize the docs"}],
             tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
             rag_scope = {"thread_id": "t1"},
         )
     )
