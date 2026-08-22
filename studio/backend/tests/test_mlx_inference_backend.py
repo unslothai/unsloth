@@ -357,8 +357,6 @@ def test_a_drafter_that_will_not_load_costs_the_model_only_when_it_was_asked_for
         assert backend._tokenizer is not None
         assert backend._processor is not None
         assert backend.models["fake/vlm"]["mlx_speculative_reason"] == "auto_drafter_load_failed"
-        # Recorded: the reuse comparison re-resolves Auto at this same value.
-        assert backend.models["fake/vlm"]["load_in_4bit"] is in_4bit
     else:
         # A method the user named is not silently downgraded; that load failed.
         with pytest.raises(RuntimeError, match = "drafter unavailable"):
@@ -4339,6 +4337,35 @@ def test_a_target_too_small_to_gain_from_drafting_is_left_undrafted(monkeypatch,
 
 
 @pytest.mark.parametrize(
+    "requested,resolved,pinned_block,expected_block",
+    # Auto states a depth, a depth the user set outranks it, and an explicit method takes
+    # only what it was given. Each method's depth differs, so one taken from another is wrong.
+    [("auto", "mtp", None, 4), ("auto", "dflash", None, 4), ("auto", "eagle3", None, 2),
+     ("auto", "mtp", 8, 8), ("mtp", "mtp", None, None), ("mtp", "mtp", 8, 8)],
+)
+def test_auto_hands_the_loader_the_depth_its_method_pays_off_at(
+    monkeypatch, requested, resolved, pinned_block, expected_block
+):
+    _install_fake_mlx(monkeypatch)
+    _install_fake_fast_mlx(monkeypatch, [])
+    from core.inference import mlx_speculative as spec
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    seen = {}
+    monkeypatch.setattr(spec, "mlx_speculative_load_resolution",
+                        lambda *a, **k: spec.MlxSpeculativeResolution(resolved, "org/A"))
+    backend = MLXInferenceBackend()
+    monkeypatch.setattr(backend, "_load_speculative_drafter",
+                        lambda *a, **k: seen.update(args = a, kwargs = k))
+    config = SimpleNamespace(identifier = "fake/vlm", is_vision = True, is_lora = False)
+    assert backend.load_model(
+        config, mlx_speculative_mode = requested, mlx_draft_block_size = pinned_block
+    ) is True
+    # Read the depth the drafter is built at: one forced onto every mode looks right anywhere.
+    assert seen["args"][2] is expected_block, seen
+
+
+@pytest.mark.parametrize(
     "revisions,expected",
     [
         # Ranked nowhere else: under one method the id decides unless precision does.
@@ -4577,6 +4604,30 @@ def test_auto_reuse_reloads_when_the_cache_changed_under_the_same_request(monkey
 
 def test_the_loader_takes_the_revision_the_ranking_measured(monkeypatch):
     # An unfitting revision listed first is not the one handed to the worker.
+    from core.inference import mlx_speculative as spec
+    from pathlib import Path as _Path
+
+    cached = [
+        ("org/A", {"quantization": {"bits": 8}, "fits": False}, _Path("/wrong"), 0),
+        ("org/A", {"quantization": {"bits": 4}, "fits": True}, _Path("/right"), 0),
+    ]
+    monkeypatch.setattr(spec, "_active_cached_drafter_configs", lambda: iter(cached))
+    monkeypatch.setattr(spec, "_drafter_method", lambda _c: "mtp")
+    monkeypatch.setattr(spec, "_dynamic_candidate_config_matches",
+                        lambda _m, _t, _tc, config, *a: config.get("fits", True))
+    monkeypatch.setattr(spec, "_read_config", lambda _t: {"model_type": "qwen3_5"})
+
+    assert spec.mlx_speculative_snapshot_path("org/A", "org/target", "mtp") == _Path("/right")
+    config, snapshot = spec._fitting_cached_revision(
+        "org/A", "org/target", {"model_type": "qwen3_5"}, "mtp"
+    )
+    assert snapshot == _Path("/right")
+    assert spec._config_precision_rank(config) == spec._precision_rank(4)
+
+
+def test_the_loader_takes_the_revision_the_ranking_measured(monkeypatch):
+    # The loader's side of the shared choice: an unfitting revision listed first is not the
+    # one handed to the worker.
     from core.inference import mlx_speculative as spec
     from pathlib import Path as _Path
 

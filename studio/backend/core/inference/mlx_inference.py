@@ -1855,6 +1855,7 @@ class MLXInferenceBackend:
         self._hf_token = hf_token
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         from core.inference.mlx_speculative import (
+            mlx_auto_draft_block_size,
             mlx_speculative_load_resolution,
             mlx_speculative_request_identity,
         )
@@ -2085,31 +2086,46 @@ class MLXInferenceBackend:
             "mlx_speculative_materialization_bytes": 0,
         }
         if resolution.method != "off":
+            # Auto picks the depth its method pays off at; a depth the user set outranks it.
+            block_size = mlx_draft_block_size
+            if block_size is None and requested_speculative_mode == "auto":
+                block_size = mlx_auto_draft_block_size(resolution.method)
             try:
                 self._load_speculative_drafter(
                     resolution.method,
                     resolution.draft_model,
-                    mlx_draft_block_size,
+                    block_size,
                     model_name,
                 )
-            except Exception:
-                self._model = None
-                self._tokenizer = None
-                self._processor = None
-                self._is_vlm = False
-                self._clear_speculative_state()
-                del model, tokenizer_or_processor
-                import gc
+            except Exception as exc:
+                # A named method was the point of the load, so its failure is the load's. Auto
+                # asked only for an accelerator, and tearing down the resident target beside it
+                # would cost the user the model itself.
+                if requested_speculative_mode != "auto":
+                    self._model = None
+                    self._tokenizer = None
+                    self._processor = None
+                    self._is_vlm = False
+                    self._clear_speculative_state()
+                    del model, tokenizer_or_processor
+                    import gc
 
-                gc.collect()
+                    gc.collect()
+                    _drain_generation_streams(mx)
+                    mx.clear_cache()
+                    raise
+                logger.warning("MLX speculative drafter failed to load: %s", exc)
+                self._clear_speculative_state()
                 _drain_generation_streams(mx)
                 mx.clear_cache()
-                raise
-            model_record.update(
-                mlx_speculative_effective_mode = self._draft_kind,
-                mlx_speculative_effective_draft_model = self._draft_repo_id,
-                mlx_speculative_materialization_bytes = self._draft_materialization_bytes,
-            )
+                model_record["mlx_speculative_reason"] = "auto_drafter_load_failed"
+            else:
+                model_record.update(
+                    mlx_speculative_effective_mode = self._draft_kind,
+                    mlx_speculative_effective_draft_model = self._draft_repo_id,
+                    mlx_speculative_effective_block_size = self._draft_block_size,
+                    mlx_speculative_materialization_bytes = self._draft_materialization_bytes,
+                )
 
         self.active_model_name = model_name
         self.models[model_name] = model_record
