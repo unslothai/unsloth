@@ -488,6 +488,43 @@ def test_clear_all_chats_invalidates_an_image_lookup_already_in_a_thread(monkeyp
     assert list(tmp_path.glob("*.json")) == []
 
 
+def test_clear_all_chats_invalidates_the_plain_query_image_sweep(monkeypatch, tmp_path):
+    # The same race on the path with no image_queries: the sweep runs while the user
+    # clears every chat, and without the generation it registers afterwards anyway --
+    # the sidecar then outlives the clear and keeps the picture fetchable.
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingClient:
+        def images(self, query, max_results = 5, **kwargs):
+            started.set()
+            release.wait(2)
+            return RAW_IMAGES
+
+    async def race_clear_against_sweep():
+        task = asyncio.create_task(
+            asyncio.to_thread(
+                tools._web_search_images_suffix, BlockingClient(), "dog breeds", 5, None, None
+            )
+        )
+        try:
+            assert await asyncio.to_thread(started.wait, 1)
+            search_images.clear_cache()
+        finally:
+            release.set()
+        return await task
+
+    assert asyncio.run(race_clear_against_sweep()) == ""
+    assert search_images._registry == {}
+    assert list(tmp_path.glob("*.json")) == []
+
+    # No clear racing it: the same sweep still returns its images, so the guard is
+    # not simply "never register".
+    assert search_images.SEARCH_IMAGES_SENTINEL in tools._web_search_images_suffix(
+        BlockingClient(), "dog breeds", 5, None, None
+    )
+
+
 def test_a_clear_between_the_two_registry_reads_still_wins(monkeypatch, tmp_path):
     # The exact interleaving the first fix missed: the entry and the cache generation
     # were read under SEPARATE acquisitions, so a clear landing in the gap handed this

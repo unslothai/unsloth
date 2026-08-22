@@ -12227,6 +12227,7 @@ def _web_search_images_suffix(client, query, wanted, cancel_event, website_polic
     # "" when images are unavailable; never raises, the text results stand on their own.
     from .search_images import (
         MAX_IMAGES_PER_SEARCH,
+        cache_generation,
         format_images_for_model,
         images_envelope,
         register_images,
@@ -12235,6 +12236,9 @@ def _web_search_images_suffix(client, query, wanted, cancel_event, website_polic
     images_fn = getattr(client, "images", None)
     if not callable(images_fn):
         return ""
+    # Before the sweep, like _image_search: clear-all is what bumps this, and an
+    # entry registered after one would keep serving a picture the user cleared.
+    expected_generation = cache_generation()
     try:
         raw = images_fn(
             query, max_results = max(wanted, MAX_IMAGES_PER_SEARCH * 2), safesearch = "moderate"
@@ -12244,7 +12248,9 @@ def _web_search_images_suffix(client, query, wanted, cancel_event, website_polic
         return ""
     if cancel_event is not None and cancel_event.is_set():
         return ""
-    entries = register_images(list(raw or []), website_policy)
+    entries = register_images(
+        list(raw or []), website_policy, expected_generation = expected_generation
+    )
     if not entries:
         return ""
     return "\n\n---\n\n" + format_images_for_model(entries) + images_envelope(entries)
