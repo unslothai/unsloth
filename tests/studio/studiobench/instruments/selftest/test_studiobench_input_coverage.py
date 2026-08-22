@@ -171,14 +171,23 @@ class _Page:
     def keyboard(self):
         return types.SimpleNamespace(type = self._type)
 
-    def _type(self, text, delay = 0) -> None:
+    def _type(
+        self,
+        text,
+        delay = 0,
+    ) -> None:
         self.value += text
 
 
 class _Instrument:
     """The input instrument, with the reading it will return dictated by the test."""
 
-    def __init__(self, reading: dict, *, pending_forever: bool = False) -> None:
+    def __init__(
+        self,
+        reading: dict,
+        *,
+        pending_forever: bool = False,
+    ) -> None:
         self.reading = reading
         self.pending_forever = pending_forever
         self.polls = 0
@@ -249,9 +258,7 @@ def test_a_jammed_page_that_coalesced_most_of_its_keystrokes_still_passes():
 
 
 def test_a_reading_with_a_keystroke_still_unpainted_is_not_quotable():
-    result = _run_keystroke(
-        _Instrument(_reading(samples = 11, pending_at_collect = True, max_ms = 20.0))
-    )
+    result = _run_keystroke(_Instrument(_reading(samples = 11, pending_at_collect = True, max_ms = 20.0)))
 
     assert result.ran is True
     assert result.expect_ok is False
