@@ -45,7 +45,12 @@ jobs:
   source-lint:
     name: Source lint (Python + shell + YAML + JSON + safety nets)
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Real work here is well under a minute; the budget is sized for the apt step
+    # below, which is bounded at 13 minutes of worst-case retries. Raised from 5,
+    # where the job timeout was doing the bounding -- and doing it badly, since a
+    # job that runs out of budget is reported as "cancelled" with no reason given
+    # and every remaining step skipped. The step timeout says which step and why.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -121,8 +126,26 @@ jobs:
 
           echo "launched 2 background lanes"
 
+      # Bounded and retried, because this step is why the job's own timeout used to
+      # be the failure mechanism: on 2026-08-19 it sat in apt for 5 minutes, the job
+      # hit `timeout-minutes: 5`, and GitHub scored the result "cancelled" with no
+      # reason and skipped all fifteen checks below it. A lint run that reports
+      # nothing about lint is worse than a red one.
+      #
+      # update and install are one unit: retrying the install alone after a stalled
+      # update just re-reads the same broken package list.
       - name: Linux deps for shellcheck
-        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends shellcheck
+        # Two long attempts, not three short ones. 150s killed apt mid-`update`
+        # against a mirror that was degraded rather than dead, and every attempt
+        # then hit the same wall -- three kills and no result. The bound exists to
+        # stop an infinite hang, not to race a slow mirror.
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
+        run: |
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y --no-install-recommends shellcheck || { apt-get update -qq && apt-get install -y --no-install-recommends shellcheck; }'
 
       - name: Python AST/syntax check (every committed .py must compile)
         # python -m compileall uses the same parser the interpreter
