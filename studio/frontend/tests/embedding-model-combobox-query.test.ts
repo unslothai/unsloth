@@ -48,6 +48,15 @@ test("only a keystroke counts as typing", () => {
   assert.ok(handler.includes("setTyped(next)"));
 });
 
+test("closing the list ends the search", () => {
+  const start = COMBOBOX.indexOf("onOpenChange");
+  const handler = COMBOBOX.slice(start, COMBOBOX.indexOf("}}", start));
+  // Saving writes the same string back, so the value never changes and the
+  // equality guard cannot see it. Without this, reopening the list after a
+  // save is still filtered by what was typed to enter the model.
+  assert.ok(handler.includes("if (!open) setTyped(null)"));
+});
+
 test("the field says what it does", () => {
   assert.match(
     SECTION,

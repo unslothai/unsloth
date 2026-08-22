@@ -46,7 +46,8 @@ export function EmbeddingModelCombobox({
   // Only text the user typed is a query. A saved or selected value searches for
   // itself, which leaves the list holding that one model instead of the others.
   const [typed, setTyped] = useState<string | null>(null);
-  // Anything the parent set (selection, reset, reload) clears the query.
+  // Anything the parent set (selection, reset, reload) clears the query. Saving
+  // writes the same string back, which this cannot see, so closing clears it too.
   const query = typed !== null && typed === value ? typed : "";
   const debouncedQuery = useDebouncedValue(query);
 
@@ -89,6 +90,11 @@ export function EmbeddingModelCombobox({
         items={items}
         filteredItems={items}
         filter={null}
+        onOpenChange={(open) => {
+          // The search lasts as long as the list is open, as the model picker
+          // in Settings -> Agents does.
+          if (!open) setTyped(null);
+        }}
         value={value.trim() ? value : null}
         onValueChange={(next) => onChange(next ?? "")}
         onInputValueChange={(next, details) => {
