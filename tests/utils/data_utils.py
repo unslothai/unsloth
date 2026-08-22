@@ -117,6 +117,8 @@ def check_responses(
     for i, response in enumerate(responses, start = 1):
         if answer in response:
             print(f"\u2713 response {i} contains answer")
+            # print(f" -> response {i}: {response}")
+            # print(f" -> expected answer: {answer}")
         else:
             print(f"\u2717 response {i} does not contain answer")
             if prompt is not None:
