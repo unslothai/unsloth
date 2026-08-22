@@ -13086,6 +13086,13 @@ def _inject_audio_part(messages: list[dict], audio_b64: str, audio_format: str) 
             return
 
 
+def _message_is_retained_for_local_chat(message) -> bool:
+    content = message.content
+    return isinstance(content, (str, list)) or (
+        message.role == "assistant" and bool(getattr(message, "reasoning_content", None))
+    )
+
+
 def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[str]"]:
     """
     Parse OpenAI-format messages into components the inference backend expects.
@@ -13111,6 +13118,9 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
             elif isinstance(msg.content, list):
                 # Unlikely but handle: join text parts
                 system_parts.append("\n".join(p.text for p in msg.content if p.type == "text"))
+            continue
+
+        if not _message_is_retained_for_local_chat(msg):
             continue
 
         # ── User / assistant messages ─────────────────────────
@@ -13145,6 +13155,35 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
         chat_messages.append(chat_message)
 
     return "\n\n".join(p for p in system_parts if p), chat_messages, first_image_b64
+
+
+def _restore_first_vlm_image_marker(source_messages, chat_messages, image_base64):
+    """Restore the exact flattened data-URL image at its original turn."""
+    chat_index = -1
+    for source_message in source_messages:
+        if source_message.role in ("system", "developer"):
+            continue
+        if not _message_is_retained_for_local_chat(source_message):
+            continue
+        parts = source_message.content
+        chat_index += 1
+        if not isinstance(parts, list):
+            continue
+        matched = False
+        for part in parts:
+            if part.type != "image_url":
+                continue
+            url = part.image_url.url
+            if url.startswith("data:") and "," in url and url.split(",", 1)[1] == image_base64:
+                matched = True
+                break
+        if not matched:
+            continue
+        text = chat_messages[chat_index].get("content", "")
+        chat_messages[chat_index]["content"] = [{"type": "image"}]
+        if text:
+            chat_messages[chat_index]["content"].append({"type": "text", "text": text})
+        return
 
 
 # ── External provider proxy ──────────────────────────────────────
@@ -16970,6 +17009,11 @@ async def openai_chat_completions(
 
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
+    if extracted_image_b64 and image is not None and _sf_model_info.get("is_mlx"):
+        # _extract_content_parts flattens media for the shared CUDA path. Restore
+        # the first image marker at its original turn so an MLX VLM conversation
+        # keeps an append-only token prefix instead of moving the image every turn.
+        _restore_first_vlm_image_marker(payload.messages, chat_messages, extracted_image_b64)
     _sf_tpl = (_sf_model_info.get("chat_template_info") or {}).get("template")
     # Resolve the tool policy BEFORE the protocol is classified: the template
     # branch chosen here must be the one generation renders. Reading the raw

@@ -215,6 +215,9 @@ def test_orchestrator_cmd_carries_all_sampling_params():
     )
     for key, val in _SAMPLING.items():
         assert cmd[key] == val, f"{key} dropped/altered in orchestrator cmd"
+    # Cache selection happens inside the MLX backend; no conversation identity
+    # crosses the orchestrator boundary on any backend.
+    assert "conversation_id" not in cmd
 
 
 def test_worker_forwards_all_sampling_params_to_backend():
