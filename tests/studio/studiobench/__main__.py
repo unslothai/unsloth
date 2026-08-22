@@ -570,6 +570,11 @@ def run(args, ab_ref = None) -> int:
                 # reader has no way to notice before quoting a ratio across it.
                 "stream_tail_chars": args.stream_tail_chars,
                 "corpus_dollars": bool(args.corpus_dollars),
+                # WHETHER THE PROBE RAN BEFORE THE FILM, for the same reason and with the same
+                # consequence: it changes what the cell measures without moving the cell id, so
+                # `--resume` needs it on the record to be able to refuse a toggle. See
+                # `IDENTITY_AXES`.
+                "click_probe": bool(getattr(args, "click_probe", False)),
             }
         )
         rec.gate("production_build", verdict.production, verdict.as_dict())
@@ -888,6 +893,15 @@ IDENTITY_AXES = (
     # back as the defaults (see `HISTORICAL_DEFAULTS`).
     "stream_tail_chars",
     "corpus_dollars",
+    # `--click-probe`, whose own help text says it "makes the cell's timings incomparable with a
+    # cell that did not run it". That is the definition of an identity axis: the probe runs a full
+    # `page.click`, a real mouse click, a dispatch, a focus and a hover over the thread before the
+    # film starts, and the cell then records a `composer_click_ms` measured on a composer those
+    # paths have already been through plus a `click_attribution` block a cell without the flag
+    # does not have at all. None of it moves the cell id, so a resume that toggles the flag skips
+    # the completed cells and appends the rest under the same ids -- the one ladder built from two
+    # films this check exists to refuse.
+    "click_probe",
 )
 
 #: The axes that describe the SECOND side, which only exist when a run has one. See
@@ -900,16 +914,18 @@ TREATMENT_AXES = ("treatment_ref", "treatment_url")
 #: never declared cannot be a difference. That is right for the axes `run_meta` has always carried:
 #: a payload missing one of those is a payload this check has nothing to say about.
 #:
-#: It is WRONG for these two. They arrived with the flags that set them, so a payload written
+#: It is WRONG for these three. They arrived with the flags that set them, so a payload written
 #: before them did not decline to record a value -- there was no way to ask for anything but the
-#: default, and it ran under `stream_tail_chars = None` and `corpus_dollars = False` by
-#: construction. Skipping them therefore accepted `--resume --stream-tail-chars 24000` against such
-#: a payload, skipped its completed cells, and recorded the rest under a different streamed fixture
-#: beneath the same cell ids: one ladder built from two films, which is what this check exists to
-#: refuse. Absence proves the value here, so it is read as the value.
+#: default, and it ran under `stream_tail_chars = None`, `corpus_dollars = False` and
+#: `click_probe = False` by construction. Skipping them therefore accepted
+#: `--resume --stream-tail-chars 24000` against such a payload, skipped its completed cells, and
+#: recorded the rest under a different streamed fixture beneath the same cell ids: one ladder built
+#: from two films, which is what this check exists to refuse. Absence proves the value here, so it
+#: is read as the value.
 HISTORICAL_DEFAULTS = {
     "stream_tail_chars": None,
     "corpus_dollars": False,
+    "click_probe": False,
 }
 
 
@@ -937,6 +953,7 @@ def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
         "treatment_url": attach_b if (ab_ref and attach_b) else "",
         "stream_tail_chars": args.stream_tail_chars,
         "corpus_dollars": bool(args.corpus_dollars),
+        "click_probe": bool(getattr(args, "click_probe", False)),
     }
 
 

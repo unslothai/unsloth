@@ -201,6 +201,10 @@ class CellRunner:
             "target_tokens": plan.target_tokens,
             "instruments": {},
         }
+        # Cleared HERE, not beside the click that produces it, so the preservation in the `finally`
+        # below cannot attach the PREVIOUS cell's attribution to a cell that died before its own
+        # probe ran. A reading filed under the wrong cell id is worse than a missing one.
+        self._click_attribution_result = None
         try:
             self._run_inner(cell, plan, row)
             row["completed"] = True
@@ -220,6 +224,15 @@ class CellRunner:
             # RSS at death, not a gap in the table.
             rss = row["instruments"].get("rss") or {}
             row["rss_at_death_mb"] = rss.get("rss_peak_mb") if not row["completed"] else None
+            # AND SO IS THE PROBE THAT ALREADY RAN. `--click-probe` finishes inside `_press_send`,
+            # and everything after it there -- the `page.fill`, the send button lookup and its
+            # click -- still runs under the default 8s action timeout, which is exactly what a
+            # large rung exceeds. Assigned only on the way out of `_run_inner`, the whole
+            # attribution was dropped from the cell it was measured for, and unlike
+            # `composer_click_ms` it has no window row of its own to survive in: nothing else in
+            # the payload records it. So it is filed from here, on both paths.
+            if self._click_attribution_result is not None:
+                row["click_attribution"] = self._click_attribution_result
             rec.emit(row)
         return row
 
@@ -311,10 +324,9 @@ class CellRunner:
 
         before_metrics = cdp_metrics(s.ctx.cdp)
         self._composer_click_ms = None
-        self._click_attribution_result = None
+        # `click_attribution` is NOT filed here. It is filed in `run`'s `finally`, because a cell
+        # that dies after the probe has to keep it: see there.
         t0 = self._press_send(page)
-        if self._click_attribution_result:
-            row["click_attribution"] = self._click_attribution_result
         # On the cell rather than in `actions`, because it happens before the first slot opens and
         # filing it as an action would put a reading outside the film into a list the scoring layer
         # pairs by slot. It is still a per-cell timing and grows with the rung like any other.
