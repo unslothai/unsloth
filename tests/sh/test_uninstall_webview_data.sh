@@ -23,11 +23,6 @@ XDG_RUNTIME_DIR="$_TMP_ROOT/run"
 export XDG_RUNTIME_DIR
 mkdir -p "$XDG_RUNTIME_DIR"
 
-# Keep uninstall tests away from the host profile directory.
-UNSLOTH_PROFILE_D="$_TMP_ROOT/profile.d"
-export UNSLOTH_PROFILE_D
-mkdir -p "$UNSLOTH_PROFILE_D"
-
 # Explicit template: -p is GNU-only and a bare mktemp -d lands outside _TMP_ROOT on macOS.
 new_home() { mktemp -d "$_TMP_ROOT/home.XXXXXX"; }
 

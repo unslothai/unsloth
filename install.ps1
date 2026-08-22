@@ -4816,43 +4816,6 @@ exit 0
         }
     }
 
-    # Both automatic and pinned ROCm routes set $ROCmIndexUrl. Persist the AOTriton gate for
-    # future torch processes while preserving any existing value, including the "0" opt-out.
-    if ($ROCmIndexUrl) {
-        $aotritonVar = "TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL"
-        $aotritonSet = $null -ne [Environment]::GetEnvironmentVariable($aotritonVar, "User") `
-            -or -not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($aotritonVar))
-        if ($aotritonSet) {
-            substep "$aotritonVar already set -- leaving it alone" "DarkGray"
-        } else {
-            # Set process scope first because the User-scope write can fail under policy.
-            Set-Item -Path "Env:$aotritonVar" -Value "1"
-            # Record ownership first, then roll it back if the User-scope write fails.
-            $aotritonOwnerKey = "HKCU:\Software\Unsloth"
-            $aotritonOwnerName = "AotritonUserEnvOwned"
-            try {
-                # Create it only when absent: New-Item -Force deletes an existing key,
-                # and Add-ToUserPath keeps PathBackup in this one.
-                if (-not (Test-Path -LiteralPath $aotritonOwnerKey)) {
-                    New-Item -Path $aotritonOwnerKey -Force -ErrorAction Stop | Out-Null
-                }
-                New-ItemProperty -Path $aotritonOwnerKey -Name $aotritonOwnerName `
-                    -Value 1 -PropertyType DWord -Force -ErrorAction Stop | Out-Null
-                try {
-                    [Environment]::SetEnvironmentVariable($aotritonVar, "1", "User")
-                } catch {
-                    Remove-ItemProperty -Path $aotritonOwnerKey -Name $aotritonOwnerName `
-                        -Force -ErrorAction SilentlyContinue
-                    throw
-                }
-                substep "$aotritonVar=1 (AOTriton attention; set it to 0 to fall back to MATH)" "Cyan"
-            } catch {
-                # The process copy still enables AOTriton for this run.
-                substep "could not persist $aotritonVar : $($_.Exception.Message)" "Yellow"
-            }
-        }
-    }
-
     if ($ROCmIndexUrl) {
         $TorchIndexFamily = "rocm"
     } else {

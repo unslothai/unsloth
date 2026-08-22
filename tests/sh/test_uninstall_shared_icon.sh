@@ -23,11 +23,6 @@ FAIL=0
 _TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$_TMP_ROOT"' EXIT
 
-# Keep uninstall tests away from the host profile directory.
-UNSLOTH_PROFILE_D="$_TMP_ROOT/profile.d"
-export UNSLOTH_PROFILE_D
-mkdir -p "$UNSLOTH_PROFILE_D"
-
 assert_file()   { _l="$1"; [ -f "$2" ] && { echo "  PASS: $_l"; PASS=$((PASS+1)); } || { echo "  FAIL: $_l (missing $2)"; FAIL=$((FAIL+1)); }; }
 assert_nofile() { _l="$1"; [ -f "$2" ] && { echo "  FAIL: $_l (unexpected $2)"; FAIL=$((FAIL+1)); } || { echo "  PASS: $_l"; PASS=$((PASS+1)); }; }
 assert_dir()    { _l="$1"; [ -d "$2" ] && { echo "  PASS: $_l"; PASS=$((PASS+1)); } || { echo "  FAIL: $_l (missing dir $2)"; FAIL=$((FAIL+1)); }; }

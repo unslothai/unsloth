@@ -4151,39 +4151,6 @@ _persist_rocm_wsl_dropin() {
     fi
 }
 
-# Persist torch's AOTriton SDPA gate for ROCm processes that do not import unsloth.
-# Preserve existing values, including the "0" opt-out, and never fail the installer.
-_persist_rocm_aotriton_env() {
-    # --no-torch must not change future ROCm processes on the host.
-    [ "${SKIP_TORCH:-false}" = "false" ] || return 0
-    if [ -n "${TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL:-}" ]; then
-        return 0
-    fi
-    export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
-    # Keep redirected installs removable by scripts/uninstall.sh.
-    _aot_profile_d="${UNSLOTH_PROFILE_D:-/etc/profile.d}"
-    [ -d "$_aot_profile_d" ] || return 0
-    # The WSL drop-in already exports it; a second file would be dead weight.
-    [ -r "$_aot_profile_d/unsloth-rocm-wsl.sh" ] && return 0
-    [ -r "$_aot_profile_d/unsloth-rocm-aotriton.sh" ] && return 0
-    _aot_dropin="$(
-        printf '# >>> Unsloth ROCm AOTriton attention >>>\n'
-        printf '# Set to 0 to fall back to torch'"'"'s MATH SDPA kernel.\n'
-        printf 'export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1\n'
-        printf '# <<< Unsloth ROCm AOTriton attention <<<\n'
-    )"
-    # 0644 explicitly: both writers inherit the caller's umask (sudo unions it with the
-    # sudoers one), and a 077 umask would leave a drop-in no other login shell can read.
-    if [ "$(id -u)" = "0" ]; then
-        printf '%s\n' "$_aot_dropin" > "$_aot_profile_d/unsloth-rocm-aotriton.sh" 2>/dev/null || true
-        chmod 0644 "$_aot_profile_d/unsloth-rocm-aotriton.sh" 2>/dev/null || true
-    elif command -v sudo >/dev/null 2>&1; then
-        printf '%s\n' "$_aot_dropin" | sudo tee "$_aot_profile_d/unsloth-rocm-aotriton.sh" >/dev/null 2>&1 || true
-        sudo chmod 0644 "$_aot_profile_d/unsloth-rocm-aotriton.sh" >/dev/null 2>&1 || true
-    fi
-    return 0
-}
-
 # _wsl_amd_gpu_name is defined earlier so both the reroute and this bootstrap can use it.
 _maybe_bootstrap_rocm_wsl() {
     [ "${OS:-}" = "wsl" ] || return 0
@@ -4432,8 +4399,6 @@ esac
 # merely STARTING with "rocm" isn't force-repaired from the wrong path.
 if _is_pip_rocm_family_leaf "$_torch_index_leaf"; then
     _torch_index_is_rocm_family=true
-    # Persist the gate for confirmed ROCm wheels.
-    _persist_rocm_aotriton_env || true
 else
     _torch_index_is_rocm_family=false
 fi

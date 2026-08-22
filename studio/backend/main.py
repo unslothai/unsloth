@@ -17,6 +17,12 @@ from typing import Any, Optional
 
 os.environ["PYTHONWARNINGS"] = "ignore"
 
+# Direct `uvicorn main:app` bypasses run.py. Keep the ROCm attention default inside this Studio
+# process and its workers, while preserving an explicit value such as the "0" opt-out.
+_AOTRITON_ENV = "TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL"
+os.environ.setdefault(_AOTRITON_ENV, "1")
+del _AOTRITON_ENV
+
 # Pin GPU index ordering to PCI bus id before any torch import creates a CUDA context.
 # Otherwise torch/CUDA default to FASTEST_FIRST while nvidia-smi (and Unsloth's VRAM
 # probes) use PCI-bus order, so an index chosen from nvidia-smi can resolve to a different

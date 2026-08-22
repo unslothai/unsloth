@@ -12,32 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for ROCm AOTriton environment setup."""
+"""Tests for process-local ROCm AOTriton setup."""
 
 import os
 import re
-import shutil
-import subprocess
-import sys
 from pathlib import Path
-
-import pytest
 
 from unsloth._rocm_attention import AOTRITON_ENV, enable_rocm_aotriton_attention
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _INIT = _REPO_ROOT / "unsloth" / "__init__.py"
-_INSTALL_PS1 = _REPO_ROOT / "install.ps1"
-_INSTALL_SH = _REPO_ROOT / "install.sh"
-_UNINSTALL_PS1 = _REPO_ROOT / "scripts" / "uninstall.ps1"
-_UNINSTALL_SH = _REPO_ROOT / "scripts" / "uninstall.sh"
-
-_DROPIN_MARKER = "# >>> Unsloth ROCm AOTriton attention >>>"
-_OWNER_MARKER = "AotritonUserEnvOwned"
-_REQUIRES_POSIX_SHELL = pytest.mark.skipif(
-    sys.platform == "win32" or shutil.which("sh") is None,
-    reason = "needs a POSIX shell",
-)
+_STUDIO_RUN = _REPO_ROOT / "studio" / "backend" / "run.py"
+_STUDIO_MAIN = _REPO_ROOT / "studio" / "backend" / "main.py"
 
 
 def test_opens_the_gate_when_unset():
@@ -66,21 +52,16 @@ def test_idempotent():
 
 
 def test_defaults_to_the_real_environment(monkeypatch):
-    import os
-
     monkeypatch.delenv(AOTRITON_ENV, raising = False)
     assert enable_rocm_aotriton_attention() is True
     assert os.environ[AOTRITON_ENV] == "1"
 
 
-def test_init_opens_the_gate_before_importing_torch():
-    """Keep the gate before imports that can load torch."""
+def test_init_opens_the_gate_before_attention_imports():
     source = _INIT.read_text(encoding = "utf-8")
     gate = source.index("_enable_rocm_aotriton_attention()")
     before = source[:gate]
-    # No torch import of any spelling may precede the gate.
     assert re.search(r"^\s*(import torch|from torch)\b", before, re.MULTILINE) is None
-    # Nor an unsloth submodule that pulls torch on the way in.
     for module in ("_gpu_init", "import_fixes", "models", "kernels"):
         assert f"from .{module}" not in before
         assert f"from unsloth.{module}" not in before
@@ -91,262 +72,32 @@ def test_init_imports_the_helper_from_the_package():
     assert "from ._rocm_attention import enable_rocm_aotriton_attention" in source
 
 
-def test_install_ps1_persists_the_gate_for_pinned_rocm_indexes_too():
-    """Persist after both automatic and pinned ROCm routing."""
-    source = _INSTALL_PS1.read_text(encoding = "utf-8")
-    persist = source.index('[Environment]::SetEnvironmentVariable($aotritonVar, "1", "User")')
-    pinned_route = source.index(
-        "if ($TorchIndexPinned -and -not $ROCmIndexUrl -and -not $SkipTorch) {"
+def test_studio_sets_the_gate_before_backend_imports():
+    source = _STUDIO_RUN.read_text(encoding = "utf-8")
+    gate = source.index('os.environ.setdefault(_AOTRITON_ENV, "1")')
+    assert source.index("from utils.cpu_threads") > gate
+    assert source.index("from core._torchao_stub") > gate
+    assert re.search(r"^\s*(import torch|from torch)\b", source[:gate], re.MULTILINE) is None
+
+
+def test_direct_uvicorn_sets_the_gate_before_backend_imports():
+    source = _STUDIO_MAIN.read_text(encoding = "utf-8")
+    gate = source.index('os.environ.setdefault(_AOTRITON_ENV, "1")')
+    assert source.index("from utils.native_tls") > gate
+    assert source.index("from utils.cpu_threads") > gate
+    assert re.search(r"^\s*(import torch|from torch)\b", source[:gate], re.MULTILINE) is None
+
+
+def test_installers_do_not_persist_the_gate():
+    paths = (
+        _REPO_ROOT / "install.sh",
+        _REPO_ROOT / "install.ps1",
+        _REPO_ROOT / "scripts" / "uninstall.sh",
+        _REPO_ROOT / "scripts" / "uninstall.ps1",
     )
-    assert pinned_route < persist, "the AOTriton persistence must follow the pinned-index routing"
-    # Only persist when a ROCm index won.
-    guard = source.rindex("if ($ROCmIndexUrl) {", 0, persist)
-    assert guard > pinned_route
-
-
-def test_install_ps1_sets_the_process_copy_before_the_user_scope_write():
-    """Set process scope before a User-scope write that may fail."""
-    source = _INSTALL_PS1.read_text(encoding = "utf-8")
-    process_copy = source.index('Set-Item -Path "Env:$aotritonVar" -Value "1"')
-    user_write = source.index('[Environment]::SetEnvironmentVariable($aotritonVar, "1", "User")')
-    assert process_copy < user_write, "the process copy must precede the User-scope write"
-    # Keep the process write outside the fallible block.
-    assert "try {" in source[process_copy:user_write]
-
-
-def _extract_sh_function(source, name):
-    """Extract a shell function whose closing brace is in column zero."""
-    lines = source.splitlines()
-    start = next(i for i, ln in enumerate(lines) if ln.startswith(name + "() {"))
-    end = next(i for i in range(start + 1, len(lines)) if lines[i] == "}")
-    return "\n".join(lines[start : end + 1])
-
-
-def _run_persist_helper(
-    tmp_path,
-    skip_torch,
-    env = None,
-    umask = None,
-):
-    """Run the helper with its profile directory redirected to tmp_path."""
-    tmp_path.mkdir(parents = True, exist_ok = True)
-    body = _extract_sh_function(
-        _INSTALL_SH.read_text(encoding = "utf-8"), "_persist_rocm_aotriton_env"
-    )
-    profile_d = tmp_path / "profile.d"
-    profile_d.mkdir(exist_ok = True)
-    body = body.replace("/etc/profile.d", str(profile_d))
-    script = tmp_path / "harness.sh"
-    script.write_text(
-        # Take the root branch so the result does not depend on passwordless sudo.
-        (f"umask {umask}\n" if umask else "") + "id() { echo 0; }\n" + body + "\n"
-        "_persist_rocm_aotriton_env\n"
-        'printf "%s" "${TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL-<unset>}"\n',
-        encoding = "utf-8",
-    )
-    run_env = dict(os.environ)
-    run_env.pop("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", None)
-    run_env.update(env or {})
-    run_env["SKIP_TORCH"] = skip_torch
-    proc = subprocess.run(
-        ["sh", str(script)], capture_output = True, text = True, env = run_env, timeout = 60
-    )
-    assert proc.returncode == 0, proc.stderr
-    return proc.stdout, (profile_d / "unsloth-rocm-aotriton.sh").exists()
-
-
-@_REQUIRES_POSIX_SHELL
-def test_install_sh_skips_persistence_under_no_torch(tmp_path):
-    """Do not change the host when torch is not installed."""
-    value, wrote = _run_persist_helper(tmp_path, "true")
-    assert value == "<unset>", "--no-torch must not export the gate"
-    assert not wrote, "--no-torch must not write the host-wide drop-in"
-
-
-@_REQUIRES_POSIX_SHELL
-def test_install_sh_persists_when_torch_is_being_installed(tmp_path):
-    value, wrote = _run_persist_helper(tmp_path, "false")
-    assert value == "1"
-    assert wrote
-
-
-@_REQUIRES_POSIX_SHELL
-def test_install_sh_leaves_an_existing_opinion_alone(tmp_path):
-    value, wrote = _run_persist_helper(
-        tmp_path, "false", env = {"TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL": "0"}
-    )
-    assert value == "0"
-    assert not wrote
-
-
-@_REQUIRES_POSIX_SHELL
-def test_install_sh_writes_a_dropin_every_login_shell_can_read(tmp_path):
-    """A restrictive umask must not leave the drop-in unreadable to other users."""
-    value, wrote = _run_persist_helper(tmp_path, "false", umask = "077")
-    assert value == "1"
-    assert wrote
-    mode = (tmp_path / "profile.d" / "unsloth-rocm-aotriton.sh").stat().st_mode & 0o777
-    assert mode == 0o644, oct(mode)
-
-
-def test_install_sh_persists_the_gate_off_the_resolved_index_leaf():
-    """Persist after the final torch index is resolved."""
-    source = _INSTALL_SH.read_text(encoding = "utf-8")
-    classify = source.index('if _is_pip_rocm_family_leaf "$_torch_index_leaf"; then')
-    call = source.index("_persist_rocm_aotriton_env ||", classify)
-    assert call - classify < 400
-
-
-def _run_remove_helper(
-    tmp_path,
-    dropin_contents = None,
-    profile_d = None,
-):
-    """Run the uninstaller's removal helper against a redirected profile directory."""
-    tmp_path.mkdir(parents = True, exist_ok = True)
-    body = _extract_sh_function(
-        _UNINSTALL_SH.read_text(encoding = "utf-8"), "_remove_rocm_aotriton_dropin"
-    )
-    profile_d = profile_d or tmp_path / "profile.d"
-    profile_d.mkdir(exist_ok = True)
-    dropin = profile_d / "unsloth-rocm-aotriton.sh"
-    if dropin_contents is not None:
-        dropin.write_text(dropin_contents, encoding = "utf-8")
-    script = tmp_path / "harness.sh"
-    script.write_text(
-        # Take the root branch so the result does not depend on passwordless sudo.
-        "id() { echo 0; }\n" + body + "\n_remove_rocm_aotriton_dropin\n",
-        encoding = "utf-8",
-    )
-    run_env = dict(os.environ)
-    # Use install.sh's supported profile directory override.
-    run_env["UNSLOTH_PROFILE_D"] = str(profile_d)
-    proc = subprocess.run(
-        ["sh", str(script)], capture_output = True, text = True, env = run_env, timeout = 60
-    )
-    assert proc.returncode == 0, proc.stderr
-    return dropin.exists()
-
-
-def _installer_dropin_text():
-    """The drop-in exactly as _persist_rocm_aotriton_env writes it."""
-    return (
-        f"{_DROPIN_MARKER}\n"
-        "# Set to 0 to fall back to torch's MATH SDPA kernel.\n"
-        f"export {AOTRITON_ENV}=1\n"
-        "# <<< Unsloth ROCm AOTriton attention <<<\n"
-    )
-
-
-@_REQUIRES_POSIX_SHELL
-@pytest.mark.parametrize(
-    ("dropin_contents", "survives"),
-    (
-        (_installer_dropin_text(), False),
-        (f"export {AOTRITON_ENV}=1\n", True),
-        (None, False),
-        (
-            _installer_dropin_text().replace(f"{AOTRITON_ENV}=1", f"{AOTRITON_ENV}=0"),
-            True,
-        ),
-        (_installer_dropin_text() + f"export {AOTRITON_ENV}=0\n", True),
-        (
-            _installer_dropin_text() + 'export MY_OWN_THING="keep me"\n',
-            True,
-        ),
-        (f"export {AOTRITON_ENV}=0\n" + _installer_dropin_text(), True),
-    ),
-    ids = (
-        "installer-created",
-        "foreign",
-        "missing",
-        "replaced-value",
-        "appended-opt-out",
-        "appended-content",
-        "prepended-opt-out",
-    ),
-)
-def test_uninstall_sh_dropin_ownership(tmp_path, dropin_contents, survives):
-    assert _run_remove_helper(tmp_path, dropin_contents) is survives
-
-
-@_REQUIRES_POSIX_SHELL
-def test_the_drop_in_directory_is_redirectable_end_to_end(tmp_path):
-    """Write and removal must agree on where the drop-in lives."""
-    profile_d = tmp_path / "elsewhere"
-    profile_d.mkdir()
-    write_tmp = tmp_path / "write"
-    remove_tmp = tmp_path / "remove"
-    written, _ = _run_persist_helper(write_tmp, "false", env = {"UNSLOTH_PROFILE_D": str(profile_d)})
-    dropin = profile_d / "unsloth-rocm-aotriton.sh"
-    assert written == "1"
-    assert dropin.exists(), "install.sh must honour UNSLOTH_PROFILE_D"
-    written_text = dropin.read_text(encoding = "utf-8")
-    # Keep the fixture aligned with install.sh's output.
-    assert written_text == _installer_dropin_text()
-    assert _run_remove_helper(remove_tmp, profile_d = profile_d) is False
-
-
-def test_the_installers_advertise_an_opt_out_that_survives_import():
-    """Importing unsloth restores an unset gate, so only 0 turns it back off."""
-    for path in (_INSTALL_SH, _INSTALL_PS1):
-        advice = next(
-            ln
-            for ln in path.read_text(encoding = "utf-8").splitlines()
-            if "fall back to" in ln and "MATH" in ln
-        )
-        assert "0" in advice, f"{path.name}: {advice.strip()}"
-        assert "unset" not in advice.lower(), f"{path.name}: {advice.strip()}"
-
-
-def test_uninstall_sh_removes_the_dropin_outside_the_wsl_branch():
-    """install.sh writes it on native Linux, where the WSL branch never runs."""
-    source = _UNINSTALL_SH.read_text(encoding = "utf-8")
-    linux_case = source.index("\n        Linux)\n")
-    call = source.index("_remove_rocm_aotriton_dropin\n", linux_case)
-    wsl_branch = source.index('if [ "$_is_wsl" = "1" ]; then', linux_case)
-    assert call < wsl_branch, "the drop-in removal must not be gated on WSL"
-
-
-def test_install_ps1_marks_the_user_value_as_installer_created():
-    """Write the ownership marker before the value it describes."""
-    source = _INSTALL_PS1.read_text(encoding = "utf-8")
-    marker = source.index(f"-Name $aotritonOwnerName")
-    user_write = source.index('[Environment]::SetEnvironmentVariable($aotritonVar, "1", "User")')
-    assert marker < user_write, "an unmarked value would never be cleaned up"
-    # A failed write must not leave a marker claiming a value the user owns.
-    rollback = source.index("Remove-ItemProperty", user_write)
-    assert _OWNER_MARKER in source
-    assert rollback - user_write < 400
-
-
-def test_install_ps1_creates_the_shared_registry_key_only_when_absent():
-    """New-Item -Force deletes an existing key, and PathBackup lives in this one."""
-    source = _INSTALL_PS1.read_text(encoding = "utf-8")
-    # Add-ToUserPath keeps the pre-install PATH under the same key.
-    assert "CreateSubKey('Software\\Unsloth')" in source
-    create = source.index("New-Item -Path $aotritonOwnerKey")
-    guard = source.rfind("Test-Path -LiteralPath $aotritonOwnerKey", 0, create)
-    assert 0 <= create - guard < 100, "create the key only when it is absent"
-
-
-def test_uninstall_ps1_clears_only_the_installer_created_value():
-    """Marked and unmodified, or it stays."""
-    source = _UNINSTALL_PS1.read_text(encoding = "utf-8")
-    clear = source.index(
-        f'[Environment]::SetEnvironmentVariable($aotritonVar, [NullString]::Value, "User")'
-    )
-    guard = source.rindex(f"-Name '{_OWNER_MARKER}'", 0, clear)
-    assert f'-eq "1"' in source[guard:clear], "a user's later edit must survive"
-    # The marker lives under HKCU\Software\Unsloth, which the uninstaller then deletes.
-    key_removal = source.index("Remove-Item -LiteralPath 'HKCU:\\Software\\Unsloth'")
-    assert clear < key_removal
-
-
-def test_uninstall_ps1_keeps_the_marker_when_the_value_survives():
-    """A value we could not clear stays identifiable for the next run."""
-    source = _UNINSTALL_PS1.read_text(encoding = "utf-8")
-    failure = source.index("$aotritonCleared = $false")
-    key_removal = source.index("Remove-Item -LiteralPath 'HKCU:\\Software\\Unsloth'")
-    gate = source.rfind("if ($aotritonCleared) {", failure, key_removal)
-    assert gate > failure, "the key removal must be gated on a successful clear"
+    sources = {path.name: path.read_text(encoding = "utf-8") for path in paths}
+    assert "_persist_rocm_aotriton_env" not in sources["install.sh"]
+    assert "unsloth-rocm-aotriton.sh" not in sources["install.sh"]
+    assert "unsloth-rocm-aotriton.sh" not in sources["uninstall.sh"]
+    assert "AotritonUserEnvOwned" not in sources["install.ps1"]
+    assert "AotritonUserEnvOwned" not in sources["uninstall.ps1"]

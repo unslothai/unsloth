@@ -35,11 +35,8 @@ fi
 _TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$_TMP_ROOT"' EXIT
 
-# Keep uninstall tests away from the host profile directory.
+# Isolate every environment-controlled removal path.
 unset UNSLOTH_STUDIO_HOME STUDIO_HOME UNSLOTH_UNINSTALL_ROCM
-UNSLOTH_PROFILE_D="$_TMP_ROOT/profile.d"
-export UNSLOTH_PROFILE_D
-mkdir -p "$UNSLOTH_PROFILE_D"
 XDG_RUNTIME_DIR="$_TMP_ROOT/run"
 export XDG_RUNTIME_DIR
 mkdir -p "$XDG_RUNTIME_DIR"

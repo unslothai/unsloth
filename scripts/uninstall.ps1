@@ -808,29 +808,10 @@ Environment:
     } catch {
         _Substep "could not update user PATH: $($_.Exception.Message)" "Yellow"
     }
-    # Remove only the unmodified User-scope value created by install.ps1.
-    $aotritonVar = "TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL"
-    $aotritonCleared = $true
+    # Remove HKCU\Software\Unsloth (PathBackup lives here; install.ps1 owns it).
     try {
-        $aotritonOwned = Get-ItemPropertyValue -LiteralPath 'HKCU:\Software\Unsloth' `
-            -Name 'AotritonUserEnvOwned' -ErrorAction SilentlyContinue
-        if ($aotritonOwned -eq 1 -and
-            [Environment]::GetEnvironmentVariable($aotritonVar, "User") -eq "1") {
-            [Environment]::SetEnvironmentVariable($aotritonVar, [NullString]::Value, "User")
-            _Substep "removed installer-created $aotritonVar" "Green"
-        }
-    } catch {
-        $aotritonCleared = $false
-        _Substep "could not remove $aotritonVar : $($_.Exception.Message)" "Yellow"
-    }
-    # Remove HKCU\Software\Unsloth, which install.ps1 owns. A value we could not clear keeps
-    # the key: the marker is the only thing that identifies it as ours for a later run, and
-    # PathBackup is what restores the PATH entry the same failure left behind.
-    if ($aotritonCleared) {
-        try {
-            Remove-Item -LiteralPath 'HKCU:\Software\Unsloth' -Recurse -Force -ErrorAction SilentlyContinue
-        } catch { }
-    }
+        Remove-Item -LiteralPath 'HKCU:\Software\Unsloth' -Recurse -Force -ErrorAction SilentlyContinue
+    } catch { }
 
     Write-Host ""
     Write-Host "Unsloth Studio uninstalled."
