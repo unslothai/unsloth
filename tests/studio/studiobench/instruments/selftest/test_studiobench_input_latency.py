@@ -72,6 +72,14 @@ def _typed(page, *, delay_armed: bool) -> dict:
 
 def test_an_injected_keydown_stall_moves_keystroke_p95():
     playwright = pytest.importorskip("playwright.sync_api", reason = "playwright is not installed")
+    # IMPORTORSKIP IS NOT ENOUGH IN THIS SUITE. tests/studio/
+    # test_heavy_thread_measurement_integrity.py puts a stub `playwright.sync_api` into
+    # `sys.modules` at collection time and, as its own docstring says, it stays there for the rest
+    # of the session. So on the CPU job the import above SUCCEEDS against the stub and every name
+    # it hands back raises RuntimeError when called. The stub is a bare ModuleType with no
+    # `__file__`, which the real package always has, so that is what distinguishes them.
+    if getattr(playwright, "__file__", None) is None:
+        pytest.skip("playwright.sync_api is the CPU-job stub, so there is no browser to drive")
 
     with playwright.sync_playwright() as pw:
         name = _engine(pw)
