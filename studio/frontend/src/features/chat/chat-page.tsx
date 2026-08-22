@@ -129,6 +129,7 @@ import {
   useSelectedChatArtifact,
 } from "./artifacts/store";
 import type { ChatArtifact, ChatArtifactSurface } from "./artifacts/types";
+import { McpServersDialogMount } from "./mcp-composer-button";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import {
   ResearchActivityPanel,
@@ -3551,6 +3552,10 @@ export function ChatPage({
           render their own copy and the shared-composer menu would have none. It
           also portals to body, so gate it on `active` like the tour above. */}
       {active && <BypassPermissionsConfirmDialog />}
+      {/* Same treatment for the MCP servers dialog: its chord has to work
+          before MCP is switched on, and the pill that used to own it only
+          renders once it is. */}
+      {active && <McpServersDialogMount />}
       {/* `--studio-chat-notice-height` is 0 until ChatModelNotice is actually on
           screen, and the thread viewport adds it to the top padding it already
           reserves for the header. Without it the notice is an opaque bar over

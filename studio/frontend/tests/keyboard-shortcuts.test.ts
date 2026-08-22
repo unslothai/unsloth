@@ -714,6 +714,28 @@ test("a collapsed sidebar section is not published for the chords", async () => 
   assert.match(sidebar, /recentItems: visibleRecentItems,/);
 });
 
+test("the MCP chord does not live behind the MCP pill", async () => {
+  const button = await readFile(
+    new URL("../src/features/chat/mcp-composer-button.tsx", import.meta.url),
+    "utf8",
+  );
+  const page = await readFile(
+    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
+    "utf8",
+  );
+  // MCP ships off for a chat and the pill only renders once it is on, so a
+  // chord registered inside the pill would do nothing until it was found by
+  // hand. The dialog and its chord mount for the chat instead.
+  const pill = button.indexOf("export function McpComposerButton");
+  const mount = button.indexOf("export function McpServersDialogMount");
+  assert.ok(pill !== -1 && mount > pill, "the mount moved");
+  assert.ok(
+    button.indexOf('useShortcut("openMcpServers"') > mount,
+    "the chord is back inside the pill",
+  );
+  assert.match(page, /\{active && <McpServersDialogMount \/>\}/);
+});
+
 test("every settings tab survives a reload", () => {
   // The persisted-tab check reads this same list, so a tab added to the union
   // alone can no longer be rejected back to General.
