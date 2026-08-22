@@ -6,15 +6,25 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  OPEN_DOCUMENT_ATTACHMENT_ACCEPT,
+  OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS,
+} from "../src/features/chat/open-document-accept.ts";
+import {
   dequeueNativeAttachments,
   enqueueNativeAttachments,
 } from "../src/features/native-intents/attachment-queue.ts";
-import { classifyDropPaths, CHAT_AUDIO_DROP_ACCEPT, CHAT_IMAGE_DROP_ACCEPT, CHAT_VIDEO_DROP_ACCEPT, SUPPORTED_DROP_HINT } from "../src/features/native-intents/drop-paths.ts";
+import {
+  CHAT_AUDIO_DROP_ACCEPT,
+  CHAT_IMAGE_DROP_ACCEPT,
+  CHAT_VIDEO_DROP_ACCEPT,
+  SUPPORTED_DROP_HINT,
+  classifyDropPaths,
+} from "../src/features/native-intents/drop-paths.ts";
 import type { NativeIntent } from "../src/features/native-intents/types.ts";
-import { AUDIO_ACCEPT } from "../src/lib/audio-utils.ts";
-import { MAX_REFERENCE_BYTES } from "../src/features/video/reference-budget.ts";
-import { VIDEO_ACCEPT } from "../src/lib/video-utils.ts";
 import { RAG_UPLOAD_ACCEPT } from "../src/features/rag/types/rag.ts";
+import { MAX_REFERENCE_BYTES } from "../src/features/video/reference-budget.ts";
+import { AUDIO_ACCEPT } from "../src/lib/audio-utils.ts";
+import { VIDEO_ACCEPT } from "../src/lib/video-utils.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
@@ -25,6 +35,8 @@ const { useNativeIntentStore } = await import(
 
 const BACKEND_UPLOAD_EXTS_RE = /UPLOAD_EXTS\s*=\s*\{([^}]+)\}/s;
 const RUST_ATTACHMENT_EXTS_RE = /ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
+const RUST_OPEN_DOCUMENT_ATTACHMENT_EXTS_RE =
+  /OPEN_DOCUMENT_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
 const RUST_IMAGE_ATTACHMENT_EXTS_RE = /IMAGE_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
 const RUST_AUDIO_ATTACHMENT_EXTS_RE = /AUDIO_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
 const RUST_AUDIO_MIME_RE = /Some\("(audio\/[^"]+)"\)/g;
@@ -38,6 +50,21 @@ const MIME_ARM_EXTENSION_RE = /^\s*((?:"[^"]+"\s*\|?\s*)+)=>\s*Some\("image\//gm
 const COMPOSER_IMAGE_ACCEPT_RE = /const IMAGE_ACCEPT\s*=\s*"([^"]+)"/;
 const VISION_ADAPTER_ACCEPT_RE =
   /class VisionImageAdapter[^{]*\{\s*accept\s*=\s*"([^"]+)"/s;
+const OPEN_DOCUMENT_EXTENSION_RE = /\.ods/;
+const OPEN_DOCUMENT_ADAPTER_ACCEPT_RE =
+  /class OpenDocumentAttachmentAdapter[^{]*\{[\s\S]*?accept = OPEN_DOCUMENT_ATTACHMENT_ACCEPT;/;
+const OPEN_DOCUMENT_DROP_TO_COMPOSER_RE =
+  /await attachOptions\.onAttachImages\?\.\(registered\.images\)[\s\S]*?await attachOptions\.onAttachOpenDocuments\?\.\([\s\S]*?registered\.openDocuments/;
+const OPEN_DOCUMENT_REGISTRATION_CLASS_RE =
+  /const openDocumentPaths = docPaths\.filter\(isOpenDocumentAttachmentName\);[\s\S]*?const ragDocumentPaths = docPaths\.filter[\s\S]*?registerEach\(ragDocumentPaths\),[\s\S]*?registerEach\(openDocumentPaths\),[\s\S]*?openDocuments: openDocuments\.intents/;
+const OPEN_DOCUMENT_IMAGE_REGISTRATION_RE =
+  /const needsOpenDocuments = openDocumentPaths\.length > 0;[\s\S]*?const needsComposerAttachments = needsImages \|\| needsOpenDocuments;[\s\S]*?if \(needsComposerAttachments\) store\.beginImageDropRegistration\(\);[\s\S]*?finally \{[\s\S]*?if \(needsComposerAttachments\) store\.endImageDropRegistration\(\)/;
+const OPEN_DOCUMENT_BACKEND_GATE_RE =
+  /function canAttachDocumentPaths[\s\S]*?isOpenDocumentAttachmentName\(path\)[\s\S]*?\? canAttachOpenDocuments\(options\)[\s\S]*?: canAttachDocs\(options\)[\s\S]*?const needsRagDocuments = documentPaths\.some[\s\S]*?if \(needsRagDocuments && !canAttachDocs\(currentOptions\)\)/;
+const OPEN_DOCUMENT_CHAT_QUEUE_RE =
+  /const handleNativeOpenDocumentDrop = useCallback\([\s\S]*?addOpenDocumentAttachments\(artifactViewKey, intents\)[\s\S]*?onAttachOpenDocuments: handleNativeOpenDocumentDrop/;
+const OPEN_DOCUMENT_DRAIN_RE =
+  /takeOpenDocumentAttachments\(targetKey\)[\s\S]*?nativeAttachmentIntentToFile\(intent\)[\s\S]*?await aui\.composer\(\)\.addAttachment\(file\)/;
 
 function attachmentIntent(id: string): NativeIntent {
   return {
@@ -72,6 +99,59 @@ test("documents are an attachment drop, one or many", () => {
   ]);
   assert.equal(dropped.kind, "docs");
   assert.equal(dropped.kind === "docs" ? dropped.paths.length : 0, 3);
+});
+
+test("OpenDocument picker types are accepted by native drops", () => {
+  assert.match(OPEN_DOCUMENT_ATTACHMENT_ACCEPT, OPEN_DOCUMENT_EXTENSION_RE);
+  for (const extension of OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS.split(",")) {
+    const path = `/docs/file${extension.toUpperCase()}`;
+    assert.equal(classifyDropPaths([path]).kind, "docs", path);
+    assert.ok(SUPPORTED_DROP_HINT.includes(extension));
+  }
+
+  const providerSource = readFileSync(
+    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(providerSource, OPEN_DOCUMENT_ADAPTER_ACCEPT_RE);
+
+  const nativeDropSource = readFileSync(
+    new URL(
+      "../src/features/native-intents/use-native-drop.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(nativeDropSource, OPEN_DOCUMENT_DROP_TO_COMPOSER_RE);
+  assert.match(nativeDropSource, OPEN_DOCUMENT_REGISTRATION_CLASS_RE);
+  assert.match(nativeDropSource, OPEN_DOCUMENT_IMAGE_REGISTRATION_RE);
+  assert.match(nativeDropSource, OPEN_DOCUMENT_BACKEND_GATE_RE);
+
+  const chatPageSource = readFileSync(
+    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(chatPageSource, OPEN_DOCUMENT_CHAT_QUEUE_RE);
+
+  const threadSource = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(threadSource, OPEN_DOCUMENT_DRAIN_RE);
+
+  const rustSource = readFileSync(
+    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
+    "utf8",
+  );
+  const rust = [
+    ...(rustSource
+      .match(RUST_OPEN_DOCUMENT_ATTACHMENT_EXTS_RE)?.[1]
+      .matchAll(RUST_EXTENSION_RE) ?? []),
+  ]
+    .map((match) => `.${match[1]}`)
+    .sort();
+  const frontend = OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS.split(",").sort();
+  assert.deepEqual(rust, frontend);
 });
 
 test("images route to chat vision attachments, one or many", () => {
@@ -290,7 +370,7 @@ test("the drop image list matches the composer's file picker", () => {
 });
 
 // A remount means the instance that queued the batch cannot hand it over.
-test("a remounted composer claims the batch its predecessor left behind", () => {
+test("a remounted composer claims image and OpenDocument batches", () => {
   const store = useNativeIntentStore.getState();
   const intent = {
     id: "i1",
@@ -303,8 +383,10 @@ test("a remounted composer claims the batch its predecessor left behind", () => 
       expiresAtMs: Date.now() + 60_000,
     },
   } as unknown as NativeIntent;
+  const openDocument = attachmentIntent("remounted-sheet");
 
   store.addImageAttachments("single:new", [intent]);
+  store.addOpenDocumentAttachments("single:new", [openDocument]);
   store.noteImageDropOwner("single:new", "composer-1");
 
   // A different composer must not take it.
@@ -318,6 +400,11 @@ test("a remounted composer claims the batch its predecessor left behind", () => 
   const after = useNativeIntentStore.getState();
   assert.equal(after.pendingImageAttachments["single:new"], undefined);
   assert.deepEqual(after.pendingImageAttachments["single:thread-7"], [intent]);
+  assert.equal(after.pendingOpenDocumentAttachments["single:new"], undefined);
+  assert.deepEqual(
+    after.pendingOpenDocumentAttachments["single:thread-7"],
+    [openDocument],
+  );
   assert.deepEqual(after.imageDropOwners, {});
 });
 
@@ -349,6 +436,20 @@ test("ownership recorded after a claim is still picked up", () => {
   const after = useNativeIntentStore.getState();
   assert.equal(after.pendingImageAttachments["single:new"], undefined);
   assert.deepEqual(after.pendingImageAttachments["single:thread-9"], [intent]);
+});
+
+test("image failures cannot consume queued OpenDocuments", () => {
+  const store = useNativeIntentStore.getState();
+  const image = attachmentIntent("mixed-image");
+  const openDocument = attachmentIntent("mixed-sheet");
+
+  store.addImageAttachments("single:mixed", [image]);
+  store.addOpenDocumentAttachments("single:mixed", [openDocument]);
+
+  assert.deepEqual(store.takeImageAttachments("single:mixed"), [image]);
+  assert.deepEqual(store.takeOpenDocumentAttachments("single:mixed"), [
+    openDocument,
+  ]);
 });
 
 test("document, image and audio drop extensions stay disjoint", () => {

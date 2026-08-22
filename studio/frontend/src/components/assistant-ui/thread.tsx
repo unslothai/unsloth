@@ -2456,11 +2456,22 @@ const Composer: FC<{
         (s.pendingImageAttachments[nativeAttachmentTargetKey]?.length ?? 0) > 0,
     ),
   );
+  const hasPendingOpenDocumentAttachments = useNativeIntentStore((s) =>
+    Boolean(
+      nativeAttachmentTargetKey &&
+        (s.pendingOpenDocumentAttachments[nativeAttachmentTargetKey]?.length ??
+          0) > 0,
+    ),
+  );
   const registeringImageDrops = useNativeIntentStore(
     (s) => s.registeringImageDrops > 0,
   );
   const [materializingDroppedImages, setMaterializingDroppedImages] =
     useState(false);
+  const [
+    materializingDroppedOpenDocuments,
+    setMaterializingDroppedOpenDocuments,
+  ] = useState(false);
   const hasPendingAudioAttachments = useNativeIntentStore((s) =>
     Boolean(
       nativeAttachmentTargetKey &&
@@ -2886,10 +2897,115 @@ const Composer: FC<{
       unsubscribe();
     };
   }, [nativeAttachmentTargetKey, aui]);
+  useEffect(() => {
+    if (!nativeAttachmentTargetKey) {
+      return;
+    }
+    const targetKey = nativeAttachmentTargetKey;
+    const identityAtSetup = composerIdentityRef.current;
+    useNativeIntentStore
+      .getState()
+      .claimImageAttachments(identityAtSetup, targetKey);
+    let disposed = false;
+    let draining = false;
+
+    const stillThisComposer = () =>
+      composerIdentityRef.current === identityAtSetup;
+    const requeue = (intents: NativeIntent[]) => {
+      const key = stillThisComposer()
+        ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
+        : targetKey;
+      const store = useNativeIntentStore.getState();
+      store.addOpenDocumentAttachments(key, intents);
+      store.noteImageDropOwner(key, identityAtSetup);
+    };
+
+    const drainPendingOpenDocuments = async () => {
+      if (disposed || draining) return;
+      draining = true;
+      setMaterializingDroppedOpenDocuments(true);
+      try {
+        while (!disposed) {
+          const intents = useNativeIntentStore
+            .getState()
+            .takeOpenDocumentAttachments(targetKey);
+          if (intents.length === 0) break;
+          for (const [index, intent] of intents.entries()) {
+            if (disposed) {
+              requeue(intents.slice(index));
+              return;
+            }
+            let file: File;
+            try {
+              file = await nativeAttachmentIntentToFile(intent);
+            } catch (error) {
+              toast.error("Could not attach dropped document", {
+                description:
+                  error instanceof Error ? error.message : String(error),
+              });
+              if (stillThisComposer()) cancelQueuedSendRef.current?.();
+              continue;
+            }
+            if (
+              disposed ||
+              nativeAttachmentTargetKeyRef.current !== targetKey
+            ) {
+              requeue(intents.slice(index));
+              return;
+            }
+            try {
+              await aui.composer().addAttachment(file);
+            } catch {
+              if (stillThisComposer()) cancelQueuedSendRef.current?.();
+            }
+          }
+        }
+      } finally {
+        draining = false;
+        if (!disposed) {
+          const pending =
+            useNativeIntentStore.getState().pendingOpenDocumentAttachments[
+              targetKey
+            ]?.length ?? 0;
+          if (pending > 0 && stillThisComposer()) {
+            void drainPendingOpenDocuments();
+          } else {
+            setMaterializingDroppedOpenDocuments(false);
+          }
+        }
+      }
+    };
+
+    const unsubscribe = useNativeIntentStore.subscribe((state) => {
+      const orphaned = Object.entries(state.imageDropOwners).some(
+        ([key, owner]) => owner === identityAtSetup && key !== targetKey,
+      );
+      if (orphaned) {
+        useNativeIntentStore
+          .getState()
+          .claimImageAttachments(identityAtSetup, targetKey);
+        return;
+      }
+      if (
+        (state.pendingOpenDocumentAttachments[targetKey]?.length ?? 0) > 0
+      ) {
+        void drainPendingOpenDocuments();
+      }
+    });
+    void drainPendingOpenDocuments();
+
+    return () => {
+      disposed = true;
+      setMaterializingDroppedOpenDocuments(false);
+      unsubscribe();
+    };
+  }, [nativeAttachmentTargetKey, aui]);
   const hasMaterializingImageAttachments =
     registeringImageDrops ||
     hasPendingImageAttachments ||
-    materializingDroppedImages;
+    materializingDroppedImages ||
+    hasPendingOpenDocumentAttachments ||
+    materializingDroppedOpenDocuments;
   const hasMaterializingAudioAttachments =
     registeringAudioDrops ||
     hasPendingAudioAttachments ||

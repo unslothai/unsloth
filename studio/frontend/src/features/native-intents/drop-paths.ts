@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS,
+  isOpenDocumentAttachmentName,
+} from "../chat/open-document-accept.ts";
 import { RAG_UPLOAD_ACCEPT } from "../rag/types/rag.ts";
 
 const DOC_EXTS = RAG_UPLOAD_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase());
@@ -23,7 +27,7 @@ export const CHAT_VIDEO_DROP_ACCEPT = ".mp4,.mov,.webm,.mkv,.avi";
 const VIDEO_EXTS = CHAT_VIDEO_DROP_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase());
 
 /** What the window actually takes, for the rejection toast and the overlay. */
-export const SUPPORTED_DROP_HINT = `Supported files: ${RAG_UPLOAD_ACCEPT}, ${CHAT_IMAGE_DROP_ACCEPT}, one of ${CHAT_AUDIO_DROP_ACCEPT}, one of ${CHAT_VIDEO_DROP_ACCEPT}, or a single .gguf model.`;
+export const SUPPORTED_DROP_HINT = `Supported files: ${RAG_UPLOAD_ACCEPT}, ${OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS}, ${CHAT_IMAGE_DROP_ACCEPT}, one of ${CHAT_AUDIO_DROP_ACCEPT}, one of ${CHAT_VIDEO_DROP_ACCEPT}, or a single .gguf model.`;
 
 /** Last path segment of a native path, for display and extension checks. */
 export function nativeFileName(path: string): string {
@@ -61,7 +65,11 @@ export function classifyDropPaths(paths: string[]): NativeDropClass {
       ? { kind: "model", path: ggufs[0] }
       : { kind: "unsupported" };
   }
-  const docs = paths.filter((path) => DOC_EXTS.some((ext) => hasExt(path, ext)));
+  const docs = paths.filter(
+    (path) =>
+      DOC_EXTS.some((ext) => hasExt(path, ext)) ||
+      isOpenDocumentAttachmentName(path),
+  );
   const images = paths.filter((path) =>
     IMAGE_EXTS.some((ext) => hasExt(path, ext)),
   );
