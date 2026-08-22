@@ -33,7 +33,13 @@ _VALIDATED_BUILD = "2.11.0+rocm7.13.0"
 
 
 class _FakeCuda:
-    def __init__(self, arches = ("gfx1151",), *, available = True, error = None):
+    def __init__(
+        self,
+        arches = ("gfx1151",),
+        *,
+        available = True,
+        error = None,
+    ):
         self.arches = tuple(arches)
         self.available = available
         self.error = error
@@ -50,7 +56,11 @@ class _FakeCuda:
         return SimpleNamespace(gcnArchName = self.arches[index])
 
 
-def _torch(build = _VALIDATED_BUILD, arches = ("gfx1151",), **cuda_kwargs):
+def _torch(
+    build = _VALIDATED_BUILD,
+    arches = ("gfx1151",),
+    **cuda_kwargs,
+):
     return SimpleNamespace(__version__ = build, cuda = _FakeCuda(arches, **cuda_kwargs))
 
 
@@ -75,11 +85,14 @@ def test_studio_metadata_path_imports_torch_only_after_the_build_matches(monkeyp
     monkeypatch.setattr(rocm_attention, "package_version", lambda _name: _VALIDATED_BUILD)
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     env = {}
-    assert enable_rocm_aotriton_attention(
-        env,
-        platform_name = "linux",
-        dxg_present = False,
-    ) is True
+    assert (
+        enable_rocm_aotriton_attention(
+            env,
+            platform_name = "linux",
+            dxg_present = False,
+        )
+        is True
+    )
     assert env[AOTRITON_ENV] == "1"
 
 
