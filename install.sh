@@ -655,6 +655,38 @@ _resolve_studio_destinations
 # for us; the pinned path does not.
 _UNSLOTH_LOGIN_PATH="$PATH"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
+
+# Keep uv's cache on the same filesystem as the venv it fills.
+#
+# uv HARDLINKS wheels out of its cache into the venv when both sit on one
+# filesystem, and falls back to COPYING when they do not. Measured with
+# torch 2.11.0+cpu: co-located, a 749 MB cache and a 748 MB venv occupy 755 MB
+# between them (st_nlink 2 on the shared objects); split across a filesystem
+# boundary the same files are duplicated outright (st_nlink 1).
+#
+# uv's default cache is $HOME/.cache/uv, while STUDIO_HOME can be moved anywhere
+# with UNSLOTH_STUDIO_HOME. Every such install -- Studio on an SD card or a second
+# disk, which is the usual reason to redirect it -- therefore paid twice the disk
+# cost AND left several GB of cache on the drive the user deliberately moved off.
+# Scoping the cache under STUDIO_HOME also means it leaves with the install rather
+# than accumulating in a shared cache across upgrades.
+#
+# An explicit UV_CACHE_DIR from the caller always wins. A failed mkdir must not be
+# merely ignored: uv aborts with "Failed to initialize cache at ..." on a cache path it
+# cannot create, so keeping the export would turn a co-location optimisation into a hard
+# install failure on a host where uv's own default cache would have worked. Reachable
+# with a writable STUDIO_HOME whose "cache" entry is a file or an unwritable directory
+# (a leftover from an install run under a different user). Fall back to uv's default by
+# restoring the unset state instead.
+if [ -z "${UV_CACHE_DIR:-}" ]; then
+    UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
+    export UV_CACHE_DIR
+    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null; then
+        echo "[WARN] Cannot create $UV_CACHE_DIR -- using uv's default cache." >&2
+        echo "[WARN] Wheels will be copied into the venv rather than hardlinked, costing extra disk." >&2
+        unset UV_CACHE_DIR
+    fi
+fi
 _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
 _VENV_ROLLBACK_ACTIVE=false
@@ -3079,6 +3111,13 @@ fi
 # Default torch constraint -- tightened for Python 3.13+ on arm64 macOS
 # (torch <2.6 has no cp313 macOS arm64 wheels)
 TORCH_CONSTRAINT="torch>=2.4,<2.11.0"
+# Minor version of the interpreter the venv actually has, for the wheel floors below.
+# Read once here rather than per-arm: the venv exists by this point, and a version the
+# probe cannot read must not silently drop a floor, so an unreadable one reads as 99
+# (newest) and leaves every arm's own guard to decide.
+_PY_MINOR_FOR_TORCH=$("$VENV_DIR/bin/python" -c \
+    "import sys; print(sys.version_info.minor)" 2>/dev/null || echo "99")
+case "$_PY_MINOR_FOR_TORCH" in ''|*[!0-9]*) _PY_MINOR_FOR_TORCH=99 ;; esac
 if [ "$SKIP_TORCH" = false ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     _PY_MINOR=$("$VENV_DIR/bin/python" -c \
         "import sys; print(sys.version_info.minor)" 2>/dev/null || echo "0")
@@ -3721,7 +3760,46 @@ get_torch_index_url() {
             echo "[WARN] For GPU PyTorch, install or repair rocminfo/amd-smi (e.g. sudo pacman -S rocm-hip-sdk) and re-run this installer." >&2
             echo "$_base/cpu"; return
         fi
-        # AMD GPU confirmed -- detect ROCm version
+        # Archs measured to compute INCORRECTLY under ROCm route to CPU instead.
+        #
+        # This is deliberately NOT "everything outside AMD's hardware support table".
+        # unsloth serves several archs AMD does not list, on purpose and with evidence:
+        # gfx906 (MI50 / Radeon VII) through the rocm6.3 legacy index, verified there
+        # with torch 2.7.0, and gfx1031-gfx1036 through gfx103X-all (#7277). Gating on
+        # AMD's table alone would silently drop support that is known to work.
+        #
+        # gfx1033 (Van Gogh, the Steam Deck APU) is different: ROCm wheels install on
+        # it and then return wrong answers rather than refusing. Training diverges to a
+        # negative MSE loss and then NaN, and torch.autograd.gradcheck fails in float64
+        # -- reproduced on rocm7.1/torch 2.10, rocm7.2/torch 2.11 and AMD's own native
+        # gfx1033 build from TheRock, while forward math matches CPU to 4.2e-07. It is
+        # in gfx103X-all above, so without this it would be routed to ROCm wheels the
+        # moment a ROCm runtime is present. Full measurements in
+        # studio/ROCM_RDNA2_APU.md.
+        #
+        # Deliberately inline rather than a helper: get_torch_index_url is extracted on
+        # its own by several test harnesses, and a helper they did not also extract
+        # would be an undefined command whose negation sends every ROCm case to the cpu
+        # index. Keeping the gate in the function body means every harness gets it.
+        #
+        # Escape hatch: a pinned UNSLOTH_TORCH_INDEX_URL returns long before this point.
+        #
+        # Match a TOKEN, not the whole probe. _probe_amd_gfx_arch keeps every `grep -oE`
+        # hit and rocminfo names each GPU agent twice -- its own "Name: gfx1033" and its
+        # "ISA Info" line "amdgcn-amd-amdhsa--gfx1033" -- so a single-GPU Deck already
+        # reads "gfx1033\ngfx1033". An exact-string case on that matched nothing and fell
+        # through to the version-keyed ROCm index below. Flatten to one space-delimited,
+        # lowercased, suffix-stripped line (the surrounding spaces keep gfx10330 out).
+        _amd_gfx_tokens=" $(printf '%s\n' "$_amd_gfx_probe" | sed 's/:.*$//' \
+            | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')"
+        case "$_amd_gfx_tokens" in
+            *" gfx1033 "*)
+                echo "[WARN] AMD gfx1033 (Van Gogh) computes incorrect results under ROCm -- installing CPU-only PyTorch." >&2
+                echo "[WARN] ROCm wheels install on it but training diverges to NaN and gradcheck fails; forward math is fine." >&2
+                echo "[WARN] Details: studio/ROCM_RDNA2_APU.md. Override with UNSLOTH_TORCH_INDEX_URL if you want ROCm anyway." >&2
+                echo "$_base/cpu"; return ;;
+        esac
+        # detect ROCm version
         _rocm_tag=""
         _rocm_tag=$(_detect_rocm_version_tag) || _rocm_tag=""
         # ^ || guard: belt and braces on the set -e contract the helpers hold, so a
@@ -4372,6 +4450,27 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
     case "$TORCH_INDEX_URL" in
         */cpu)
             _linux_inferred_gfx=$(_infer_linux_amd_gfx_arch 2>/dev/null || true)
+            # The gfx1033 gate in get_torch_index_url is not enough on its own: this
+            # reroute fires on UNSLOTH_ROCM_GFX_ARCH alone and would take the */cpu that
+            # gate just chose straight back to gfx103X-all. Drop it here too, so the only
+            # way to ROCm on Van Gogh stays the documented UNSLOTH_TORCH_INDEX_URL pin.
+            #
+            # Clearing the local variable is not enough either: setup.sh copies
+            # UNSLOTH_ROCM_GFX_ARCH straight into --rocm-gfx, and
+            # install_llama_prebuilt.py's _apply_host_overrides reads any forwarded gfx
+            # as proof of ROCm (has_rocm = True). On a Van Gogh host with no ROCm that
+            # skips the AMD-without-ROCm Vulkan branch this release adds -- the bundle
+            # measured 112.8 tok/s against 49.8 for CPU -- and asks for a ROCm prebuilt
+            # or a HIP source build the host cannot run. Drop the rejected override so
+            # setup.sh re-probes instead: a host that really does have ROCm still finds
+            # gfx1033 through its own rocminfo call, and the documented
+            # UNSLOTH_TORCH_INDEX_URL pin returns long before this block.
+            case "${_linux_inferred_gfx%%:*}" in
+                gfx1033)
+                    echo "[WARN] AMD gfx1033 (Van Gogh) computes incorrect results under ROCm -- keeping CPU-only PyTorch (studio/ROCM_RDNA2_APU.md)." >&2
+                    _linux_inferred_gfx=""
+                    unset UNSLOTH_ROCM_GFX_ARCH ;;
+            esac
             if [ -n "$_linux_inferred_gfx" ]; then
                 _amd_family=$(_amd_arch_index_family_for_gfx "$_linux_inferred_gfx") || _amd_family=""
                 if [ -n "$_amd_family" ]; then
@@ -4469,6 +4568,36 @@ case "$_torch_index_leaf" in
         TORCH_CONSTRAINT="torch>=2.4,<2.12.0"
         TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.27.0"
         TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.12.0"
+        ;;
+    # The cpu index ships the full 2.11 trio (torch 2.11.0+cpu, torchvision 0.26.0+cpu,
+    # torchaudio 2.11.0+cpu) for cp312/cp313, on the same manylinux_2_28 platform tag the
+    # 2.10 cpu wheels already used -- so this raises no glibc floor and cannot strand an
+    # older distro.
+    #
+    # The companions move with torch, matching how the rocm7.2 arm pins its trio. To be
+    # precise about what this is NOT: the bounded companion defaults above already prevent
+    # the bare-companion mismatch described there. Verified with a resolve against this
+    # index -- with the current bounds it yields a consistent torch/torchaudio/torchvision
+    # 2.10/2.10/0.25 set, and only bare companion NAMES reproduce torch 2.10.0+cpu with
+    # torchaudio 2.11.0+cpu. So this keeps that property one version up; it fixes nothing.
+    #
+    # Linux/WSL only. macOS resolves through this same leaf (get_torch_index_url returns
+    # $_base/cpu on Darwin) and its arm64 wheels have had no smoke pass here, so macOS keeps
+    # the default window and the Python 3.13 >=2.6 floor set earlier. Windows never runs this
+    # script.
+    #
+    # Floored at Python 3.10, which is where the 2.11 cpu wheels start (cp310-cp314
+    # verified on the index). The default interpreter is 3.13 so this is normally moot,
+    # but --python / UNSLOTH_PYTHON take any version and an existing venv from an older
+    # install is reused as-is. On 3.9 a bare 2.11 floor makes the resolve fail outright
+    # ("No solution found") where the default window still resolves torch 2.8.0+cpu, so
+    # an older interpreter keeps the default window rather than losing torch entirely.
+    cpu)
+        if [ "$OS" != "macos" ] && [ "${_PY_MINOR_FOR_TORCH:-99}" -ge 10 ] 2>/dev/null; then
+            TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
+            TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
+            TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
+        fi
         ;;
     # Floor 2.6, not the generic 2.4: unsloth/models/_utils.py raises at import for an XPU
     # device below it, so a mirror serving an older +xpu wheel would install something that
@@ -4802,7 +4931,16 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
         step "gpu" "AMD ROCm"
     fi
     _rocm_root="${ROCM_PATH:-${HIP_PATH:-/opt/rocm}}"
-    substep "ROCm: $_rocm_root"
+    # Only claim a path that is really there. /opt/rocm is a FALLBACK, not a
+    # detection: _has_amd_rocm_gpu() accepts rocminfo/amd-smi on their own, so a
+    # runtime-only ROCm (driver plus libraries, no SDK tree) reaches here with
+    # nothing at /opt/rocm. Reporting it anyway sent anyone debugging a ROCm setup
+    # off to inspect a directory that does not exist.
+    if [ -d "$_rocm_root" ]; then
+        substep "ROCm: $_rocm_root"
+    else
+        substep "ROCm: runtime detected (no SDK tree at $_rocm_root)"
+    fi
     [ -n "$_gpu_rocm_ver" ] && substep "hipconfig: $_gpu_rocm_ver"
     [ -n "$_gpu_disp_mkt" ] && [ -n "$_gpu_disp_gfx" ] && substep "GPU: $_gpu_disp_mkt"
 elif [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
@@ -5557,9 +5695,18 @@ _persist_fish_path_dir() {
     # The exact line we would write, not any occurrence of the directory: /opt/uv-old must not
     # pass for /opt/uv, and fish reads none of the POSIX files that would otherwise cover it.
     if ! grep -v '^[[:space:]]*#' "$_pfp_file" 2>/dev/null | grep -qxF "fish_add_path '$_pfp_quoted'"; then
-        echo "# Added by Unsloth installer" >> "$_pfp_file"
-        echo "fish_add_path '$_pfp_quoted'" >> "$_pfp_file"
-        step "path" "added $_pfp_label to PATH in $_pfp_file"
+        # Same single redirect and same warning-not-failure contract as the POSIX arm.
+        if {
+            echo "# Added by Unsloth installer"
+            echo "fish_add_path '$_pfp_quoted'"
+        } >> "$_pfp_file" 2>/dev/null; then
+            step "path" "added $_pfp_label to PATH in $_pfp_file"
+        else
+            step "path" "could not write $_pfp_file -- it is read-only or managed" "$C_WARN"
+            substep "Unsloth is installed and works; only the PATH line is missing."
+            substep "Add this to your fish config to get 'unsloth' in new shells:"
+            substep "  fish_add_path '$_pfp_quoted'"
+        fi
     fi
 }
 
@@ -5603,10 +5750,26 @@ _persist_login_path_dir() {
     # shell with no uv at all.
     if ! grep -v '^[[:space:]]*#' "$_SHELL_PROFILE" 2>/dev/null \
         | grep -E "$_PATH_LINE_RE" | grep -qE "$_plp_pattern"; then
-        echo '' >> "$_SHELL_PROFILE"
-        echo '# Added by Unsloth installer' >> "$_SHELL_PROFILE"
-        echo "export PATH=\"$_plp_literal:\$PATH\"" >> "$_SHELL_PROFILE"
-        step "path" "added $_plp_label to PATH in $_SHELL_PROFILE"
+        # One redirect, not three: a write that dies midway (full disk, quota) would
+        # otherwise leave a dangling "# Added by Unsloth installer" with no export under
+        # it. And a failure here is a WARNING carrying the line to add by hand, never a
+        # failure of the install: set -e at the top of this script would otherwise abort
+        # AFTER the venv, llama.cpp and the shim are all in place, and the Tauri/AppImage
+        # path surfaces that exit code as a failed install. A read-only rc is a supported
+        # setup (NixOS and home-manager symlink ~/.bashrc read-only into the Nix store;
+        # chezmoi, stow and yadm do the same), not a broken machine.
+        if {
+            echo ''
+            echo '# Added by Unsloth installer'
+            echo "export PATH=\"$_plp_literal:\$PATH\""
+        } >> "$_SHELL_PROFILE" 2>/dev/null; then
+            step "path" "added $_plp_label to PATH in $_SHELL_PROFILE"
+        else
+            step "path" "could not write $_SHELL_PROFILE -- it is read-only or managed" "$C_WARN"
+            substep "Unsloth is installed and works; only the PATH line is missing."
+            substep "Add this to your shell config to get 'unsloth' in new shells:"
+            substep "  export PATH=\"$_plp_literal:\$PATH\""
+        fi
     fi
 }
 

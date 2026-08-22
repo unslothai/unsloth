@@ -2701,6 +2701,96 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
         attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(host, self._cpu_only_bundle())
         assert [a.install_kind for a in attempts] == ["linux-cpu"]
 
+    def _vulkan_and_cpu_bundle(self):
+        """What unslothai/llama.cpp actually publishes: both an x64 Vulkan bundle and
+        an x64 CPU one (app-<tag>-linux-x64-vulkan.tar.gz / -cpu.tar.gz)."""
+        return make_release(
+            [
+                make_artifact(
+                    "app-b8508-linux-x64-vulkan.tar.gz",
+                    install_kind = "linux-vulkan",
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = "linux-vulkan-x64",
+                    rank = 500,
+                ),
+                make_artifact(
+                    "app-b8508-linux-x64-cpu.tar.gz",
+                    install_kind = "linux-cpu",
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = None,
+                    rank = 1000,
+                ),
+            ]
+        )
+
+    def _gpu_host(self, **overrides):
+        base = dict(
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            has_rocm = False,
+        )
+        base.update(overrides)
+        return make_host(**base)
+
+    def test_amd_without_rocm_gets_the_published_vulkan_bundle(self):
+        """The regression this guards: an AMD host with no usable ROCm silently took the
+        CPU bundle.
+
+        The Vulkan preference was stated in direct_upstream_release_plan and in
+        resolve_upstream_asset_choice, but NOT here -- and this is the branch that runs
+        whenever a published bundle exists, which is the normal case. So a Steam Deck
+        installed the CPU llama.cpp while both upstream paths said Vulkan, and the only
+        way to get Vulkan was to set UNSLOTH_LLAMA_CPP_BACKEND by hand.
+        """
+        host = self._gpu_host(has_amd_gpu_without_rocm = True)
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(
+            host, self._vulkan_and_cpu_bundle()
+        )
+        # Vulkan first, CPU kept behind it: if the Vulkan bundle fails validation the
+        # host still gets a working engine rather than nothing.
+        assert [a.install_kind for a in attempts] == ["linux-vulkan", "linux-cpu"]
+
+    def test_intel_routing_is_unchanged(self):
+        host = self._gpu_host(has_intel_gpu = True)
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(
+            host, self._vulkan_and_cpu_bundle()
+        )
+        assert [a.install_kind for a in attempts] == ["linux-vulkan", "linux-cpu"]
+
+    def test_plain_cpu_host_never_reaches_vulkan(self):
+        host = self._gpu_host()
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(
+            host, self._vulkan_and_cpu_bundle()
+        )
+        assert [a.install_kind for a in attempts] == ["linux-cpu"]
+
+    def test_amd_next_to_a_physical_nvidia_does_not_reach_vulkan(self):
+        """Vulkan ignores CUDA_VISIBLE_DEVICES, so a hidden NVIDIA card must not be
+        enumerated through it -- the same reason the other two paths test physical
+        rather than usable NVIDIA."""
+        host = self._gpu_host(has_amd_gpu_without_rocm = True, has_physical_nvidia = True)
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(
+            host, self._vulkan_and_cpu_bundle()
+        )
+        assert "linux-vulkan" not in [a.install_kind for a in attempts]
+
+    def test_amd_without_rocm_falls_back_to_cpu_when_no_vulkan_bundle_exists(self):
+        """An older release that shipped no Vulkan bundle must still install something."""
+        host = self._gpu_host(has_amd_gpu_without_rocm = True)
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(host, self._cpu_only_bundle())
+        assert [a.install_kind for a in attempts] == ["linux-cpu"]
+
 
 # ===========================================================================
 # N.1d. published_windows_cuda_attempts -- version-dynamic ordering seed

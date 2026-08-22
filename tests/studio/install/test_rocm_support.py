@@ -5636,6 +5636,22 @@ class TestStrixRocm71Override:
         with patch.object(m, "IS_WINDOWS", True):
             assert m._amd_arch_index_url("gfx1151") == m._windows_rocm_index_url("gfx1151")
 
+    def test_amd_arch_index_url_refuses_miscomputing_arch(self):
+        """gfx1033 (Van Gogh) installs ROCm wheels fine and then computes wrong answers
+        (studio/ROCM_RDNA2_APU.md), so install.sh routes it to the cpu index. The
+        inferred-gfx repair here is exempt from the runtime gate when
+        UNSLOTH_ROCM_GFX_ARCH is set, so without this it would force-reinstall the exact
+        ROCm wheels that gate avoids. Its family neighbours must keep working (#7277)."""
+        m = stack_mod
+        with (
+            patch.object(m, "IS_WINDOWS", False),
+            patch.dict(os.environ, {"UNSLOTH_AMD_ROCM_MIRROR": ""}),
+        ):
+            assert m._amd_arch_index_url("gfx1033") is None
+            assert m._amd_arch_index_url("GFX1033") is None
+            for _gfx in ("gfx1030", "gfx1031", "gfx1032", "gfx1034", "gfx1035", "gfx1036"):
+                assert m._amd_arch_index_url(_gfx) == "https://repo.amd.com/rocm/whl/gfx103X-all/"
+
     def test_strix_gfx_detection_in_install_sh(self):
         """install.sh must detect gfx1151 and gfx1150 for the override."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
@@ -6668,6 +6684,117 @@ class TestRocmWslSupplyChainPins:
         assert required.group(1) == declared.group(1)
         assert "git rev-parse HEAD" in helper
         assert "_co_failed=1" in helper
+
+
+class TestRocmMiscomputingArchDemotion:
+    """A gfx1033 venv that ALREADY holds ROCm torch must be demoted, not just declined.
+
+    _amd_arch_index_url() returning None only blocks a fresh ROCm install. On an upgrade
+    the existing build survived every gate: install.sh resolves UNSLOTH_TORCH_BACKEND=cpu,
+    which returns _ensure_rocm_torch at its first line; _ensure_cpu_torch fired only for an
+    explicit pin; and the base update does not reinstall an already-satisfied torch. The
+    host most in need of the gate therefore kept the wheels the gate exists to remove.
+    """
+
+    def _demotion_calls(
+        self,
+        monkeypatch,
+        label,
+        archs,
+        env = None,
+        codes_fn = None,
+    ):
+        calls = []
+        monkeypatch.setattr(stack_mod, "NO_TORCH", False)
+        monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)
+        monkeypatch.setattr(stack_mod, "IS_MACOS", False)
+        monkeypatch.setattr(stack_mod, "_installed_torch_label_on_disk", lambda: label)
+        monkeypatch.setattr(
+            stack_mod, "_detect_amd_gfx_codes", codes_fn or (lambda **_kw: list(archs))
+        )
+        monkeypatch.setattr(stack_mod, "_infer_linux_amd_gfx_arch", lambda: None)
+        monkeypatch.setattr(stack_mod, "pip_install", lambda *a, **k: calls.append((a, k)))
+        for _var in (
+            "UNSLOTH_TORCH_INDEX_URL",
+            "UNSLOTH_TORCH_INDEX_FAMILY",
+            "UNSLOTH_ROCM_GFX_ARCH",
+        ):
+            monkeypatch.delenv(_var, raising = False)
+        for _var, _val in (env or {}).items():
+            monkeypatch.setenv(_var, _val)
+        probe = MagicMock(returncode = 0, stdout = b"gpu\n")
+        with patch("subprocess.run", return_value = probe):
+            stack_mod._ensure_cpu_torch()
+        return calls
+
+    def test_installed_rocm_torch_on_gfx1033_is_demoted(self, monkeypatch):
+        calls = self._demotion_calls(monkeypatch, "2.10.0+rocm7.1", ["gfx1033"])
+        assert len(calls) == 1, "gfx1033 kept its ROCm torch across the upgrade"
+        assert "--force-reinstall" in calls[0][0]
+        assert "download.pytorch.org/whl/cpu" in str(calls[0])
+
+    def test_hsa_spoofed_gfx1033_is_still_demoted(self, monkeypatch):
+        """HSA_OVERRIDE_GFX_VERSION=10.3.0 is the usual Van Gogh workaround and makes
+        rocminfo answer gfx1030, so the probe must ignore it or the arch hides itself."""
+        seen = {}
+
+        def _codes(**kw):
+            seen.update(kw)
+            return ["gfx1030"] if not kw.get("ignore_hsa_override") else ["gfx1033"]
+
+        calls = self._demotion_calls(monkeypatch, "2.10.0+rocm7.1", [], codes_fn = _codes)
+        assert seen.get("ignore_hsa_override") is True
+        assert len(calls) == 1
+
+    def test_env_override_names_the_arch(self, monkeypatch):
+        calls = self._demotion_calls(
+            monkeypatch, "2.10.0+rocm7.1", [], env = {"UNSLOTH_ROCM_GFX_ARCH": "GFX1033"}
+        )
+        assert len(calls) == 1
+
+    @pytest.mark.parametrize(
+        "label, archs, env, why",
+        [
+            # A supported arch keeps its ROCm torch: the gate is scoped to what was measured.
+            ("2.10.0+rocm7.1", ["gfx1030"], None, "gfx1030 demoted"),
+            ("2.10.0+rocm7.1", ["gfx906"], None, "gfx906 demoted"),
+            # Mixed host: a healthy dGPU beside the APU is still served by ROCm.
+            ("2.10.0+rocm7.1", ["gfx1033", "gfx1100"], None, "mixed host demoted"),
+            # Nothing to demote -- and no ROCm probe should be paid for on these hosts.
+            ("2.10.0+cu128", ["gfx1033"], None, "CUDA torch demoted"),
+            ("2.10.0", ["gfx1033"], None, "CPU torch reinstalled for nothing"),
+            # The documented escape hatch stays authoritative.
+            (
+                "2.10.0+rocm7.1",
+                ["gfx1033"],
+                {"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/rocm7.2"},
+                "explicit ROCm pin overridden",
+            ),
+            (
+                "2.10.0+rocm7.1",
+                ["gfx1033"],
+                {"UNSLOTH_TORCH_INDEX_FAMILY": "rocm7.2"},
+                "explicit family pin overridden",
+            ),
+        ],
+    )
+    def test_no_demotion_outside_the_measured_case(self, monkeypatch, label, archs, env, why):
+        assert self._demotion_calls(monkeypatch, label, archs, env) == [], why
+
+    def test_probe_is_skipped_when_no_rocm_torch_is_installed(self, monkeypatch):
+        """The arch probes run subprocesses; they must not run on every ordinary install."""
+        monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)
+        monkeypatch.setattr(stack_mod, "IS_MACOS", False)
+        monkeypatch.setattr(stack_mod, "_installed_torch_label_on_disk", lambda: "2.10.0+cu128")
+
+        def _boom(**_kw):
+            raise AssertionError("probed the AMD arch on a host with no ROCm torch")
+
+        monkeypatch.setattr(stack_mod, "_detect_amd_gfx_codes", _boom)
+        monkeypatch.setattr(stack_mod, "_infer_linux_amd_gfx_arch", _boom)
+        for _var in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY"):
+            monkeypatch.delenv(_var, raising = False)
+        assert stack_mod._rocm_miscomputing_host() is False
 
 
 if __name__ == "__main__":
