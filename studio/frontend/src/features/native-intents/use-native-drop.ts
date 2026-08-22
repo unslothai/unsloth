@@ -2,7 +2,11 @@ import { isTauri } from "@/lib/api-base";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { registerNativeAttachmentPath, registerNativeModelPath } from "./api";
-import { classifyDropPaths, SUPPORTED_DROP_HINT } from "./drop-paths";
+import {
+  classifyDropPaths,
+  isComposerAttachmentName,
+  SUPPORTED_DROP_HINT,
+} from "./drop-paths";
 import { nativeDropTargetAt } from "./native-drop-targets";
 import { useNativeIntentStore } from "./store";
 import type { NativeIntent } from "./types";
@@ -43,6 +47,17 @@ function canAttachDocs(options: NativeModelDropOptions): boolean {
 
 function canAttachImages(options: NativeModelDropOptions): boolean {
   return Boolean(options.onAttachImages);
+}
+
+function canAttachDocumentPaths(
+  paths: string[],
+  options: NativeModelDropOptions,
+): boolean {
+  return paths.every((path) =>
+    isComposerAttachmentName(path)
+      ? canAttachImages(options)
+      : canAttachDocs(options),
+  );
 }
 
 function canAttachAudio(options: NativeModelDropOptions): boolean {
@@ -99,7 +114,7 @@ function dropStateForPaths(
     return { status: "invalid", reason: options.dropsUnsupportedReason };
   }
   if (dropped.kind === "docs") {
-    return canAttachDocs(options)
+    return canAttachDocumentPaths(dropped.paths, options)
       ? { status: "attach", count: dropped.paths.length, kind: "docs" }
       : { status: "invalid" };
   }
@@ -119,7 +134,7 @@ function dropStateForPaths(
       : { status: "invalid" };
   }
   if (dropped.kind === "attach") {
-    const docsSupported = dropped.docs.length === 0 || canAttachDocs(options);
+    const docsSupported = canAttachDocumentPaths(dropped.docs, options);
     const imagesSupported =
       dropped.images.length === 0 || canAttachImages(options);
     const audioSupported = dropped.audio.length === 0 || canAttachAudio(options);
@@ -140,6 +155,7 @@ function dropStateForPaths(
 
 interface RegisteredDrop {
   docs: NativeIntent[];
+  composerDocuments: NativeIntent[];
   images: NativeIntent[];
   audio: NativeIntent[];
   video: NativeIntent[];
@@ -184,6 +200,10 @@ async function registerDroppedAttachments(
       : dropped.kind === "attach"
         ? dropped.docs
         : [];
+  const composerDocumentPaths = docPaths.filter(isComposerAttachmentName);
+  const ragDocumentPaths = docPaths.filter(
+    (path) => !isComposerAttachmentName(path),
+  );
   const imagePaths =
     dropped.kind === "images"
       ? dropped.paths
@@ -202,22 +222,29 @@ async function registerDroppedAttachments(
       : dropped.kind === "attach"
         ? dropped.video
         : [];
-  const [docs, images, audio, video] = await Promise.all([
-    registerEach(docPaths),
+  const [docs, composerDocuments, images, audio, video] = await Promise.all([
+    registerEach(ragDocumentPaths),
+    registerEach(composerDocumentPaths),
     registerEach(imagePaths),
     registerEach(audioPaths),
     registerEach(videoPaths),
   ]);
   return {
     docs: docs.intents,
+    composerDocuments: composerDocuments.intents,
     images: images.intents,
     audio: audio.intents,
     video: video.intents,
-    docsFailed: docs.failed,
+    docsFailed: docs.failed + composerDocuments.failed,
     imagesFailed: images.failed,
     audioFailed: audio.failed,
     videoFailed: video.failed,
-    error: docs.error ?? images.error ?? audio.error ?? video.error,
+    error:
+      docs.error ??
+      composerDocuments.error ??
+      images.error ??
+      audio.error ??
+      video.error,
   };
 }
 
@@ -297,25 +324,36 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
           dropped.kind === "video" ||
           dropped.kind === "attach"
         ) {
-          const needsDocs =
-            dropped.kind === "docs" ||
-            (dropped.kind === "attach" && dropped.docs.length > 0);
           const needsImages =
             dropped.kind === "images" ||
             (dropped.kind === "attach" && dropped.images.length > 0);
+          const documentPaths =
+            dropped.kind === "docs"
+              ? dropped.paths
+              : dropped.kind === "attach"
+                ? dropped.docs
+                : [];
+          const composerDocumentPaths = documentPaths.filter(
+            isComposerAttachmentName,
+          );
+          const needsRagDocuments = documentPaths.some(
+            (path) => !isComposerAttachmentName(path),
+          );
+          const needsComposerDocuments = composerDocumentPaths.length > 0;
+          const needsComposerAttachments = needsImages || needsComposerDocuments;
           const needsAudio =
             dropped.kind === "audio" ||
             (dropped.kind === "attach" && dropped.audio.length > 0);
           const needsVideo =
             dropped.kind === "video" ||
             (dropped.kind === "attach" && dropped.video.length > 0);
-          if (needsDocs && !canAttachDocs(currentOptions)) {
+          if (needsRagDocuments && !canAttachDocs(currentOptions)) {
             toast.error("Attaching files needs the desktop backend", {
               description: "Retry once Studio has finished starting up.",
             });
             return;
           }
-          if (needsImages && !canAttachImages(currentOptions)) {
+          if (needsComposerAttachments && !canAttachImages(currentOptions)) {
             toast.error("Attaching images is unavailable right now", {
               description: "Retry once this chat is ready for attachments.",
             });
@@ -337,7 +375,7 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
           // intents reaching the queue there is nothing for the composer to see,
           // so an Enter in that window would send the text without the image.
           const store = useNativeIntentStore.getState();
-          if (needsImages) store.beginImageDropRegistration();
+          if (needsComposerAttachments) store.beginImageDropRegistration();
           if (needsAudio) store.beginAudioDropRegistration();
           if (needsVideo) store.beginVideoDropRegistration();
           try {
@@ -353,8 +391,14 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
             if (registered.docs.length > 0) {
               await attachOptions.onAttach?.(registered.docs);
             }
-            if (registered.images.length > 0) {
-              await attachOptions.onAttachImages?.(registered.images);
+            // Documents first: a vision-less model throws on the image and
+            // aborts the batch, which would discard them.
+            const composerAttachments = [
+              ...registered.composerDocuments,
+              ...registered.images,
+            ];
+            if (composerAttachments.length > 0) {
+              await attachOptions.onAttachImages?.(composerAttachments);
             }
             const failureKey = attachOptions.attachmentTargetKey;
             if (registered.imagesFailed > 0 && failureKey) {
@@ -369,7 +413,9 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
             // A failed document cancels a send parked behind the image, audio or
             // video gate too, or the draft goes out with only what survived.
             if (registered.docsFailed > 0 && failureKey) {
-              if (needsImages) store.failImageDropRegistration(failureKey);
+              if (needsComposerAttachments) {
+                store.failImageDropRegistration(failureKey);
+              }
               if (needsAudio) store.failAudioDropRegistration(failureKey);
               if (needsVideo) store.failVideoDropRegistration(failureKey);
             }
@@ -392,7 +438,7 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
             }
           } catch (error) {
             const failureKey = currentOptions.attachmentTargetKey;
-            if (needsImages && failureKey) {
+            if (needsComposerAttachments && failureKey) {
               store.failImageDropRegistration(failureKey);
             }
             if (needsAudio && failureKey) {
@@ -405,7 +451,7 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
               description: error instanceof Error ? error.message : String(error),
             });
           } finally {
-            if (needsImages) store.endImageDropRegistration();
+            if (needsComposerAttachments) store.endImageDropRegistration();
             if (needsAudio) store.endAudioDropRegistration();
             if (needsVideo) store.endVideoDropRegistration();
           }
