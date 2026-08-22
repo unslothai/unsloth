@@ -414,8 +414,31 @@ def run(args, ab_ref = None) -> int:
                     "base_url": side_url,
                     "owns": owns,
                     "password": password,
+                    "commit": getattr(side_install, "commit", None) or "",
                 }
             )
+
+        # THE BUILD, NOW THAT IT IS KNOWN. `prepare_payload` has already agreed the refs match,
+        # and a ref is a pointer: see `commit_problems`. This is the first moment the commit
+        # behind it exists, and it is still before the browser, the pacer and every cell, so a
+        # resume onto a moved branch costs the install it has already paid and nothing more.
+        if args.resume:
+            resolved = resolved_commits(sides)
+            commit_issues: list = []
+            for recorded in recorded_identities(paths.payload_jsonl):
+                for problem in commit_problems(recorded, resolved):
+                    if problem not in commit_issues:
+                        commit_issues.append(problem)
+            if commit_issues:
+                raise SystemExit(
+                    f"refusing to resume {paths.payload_jsonl}: the ref matches but the build "
+                    "does not.\n  "
+                    + "\n  ".join(commit_issues)
+                    + "\nThe cells already in this payload were measured on the commit it "
+                    "records, and the rungs it still owes would be measured on the one installed "
+                    "now, under one header naming one ref. Resume with the commit the payload "
+                    "was recorded at, or re-run into a fresh --out."
+                )
 
         base_url = sides[0]["base_url"]
         install, owns_studio = installs[0]
@@ -532,6 +555,10 @@ def run(args, ab_ref = None) -> int:
                 "tool_version": TOOL_VERSION,
                 "corpus_hash": corpus.corpus_hash,
                 "studio_ref": args.branch if owns_studio else f"attached:{base_url}",
+                # WHICH COMMIT THAT REF NAMED, so a later `--resume` can tell a continuation from
+                # a branch that moved. Empty for an attached Studio, whose build is not visible
+                # from here. See `commit_problems`.
+                "studio_commit": sides[0].get("commit") or "",
                 "bundle": verdict.as_dict(),
                 "platform": {
                     "system": platform.system(),
@@ -645,6 +672,8 @@ def run(args, ab_ref = None) -> int:
                     # the build that answered on the port. See `requested_identity`. Empty when this
                     # run installed the treatment itself: then the ref above is the identity.
                     "treatment_url": "" if sides[1]["owns"] else sides[1]["base_url"],
+                    # The treatment's half of `studio_commit`. Same reason, same emptiness rule.
+                    "treatment_commit": sides[1].get("commit") or "",
                     "balanced": order_is_balanced(work),
                     "order": [c.cell_id for _t, c, _p in work],
                 }
@@ -846,6 +875,15 @@ IDENTITY_AXES = (
 #: `identity_problems`: an A/B judged against a run that is not one may not differ on them.
 TREATMENT_AXES = ("treatment_ref", "treatment_url")
 
+#: THE BUILD, as opposed to the name it was asked for by. A ref is a POINTER: `main`, a topic
+#: branch and a movable tag all resolve afresh on every install, and `checkout_ref` is the only
+#: thing that ever knows which commit one named. So these are not in `IDENTITY_AXES` and are not
+#: checked by `prepare_payload`: that refusal is deliberately made BEFORE anything is installed,
+#: and a commit cannot be known before the fetch that resolves it. They are checked instead by
+#: `commit_problems`, once the sides are up and before the first cell -- late enough to have the
+#: answer, early enough that nothing has been measured under it. See `run`.
+COMMIT_AXES = ("studio_commit", "treatment_commit")
+
 
 def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
     """The payload identity THIS invocation is asking for.
@@ -897,7 +935,7 @@ def recorded_identities(payload_path) -> list:
             if session not in by_session:
                 by_session[session] = {}
                 order.append(session)
-            for axis in IDENTITY_AXES:
+            for axis in IDENTITY_AXES + COMMIT_AXES:
                 if axis in row:
                     by_session[session][axis] = row[axis]
             # `ab_plan` is where the treatment ref is recorded; `run_meta` names only the base.
@@ -926,6 +964,48 @@ def identity_problems(recorded: dict, requested: dict) -> list:
             problems.append(
                 f"{axis}: the payload was recorded with {got!r}, this run asks {want!r}"
             )
+    return problems
+
+
+def resolved_commits(sides: list) -> dict:
+    """The commits the sides of THIS run were actually installed from. `""` when unknowable.
+
+    Unknowable for an attached Studio: the caller pointed this harness at a URL and nothing about
+    what is deployed behind it is visible from here, which is why `studio_ref` folds an attached
+    base down to that URL instead.
+    """
+    out = {axis: "" for axis in COMMIT_AXES}
+    for axis, side in zip(COMMIT_AXES, sides):
+        if side.get("owns"):
+            out[axis] = str(side.get("commit") or "")
+    return out
+
+
+def commit_problems(recorded: dict, resolved: dict) -> list:
+    """Every side on which a recorded session and this invocation installed a different BUILD.
+
+    `--resume` skips a completed `cell_id`, and a cell id is the rung, the arm and the repetition.
+    The identity check in `prepare_payload` keeps the REFS in step, and a ref is enough right up
+    until it moves: `--branch main --ab fix --resume` into a payload recorded yesterday passes
+    every axis while `main` has advanced, so the cells already in the file were measured on one
+    build and the rungs still owed are measured on another, and `report.assemble_rows` prints the
+    mixture under a single header naming one ref. Movable tags and any live topic branch do the
+    same thing; `unsloth/main` does it several times a day.
+
+    An empty commit on EITHER side is not a difference. A payload written before this was recorded
+    never declared it -- the same rule `recorded_identities` applies to every other axis -- and an
+    attached side has no commit to declare, so attaching does not start failing against a payload
+    that a self-managed run wrote.
+    """
+    problems = []
+    for axis in COMMIT_AXES:
+        want, got = str(resolved.get(axis) or ""), str(recorded.get(axis) or "")
+        if not want or not got or want == got:
+            continue
+        side = "the base" if axis == "studio_commit" else "the treatment"
+        problems.append(
+            f"{axis}: {side} was recorded at commit {got[:12]}, this run installed {want[:12]}"
+        )
     return problems
 
 
@@ -1008,19 +1088,38 @@ def prepare_payload(
 
 
 def _resume_set(paths) -> set:
+    """The cells `--resume` may skip: the ones whose LATEST attempt completed.
+
+    THE LATEST ATTEMPT DECIDES, which is the rule `latest_attempt_rows` already applies for the
+    score (`report.build.score_payload`), the ratio (`ab.readings_by_arm`), the surface parity
+    sweep and `--assert-liveness`. Read raw, this loop was the last reader in which a superseded
+    row still counted -- and it counted in the direction that skips work.
+
+    How that happens without anybody doing anything unusual: an A/B pair is re-run WHOLE
+    (`ab.skippable_cells`), so a resume re-runs an arm that had already succeeded. If that retry
+    fails while its partner succeeds, the payload holds a completed row and a LATER failed row
+    under the same deterministic `cell_id`. The next `--resume` found the old success, skipped the
+    whole pair and exited 0, while `--report` scored the failed retry INCOMPLETE and
+    `--assert-liveness` failed on it. A resume that can never re-run the cell that is broken is a
+    gate nobody can satisfy by fixing the run.
+    """
+    from .scoring.from_payload import latest_attempt_rows
+
     done = set()
     if not paths.payload_jsonl.exists():
         return done
+    records = []
     with paths.payload_jsonl.open(encoding = "utf-8") as fh:
         for line in fh:
             try:
-                row = json.loads(line)
+                records.append(json.loads(line))
             except ValueError:
                 continue
-            # Only a COMPLETED cell is skipped. A cell that died is re-run, because its failure
-            # may have been the machine and not the build.
-            if row.get("row_type") == "cell" and row.get("completed"):
-                done.add(row.get("cell_id"))
+    for row in latest_attempt_rows(records):
+        # Only a COMPLETED cell is skipped. A cell that died is re-run, because its failure
+        # may have been the machine and not the build.
+        if row.get("row_type") == "cell" and row.get("completed"):
+            done.add(row.get("cell_id"))
     return done
 
 
