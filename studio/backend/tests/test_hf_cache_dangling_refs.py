@@ -1548,18 +1548,11 @@ def test_vision_does_not_travel_between_two_cache_roots(tmp_path, monkeypatch):
 # --- the chokepoints, so a new signal cannot pick its own snapshot ------------
 
 _BACKEND = Path(__file__).resolve().parents[1]
-# Every helper the per-repo scan may hand the whole repo to. Each aggregates across revisions on
-# purpose, so a new name here is a new repo-wide signal on a one-directory row.
-_REPO_WIDE_HELPERS = frozenset(
+# helpers passed repo_info; snapshot signals also receive selected.
+_REPO_INFO_HELPERS = frozenset(
     {
         "_cache_inventory_fields",
-        # The row's pipeline task. Repo-wide on purpose and NOT a snapshot signal: it answers "which
-        # model is this", which every revision of a repo agrees on. The non-GGUF classifier returns
-        # non-None only when detect_family(repo_id) does, and _repo_is_diffusers is True whenever
-        # that holds, so its newest-revision _repo_has_pipeline_index branch cannot change the
-        # answer; the GGUF one reads general.architecture, identical in every cached quant. Scoping
-        # it would only lose rows -- an unreadable header in the one pinned snapshot would drop the
-        # repo from the Images/Video pickers entirely.
+        "_cached_row_is_diffusers",
         "_cached_row_task",
         "_repo_gguf_last_modified",
         "_repo_gguf_payload_snapshots",
@@ -1640,8 +1633,8 @@ def test_the_scan_loop_cannot_advertise_a_signal_it_did_not_scope(scan):
         }
     )
     assert (
-        set(handed_off) <= _REPO_WIDE_HELPERS
-    ), f"{scan} hands the whole repo to {sorted(set(handed_off) - _REPO_WIDE_HELPERS)}"
+        set(handed_off) <= _REPO_INFO_HELPERS
+    ), f"{scan} hands repo_info to {sorted(set(handed_off) - _REPO_INFO_HELPERS)}"
 
 
 @pytest.mark.parametrize("module, allowed", sorted(_MTIME_READERS.items()))
@@ -3969,6 +3962,58 @@ def test_a_stray_base_shard_does_not_veto_a_complete_adapter(
     assert rows[0]["model_format"] == "adapter"
     assert rows[0]["partial"] is False
     assert rows[0]["capabilities"]["can_chat"] is True
+
+
+@pytest.mark.parametrize(
+    ("base_config", "expected"),
+    [
+        ({"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]}, True),
+        (
+            {
+                "model_type": "whisper",
+                "architectures": ["WhisperForConditionalGeneration"],
+            },
+            False,
+        ),
+    ],
+    ids = ["chat-base", "non-chat-base"],
+)
+def test_cached_adapter_chat_capability_uses_its_exact_cached_base(
+    base_config, expected, tmp_path, monkeypatch
+):
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {
+                "adapter_config.json": json.dumps(
+                    {
+                        "base_model_name_or_path": "Org/Base",
+                        "revision": SNAPSHOT,
+                        "peft_type": "LORA",
+                    }
+                ).encode(),
+                "adapter_model.safetensors": b"\0" * 128,
+            }
+        },
+        refs = {"main": SNAPSHOT},
+        name = "models--Org--Adapter",
+    )
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {
+                "config.json": json.dumps(base_config).encode(),
+                "model.safetensors": b"\0" * 256,
+            }
+        },
+        refs = {"main": SNAPSHOT},
+        name = "models--Org--Base",
+    )
+
+    rows = {row["repo_id"]: row for row in _autoload_rows(tmp_path, monkeypatch)}
+
+    assert rows["Org/Adapter"]["model_format"] == "adapter"
+    assert rows["Org/Adapter"]["capabilities"]["can_chat"] is expected
 
 
 @pytest.mark.parametrize(

@@ -8,7 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-NON_CHAT_TASKS = frozenset({"text-to-image", "text-to-video", "image-diffusion-unsupported"})
+NON_CHAT_TASKS = frozenset(
+    {"text-to-image", "text-to-video", "text-to-speech", "image-diffusion-unsupported"}
+)
 LOCAL_SOURCES = frozenset({"models_dir", "lmstudio", "custom"})
 
 
@@ -182,8 +184,6 @@ def cached_entries() -> List[ModelEntry]:
         )
     for row in model_rows:
         if row.get("partial") or row.get("companion") or row.get("task") in NON_CHAT_TASKS:
-            continue
-        if row.get("model_format") == "adapter":
             continue
         # A cached embedding/CLIP repo has task None like any chat repo; can_chat is the gate.
         if row.get("capabilities", {}).get("can_chat") is False:

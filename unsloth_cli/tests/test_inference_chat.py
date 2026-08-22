@@ -422,7 +422,21 @@ def test_catalog_cached_entries_filter_non_chat_rows(monkeypatch, tmp_path):
         {"repo_id": "org/Chat", "task": None},
         {"repo_id": "org/Half", "task": None, "partial": True},
         {"repo_id": "org/Image", "task": "text-to-image"},
+        {"repo_id": "org/TTS", "task": "text-to-speech"},
         {"repo_id": "org/Pinned", "task": None, "load_id": "/snap/path"},
+        {
+            "repo_id": "org/ChatAdapter",
+            "task": None,
+            "model_format": "adapter",
+            "load_id": "/snap/chat-adapter",
+            "capabilities": {"can_chat": True},
+        },
+        {
+            "repo_id": "org/SpeechAdapter",
+            "task": None,
+            "model_format": "adapter",
+            "capabilities": {"can_chat": False},
+        },
         # An embedding/CLIP repo carries task None like any chat repo; can_chat separates them.
         {"repo_id": "org/Embedder", "task": None, "capabilities": {"can_chat": False}},
         # An untrusted diffusion repo carries no task either, and its pipeline root has no
@@ -439,6 +453,7 @@ def test_catalog_cached_entries_filter_non_chat_rows(monkeypatch, tmp_path):
         ("Downloaded", "org/Tiny-GGUF", "Q2_K, Q4_K_M", "org/Tiny-GGUF"),
         ("Downloaded", "org/Chat", "", "org/Chat"),
         ("Downloaded", "org/Pinned", "", "/snap/path"),
+        ("Downloaded", "org/ChatAdapter", "", "/snap/chat-adapter"),
     ]
 
 

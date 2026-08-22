@@ -36,6 +36,7 @@ from hub.services.models.common import (
     _is_mmproj_filename,
     _is_transformers_safetensors_weight_name,
     _local_inventory_id,
+    _local_path_can_chat,
     _runtime_for_format,
 )
 
@@ -395,18 +396,19 @@ def _cache_inventory_fields(
     # The directory this row loads from: the non-GGUF scan passes only
     # *identity*, so snapshot_path alone classified nothing.
     classify_snapshot = identity.load_snapshot or snapshot_path
+    can_chat_override = None
+    if classify_snapshot is not None:
+        if model_format == "adapter":
+            can_chat_override = _local_path_can_chat(classify_snapshot)
+        elif model_format in {"safetensors", "checkpoint"}:
+            can_chat_override = _local_transformers_can_chat(classify_snapshot)
     capabilities = _capabilities_for_format(
         model_format,
         "hf_cache",
         partial = partial,
         requires_variant = requires_variant,
-        # Same classification the scan-folder rows get: a cached BERT or CLIP
-        # repo is chat-capable on format alone, and small enough to be tried first.
-        can_chat_override = (
-            _local_transformers_can_chat(classify_snapshot)
-            if model_format in {"safetensors", "checkpoint"} and classify_snapshot is not None
-            else None
-        ),
+        # cached encoders classify their config; adapters classify the selected snapshot's exact base.
+        can_chat_override = can_chat_override,
     ).model_dump()
     # The loader's companion search never leaves the quants' snapshot.
     if model_format == "gguf" and (
