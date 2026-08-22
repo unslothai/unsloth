@@ -352,7 +352,7 @@ export const it = {
         },
         openProjectPicker: {
           label: "Apri selettore progetto",
-          description: "Sposta questa chat in un progetto",
+          description: "Passa a un altro progetto dall'intestazione della chat",
         },
         startDictation: {
           label: "Dettatura",

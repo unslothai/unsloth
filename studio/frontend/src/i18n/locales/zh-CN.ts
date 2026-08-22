@@ -382,7 +382,7 @@ export const zhCN = {
         },
         openProjectPicker: {
           label: "打开项目选择器",
-          description: "将该聊天移动到某个项目",
+          description: "从聊天标题栏切换到其他项目",
         },
         startDictation: {
           label: "语音输入",

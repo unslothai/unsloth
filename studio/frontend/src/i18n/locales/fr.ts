@@ -388,7 +388,7 @@ export const fr = {
         },
         openProjectPicker: {
           label: "Ouvrir le sélecteur de projet",
-          description: "Déplacer cette discussion vers un projet",
+          description: "Passer à un autre projet depuis l'en-tête du chat",
         },
         startDictation: {
           label: "Dictée",

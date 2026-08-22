@@ -387,7 +387,7 @@ export const hi = {
         },
         openProjectPicker: {
           label: "प्रोजेक्ट चयनकर्ता खोलें",
-          description: "इस चैट को किसी प्रोजेक्ट में ले जाएँ",
+          description: "चैट हेडर से किसी दूसरे प्रोजेक्ट पर जाएँ",
         },
         startDictation: {
           label: "श्रुतलेख",

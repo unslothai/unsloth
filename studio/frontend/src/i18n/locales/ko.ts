@@ -384,7 +384,7 @@ export const ko = {
         },
         openProjectPicker: {
           label: "프로젝트 선택 열기",
-          description: "이 채팅을 프로젝트로 옮깁니다",
+          description: "채팅 헤더에서 다른 프로젝트로 전환합니다",
         },
         startDictation: {
           label: "받아쓰기",

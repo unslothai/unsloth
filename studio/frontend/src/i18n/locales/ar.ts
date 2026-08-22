@@ -384,7 +384,7 @@ export const ar = {
         },
         openProjectPicker: {
           label: "فتح منتقي المشروع",
-          description: "نقل هذه المحادثة إلى مشروع",
+          description: "الانتقال إلى مشروع آخر من ترويسة المحادثة",
         },
         startDictation: {
           label: "الإملاء",

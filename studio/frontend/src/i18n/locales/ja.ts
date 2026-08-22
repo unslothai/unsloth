@@ -386,7 +386,7 @@ export const ja = {
         },
         openProjectPicker: {
           label: "プロジェクト選択を開く",
-          description: "このチャットをプロジェクトへ移動します",
+          description: "チャットヘッダーから別のプロジェクトに切り替えます",
         },
         startDictation: {
           label: "音声入力",

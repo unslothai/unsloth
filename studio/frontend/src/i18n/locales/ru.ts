@@ -386,7 +386,7 @@ export const ru = {
         },
         openProjectPicker: {
           label: "Открыть выбор проекта",
-          description: "Переместить этот чат в проект",
+          description: "Перейти к другому проекту из заголовка чата",
         },
         startDictation: {
           label: "Диктовка",

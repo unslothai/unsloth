@@ -388,7 +388,7 @@ export const de = {
         },
         openProjectPicker: {
           label: "Projektauswahl öffnen",
-          description: "Diesen Chat in ein Projekt verschieben",
+          description: "Über die Chat-Kopfzeile zu einem anderen Projekt wechseln",
         },
         startDictation: {
           label: "Diktat",

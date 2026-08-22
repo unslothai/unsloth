@@ -765,6 +765,24 @@ test("the copy chords keep their gesture across the read", async () => {
   }
 });
 
+test("the project picker chord is described by what it does", async () => {
+  const page = await readFile(
+    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
+    "utf8",
+  );
+  // The header switcher navigates to the chosen project's landing; moving a
+  // chat between projects is a different flow, on the chat row's own menu.
+  assert.match(page, /onSelectProject=\{openProjectLanding\}/);
+  const strings = await readFile(
+    new URL("../src/i18n/locales/en.ts", import.meta.url),
+    "utf8",
+  );
+  const at = strings.indexOf("openProjectPicker: {");
+  const entry = strings.slice(at, strings.indexOf("},", at));
+  assert.ok(!/move/i.test(entry), "no move-to-project promise");
+  assert.ok(entry.includes("project"));
+});
+
 test("the new-chat chords stay out of the auth flow", async () => {
   const root = await readFile(
     new URL("../src/app/routes/__root.tsx", import.meta.url),

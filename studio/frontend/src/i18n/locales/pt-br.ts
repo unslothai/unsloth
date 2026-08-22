@@ -386,7 +386,7 @@ export const ptBR = {
         },
         openProjectPicker: {
           label: "Abrir seletor de projeto",
-          description: "Mover este chat para um projeto",
+          description: "Trocar de projeto pelo cabeçalho do chat",
         },
         startDictation: {
           label: "Ditado",
