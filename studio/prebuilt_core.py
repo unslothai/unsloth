@@ -62,7 +62,7 @@ except ImportError:
 _TRUSTSTORE_VENDOR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend", "vendor")
 _flag = os.environ.get("UNSLOTH_STUDIO_NATIVE_TLS", "").strip().lower()
 if _flag in ("1", "true", "yes") or (
-    _flag not in ("0", "false", "no") and sys.platform in ("darwin", "win32")
+    _flag not in ("0", "false", "no") and sys.platform in ("darwin", "win32", "linux")
 ):
     try:
         if _TRUSTSTORE_VENDOR not in sys.path:
