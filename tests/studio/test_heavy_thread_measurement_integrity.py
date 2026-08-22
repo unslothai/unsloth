@@ -811,10 +811,12 @@ def floor_row(
     }
 
 
-def test_reopen_declares_the_one_paint_floor_it_pays() -> None:
-    """Reopen is driven by a React state update, so the count check straight after openThread()
-    always still sees the unmounted tree and the loop always waits at least one paint."""
-    assert HARNESS.declared_floor("reopen ms") == 1
+def test_reopen_measures_the_paint_floor_it_pays() -> None:
+    """MEASURED, not a literal. Reopen is driven by a React state update, so the count check
+    straight after openThread() always still sees the unmounted tree and the loop always waits at
+    least one paint -- but it waits once per COMMIT, and the progressive mount window brings a long
+    thread back over several frames. A literal cannot be right at both ends of the ladder."""
+    assert callable(HARNESS.declared_floor("reopen ms"))
 
 
 def test_a_matching_floor_declaration_is_accepted() -> None:
@@ -822,14 +824,12 @@ def test_a_matching_floor_declaration_is_accepted() -> None:
     assert HARNESS.floor_declaration_problems(floor_row(1)) == []
 
 
-def test_a_floor_declared_below_the_waits_paid_is_rejected() -> None:
-    problems = HARNESS.floor_declaration_problems(floor_row(2))
-    assert len(problems) == 1 and "subtracts 1" in problems[0], problems
-
-
-def test_a_floor_declared_above_the_waits_paid_is_rejected() -> None:
-    problems = HARNESS.floor_declaration_problems(floor_row(0))
-    assert len(problems) == 1 and "paid 0 paint wait" in problems[0], problems
+def test_a_multi_commit_reopen_is_not_a_mis_declared_floor() -> None:
+    """The progressive mount window mounts a long thread over several frames, so `ms` -- which
+    runs until messageCount() reaches `before` -- spans one paint wait per widening commit. Ten is
+    an ordinary reading at 100K, not a harness fault, and reporting it as one stops the run after
+    every measurement has already been taken."""
+    assert HARNESS.floor_declaration_problems(floor_row(10)) == []
 
 
 def test_an_unreported_wait_count_is_a_failure_not_a_skip() -> None:
@@ -1284,7 +1284,23 @@ def test_whole_window_axes_use_the_measured_floor(name) -> None:
     assert floored({"actions": {action: {"paint_waits": 20}}}) == 20
 
 
-@pytest.mark.parametrize("name", ("jump painted ms", "menu open+close ms", "reopen ms"))
+def test_reopen_uses_its_own_wait_counter_not_the_windows() -> None:
+    """Reopen is the third kind, and it is neither of the two below.
+
+    `ms` is measured from `reopenStarted`, so it does not span the recorder window and cannot take
+    the window's `paint_waits`. But it does span one double-rAF wait per commit that adds messages,
+    and the progressive mount window makes that a property of the fixture rather than a constant,
+    so it cannot take a literal either. `REOPEN_JS` counts its own loop into `paintWaits`, and that
+    is what the axis reads.
+    """
+    floored = axis_floor("reopen ms")
+    assert callable(floored), "reopen ms declares a fixed floor but its wait count varies"
+    assert floored({"actions": {"reopen": {"paintWaits": 10}}}) == 10
+    # Its OWN counter, not the recorder window's.
+    assert floored({"actions": {"reopen": {"paint_waits": 20}}}) == 0
+
+
+@pytest.mark.parametrize("name", ("jump painted ms", "menu open+close ms"))
 def test_partial_window_axes_keep_their_declared_floor(name) -> None:
     """The other half of the rule, and it is not symmetry for its own sake.
 

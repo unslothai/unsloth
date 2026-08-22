@@ -77,6 +77,23 @@ export const INITIAL_MESSAGES = 16;
 export const CHUNK_MESSAGES = 32;
 
 /**
+ * The most messages the first commit may span, however few of them render.
+ *
+ * Sizing the tail on renderable rows means walking back across every non-rendering message in
+ * between, and that walk is unbounded on its own: sixteen visible messages followed by two hundred
+ * system entries walks to zero and the first commit rebuilds every provider in the thread, which is
+ * the bound this file exists to create.
+ *
+ * Four tails. A thread has to be three quarters non-rendering across its whole tail before this
+ * binds at all, which no thread the importers produce comes close to; below that it costs nothing
+ * and the window is exactly the renderable-row one. When it does bind the first commit shows fewer
+ * than INITIAL_MESSAGES rows, possibly none, and widening reaches the rest within a few frames --
+ * bounded work either way, against the 1318ms of empty screen the merge base pays for the same
+ * thread.
+ */
+export const MAX_INITIAL_SPAN = INITIAL_MESSAGES * 4;
+
+/**
  * The window a thread opens with. A running thread opens unrestricted: widening and streaming write
  * the same scroll position, and a run starting under a short window would commit its reply into a
  * tree that has not reached it. A mid-run thread was mounted a moment ago anyway.
@@ -97,16 +114,24 @@ export function initialWindow(
   // Optional so the arithmetic stays testable on its own and `stepsToCover` keeps a pure form; a
   // caller that cannot say what renders gets the old count-based window.
   if (!isRenderable) return { start: Math.max(0, count - INITIAL_MESSAGES) };
-  // Walk back from the end until the window holds a full tail of renderable rows. Reaching
-  // further back only ever mounts MORE, so this cannot shrink the window or unmount anything.
+  // Walk back from the end until the window holds a full tail of renderable rows, but never past
+  // MAX_INITIAL_SPAN messages: the walk crosses non-rendering messages too, and without the cap a
+  // tail dense with them reaches index 0 and mounts the whole thread. Reaching further back only
+  // ever mounts MORE, so this cannot shrink the window or unmount anything.
+  const floor = Math.max(0, count - MAX_INITIAL_SPAN);
   let renderable = 0;
-  for (let index = count - 1; index >= 0; index -= 1) {
+  for (let index = count - 1; index >= floor; index -= 1) {
     if (!isRenderable(index)) continue;
     renderable += 1;
     if (renderable >= INITIAL_MESSAGES) return { start: index };
   }
-  // Fewer renderable rows in the whole thread than one tail: there is nothing to withhold, and
-  // withholding anyway would hide part of the little there is to see.
+  // The cap bound before a full tail was found. Take the cap: the first commit shows whatever
+  // renders inside it, which may be nothing, and widening reaches the rest within a few frames.
+  // Bounded and converging beats both alternatives -- mounting the whole thread, and withholding
+  // on a thread this short.
+  if (floor > 0) return { start: floor };
+  // The whole thread fits inside the cap and still holds fewer renderable rows than one tail:
+  // there is nothing to withhold, and withholding anyway would hide part of the little there is.
   return null;
 }
 

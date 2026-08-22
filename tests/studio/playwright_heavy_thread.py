@@ -1350,10 +1350,16 @@ GROWTH_AXES = tuple(
         # close. The window count is zero here and would remove a floor that is really there.
         ("menu open+close ms", _action("menu", "open_close_ms"), 2),
         ("delete ms", _action("delete", "ms"), 1),
-        # 1, not 0: see paintWaits in REOPEN_JS. Leaving it at 0 left a full ~33ms vsync floor
-        # of constant baseline in both ends of the ratio, which compresses it towards 1 and can
-        # report a real reopen curve as flat when the smallest fixture rebuilds near the floor.
-        ("reopen ms", _action("reopen", "ms"), 1),
+        # MEASURED, not a literal: see paintWaits in REOPEN_JS. `ms` runs until messageCount()
+        # reaches `before`, so it spans one double-rAF wait per COMMIT that adds messages. That
+        # was always exactly one while the tail arrived in a single commit, and a literal 1 was
+        # right. The progressive mount window brings a long thread back over several frames, so
+        # the count is now a property of the fixture (1 at 25K, 10 at 100K) and any literal
+        # removes the wrong constant from one end of the ratio or the other. Leaving it at 0 is
+        # still worse than either: that left a full ~33ms vsync floor of constant baseline in
+        # both ends, which compresses the ratio towards 1 and can report a real reopen curve as
+        # flat when the smallest fixture rebuilds near the floor.
+        ("reopen ms", _action("reopen", "ms"), _floor_from("reopen", "paintWaits")),
     ]
 )
 # A ratio at or below this from the smallest size to the largest means the axis did not respond
@@ -1605,7 +1611,12 @@ def floor_declaration_problems(results: dict) -> list[str]:
                         f"paint floor subtracted from '{axis_name}' is unverified"
                     )
                     continue
-                declared = declared_floor(axis_name)
+                # Resolved against THIS row, so an axis whose floor is read from the row (see
+                # `_floor_from`) is verified as what it will actually subtract rather than
+                # compared as a callable and reported wrong every time. A hand-declared literal
+                # resolves to itself, so it is still caught the moment it drifts from the waits
+                # the action paid, which is the whole point of this check.
+                declared = resolve_floor(declared_floor(axis_name), row)
                 if declared == observed:
                     continue
                 problems.append(

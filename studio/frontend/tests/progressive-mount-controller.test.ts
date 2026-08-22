@@ -14,6 +14,7 @@ import test from "node:test";
 import {
   CHUNK_MESSAGES,
   INITIAL_MESSAGES,
+  MAX_INITIAL_SPAN,
   MIN_PROGRESSIVE_MESSAGES,
   type MountWindow,
   admits,
@@ -286,9 +287,10 @@ test("a tail of unrenderable rows still only ever widens", () => {
   }
 });
 
-test("a thread with too few renderable rows is not windowed at all", () => {
-  // Nothing to withhold: withholding here would hide part of the little there is to see.
-  const count = 220;
+test("a short thread with too few renderable rows is not windowed at all", () => {
+  // Short enough to sit inside the cap, so there is no bound to enforce and nothing to withhold:
+  // withholding here would hide part of the little there is to see.
+  const count = MAX_INITIAL_SPAN;
   assert.equal(
     initialWindow(count, false, () => false),
     null,
@@ -303,6 +305,21 @@ test("a thread with too few renderable rows is not windowed at all", () => {
   );
 });
 
+test("a long thread with too few renderable rows is bounded, not mounted whole", () => {
+  // Past the cap the bound is what matters. There is nothing to see either way, so mounting the
+  // whole thread in order to show nothing is the one option with no argument for it.
+  const count = 220;
+  const shapes = [
+    () => false,
+    (index: number) => index >= count - (INITIAL_MESSAGES - 1),
+  ];
+  for (const renders of shapes) {
+    const w = initialWindow(count, false, renders);
+    assert.notEqual(w, null);
+    assert.equal(w?.start, count - MAX_INITIAL_SPAN);
+  }
+});
+
 test("omitting the predicate keeps the count-based window", () => {
   // Callers that cannot say what renders (the tests above, stepsToCover) must behave as before.
   assert.deepEqual(initialWindow(220, false), {
@@ -314,4 +331,55 @@ test("omitting the predicate keeps the count-based window", () => {
       start: 220 - INITIAL_MESSAGES,
     },
   );
+});
+
+// Sizing the tail on renderable rows has to stay BOUNDED. Walking back for sixteen rows that
+// render will cross every non-rendering message in between, and an imported thread of sixteen
+// visible messages followed by two hundred system entries walked all the way to zero: the first
+// commit then rebuilt every provider in the thread, which is the bound this window exists to
+// create. Both ends matter, so both are asserted here.
+
+test("the first commit's raw span is bounded even when the tail does not render", () => {
+  const count = 220;
+  const renders = (index: number) => index < INITIAL_MESSAGES;
+  const w = initialWindow(count, false, renders);
+  const first = w == null ? 0 : w.start;
+  assert.ok(
+    count - first <= MAX_INITIAL_SPAN,
+    `first commit mounted ${count - first} providers, over the ${MAX_INITIAL_SPAN} cap`,
+  );
+});
+
+test("the cap does not cost visible rows when they are reachable inside it", () => {
+  // The realistic shape: a system entry every few messages. The walk crosses them and still
+  // returns a full tail of conversation, well inside the cap.
+  const count = 220;
+  const renders = (index: number) => index % 3 !== 0;
+  const w = initialWindow(count, false, renders);
+  assert.notEqual(w, null);
+  const first = w == null ? 0 : w.start;
+  assert.ok(count - first <= MAX_INITIAL_SPAN);
+  assert.equal(visibleRows(w, count, renders), INITIAL_MESSAGES);
+});
+
+test("an all-renderable thread is unchanged by the cap", () => {
+  // The common case must not move: the cap is a bound, not a policy.
+  assert.deepEqual(initialWindow(220, false, () => true), {
+    start: 220 - INITIAL_MESSAGES,
+  });
+});
+
+test("a capped window still only widens, and still converges", () => {
+  const count = 220;
+  const renders = (index: number) => index < INITIAL_MESSAGES;
+  let current = initialWindow(count, false, renders);
+  assert.ok(current != null && current.start >= 0 && current.start < count);
+  let steps = 0;
+  while (current != null) {
+    const next = widen(current, count);
+    assert.ok(next == null || next.start < current.start, "start must only fall");
+    current = next;
+    steps += 1;
+    assert.ok(steps <= count + 2, "widen made no progress");
+  }
 });
