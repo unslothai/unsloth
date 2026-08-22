@@ -109,7 +109,7 @@ test("the chunk warm-up claims exactly one fence, and never releases it", () => 
 test("the grammar warm-up tokenizes nothing real and is skipped when the flag is off", () => {
   const block = MARKDOWN_TEXT.slice(
     MARKDOWN_TEXT.indexOf("GRAMMAR WARM-UP"),
-    MARKDOWN_TEXT.indexOf("GRAMMAR WARM-UP") + 900,
+    MARKDOWN_TEXT.indexOf("GRAMMAR WARM-UP") + 1600,
   );
   assert.ok(
     block.includes('if (mode === "off" || reached) return;'),
@@ -123,6 +123,30 @@ test("the grammar warm-up tokenizes nothing real and is skipped when the flag is
     block.includes("warmedGrammars.has(lang)") && block.includes("warmedGrammars.add(lang)"),
     "one call per language, not one per fence",
   );
+});
+
+test("a cancelled grammar warm-up releases its claim", () => {
+  // The claim is taken before the callback is scheduled, or every fence of a language schedules
+  // its own. But a cleanup can cancel a callback that never ran, and a claim left behind then
+  // means no later fence ever warms that grammar, so a print in a later thread is back to
+  // snapshotting the asynchronous plain fallback.
+  const block = MARKDOWN_TEXT.slice(
+    MARKDOWN_TEXT.indexOf("GRAMMAR WARM-UP"),
+    MARKDOWN_TEXT.indexOf("GRAMMAR WARM-UP") + 1800,
+  );
+  assert.ok(block.includes("let ran = false;"), "the callback must record that it ran");
+  assert.ok(
+    /const release = \(\) => \{\s*if \(!ran\) warmedGrammars\.delete\(lang\);/.test(block),
+    "cancelling a warm-up that never ran must release the language claim",
+  );
+  for (const path of ["cancelIdleCallback", "clearTimeout"]) {
+    const i = block.indexOf(path);
+    assert.ok(i > 0, `expected the ${path} cleanup path`);
+    assert.ok(
+      block.slice(i, i + 90).includes("release()"),
+      `the ${path} cleanup must release the claim`,
+    );
+  }
 });
 
 test("a completing stream cannot downgrade a fence that was highlighted while it streamed", () => {

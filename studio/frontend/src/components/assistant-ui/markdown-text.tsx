@@ -463,20 +463,37 @@ function FenceBlock({
     if (mode === "off" || reached) return;
     const lang = language ?? "text";
     if (warmedGrammars.has(lang)) return;
+    // CLAIMED NOW, RELEASED IF IT NEVER RAN. The claim has to be taken before the callback is
+    // scheduled, or every fence of this language schedules its own. But the cleanup can cancel a
+    // callback that never ran -- switching threads, or the fence being reached first -- and a
+    // claim left behind then means no later fence ever warms that grammar, so a print in a later
+    // thread is back to snapshotting the asynchronous plain fallback. `ran` is what tells the two
+    // cases apart.
     warmedGrammars.add(lang);
+    let ran = false;
     const warm = () => {
+      ran = true;
       code.highlight(
         { code: " ", language: lang as never, themes: STREAMDOWN_SHIKI_THEME },
         () => {},
       );
     };
+    const release = () => {
+      if (!ran) warmedGrammars.delete(lang);
+    };
     const idle = window.requestIdleCallback;
     if (typeof idle === "function") {
       const handle = idle(warm, { timeout: 4000 });
-      return () => window.cancelIdleCallback?.(handle);
+      return () => {
+        window.cancelIdleCallback?.(handle);
+        release();
+      };
     }
     const timer = window.setTimeout(warm, 1000);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      release();
+    };
   }, [mode, reached, language]);
 
   // MEASUREMENT ARM ONLY. See `FenceMode`: this puts the tokenizer work back while leaving the
