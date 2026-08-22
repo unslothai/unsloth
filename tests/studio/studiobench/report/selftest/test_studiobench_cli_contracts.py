@@ -87,8 +87,16 @@ def test_one_attached_studio_driven_twice_is_a_null_control():
 def test_each_attached_side_authenticates_with_its_own_password():
     args = parse_args(
         [
-            "--attach", "http://127.0.0.1:5401", "--password", "base-secret",
-            "--ab", "pr", "--attach-b", "http://127.0.0.1:5402", "--password-b", "treatment-secret",
+            "--attach",
+            "http://127.0.0.1:5401",
+            "--password",
+            "base-secret",
+            "--ab",
+            "pr",
+            "--attach-b",
+            "http://127.0.0.1:5402",
+            "--password-b",
+            "treatment-secret",
         ]
     )
     specs = side_specs(args, "pr")
@@ -98,7 +106,9 @@ def test_each_attached_side_authenticates_with_its_own_password():
 
 
 def test_the_treatment_falls_back_to_the_one_password():
-    args = parse_args(["--attach", "http://a", "--password", "one", "--ab", "pr", "--attach-b", "http://b"])
+    args = parse_args(
+        ["--attach", "http://a", "--password", "one", "--ab", "pr", "--attach-b", "http://b"]
+    )
     assert side_specs(args, "pr")[1][4] == "one"
 
 
@@ -132,9 +142,12 @@ def test_an_engine_with_a_note_is_not_installed():
     assert engines_installed("chromium, webkit (not installed), firefox (unavailable)") == [
         "chromium"
     ]
-    assert engines_installed(
-        "chromium (not installed), webkit (not installed), firefox (not installed)"
-    ) == []
+    assert (
+        engines_installed(
+            "chromium (not installed), webkit (not installed), firefox (not installed)"
+        )
+        == []
+    )
     assert engines_installed("chromium, webkit, firefox") == ["chromium", "webkit", "firefox"]
 
 
