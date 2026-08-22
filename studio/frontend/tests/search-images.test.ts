@@ -749,3 +749,48 @@ test("a replayed web_search result carries no image tokens either", () => {
     "the replayed web_search result must be stripped of its tokens",
   );
 });
+
+// Search images is read by the backend out of SQLite when the tool schema is
+// picked, not carried in the request, and the mirror to /api/chat/settings is a
+// 400 ms trailing-edge debounce -- so a message sent right after the toggle used
+// to run on the previous value. The store and the adapter cannot be imported in
+// a bare node test (a .tsx barrel sits in both graphs), so these pin the source
+// the way the sibling store tests do.
+const storeSource = readFileSync(
+  fileURLToPath(
+    new URL("../src/features/chat/stores/chat-runtime-store.ts", import.meta.url),
+  ),
+  "utf8",
+);
+
+test("a queued settings patch is sent before a run reads it", () => {
+  const flush = storeSource.slice(
+    storeSource.indexOf("export async function flushPendingChatSettings("),
+  );
+  assert.ok(flush.length > 0, "flushPendingChatSettings is gone");
+  const body = flush.slice(0, flush.indexOf("\n}\n") + 2);
+  // Nothing queued is the common case and must not cost a send anything.
+  assert.match(
+    body,
+    /pendingTimer === null && Object\.keys\(pendingPatch\)\.length === 0\) return;/,
+  );
+  // The debounce is cut short rather than waited out.
+  assert.match(body, /clearTimeout\(pendingTimer\)/);
+  // Chained onto the same queue the debounce uses, so two flushes cannot overlap.
+  assert.match(body, /inflightFlush = inflightFlush/);
+  // Bounded: a wedged PATCH must not hold the composer open.
+  assert.match(body, /Promise\.race\(/);
+  assert.match(storeSource, /const SETTINGS_FLUSH_TIMEOUT_MS = \d+;/);
+});
+
+test("the run flushes those settings before it hydrates and sends", () => {
+  const start = adapterSource.indexOf("await flushPendingChatSettings();");
+  assert.ok(start > 0, "the run no longer flushes pending chat settings");
+  const hydrate = adapterSource.indexOf(
+    "hydratePersistedSettings()",
+    start,
+  );
+  assert.ok(hydrate > start, "the flush must come before the hydrate");
+  // Awaited, not fired and forgotten, or the run races the patch it just sent.
+  assert.match(adapterSource.slice(start - 6, start + 34), /await flushPendingChatSettings\(\);/);
+});

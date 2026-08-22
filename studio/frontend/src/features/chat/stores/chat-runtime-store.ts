@@ -477,6 +477,42 @@ function saveSettingsPatch(patch: SettingsPatch): void {
   scheduleSettingsFlush();
 }
 
+// A wedged PATCH must not hold a send open. Past this the run goes ahead on the
+// value the server already has, which is exactly where it stood before.
+const SETTINGS_FLUSH_TIMEOUT_MS = 2000;
+
+/**
+ * Send the debounced settings patch now and wait for it.
+ *
+ * Some settings are read by the backend out of SQLite at call time rather than
+ * being carried in the request -- Search images picks the web_search schema that
+ * way -- and the mirror above is a trailing-edge debounce, so a message sent
+ * inside that window would run on the value before the toggle. Returns
+ * immediately when nothing is queued, which is every send but one right after a
+ * settings change.
+ */
+export async function flushPendingChatSettings(): Promise<void> {
+  if (pendingTimer === null && Object.keys(pendingPatch).length === 0) return;
+  if (pendingTimer !== null) {
+    clearTimeout(pendingTimer);
+    pendingTimer = null;
+  }
+  inflightFlush = inflightFlush
+    .catch(() => undefined)
+    .then(() => flushSettingsPatch());
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      inflightFlush.catch(() => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, SETTINGS_FLUSH_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 // Best-effort flush of any pending patch when the page is going away. keepalive
 // lets the PUT outlive the unload; without it the browser cancels the fetch and
 // the user's last slider drag is dropped.
