@@ -46,6 +46,49 @@ type Props = {
 
 type State = { failed: boolean };
 
+/**
+ * The INNER boundary: the renderer fails, the block's controls survive.
+ *
+ * `MarkdownBlockBoundary` below is the catch-all and wraps the whole block, so
+ * when it fires it necessarily takes the block's siblings with it: the copy and
+ * download bar, and a completed SVG fence's already-sanitized preview. Those are
+ * exactly the affordances a reader wants at the moment a block failed to render,
+ * because the next thing they do with a block they cannot read here is take it
+ * somewhere else.
+ *
+ * So the throw-prone renderer gets its own boundary, inside the wrapper that
+ * carries the controls. `Block` is the only thing in a block that loads code at
+ * render time, so it is the only thing that needs one.
+ *
+ * The fallback is an ELEMENT built by the caller, not something computed here.
+ * React does not catch a throw in a boundary's own render, so the less this
+ * render does the better: this one branches and returns. If the fallback element
+ * itself throws while rendering, it throws as this boundary's own output and
+ * `MarkdownBlockBoundary` catches it, degrading the whole block to text the way
+ * it does today. Two rungs, and the bottom one is the behaviour already shipped.
+ */
+export class MarkdownRendererBoundary extends Component<
+  { fallback: ReactNode; children: ReactNode },
+  State
+> {
+  state: State = { failed: false };
+
+  static getDerivedStateFromError(): State {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: unknown): void {
+    console.error(
+      "[markdown] a block renderer failed, showing its source instead",
+      error,
+    );
+  }
+
+  render(): ReactNode {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
+}
+
 export class MarkdownBlockBoundary extends Component<Props, State> {
   state: State = { failed: false };
 
@@ -56,7 +99,10 @@ export class MarkdownBlockBoundary extends Component<Props, State> {
   componentDidCatch(error: unknown): void {
     // Still reported. Degrading quietly is right for the READER and wrong for
     // anyone trying to find out why a reply lost its highlighting.
-    console.error("[markdown] a block failed to render, showing it as text", error);
+    console.error(
+      "[markdown] a block failed to render, showing it as text",
+      error,
+    );
   }
 
   render(): ReactNode {
@@ -81,7 +127,9 @@ export class MarkdownBlockBoundary extends Component<Props, State> {
       );
     }
     return (
-      <div className="my-4 whitespace-pre-wrap break-words">{fallback.text}</div>
+      <div className="my-4 whitespace-pre-wrap break-words">
+        {fallback.text}
+      </div>
     );
   }
 }

@@ -47,7 +47,10 @@ import {
   useFenceReached,
 } from "./code-fence-defer";
 import { createCodePlugin } from "./code-plugin";
-import { MarkdownBlockBoundary } from "./markdown-block-boundary";
+import {
+  MarkdownBlockBoundary,
+  MarkdownRendererBoundary,
+} from "./markdown-block-boundary";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
@@ -374,7 +377,18 @@ function StreamdownBlockContent(props: BlockProps) {
   if (mermaidSource) {
     return (
       <div className="relative isolate">
-        <Block {...blockProps} />
+        {/*
+         * The Mermaid renderer is the app's other lazy chunk, so the diagram is
+         * the second thing that can fail at render time. Degraded, it is its own
+         * source as readable code, and the copy button beside it still works.
+         */}
+        <MarkdownRendererBoundary
+          fallback={
+            <DeferredFenceShell language="mermaid" source={mermaidSource} />
+          }
+        >
+          <Block {...blockProps} />
+        </MarkdownRendererBoundary>
         <MermaidCopyButton source={mermaidSource} />
       </div>
     );
@@ -475,20 +489,38 @@ function FenceBlock({
   const pretokenize = mode === "tokenize" && !reached;
   useEffect(() => {
     if (!pretokenize) return;
-    code.highlight({
-      code: trimTrailingNewlines(source),
-      language: (languageToken ?? "text") as never,
-      themes: STREAMDOWN_SHIKI_THEME,
-    }, () => {});
+    code.highlight(
+      {
+        code: trimTrailingNewlines(source),
+        language: (languageToken ?? "text") as never,
+        themes: STREAMDOWN_SHIKI_THEME,
+      },
+      () => {},
+    );
   }, [pretokenize, source, languageToken]);
 
   return (
     <div className="relative isolate" ref={host}>
-      {reached ? (
-        <Block {...blockProps} />
-      ) : (
-        <DeferredFenceShell language={languageToken} source={source} />
-      )}
+      {/*
+       * Only `Block` can fail here, because only `Block` loads the highlighter
+       * at render time. Boundary it on its own so that a fence whose chunk will
+       * not load keeps the copy and download bar below, which is the control a
+       * reader reaches for precisely when a block did not render. The degraded
+       * form is the SAME plain shell an unreached fence already shows, so the
+       * failure looks like a fence that has not been highlighted rather than
+       * like a broken block.
+       */}
+      <MarkdownRendererBoundary
+        fallback={
+          <DeferredFenceShell language={languageToken} source={source} />
+        }
+      >
+        {reached ? (
+          <Block {...blockProps} />
+        ) : (
+          <DeferredFenceShell language={languageToken} source={source} />
+        )}
+      </MarkdownRendererBoundary>
       <CodeBlockActions
         disabled={Boolean(isIncomplete)}
         language={language}

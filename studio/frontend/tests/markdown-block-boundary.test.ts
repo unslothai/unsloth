@@ -211,6 +211,71 @@ test("every markdown block is rendered inside the boundary", () => {
   );
 });
 
+/** The JSX element names enclosing every occurrence of `tag`, innermost last. */
+function wrappersAround(tag: string): string[][] {
+  const found: string[][] = [];
+  const visit = (node: ts.Node, open: string[]): void => {
+    const name =
+      ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node)
+        ? node.tagName.getText(source)
+        : null;
+    if (name === tag) found.push(open);
+    const next = ts.isJsxElement(node)
+      ? [...open, node.openingElement.tagName.getText(source)]
+      : open;
+    node.forEachChild((child) => visit(child, next));
+  };
+  source.forEachChild((node) => visit(node, []));
+  return found;
+}
+
+const INNER_BOUNDARY = "MarkdownRendererBoundary";
+
+test("a failed renderer does not take the block's controls with it", () => {
+  /*
+   * The whole point, asserted as a RELATIONSHIP so it cannot pass vacuously: a
+   * tree with no inner boundary at all would satisfy "the control is not inside
+   * one", which is exactly the tree this test exists to reject.
+   *
+   * `Block` is the only thing in a block that loads a chunk at render time, so
+   * it is what the rejected `React.lazy` throws from. `CodeBlockActions` (copy
+   * and download) and `MermaidCopyButton` are independent of it, and they are
+   * what a reader reaches for when a block did not render. So each control must
+   * be a SIBLING of the boundary that catches the renderer, not a descendant:
+   * the control's ancestors must be exactly the Block's ancestors with the
+   * boundary taken out.
+   */
+  for (const control of ["CodeBlockActions", "MermaidCopyButton"]) {
+    const sites = wrappersAround(control);
+    assert.ok(sites.length > 0, `${control} is not rendered at all`);
+    for (const open of sites) {
+      assert.ok(
+        !open.includes(INNER_BOUNDARY),
+        `${control} is rendered inside ${INNER_BOUNDARY}, so it is unmounted along with the renderer that failed and the reader loses it exactly when they need it`,
+      );
+      assert.ok(
+        wrappersAround("Block").some(
+          (blockOpen) =>
+            blockOpen.includes(INNER_BOUNDARY) &&
+            blockOpen.filter((w) => w !== INNER_BOUNDARY).join(">") ===
+              open.join(">"),
+        ),
+        `no boundaried <Block> sits beside ${control}, so a rejected lazy chunk still escapes to the whole-block boundary and takes ${control} down with it`,
+      );
+    }
+  }
+});
+
+test("the whole-block boundary is still the catch-all above them", () => {
+  // The inner boundary narrows what is REPLACED, never what is CAUGHT. Anything
+  // that throws outside `Block` -- a hook, a sanitizer, an artifact card -- must
+  // still reach the outer boundary rather than the router.
+  assert.ok(
+    wrappersAroundBlockContent().includes("MarkdownBlockBoundary"),
+    "the outer boundary no longer wraps the block, so narrowing the inner one narrowed the coverage too",
+  );
+});
+
 test("the boundary does not retry the import it caught", () => {
   const boundary = readFileSync(
     new URL(
