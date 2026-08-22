@@ -1031,7 +1031,9 @@ export const ja = {
         apiKey:
           "Unsloth の API キーを指定します (または UNSLOTH_API_KEY を設定)。",
         reasoning:
-          "このコマンドが起動するサーバーの推論モード (off、auto、on)。既定は off。強さを指定する場合は unsloth run --chat-template-kwargs '{\"reasoning_effort\":\"medium\"}' でモデルを起動してください。",
+          "チャットで推論を使うかどうか: on、off、auto。auto はモデルのチャットテンプレートに従い、通常は on になります。",
+        reasoningEffort:
+          "チャットテンプレートに渡す推論の強さ: minimal、low、medium、high、xhigh、max。未指定ならテンプレート自身の値が使われます。",
         yolo:
           "承認の確認をスキップします。信頼できる環境でのみ使用してください。",
       },

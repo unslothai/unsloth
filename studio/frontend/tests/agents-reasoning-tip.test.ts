@@ -25,6 +25,8 @@ test("--reasoning is listed with the other start flags", () => {
     "the flag row is in the options table",
   );
   assert.ok(rows.includes("settings.agents.options.reasoning"));
+  assert.ok(rows.includes('flag: "--reasoning-effort"'));
+  assert.ok(rows.includes("settings.agents.options.reasoningEffort"));
   // Next to --serve: both only mean anything for a server this command starts.
   assert.ok(
     rows.indexOf("--serve") < rows.indexOf("--reasoning"),
@@ -32,12 +34,13 @@ test("--reasoning is listed with the other start flags", () => {
   );
 });
 
-test("the row carries the effort recipe, which is a different flag", () => {
-  const row = en.settings.agents.options.reasoning;
-  // --reasoning is the on/off/auto mode. An effort level is a chat template
-  // kwarg on the server, and unsloth start forwards unknown flags to the
-  // agent, so it has to be set when the model is served.
-  assert.ok(row.includes("off, auto, on"));
-  assert.ok(row.includes('--chat-template-kwargs \'{"reasoning_effort":"medium"}\''));
-  assert.ok(row.includes("unsloth run"));
+test("both reasoning rows are there, and say what each one does", () => {
+  const { reasoning, reasoningEffort } = en.settings.agents.options;
+  // --reasoning is the on/off/auto switch, and auto (the model's template)
+  // is what an agent session gets unless it is set.
+  assert.ok(reasoning.includes("on, off, or auto"));
+  assert.ok(reasoning.includes("chat template"));
+  // The level is a separate flag, and unset means the template's own level.
+  assert.ok(reasoningEffort.includes("minimal, low, medium, high, xhigh or max"));
+  assert.ok(reasoningEffort.includes("chat template"));
 });

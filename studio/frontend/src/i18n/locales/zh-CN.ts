@@ -1019,7 +1019,9 @@ export const zhCN = {
           "让父智能体保持当前模型，并将 Unsloth 注册为本地子智能体（Claude Code、Codex 和 OpenCode）。",
         apiKey: "提供你的 Unsloth API 密钥（或设置 UNSLOTH_API_KEY）。",
         reasoning:
-          "该命令启动的服务器的推理模式（off、auto、on），默认 off。需要指定强度时，用 unsloth run --chat-template-kwargs '{\"reasoning_effort\":\"medium\"}' 提供模型。",
+          "是否在对话中使用推理：on、off 或 auto。auto 会遵循模型的对话模板，通常为开启。",
+        reasoningEffort:
+          "传给对话模板的推理强度：minimal、low、medium、high、xhigh 或 max。不设置时沿用模板自身的强度。",
         yolo: "跳过确认提示。请仅在可信环境中使用。",
       },
       remote: {

@@ -1042,7 +1042,9 @@ export const ar = {
           "يبقي الوكيل الأصلي على نموذجه الحالي ويسجّل Unsloth كوكيل فرعي محلي (Claude Code وCodex وOpenCode).",
         apiKey: "يمرّر مفتاح API الخاص بـ Unsloth (أو اضبط UNSLOTH_API_KEY).",
         reasoning:
-          "وضع الاستدلال (off أو auto أو on) لخادم يشغّله هذا الأمر، والافتراضي off. ولضبط مستوى الجهد، شغّل النموذج بالأمر unsloth run --chat-template-kwargs '{\"reasoning_effort\":\"medium\"}'.",
+          "استخدام الاستدلال في المحادثة: on أو off أو auto. ويتبع auto قالب المحادثة الخاص بالنموذج، وهو غالبًا on.",
+        reasoningEffort:
+          "مستوى جهد الاستدلال المُمرَّر إلى قالب المحادثة: minimal أو low أو medium أو high أو xhigh أو max. وبدون قيمة يبقى مستوى القالب نفسه.",
         yolo: "يتخطى طلبات الموافقة. استخدمه في البيئات الموثوقة فقط.",
       },
       remote: {

@@ -1038,7 +1038,9 @@ export const en = {
           "Keep the parent on its current model and register Unsloth as a local subagent (Claude Code, Codex, and OpenCode).",
         apiKey: "Provide your Unsloth API key (or set UNSLOTH_API_KEY).",
         reasoning:
-          "Reasoning mode (off, auto, on) for a server this command starts; defaults to off. For an effort level, serve the model with unsloth run --chat-template-kwargs '{\"reasoning_effort\":\"medium\"}'.",
+          "Use reasoning in the chat: on, off, or auto. Auto follows the model's chat template, which usually means on.",
+        reasoningEffort:
+          "Reasoning effort level given to the chat template: minimal, low, medium, high, xhigh or max. Unset leaves the template's own level.",
         yolo: "Skip approval prompts. Use only in trusted environments.",
       },
       remote: {

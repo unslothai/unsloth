@@ -1042,7 +1042,9 @@ export const it = {
         apiKey:
           "Fornisci la tua chiave API Unsloth (oppure imposta UNSLOTH_API_KEY).",
         reasoning:
-          "Modalità di ragionamento (off, auto, on) per un server avviato da questo comando; predefinito: off. Per un livello di impegno, avvia il modello con unsloth run --chat-template-kwargs '{\"reasoning_effort\":\"medium\"}'.",
+          "Usare il ragionamento nella chat: on, off o auto. Auto segue il chat template del modello, che di solito significa on.",
+        reasoningEffort:
+          "Livello di impegno passato al chat template: minimal, low, medium, high, xhigh o max. Se non impostato resta il livello del template.",
         yolo: "Salta le richieste di approvazione. Usa solo in ambienti fidati.",
       },
       remote: {

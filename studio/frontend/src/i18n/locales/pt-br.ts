@@ -1057,7 +1057,9 @@ export const ptBR = {
         apiKey:
           "Informa sua chave de API do Unsloth (ou defina UNSLOTH_API_KEY).",
         reasoning:
-          "Modo de raciocínio (off, auto, on) para um servidor iniciado por este comando; padrão: off. Para um nível de esforço, sirva o modelo com unsloth run --chat-template-kwargs '{\"reasoning_effort\":\"medium\"}'.",
+          "Usar raciocínio no chat: on, off ou auto. Auto segue o chat template do modelo, o que normalmente significa on.",
+        reasoningEffort:
+          "Nível de esforço de raciocínio passado ao chat template: minimal, low, medium, high, xhigh ou max. Sem valor, vale o nível do template.",
         yolo: "Pula os pedidos de aprovação. Use apenas em ambientes confiáveis.",
       },
       remote: {

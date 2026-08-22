@@ -1048,7 +1048,9 @@ export const hi = {
         apiKey:
           "आपकी Unsloth API key लेता है (या UNSLOTH_API_KEY सेट करें)।",
         reasoning:
-          "इस कमांड से शुरू होने वाले सर्वर का रीज़निंग मोड (off, auto, on); डिफ़ॉल्ट off। एफ़र्ट स्तर के लिए मॉडल को unsloth run --chat-template-kwargs '{\"reasoning_effort\":\"medium\"}' से चलाएँ।",
+          "चैट में रीज़निंग इस्तेमाल करें: on, off या auto। Auto मॉडल के चैट टेम्पलेट के अनुसार चलता है, जो आम तौर पर on होता है।",
+        reasoningEffort:
+          "चैट टेम्पलेट को दिया जाने वाला रीज़निंग एफ़र्ट स्तर: minimal, low, medium, high, xhigh या max। खाली छोड़ने पर टेम्पलेट का अपना स्तर रहता है।",
         yolo:
           "मंज़ूरी के प्रॉम्प्ट छोड़ देता है। केवल भरोसेमंद वातावरण में उपयोग करें।",
       },

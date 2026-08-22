@@ -1041,7 +1041,9 @@ export const ko = {
         apiKey:
           "Unsloth API 키를 지정합니다(또는 UNSLOTH_API_KEY 환경 변수를 설정합니다).",
         reasoning:
-          "이 명령이 시작하는 서버의 추론 모드(off, auto, on). 기본값은 off입니다. 강도를 지정하려면 unsloth run --chat-template-kwargs '{\"reasoning_effort\":\"medium\"}'로 모델을 제공하세요.",
+          "채팅에서 추론 사용 여부: on, off, auto. auto는 모델의 채팅 템플릿을 따르며 보통 on입니다.",
+        reasoningEffort:
+          "채팅 템플릿에 전달하는 추론 강도: minimal, low, medium, high, xhigh, max. 지정하지 않으면 템플릿의 값이 유지됩니다.",
         yolo: "승인 확인을 건너뜁니다. 신뢰할 수 있는 환경에서만 사용하세요.",
       },
       remote: {

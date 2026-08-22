@@ -1068,7 +1068,9 @@ export const es = {
           "Mantén el agente principal en su modelo actual y registra Unsloth como subagente local (Claude Code, Codex y OpenCode).",
         apiKey: "Indica tu clave de API de Unsloth (o define UNSLOTH_API_KEY).",
         reasoning:
-          "Modo de razonamiento (off, auto, on) para un servidor que inicie este comando; predeterminado: off. Para un nivel de esfuerzo, sirve el modelo con unsloth run --chat-template-kwargs '{\"reasoning_effort\":\"medium\"}'.",
+          "Usar razonamiento en el chat: on, off o auto. Auto sigue la plantilla de chat del modelo, lo que suele significar on.",
+        reasoningEffort:
+          "Nivel de esfuerzo de razonamiento que se pasa a la plantilla de chat: minimal, low, medium, high, xhigh o max. Sin valor se mantiene el nivel de la plantilla.",
         yolo:
           "Omite las solicitudes de aprobación. Úsalo solo en entornos de confianza.",
       },

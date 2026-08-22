@@ -259,6 +259,16 @@ _REASONING_OPTION = typer.Option(
         "'auto' or 'on' to opt back into model reasoning."
     ),
 )
+_REASONING_EFFORT_OPTION = typer.Option(
+    None,
+    "--reasoning-effort",
+    rich_help_panel = _PANEL_SERVER,
+    help = (
+        "Reasoning effort level for an auto-started coding-agent server: 'minimal', "
+        "'low', 'medium', 'high', 'xhigh' or 'max'. Default: unset, so the model's "
+        "chat template decides."
+    ),
+)
 # Sampling overrides pin a value on the auto-started server (winning over the client and the
 # per-model recommendation). Default unset -> the model's recommended sampling is used.
 _TEMPERATURE_OPTION = typer.Option(
@@ -577,6 +587,9 @@ class LoadOptions(NamedTuple):
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
 
 
+_ReasoningEffort = Literal["minimal", "low", "medium", "high", "xhigh", "max"]
+
+
 class ServerOptions(NamedTuple):
     """Tool-call knobs forwarded to an auto-started `unsloth run` server."""
 
@@ -584,6 +597,7 @@ class ServerOptions(NamedTuple):
     tool_call_healing: Optional[bool] = None
     tool_call_nudging: Optional[bool] = None
     reasoning: Optional[Literal["on", "off", "auto"]] = None
+    reasoning_effort: Optional[_ReasoningEffort] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     top_k: Optional[int] = None
@@ -1149,6 +1163,9 @@ def _start_studio_server(
     # Older managed versions ignore an unknown env variable instead of failing startup on
     # an unknown passthrough CLI flag. An omitted start option still defaults to off.
     child_env["LLAMA_ARG_REASONING"] = server.reasoning or "off"
+    # Unset leaves the level to the chat template, which is llama-server's default.
+    if server.reasoning_effort:
+        child_env["LLAMA_ARG_REASONING_EFFORT"] = server.reasoning_effort
     # Pass the marker via env so an older launcher ignores it instead of treating an
     # unknown CLI flag as a llama-server arg; new launchers preserve it across re-exec.
     child_env[_START_API_KEY_MARKER_ENV] = "1"
@@ -1288,10 +1305,18 @@ def _require_studio(
                 "and re-run to apply them.",
                 err = True,
             )
-        if server_options.reasoning is not None:
+        _reasoning_pins = [
+            f"{_flag} {_value}"
+            for _flag, _value in (
+                ("--reasoning", server_options.reasoning),
+                ("--reasoning-effort", server_options.reasoning_effort),
+            )
+            if _value is not None
+        ]
+        if _reasoning_pins:
             typer.echo(
                 f"Warning: an Unsloth server is already running at {base}; "
-                f"--reasoning {server_options.reasoning} applies only when this command starts "
+                f"{', '.join(_reasoning_pins)} takes effect only when this command starts "
                 "the server, so the running server keeps its current reasoning mode. Stop it "
                 "with `unsloth studio stop` and re-run to apply the override.",
                 err = True,
@@ -4362,6 +4387,7 @@ def claude(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[_ReasoningEffort] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4393,6 +4419,7 @@ def claude(
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
             reasoning = reasoning,
+            reasoning_effort = reasoning_effort,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -4483,6 +4510,7 @@ def codex(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[_ReasoningEffort] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4512,6 +4540,7 @@ def codex(
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
             reasoning = reasoning,
+            reasoning_effort = reasoning_effort,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -4588,6 +4617,7 @@ def openclaw(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[_ReasoningEffort] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4619,6 +4649,7 @@ def openclaw(
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
             reasoning = reasoning,
+            reasoning_effort = reasoning_effort,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -4679,6 +4710,7 @@ def opencode(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[_ReasoningEffort] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4707,6 +4739,7 @@ def opencode(
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
             reasoning = reasoning,
+            reasoning_effort = reasoning_effort,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -4861,6 +4894,7 @@ def hermes(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[_ReasoningEffort] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4890,6 +4924,7 @@ def hermes(
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
             reasoning = reasoning,
+            reasoning_effort = reasoning_effort,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -4921,6 +4956,7 @@ def pi(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[_ReasoningEffort] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4953,6 +4989,7 @@ def pi(
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
             reasoning = reasoning,
+            reasoning_effort = reasoning_effort,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,

@@ -440,6 +440,10 @@ const OPTION_ROWS: { flag: string; descKey: TranslationKey }[] = [
   { flag: "--serve / --no-serve", descKey: "settings.agents.options.serve" },
   { flag: "--reasoning", descKey: "settings.agents.options.reasoning" },
   {
+    flag: "--reasoning-effort",
+    descKey: "settings.agents.options.reasoningEffort",
+  },
+  {
     flag: "--launch / --no-launch",
     descKey: "settings.agents.options.launch",
   },

@@ -1077,7 +1077,9 @@ export const de = {
         apiKey:
           "Übergibt Ihren Unsloth-API-Schlüssel (alternativ UNSLOTH_API_KEY setzen).",
         reasoning:
-          "Reasoning-Modus (off, auto, on) für einen von diesem Befehl gestarteten Server; Standard: off. Für eine Aufwandsstufe starten Sie das Modell mit unsloth run --chat-template-kwargs '{\"reasoning_effort\":\"medium\"}'.",
+          "Reasoning im Chat verwenden: on, off oder auto. Auto folgt der Chat-Vorlage des Modells, was meist on bedeutet.",
+        reasoningEffort:
+          "Reasoning-Aufwand, der an die Chat-Vorlage übergeben wird: minimal, low, medium, high, xhigh oder max. Ohne Angabe gilt die Stufe der Vorlage.",
         yolo:
           "Überspringt Bestätigungsabfragen. Nur in vertrauenswürdigen Umgebungen verwenden.",
       },
