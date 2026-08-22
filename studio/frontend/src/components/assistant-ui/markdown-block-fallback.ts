@@ -138,30 +138,54 @@ export function markdownBlockFallback(content: string): MarkdownBlockFallback {
   if (!open) {
     return { text: content, language: null, fenced: false };
   }
+  const body = fenceBody(open.body, open.marker);
+  // The fence closed with the block still running, so the block is a DOCUMENT
+  // that merely starts with a fence. Its own source is the readable form.
+  if (body === null) {
+    return { text: content, language: null, fenced: false };
+  }
   const language = open.info.trim().split(/\s+/)[0] || null;
-  const body = stripClosingFence(open.body, open.marker);
   return { text: stripIndent(body, open.indent), language, fenced: true };
 }
 
 /**
- * The body with its closing fence removed, or unchanged when it has none.
+ * The fence's content, or null when the fence does not own the whole block.
  *
- * Only the block's LAST line is considered, which is what makes an unclosed
- * fence degrade to all of itself: the failure happens mid-fence, long before it
- * closes, and that is exactly when the reader needs the characters.
+ * One block is usually one construct, but not always: Streamdown 2.5's
+ * `parseMarkdownIntoBlocks` returns an ENTIRE reply as a single block once it
+ * contains a footnote (measured: the same reply splits into 5 blocks without one
+ * and 1 with). A fence at the top of such a block is followed by its own close
+ * and then by prose, and reading the whole thing as the fence's body put the
+ * closing delimiter, the prose and the footnote on screen as if the model had
+ * written them as Python.
+ *
+ * So the close is looked for from the TOP, and where it falls decides:
+ *   last line   the fence is the block. Its content is everything above.
+ *   earlier     the block continues past the fence, so it is not a whole-block
+ *               fence and belongs to the caller unchanged.
+ *   never       still streaming. All of it is content, which is the case the
+ *               reader needs most: the failure happens mid-fence, long before it
+ *               closes.
  */
-function stripClosingFence(body: string, marker: string): string {
+function fenceBody(body: string, marker: string): string | null {
   // The line break before the closing fence belongs to the fence's line, and a
   // block may or may not carry a trailing one of its own.
   const withoutTrailingBreak = body.replace(/\r?\n$/, "");
-  const lastBreak = withoutTrailingBreak.lastIndexOf("\n");
-  if (!closesFence(withoutTrailingBreak.slice(lastBreak + 1), marker)) {
-    return body;
+  let start = 0;
+  for (;;) {
+    const nl = withoutTrailingBreak.indexOf("\n", start);
+    const end = nl === -1 ? withoutTrailingBreak.length : nl;
+    const line = withoutTrailingBreak.slice(start, end).replace(/\r$/, "");
+    if (closesFence(line, marker)) {
+      if (nl !== -1) return null;
+      // An empty fence closes on the line after it opens, so there is no body at
+      // all. Returning the closing run here is what showed ``` as its own code.
+      if (start === 0) return "";
+      const cut =
+        withoutTrailingBreak[start - 2] === "\r" ? start - 2 : start - 1;
+      return withoutTrailingBreak.slice(0, cut);
+    }
+    if (nl === -1) return body;
+    start = nl + 1;
   }
-  // An empty fence closes on the line after it opens, so there is no body at
-  // all. Returning the closing run here is what showed ``` as its own code.
-  if (lastBreak === -1) return "";
-  const end =
-    withoutTrailingBreak[lastBreak - 1] === "\r" ? lastBreak - 1 : lastBreak;
-  return withoutTrailingBreak.slice(0, end);
 }

@@ -246,6 +246,47 @@ test("only the opener's own indentation comes off, never the code's", () => {
   );
 });
 
+test("a block that continues past its fence is not read as one fence", () => {
+  // Streamdown 2.5's parseMarkdownIntoBlocks returns the WHOLE reply as a single
+  // block once it contains a footnote. Measured on the installed version: the
+  // same reply is 5 blocks without the footnote and 1 block with it. So a fence
+  // followed by prose really does arrive here as one string, and reading it all
+  // as the fence's body showed the closing delimiter, the prose and the footnote
+  // as though the model had written them as Python.
+  const content = "```python\nx=1\n```\n\nAfter code.[^1]\n\n[^1]: note";
+  const fallback = markdownBlockFallback(content);
+
+  assert.equal(
+    fallback.text,
+    content,
+    "a multi-construct block was degraded as a single fence, so prose rendered as code",
+  );
+  assert.equal(fallback.fenced, false);
+  assert.equal(fallback.language, null);
+});
+
+test("the close still has to be the last line, not merely present", () => {
+  // The three positions the close can take, which are the whole rule.
+  assert.equal(markdownBlockFallback("```py\nx\n```").text, "x");
+  assert.equal(markdownBlockFallback("```py\nx\n```\n").text, "x");
+  assert.equal(markdownBlockFallback("```py\nx").text, "x");
+  assert.equal(
+    markdownBlockFallback("```py\nx\n```\ntail").fenced,
+    false,
+    "content after the closing fence was swallowed into the code body",
+  );
+});
+
+test("an inner fence shorter than the opener does not end the block early", () => {
+  // The scan runs from the top now, so the first line that could be mistaken for
+  // a close is a four-backtick fence's three-backtick content.
+  const fallback = markdownBlockFallback("````md\n```py\nx = 1\n```\n````");
+
+  assert.equal(fallback.text, "```py\nx = 1\n```");
+  assert.equal(fallback.language, "md");
+  assert.equal(fallback.fenced, true);
+});
+
 test("a block with content never degrades to nothing", () => {
   for (const content of [
     "```python\nx = 1\n```",
