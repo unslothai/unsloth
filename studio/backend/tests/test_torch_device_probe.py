@@ -9,11 +9,42 @@ import signal
 import subprocess
 import sys
 import threading
+import types
 from pathlib import Path
 
 import pytest
 
 from utils import process_lifetime, torch_device_probe
+
+
+def _spoof_os_name(monkeypatch, name: str) -> None:
+    """Give the probe a private ``os`` whose ``name`` is spoofed.
+
+    The probe branches on ``os.name`` for every status interpretation, but the
+    real ``os`` module is shared with pytest's terminal reporter and the xdist
+    transport, which keep reading it while a test runs. Mutating it in-process
+    flipped pathlib to Windows flavour inside pytest's own report formatting
+    (``ValueError: ... is not in the subpath of '\\repo\\...'``) and took the
+    worker down, killing or wedging the whole run. A module-private copy keeps
+    the spoof scoped to the code under test.
+    """
+    fake_os = types.ModuleType(os.__name__)
+    fake_os.__dict__.update(os.__dict__)
+    fake_os.name = name
+    monkeypatch.setattr(torch_device_probe, "os", fake_os)
+
+
+def _spoof_sys_platform(monkeypatch, platform: str) -> None:
+    """Give the probe a private copy of ``sys`` with the platform spoofed.
+
+    Same reason as ``_spoof_os_name``: the real ``sys`` is shared with pytest
+    and the xdist transport; on Windows the spoof also defeats the
+    ``sys.platform == "win32"`` guard in process_lifetime's liveness probe.
+    """
+    fake_sys = types.ModuleType(sys.__name__)
+    fake_sys.__dict__.update(sys.__dict__)
+    fake_sys.platform = platform
+    monkeypatch.setattr(torch_device_probe, "sys", fake_sys)
 
 
 # A child that dies of SIGSEGV is still handed to the host's core_pattern handler
@@ -266,13 +297,13 @@ def test_a_child_that_hit_its_own_deadline_is_a_failed_probe(monkeypatch):
     # recognised before: SIGALRM is not a hard fault so it fell through _died_by_signal,
     # and the Windows status is an ordinary non-zero exit. Both read as a healthy device,
     # which let the parent make the allocation the probe stands in front of.
-    monkeypatch.setattr(torch_device_probe.os, "name", "posix")
+    _spoof_os_name(monkeypatch, "posix")
     _patch_popen(monkeypatch, _FakeProcess(returncode = -torch_device_probe._SIGALRM_NUMBER))
     assert torch_device_probe.device_can_allocate("cuda") is False
 
 
 def test_the_windows_watchdog_status_is_a_failed_probe(monkeypatch):
-    monkeypatch.setattr(torch_device_probe.os, "name", "nt")
+    _spoof_os_name(monkeypatch, "nt")
     _patch_popen(monkeypatch, _FakeProcess(returncode = torch_device_probe._WATCHDOG_EXIT_STATUS))
     assert torch_device_probe.device_can_allocate("cuda") is False
 
@@ -280,7 +311,7 @@ def test_the_windows_watchdog_status_is_a_failed_probe(monkeypatch):
 def test_a_windows_crt_abort_is_a_failed_probe(monkeypatch):
     # A native abort() on Windows leaves plain exit status 3, not an NTSTATUS, so nothing
     # else here recognises it and the crashing device was being reported as usable.
-    monkeypatch.setattr(torch_device_probe.os, "name", "nt")
+    _spoof_os_name(monkeypatch, "nt")
     _patch_popen(
         monkeypatch,
         _FakeProcess(returncode = torch_device_probe._WINDOWS_ABORT_EXIT_STATUS),
@@ -290,7 +321,7 @@ def test_a_windows_crt_abort_is_a_failed_probe(monkeypatch):
 
 def test_the_abort_status_is_read_as_a_crash_only_on_windows(monkeypatch):
     # Elsewhere 3 is just an exit status a child chose, and an abort arrives as SIGABRT.
-    monkeypatch.setattr(torch_device_probe.os, "name", "posix")
+    _spoof_os_name(monkeypatch, "posix")
     assert (
         torch_device_probe._died_by_signal(torch_device_probe._WINDOWS_ABORT_EXIT_STATUS) is False
     )
@@ -428,7 +459,7 @@ def test_timeout_that_terminates_does_not_kill(monkeypatch):
 def test_windows_child_registers_rocm_dll_directories_before_torch(monkeypatch, tmp_path):
     rocm_bin = tmp_path / "rocm" / "bin"
     rocm_bin.mkdir(parents = True)
-    monkeypatch.setattr(sys, "platform", "win32")
+    _spoof_sys_platform(monkeypatch, "win32")
     monkeypatch.setenv("HIP_PATH", str(tmp_path / "rocm"))
     calls: list = []
     _patch_popen(monkeypatch, _FakeProcess(), calls)
@@ -442,7 +473,7 @@ def test_windows_child_registers_rocm_dll_directories_before_torch(monkeypatch, 
 def test_windows_rocm_directories_use_numeric_version_order(monkeypatch, tmp_path):
     for version in ("6.3", "10.0", "7.0"):
         (tmp_path / "AMD" / "ROCm" / version / "bin").mkdir(parents = True)
-    monkeypatch.setattr(sys, "platform", "win32")
+    _spoof_sys_platform(monkeypatch, "win32")
     monkeypatch.setenv("ProgramFiles", str(tmp_path))
     monkeypatch.delenv("HIP_PATH", raising = False)
     monkeypatch.delenv("ROCM_PATH", raising = False)
@@ -470,7 +501,7 @@ def test_windows_rocm_directories_use_numeric_version_order(monkeypatch, tmp_pat
     ],
 )
 def test_died_by_signal(monkeypatch, returncode, on_windows, expected):
-    monkeypatch.setattr(torch_device_probe.os, "name", "nt" if on_windows else "posix")
+    _spoof_os_name(monkeypatch, "nt" if on_windows else "posix")
     assert torch_device_probe._died_by_signal(returncode) is expected
 
 
@@ -480,7 +511,7 @@ def test_a_killed_probe_is_not_a_pass_for_an_accelerator(monkeypatch, killer):
     # run that earns a pass either. Importing torch and building its device context is
     # enough to trip a cgroup OOM on its own, and reading that as a pass sends the caller
     # on to a much larger load in this process.
-    monkeypatch.setattr(torch_device_probe.os, "name", "posix")
+    _spoof_os_name(monkeypatch, "posix")
     _patch_popen(monkeypatch, _FakeProcess(returncode = -killer))
     assert torch_device_probe.device_can_allocate("cuda") is False
 
@@ -488,13 +519,13 @@ def test_a_killed_probe_is_not_a_pass_for_an_accelerator(monkeypatch, killer):
 def test_a_killed_probe_still_leaves_cpu_available(monkeypatch):
     # Same no-verdict trade as a probe that never ran: CPU cannot fault a GPU driver, and
     # condemning it would push the caller past its CPU fallback to a different backend.
-    monkeypatch.setattr(torch_device_probe.os, "name", "posix")
+    _spoof_os_name(monkeypatch, "posix")
     _patch_popen(monkeypatch, _FakeProcess(returncode = -9))
     assert torch_device_probe.device_can_allocate("cpu") is True
 
 
 def test_a_clean_child_is_still_a_pass(monkeypatch):
-    monkeypatch.setattr(torch_device_probe.os, "name", "posix")
+    _spoof_os_name(monkeypatch, "posix")
     _patch_popen(monkeypatch, _FakeProcess(returncode = 0))
     assert torch_device_probe.device_can_allocate("cuda") is True
 

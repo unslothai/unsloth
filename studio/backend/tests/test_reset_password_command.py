@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import os
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -39,9 +41,38 @@ def auth():
     return module
 
 
+def _spoof_auth_globals(
+    monkeypatch,
+    auth,
+    *,
+    os_name = None,
+    executable = None,
+) -> None:
+    """Give routes/auth.py private copies of ``os`` and ``sys``.
+
+    The command builder branches on ``os.name`` and reads ``sys.executable``,
+    but the real modules are shared with pytest's terminal reporter and the
+    xdist transport, which keep reading them while a test runs. Mutating them
+    in-process flipped pathlib to Windows flavour inside pytest's own report
+    formatting (``ValueError: ... is not in the subpath of '\\repo\\...'``)
+    and killed the worker, taking down or wedging the whole run. Module-private
+    copies keep the spoof scoped to the code under test.
+    """
+    if os_name is not None:
+        fake_os = types.ModuleType(os.__name__)
+        fake_os.__dict__.update(os.__dict__)
+        fake_os.name = os_name
+        monkeypatch.setattr(auth, "os", fake_os)
+    if executable is not None:
+        fake_sys = types.ModuleType(sys.__name__)
+        fake_sys.__dict__.update(sys.__dict__)
+        fake_sys.executable = executable
+        monkeypatch.setattr(auth, "sys", fake_sys)
+
+
 @pytest.fixture
 def windows(monkeypatch, auth):
-    monkeypatch.setattr(auth.os, "name", "nt")
+    _spoof_auth_globals(monkeypatch, auth, os_name = "nt")
 
 
 def test_a_venv_install_gets_the_isolated_module_route(auth, monkeypatch, windows):
@@ -51,8 +82,10 @@ def test_a_venv_install_gets_the_isolated_module_route(auth, monkeypatch, window
     directory that happens to hold an unsloth_cli folder cannot shadow the
     managed one.
     """
-    monkeypatch.setattr(
-        auth.sys, "executable", r"C:\Users\dan\.unsloth\studio\unsloth_studio\Scripts\python.exe"
+    _spoof_auth_globals(
+        monkeypatch,
+        auth,
+        executable = r"C:\Users\dan\.unsloth\studio\unsloth_studio\Scripts\python.exe",
     )
     monkeypatch.setattr(auth, "_cli_is_inside", lambda _prefix: True)
 
@@ -69,7 +102,7 @@ def test_a_user_site_install_is_not_told_to_isolate_itself(auth, monkeypatch, wi
     `No module named unsloth_cli`, which is worse than useless to someone who is
     already locked out.
     """
-    monkeypatch.setattr(auth.sys, "executable", r"C:\Python313\python.exe")
+    _spoof_auth_globals(monkeypatch, auth, executable = r"C:\Python313\python.exe")
     monkeypatch.setattr(auth, "_cli_is_inside", lambda _prefix: False)
 
     command = auth._reset_password_command()
@@ -108,7 +141,7 @@ def test_the_bootstrap_matches_the_one_the_cli_uses(auth):
 
 def test_a_spaced_interpreter_path_still_falls_through_to_the_cmd_shim(auth, monkeypatch, windows):
     """Unchanged: a quoted path is written differently in cmd and PowerShell."""
-    monkeypatch.setattr(auth.sys, "executable", r"C:\Program Files\Python313\python.exe")
+    _spoof_auth_globals(monkeypatch, auth, executable = r"C:\Program Files\Python313\python.exe")
     monkeypatch.setattr(auth, "_cli_is_inside", lambda _prefix: True)
 
     assert auth._reset_password_command() == "unsloth.cmd studio reset-password"
@@ -140,10 +173,9 @@ def test_the_prefix_check_locates_rather_than_imports(auth, tmp_path, monkeypatc
 
 def test_posix_is_untouched(auth, monkeypatch, tmp_path):
     """The console script is what a POSIX user should run; nothing here changes."""
-    monkeypatch.setattr(auth.os, "name", "posix")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "unsloth").write_text("", encoding = "utf-8")
-    monkeypatch.setattr(auth.sys, "executable", str(bin_dir / "python"))
+    _spoof_auth_globals(monkeypatch, auth, os_name = "posix", executable = str(bin_dir / "python"))
 
     assert auth._reset_password_command() == f"{bin_dir / 'unsloth'} studio reset-password"
