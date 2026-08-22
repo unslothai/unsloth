@@ -902,6 +902,6 @@ class TestNativeLeaseOperation:
         # that call is typed against.
         types_ts = (
             Path(__file__).resolve().parents[2] / "frontend/src/features/native-intents/types.ts"
-        ).read_text()
+        ).read_text(encoding = "utf-8")
         assert '"validate-model"' in types_ts
         assert "estimate-memory" not in types_ts
