@@ -275,7 +275,9 @@ def declared_windowed(
                 name = str(r.get("name") or "")
                 if name.startswith(WINDOWED_GATE):
                     arm = name[len(WINDOWED_GATE) :] or "?"
-                    arms[(shard, arm)] = f"the run declared the {arm} arm windowed (gate row {name})"
+                    arms[(shard, arm)] = (
+                        f"the run declared the {arm} arm windowed (gate row {name})"
+                    )
             elif kind == "cell":
                 readiness = r.get("readiness")
                 mode = readiness.get("mode") if isinstance(readiness, dict) else None
