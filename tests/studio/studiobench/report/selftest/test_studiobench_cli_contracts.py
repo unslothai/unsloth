@@ -250,7 +250,12 @@ def test_an_explicit_tier_still_wins(tmp_path):
 # it itself or the payload silently becomes one ladder measured against two films.
 
 
-def _resume_payload(tmp_path, name, meta: dict, cells = ("1K.A0.rep0",)):
+def _resume_payload(
+    tmp_path,
+    name,
+    meta: dict,
+    cells = ("1K.A0.rep0",),
+):
     out = tmp_path / name
     out.mkdir(parents = True, exist_ok = True)
     rows = [{"row_type": "run_meta", "tier": "standard", "corpus_hash": "same", **meta}]

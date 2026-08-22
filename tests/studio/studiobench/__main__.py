@@ -584,9 +584,7 @@ def run(args, ab_ref = None) -> int:
             f"with the same pair."
         )
 
-    done = (
-        _resume_set(paths, args.stream_tail_chars, args.corpus_dollars) if args.resume else set()
-    )
+    done = _resume_set(paths, args.stream_tail_chars, args.corpus_dollars) if args.resume else set()
     if done:
         _log(f"  resuming: {len(done)} cells already in {paths.payload_jsonl.name}")
 
