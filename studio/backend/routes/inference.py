@@ -3533,6 +3533,16 @@ async def _await_disconnect_then_cancel(request, cancel_event) -> None:
         return
 
 
+async def _await_disconnect_then_cancel_task(request, task: asyncio.Task) -> None:
+    """Cancel one outbound request when its client disconnects."""
+    try:
+        while not await request.is_disconnected():
+            await asyncio.sleep(0.1)
+        task.cancel()
+    except asyncio.CancelledError:
+        return
+
+
 async def _await_stt_disconnect_then_cancel(request, sidecar, cancel_event) -> None:
     """Cancel this sidecar request, including a model load still starting."""
     try:
@@ -12166,6 +12176,108 @@ async def openai_audio_speech(
     return Response(content = wav_bytes, media_type = "audio/wav")
 
 
+async def _external_stt_transcription(
+    *,
+    provider_id: str,
+    raw: bytes,
+    filename: str,
+    content_type: str,
+    model: Optional[str],
+    language: Optional[str],
+    response_format: str,
+    encrypted_api_key: Optional[str],
+    request: Request,
+) -> Response:
+    provider_id = provider_id.strip()
+    if not provider_id:
+        raise HTTPException(status_code = 400, detail = "provider_id cannot be empty.")
+    if not raw:
+        raise HTTPException(status_code = 400, detail = "Audio is empty.")
+    if len(raw) > _MAX_AUDIO_RAW_BYTES:
+        raise HTTPException(status_code = 413, detail = "Audio is too large.")
+    external_model = (model or "").strip()
+    if not external_model:
+        raise HTTPException(
+            status_code = 400,
+            detail = "model is required when using an external STT connection.",
+        )
+
+    config = await asyncio.to_thread(providers_db.get_provider, provider_id)
+    if config is None:
+        raise HTTPException(status_code = 404, detail = f"Provider config not found: {provider_id}")
+    if not config["is_enabled"]:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Provider '{config['display_name']}' is disabled.",
+        )
+    base_url = config["base_url"] or get_base_url(config["provider_type"])
+    if not base_url:
+        raise HTTPException(status_code = 400, detail = "The connection has no base URL.")
+    try:
+        base_url = validate_provider_base_url(base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+
+    async with provider_config_guard(provider_id):
+        current = await asyncio.to_thread(providers_db.get_provider, provider_id)
+        routing_fields = ("provider_type", "base_url", "is_enabled")
+        if current is None or any(
+            current.get(field) != config.get(field) for field in routing_fields
+        ):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Provider changed while the request was starting; retry.",
+            )
+        api_key = await asyncio.to_thread(
+            resolve_provider_api_key_or_400,
+            provider_id,
+            encrypted_api_key,
+            allow_saved_key = not _request_has_api_key(request),
+        )
+
+    client = ExternalProviderClient(
+        provider_type = config["provider_type"],
+        base_url = base_url,
+        api_key = api_key,
+    )
+    transcription_task = asyncio.create_task(
+        client.create_transcription(
+            audio = raw,
+            filename = filename,
+            content_type = content_type,
+            model = external_model,
+            language = language,
+            response_format = response_format,
+        )
+    )
+    disconnect_watcher = asyncio.create_task(
+        _await_disconnect_then_cancel_task(request, transcription_task)
+    )
+    try:
+        body, media_type = await transcription_task
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text[:300] if exc.response is not None else str(exc)
+        raise HTTPException(
+            status_code = 502,
+            detail = (
+                f"STT endpoint returned HTTP {exc.response.status_code}: {detail}"
+                if exc.response is not None
+                else f"STT endpoint rejected the request: {detail}"
+            ),
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise log_and_http_error(
+            exc,
+            502,
+            "Could not reach the STT endpoint.",
+            event = "external_stt.transport_error",
+            log = logger,
+        ) from exc
+    finally:
+        await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+    return Response(content = body, media_type = media_type)
+
+
 # openai-compatible transcription api, dual-mounted like /audio/speech; runs on the stt sidecar, not the main gpu slot
 @router.post("/audio/transcriptions")
 async def openai_audio_transcriptions(
@@ -12174,12 +12286,15 @@ async def openai_audio_transcriptions(
     model: Optional[str] = Form(None),
     language: Optional[str] = Form(None),
     response_format: str = Form("json"),
+    provider_id: Optional[str] = Form(None),
+    encrypted_api_key: Optional[str] = Form(None),
     current_subject: str = Depends(get_current_subject),
 ):
     """OpenAI-compatible speech-to-text (POST /v1/audio/transcriptions).
 
-    ``model`` maps to a sidecar model id, with ``whisper-1`` or nothing selecting the
-    default. ``response_format`` supports ``json`` and ``text``."""
+    With ``provider_id`` set, the request is proxied to that saved connection.
+    Otherwise ``model`` maps to a sidecar model id, with ``whisper-1`` or nothing
+    selecting the default. ``response_format`` supports ``json`` and ``text``."""
     fmt = (response_format or "json").strip().lower()
     if fmt not in ("json", "text"):
         raise HTTPException(
@@ -12189,6 +12304,18 @@ async def openai_audio_transcriptions(
     # UploadFile spools to disk, but an unbounded read materializes the whole upload in
     # memory before the shared size check. One byte past the limit is enough to reject it.
     raw = await file.read(_MAX_AUDIO_RAW_BYTES + 1)
+    if isinstance(provider_id, str):
+        return await _external_stt_transcription(
+            provider_id = provider_id,
+            raw = raw,
+            filename = file.filename or "audio",
+            content_type = file.content_type or "application/octet-stream",
+            model = model,
+            language = language,
+            response_format = fmt,
+            encrypted_api_key = encrypted_api_key,
+            request = request,
+        )
     # openai's whisper-1 placeholder means the default transcription model, not a sidecar id
     sidecar_model = None if model in (None, "", "whisper-1") else model
     result = await _transcribe_audio_result(
