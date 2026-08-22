@@ -115,6 +115,73 @@
       const m = message || D.lastAssistantMessage();
       return m ? byName("button", name, m) : null;
     },
+    // Hover the last assistant message, which is what mounts its action bar. `autohide` on the
+    // bar unmounts it on every message that is not hovered, so a control read without this is
+    // read out of a tree it was never in.
+    hoverLastAssistantMessage() {
+      const m = D.lastAssistantMessage();
+      if (m) {
+        m.dispatchEvent(
+          new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" })
+        );
+      }
+      return m;
+    },
+
+    // WAIT for one of the action bar's controls, up to `waitMs`, instead of sampling for it once.
+    //
+    // WHY A WAIT AND NOT A SAMPLE, which is the whole point of this method. The assistant action
+    // bar is mounted with `hideWhenRunning` (thread.tsx), so while the thread is generating there
+    // is no Copy, no Delete and no More ANYWHERE in the tree -- not hidden, not disabled, absent.
+    // Every action that needs one of them is therefore scheduled after a `send_turn`, on the
+    // arithmetic that the follow-up turn drains in FOLLOW_UP_CHARS / the field cadence. That
+    // arithmetic is the NOMINAL drain: it assumes the pacer's cadence is the binding constraint,
+    // and at the 100K rung it is not -- the renderer is, so the reply arrives about 25% later
+    // than the cadence says, and the slot can open with the last few chunks still in flight.
+    //
+    // Measured on the CI runner, from the payload of the run that failed the liveness gate: the
+    // `message_menu` window opened at 32,000ms, took ONE more SSE chunk inside itself, and the
+    // reply stopped growing 71 characters later, inside the same window. The reply settled about
+    // a third of a second after the instant the action sampled the DOM. A single sample turns
+    // that third of a second into `NOT RUN -- no More button on the last assistant message`,
+    // which reads like a missing control and is really a clock being read too early.
+    //
+    // So the control is waited for. The wait is bounded, it is reported, and it happens BEFORE
+    // any measurement clock starts, so a cell that had to wait is not a cell whose open latency
+    // was inflated by the waiting. `fixture/selftest/test_studiobench_rung_plan.py` already
+    // asserts this behaviour in prose -- "a slot may legitimately open a little before the
+    // follow-up finishes and wait inside its own budget" -- and this is the code that makes the
+    // sentence true.
+    //
+    // Polling per paint, not per millisecond, and scoped: `actionButton` searches inside the last
+    // assistant message, so this is O(that message) rather than O(the thread), and it stops the
+    // instant the control appears (0 iterations on every cell where the reply has settled, which
+    // is the normal case).
+    async waitForActionButton(name, waitMs, everyMs) {
+      const started = performance.now();
+      const budget = Math.max(0, Number(waitMs) || 0);
+      const nextPaint = () =>
+        window.__sbNextPaint
+          ? window.__sbNextPaint()
+          : new Promise((r) => setTimeout(r, Number(everyMs) || 16));
+      D.hoverLastAssistantMessage();
+      let el = D.actionButton(name);
+      while (!el && performance.now() - started < budget) {
+        await nextPaint();
+        // Re-hovered every pass: the bar unmounts again whenever the message re-renders, which
+        // during a stream is on every chunk.
+        D.hoverLastAssistantMessage();
+        el = D.actionButton(name);
+      }
+      return {
+        el,
+        waitedMs: Math.round((performance.now() - started) * 10) / 10,
+        // Recorded whether the control was found or not. A miss with `running: true` is the
+        // reply not having settled; a miss with `running: false` is a control that is genuinely
+        // not there, and those are different bugs.
+        running: D.isRunning(),
+      };
+    },
     openMenu() {
       return q(".aui-action-bar-more-content");
     },
