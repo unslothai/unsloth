@@ -536,6 +536,16 @@ class CellRunner:
         # are common to both and cancel, and it carries the reason it is not a verdict. Gating on
         # it would have failed the shipped build.
         row["scroll_intent"] = {
+            # THE ATTESTATION, without which this block fails the bare-zero ban and takes the whole
+            # report with it. `yanked_back_samples: 0` beside a non-zero `detached_samples` is the
+            # GOOD outcome -- the user scrolled away and the app left them there -- and the walker
+            # in scoring/schema.py cannot tell that from a counter nobody wrote. `follow` itself
+            # already carries `follow_attempted` and is covered by it; this block is derived from
+            # the same read and had nothing, so a real CI session refused to render at all with
+            # `bare zeros found: $.cells[0].scroll_intent.yanked_back_samples = 0`. False here
+            # rather than absent: the sampler that was never installed reports None for both
+            # counters, so "not measured" stays distinguishable from "measured zero".
+            "follow_attempted": bool(follow.get("follow_attempted")),
             "detached_samples": follow.get("detached_samples"),
             "yanked_back_samples": follow.get("yanked_back_samples"),
             "gated": False,

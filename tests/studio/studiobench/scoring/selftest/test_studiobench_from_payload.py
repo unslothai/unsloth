@@ -282,3 +282,47 @@ def test_a_wire_character_count_of_zero_is_still_a_failure():
     stay loud."""
     with pytest.raises(PayloadSchemaError):
         validate_payload({"excluded_cells": [], "blk": {"wire_chars": 0}})
+
+
+def test_a_thread_that_was_not_yanked_back_can_still_be_reported():
+    """The block `runtime/session.py` writes as `scroll_intent`, with the reading that broke CI.
+
+    `detached_samples: 7, yanked_back_samples: 0` is the GOOD outcome -- the user scrolled away and
+    the app left them there -- and it made the whole payload unrenderable: the real-path CI session
+    ran every action, wrote its cell, and then `--report` refused with `bare zeros found:
+    $.cells[0].scroll_intent.yanked_back_samples = 0`. The block is derived from the same page-side
+    read as `follow`, which is covered by its own `follow_attempted`, so it carries the same
+    attestation rather than a new exemption.
+    """
+    validate_payload(
+        {
+            "excluded_cells": [],
+            "cells": [
+                {
+                    "row_type": "cell",
+                    "completed": True,
+                    "scroll_intent": {
+                        "follow_attempted": True,
+                        "detached_samples": 7,
+                        "yanked_back_samples": 0,
+                        "gated": False,
+                        "reason": "counts legitimate re-pins as well as yanks",
+                    },
+                }
+            ],
+        }
+    )
+
+
+def test_the_scroll_intent_block_still_attests_in_the_session_layer():
+    """The exemption is an attestation, so it lives with the writer and can be dropped there.
+
+    Pinned at the source because the payload shape that fails is only produced by a live run: a
+    `scroll_intent` block written without `follow_attempted` passes every unit test in this file
+    and refuses the first real session that reaches the report step.
+    """
+    session = (
+        Path(__file__).resolve().parents[2] / "runtime" / "session.py"
+    ).read_text(encoding = "utf-8")
+    block = session[session.index('row["scroll_intent"] = {') :][:2_000]
+    assert '"follow_attempted": bool(follow.get("follow_attempted"))' in block
