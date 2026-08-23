@@ -1067,7 +1067,7 @@ export const zhCN = {
         exportChat: "导出聊天",
       },
       pastedTextThreshold: "压缩长粘贴内容",
-      pastedTextThresholdDescription: "超过此长度的粘贴文本将变为 .txt 附件，而不会填满消息输入框。",
+      pastedTextThresholdDescription: "超过此长度的粘贴文本将变为 .txt 附件，而不会填满消息输入框。 按 {shortcut} 仍可粘贴到消息输入框。",
       pastedTextThresholdOff: "关闭",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
