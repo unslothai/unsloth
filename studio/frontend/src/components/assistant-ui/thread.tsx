@@ -12,7 +12,6 @@ import {
 import { CompactionNotice } from "@/components/assistant-ui/compaction-notice";
 import {
   compactionBoundary,
-  lastFitShortened,
   type ContextTruncation,
 } from "@/features/chat/utils/context-truncation";
 import { downloadImagePart } from "@/components/assistant-ui/image";
@@ -6559,10 +6558,6 @@ const ContinueMessageBarForLastMessage: FC = () => {
     resumable &&
     shouldAutoContinueMessage(messageId, reason, parentId, {
       fits: truncation?.fits,
-      // `fits` alone no longer separates the two refusals: a shortened prompt that was
-      // sent also reports false. Ask the LAST fit, not the turn's running total, or a
-      // turn that rescued early and refused at the end reads as a rescue.
-      promptWasShortened: lastFitShortened(truncation ?? undefined),
       // The same cheap estimator the backend fit uses, which is all that is needed to
       // spot a partial that has already eaten the whole budget.
       partialTokens: Math.ceil(partial.length / 4),

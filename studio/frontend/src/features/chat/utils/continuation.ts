@@ -328,15 +328,12 @@ export function shouldAutoContinue(
   {
     limit = AUTO_CONTINUE_LIMIT,
     fits,
-    promptWasShortened,
     partialTokens,
     promptTarget,
   }: {
     limit?: number;
     /** `contextTruncation.fits` of the turn being resumed. */
     fits?: boolean;
-    /** Whether that fit actually removed turns, i.e. `dropped_messages > 0`. */
-    promptWasShortened?: boolean;
     /** Estimated size of the partial that would be replayed. */
     partialTokens?: number;
     /** `contextTruncation.prompt_target`: what the window leaves for the prompt. */
@@ -346,14 +343,16 @@ export function shouldAutoContinue(
   if (reason !== "length" || !key) {
     return false;
   }
-  if (fits === false && !promptWasShortened) {
-    // Refused AND returned the originals, so the request never fitted. Resuming re-sends a
-    // partial that is only ever longer, so the next round cannot fit either.
+  if (fits === false) {
+    // Neither shape of `fits: false` can be resumed, for the same reason.
     //
-    // A fit that missed only the reply reserve is different: it evicted, was sent, and
-    // answered -- precisely the turn that runs out of reply room and stops on `length`,
-    // and the fitter can evict further for the replayed partial. The hopeless case is
-    // caught on its own merits by the partialTokens check below.
+    // A refusal returned the originals, so the request never fitted at all. And a rescue
+    // is reached only after the eviction loop ran out of eligible turns, so its prompt is
+    // already the floor -- system, pins and the latest turn. Either way there is nothing
+    // left to evict, while a continuation replays the partial as the final assistant turn,
+    // which the fit protects. So each round asks for MORE protected prompt against the
+    // same window: measured on a 460-of-500-token rescue, a 10-character partial already
+    // refuses and an 80-character one overflows the window outright.
     return false;
   }
   if (

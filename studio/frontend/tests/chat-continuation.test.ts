@@ -390,31 +390,16 @@ test("a turn whose own fit was refused is never resumed automatically", () => {
   );
 });
 
-test("a turn whose fit only missed the reply reserve IS resumed", () => {
+test("a turn whose fit only missed the reply reserve is not resumed either", () => {
   resetAutoContinue();
-  // A shortened prompt that was sent and answered also reports `fits: false`, but it is
-  // not a refusal: turns were evicted, the request completed, and running out of reply
-  // room is exactly why it stopped on `length`. The fitter can evict further to make
-  // room for the replayed partial, so this is the case auto-continue exists for.
+  // A rescue reports `fits: false` too, and it is just as unresumable. The rescue branch
+  // is reached only once the eviction loop has run out of eligible turns, so its prompt
+  // is already the floor; the continuation then replays the partial as the final
+  // assistant turn, which the fit protects, asking for MORE prompt against the same
+  // window. Measured on the 460-of-500-token rescue: a 10-character partial already
+  // refuses and an 80-character one overflows the window.
   assert.equal(
-    shouldAutoContinue("length", "parent-1", {
-      fits: false,
-      promptWasShortened: true,
-    }),
-    true,
-  );
-});
-
-test("a shortened turn is still refused once the partial fills the budget", () => {
-  resetAutoContinue();
-  // The genuinely hopeless case is caught on its own merits, not via `fits`.
-  assert.equal(
-    shouldAutoContinue("length", "parent-1", {
-      fits: false,
-      promptWasShortened: true,
-      partialTokens: 3648,
-      promptTarget: 3648,
-    }),
+    shouldAutoContinue("length", "parent-1", { fits: false }),
     false,
   );
 });
