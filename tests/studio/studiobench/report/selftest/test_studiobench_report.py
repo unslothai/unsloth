@@ -229,7 +229,12 @@ def test_harness_bias_is_printed_and_never_subtracted():
 # ── a cell that failed an invalidating gate is INCOMPLETE, not absent ──────────
 
 
-def _gated_cell_rows(gate_name, passed, *, session = "s1"):
+def _gated_cell_rows(
+    gate_name,
+    passed,
+    *,
+    session = "s1",
+):
     """One rung, one cell that completed its film, and that cell's own verdict on itself."""
     return [
         {
@@ -268,7 +273,6 @@ def test_a_cell_that_lost_its_thread_is_scored_incomplete_rather_than_green():
 
 def test_a_cell_that_stopped_following_the_stream_is_incomplete_too():
     from studiobench.report.build import _completion_by_rung
-
     got = _completion_by_rung(_gated_cell_rows("follows_the_stream", False))
     assert got[100_000][0] is False, got
 
@@ -284,7 +288,6 @@ def test_a_gate_that_only_qualifies_one_column_leaves_the_rung_alone():
 
 def test_a_passing_gate_leaves_the_rung_complete():
     from studiobench.report.build import _completion_by_rung
-
     got = _completion_by_rung(_gated_cell_rows("thread_complete", True))
     assert got[100_000] == (True, None), got
 
