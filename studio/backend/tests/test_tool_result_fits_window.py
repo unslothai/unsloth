@@ -964,7 +964,11 @@ class TestTheSafetensorsLoopPricesItToo:
     nothing downstream able to evict it."""
 
     @staticmethod
-    def _run(context_length, messages = None, calls = 1):
+    def _run(
+        context_length,
+        messages = None,
+        calls = 1,
+    ):
         """One `terminal` call through the real loop, returning the kwargs it was given."""
         import threading
 
