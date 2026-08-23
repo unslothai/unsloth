@@ -513,6 +513,42 @@ def registered_image_ids() -> set[str] | None:
     return ids
 
 
+def snapshot_and_fence_registrations() -> set[str] | None:
+    """``registered_image_ids``, plus a fence closing the window it opens.
+
+    Bounding the reap to a snapshot means anything registered after it is spared. The
+    reasoning was that such an image belongs to a chat created since, which the clear is
+    keeping -- but a lookup already running when the clear started belongs to an answer the
+    clear is DELETING, and it publishes into that same window. `/search-images/lookup` is
+    the plain case: it carries no thread, so no cancellation reaches it, and it samples the
+    cache generation on entry, before the reap moves it. Its images then survived Clear all
+    with their sidecars, which say what was searched for.
+
+    Bumping the generation HERE, at the clear boundary rather than at the reap seconds
+    later, refuses exactly those: ``register_images`` compares against the generation its
+    caller sampled, so work that started before this moment publishes nothing. Work that
+    starts after samples the new value, registers normally, and is spared as intended.
+
+    The bump is inside the same lock as the registry read, so a registration cannot slip
+    between being missed by the snapshot and being caught by the fence. It does not abort
+    in-flight FETCHES: those are keyed per id now, and a bare generation move is not one of
+    the signals they read.
+    """
+    global _cache_generation
+    ids: set[str] = set()
+    with _registry_lock:
+        ids.update(_registry)
+        _cache_generation += 1
+    for pattern in ("*.jpg", "*.json"):
+        try:
+            ids.update(path.stem for path in _cache_dir().glob(pattern))
+        except OSError:
+            # Same fallback as registered_image_ids: an incomplete snapshot cannot bound a
+            # reap, and None is the sentinel clear_cache reads as "clear everything".
+            return None
+    return ids
+
+
 def _reaped_since_locked(image_id: str, generation: int) -> bool:
     """Whether a clear covering ``image_id`` landed after ``generation``. Caller holds the lock."""
     if _full_clear_generation > generation:

@@ -1368,11 +1368,11 @@ async def clear_history(
         every search in every chat for the length of a clear. The window bought back is a few
         instructions wide and its cost is one chat's thumbnails re-fetching. Not worth it.
         """
-        from core.inference.search_images import registered_image_ids
+        from core.inference.search_images import snapshot_and_fence_registrations
 
         if payload is None:
             cleared, cleared_runs = clear_chat_history()
-            return cleared, cleared_runs, False, registered_image_ids()
+            return cleared, cleared_runs, False, snapshot_and_fence_registrations()
         # Answered by the transaction itself. Read separately beforehand it is a guess:
         # a concurrent retry of the same operation id sees the same unrecorded ledger,
         # and the one BEGIN IMMEDIATE puts second replays while still believing it
@@ -1391,7 +1391,7 @@ async def clear_history(
                 True,
                 unreaped_clear_operation_image_ids(payload.operationId),
             )
-        snapshot = registered_image_ids()
+        snapshot = snapshot_and_fence_registrations()
         # Recorded before the reap runs, so a crash in the seconds of cleanup that follow
         # leaves a retry able to finish exactly this set and nothing wider.
         record_clear_operation_reap_scope(payload.operationId, snapshot)

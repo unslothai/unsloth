@@ -1203,3 +1203,56 @@ def test_a_full_clear_still_aborts_every_fetch_including_unknown_ids():
     search_images.clear_cache()
     with search_images._registry_lock:
         assert search_images._reaped_since_locked("ffffffffffff", before) is True
+
+
+def test_a_lookup_already_running_when_a_clear_starts_publishes_nothing(monkeypatch, tmp_path):
+    """Bounding the reap to a snapshot spares whatever registers after it. That is right for
+    a chat created since the clear, and wrong for a lookup the clear is deleting the answer
+    of -- `/search-images/lookup` carries no thread, so no cancellation reaches it, and it
+    samples the cache generation on entry.
+
+    Without a fence at the clear boundary its images register into the window between the
+    snapshot and the reap, the selective reap spares them, and Clear all leaves their
+    sidecars on disk saying what was searched for.
+    """
+    monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path)
+
+    # What _image_search does on entry, before it goes to the network.
+    sampled = search_images.cache_generation()
+
+    # The clear reaches its boundary while that lookup is still out.
+    snapshot = search_images.snapshot_and_fence_registrations()
+    assert snapshot is not None
+
+    # The lookup comes back and tries to publish.
+    published = search_images.register_images(RAW_IMAGES, expected_generation = sampled)
+
+    assert published == [], (
+        "an answer this clear is deleting must not get its images registered behind it"
+    )
+    assert list(tmp_path.glob("*.json")) == [], "and no sidecar may be written either"
+
+
+def test_a_lookup_that_starts_after_the_clear_boundary_still_registers(monkeypatch, tmp_path):
+    """The complement. A chat created after the clear is exactly what the snapshot spares,
+    so its lookups must go through untouched."""
+    monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path)
+
+    search_images.snapshot_and_fence_registrations()
+    sampled = search_images.cache_generation()
+    published = search_images.register_images(RAW_IMAGES, expected_generation = sampled)
+
+    assert published, "a lookup that started after the boundary belongs to a surviving chat"
+
+
+def test_the_fence_does_not_abort_an_in_flight_fetch(monkeypatch, tmp_path):
+    """The fence moves the generation, and fetch invalidation is per id now, so a fetch
+    already running for an image the clear will spare must be unaffected. Reading the bare
+    generation here would undo the per-id work."""
+    monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path)
+    started_at = search_images.cache_generation()
+
+    search_images.snapshot_and_fence_registrations()
+
+    with search_images._registry_lock:
+        assert search_images._reaped_since_locked("ffffffffffff", started_at) is False
