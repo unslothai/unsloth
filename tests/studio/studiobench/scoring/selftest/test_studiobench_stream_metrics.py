@@ -361,9 +361,7 @@ def test_a_frameless_streaming_window_poisons_the_pooled_streaming_frame_metrics
     window's clean numbers. `_frame_measures` refuses the same shape for the cell-wide metrics.
     """
     smooth = _window("stream:gap1", frame_gaps = [16.7] * 540, max_frame_ms = 16.7)
-    frozen = _window(
-        "stream:gap2", duration_ms = 4_000.0, frame_gaps = [], max_frame_ms = None
-    )
+    frozen = _window("stream:gap2", duration_ms = 4_000.0, frame_gaps = [], max_frame_ms = None)
 
     m = _stream_measures([smooth, frozen])
     for key in ("stream_max_frame_ms", "stream_time_in_jank_pct", "stream_jank_index"):

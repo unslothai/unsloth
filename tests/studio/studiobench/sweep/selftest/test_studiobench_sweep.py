@@ -507,7 +507,11 @@ def frame_window(cid: str, kind: str, gaps: list[float], duration_ms: float, **e
     return row
 
 
-def stream_window(cid: str, gaps: list[float], duration_ms: float = 10_000.0) -> dict:
+def stream_window(
+    cid: str,
+    gaps: list[float],
+    duration_ms: float = 10_000.0,
+) -> dict:
     """One qualifying, unaided streaming window: SSE traffic plus enough reply growth."""
     return {
         "row_type": "window",
