@@ -25456,13 +25456,11 @@ class LlamaCppBackend:
                                     )
                                 )
                                 # What ANY result may add before the next prompt is over
-                                # budget. Every tool, not just the retrieval ones: the cap
-                                # a result carried before this was a share of the WINDOW
-                                # and so never fell as the thread filled, which let the
-                                # last result before an overflow claim as much room as the
-                                # first. Nothing downstream can recover from that -- the
-                                # fit protects the newest turn, so compaction may not drop
-                                # the very result that does not fit.
+                                # budget, for every tool and not just the retrieval ones.
+                                # The old cap was a share of the WINDOW and never fell as
+                                # the thread filled, so the last result before an overflow
+                                # claimed as much as the first, and nothing downstream
+                                # recovers: the fit protects the newest turn.
                                 if accepts_kwarg(execute_tool, "result_budget_tokens"):
                                     kwargs["result_budget_tokens"] = tool_result_budget(
                                         self._effective_context_length,

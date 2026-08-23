@@ -12214,17 +12214,14 @@ def _dense_char_limit(text: str, max_chars: int) -> int:
     # Never below the floor that keeps a result worth reading...
     floor = _MIN_PAGE_CHARS
     if room is not None:
-        # ...but the floor is a comfort, not a right. Holding 2,000 characters of a dense
-        # result when the thread has room for 100 tokens reinstates exactly the overflow
-        # this budget exists to prevent, and the caller cannot recover: the fit protects
-        # the newest turn. Lowered to what the room really holds, which in the extreme
-        # leaves the stub alone -- small enough that the next fit can evict older turns
-        # and carry on.
+        # ...but the floor is a comfort, not a right. 2,000 characters of dense output on
+        # a thread with room for 100 tokens is the overflow this budget exists to prevent,
+        # and the fit protects the newest turn so nothing downstream recovers. In the
+        # extreme it leaves the stub alone, which is small enough to stay servable.
         #
-        # MEASURED, not estimated, for the same reason the body below is: the character
-        # rule charges ASCII a flat four per token, so on the dense output these tools
-        # print it hands back a third more than the room holds. Bottomed at one character
-        # rather than the legacy floor, since the whole point here is to go below it.
+        # MEASURED, not estimated: the flat four-characters-per-token rule hands back
+        # about a third more than the room holds. Bottomed at one character rather than
+        # the legacy floor, since going below it is the point.
         room_chars = _dense_prefix_chars(text, float(room))
         floor = min(floor, _exact_prefix_chars(text, room_chars, float(room), ctx, 1))
     fitted = _dense_prefix_chars(text, share)
@@ -13993,15 +13990,13 @@ def _truncate(
 def _head_whole_lines(text: str, limit: int) -> "tuple[str, bool]":
     """``text`` cut to at most ``limit`` characters, and whether it ended on a line break.
 
-    Whole lines where possible so the continuation hint can name a line number that
-    resumes exactly where this stopped. A cut mid-line would either repeat that line or
-    lose it, and on the output these tools produce most -- a file printed verbatim --
-    losing one is losing a line of the user's own code.
+    Whole lines where possible, so the hint can name a line that resumes exactly where
+    this stopped; a mid-line cut would repeat or lose one, and on a file printed verbatim
+    that is a line of the user's own code.
 
-    The flag is not decoration: one enormous line (minified JS, a base64 blob) has no
-    boundary to cut on, and a line number would then name the line AFTER the one the
-    reader is standing in the middle of, skipping everything still unread in it. On
-    single-line output that resumes past the end and returns nothing at all.
+    The flag is not decoration. One enormous line (minified JS, base64) has no boundary to
+    cut on, and a line number would then name the line AFTER the one the reader is halfway
+    through, skipping the rest of it. On single-line output that returns nothing at all.
     """
     head = text[:limit]
     cut = head.rfind("\n")

@@ -251,12 +251,9 @@ _TOOL_RESULT_BUDGET_BUFFER = 0.99
 
 # What a truncated result costs BESIDES its body: the notice naming the cut, the spill
 # path and the command that resumes it. Measured at 60-85 tokens, held clear of that.
-#
-# Reserved rather than ignored because the body is what gets sized and the notice is what
-# gets appended afterwards, so a budget spent entirely on the body overshoots by the
-# notice every single time -- and at zero room, where the reply is nothing but the notice,
-# it overshoots by the whole of it. That is the difference between a thread that survives
-# repeated large results and one that creeps over the budget a notice at a time.
+# Reserved rather than ignored because the body is sized and the notice appended after,
+# so a budget spent entirely on the body overshoots by the notice every time, and at zero
+# room, where the notice IS the message, by the whole of it.
 _RESULT_NOTICE_RESERVE = 128
 
 
@@ -269,19 +266,14 @@ def tool_result_budget(
 ) -> int:
     """Tokens a tool result may add without pushing the next prompt past its budget.
 
-    The cap tool results carried before this was a share of the WINDOW, so it never fell as
-    the conversation filled: on a small window one result could take half the context no
-    matter how little was left, and the next fit could not recover because it protects the
-    newest turn -- the very result that does not fit. This prices the same result against
-    the room actually remaining.
+    The cap before this was a share of the WINDOW, so it never fell as the conversation
+    filled: one result could take half a small context however little was left, and the
+    next fit cannot recover because it protects the newest turn, the very result that does
+    not fit. This prices the same result against the room actually remaining.
 
     Against ``prompt_budget`` rather than ``context_length``: a result sized to fill the
-    physical window leaves the prompt fitting and nothing to answer in, which is the
-    reserve-missing case that already has its own rescue path. Room for the reply is not
-    room for the result.
-
-    The figure covers the WHOLE tool message, its truncation notice included, so a caller
-    that sizes a body against it and then appends the notice still lands inside.
+    physical window leaves the prompt fitting and nothing to answer in. Room for the reply
+    is not room for the result. The figure covers the whole tool message, notice included.
     """
     target = prompt_budget(context_length, max_tokens)
     room = int(target * buffer) - int(prompt_tokens or 0) - _RESULT_NOTICE_RESERVE
