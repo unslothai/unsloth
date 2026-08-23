@@ -629,7 +629,7 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
             try:
                 dest.resolve(strict = True)
             except FileNotFoundError:
-                pass                        # a target this bundle does not ship is still fine
+                pass  # a target this bundle does not ship is still fine
             except OSError as exc:
                 dest.unlink(missing_ok = True)
                 raise RuntimeError(f"symlink cycle in archive: {member.filename!r}") from exc
