@@ -3773,8 +3773,9 @@ export function HubModelPicker({
       .filter(
         (m) =>
           // A CSM export in a GGUF container loads nowhere: llama.cpp has no decoder and the
-          // Audio page does not list speech GGUFs either. audioType is read off the checkpoint,
-          // so this holds for a row whose path says nothing about its family.
+          // Audio page does not list speech GGUFs either. audioType comes off the checkpoint,
+          // so it catches an exported row regardless of path. Local rows have no
+          // audioType and are refused at load instead.
           !localAudioRowIsUndecodableGguf({
             audioType: m.audioType,
             exportType: m.exportType,
