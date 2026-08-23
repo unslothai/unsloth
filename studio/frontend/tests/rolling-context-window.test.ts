@@ -377,7 +377,9 @@ test("the too-long advice depends on WHICH part does not fit", () => {
   // already been evicted and the single message is what overflows.
   assert.match(adapterSource, /contextTruncation\?\.fits === false/);
   assert.match(adapterSource, /shortening the conversation will not help/);
-  assert.match(adapterSource, /latest_turn_tokens/);
+  // Matching the wire field name would pin nothing: after the floor fix its only
+  // occurrence in that file is prose in a comment.
+  assert.match(adapterSource, /latestTurnOwnTokens\(irreducible\)/);
 });
 
 test("a fits:false diagnosis is not a compaction", () => {
@@ -417,5 +419,7 @@ test("the too-long check uses the prompt budget, not the raw window", () => {
   // message cannot fit a 4,096-token context. The raw window would blame the
   // conversation and send the user to a new chat that fails identically.
   assert.match(source, /irreducible\?\.prompt_target \?\? irreducible\?\.context_length/);
-  assert.match(source, /latest_turn_tokens \?\? 0\) > budget/);
+  // Still measured against the budget, but through the helper that takes the prompt's
+  // shared floor off the turn first.
+  assert.match(source, /latestTurnIsTheProblem\(\s*irreducible,\s*budget,?\s*\)/);
 });
