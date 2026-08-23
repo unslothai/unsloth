@@ -2286,13 +2286,21 @@ function CancelRegistrar(): ReactElement | null {
 function ThreadBackendAutosave({
   modelType,
   pairId,
+  backgrounded,
 }: {
   modelType: ModelType;
   pairId?: string;
+  backgrounded: boolean;
 }): ReactElement | null {
   const aui = useAui();
   const saveChainRef = useRef(Promise.resolve());
   const pendingFirstSavesRef = useRef(new Map<string, Promise<void>>());
+  // Read through a ref, and deliberately NOT a dependency of saveThread. The save that
+  // publishes may have been queued while this pane was on screen and resolve long after
+  // Compare hid it, so the decision has to use the value at PUBLISH time. A dependency
+  // would freeze the value the save was scheduled with, which is the wrong one.
+  const backgroundedRef = useRef(backgrounded);
+  backgroundedRef.current = backgrounded;
 
   const reportAutosaveError = useCallback((error: unknown): void => {
     if (!isExpectedBackgroundChatStorageError(error)) {
@@ -2325,7 +2333,13 @@ function ThreadBackendAutosave({
         return;
       }
 
-      if (modelType === "base" && !pairId) {
+      // Autosave itself keeps running while backgrounded -- that is the point of this PR,
+      // the run survives the view switch and must still be saved. Only the PUBLICATION is
+      // suppressed: a hidden pane naming itself the active thread reaches Compare's
+      // SharedComposer, whose exportThreadIds is [model1, model2, activeThreadId], so the
+      // base chat would be downloaded alongside the two compare threads, or Export would
+      // light up before either compare thread exists.
+      if (modelType === "base" && !pairId && !backgroundedRef.current) {
         const store = useChatRuntimeStore.getState();
         const activeThreadId = runtime.threads.getState().mainThreadId;
         if (activeThreadId === threadId && store.activeThreadId !== remoteId) {
@@ -2479,7 +2493,11 @@ export function ChatRuntimeProvider({
         <ThreadContextUsageRecount
           enabled={modelType === "base" && !pairId && !backgrounded}
         />
-        <ThreadBackendAutosave modelType={modelType} pairId={pairId} />
+        <ThreadBackendAutosave
+          modelType={modelType}
+          pairId={pairId}
+          backgrounded={backgrounded}
+        />
         <CancelRegistrar />
         {initialThreadId && (
           <ThreadAutoSwitch

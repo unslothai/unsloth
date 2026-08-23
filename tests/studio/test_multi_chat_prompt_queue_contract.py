@@ -864,3 +864,53 @@ def test_sidebar_exposes_queue_activity_for_each_thread():
     assert "{showWorkSpinner && (" in APP_SIDEBAR
     assert "hasUnreadActivity" in APP_SIDEBAR
     assert "clearChatNotifications(item)" in APP_SIDEBAR
+
+
+def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
+    """The shared provider (#9129) keeps a hidden pane's run alive, so its autosave still
+    fires after Compare has hidden it. The SAVE must keep happening; only the active-thread
+    PUBLICATION is suppressed.
+
+    Unsuppressed, a hidden base pane writes its own remote id into the store, and Compare's
+    SharedComposer builds exportThreadIds as [model1, model2, activeThreadId] -- so Export
+    downloads the unrelated base conversation alongside the two compare threads, or lights
+    up before either compare thread exists.
+    """
+    autosave = _between(
+        RUNTIME_PROVIDER,
+        "function ThreadBackendAutosave(",
+        "\nexport function useChatActive(",
+    )
+
+    # The pane knows it is hidden.
+    assert "backgrounded: boolean;" in autosave, (
+        "ThreadBackendAutosave has to be told, like every other sync component here"
+    )
+    assert "backgrounded={backgrounded}" in RUNTIME_PROVIDER, (
+        "and the provider has to pass it, or the prop is inert"
+    )
+
+    # Read at publish time, not captured when the save was queued: the save that publishes
+    # may have been scheduled while the pane was on screen and resolve long after Compare
+    # hid it.
+    assert "const backgroundedRef = useRef(backgrounded);" in autosave
+    assert "backgroundedRef.current = backgrounded;" in autosave
+
+    # The publication is what is gated -- and ONLY the publication.
+    assert 'if (modelType === "base" && !pairId && !backgroundedRef.current) {' in autosave, (
+        "the active-thread publication must be gated on the pane being visible"
+    )
+    publish_at = autosave.index("store.setActiveThreadId(remoteId)")
+    guard_at = autosave.index("!backgroundedRef.current")
+    assert guard_at < publish_at, "the guard has to come before the write it guards"
+
+    # The save itself is untouched: gating it would defeat the PR, which exists so a run
+    # that outlives its view still lands on disk.
+    for call in (
+        "await ensureStoredChatThread(remoteId)",
+        "await syncExportedRepositoryToBackend(remoteId, exported)",
+    ):
+        assert call in autosave, f"{call} must still run while backgrounded"
+        assert autosave.index(call) < guard_at, (
+            f"{call} must not sit behind the visibility guard"
+        )
