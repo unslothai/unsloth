@@ -983,21 +983,29 @@ def family_prequant_repo(
     without its own entry still returns the family default. That is harmless only while the
     default is close enough that planning around it costs nothing, since the base_model_id
     validation refuses the artifact well after the plan was made. A base whose weights really
-    differ belongs in ``prequant_excluded_bases``, which returns None here instead."""
+    differ belongs in ``prequant_excluded_bases``, which returns None here instead.
+
+    Reads the tables through ``getattr`` and skips malformed rows instead of raising, exactly
+    as ``video_family_prequant_repo`` does: this runs on load and refusal paths where a family
+    object without these fields (the video loader calls it with a VideoFamily, which lacks
+    ``prequant_excluded_bases``) or a table typo must resolve to "no hosted checkpoint",
+    never a 500."""
     # Both tables are keyed on lowercased upstream ids.
     base = canonical_base(base_repo).lower()
     if base:
-        # getattr, because the video loader calls this with a VideoFamily, which has no such
-        # field. A plain attribute read raises AttributeError, resolve_prequant_source swallows it
-        # in its bare except and hands back None, and every video family silently loses its hosted
-        # prequant checkpoint to the dense path whenever a base_repo is passed.
         if base in (getattr(fam, "prequant_excluded_bases", ()) or ()):
             return None
-        for entry_base, entry_scheme, repo_id in fam.prequant_variant_repos:
-            if entry_base == base and entry_scheme == scheme:
+        for entry in getattr(fam, "prequant_variant_repos", ()) or ():
+            if not isinstance(entry, (tuple, list)) or len(entry) != 3:
+                continue
+            entry_base, entry_scheme, repo_id = entry
+            if entry_base == base and entry_scheme == scheme and repo_id:
                 return repo_id
-    for entry_scheme, repo_id in fam.prequant_repos:
-        if entry_scheme == scheme:
+    for entry in getattr(fam, "prequant_repos", ()) or ():
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            continue
+        entry_scheme, repo_id = entry
+        if entry_scheme == scheme and repo_id:
             return repo_id
     return None
 

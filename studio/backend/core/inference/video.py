@@ -365,6 +365,116 @@ def _is_trusted_video_repo(repo_id: str) -> bool:
     return rid.startswith("unsloth/") or rid in _TRUSTED_NON_GGUF_VIDEO_REPOS
 
 
+def _modular_index_error(exc: Exception) -> str:
+    """The preflight failure with its cause kept: offline, gated (401) and a missing index
+    all reach the caller as one 409, and without the cause it cannot say which."""
+    from .diffusion_lora import _scrub_hub_url
+    from utils.native_path_leases import redact_native_paths
+
+    cause = _scrub_hub_url(redact_native_paths(str(exc))) or type(exc).__name__
+    return (
+        "Could not inspect the modular pipeline's component repositories before "
+        f"loading: {cause}"
+    )
+
+
+def resolve_modular_pipeline_root(
+    model_path: str | Path,
+    hf_token: Optional[str] = None,
+    *,
+    local_files_only: bool = False,
+) -> Path:
+    """The directory holding *model_path*'s ``modular_model_index.json``.
+
+    Read from the cache first even when a download is permitted: a staged pipeline is the
+    normal case, and going to the Hub for a few KB it already has costs an offline host the
+    whole HEAD timeout (plus the Xet fallback ladder) before falling back to the same file.
+    """
+    root = Path(model_path).expanduser()
+    if root.is_dir():
+        return root
+    from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
+
+    def _index_dir(offline: bool) -> Path:
+        return Path(
+            hf_hub_download_with_xet_fallback(
+                str(model_path),
+                "modular_model_index.json",
+                hf_token,
+                cache_dir = hub_cache_dir(),
+                reuse_other_cache_root = True,
+                local_files_only = offline,
+            )
+        ).parent
+
+    try:
+        return _index_dir(True)
+    except Exception as exc:
+        if local_files_only:
+            raise RuntimeError(_modular_index_error(exc)) from exc
+    try:
+        return _index_dir(False)
+    except Exception as exc:
+        raise RuntimeError(_modular_index_error(exc)) from exc
+
+
+def hosted_modular_component_repos(
+    model_path: str | Path,
+    hf_token: Optional[str] = None,
+    *,
+    local_files_only: bool = False,
+) -> tuple[str, ...]:
+    """Return the Hub repositories referenced by a modular pipeline index."""
+    import json
+
+    root = resolve_modular_pipeline_root(
+        model_path,
+        hf_token,
+        local_files_only = local_files_only,
+    )
+    try:
+        with open(root / "modular_model_index.json", encoding = "utf-8-sig") as handle:
+            index = json.load(handle)
+    except Exception as exc:
+        raise RuntimeError(_modular_index_error(exc)) from exc
+    if not isinstance(index, dict):
+        raise RuntimeError("The modular pipeline index is invalid.")
+
+    from utils.hf_repo_ids import hf_cache_repo_id, is_valid_repo_id
+
+    repos: list[str] = []
+    for entry in index.values():
+        if (
+            not isinstance(entry, (list, tuple))
+            or len(entry) != 3
+            or not isinstance(entry[2], dict)
+        ):
+            continue
+        value = entry[2].get("pretrained_model_name_or_path") or entry[2].get("repo")
+        if isinstance(value, str):
+            sources = (value,)
+        elif isinstance(value, (list, tuple)):
+            sources = value
+        else:
+            sources = ()
+        for source in sources:
+            if not isinstance(source, str) or not source.strip():
+                continue
+            source = source.strip()
+            cached_repo = hf_cache_repo_id(source)
+            if cached_repo is not None:
+                repos.append(cached_repo)
+                continue
+            try:
+                if Path(source).expanduser().exists():
+                    continue
+            except OSError:
+                continue
+            if is_valid_repo_id(source):
+                repos.append(source)
+    return tuple(dict.fromkeys(repos))
+
+
 def _picked_gguf_arch(repo_id: str, gguf_filename: str) -> Optional[str]:
     """``general.architecture`` of a picked GGUF, or None. The Video picker admits a GGUF by its
     arch (not its name) -- for a LOCAL dir (``repo_id`` is a directory) AND for a cached HUB repo
@@ -556,8 +666,8 @@ class _VideoLoadingState:
     base_repo: str
     expected_bytes: Optional[int] = None
     error: Optional[str] = None
-    # Companion repos this load is ALSO pulling from, beyond repo_id / base_repo (the native H3
-    # GGUF and component repos). Mirrors the image backend's _SdLoading.asset_repos.
+    # Hub repos this load also uses beyond repo_id / base_repo, including native H3 companions and
+    # hosted modular components. Mirrors the image backend's _SdLoading.asset_repos.
     asset_repos: tuple[str, ...] = ()
 
 
@@ -1280,6 +1390,87 @@ class VideoBackend:
 
     # ── background load + progress ───────────────────────────────────────────
 
+    def _publish_loading_repos(
+        self, token: int, reservation: Optional[Any], *repo_ids: Optional[str]
+    ) -> None:
+        repos = tuple(dict.fromkeys(repo_id for repo_id in repo_ids if repo_id))
+        if reservation is not None:
+            reservation.add(*repos)
+        with self._lock:
+            if self._load_token == token and self._loading is not None:
+                self._loading.asset_repos = tuple(
+                    dict.fromkeys((*self._loading.asset_repos, *repos))
+                )
+
+    def preflight_load_repositories(
+        self,
+        repo_id: str,
+        fam: Any,
+        *,
+        model_kind: str,
+        base_repo: Optional[str] = None,
+        text_encoder_quant: Optional[str] = None,
+        h3_task: Optional[str] = None,
+        gpu_ordinal: Optional[int] = None,
+        modular_component_repos: tuple[str, ...] = (),
+        h3_te_scheme: Optional[str] = None,
+    ) -> tuple[str, ...]:
+        from .video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO, is_h3_native
+
+        h3_native = is_h3_native(fam, model_kind)
+        base = (
+            ""
+            if h3_native
+            else repo_id
+            if model_kind == "pipeline"
+            else (base_repo or "").strip() or getattr(fam, "base_repo", "")
+        )
+        repositories: list[Optional[str]] = [base, *modular_component_repos]
+        if h3_native:
+            repositories.extend((H3_GGUF_REPO, H3_COMPONENT_REPO))
+        else:
+            repositories.extend(
+                getattr(source, "location", None)
+                for source in self._te_prequant_sources(
+                    fam,
+                    text_encoder_quant,
+                    gpu_ordinal,
+                ).values()
+                if getattr(source, "kind", None) == "repo"
+            )
+            if getattr(fam, "modular_workflow", None):
+                repositories.extend(
+                    video_family_prequant_repo(fam, scheme, base_repo = base)
+                    for scheme in video_family_prequant_schemes(fam, h3_task)
+                )
+            if h3_te_scheme is not None:
+                repositories.append(H3_TE_QUANT_REPO)
+        return tuple(dict.fromkeys(repo for repo in repositories if repo))
+
+    def preflight_h3_te_quant_scheme(
+        self,
+        fam: Any,
+        text_encoder_quant: Optional[str],
+        base: Optional[str],
+        hf_token: Optional[str],
+        *,
+        gpu_ordinal: Optional[int] = None,
+        local_files_only: bool = False,
+    ) -> Optional[str]:
+        target = (
+            resolve_diffusion_device_target()
+            if gpu_ordinal is None
+            else resolve_diffusion_device_target(ordinal = gpu_ordinal)
+        )
+        return self._h3_te_quant_scheme_verified(
+            fam,
+            text_encoder_quant,
+            base,
+            hf_token,
+            local_files_only = local_files_only,
+            target = target,
+        )
+
     def begin_load(
         self,
         repo_id: str,
@@ -1301,6 +1492,10 @@ class VideoBackend:
         gpu_ids: Optional[list[int]] = None,
         # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card.
         gpu_ordinal: Optional[int] = None,
+        _modular_component_repos: tuple[str, ...] = (),
+        _preclaimed_repositories: tuple[str, ...] = (),
+        _preflight_h3_te_scheme: Optional[str] = None,
+        _preflight_h3_te_scheme_settled: bool = False,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
@@ -1332,9 +1527,10 @@ class VideoBackend:
         # tens of GB first. Footprint-dependent declines still surface via load-progress. The
         # ROUTE makes the same call earlier still (see assert_video_precision_available): this one
         # runs inside acquire_for, which has already evicted chat by the time it fires.
+        kind = resolve_video_model_kind(gguf_filename, model_kind)
         assert_video_precision_available(
             fam,
-            model_kind = resolve_video_model_kind(gguf_filename, model_kind),
+            model_kind = kind,
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
             gpu_ordinal = gpu_ordinal,
@@ -1345,27 +1541,55 @@ class VideoBackend:
         # companion repo this load needs. A later claim does not revoke a delete already admitted.
         from .video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO, is_h3_native
 
-        h3_native = is_h3_native(fam, resolve_video_model_kind(gguf_filename, model_kind))
-        claimed_assets = (H3_GGUF_REPO, H3_COMPONENT_REPO) if h3_native else ()
-
-        with self._lock:
-            if self._loading is not None and self._loading.error is None:
-                raise RuntimeError("A video load is already in progress.")
-            self._load_token += 1
-            token = self._load_token
-            # A NEW event per load, never a clear() of the shared one: unload() sets the event the running worker holds but also
-            # drops _loading, so the next begin_load would clear the object that worker watches. A fresh object leaves it set.
-            cancel_event = threading.Event()
-            self._cancel_event = cancel_event
-            self._loading = _VideoLoadingState(
-                repo_id = repo_id,
-                base_repo = fam.base_repo,
-                asset_repos = claimed_assets,
+        h3_native = is_h3_native(fam, kind)
+        claimed_assets = tuple(
+            dict.fromkeys(
+                ((H3_GGUF_REPO, H3_COMPONENT_REPO) if h3_native else ())
+                + _modular_component_repos
             )
+        )
+        initial_base = (
+            ""
+            if h3_native
+            else repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
+        )
 
-        threading.Thread(
-            target = self._run_load,
-            kwargs = dict(
+        from hub.utils.gguf import gguf_variant_key
+        from utils.model_cache_reservations import (
+            reserve_inference_load,
+            run_reserved_inference_load,
+        )
+
+        # A GGUF pick claims only its own quantization, so a sibling quant can keep
+        # downloading side by side; companion repos are claimed whole, as the load
+        # pulls all of them. H3 native reads two GGUFs from one repo (denoiser
+        # partition + Qwen encoder), so it claims the repo whole.
+        load_reservation = reserve_inference_load(
+            repo_id,
+            variant = (
+                gguf_variant_key(gguf_filename)
+                if kind == "gguf" and not h3_native
+                else None
+            ),
+        )
+        token: Optional[int] = None
+        try:
+            load_reservation.add(initial_base, *claimed_assets, *_preclaimed_repositories)
+            with self._lock:
+                if self._loading is not None and self._loading.error is None:
+                    raise RuntimeError("A video load is already in progress.")
+                self._load_token += 1
+                token = self._load_token
+                # A NEW event per load, never a clear() of the shared one: unload() sets the event the running worker holds but also
+                # drops _loading, so the next begin_load would clear the object that worker watches. A fresh object leaves it set.
+                cancel_event = threading.Event()
+                self._cancel_event = cancel_event
+                self._loading = _VideoLoadingState(
+                    repo_id = repo_id,
+                    base_repo = initial_base,
+                    asset_repos = claimed_assets,
+                )
+            load_kwargs = dict(
                 repo_id = repo_id,
                 local_files_only = local_files_only,
                 gguf_filename = gguf_filename,
@@ -1384,13 +1608,27 @@ class VideoBackend:
                 gpu_ordinal = gpu_ordinal,
                 _load_token = token,
                 _cancel_event = cancel_event,
-            ),
-            daemon = True,
-        ).start()
+                _load_reservation = load_reservation,
+                _preflight_h3_te_scheme = _preflight_h3_te_scheme,
+                _preflight_h3_te_scheme_settled = _preflight_h3_te_scheme_settled,
+            )
+            threading.Thread(
+                target = run_reserved_inference_load,
+                args = (load_reservation, self._run_load),
+                kwargs = load_kwargs,
+                daemon = True,
+            ).start()
+        except BaseException:
+            load_reservation.release()
+            with self._lock:
+                if token is not None and self._load_token == token:
+                    self._loading = None
+            raise
         return self.status()
 
     def _run_load(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
+        load_reservation = kwargs.pop("_load_reservation", None)
         # This load's own event: a later load replaces self._cancel_event rather than clearing it.
         cancel_event = kwargs.pop("_cancel_event", None) or self._cancel_event
         # An API-initiated load promises to download NOTHING: it may only open what is already
@@ -1398,6 +1636,10 @@ class VideoBackend:
         # much as the fetches, since a model_info call reaches the Hub just as a weight pull does.
         # READ, not popped: load_pipeline takes it too (it is in this thread's kwargs by contract).
         local_files_only = bool(kwargs.get("local_files_only"))
+        preflight_h3_te_scheme = kwargs.pop("_preflight_h3_te_scheme", None)
+        preflight_h3_te_scheme_settled = bool(
+            kwargs.pop("_preflight_h3_te_scheme_settled", False)
+        )
         try:
             fam = _detect_load_family(
                 kwargs["repo_id"], kwargs.get("gguf_filename"), kwargs.get("family_override")
@@ -1432,9 +1674,15 @@ class VideoBackend:
                 else resolve_video_base_repo(fam, kwargs.get("base_repo"))
             )
             kwargs["base_repo"] = base
+            self._publish_loading_repos(token, load_reservation, base)
             # An fp8 encoder request loads a hosted pre-cast checkpoint, so neither the estimate nor the pull includes those dense shards.
             te_sources = self._te_prequant_sources(
                 fam, kwargs.get("text_encoder_quant"), kwargs.get("gpu_ordinal")
+            )
+            self._publish_loading_repos(
+                token,
+                load_reservation,
+                *(getattr(source, "location", None) for source in te_sources.values()),
             )
             # The same deal for the denoiser: a hosted pre-quantized checkpoint replaces the dense
             # DiT shards, so the estimate and the scoped pull below both drop them. VERIFIED, like
@@ -1456,6 +1704,17 @@ class VideoBackend:
                 # pipeline will land on: the default one can be larger or smaller than the pick.
                 gpu_ordinal = kwargs.get("gpu_ordinal"),
             )
+            if getattr(fam, "modular_workflow", None):
+                self._publish_loading_repos(
+                    token,
+                    load_reservation,
+                    *(
+                        video_family_prequant_repo(fam, scheme, base_repo = base)
+                        for scheme in video_family_prequant_schemes(
+                            fam, kwargs.get("h3_task")
+                        )
+                    ),
+                )
             skip_transformer_weights = self._denoiser_prequant_verified(
                 fam,
                 h3_auto_denoiser or kwargs.get("transformer_quant"),
@@ -1475,13 +1734,20 @@ class VideoBackend:
             # repo's 62 GB dense text_encoder/ shards outright.
             # Verified, not just name-matched: this scheme decides whether the base pull DROPS the
             # dense encoder, and a derivative that the seed will decline must keep its own.
-            h3_te_scheme = self._h3_te_quant_scheme_verified(
-                fam,
-                kwargs.get("text_encoder_quant"),
-                base,
-                kwargs.get("hf_token"),
-                local_files_only = local_files_only,
+            h3_te_scheme = (
+                preflight_h3_te_scheme
+                if preflight_h3_te_scheme_settled
+                else self.preflight_h3_te_quant_scheme(
+                    fam,
+                    kwargs.get("text_encoder_quant"),
+                    base,
+                    kwargs.get("hf_token"),
+                    gpu_ordinal = kwargs.get("gpu_ordinal"),
+                    local_files_only = local_files_only,
+                )
             )
+            if h3_te_scheme:
+                self._publish_loading_repos(token, load_reservation, H3_TE_QUANT_REPO)
             expected = self._estimate_download_bytes(
                 kwargs["repo_id"],
                 kwargs.get("gguf_filename"),
@@ -1497,13 +1763,6 @@ class VideoBackend:
             with self._lock:
                 if self._load_token == token and self._loading is not None:
                     self._loading.base_repo = base
-                    # The conditioner artifact comes from a THIRD repo, neither repo_id nor
-                    # base_repo, so without this the delete-cached guard would let it be deleted
-                    # out from under the in-flight fetch (or out from under the assembly, while
-                    # the base snapshot that no longer carries a dense encoder is still coming
-                    # down). Same registration the native H3 path makes for its companions.
-                    if h3_te_scheme:
-                        self._loading.asset_repos = self._loading.asset_repos + (H3_TE_QUANT_REPO,)
                     self._loading.expected_bytes = expected
             # Checkpoint downloads outside the lock so an unload can preempt the multi-GB pull; companions pre-download the same way.
             checkpoint_local: Optional[Path] = None
@@ -1546,6 +1805,9 @@ class VideoBackend:
                             probe = None
                 ltx23 = probe is not None and is_ltx23_checkpoint(probe)
                 if ltx23:
+                    from .video_ltx2 import LTX23_EXTRAS_REPO
+
+                    self._publish_loading_repos(token, load_reservation, LTX23_EXTRAS_REPO)
                     expected = self._estimate_download_bytes(
                         kwargs["repo_id"],
                         kwargs.get("gguf_filename"),
@@ -1675,7 +1937,6 @@ class VideoBackend:
         # scheduled. This one is for load_pipeline, which never goes through begin_load.
         with self._lock:
             if self._load_token == token and self._loading is not None:
-                self._loading.base_repo = fam.base_repo
                 self._loading.asset_repos = (H3_GGUF_REPO, H3_COMPONENT_REPO)
 
         # BEFORE the download, not after it. The H3-gated ensure, not the plain one: a build that
@@ -2268,6 +2529,7 @@ class VideoBackend:
         base: Optional[str],
         hf_token: Optional[str],
         local_files_only: bool = False,
+        target: Any = None,
     ) -> Optional[str]:
         """``_h3_te_quant_scheme`` plus the exact index check, for the decisions that COMMIT.
 
@@ -2280,7 +2542,7 @@ class VideoBackend:
         skipped: this check is what stops a derivative being conditioned on someone else's encoder,
         and an offline load is no safer to get that wrong. An unreadable index keeps the dense
         encoder, exactly as it does online."""
-        scheme = self._h3_te_quant_scheme(fam, text_encoder_quant, base)
+        scheme = self._h3_te_quant_scheme(fam, text_encoder_quant, base, target)
         if scheme is None:
             return None
         source = self._h3_te_base_index_source(base, hf_token, local_files_only = local_files_only)
@@ -3323,9 +3585,8 @@ class VideoBackend:
         """Repo ids the COMMITTED model reads from disk (empty unless a native model is loaded).
 
         The one-shot sd-cli re-reads H3's Qwen encoder and both VAEs from the cache on every
-        generation, and those live in companion repos that are neither ``repo_id`` nor the BF16
-        ``base_repo`` ``status()`` publishes, so the delete-cached guard must refuse them too.
-        Mirrors the image backend's guard (SdCppBackend.loaded_repo_ids)."""
+        generation, so the delete-cached guard must refuse their repositories too. Mirrors the
+        image backend's guard (SdCppBackend.loaded_repo_ids)."""
         with self._lock:
             state = self._state
             if state is None or state.engine != "sd_cpp":
@@ -3334,6 +3595,30 @@ class VideoBackend:
         from .video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
 
         return (repo_id, H3_GGUF_REPO, H3_COMPONENT_REPO)
+
+    def loaded_gguf_dependency_scopes(self) -> tuple[tuple[str, str], ...]:
+        """GGUF dependencies the committed model re-reads in addition to its checkpoint."""
+        with self._lock:
+            state = self._state
+            if (
+                state is None
+                or state.engine != "sd_cpp"
+                or state.family.name != "minimax-h3"
+                or not state.gguf_filename
+            ):
+                return ()
+            repo_id = state.repo_id
+            transformer_filename = state.gguf_filename
+        from hub.utils.gguf import gguf_variant_key
+        from .video_minimax_h3 import h3_text_encoder_filename
+
+        encoder_filename = h3_text_encoder_filename(transformer_filename)
+        return (
+            (
+                self._h3_text_encoder_repo(repo_id, encoder_filename),
+                gguf_variant_key(encoder_filename),
+            ),
+        )
 
     # ── the load itself ──────────────────────────────────────────────────────
 
@@ -5997,6 +6282,8 @@ class VideoBackend:
         with self._lock:
             self._load_token += 1
             self._cancel_event.set()
+            # This is only the UI marker. The load's registry reservation is owned by
+            # its daemon worker and remains until that worker has actually returned.
             self._loading = None
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()

@@ -16,6 +16,7 @@ from typing import Optional, Tuple
 import numpy as np
 import torch
 
+from utils.audio_codec_repositories import SNAC_CODEC_REPOSITORY
 from utils.third_party_source import (
     deactivate_pinned_package,
     ensure_dac_speech_weights,
@@ -85,7 +86,7 @@ class AudioCodecManager:
 
         # Route weights to the selected cache; this can run in the main process.
         self._snac_model = (
-            SNAC.from_pretrained("hubertsiuzdak/snac_24khz", cache_dir = active_hf_hub_cache())
+            SNAC.from_pretrained(SNAC_CODEC_REPOSITORY, cache_dir = active_hf_hub_cache())
             .to(device)
             .eval()
         )

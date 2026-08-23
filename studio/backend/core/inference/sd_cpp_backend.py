@@ -1176,6 +1176,18 @@ class SdCppDiffusionBackend:
 
     # ── Background load + progress ─────────────────────────────────────────
 
+    def _publish_loading_repos(
+        self, token: int, reservation: Optional[Any], *repo_ids: Optional[str]
+    ) -> None:
+        repos = _with_mirrors(repo_ids)
+        if reservation is not None:
+            reservation.add(*repos)
+        with self._lock:
+            if self._load_token == token and self._loading is not None:
+                self._loading.asset_repos = tuple(
+                    dict.fromkeys((*self._loading.asset_repos, *repos))
+                )
+
     def begin_load(
         self,
         repo_id: str,
@@ -1213,8 +1225,11 @@ class SdCppDiffusionBackend:
         gpu_ids: Optional[list[int]] = None,
         # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card.
         gpu_ordinal: Optional[int] = None,
+        _preclaimed_repositories: tuple[str, ...] = (),
+        _preflight_resolved_base_repo: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then fetch assets on a daemon thread. Returns at once."""
+        del _preflight_resolved_base_repo
         # Empty/whitespace token = "no token"; "" verbatim breaks the anonymous fallback.
         hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
         # Same fallback the diffusers and video backends take: the route ranks the selection and
@@ -1253,6 +1268,13 @@ class SdCppDiffusionBackend:
         inner_dim = self._flux2_inner_dim(
             repo_id, gguf_filename, fam, hf_token, allow_network = False
         )
+        asset_repos = tuple(
+            dict.fromkeys(
+                r
+                for r, _f, kind in self._asset_specs(repo_id, gguf_filename, fam, inner_dim)
+                if kind != "diffusion_model"
+            )
+        )
         # Same link the diffusers resolver records, so the delete guard protects a native pick's
         # companions too -- and here that means the repos _asset_specs actually FETCHES. The
         # native engine does not read the diffusers base: FLUX.2 takes its VAE from
@@ -1262,42 +1284,43 @@ class SdCppDiffusionBackend:
         # never fails a load.
         try:
             from hub.utils.companion_assets import record_companion_link
-            for asset_repo in dict.fromkeys(
-                r
-                for r, _f, kind in self._asset_specs(repo_id, gguf_filename, fam, inner_dim)
-                if kind != "diffusion_model"
-            ):
+            for asset_repo in asset_repos:
                 record_companion_link(repo_id, asset_repo)
-            record_companion_link(repo_id, base)
         except Exception as exc:  # noqa: BLE001
             logger.debug("sd_cpp.companion_link_record_failed: %s", exc)
-        with self._lock:
-            if self._loading is not None and self._loading.error is None:
-                raise RuntimeError("A diffusion load is already in progress.")
-            # A superseding load must stop any in-flight generation, else the old run can still persist an image after the new load starts.
-            if self._active_generate_cancel is not None:
-                self._active_generate_cancel.set()
-            self._load_token += 1
-            token = self._load_token
-            # A NEW event per load, never a clear() of the shared one: unload() sets the event the running worker holds but also
-            # drops _loading, so a clear() here would un-cancel its still-running multi-gigabyte pull.
-            cancel_event = threading.Event()
-            self._cancel_event = cancel_event
-            self._loading = _SdLoading(
-                repo_id = repo_id,
-                base_repo = base,
-                asset_repos = tuple(
-                    dict.fromkeys(
-                        r
-                        for r, _f, kind in self._asset_specs(repo_id, gguf_filename, fam, inner_dim)
-                        if kind != "diffusion_model"
-                    )
-                ),
-            )
+        from hub.utils.gguf import gguf_variant_key
+        from utils.model_cache_reservations import (
+            reserve_inference_load,
+            run_reserved_inference_load,
+        )
 
-        threading.Thread(
-            target = self._run_load,
-            kwargs = dict(
+        # The claim covers only this pick's quantization, so a sibling quant can keep
+        # downloading side by side; asset repos are claimed whole, as the load pulls all of them.
+        load_reservation = reserve_inference_load(
+            *_with_mirrors((repo_id,)),
+            variant = gguf_variant_key(gguf_filename),
+        )
+        token: Optional[int] = None
+        try:
+            load_reservation.add(*_with_mirrors(asset_repos), *_preclaimed_repositories)
+            with self._lock:
+                if self._loading is not None and self._loading.error is None:
+                    raise RuntimeError("A diffusion load is already in progress.")
+                # A superseding load must stop any in-flight generation, else the old run can still persist an image after the new load starts.
+                if self._active_generate_cancel is not None:
+                    self._active_generate_cancel.set()
+                self._load_token += 1
+                token = self._load_token
+                # A NEW event per load, never a clear() of the shared one: unload() sets the event the running worker holds but also
+                # drops _loading, so a clear() here would un-cancel its still-running multi-gigabyte pull.
+                cancel_event = threading.Event()
+                self._cancel_event = cancel_event
+                self._loading = _SdLoading(
+                    repo_id = repo_id,
+                    base_repo = base,
+                    asset_repos = asset_repos,
+                )
+            load_kwargs = dict(
                 repo_id = repo_id,
                 local_files_only = local_files_only,
                 gguf_filename = gguf_filename,
@@ -1310,9 +1333,20 @@ class SdCppDiffusionBackend:
                 gpu_ordinal = gpu_ordinal,
                 _load_token = token,
                 _cancel_event = cancel_event,
-            ),
-            daemon = True,
-        ).start()
+                _load_reservation = load_reservation,
+            )
+            threading.Thread(
+                target = run_reserved_inference_load,
+                args = (load_reservation, self._run_load),
+                kwargs = load_kwargs,
+                daemon = True,
+            ).start()
+        except BaseException:
+            load_reservation.release()
+            with self._lock:
+                if token is not None and self._load_token == token:
+                    self._loading = None
+            raise
         return self.status()
 
     def _run_load(
@@ -1332,6 +1366,7 @@ class SdCppDiffusionBackend:
         gpu_ordinal: Optional[int] = None,
         _load_token: int,
         _cancel_event: Optional[threading.Event] = None,
+        _load_reservation: Optional[Any] = None,
     ) -> None:
         # This load's own event: a later load replaces self._cancel_event rather than clearing it.
         cancel_event = _cancel_event if _cancel_event is not None else self._cancel_event
@@ -1399,14 +1434,32 @@ class SdCppDiffusionBackend:
             specs = self._asset_specs(repo_id, gguf_filename, fam, inner_dim)
             fetch_repo = _fetch_repo_map(specs, hf_token)
             assets = [(fetch_repo[repo], fn, kind) for repo, fn, kind in specs]
+            primary_repos = tuple(
+                dict.fromkeys(
+                    rid
+                    for repo, _filename, kind in specs
+                    if kind == "diffusion_model"
+                    for rid in (repo, fetch_repo[repo])
+                )
+            )
+            asset_repos = tuple(
+                dict.fromkeys(
+                    rid
+                    for repo, _filename, kind in specs
+                    if kind != "diffusion_model"
+                    for rid in (repo, fetch_repo[repo])
+                )
+            )
+            if _load_reservation is not None:
+                _load_reservation.add_primary(*_with_mirrors(primary_repos))
+            self._publish_loading_repos(
+                _load_token,
+                _load_reservation,
+                *asset_repos,
+            )
             # begin_load could only guess the encoder repos (it may not have had the header yet);
             # now they are known, so publish them before a single byte is fetched. Otherwise
             # delete-cached would happily remove a companion this load is about to write into.
-            with self._lock:
-                if self._load_token == _load_token and self._loading is not None:
-                    self._loading.asset_repos = tuple(
-                        dict.fromkeys(r for r, _f, kind in specs if kind != "diffusion_model")
-                    )
             # And record them, from the SAME post-probe specs. begin_load records what it can, but
             # it resolves the header offline, so a remote or renamed FLUX.2-klein 9B checkpoint
             # with no cached probe records the default 4B encoder while this load fetches the 9B
@@ -1415,12 +1468,7 @@ class SdCppDiffusionBackend:
             # mirror or a cached community repack is where the bytes actually land.
             try:
                 from hub.utils.companion_assets import record_companion_link
-                for asset_repo in dict.fromkeys(
-                    rid
-                    for repo, _f, kind in specs
-                    if kind != "diffusion_model"
-                    for rid in (repo, fetch_repo.get(repo, repo))
-                ):
+                for asset_repo in asset_repos:
                     record_companion_link(repo_id, asset_repo)
             except Exception as exc:  # noqa: BLE001 -- bookkeeping never fails a load
                 logger.debug("sd_cpp.companion_link_record_failed: %s", exc)
@@ -1905,13 +1953,37 @@ class SdCppDiffusionBackend:
         hf_token: Optional[str] = None,
         allow_network: bool = True,  # noqa: ARG002 -- signature parity; no speech probe here
     ) -> None:
+        self.preflight_load_repositories(
+            repo_id,
+            fam,
+            gguf_filename = gguf_filename,
+            model_kind = model_kind,
+            base_repo = base_repo,
+            hf_token = hf_token,
+        )
+
+    def preflight_load_repositories(
+        self,
+        repo_id: str,
+        fam: Optional[DiffusionFamily],
+        *,
+        gguf_filename: Optional[str] = None,
+        model_kind: Optional[str] = None,
+        base_repo: Optional[str] = None,
+        hf_token: Optional[str] = None,
+        text_encoder_quant: Optional[str] = None,
+        transformer_quant: Optional[str] = None,
+        loras: Optional[list[tuple[str, float]]] = None,
+        gpu_ordinal: Optional[int] = None,
+        allow_network: bool = True,  # noqa: ARG002 -- signature parity; speech is gated by route
+    ) -> tuple[str, ...]:
         """The companion refusal ``_run_load`` makes, run by the route BEFORE it takes the GPU.
 
         Same signature and reason as the diffusers backend's: ``_run_load`` runs on the load thread,
         after a forced-native load on a GPU host already evicted chat, so a pick refused only there
         unloads the resident model first. Nothing to check without a family or checkpoint name."""
         if fam is None or not gguf_filename:
-            return
+            return ()
         # Post-swap, as the plan and the load are: the swap is pure, so all three decide alike.
         specs = self._asset_specs(
             repo_id,
@@ -1924,6 +1996,12 @@ class SdCppDiffusionBackend:
             self._assets_by_repo([(fetch_repo[r], fn, kind) for r, fn, kind in specs]),
             fetch_repo.get(repo_id, repo_id),
             hf_token,
+        )
+        return _with_mirrors(
+            rid
+            for repo, _filename, kind in specs
+            if kind != "diffusion_model"
+            for rid in (repo, fetch_repo[repo])
         )
 
     @staticmethod
@@ -2099,7 +2177,7 @@ class SdCppDiffusionBackend:
             loading = self._loading
             if loading is None or loading.error is not None:
                 return ()
-            ids = (loading.repo_id, loading.base_repo, *loading.asset_repos)
+            ids = (loading.repo_id, *loading.asset_repos)
             return _with_mirrors(ids)
 
     def loaded_repo_ids(self) -> tuple[str, ...]:
@@ -2116,7 +2194,7 @@ class SdCppDiffusionBackend:
             if state is None:
                 return ()
             fam = state.family
-            repos = [state.repo_id, state.base_repo]
+            repos = [state.repo_id]
             if fam.sd_cpp_vae:
                 repos.append(fam.sd_cpp_vae[0])
             # Same per-variant selection as _asset_specs (the header dim this load committed, else
@@ -2167,6 +2245,7 @@ class SdCppDiffusionBackend:
         from PIL import Image
 
         from core.inference import diffusion_lora
+        from utils.model_cache_reservations import reserve_inference_load
 
         if (
             init_image is not None
@@ -2194,6 +2273,7 @@ class SdCppDiffusionBackend:
             )
 
         cancel = threading.Event()
+        lora_reservation = None
         with self._generate_lock:
             with self._lock:
                 state = self._state
@@ -2215,6 +2295,9 @@ class SdCppDiffusionBackend:
                 # Publish an active (step 0) state before the slow pre-generate setup so a reload probe does not read idle while this holds _generate_lock.
                 self._gen = _SdGen(total_steps = int(steps))
             try:
+                lora_reservation = reserve_inference_load(
+                    *diffusion_lora.repo_ids_for_specs(loras or [])
+                )
                 if seed is None:
                     seed = int.from_bytes(os.urandom(6), "big") & ((1 << 53) - 1)
                 else:
@@ -2311,6 +2394,8 @@ class SdCppDiffusionBackend:
                 with self._lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
+                if lora_reservation is not None:
+                    lora_reservation.release()
 
     def _generate_server(
         self,
@@ -2655,6 +2740,8 @@ class SdCppDiffusionBackend:
             state = self._state
             self._state = None
             self._load_token += 1
+            # This is only the UI marker. The load's registry reservation is owned by
+            # its daemon worker and remains until that worker has actually returned.
             self._loading = None
             # Grab a mid-start() uncommitted server too so we can stop it (startup is abortable).
             pending = self._pending_server

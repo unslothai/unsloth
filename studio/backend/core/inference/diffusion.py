@@ -55,6 +55,8 @@ from .diffusion_families import (
     default_generation_params,
     detect_family_for_pick,
     excluded_model_reason,
+    family_prequant_repo,
+    mirror_repo,
     prefer_ungated_mirror,
     resolve_base_repo,
     resolve_local_gguf_child,
@@ -77,7 +79,12 @@ from .diffusion_device import (
     resolve_selected_cuda_ordinal,
 )
 from .diffusion_ideogram4 import ideogram4_repo_is_fp8, load_ideogram4_pipeline
-from .diffusion_hidream import HIDREAM_FAMILY_NAME, hidream_te4_kwargs
+from .diffusion_hidream import (
+    HIDREAM_FAMILY_NAME,
+    HIDREAM_LLAMA_REPO,
+    hidream_te4_kwargs,
+    hidream_te4_prequant_source,
+)
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
 from .diffusion_memory import (
     MEMORY_MODE_BALANCED,
@@ -165,6 +172,7 @@ from .diffusion_auto_policy import (
 )
 from .diffusion_transformer_quant import (
     TQ_AUTO,
+    TQ_SCHEMES,
     DEFAULT_MIN_LINEAR_FEATURES,
     dense_transformer_supported,
     explain_unusable_scheme,
@@ -767,6 +775,12 @@ def _assert_base_repo_accessible(
 
 
 @dataclass(frozen = True)
+class DiffusionLoadPreflight:
+    resolved_base_repo: str
+    repositories: tuple[str, ...]
+
+
+@dataclass(frozen = True)
 class _LoadState:
     """Everything about the currently-loaded pipeline, swapped as one unit."""
 
@@ -842,6 +856,7 @@ class _LoadingState:
     # surfaced (``base_repo`` stays the id status() reports), but the cache scan and the delete
     # guard must look here.
     fetch_repo: Optional[str] = None
+    asset_repos: tuple[str, ...] = ()
 
 
 @dataclass
@@ -1926,6 +1941,31 @@ class DiffusionBackend:
         hf_token: Optional[str] = None,
         allow_network: bool = True,
     ) -> None:
+        self.preflight_load_repositories(
+            repo_id,
+            fam,
+            gguf_filename = gguf_filename,
+            model_kind = model_kind,
+            base_repo = base_repo,
+            hf_token = hf_token,
+            allow_network = allow_network,
+        )
+
+    def preflight_load_repositories(
+        self,
+        repo_id: str,
+        fam: Optional[DiffusionFamily],
+        *,
+        gguf_filename: Optional[str] = None,
+        model_kind: Optional[str] = None,
+        base_repo: Optional[str] = None,
+        hf_token: Optional[str] = None,
+        text_encoder_quant: Optional[str] = None,
+        transformer_quant: Optional[str] = None,
+        loras: Optional[list[tuple[str, float]]] = None,
+        gpu_ordinal: Optional[int] = None,
+        allow_network: bool = True,
+    ) -> DiffusionLoadPreflight:
         """The gated/unreadable-base and FLUX.2 size-pairing refusals, run by the route BEFORE it
         takes the GPU.
 
@@ -1944,7 +1984,8 @@ class DiffusionBackend:
         # Probe the repo the load will FETCH from: refusing the upstream id would reject the gated
         # picks the ungated mirror rescues, and the swap is pure, so it decides the same here as on
         # the load thread. Only the raise matters; _run_load recomputes the excused snapshot.
-        _assert_base_repo_accessible(prefer_ungated_mirror(base, hf_token), hf_token)
+        fetch_base = prefer_ungated_mirror(base, hf_token)
+        _assert_base_repo_accessible(fetch_base, hf_token)
         # Same reasoning for the FLUX.2 size pairing, and this is the only place it can be caught
         # before a teardown: the loader's own guard opens the downloaded checkpoint, so it fires
         # after ~19 GB of base shards AND after the resident pipeline was freed. Metadata only (one
@@ -1956,8 +1997,61 @@ class DiffusionBackend:
         # Cache-only for a load nobody asked for: this probe would otherwise spend a revision HEAD,
         # or a range request and its bound, on the one path that promised to stay off the Hub.
         assert_pick_is_not_speech(repo_id, gguf_filename, hf_token, allow_network)
+        repositories: list[Optional[str]] = [base, mirror_repo(base), fetch_base]
+        if fam is not None and fam.name == HIDREAM_FAMILY_NAME:
+            repositories.append(HIDREAM_LLAMA_REPO)
+        if kind == "gguf" and loras:
+            from .diffusion_lora import repo_ids_for_specs
+
+            repositories.extend(repo_ids_for_specs(loras))
+        if fam is not None:
+            from .diffusion_te_prequant import te_prequant_sources
+
+            target = (
+                resolve_diffusion_device_target()
+                if gpu_ordinal is None
+                else resolve_diffusion_device_target(ordinal = gpu_ordinal)
+            )
+            repositories.extend(
+                source.location
+                for source in te_prequant_sources(
+                    fam,
+                    te_quant_mode = text_encoder_quant,
+                    target = target,
+                ).values()
+                if source.kind == "repo"
+            )
+            if fam.name == HIDREAM_FAMILY_NAME:
+                source = hidream_te4_prequant_source(fam, text_encoder_quant, target)
+                if source is not None and source.kind == "repo":
+                    repositories.append(source.location)
+            raw_quant = transformer_quant
+            quant_auto = raw_quant is None or str(raw_quant).strip().lower() in ("", "auto")
+            quant_mode = normalize_transformer_quant(raw_quant)
+            if kind == "gguf" and not _has_active_lora(loras):
+                schemes = TQ_SCHEMES if quant_auto else ((quant_mode,) if quant_mode else ())
+                repositories.extend(
+                    family_prequant_repo(fam, scheme, base_repo = base)
+                    for scheme in schemes
+                )
+        return DiffusionLoadPreflight(
+            resolved_base_repo = base,
+            repositories = tuple(dict.fromkeys(repo for repo in repositories if repo)),
+        )
 
     # ── Background load + progress ─────────────────────────────────────────
+
+    def _publish_loading_repos(
+        self, token: int, reservation: Optional[Any], *repo_ids: Optional[str]
+    ) -> None:
+        repos = tuple(dict.fromkeys(repo_id for repo_id in repo_ids if repo_id))
+        if reservation is not None:
+            reservation.add(*repos)
+        with self._lock:
+            if self._load_token == token and self._loading is not None:
+                self._loading.asset_repos = tuple(
+                    dict.fromkeys((*self._loading.asset_repos, *repos))
+                )
 
     def begin_load(
         self,
@@ -1983,6 +2077,8 @@ class DiffusionBackend:
         gpu_ids: Optional[list[int]] = None,
         # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card.
         gpu_ordinal: Optional[int] = None,
+        _preclaimed_repositories: tuple[str, ...] = (),
+        _preflight_resolved_base_repo: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         # A blank token must mean "anonymous", not an empty credential the Hub 401s.
@@ -2011,35 +2107,79 @@ class DiffusionBackend:
         # route answers 409 with the reason instead of evicting the resident model, downloading
         # several GB and only then failing. The declines that need the real footprint (a VRAM
         # misfit, a failed build) can only be found mid-load and surface through load-progress.
+        kind = resolve_model_kind(gguf_filename, model_kind)
         self.assert_precision_available(
             fam,
-            model_kind = resolve_model_kind(gguf_filename, model_kind),
+            model_kind = kind,
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
             gpu_ordinal = gpu_ordinal,
         )
 
-        with self._lock:
-            # Allow starting over a previously-failed load, but not over a live one.
-            if self._loading is not None and self._loading.error is None:
-                raise RuntimeError("A diffusion load is already in progress.")
-            self._load_token += 1
-            token = self._load_token
-            # A NEW event per load, never a clear() of the shared one: unload() sets the event the running worker holds but also
-            # drops _loading, so clearing here would un-cancel that worker. Download preemption is best-effort; the token is the
-            # real commit guard.
-            cancel_event = threading.Event()
-            self._cancel_event = cancel_event
-            # Seed with the family fallback; the worker resolves the real base and updates this.
-            self._loading = _LoadingState(repo_id = repo_id, base_repo = fam.base_repo)
+        from .diffusion_lora import repo_ids_for_specs
+        from hub.utils.gguf import gguf_variant_key
+        from utils.model_cache_reservations import (
+            reserve_inference_load,
+            run_reserved_inference_load,
+        )
 
-        threading.Thread(
-            target = self._run_load,
-            kwargs = dict(
+        lora_repos = repo_ids_for_specs(loras or []) if kind == "gguf" else ()
+        family_repos = (HIDREAM_LLAMA_REPO,) if fam.name == HIDREAM_FAMILY_NAME else ()
+        settled_base_repo = _preflight_resolved_base_repo or base_repo
+        initial_base = (
+            repo_id if kind == "pipeline" else (settled_base_repo or "").strip() or fam.base_repo
+        )
+        companion_repos = (
+            ()
+            if kind == "pipeline"
+            else (initial_base, mirror_repo(initial_base))
+        )
+        # A GGUF pick claims only its own quantization, so a sibling quant can keep
+        # downloading side by side; companion repos are claimed whole, as the load
+        # pulls all of them.
+        load_reservation = reserve_inference_load(
+            repo_id,
+            mirror_repo(repo_id),
+            variant = gguf_variant_key(gguf_filename) if kind == "gguf" else None,
+        )
+        token: Optional[int] = None
+        try:
+            load_reservation.add(
+                *companion_repos,
+                *family_repos,
+                *lora_repos,
+                *_preclaimed_repositories,
+            )
+            with self._lock:
+                # Allow starting over a previously-failed load, but not over a live one.
+                if self._loading is not None and self._loading.error is None:
+                    raise RuntimeError("A diffusion load is already in progress.")
+                self._load_token += 1
+                token = self._load_token
+                # A NEW event per load, never a clear() of the shared one: unload() sets the event the running worker holds but also
+                # drops _loading, so clearing here would un-cancel that worker. Download preemption is best-effort; the token is the
+                # real commit guard.
+                cancel_event = threading.Event()
+                self._cancel_event = cancel_event
+                self._loading = _LoadingState(
+                    repo_id = repo_id,
+                    base_repo = initial_base,
+                    asset_repos = tuple(
+                        repo
+                        for repo in (
+                            mirror_repo(repo_id),
+                            *(companion_repos[1:] if companion_repos else ()),
+                            *family_repos,
+                            *lora_repos,
+                        )
+                        if repo
+                    ),
+                )
+            load_kwargs = dict(
                 repo_id = repo_id,
                 local_files_only = local_files_only,
                 gguf_filename = gguf_filename,
-                base_repo = base_repo,
+                base_repo = settled_base_repo,
                 family_override = family_override,
                 hf_token = hf_token,
                 cpu_offload = cpu_offload,
@@ -2057,13 +2197,25 @@ class DiffusionBackend:
                 gpu_ordinal = gpu_ordinal,
                 _load_token = token,
                 _cancel_event = cancel_event,
-            ),
-            daemon = True,
-        ).start()
+                _load_reservation = load_reservation,
+            )
+            threading.Thread(
+                target = run_reserved_inference_load,
+                args = (load_reservation, self._run_load),
+                kwargs = load_kwargs,
+                daemon = True,
+            ).start()
+        except BaseException:
+            load_reservation.release()
+            with self._lock:
+                if token is not None and self._load_token == token:
+                    self._loading = None
+            raise
         return self.status()
 
     def _run_load(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
+        load_reservation = kwargs.pop("_load_reservation", None)
         # This load's own event: a later load replaces self._cancel_event rather than clearing it.
         cancel_event = kwargs.pop("_cancel_event", None) or self._cancel_event
         # An API-initiated load promises to download NOTHING: it may only open what is already
@@ -2087,6 +2239,41 @@ class DiffusionBackend:
                     kwargs["repo_id"], kwargs.get("base_repo"), fam, kwargs.get("hf_token")
                 )
             kwargs["base_repo"] = base
+            te_mode = normalize_te_quant(kwargs.get("text_encoder_quant"))
+            asset_repos = [base, mirror_repo(base)]
+            if fam.name == HIDREAM_FAMILY_NAME:
+                asset_repos.append(HIDREAM_LLAMA_REPO)
+            if te_mode is not None:
+                from .diffusion_te_prequant import te_prequant_sources
+
+                target = (
+                    resolve_diffusion_device_target()
+                    if kwargs.get("gpu_ordinal") is None
+                    else resolve_diffusion_device_target(ordinal = kwargs["gpu_ordinal"])
+                )
+                te_sources = te_prequant_sources(
+                    fam,
+                    te_quant_mode = te_mode,
+                    target = target,
+                )
+                asset_repos.extend(
+                    source.location
+                    for source in te_sources.values()
+                    if source.kind == "repo"
+                )
+                if fam.name == HIDREAM_FAMILY_NAME:
+                    source = hidream_te4_prequant_source(fam, te_mode, target)
+                    if source is not None and source.kind == "repo":
+                        asset_repos.append(source.location)
+            raw_quant = kwargs.get("transformer_quant")
+            quant_auto = raw_quant is None or str(raw_quant).strip().lower() in ("", "auto")
+            quant_mode = normalize_transformer_quant(raw_quant)
+            if kind == "gguf" and not _has_active_lora(kwargs.get("loras")):
+                schemes = TQ_SCHEMES if quant_auto else ((quant_mode,) if quant_mode else ())
+                asset_repos.extend(
+                    family_prequant_repo(fam, scheme, base_repo = base) for scheme in schemes
+                )
+            self._publish_loading_repos(token, load_reservation, *asset_repos)
             # The pre-cast encoder replaces these weights, so skip their dense shards. Same resolver as the injection.
             te_prequant_files = self._te_prequant_plan_files(
                 fam,
@@ -2132,6 +2319,7 @@ class DiffusionBackend:
             # load_pipeline: per-call-site, one repo could be staged and the other assembled from.
             fetch_base = prefer_ungated_mirror(base, kwargs.get("hf_token"), files = base_files)
             kwargs["_fetch_base"] = fetch_base
+            self._publish_loading_repos(token, load_reservation, fetch_base)
             # Same preflight the plan runs: catch a gated base here, not 15 GiB into the prefetch.
             # Runs on ``fetch_base``, once it is decided, so it probes the repo the pull will read:
             # refusing the upstream id would reject the gated picks the ungated mirror rescues.
@@ -2248,7 +2436,12 @@ class DiffusionBackend:
             loading = self._loading
             if loading is None or loading.error is not None:
                 return ()
-            ids = (loading.repo_id, loading.base_repo, loading.fetch_repo)
+            ids = (
+                loading.repo_id,
+                loading.base_repo,
+                loading.fetch_repo,
+                *loading.asset_repos,
+            )
             return tuple(dict.fromkeys(r for r in ids if r))
 
     @staticmethod
@@ -5597,6 +5790,7 @@ class DiffusionBackend:
 
         # Per-generation cancel Event that unload()/a superseding load set (under _lock) to abort just this denoise.
         cancel = threading.Event()
+        generation_reservation = None
         with self._generation_slot(cancel):
             with self._lock:
                 state = self._state
@@ -5611,6 +5805,12 @@ class DiffusionBackend:
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not read idle.
                 self._gen = _GenState(total_steps = steps)
             try:
+                from core.inference import diffusion_lora
+                from utils.model_cache_reservations import reserve_inference_load
+
+                generation_reservation = reserve_inference_load(
+                    *diffusion_lora.repo_ids_for_specs(loras or [])
+                )
                 # FIRST, before any device object exists. This worker is not the thread that loaded
                 # the pipeline, so until it is pinned the un-indexed state.device below -- and the
                 # ControlNet placement further down -- resolve to its own default card while the
@@ -5764,6 +5964,8 @@ class DiffusionBackend:
                         except FileNotFoundError as exc:
                             # An unknown CN id -> 400, not 500 (the route maps ValueError).
                             raise ValueError(str(exc)) from exc
+                        if not resolved_cn.is_local:
+                            generation_reservation.add(resolved_cn.path)
                         pipe = self._controlnet_pipe(state, resolved_cn, cancel)
                         workflow = "controlnet"
                         cn_scale, cn_gstart, cn_gend = cn_strength, cn_gs, cn_ge
@@ -6073,6 +6275,8 @@ class DiffusionBackend:
                 with self._lock:
                     # Sole clear of the published progress state, on every exit, so a crashed generation never leaves the UI stuck.
                     self._gen = None
+                if generation_reservation is not None:
+                    generation_reservation.release()
 
     def generate_progress(self) -> dict[str, Any]:
         """Live per-step progress for an in-flight generation (lock-free read)."""

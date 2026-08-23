@@ -2634,6 +2634,7 @@ from datetime import date as _date
 
 if TYPE_CHECKING:
     import numpy as np
+    from utils.model_cache_reservations import InferenceLoadReservation
 
 router = APIRouter()
 # Unsloth-only router (not mounted on /v1 OpenAI-compat).
@@ -6712,35 +6713,54 @@ async def _maybe_auto_switch_model(
                         # Reuse the load impl so its dedup, tensor fallback, and threading
                         # apply. Call the impl directly: we already hold the lifecycle gate
                         # the /load route would otherwise take, so the route would deadlock.
+                        from utils.model_cache_reservations import (
+                            reserve_inference_load,
+                            wait_for_reserved_worker,
+                        )
+
+                        load_request = LoadRequest(**load_kwargs)
+                        load_reservation = reserve_inference_load(
+                            load_request.model_path,
+                            variant = load_request.gguf_variant,
+                        )
                         try:
-                            await _load_model_impl(
-                                LoadRequest(**load_kwargs),
-                                fastapi_request,
-                                current_subject,
-                                current_request_counted = True,
-                            )
-                        except HTTPException as exc:
-                            # The pre-flight check cannot mirror every loader gpu_ids rule,
-                            # and a stale pin must never block a request, so retry without it.
-                            if not (
-                                exc.status_code == 400
-                                and load_kwargs.get("gpu_ids")
-                                and "gpu" in str(exc.detail).lower()
-                            ):
-                                raise
-                            logger.warning(
-                                "Retrying %s without saved gpu_ids %s: %s",
-                                override_id,
-                                load_kwargs.get("gpu_ids"),
-                                exc.detail,
-                            )
-                            load_kwargs.pop("gpu_ids", None)
-                            await _load_model_impl(
-                                LoadRequest(**load_kwargs),
-                                fastapi_request,
-                                current_subject,
-                                current_request_counted = True,
-                            )
+                            try:
+                                await wait_for_reserved_worker(
+                                    _load_model_impl(
+                                        load_request,
+                                        fastapi_request,
+                                        current_subject,
+                                        current_request_counted = True,
+                                        load_reservation = load_reservation,
+                                    )
+                                )
+                            except HTTPException as exc:
+                                # The pre-flight check cannot mirror every loader gpu_ids rule,
+                                # and a stale pin must never block a request, so retry without it.
+                                if not (
+                                    exc.status_code == 400
+                                    and load_kwargs.get("gpu_ids")
+                                    and "gpu" in str(exc.detail).lower()
+                                ):
+                                    raise
+                                logger.warning(
+                                    "Retrying %s without saved gpu_ids %s: %s",
+                                    override_id,
+                                    load_kwargs.get("gpu_ids"),
+                                    exc.detail,
+                                )
+                                load_kwargs.pop("gpu_ids", None)
+                                await wait_for_reserved_worker(
+                                    _load_model_impl(
+                                        LoadRequest(**load_kwargs),
+                                        fastapi_request,
+                                        current_subject,
+                                        current_request_counted = True,
+                                        load_reservation = load_reservation,
+                                    )
+                                )
+                        finally:
+                            load_reservation.release()
                         # Advertise the repo id (not the concrete load path) as the loaded
                         # model's public id and override key for /v1/models and idle stash.
                         get_llama_cpp_backend()._openai_advertised_id = override_id
@@ -9222,6 +9242,7 @@ async def _run_tracked_load_model_impl(
     attempt: Optional[_ScopedLoadAttempt] = None,
     current_request_counted: bool = False,
     on_reload_confirmed = None,
+    load_reservation: Optional["InferenceLoadReservation"] = None,
 ):
     global _running_load_attempt
 
@@ -9239,6 +9260,7 @@ async def _run_tracked_load_model_impl(
             current_request_counted = current_request_counted,
             on_reload_confirmed = on_reload_confirmed,
             load_cancel_event = attempt.cancel_event,
+            load_reservation = load_reservation,
         )
     finally:
         if attempt.cancel_event.is_set() and not attempt.cancel_complete.is_set():
@@ -9297,6 +9319,7 @@ async def load_model_gated(
     # install can reserve while this request queues on the gate, so the pre-gate
     # check alone is only a fast path.
     from core.inference.llama_keepwarm import inference_lifecycle_gate
+    from utils.model_cache_reservations import wait_for_reserved_worker
 
     attempt = _begin_load_attempt(request, current_subject)
     try:
@@ -9308,15 +9331,17 @@ async def load_model_gated(
             _raise_if_sidecar_swap_in_progress()
             # The active-generation gate runs inside _load_model_impl, once it knows this is a real
             # reload, and still under the lifecycle gate so the check stays atomic with the teardown.
-            response = await _run_tracked_load_model_impl(
-                request,
-                fastapi_request,
-                current_subject,
-                attempt = attempt,
-                on_reload_confirmed = lambda *, cancel: _raise_or_cancel_active_generations(
-                    force = request.force_cancel_active,
-                    action = "Loading a model",
-                    cancel = cancel,
+            response = await wait_for_reserved_worker(
+                _run_tracked_load_model_impl(
+                    request,
+                    fastapi_request,
+                    current_subject,
+                    attempt = attempt,
+                    on_reload_confirmed = lambda *, cancel: _raise_or_cancel_active_generations(
+                        force = request.force_cancel_active,
+                        action = "Loading a model",
+                        cancel = cancel,
+                    ),
                 ),
             )
         # Record provenance only once the model is resident, and here rather than
@@ -9338,6 +9363,7 @@ async def _load_model_impl(
     current_request_counted: bool = False,
     on_reload_confirmed = None,
     load_cancel_event: Optional[threading.Event] = None,
+    load_reservation: Optional["InferenceLoadReservation"] = None,
 ):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
@@ -9363,6 +9389,7 @@ async def _load_model_impl(
     native_grant_backed = False
     model_log_label = request.model_path
     gguf_load_stack = ExitStack()
+    owns_load_reservation = False
     try:
         # Validate user pass-through args up front so a managed-flag collision
         # returns 400 before any model work.
@@ -9557,6 +9584,15 @@ async def _load_model_impl(
                     chat_template = _chat_template,
                 )
 
+        if load_reservation is None:
+            from utils.model_cache_reservations import reserve_inference_load
+
+            load_reservation = reserve_inference_load(
+                request.model_path,
+                variant = request.gguf_variant,
+            )
+            owns_load_reservation = True
+
         # is_lora auto-detected from adapter_config.json on disk/HF.
         # Probe wrap so offline loads skip 30-60s of soft-failed network checks before
         # the worker starts. Off-loop: the guard can spend seconds on DNS plus a HEAD and
@@ -9572,6 +9608,7 @@ async def _load_model_impl(
                     # pass that touches a drafter candidate, so the boundary has
                     # to travel with it rather than being applied afterwards.
                     drafter_accept = _native_drafter_accept if native_grant_backed else None,
+                    on_base_model_resolved = load_reservation.add,
                 )
 
         # Guard and call go to the worker together: from_identifier can import transformers
@@ -9583,6 +9620,16 @@ async def _load_model_impl(
                 status_code = 400,
                 detail = f"Invalid model identifier: {model_log_label}",
             )
+
+        # Config resolution is where a shorthand model's canonical Hub id becomes
+        # authoritative. Claim it before downstream preflight touches its snapshot.
+        load_reservation.add_primary(
+            model_identifier,
+            getattr(config, "identifier", None),
+        )
+        from utils.audio_codec_repositories import audio_codec_repositories
+
+        load_reservation.add(*audio_codec_repositories(getattr(config, "audio_type", None)))
 
         # Resolve inherited extras once before command-dependent preflights.
         extra_llama_args = _resolve_inherited_extra_args(
@@ -9607,6 +9654,14 @@ async def _load_model_impl(
                 model_log_label,
             )
             extra_llama_args = []
+        if config.is_gguf and placement.diffusion_kind is not True:
+            from core.inference.llama_cpp import _extra_args_mtp_draft_source
+
+            draft_source, draft_is_remote = _extra_args_mtp_draft_source(extra_llama_args)
+            if draft_source:
+                if draft_is_remote:
+                    draft_source = _split_hf_draft_spec(draft_source)[0]
+                load_reservation.add(draft_source)
         if config.is_gguf and extra_llama_args:
             # After the slot count is known, because the floor depends on it. The
             # editor draws the same line, but a CLI or API caller never sees it, and
@@ -9890,6 +9945,7 @@ async def _load_model_impl(
                     llama_backend.load_model,
                     intent = attempt,
                     load_cancel_event = load_cancel_event,
+                    on_audio_codec_resolved = load_reservation.add,
                 )
 
             # Tensor parallelism is arch-gated in llama.cpp and crashes some loads
@@ -9906,6 +9962,7 @@ async def _load_model_impl(
                     llama_backend.load_cancelled()
                     or bool(load_cancel_event and load_cancel_event.is_set())
                 ),
+                retryable_exception = lambda exc: not isinstance(exc, HTTPException),
             )
 
             if not success:
@@ -10203,9 +10260,15 @@ async def _load_model_impl(
         msg = _maybe_unsupported_message(redacted_msg)
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
     finally:
-        gguf_load_stack.close()
-        # Catch-all: an error or cancelled load would otherwise leave the row "loading".
-        api_monitor.fail_open(_load_event, "Load did not complete")
+        try:
+            gguf_load_stack.close()
+        finally:
+            try:
+                if owns_load_reservation:
+                    load_reservation.release()
+            finally:
+                # Catch-all: an error or cancelled load would otherwise leave the row "loading".
+                api_monitor.fail_open(_load_event, "Load did not complete")
 
 
 def _any_remote(targets) -> bool:
@@ -25931,6 +25994,7 @@ async def load_diffusion_model_gated(
     API-loaded pipeline from one the user picked on the Images page.
     """
     from core.inference.diffusion import (
+        DiffusionLoadPreflight,
         get_diffusion_backend,
         resolve_local_single_file,
         resolve_model_kind,
@@ -25948,12 +26012,17 @@ async def load_diffusion_model_gated(
         select_and_activate_engine,
     )
     from core.inference.gpu_arbiter import acquire_for, release, DIFFUSION
+    from core.inference.diffusion_families import mirror_repo
+    from core.inference.diffusion_hidream import HIDREAM_FAMILY_NAME, HIDREAM_LLAMA_REPO
+    from core.inference.diffusion_lora import repo_ids_for_specs
     from core.inference.media_keepwarm import note_load_origin as note_media_load_origin
-    from hub.utils.gguf import extract_quant_token
+    from hub.utils.gguf import extract_quant_token, gguf_variant_key
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
+    from utils.model_cache_reservations import reserve_inference_load
     from utils.native_path_leases import redact_native_paths
 
     backend = get_diffusion_backend()
+    load_reservation = None
     try:
         # Resolve the load kind once (gguf / single_file / pipeline) so validation, engine selection and the load agree. A bad kind raises here, so a 400.
         kind = resolve_model_kind(request.gguf_filename, request.model_kind)
@@ -25972,6 +26041,15 @@ async def load_diffusion_model_gated(
             model_kind = kind,
             base_repo = request.base_repo,
         )
+        family_base_repo = getattr(fam, "base_repo", None)
+        # Every repo begin_load will claim, reserved HERE so a conflict refuses the pick
+        # before the arbiter evicts chat; a GGUF pick claims only its own quantization,
+        # so a sibling quant can keep downloading side by side.
+        load_reservation = reserve_inference_load(
+            request.model_path,
+            mirror_repo(request.model_path),
+            variant = gguf_variant_key(request.gguf_filename) if kind == "gguf" else None,
+        )
         # Refuse while training is running: a multi-GB pipeline would compete with the training subprocess for VRAM.
         _guard_diffusion_load_against_training()
         # Take the GPU from chat only on a non-CPU device: gate on the device, not the engine name.
@@ -25985,15 +26063,38 @@ async def load_diffusion_model_gated(
 
         def _preflight(target):
             # Gated/unreadable-companion refusal, asked of ONE engine (they check different repos).
-            return target.preflight_base_access(
+            preflight = getattr(target, "preflight_load_repositories", None)
+            if preflight is None:
+                target.preflight_base_access(
+                    request.model_path,
+                    fam,
+                    gguf_filename = request.gguf_filename,
+                    model_kind = kind,
+                    base_repo = request.base_repo,
+                    hf_token = request.hf_token,
+                    allow_network = user_initiated,
+                )
+                return (), None
+            result = preflight(
                 request.model_path,
                 fam,
                 gguf_filename = request.gguf_filename,
                 model_kind = kind,
                 base_repo = request.base_repo,
                 hf_token = request.hf_token,
+                text_encoder_quant = request.text_encoder_quant,
+                transformer_quant = request.transformer_quant,
+                loras = (
+                    [(spec.id, spec.weight) for spec in request.loras]
+                    if request.loras
+                    else None
+                ),
+                gpu_ordinal = gpu_ordinal,
                 allow_network = user_initiated,
             )
+            if isinstance(result, DiffusionLoadPreflight):
+                return result.repositories, result.resolved_base_repo
+            return tuple(result or ()), None
 
         # Last refusal before anything is torn down: a gated/unreadable companion repo. The download
         # plan checks the same, but the images page falls back to THIS route when that call fails,
@@ -26005,6 +26106,19 @@ async def load_diffusion_model_gated(
             pending_name = predict_engine(fam, model_kind = kind) if fam is not None else None
         except Exception:  # noqa: BLE001 -- a probe failure must not refuse a loadable pick
             pending_name = None
+        initial_base_repo = None
+        if kind != "pipeline" and pending_name != ENGINE_SD_CPP:
+            initial_base_repo = (request.base_repo or "").strip() or family_base_repo
+        load_reservation.add(initial_base_repo, mirror_repo(initial_base_repo))
+        if (
+            pending_name != ENGINE_SD_CPP
+            and getattr(fam, "name", None) == HIDREAM_FAMILY_NAME
+        ):
+            load_reservation.add(HIDREAM_LLAMA_REPO)
+        if pending_name != ENGINE_SD_CPP and kind == "gguf" and request.loras:
+            load_reservation.add(
+                *repo_ids_for_specs([(spec.id, spec.weight) for spec in request.loras])
+            )
         # Same bar, same reason, for an EXPLICIT precision this host can never honor. begin_load
         # makes the identical network-free check, but it runs inside acquire_for -- which evicts
         # chat under the arbiter lock BEFORE the register callback -- and after selection, which
@@ -26047,9 +26161,14 @@ async def load_diffusion_model_gated(
             user_initiated,
         )
         preflighted = None
+        dependency_repos: tuple[str, ...] = ()
+        preflight_base_repo = None
         if pending_name is not None and (needs_gpu or pending_name != active_engine_name()):
             preflighted = engine_for(pending_name)
-            await asyncio.to_thread(_preflight, preflighted)
+            dependency_repos, preflight_base_repo = await asyncio.to_thread(
+                _preflight, preflighted
+            )
+            load_reservation.add(*dependency_repos)
 
         # Pick the engine for this host (diffusers on GPU, native sd.cpp otherwise), installing sd-cli if needed, BEFORE evicting chat.
         engine = await asyncio.to_thread(
@@ -26061,7 +26180,10 @@ async def load_diffusion_model_gated(
         # companion; a correct prediction already made this call, so it is never paid twice. Runs
         # on the CPU path too when a preflight was owed there, since the switch is what is at stake.
         if (needs_gpu or preflighted is not None) and engine is not preflighted:
-            await asyncio.to_thread(_preflight, engine)
+            dependency_repos, preflight_base_repo = await asyncio.to_thread(
+                _preflight, engine
+            )
+            load_reservation.add(*dependency_repos)
         # And the precision gate, against the engine that was actually activated. When
         # predict_engine RAISED, pending_name stayed None and both arms above were skipped, so
         # a selection that then landed on sd.cpp accepted an explicit FP8, quantised nothing
@@ -26113,6 +26235,8 @@ async def load_diffusion_model_gated(
                 # The winner this route already ranked and preflighted, so the load cannot pick a
                 # different card from free VRAM that has moved since.
                 gpu_ordinal = gpu_ordinal,
+                _preclaimed_repositories = dependency_repos,
+                _preflight_resolved_base_repo = preflight_base_repo,
             )
 
         def _begin_load():
@@ -26143,8 +26267,12 @@ async def load_diffusion_model_gated(
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
     except RuntimeError as exc:
-        # A load is already in progress.
+        # Every RuntimeError this path raises is a refusal (a load already in progress, a
+        # precision this host cannot honor), not a server fault.
         raise HTTPException(status_code = 409, detail = str(exc))
+    finally:
+        if load_reservation is not None:
+            load_reservation.release()
 
 
 # Count of finished generations still writing their PNG/gallery records; generate-progress reports active while above 0. Mutated only on the event loop, so no lock.
@@ -26224,6 +26352,8 @@ async def generate_diffusion_image(
                 else None
             ),
         )
+    except HTTPException:
+        raise
     except ValueError as exc:
         # Bad client input (undecodable image/mask, or an unsupported workflow): a 400 with the reason, not a generic 500.
         raise HTTPException(status_code = 400, detail = str(exc))

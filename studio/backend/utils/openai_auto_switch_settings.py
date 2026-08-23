@@ -751,7 +751,7 @@ def _looks_like_filesystem_path(model_id: str) -> bool:
     return len(model_id) >= 3 and model_id[1] == ":" and model_id[2] in ("\\", "/")
 
 
-# The case-insensitive path shapes. Must stay in step with features/hub/lib/model-identity.ts,
+# The case-insensitive path shapes. Must stay in step with src/lib/model-identity.ts,
 # which folds these before storing, or a stored key becomes unreachable.
 _WINDOWS_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
 _WSL_DRIVE_PATH = re.compile(r"^/mnt/[A-Za-z](?:/|$)")
@@ -987,9 +987,9 @@ def _cached_repo_override_identity(model_id: str) -> Optional[tuple[str, str]]:
     if split is None:
         return None
     base, quant = split
-    from core.inference.model_ids import hf_cache_repo_id
+    from utils import hf_repo_ids
 
-    repo = hf_cache_repo_id(base)
+    repo = hf_repo_ids.hf_cache_repo_id(base)
     if repo is None:
         if _looks_like_filesystem_path(base):
             return None

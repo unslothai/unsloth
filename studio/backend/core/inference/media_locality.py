@@ -266,7 +266,7 @@ def plan_gpu_ordinal() -> Optional[int]:
     return resolve_selected_cuda_ordinal(None)
 
 
-def _pipeline_components_present(root: Path) -> bool:
+def pipeline_components_present(root: Path) -> bool:
     """Whether every component a local pipeline's own index names is on disk.
 
     A directory carrying a pipeline index is treated as complete by definition, because
@@ -486,7 +486,7 @@ def missing_download_bytes(
     """
     target = normalized_pick(pick)
     local_pipeline = not target.gguf_filename and Path(target.model_path).is_dir()
-    if local_pipeline and not _pipeline_components_present(Path(target.model_path)):
+    if local_pipeline and not pipeline_components_present(Path(target.model_path)):
         return UNSIZED_MISSING
     if owner == DIFFUSION:
         # asked of every image pick, not only local pipelines: a single-file HiDream checkpoint
@@ -534,6 +534,7 @@ __all__ = [
     "is_edit_only",
     "missing_download_bytes",
     "normalized_pick",
+    "pipeline_components_present",
     "plan_gpu_ordinal",
     "planners_for",
 ]

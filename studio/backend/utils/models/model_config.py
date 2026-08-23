@@ -3754,6 +3754,7 @@ class ModelConfig:
         is_lora: bool = False,
         gguf_variant: Optional[str] = None,
         drafter_accept: Optional[Callable[[str, str, str, str], bool]] = None,
+        on_base_model_resolved: Optional[Callable[[str], None]] = None,
     ) -> Optional["ModelConfig"]:
         """Create ModelConfig from a clean model identifier (HF repo or local
         path), for FastAPI routes that send sanitized paths.
@@ -3774,6 +3775,8 @@ class ModelConfig:
                 route rejects only after the read already happened. Left None by
                 every caller that has no boundary to impose, which sees the same
                 candidates in the same order as before.
+            on_base_model_resolved: Called after a LoRA base is resolved and before
+                its metadata is read.
 
         Returns:
             ModelConfig or None if it cannot be created.
@@ -4070,6 +4073,8 @@ class ModelConfig:
             if not base_model:
                 logger.warning(f"Could not determine base model for LoRA '{path}'")
                 return None
+            if on_base_model_resolved is not None:
+                on_base_model_resolved(base_model)
             check_model = base_model
         else:
             check_model = identifier

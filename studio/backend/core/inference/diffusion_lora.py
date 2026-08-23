@@ -200,6 +200,25 @@ def _catalog_by_id() -> dict[str, LoraCatalogEntry]:
     return {e.id: e for e in (list(_CURATED) + _scan_local())}
 
 
+def repo_ids_for_specs(specs: list[tuple[str, float]]) -> tuple[str, ...]:
+    active = [(spec_id, weight) for spec_id, weight in specs if weight != 0]
+    if not active:
+        return ()
+    catalog = {entry.id: entry for entry in _CURATED}
+    repo_ids: list[str] = []
+    for spec_id, _weight in active:
+        entry = catalog.get(spec_id)
+        if entry is not None:
+            if entry.source == "hub" and entry.repo_id:
+                repo_ids.append(entry.repo_id)
+            continue
+        if "/" in spec_id:
+            repo_id, _, _weight_name = spec_id.partition(":")
+            if repo_id.count("/") == 1:
+                repo_ids.append(repo_id)
+    return tuple(dict.fromkeys(repo_ids))
+
+
 def resolve_one(
     spec_id: str,
     weight: float,

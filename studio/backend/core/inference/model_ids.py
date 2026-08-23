@@ -16,6 +16,8 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+from utils.hf_repo_ids import hf_cache_repo_id
+
 _GGUF_SUFFIX = ".gguf"
 
 
@@ -37,22 +39,6 @@ def _looks_like_path(identifier: str) -> bool:
     if identifier.count("/") >= 2 or "\\" in identifier:
         return True
     return False
-
-
-def hf_cache_repo_id(path: Optional[str]) -> Optional[str]:
-    """``.../models--org--name/snapshots/<sha>`` -> ``org/name``, else None.
-
-    A model loaded from the HF cache is identified by its snapshot dir, whose
-    basename is a commit hash; recover the repo id so callers don't show that.
-    """
-    if not path:
-        return None
-    parts = str(path).replace("\\", "/").split("/")
-    for index, part in enumerate(parts):
-        # Only inside the real cache layout: a "models--" name alone is not a repo id.
-        if part.startswith("models--") and parts[index + 1 : index + 2] == ["snapshots"]:
-            return part[len("models--") :].replace("--", "/")
-    return None
 
 
 def public_model_id(identifier: Optional[str]) -> Optional[str]:

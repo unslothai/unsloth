@@ -1417,7 +1417,7 @@ def _fill_target_id(target_id: str) -> str:
     Only in that direction. A repo-id key never outranks an existing path entry, and two
     snapshot paths name two caches, neither of which is knowably the one loaded here.
     """
-    from core.inference.model_ids import hf_cache_repo_id
+    from utils import hf_repo_ids
     from utils.openai_auto_switch_settings import split_quant_suffix
 
     # Already stored, so this write creates no second key to outrank anything.
@@ -1425,11 +1425,11 @@ def _fill_target_id(target_id: str) -> str:
         return target_id
     split = split_quant_suffix(target_id)
     # A bare id backs every quant and is read last, and only a cache path outranks.
-    if split is None or hf_cache_repo_id(split[0]) is None:
+    if split is None or hf_repo_ids.hf_cache_repo_id(split[0]) is None:
         return target_id
     for alias_id in cached_repo_alias_keys(target_id):
         alias_split = split_quant_suffix(alias_id)
-        if alias_split is not None and hf_cache_repo_id(alias_split[0]) is None:
+        if alias_split is not None and hf_repo_ids.hf_cache_repo_id(alias_split[0]) is None:
             return alias_id
     return target_id
 

@@ -9,7 +9,7 @@ import os
 from collections.abc import Mapping
 from typing import Any, Optional
 
-from core.inference.model_ids import hf_cache_repo_id
+from utils.hf_repo_ids import hf_cache_repo_id
 
 
 def _identifier(value: Any) -> Optional[str]:

@@ -2639,6 +2639,7 @@ def _with_gguf_load_marker(load: Callable):
         self,
         intent: GgufLoadIntent,
         load_cancel_event: Optional[threading.Event] = None,
+        on_audio_codec_resolved: Optional[Callable[[str], None]] = None,
     ):
         hf_repo = intent.hf_repo
         with gguf_load_in_flight(hf_repo):
@@ -2661,7 +2662,12 @@ def _with_gguf_load_marker(load: Callable):
                 raise RuntimeError(
                     f"'{hf_repo}' is currently being downloaded by the download manager"
                 )
-            return load(self, intent, load_cancel_event = load_cancel_event)
+            return load(
+                self,
+                intent,
+                load_cancel_event = load_cancel_event,
+                on_audio_codec_resolved = on_audio_codec_resolved,
+            )
 
     return wrapped
 
@@ -15016,6 +15022,7 @@ class LlamaCppBackend:
         self,
         intent: GgufLoadIntent,
         load_cancel_event: Optional[threading.Event] = None,
+        on_audio_codec_resolved: Optional[Callable[[str], None]] = None,
     ) -> bool:
         """Start llama-server from one immutable load intent."""
 
@@ -15198,15 +15205,10 @@ class LlamaCppBackend:
                     f"'{model_identifier}', skipping reload"
                 )
                 # Retry probe only if a prior attempt didn't finish.
-                if not self._audio_probed:
-                    try:
-                        detected = self._detect_audio_type_strict()
-                        self._audio_probed = True
-                    except Exception as exc:
-                        logger.debug("Fast-path audio probe failed: %s", exc)
-                        detected = None
-                    if not self._apply_detected_audio(detected):
-                        return False
+                if not self._audio_probed and not self._retry_audio_probe(
+                    on_audio_codec_resolved
+                ):
+                    return False
                 if not self._healthy:
                     return False
                 return True
@@ -20715,7 +20717,10 @@ class LlamaCppBackend:
             except Exception as exc:
                 logger.debug("Audio probe failed: %s", exc)
                 detected = None
-            if not self._apply_detected_audio(detected):
+            audio_applied = self._apply_detected_audio_for_new_server(
+                detected, on_audio_codec_resolved
+            )
+            if not audio_applied:
                 return False
 
             if not self._healthy:
@@ -21460,6 +21465,10 @@ class LlamaCppBackend:
     def unload_model(self) -> bool:
         """Terminate the subprocess and cancel any in-flight download."""
         self._cancel_event.set()
+        return self._teardown_model()
+
+    def _teardown_model(self) -> bool:
+        """Terminate and reset the backend without changing the load cancellation signal."""
         with self._lock:
             self._unload_epoch += 1
             self._kill_process()
@@ -26181,12 +26190,21 @@ class LlamaCppBackend:
             logger.debug(f"Audio type detection failed: {e}")
             return None
 
-    def _apply_detected_audio(self, detected: Optional[str]) -> bool:
+    def _apply_detected_audio(
+        self,
+        detected: Optional[str],
+        on_audio_codec_resolved: Optional[Callable[[str], None]] = None,
+    ) -> bool:
         """Apply a probed audio codec under self._lock. Returns True to continue
         the load (codec inited OK, or nothing to init), False to abort (server
         unhealthy or codec init failed). Shared by the fast-path retry and the
         main load path."""
         if detected in ("snac", "bicodec", "dac"):
+            if on_audio_codec_resolved is not None:
+                from utils.audio_codec_repositories import audio_codec_repositories
+
+                for repo_id in audio_codec_repositories(detected):
+                    on_audio_codec_resolved(repo_id)
             with self._lock:
                 if not self._healthy:
                     return False
@@ -26212,6 +26230,63 @@ class LlamaCppBackend:
         self._has_audio_input = bool(is_audio_input_type(self._audio_type)) or bool(
             self._mmproj_has_audio
         )
+        return True
+
+    def _unload_after_audio_abort(self) -> None:
+        """Tear the server down without leaving a cancellation behind.
+
+        Nothing is downloading by this point -- the server is up and answering -- so this
+        teardown must not arm ``_cancel_event`` and suppress the tensor-parallel -> layer
+        retry. A concurrent ``unload_model`` still arms it before waiting for the teardown
+        lock, so a real cancellation is preserved.
+        """
+        self._teardown_model()
+
+    def _apply_detected_audio_for_new_server(
+        self,
+        detected: Optional[str],
+        on_audio_codec_resolved: Optional[Callable[[str], None]] = None,
+    ) -> bool:
+        """:meth:`_apply_detected_audio` for a server THIS load spawned.
+
+        Every abort tears that child down. A load that returns False raises 500 upstream and
+        a reservation conflict raises 409 from the callback, and either one leaving a
+        llama-server running would orphan a process the caller believes never started -- and
+        the tensor-parallel fallback would relaunch on top of it.
+        """
+        try:
+            applied = self._apply_detected_audio(detected, on_audio_codec_resolved)
+        except Exception:
+            self._unload_after_audio_abort()
+            raise
+        if not applied:
+            self._unload_after_audio_abort()
+        return applied
+
+    def _retry_audio_probe(
+        self,
+        on_audio_codec_resolved: Optional[Callable[[str], None]] = None,
+    ) -> bool:
+        """:meth:`_apply_detected_audio` for a server this load ADOPTED, after an earlier
+        attempt left the probe unfinished. Returns True to continue the load.
+
+        Not the ``_for_new_server`` variant: nothing here spawned the server, so a codec
+        failure must not unload it. ``_audio_probed`` latches only once the codec has been
+        applied -- the resolved callback can raise (a cache reservation conflict), and
+        latching before it would make every later duplicate load skip this retry and
+        report the model loaded with its audio dead.
+        """
+        try:
+            detected = self._detect_audio_type_strict()
+            probed = True
+        except Exception as exc:
+            logger.debug("Fast-path audio probe failed: %s", exc)
+            detected = None
+            probed = False
+        if not self._apply_detected_audio(detected, on_audio_codec_resolved):
+            return False
+        if probed:
+            self._audio_probed = True
         return True
 
     def _detect_audio_type_strict(self) -> Optional[str]:
@@ -26290,8 +26365,9 @@ class LlamaCppBackend:
         if audio_type == "bicodec":
             from huggingface_hub import snapshot_download
             import os
+            from utils.audio_codec_repositories import BICODEC_CODEC_REPOSITORY
 
-            repo_path = snapshot_download("unsloth/Spark-TTS-0.5B")
+            repo_path = snapshot_download(BICODEC_CODEC_REPOSITORY)
             model_repo_path = os.path.abspath(repo_path)
 
         LlamaCppBackend._codec_mgr.load_codec(audio_type, device, model_repo_path = model_repo_path)

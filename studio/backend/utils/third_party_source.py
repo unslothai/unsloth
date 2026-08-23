@@ -27,6 +27,7 @@ from types import ModuleType
 
 from filelock import FileLock, Timeout
 
+from utils.audio_codec_repositories import DAC_CODEC_REPOSITORY
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.paths.storage_roots import cache_root
 from utils.subprocess_compat import (
@@ -94,7 +95,6 @@ _REVISION_PATTERN = re.compile(r"[0-9a-f]{40}")
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 _IMPORT_LOCK = threading.RLock()
 
-_DAC_REPOSITORY = "ibm-research/DAC.speech.v1.0"
 _DAC_REVISION = "1ea7f64cd0678415e2d8c32d67b190722cb9b149"
 _DAC_FILENAME = "weights_24khz_1.5kbps_v1.0.pth"
 _DAC_SIZE = 295731578
@@ -891,7 +891,7 @@ def ensure_dac_speech_weights(legacy_path: Path | str | None = None) -> Path:
     destination = (
         hub_cache
         / "studio-pinned-artifacts"
-        / _DAC_REPOSITORY.replace("/", "--")
+        / DAC_CODEC_REPOSITORY.replace("/", "--")
         / _DAC_REVISION
         / _DAC_FILENAME
     )
@@ -953,7 +953,7 @@ def ensure_dac_speech_weights(legacy_path: Path | str | None = None) -> Path:
             try:
                 downloaded = Path(
                     hf_hub_download(
-                        repo_id = _DAC_REPOSITORY,
+                        repo_id = DAC_CODEC_REPOSITORY,
                         filename = _DAC_FILENAME,
                         revision = _DAC_REVISION,
                         cache_dir = str(hub_cache),

@@ -27,6 +27,7 @@ async def load_with_tensor_fallback(
     extra_args: Optional[list[str]],
     label: str = "",
     cancelled: Optional[Callable[[], bool]] = None,
+    retryable_exception: Optional[Callable[[Exception], bool]] = None,
 ) -> bool:
     """Run a GGUF load with the tensor-parallel -> layer-split auto-fallback.
 
@@ -46,12 +47,17 @@ async def load_with_tensor_fallback(
     cancellation: ``attempt_load`` also returns False when the load was
     cancelled, so without this the helper would restart a load the user just
     cancelled.
+
+    ``retryable_exception`` can preserve control-flow errors that must not be
+    converted into a tensor fallback.
     """
     tensor_requested = _effective_tensor_parallel(extra_args, requested_tensor)
     try:
         success = await attempt_load(requested_tensor, extra_args)
     except Exception as exc:
-        if not tensor_requested:
+        if not tensor_requested or (
+            retryable_exception is not None and not retryable_exception(exc)
+        ):
             raise
         logger.warning("Tensor-parallel load raised for '%s': %s", label, exc)
         success = False

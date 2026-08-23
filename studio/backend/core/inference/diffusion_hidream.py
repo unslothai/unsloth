@@ -15,9 +15,12 @@ pipeline's prompt encoder consumes the Llama hidden states, not the logits.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from loggers import get_logger
+
+if TYPE_CHECKING:
+    from .diffusion_te_prequant import TePrequantSource
 
 logger = get_logger(__name__)
 
@@ -25,6 +28,34 @@ HIDREAM_FAMILY_NAME = "hidream-i1"
 
 # Open mirror of the gated meta-llama/Meta-Llama-3.1-8B-Instruct the pipeline expects.
 HIDREAM_LLAMA_REPO = "unsloth/Meta-Llama-3.1-8B-Instruct"
+
+
+def _hidream_te4_fp8_engages(fam: Any, te_quant_mode: Optional[str], target: Any) -> bool:
+    if target is None:
+        return False
+    try:
+        from . import diffusion_precision as precision
+        from .diffusion_precision import TE_QUANT_FP8, normalize_te_quant, te_quant_supported
+
+        mode = normalize_te_quant(te_quant_mode)
+        denied = getattr(precision, "_te_family_denied", None)
+        return (
+            mode == TE_QUANT_FP8
+            and te_quant_supported(target, mode)
+            and not (callable(denied) and denied(getattr(fam, "name", None), mode))
+        )
+    except Exception:  # noqa: BLE001 -- quant probe failure keeps the dense bf16 path
+        return False
+
+
+def hidream_te4_prequant_source(
+    fam: Any, te_quant_mode: Optional[str], target: Any
+) -> Optional["TePrequantSource"]:
+    if fam is None or not _hidream_te4_fp8_engages(fam, te_quant_mode, target):
+        return None
+    from .diffusion_te_prequant import resolve_te_prequant_source
+
+    return resolve_te_prequant_source(fam, "text_encoder_4", "fp8")
 
 
 def hidream_te4_kwargs(
@@ -67,50 +98,27 @@ def hidream_te4_kwargs(
         cache_dir = cache_dir,
     )
 
-    fp8_engages = False
-    if target is not None:
-        try:
-            from . import diffusion_precision as precision
-            from .diffusion_precision import (
-                TE_QUANT_FP8,
-                normalize_te_quant,
-                te_quant_supported,
-            )
+    source = hidream_te4_prequant_source(fam, te_quant_mode, target)
+    if source is not None:
+        from .diffusion_te_prequant import load_prequant_text_encoder
 
-            mode = normalize_te_quant(te_quant_mode)
-            denied = getattr(precision, "_te_family_denied", None)
-            fp8_engages = (
-                mode == TE_QUANT_FP8
-                and te_quant_supported(target, mode)
-                and not (callable(denied) and denied(getattr(fam, "name", None), mode))
-            )
-        except Exception:  # noqa: BLE001 -- quant probe failure keeps the dense bf16 path
-            fp8_engages = False
-
-    if fp8_engages and fam is not None:
-        from .diffusion_te_prequant import (
-            load_prequant_text_encoder,
-            resolve_te_prequant_source,
+        encoder = load_prequant_text_encoder(
+            HIDREAM_LLAMA_REPO,
+            "text_encoder_4",
+            source,
+            dtype = dtype,
+            hf_token = hf_token,
+            scheme = "fp8",
+            logger = logger,
+            # The Llama TE4 lives in its own standalone repo (config at the root), and the pipeline needs hidden states/attentions from its forward.
+            config_subfolder = "",
+            config_overrides = {
+                "output_hidden_states": True,
+                "output_attentions": True,
+            },
         )
-        source = resolve_te_prequant_source(fam, "text_encoder_4", "fp8")
-        if source is not None:
-            encoder = load_prequant_text_encoder(
-                HIDREAM_LLAMA_REPO,
-                "text_encoder_4",
-                source,
-                dtype = dtype,
-                hf_token = hf_token,
-                scheme = "fp8",
-                logger = logger,
-                # The Llama TE4 lives in its own standalone repo (config at the root), and the pipeline needs hidden states/attentions from its forward.
-                config_subfolder = "",
-                config_overrides = {
-                    "output_hidden_states": True,
-                    "output_attentions": True,
-                },
-            )
-            if encoder is not None:
-                return {"text_encoder_4": encoder, "tokenizer_4": tokenizer_4}
+        if encoder is not None:
+            return {"text_encoder_4": encoder, "tokenizer_4": tokenizer_4}
 
     logger.info("diffusion.hidream: loading Llama TE4 from %s", HIDREAM_LLAMA_REPO)
     text_encoder_4 = LlamaForCausalLM.from_pretrained(

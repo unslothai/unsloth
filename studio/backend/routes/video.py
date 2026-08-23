@@ -227,15 +227,25 @@ async def load_video_model_gated(
     )
     from core.inference.gpu_arbiter import VIDEO, acquire_for, release
     from core.inference.media_keepwarm import note_load_origin
-    from hub.utils.gguf import extract_quant_token
+    from core.inference.video_minimax_h3 import (
+        H3_COMPONENT_REPO,
+        H3_GGUF_REPO,
+        is_h3_native,
+    )
+    from core.inference.video_families import resolve_video_base_repo
+    from hub.utils.gguf import extract_quant_token, gguf_variant_key
     from core.inference.video import (
         assert_video_precision_available,
         get_video_backend,
+        hosted_modular_component_repos,
+        resolve_modular_pipeline_root,
         resolve_video_model_kind,
     )
+    from utils.model_cache_reservations import reserve_inference_load
     from utils.native_path_leases import redact_native_paths
 
     backend = get_video_backend()
+    load_reservation = None
     try:
         # Resolve the load kind once (gguf / single_file / pipeline) so validation and the load agree; a bad kind raises here, so a 400.
         kind = resolve_video_model_kind(request.gguf_filename, request.model_kind)
@@ -257,11 +267,55 @@ async def load_video_model_gated(
             text_encoder_quant = request.text_encoder_quant,
             h3_task = request.h3_task,
         )
+        # Every repo begin_load will claim, reserved HERE so a conflict refuses the pick
+        # before the arbiter evicts chat; a GGUF pick claims only its own quantization,
+        # so a sibling quant can keep downloading side by side. H3 native reads two GGUFs
+        # from one repo (denoiser partition + Qwen encoder), so it claims the repo whole.
+        h3_native = is_h3_native(fam, kind)
+        load_reservation = reserve_inference_load(
+            request.model_path,
+            variant = (
+                gguf_variant_key(request.gguf_filename)
+                if kind == "gguf" and not h3_native
+                else None
+            ),
+        )
+        if kind != "pipeline" and not h3_native:
+            load_reservation.add(resolve_video_base_repo(fam, request.base_repo))
+        if h3_native:
+            load_reservation.add(H3_GGUF_REPO, H3_COMPONENT_REPO)
         # Refuse while training is running (VRAM competition) BEFORE the precision check below:
         # that check runs an uncached quantise+matmul probe on the GPU, which would initialise a
         # CUDA context and allocate alongside the training subprocess for a load that is about to
         # be rejected anyway. Mirrors the image-load route, which already guards first.
         _guard_video_load_against_training()
+        modular_component_repos: tuple[str, ...] = ()
+        h3_te_scheme = None
+        h3_te_scheme_settled = False
+        if kind == "pipeline" and getattr(fam, "modular_workflow", None):
+            modular_root = await asyncio.to_thread(
+                resolve_modular_pipeline_root,
+                request.model_path,
+                request.hf_token,
+                local_files_only = not user_initiated,
+            )
+            modular_component_repos = await asyncio.to_thread(
+                hosted_modular_component_repos,
+                modular_root,
+            )
+            load_reservation.add(*modular_component_repos)
+            if not user_initiated:
+                from core.inference.media_locality import pipeline_components_present
+
+                complete = await asyncio.to_thread(
+                    pipeline_components_present,
+                    modular_root,
+                )
+                if not complete:
+                    raise RuntimeError(
+                        "The cached modular pipeline changed before loading. Retry after restoring "
+                        "its component repositories."
+                    )
         # Same bar for an EXPLICIT precision this host can never honor. begin_load makes the
         # identical network-free check, but it runs inside acquire_for, which evicts chat under the
         # arbiter lock BEFORE the register callback -- so a refusal raised there arrives having
@@ -282,11 +336,8 @@ async def load_video_model_gated(
             memory_mode = request.memory_mode,
             gpu_ordinal = gpu_ordinal,
         )
-        # Same bar again, for a speech GGUF picked out of a mixed video repo. The backend's own
-        # assertion runs on the load worker, INSIDE acquire_for, so a refusal there arrives
-        # having already evicted the chat model this gate exists to preserve. Off-thread because
-        # the probe reads a header, and cache-only when the load is not user-initiated, matching
-        # the locality promise begin_load makes below.
+        # Reject a speech GGUF before acquire_for can evict the resident chat model. Keep the
+        # probe cache-only for automatic loads, matching the backend locality contract.
         from core.inference.diffusion_compat import assert_pick_is_not_speech
 
         await asyncio.to_thread(
@@ -296,6 +347,34 @@ async def load_video_model_gated(
             request.hf_token,
             user_initiated,
         )
+        if getattr(fam, "modular_workflow", None) and not h3_native:
+            h3_te_scheme = await asyncio.to_thread(
+                backend.preflight_h3_te_quant_scheme,
+                fam,
+                request.text_encoder_quant,
+                (
+                    request.model_path
+                    if kind == "pipeline"
+                    else resolve_video_base_repo(fam, request.base_repo)
+                ),
+                request.hf_token,
+                gpu_ordinal = gpu_ordinal,
+                local_files_only = not user_initiated,
+            )
+            h3_te_scheme_settled = True
+        dependency_repos = await asyncio.to_thread(
+            backend.preflight_load_repositories,
+            request.model_path,
+            fam,
+            model_kind = kind,
+            base_repo = request.base_repo,
+            text_encoder_quant = request.text_encoder_quant,
+            h3_task = request.h3_task,
+            gpu_ordinal = gpu_ordinal,
+            modular_component_repos = modular_component_repos,
+            h3_te_scheme = h3_te_scheme,
+        )
+        load_reservation.add(*dependency_repos)
         # Take the GPU from chat only for a non-CPU load. Release stale VIDEO ownership on a CPU load (owner-guarded no-op).
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
 
@@ -323,6 +402,10 @@ async def load_video_model_gated(
                 # The winner this route already ranked and preflighted, so the load cannot pick a
                 # different card from free VRAM that has moved since.
                 gpu_ordinal = gpu_ordinal,
+                _modular_component_repos = modular_component_repos,
+                _preclaimed_repositories = dependency_repos,
+                _preflight_h3_te_scheme = h3_te_scheme,
+                _preflight_h3_te_scheme_settled = h3_te_scheme_settled,
             )
 
         if device != "cpu":
@@ -351,8 +434,10 @@ async def load_video_model_gated(
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
     except RuntimeError as exc:
-        # A video load is already in progress.
         raise HTTPException(status_code = 409, detail = str(exc))
+    finally:
+        if load_reservation is not None:
+            load_reservation.release()
 
 
 @router.get("/video/load-progress", response_model = VideoLoadProgressResponse)
