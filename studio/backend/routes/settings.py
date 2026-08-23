@@ -734,6 +734,15 @@ class ModelOverridePayload(BaseModel):
     # meaningful values (none kept; cache disabled; no limit). Bounds mirror LoadRequest.
     ctx_checkpoints: Optional[int] = Field(default = None, ge = 0, le = CTX_CHECKPOINTS_MAX)
     cache_ram: Optional[int] = Field(default = None, ge = CACHE_RAM_MIN_MIB, le = CACHE_RAM_MAX_MIB)
+    # Does this client know the four above exist? A save REPLACES the entry, so an
+    # omission from a build that predates them is indistinguishable from a user
+    # clearing them, and during an upgrade -- a cached bundle, or another LAN client
+    # still on the old build -- that silently deletes settings it never sent. Only a
+    # client that sets this may clear by omission; for anyone else the stored values
+    # are carried over. Default False so an old payload, which cannot set it, is the
+    # safe case. Not a blanket carry-over: that would make clearing impossible for
+    # everyone, trading a mixed-version window for a permanent bug.
+    mirrors_server_tuning: bool = False
     tensor_parallel: bool = False
     disable_vision: bool = False
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
@@ -1464,10 +1473,17 @@ def update_openai_auto_switch_override(
             raise ValueError("fill_absent_fields cannot be combined with remove.")
         # Only model_id is the documented "remove"; otherwise omitted flags carry over.
         requested_extra_args = payload.llama_extra_args
-        # fill_absent_fields is a write mode, not a saved field: leaving it in would make
-        # every payload look non-empty and break the legacy "no fields means remove".
+        # fill_absent_fields and mirrors_server_tuning are write modes, not saved fields:
+        # leaving either in would make every payload look non-empty (they are bools, so
+        # exclude_none does not drop them) and break the legacy "no fields means remove".
         saved_fields = payload.model_dump(
-            exclude = {"model_id", "llama_extra_args", "remove", "fill_absent_fields"},
+            exclude = {
+                "model_id",
+                "llama_extra_args",
+                "remove",
+                "fill_absent_fields",
+                "mirrors_server_tuning",
+            },
             exclude_none = True,
         )
         if payload.remove is not None:
@@ -1527,6 +1543,18 @@ def update_openai_auto_switch_override(
                 )
         else:
             extra_args = validate_extra_args(requested_extra_args)
+        # Same shape as the extra-args carry-over above, for the same reason: a save
+        # replaces the entry, so a field the caller never knew about must survive it.
+        # A client that declares it mirrors these clears by omission as usual; an
+        # older one keeps whatever is stored. On a remove the whole entry goes, so
+        # there is nothing to preserve.
+        _tuning_fields = ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram")
+        _kept_tuning = {name: getattr(payload, name) for name in _tuning_fields}
+        if not payload.mirrors_server_tuning and payload.remove is not True:
+            _stored_tuning = get_model_override(payload.model_id)
+            for name in _tuning_fields:
+                if _kept_tuning[name] is None:
+                    _kept_tuning[name] = _stored_tuning.get(name)
         if payload.remove is True:
             # An explicit remove wins over any other field. Remove the key a load resolves to,
             # not the literal one sent (the browser normalizes casing), and every spelling:
@@ -1599,10 +1627,10 @@ def update_openai_auto_switch_override(
                 n_parallel = payload.n_parallel,
                 n_batch = payload.n_batch,
                 n_ubatch = payload.n_ubatch,
-                load_mode = payload.load_mode,
-                spec_draft_cache_type = payload.spec_draft_cache_type,
-                ctx_checkpoints = payload.ctx_checkpoints,
-                cache_ram = payload.cache_ram,
+                load_mode = _kept_tuning["load_mode"],
+                spec_draft_cache_type = _kept_tuning["spec_draft_cache_type"],
+                ctx_checkpoints = _kept_tuning["ctx_checkpoints"],
+                cache_ram = _kept_tuning["cache_ram"],
                 tensor_parallel = payload.tensor_parallel,
                 disable_vision = payload.disable_vision,
                 chat_template_override = payload.chat_template_override,

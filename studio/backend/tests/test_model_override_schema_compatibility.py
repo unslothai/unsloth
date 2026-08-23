@@ -112,54 +112,59 @@ def test_a_field_from_a_newer_build_is_ignored_rather_than_fatal(override_store)
     }
 
 
-def test_a_client_that_does_not_send_the_tuning_group_erases_it(override_store):
+def test_a_client_that_does_not_know_the_tuning_group_cannot_erase_it(override_store):
     """P3 and P4: the cell this whole file exists for.
 
     A frontend from before the settings route forwarded the four sends a payload that
-    omits them, and ``set_model_override`` replaces the entry instead of merging, so
-    the four are deleted. There is no version stamp on the row for the route to notice
-    the skew with, and no field-level preservation except ``llama_extra_args``.
+    omits them, and ``set_model_override`` replaces the entry rather than merging. The
+    row carries no version stamp, so the route cannot tell that omission apart from a
+    user clearing the fields -- except that a build which knows them says so.
 
     Reachable two ways, and neither needs a deliberate downgrade: a second machine on
     the LAN still running the old build, and a browser holding a cached bundle against
     a server that has been upgraded under it.
     """
-    _put(MODEL, **PRE_TUNING_PAYLOAD, **TUNING_PAYLOAD)
+    _put(MODEL, **PRE_TUNING_PAYLOAD, **TUNING_PAYLOAD, mirrors_server_tuning = True)
     before = settings.get_model_override(MODEL)
     for field, value in TUNING_PAYLOAD.items():
         assert before[field] == value
 
-    # The old client: every field its build knows, and nothing it does not.
+    # The old client: every field its build knows, and nothing it does not. It cannot
+    # set the flag, which is why the flag defaults to the safe answer.
     _put(MODEL, **PRE_TUNING_PAYLOAD)
     after = settings.get_model_override(MODEL)
 
-    for field in SERVER_TUNING_FIELDS:
-        assert field not in after, f"{field} survived a save that never mentioned it"
-    # Only those four. The damage is bounded, which is what makes it hard to notice:
-    # every control the old build does have carries its value through untouched.
-    assert after == {key: before[key] for key in before if key not in SERVER_TUNING_FIELDS}
-    # And the loss reaches the command line, not just the stored row.
-    kwargs = settings.model_override_load_kwargs(after, is_gguf = True)
-    for field in SERVER_TUNING_FIELDS:
-        assert field not in kwargs
-
-
-def test_nothing_on_the_server_restores_an_erased_tuning_group(override_store):
-    # The other half of P3: whether the loss is recoverable without the user. It is
-    # not, from this side. The only merge the store offers is fill_absent_fields, and
-    # only the one-time browser backfill ever asks for it -- behind a localStorage
-    # flag an upgraded install has already set. Pinned so that a fix (a version stamp,
-    # a field-level merge) has an assertion to flip rather than one to delete.
-    _put(MODEL, **PRE_TUNING_PAYLOAD, **TUNING_PAYLOAD)
-    _put(MODEL, **PRE_TUNING_PAYLOAD)
-    assert "load_mode" not in settings.get_model_override(MODEL)
-
-    # A later save from an up-to-date client is what puts them back, and it has to
-    # carry them explicitly: reading the row first would read the gap.
-    _put(MODEL, **PRE_TUNING_PAYLOAD, **TUNING_PAYLOAD)
-    restored = settings.get_model_override(MODEL)
     for field, value in TUNING_PAYLOAD.items():
-        assert restored[field] == value
+        assert after[field] == value, f"{field} was deleted by a save that never mentioned it"
+    assert after == before
+    # And they still reach the command line.
+    kwargs = settings.model_override_load_kwargs(after, is_gguf = True)
+    for field, value in TUNING_PAYLOAD.items():
+        assert kwargs[field] == value
+
+
+def test_a_client_that_does_know_them_still_clears_by_omission(override_store):
+    # The other side of the trade. Preserving on every omission would be simpler and
+    # wrong: the panel clears one of these by sending nothing for it, so a blanket
+    # carry-over would swap a mixed-version window for a field no one can ever unset.
+    _put(MODEL, **PRE_TUNING_PAYLOAD, **TUNING_PAYLOAD, mirrors_server_tuning = True)
+    assert settings.get_model_override(MODEL)["load_mode"] == TUNING_PAYLOAD["load_mode"]
+
+    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_server_tuning = True)
+    after = settings.get_model_override(MODEL)
+    for field in SERVER_TUNING_FIELDS:
+        assert field not in after, f"{field} survived an explicit clear"
+
+
+def test_the_preservation_flag_is_not_itself_a_saved_field(override_store):
+    # It is a write mode, like fill_absent_fields. Both are bools, so exclude_none does
+    # not drop them, and either one left in saved_fields would make every payload look
+    # non-empty and break the legacy "no fields means remove".
+    _put(MODEL, **PRE_TUNING_PAYLOAD, **TUNING_PAYLOAD, mirrors_server_tuning = True)
+    assert settings.get_model_override(MODEL)
+
+    _put(MODEL, mirrors_server_tuning = True)
+    assert settings.get_model_override(MODEL) == {}
 
 
 def test_a_fill_pass_adds_the_tuning_group_without_disturbing_the_row(override_store):

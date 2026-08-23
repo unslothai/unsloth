@@ -517,6 +517,13 @@ async function sendModelOverride(
     body: JSON.stringify({
       // biome-ignore lint/style/useNamingConvention: API schema
       model_id: modelOverrideKey(modelId, ggufVariant),
+      // This build mirrors the llama-server tuning group, so an omission here is the
+      // user clearing it rather than a client that predates the fields. Without this
+      // the backend preserves the stored values, which is what stops a cached older
+      // bundle from deleting settings it never knew to send. An older backend ignores
+      // the key.
+      // biome-ignore lint/style/useNamingConvention: API schema
+      mirrors_server_tuning: true,
       // Only sent when set, so an older backend is not handed an unknown key every save.
       ...(options?.fillAbsentFields
         ? // biome-ignore lint/style/useNamingConvention: API schema
