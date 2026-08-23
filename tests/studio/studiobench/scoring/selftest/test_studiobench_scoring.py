@@ -538,6 +538,104 @@ def test_bootstrap_ci_brackets_the_geometric_mean():
 
 
 # ---------------------------------------------------------------------------------------
+# A CI that contains 1.0 is not a result: the pairs have to agree on the sign
+# ---------------------------------------------------------------------------------------
+#
+# The noise floor is a fact about the HARNESS -- whether a difference of this size is resolvable
+# here at all -- and it was the only gate a direction had to pass. Repetitions that disagree
+# produce a geometric mean well clear of the floor anyway: 0.7, 0.7, 1.2, 1.2 averages to 0.917
+# with a CI of 0.700-1.200, and the table said "improved" over it, in the one column anybody
+# quotes. The CI was computed, printed, and never consulted.
+
+
+def _split_pairs(metric: str, ratios: list[float]) -> list[Pair]:
+    """One metric, one ratio per rung, so the pairs can be made to disagree on the sign."""
+    out = []
+    for index, ratio in enumerate(ratios):
+        base = 100.0 + index
+        out.append(
+            Pair(
+                rung_tokens = 1_000 * (index + 1),
+                metric_key = metric,
+                base = Measure.read(base, "ms"),
+                treatment = Measure.read(base * ratio, "ms"),
+            )
+        )
+    return out
+
+
+def test_a_ci_that_spans_no_effect_is_not_an_improvement():
+    result = compare(
+        "treatment",
+        _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2]),
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+    )
+    metric = result.metrics[0]
+    assert metric.beyond_noise is True  # 8.3% clear of a 5% floor
+    assert metric.ci_low <= 1.0 <= metric.ci_high
+    assert metric.ci_spans_no_effect is True
+    assert metric.verdict == "inconclusive"
+    # The headline has no interval of its own, so it is the line most likely to be quoted.
+    assert result.verdict == "INCONCLUSIVE"
+    assert result.regressions == []
+
+
+def test_a_ci_that_spans_no_effect_does_not_clear_a_regression():
+    """An unresolved regression is still a regression: the fail-safe direction is FAIL.
+
+    The mirror of the case above must NOT be symmetric. Refusing to claim a win costs a
+    contributor a headline; refusing to raise a fail lets the regression ship. So the metric is
+    labelled unresolved and still counted.
+    """
+    result = compare(
+        "treatment",
+        _split_pairs("keystroke_p95_ms", [1.4, 1.4, 0.9, 0.9]),
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+    )
+    metric = result.metrics[0]
+    assert metric.ci_spans_no_effect is True
+    assert metric.verdict == "regressed (unresolved)"
+    assert result.verdict == "FAIL"
+    assert any("unresolved" in r for r in result.regressions)
+
+
+def test_agreeing_pairs_still_carry_their_direction():
+    """The gate must not swallow a real effect: four ratios that agree keep their verdict."""
+    result = compare(
+        "treatment",
+        _split_pairs("keystroke_p95_ms", [0.70, 0.72, 0.68, 0.74]),
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+    )
+    metric = result.metrics[0]
+    assert metric.ci_spans_no_effect is False
+    assert metric.verdict == "improved"
+    assert result.verdict == "IMPROVED"
+
+
+def test_the_table_does_not_print_a_direction_it_could_not_resolve():
+    from studiobench.report.render import render_ab_table
+
+    result = compare(
+        "treatment",
+        _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2]),
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+    )
+    text = render_ab_table(result)
+    assert "VERDICT: INCONCLUSIVE" in text
+    assert "improved" not in text
+    assert "no direction is claimed" in text
+    assert "contains it" in text  # the interval straddles 1.0, as opposed to being absent
+
+
+# ---------------------------------------------------------------------------------------
 # A measured zero is a reading: sub-floor arms bound the ratio rather than voiding the pair
 # ---------------------------------------------------------------------------------------
 #
@@ -691,3 +789,140 @@ def test_a_null_control_of_only_bounded_ratios_falls_back_to_the_declared_defaul
 
     assert "declared default" in source
     assert "under an instrument floor" in source
+
+
+def test_an_unresolved_metric_does_not_lend_its_magnitude_to_the_headline():
+    """A metric that cannot resolve its own sign must not supply the number that gets quoted.
+
+    The headline is a weighted geometric mean of point estimates with no interval of its own, so
+    an inconclusive metric that happened to move a long way used to dominate it. keystroke_p95_ms
+    at 0.2, 0.2, 1.5, 1.5 (geomean 0.548, CI 0.200-1.500) beside a resolved menu_open_ms of 0.900
+    produced a headline of 0.631 and the word IMPROVED: a quoted 36.9% win almost entirely made
+    of data the same table labels inconclusive.
+    """
+
+    pairs = _split_pairs("keystroke_p95_ms", [0.2, 0.2, 1.5, 1.5])
+    pairs += _split_pairs("menu_open_ms", [0.9, 0.9, 0.9, 0.9])
+    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct = 5.0)
+
+    by_key = {m.metric_key: m for m in result.metrics}
+    assert by_key["keystroke_p95_ms"].verdict == "inconclusive"
+    assert by_key["menu_open_ms"].verdict == "improved"
+    # Only the resolved metric survives into the headline, so the quoted size is the real one.
+    assert result.headline_ratio == pytest.approx(0.9, abs = 1e-9)
+    assert result.verdict == "IMPROVED"
+
+
+def test_a_run_whose_every_moving_metric_is_unresolved_is_inconclusive_not_no_reading():
+    """Dropping unresolved metrics from the headline must not turn "says nothing" into "no data".
+
+    NO READING means there was nothing to read. This run measured fine and simply failed to
+    resolve a direction, which is a different answer and the one the operator has to act on.
+    """
+
+    pairs = _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2])
+    pairs += _split_pairs("menu_open_ms", [0.6, 0.6, 1.3, 1.3])
+    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct = 5.0)
+
+    assert all(m.ci_spans_no_effect for m in result.metrics)
+    assert result.headline_ratio is None
+    assert result.verdict == "INCONCLUSIVE"
+
+
+def test_an_unresolved_mover_beside_a_flat_metric_is_not_no_difference():
+    """ "No difference" asserts the change did nothing, which is stronger than this data supports.
+
+    Dropping an unresolved mover from the headline can leave only flat metrics behind, putting the
+    aggregate back inside the noise floor. Reading that as NO DIFFERENCE would convert a refusal
+    to answer into a positive finding of no effect, when one metric did move and simply could not
+    resolve its own sign.
+    """
+
+    pairs = _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2])
+    pairs += _split_pairs("menu_open_ms", [1.0, 1.0, 1.0, 1.0])
+    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct = 5.0)
+
+    by_key = {m.metric_key: m for m in result.metrics}
+    assert by_key["keystroke_p95_ms"].unresolved is True
+    assert by_key["menu_open_ms"].verdict == "within noise"
+    assert result.headline_ratio == pytest.approx(1.0, abs = 1e-9)
+    assert result.verdict == "INCONCLUSIVE"
+
+
+def test_an_unresolved_metric_never_clears_a_resolved_regression():
+    """A fail is never cleared by the exclusion: regressions are collected independently."""
+
+    pairs = _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2])
+    pairs += _split_pairs("menu_open_ms", [1.3, 1.3, 1.3, 1.3])
+    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct = 5.0)
+
+    assert result.regressions
+    assert result.verdict == "FAIL"
+
+
+def test_a_metric_with_no_ci_at_all_does_not_claim_a_direction():
+    """An interval that does not exist cannot clear 1.0, so it must not read as permission.
+
+    `bootstrap_geomean_ci` returns (None, None) below three usable pairs, which a short ladder or
+    a partially measured metric reaches easily. The rule added here claims a direction only when
+    the CI clears no effect, and testing "does the interval contain 1.0" fails open when there is
+    no interval: two pairs at 0.5 printed a 50% win with nothing behind it.
+    """
+
+    result = compare(
+        "treatment",
+        _split_pairs("keystroke_p95_ms", [0.5, 0.5]),
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+    )
+    metric = result.metrics[0]
+    assert metric.n_pairs == 2
+    assert (metric.ci_low, metric.ci_high) == (None, None)
+    assert metric.beyond_noise is True
+    assert metric.ci_spans_no_effect is False  # nothing to span
+    assert metric.unresolved is True
+    assert metric.verdict == "inconclusive"
+    assert result.headline_ratio is None
+    assert result.verdict == "INCONCLUSIVE"
+
+
+def test_a_regression_with_no_ci_is_still_a_regression_and_still_in_the_headline():
+    """The refusal is one-sided: a missing interval withholds a win, never a loss.
+
+    Withholding an unresolved win costs a headline; withholding an unresolved loss ships the
+    regression. So the worse side keeps its plain "regressed" label, its FAIL, and its place in
+    the aggregate, where it can only pull the number toward worse.
+    """
+
+    result = compare(
+        "treatment",
+        _split_pairs("keystroke_p95_ms", [1.5, 1.5]),
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+    )
+    metric = result.metrics[0]
+    assert (metric.ci_low, metric.ci_high) == (None, None)
+    assert metric.verdict == "regressed"
+    assert metric.withheld is False
+    assert result.headline_ratio == pytest.approx(1.5, abs = 1e-9)
+    assert result.regressions
+    assert result.verdict == "FAIL"
+
+
+def test_three_pairs_still_resolve_a_direction():
+    """The control: the threshold is three, so three agreeing pairs still read as a win."""
+
+    result = compare(
+        "treatment",
+        _split_pairs("keystroke_p95_ms", [0.5, 0.5, 0.5]),
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+    )
+    metric = result.metrics[0]
+    assert metric.ci_low is not None
+    assert metric.unresolved is False
+    assert metric.verdict == "improved"
+    assert result.verdict == "IMPROVED"

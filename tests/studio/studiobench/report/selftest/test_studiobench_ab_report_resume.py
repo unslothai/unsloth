@@ -71,7 +71,10 @@ def test_a_fully_resumed_ab_keeps_the_table_the_measured_run_wrote(tmp_path):
 
     _render_ab(paths, SIDES, MEASURED, "c0ffee")
     measured = (paths.out / "ab.md").read_text(encoding = "utf-8")
-    assert "IMPROVED" in measured
+    # A real reading, as opposed to an empty table. The fixture is one pair, so the verdict is
+    # INCONCLUSIVE rather than a direction; what matters here is that something was measured.
+    assert "NO READING" not in measured
+    assert "keystroke_p95_ms" in measured
 
     # The resumed run: same output directory, new session id, not one cell of its own.
     _render_ab(paths, SIDES, RESUMED, "c0ffee")
@@ -87,7 +90,8 @@ def test_a_run_that_measured_still_rewrites_the_table(tmp_path):
     _render_ab(paths, SIDES, MEASURED, "c0ffee")
     text = (paths.out / "ab.md").read_text(encoding = "utf-8")
     assert "stale table" not in text
-    assert "IMPROVED" in text
+    assert "NO READING" not in text
+    assert "keystroke_p95_ms" in text
 
 
 def test_a_first_run_with_no_readings_still_gets_a_table(tmp_path):
