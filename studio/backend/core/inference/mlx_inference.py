@@ -1857,7 +1857,9 @@ class MLXInferenceBackend:
         from core.inference.mlx_speculative import (
             mlx_auto_draft_block_size,
             mlx_speculative_load_resolution,
+            mlx_speculative_reason_is_unproven,
             mlx_speculative_request_identity,
+            resolve_mlx_speculative_request,
         )
 
         # Recording what was asked rather than what Off implies keeps an earlier drafter
@@ -1975,6 +1977,21 @@ class MLXInferenceBackend:
             self._tokenizer = tokenizer
             self._processor = None
             self._is_vlm = False
+
+        # Auto was pinned against a cache that did not hold this target yet, so a comparison
+        # needing the target's own files could not be made. The load above supplied them, so it
+        # is asked once more here -- before the record below reports what Auto settled on, and
+        # before the drafter is chosen from it.
+        if requested_speculative_mode == "auto" and mlx_speculative_reason_is_unproven(
+            resolution.reason
+        ):
+            resolution = resolve_mlx_speculative_request(
+                model_name,
+                "auto",
+                mlx_draft_model,
+                is_vision = is_vision,
+                is_lora = is_lora,
+            )
 
         _audio_type = _classify_mlx_audio_type(
             model,

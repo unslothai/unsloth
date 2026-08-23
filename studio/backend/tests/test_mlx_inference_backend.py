@@ -5496,6 +5496,53 @@ def test_only_a_comparison_the_download_can_settle_survives_the_load_refusal(rea
     assert mlx_speculative_refusal("auto", resolution) is None
 
 
+@pytest.mark.parametrize(
+    "pinned_reason, re_resolved",
+    [
+        ("tokenizer_contract_unavailable", True),
+        ("insufficient_unified_memory", False),
+        (None, False),
+    ],
+)
+def test_auto_is_asked_again_when_its_answer_needed_the_target_that_just_loaded(
+    monkeypatch, pinned_reason, re_resolved
+):
+    """Auto is pinned against a cache that does not hold a first-time target, so a comparison
+    needing that target's files cannot be made and Auto settles on no drafter. The load supplies
+    them, so that one answer is asked again; any other reason is Auto's decision and stands."""
+    _install_fake_mlx(monkeypatch)
+    _install_fake_fast_mlx(monkeypatch, [])
+    from types import SimpleNamespace
+
+    from core.inference import mlx_speculative as spec
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    monkeypatch.setattr(
+        spec,
+        "mlx_speculative_load_resolution",
+        lambda *_a, **_k: spec.MlxSpeculativeResolution("off", None, pinned_reason),
+    )
+    monkeypatch.setattr(
+        spec,
+        "resolve_mlx_speculative_request",
+        lambda *_a, **_k: spec.MlxSpeculativeResolution("mtp", "org/A"),
+    )
+    loaded = []
+    backend = MLXInferenceBackend()
+    monkeypatch.setattr(
+        backend,
+        "_load_speculative_drafter",
+        lambda method, draft, *_a, **_k: loaded.append((method, draft)),
+    )
+    config = SimpleNamespace(identifier = "fake/vlm", is_vision = True, is_lora = False)
+
+    assert backend.load_model(config, mlx_speculative_mode = "auto") is True
+    assert loaded == ([("mtp", "org/A")] if re_resolved else [])
+    assert backend.models["fake/vlm"]["mlx_speculative_pinned_mode"] == (
+        "mtp" if re_resolved else "off"
+    )
+
+
 def _drafter_snapshot(tmp_path, name, config):
     snapshot = tmp_path / name / "snapshots" / "abc"
     snapshot.mkdir(parents = True)
