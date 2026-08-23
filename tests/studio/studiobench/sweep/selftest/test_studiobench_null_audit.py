@@ -25,6 +25,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
+from tests.studio.studiobench.analysis import parity as P  # noqa: E402
 from tests.studio.studiobench.sweep import ui_parity as U  # noqa: E402
 
 # parents[4] is `tests/`, which is what the sibling selftests put on sys.path; the repo root is
@@ -954,3 +955,93 @@ def test_the_verdict_confines_the_imported_set_when_driven_through_main(tmp_path
     assert "imported exemption(s) DROPPED" in out, out
     assert "reasoning_toggle" in out
     assert rc == 1, "the regression the other runner's race was excusing must red the job"
+
+
+# ── an action that ran and failed its own assertion ──────────────────
+
+
+def _expect_payload(
+    tmp_path: Path,
+    name: str,
+    action: str,
+    failed_on: str | None,
+    reps: tuple[str, ...] = ("rep0", "rep1"),
+    both: bool = False,
+    expect_ok_value: object = True,
+) -> Path:
+    """`action` runs on BOTH arms with the SAME digest; its assertion fails on `failed_on`."""
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            cid = f"r100K.{arm}.{rep}"
+            for i in range(16):
+                r = action_row(cid, f"filler{i}", "SAME")
+                r["expect_ok"] = True
+                rows.append(r)
+            r = action_row(cid, action, "SAME")
+            r["expect_ok"] = expect_ok_value
+            if rep in reps and (both or arm == failed_on):
+                r["expect_ok"] = False
+                r["reason"] = "clicking Stop did not end the stream"
+            rows.append(r)
+            rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+    out = tmp_path / name
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    return path
+
+
+def test_a_control_that_stopped_working_is_not_excused_by_its_digest_exemption(tmp_path, capsys):
+    """The double exemption, and it is the one the declared list makes worst.
+
+    `stop_generation` returns `ran = True, expect_ok = stopped_ms is not None`, so a head on which
+    Stop no longer ends the stream records a row whose `ran` is true and whose digest then differs
+    for the ordinary reason. It is also ON the declared unstable list, so that difference is
+    excused. `compare_rows` read only `ran`, and the result was a user-visible regression --
+    generation cannot be stopped -- passing the gate in both repetitions.
+
+    The assertion is not a digest, so the digest exemption does not reach it.
+    """
+    path = _expect_payload(tmp_path, "regressed", "stop_generation", failed_on = "treatment")
+    # Scored with stop_generation declared unstable, exactly as the gate scores it.
+    assert "stop_generation" in U.UNSTABLE_ACTIONS
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 1
+    printed = capsys.readouterr().out
+    assert "ASSERTION FAILED ON ONE ARM" in printed.upper()
+    assert "stop_generation" in printed
+
+
+def test_both_arms_failing_the_assertion_is_lost_coverage_not_a_difference(tmp_path):
+    # The fixture cannot reach the state on either build. That is worth knowing and it is not a
+    # statement about the change under review, so it must not red the job.
+    path = _expect_payload(tmp_path, "both", "stop_generation", failed_on = None, both = True)
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 0
+
+
+def test_an_action_that_asserts_nothing_is_not_an_assertion_failure(tmp_path):
+    # `expect_ok is None` is "this action makes no claim", which every payload recorded before the
+    # field existed also carries. Reading None as False would red every one of them.
+    path = _expect_payload(
+        tmp_path, "none", "stop_generation", failed_on = None, expect_ok_value = None
+    )
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 0
+    # Asserted on the signal as well as the exit code: read through the exit code alone this case
+    # is indistinguishable from the both-arms one, so a mutation that turns None into a failure
+    # would still pass here. `expect_regressed` is where the distinction actually lives.
+    row = {"ran": True, "expect_ok": None, "parity": {"parity_attempted": True, "digest": "A",
+           "root_kind": "thread", "chars": 1, "messages": [], "overlays": [],
+           "style": {"style_attempted": True, "capped": False, "nodes": []}}}
+    other = dict(row, expect_ok = True)
+    assert P.compare_rows(row, other)["expect_regressed"] == ""
+    assert P.compare_rows(other, row)["expect_regressed"] == ""
+
+
+def test_an_assertion_that_failed_in_one_repetition_of_two_is_not_counted(tmp_path, capsys):
+    # Held to the same corroboration bar as everything else: a build that cannot stop generation
+    # cannot stop it on either pass.
+    path = _expect_payload(
+        tmp_path, "flake", "stop_generation", failed_on = "treatment", reps = ("rep0",)
+    )
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 0
+    assert "UNCORROBORATED assertion failure" in capsys.readouterr().out

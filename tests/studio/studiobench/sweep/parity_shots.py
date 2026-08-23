@@ -149,9 +149,18 @@ def differing_actions(
         and r.get("one_sided")
         and not is_unstable(unstable, action, cell)
     ]
+    # The third way `report` returns 1: the action ran on both arms and its own assertion failed
+    # on one. Not filtered by the unstable set, for the same reason the verdict does not filter
+    # it -- that set measures digest stability, and this is not a digest.
+    expect_bad = [
+        (action, shard, cell, [r.get("expect_reason", "")])
+        for action, shard, cell, r in results
+        if r.get("expect_regressed")
+    ]
     firm, _weak = corroborated(stable, min_reps)
     firm_one_sided, _weak_one_sided = corroborated(one_sided, min_reps)
-    for action, shard, cell, moved in firm + firm_one_sided:
+    firm_expect, _weak_expect = corroborated(expect_bad, min_reps)
+    for action, shard, cell, moved in firm + firm_one_sided + firm_expect:
         out.append({"action": action, "shard": shard, "cell": cell, "moved": moved})
     return out
 

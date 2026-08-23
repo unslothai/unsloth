@@ -295,7 +295,46 @@ def compare_rows(base_row: Optional[dict], treat_row: Optional[dict]) -> dict:
             "style_reason": "",
         }
     assert base_row is not None and treat_row is not None
-    return compare(base_row.get("parity"), treat_row.get("parity"))
+    out = compare(base_row.get("parity"), treat_row.get("parity"))
+    # AN ACTION THAT RAN AND FAILED ITS OWN ASSERTION IS NOT A COMPARISON OF WHAT IT NAMES, and
+    # `ran` alone cannot see it. `stop_generation` returns `ran = True, expect_ok = stopped_ms is
+    # not None`, so a head on which Stop no longer ends the stream records a row this layer reads
+    # as a perfectly good observation. Every other reader already knows better --
+    # `scoring.from_payload` drops such a row's timing and `report.payload` and `--assert-
+    # liveness` both single it out -- and the parity layer was the one left reading only `ran`.
+    #
+    # CARRIED SEPARATELY FROM THE DIGEST, not folded into the verdict, and that is the whole point
+    # of it. `stop_generation` is on the declared unstable list, so its DOM difference is excused;
+    # applying that exemption to the assertion as well is applying a measurement of one quantity
+    # (does this digest race) to a different one (did the button do its job). The two happen to
+    # share an action name and nothing else. So the caller gets its own signal and decides.
+    #
+    # ONLY AN ASYMMETRY. `expect_ok is None` means the action asserts nothing, and both arms
+    # failing means the fixture cannot reach the state on either build -- coverage lost, not a
+    # difference between the builds. One arm asserting successfully while the other does not is
+    # the two builds behaving differently, which is the question this instrument asks.
+    failed = [
+        label
+        for label, row in (("base", base_row), ("treatment", treat_row))
+        if row.get("expect_ok") is False
+    ]
+    passed = [
+        label
+        for label, row in (("base", base_row), ("treatment", treat_row))
+        if row.get("expect_ok") is True
+    ]
+    out["expect_regressed"] = failed[0] if len(failed) == 1 and passed else ""
+    if out["expect_regressed"]:
+        _who = out["expect_regressed"]
+        _row = base_row if _who == "base" else treat_row
+        out["expect_reason"] = (
+            f"the action ran on both arms and its own assertion failed on the {_who} arm "
+            f"({_row.get('reason') or 'no reason recorded'}), so the two builds did not behave "
+            "the same way"
+        )
+    else:
+        out["expect_reason"] = ""
+    return out
 
 
 def derive_unstable(

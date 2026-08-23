@@ -601,6 +601,13 @@ def corroborated(entries: list[tuple], min_reps: int) -> tuple[list[tuple], list
     firm, weak = [], []
     for group in by_action.values():
         # DISTINCT repetitions, not rows: one repetition seen twice is one observation.
+        # DELIBERATELY NOT KEYED ON THE SHARD, and the shard is available in `e[1]`. Two shards
+        # carrying the same (rung, rep) cannot be told apart from ONE film recorded twice -- the
+        # duplicate-session case, where both copies are the same observation and counting them as
+        # two lets a single flake corroborate itself. Keying on the cell alone can only
+        # under-count, which costs a finding; keying on the shard can manufacture corroboration
+        # out of duplicated provenance, which is the failure this whole instrument is about.
+        # `test_one_repetition_seen_twice_is_not_two_observations` holds this direction.
         reps = {e[2] for e in group}
         (firm if len(reps) >= min_reps else weak).extend(group)
     return firm, weak
@@ -626,8 +633,19 @@ def report(
 
     stable_bad, unstable_bad, blind, style_bad, idle = [], [], [], [], []
     one_sided, one_sided_unstable = [], []
+    expect_bad = []
     matched = 0
     for action, shard, cell, r in results:
+        # COLLECTED BEFORE THE VERDICT BRANCHES AND OUTSIDE THE EXEMPTION, because it is not a
+        # digest. An action can run on both arms, produce two digests the instability exemption
+        # then excuses, and still have failed its own assertion on one arm only -- which is the
+        # two builds behaving differently and the one shape `ran` cannot see. `stop_generation`
+        # is the live example: `ran = True, expect_ok = stopped_ms is not None`, and it is on the
+        # declared unstable list, so a head that no longer stops generation was excused twice
+        # over. The exemption was measured for digest stability; applying it here would be
+        # applying it to a different quantity that happens to share an action name.
+        if r.get("expect_regressed"):
+            expect_bad.append((action, shard, cell, [r.get("expect_reason", "")]))
         if r["verdict"] == P.NOT_EXERCISED:
             entry = (action, shard, cell, [r.get("reason", "")])
             if r.get("one_sided"):
@@ -661,6 +679,7 @@ def report(
     # one the exit code is taken from.
     stable_bad, uncorroborated = corroborated(stable_bad, min_reps)
     one_sided, one_sided_weak = corroborated(one_sided, min_reps)
+    expect_bad, expect_weak = corroborated(expect_bad, min_reps)
 
     print(f"\n{label}")
     print(f"  {len(results)} action pairs across {len(paths)} shard(s)")
@@ -688,6 +707,10 @@ def report(
         f"  ran on ONE arm only:        {len(one_sided)}"
         + (f"  (in >= {min_reps} repetitions)" if min_reps > 1 else "")
     )
+    print(
+        f"  ASSERTION failed on one arm:  {len(expect_bad)}"
+        + (f"  (in >= {min_reps} repetitions)" if min_reps > 1 else "")
+    )
     print(f"  unstable actions differing: {len(unstable_bad)}  (expected to vary; not a verdict)")
     print(f"  NOT COMPARABLE:             {len(blind)}  (never measured; not a pass)")
     print(f"  NOT EXERCISED:              {len(idle)}  (the action did not run; not coverage)")
@@ -710,6 +733,23 @@ def report(
             f"\n  trivially, and this is that run. Nothing below is a pass."
         )
         return 3
+
+    if expect_bad:
+        print(
+            "\n  THE ACTION'S OWN ASSERTION FAILED ON ONE ARM -- it ran on both and did its job"
+            "\n  on only one, in every repetition. Not excused by the unstable set: that set is a"
+            "\n  measurement of whether a DIGEST races, and this is not a digest:"
+        )
+        for action, shard, cell, why in expect_bad:
+            print(f"    {action:<26} {shard} {cell}: {why[0]}")
+
+    if expect_weak:
+        print(
+            f"\n  UNCORROBORATED assertion failure -- on one arm in fewer than {min_reps} "
+            f"repetitions; reported, not counted:"
+        )
+        for action, shard, cell, why in expect_weak[:8]:
+            print(f"    {action:<26} {shard} {cell}: {why[0]}")
 
     if one_sided:
         print(
@@ -779,7 +819,7 @@ def report(
         print("\n  (reported, not counted) actions that vary between runs of any build:")
         for action, shard, cell, moved in unstable_bad[:8]:
             print(f"    {action:<26} {shard} {cell}: {', '.join(moved[:3])}")
-    return 1 if (stable_bad or one_sided) else 0
+    return 1 if (stable_bad or one_sided or expect_bad) else 0
 
 
 def tier_of(paths: list[Path]) -> set[str]:
