@@ -134,6 +134,16 @@ on:
       # fallback: seeder.py counts through /api/inference/chat/count_tokens when
       # tiktoken is unavailable, and that ratio decides how much text a rung gets.
       - 'studio/backend/routes/inference.py'
+      # And the arm of that route studiobench actually takes. `ProviderSeed`
+      # registers provider_type "custom" rather than "openai" on purpose, and
+      # its own docstring says why: custom is relayed to
+      # {base_url}/chat/completions with the SSE lines forwarded verbatim, which
+      # is the only path that puts our own event stream in front of the app's
+      # parser. inference.py delegates it to ExternalProviderClient, which
+      # sanitises every line through sse_control_frames. Either file can alter,
+      # truncate or reject the stream that BECOMES the rendered transcript.
+      - 'studio/backend/core/inference/external_provider.py'
+      - 'studio/backend/core/inference/sse_control_frames.py'
       # The precondition for reaching any of the above. runtime/lifecycle.py logs
       # each side in over POST /api/auth/login and clears must_change_password
       # over POST /api/auth/change-password before the browser starts, so a change

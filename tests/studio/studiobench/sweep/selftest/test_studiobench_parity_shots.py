@@ -425,6 +425,8 @@ def test_the_workflow_runs_the_gate_on_the_routes_the_measurement_depends_on():
         "studio/backend/models/providers.py",
         "studio/backend/core/inference/providers.py",
         "studio/backend/storage/providers_db.py",
+        "studio/backend/core/inference/external_provider.py",
+        "studio/backend/core/inference/sse_control_frames.py",
     ):
         assert dep in text, dep
 
