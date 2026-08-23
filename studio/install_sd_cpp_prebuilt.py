@@ -578,17 +578,17 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     reserved = {base / INSTALL_RECORD, base / OWNERSHIP_MARKER}
     links: list[tuple[Path, str, zipfile.ZipInfo]] = []
     plain: list[zipfile.ZipInfo] = []
-    written: list[Path] = []
+    written: list[tuple[Path, str]] = []
     for member in zf.infolist():
         # Lexical, never resolve()d. Extraction MERGES, so resolving would follow the link the
         # PREVIOUS install wrote and end with the real library replaced by a link to itself.
-        dest = base / member.filename
+        dest = Path(os.path.normpath(base / member.filename))
         checked = dest.resolve()
         if checked != base and base not in checked.parents:
             raise RuntimeError(f"unsafe path in archive: {member.filename!r}")
-        written.append((Path(os.path.normpath(dest)), member.filename))
+        written.append((dest, member.filename))
         if _is_symlink_member(member):
-            if written[-1][0] in reserved:
+            if dest in reserved:
                 raise RuntimeError(f"symlink at a reserved installer path: {member.filename!r}")
             links.append((dest, _checked_link_target(zf, member, dest, base), member))
         else:
@@ -596,20 +596,20 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     # No member may sit under a directory this same archive turns into a link: extraction would
     # write through the link, and the creation-time check below would only catch it once part of
     # the tree had already been replaced. Refused here, before the first write.
-    link_dests = {os.path.normpath(d) for d, _, _ in links}
+    link_dests = {d for d, _, _ in links}
     for dest, filename in written:
-        parent = os.path.dirname(str(dest))
-        while parent != str(base) and parent.startswith(str(base)):
+        for parent in dest.parents:
+            if parent == base:
+                break
             if parent in link_dests:
                 raise RuntimeError(
                     f"unsafe path in archive: {filename!r} is under a symlink member"
                 )
-            parent = os.path.dirname(parent)
     # Chains are normal (libwebp.so -> libwebp.so.7 -> libwebp.so.7.2.0) but must terminate:
     # a cycle installs a library nothing can read, so every load would reinstall it again.
-    by_dest = {os.path.normpath(d): t for d, t, _ in links}
+    by_dest = {str(d): t for d, t, _ in links}
     for dest, _, member in links:
-        seen, cur = set(), os.path.normpath(dest)
+        seen, cur = set(), str(dest)
         while cur in by_dest:
             if cur in seen:
                 raise RuntimeError(f"symlink cycle in archive: {member.filename!r}")
@@ -626,7 +626,6 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
             dest.unlink()
     zf.extractall(target, members = plain)
     for dest, link_target, member in links:
-        dest = Path(os.path.normpath(dest))
         # Re-resolved HERE, never reused from the pass above: that pass ran before a single
         # link existed, so an earlier member (a -> .) can turn a later member's parent into a
         # link (a/out -> ../outside) and send this unlink/symlink_to outside base. Both ends
