@@ -4087,7 +4087,6 @@ def _checkpoint_needs_search() -> bool:
 def _checkpoint_recall_may_enable_tools(payload) -> bool:
     """Whether checkpoint recovery can force the internal recall tool loop."""
     from state.tool_policy import get_tool_policy
-
     return bool(
         get_tool_policy() is not False
         and _rolling_context_policy(payload) is not None

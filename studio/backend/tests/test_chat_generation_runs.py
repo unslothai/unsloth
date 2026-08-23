@@ -448,8 +448,9 @@ def test_request_sanitization_rejects_cli_tools_override_even_when_request_disab
 
 def test_request_sanitization_rejects_checkpoint_recall_tool_loop(monkeypatch):
     import routes.inference as inference_routes
-
-    monkeypatch.setattr(inference_routes, "_checkpoint_recall_may_enable_tools", lambda request: True, raising = False)
+    monkeypatch.setattr(
+        inference_routes, "_checkpoint_recall_may_enable_tools", lambda request: True, raising = False
+    )
     with pytest.raises(Exception, match = "legacy streaming path"):
         _sanitize_request(_model(enable_tools = False))
 
