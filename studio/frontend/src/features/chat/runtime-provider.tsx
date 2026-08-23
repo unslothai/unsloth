@@ -1671,12 +1671,16 @@ type NewThreadSwitchState = {
   // had its chance to be corrected and must be retired, or opening that thread legitimately
   // later would spend the stale entry and leave the fresh one to be misread as an arrival.
   pendingSavedThreadIds: PendingSavedThreadSwitch[];
-  // The thread the ACTIVE nonce view is on, so a stale arrival can be undone by going
-  // back to it. switchToNewThread() cannot stand in for this: once the user has sent a
-  // message the nonce's thread is materialized and assistant-ui's newThreadId has been
-  // cleared, so asking for "a new thread" mints a second blank one and walks the composer
-  // off the conversation they just started.
-  nonceThreadId: string | null;
+  // The thread a nonce view is on, WITH the nonce it belongs to, so it can be reopened
+  // both after a stale arrival and after a saved-chat detour. switchToNewThread() cannot
+  // stand in for either: once the user has sent a message the thread is materialized and
+  // assistant-ui's newThreadId has been cleared, so asking for "a new thread" mints a
+  // second blank one and walks the composer off the conversation they started.
+  //
+  // A ?new= URL does not change when its chat materializes, so Back from a saved chat
+  // returns to the same nonce -- and the detour released it, so the switch effect runs
+  // again. That is a RETURNING nonce, not a new one, and the pair is what tells them apart.
+  nonceThread: { nonce: string; threadId: string } | null;
 };
 
 function ThreadAutoSwitch({
@@ -1831,8 +1835,22 @@ function ThreadNewChatSwitch({
     if (switchState.activeNonce === nonce) {
       return;
     }
-    // A new nonce owns nothing yet; the old record must not survive into it.
-    switchState.nonceThreadId = null;
+    // Only a thread this very nonce owns, and only once it has been sent to: a blank
+    // placeholder is still replaced, which is what a genuinely new nonce wants and what a
+    // detour away from an untouched landing has always done.
+    const recorded =
+      switchState.nonceThread?.nonce === nonce
+        ? switchState.nonceThread.threadId
+        : null;
+    const runtimeThreads = aui.threads().__internal_getAssistantRuntime?.();
+    const recordedRemoteId = recorded
+      ? runtimeThreads?.threads.getItemById(recorded).getState()?.remoteId
+      : undefined;
+    const returningToOwnChat = Boolean(recorded && recordedRemoteId);
+    if (!returningToOwnChat) {
+      // A new nonce owns nothing yet; the old record must not survive into it.
+      switchState.nonceThread = null;
+    }
     const shouldClearAttachments = switchState.hasSwitched;
     const clearAfterSwitch =
       shouldClearAttachments && switchState.activeNonce === null;
@@ -1860,7 +1878,11 @@ function ThreadNewChatSwitch({
     requestTemporaryPromptQueueStop();
     // Switch to a fresh local thread without persisting it yet; persistence
     // still happens on first message append.
-    void Promise.resolve(aui.threads().switchToNewThread()).then(
+    void Promise.resolve(
+      returningToOwnChat && recorded
+        ? aui.threads().switchToThread(recorded)
+        : aui.threads().switchToNewThread(),
+    ).then(
       () => {
         if (!clearAfterSwitch) return;
         const switchStateNow = newThreadSwitchStateRef.current;
@@ -1920,12 +1942,15 @@ function ThreadNewChatSwitch({
       // than at the switch, because the id changes underneath us: a fresh local thread
       // materializes on first message and the persisted id is what a reattach must use.
       if (mainThreadId) {
-        switchState.nonceThreadId = mainThreadId;
+        switchState.nonceThread = { nonce, threadId: mainThreadId };
       }
       return;
     }
     switchState.pendingSavedThreadIds.splice(claimed, 1);
-    const reattachTo = switchState.nonceThreadId;
+    const reattachTo =
+      switchState.nonceThread?.nonce === nonce
+        ? switchState.nonceThread.threadId
+        : null;
     void Promise.resolve(
       reattachTo && reattachTo !== mainThreadId
         ? aui.threads().switchToThread(reattachTo)
@@ -2550,7 +2575,7 @@ export function ChatRuntimeProvider({
     hasSwitched: false,
     attempt: 0,
     pendingSavedThreadIds: [],
-    nonceThreadId: null,
+    nonceThread: null,
   });
   useEffect(() => {
     if (!initialThreadId && !newThreadNonce) {

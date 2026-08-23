@@ -183,6 +183,10 @@ export const world: any = {
   // #9251's shell-release signal, counted so a superseded failure can be shown to still
   // fire it.
   switchFailedSignals: 0,
+  // Threads a row exists for. A recorded nonce thread is only worth returning to once the
+  // user has actually sent to it; a blank placeholder is not, and minting a fresh one is
+  // the older behaviour that must survive.
+  remoteIds: {} as Record<string, string>,
   // Which component's effects are replaying right now, so a module-level call can be
   // attributed to a caller. Set by the emulator, never read by the sliced source.
   component: "none",
@@ -272,6 +276,13 @@ async function refreshContextUsage(): Promise<void> {
 
 const auiFixture: any = {
   threads: () => ({
+    __internal_getAssistantRuntime: () => ({
+      threads: {
+        getItemById: (id: string) => ({
+          getState: () => ({ remoteId: world.remoteIds[id] }),
+        }),
+      },
+    }),
     // Both outcomes go through the gate, so a failure can be held open as long as a
     // success can: a rejection that lands after the user has moved on is the ordering
     // the two-arm handler has to survive, and a synchronous throw could not produce it.
@@ -362,12 +373,12 @@ const newThreadSwitchStateRef: any = { current: __REF_INITIAL_VALUE__ };
 // is whatever thread a given test happens to be on, and folding it into twenty unrelated
 // pins would add churn rather than coverage. It has its own accessor, and its own tests.
 export function switchState(): any {
-  const { nonceThreadId: _ignored, ...pinned } = newThreadSwitchStateRef.current;
+  const { nonceThread: _ignored, ...pinned } = newThreadSwitchStateRef.current;
   return pinned;
 }
 
 export function nonceThreadId(): any {
-  return newThreadSwitchStateRef.current.nonceThreadId ?? null;
+  return newThreadSwitchStateRef.current.nonceThread?.threadId ?? null;
 }
 
 const providerMemo: any[] = [];
@@ -2312,4 +2323,44 @@ def test_a_superseded_failure_still_releases_the_reload_shell():
         "a superseded failure must still release the reload shell, or a reload that races "
         "a view change hangs on the retained snapshot"
     )
+    assert out["unhandled"] == 0
+
+
+def test_returning_to_a_nonce_reopens_the_chat_started_under_it():
+    """A ?new= URL does not change when its chat materializes, so Back from a saved chat
+    lands on the same nonce -- and a saved-chat detour released it, so the switch effect
+    runs again and used to mint a fresh blank thread. The conversation the user started is
+    then hidden and their next message opens yet another chat.
+
+    Only for a nonce whose thread was actually sent to. A blank placeholder is still
+    replaced, which is the behaviour the detour test above pins.
+    """
+    out = _run(
+        "renderProvider, renderSettled, world",
+        """
+        await renderSettled({ newThreadNonce: "n1" });
+        const opened = world.mainThreadId;
+
+        // The user sends a message: the thread materializes and gets a row.
+        world.remoteIds[opened] = "remote-1";
+
+        // Off to a saved chat, which releases the nonce...
+        await renderSettled({ initialThreadId: "thread-a" });
+        // ...and Back to the very same nonce.
+        const before = world.switchedToNewThread;
+        await renderSettled({ newThreadNonce: "n1" });
+
+        console.log(JSON.stringify({
+          opened,
+          mainThreadId: world.mainThreadId,
+          mintedOnReturn: world.switchedToNewThread - before,
+          unhandled: unhandled.length,
+        }));
+        """,
+    )
+    assert out["mainThreadId"] == out["opened"], (
+        "coming back to the nonce must reopen the conversation started under it, not a "
+        "blank thread the user has to find their way out of"
+    )
+    assert out["mintedOnReturn"] == 0, "and it must not mint another thread to do it"
     assert out["unhandled"] == 0

@@ -127,9 +127,16 @@ test("a switch that never opens releases its nonce", () => {
     provider,
     "function ThreadNewChatSwitch({",
   );
+  // Either arm of the returning-nonce choice: a nonce coming back to a chat it already
+  // owns reopens that thread instead of minting, and both go through the same handled
+  // .then(ok, err) pair. What this pins is that neither is left unhandled.
   assert.match(
     switchSource,
-    /void Promise\.resolve\(aui\.threads\(\)\.switchToNewThread\(\)\)\.then\(/,
+    /void Promise\.resolve\([\s\S]*?aui\.threads\(\)\.switchToNewThread\(\),?\s*\)\.then\(/,
+  );
+  assert.match(
+    switchSource,
+    /returningToOwnChat && recorded\s*\?\s*aui\.threads\(\)\.switchToThread\(recorded\)/,
   );
   // Keyed by attempt as well as nonce: leaving for a saved chat releases the nonce, so
   // two switches for one nonce can overlap and the older must not release the newer's
@@ -187,7 +194,7 @@ test("a staged attachment does not follow the user into the next view", () => {
   );
   assert.match(
     runtimeProvider,
-    /const newThreadSwitchStateRef = useRef<NewThreadSwitchState>\(\{\s*activeNonce: null,\s*hasSwitched: false,\s*attempt: 0,\s*pendingSavedThreadIds: \[\],\s*nonceThreadId: null,\s*\}\);/,
+    /const newThreadSwitchStateRef = useRef<NewThreadSwitchState>\(\{\s*activeNonce: null,\s*hasSwitched: false,\s*attempt: 0,\s*pendingSavedThreadIds: \[\],\s*nonceThread: null,\s*\}\);/,
   );
   assert.match(
     runtimeProvider,
