@@ -61,6 +61,7 @@ import {
   pasteClipboardFiles,
   extractYoutubeVideoId,
   pasteLongTextAsFile,
+  isPlainPasteChord,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
   YoutubeTranscriptPrompt,
@@ -2336,8 +2337,23 @@ const Composer: FC<{
     });
   // A pasted YouTube link offers a transcript attachment above the composer.
   const [youtubeLink, setYoutubeLink] = useState<string | null>(null);
+  // Paste without formatting asks for the clipboard in the field, so the paste
+  // it makes stays inline however long it is. A paste event carries no
+  // modifiers, so the chord is read from the keydown before it, and every
+  // other keydown clears it.
+  const plainPasteRef = useRef(false);
+  const notePlainPasteChord = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      plainPasteRef.current = isPlainPasteChord(event);
+    },
+    [],
+  );
   const handleFilePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      // Read once and cleared here, so a paste with no chord before it, from
+      // the menu or a script, is never taken for the plain one.
+      const plainPaste = plainPasteRef.current;
+      plainPasteRef.current = false;
       const pastedText = event.clipboardData?.getData("text/plain") ?? "";
       if (extractYoutubeVideoId(pastedText)) {
         setYoutubeLink(pastedText.trim());
@@ -2359,7 +2375,11 @@ const Composer: FC<{
         if (composer.getState().text !== value) return;
         composer.setText(value.slice(0, selectionStart) + value.slice(selectionEnd));
       };
-      const attachedPastedText = !overlay && pasteGoesLast && pasteLongTextAsFile(
+      const attachedPastedText =
+        !overlay &&
+        !plainPaste &&
+        pasteGoesLast &&
+        pasteLongTextAsFile(
         event,
         async (file) => {
           await aui.composer().addAttachment(file);
@@ -4553,6 +4573,8 @@ const Composer: FC<{
               // no effect on Latin / CJK / Devanagari.
               dir="auto"
               {...inputProps}
+              // Capture, so inputProps keeps the onKeyDown it already owns.
+              onKeyDownCapture={notePlainPasteChord}
               addAttachmentOnPaste={false}
               onPaste={handleFilePaste}
             />

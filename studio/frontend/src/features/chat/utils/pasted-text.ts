@@ -40,6 +40,40 @@ type ClipboardTextPasteEvent = {
   preventDefault: () => void;
 };
 
+type PlainPasteKeyEvent = {
+  readonly code?: string;
+  readonly key?: string;
+  readonly metaKey: boolean;
+  readonly ctrlKey: boolean;
+  readonly shiftKey: boolean;
+  readonly altKey: boolean;
+};
+
+function isMacPlatform(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /mac|iphone|ipad|ipod/i.test(
+    `${navigator.platform ?? ""} ${navigator.userAgent ?? ""}`,
+  );
+}
+
+/**
+ * The paste-without-formatting chord, ⇧⌘V on macOS and Ctrl+Shift+V elsewhere.
+ * It asks for the clipboard in the field, so a paste made with it stays inline
+ * however long it is. `code` before `key`, since Shift can rewrite `key`.
+ */
+export function isPlainPasteChord(
+  event: PlainPasteKeyEvent,
+  mac: boolean = isMacPlatform(),
+): boolean {
+  if (!event.shiftKey || event.altKey) return false;
+  // The other platform's modifier is a different chord, not this one.
+  if (mac ? !event.metaKey || event.ctrlKey : !event.ctrlKey || event.metaKey) {
+    return false;
+  }
+  if (event.code) return event.code === "KeyV";
+  return (event.key ?? "").toLowerCase() === "v";
+}
+
 // Identity separates a pasted blob from a .txt the user attached. A sent
 // message keeps no File, so the wrapper below carries it over instead.
 const pastedTextFiles = new WeakSet<File>();

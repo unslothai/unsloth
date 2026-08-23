@@ -1089,7 +1089,7 @@ export const ko = {
         exportChat: "채팅 내보내기",
       },
       pastedTextThreshold: "긴 붙여넣기 압축",
-      pastedTextThresholdDescription: "이 길이를 초과한 붙여넣기 텍스트는 입력창을 채우는 대신 .txt 첨부 파일이 됩니다.",
+      pastedTextThresholdDescription: "이 길이를 초과한 붙여넣기 텍스트는 입력창을 채우는 대신 .txt 첨부 파일이 됩니다. {shortcut} 를 누르면 그래도 입력창에 붙여넣습니다.",
       pastedTextThresholdOff: "끄기",
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:

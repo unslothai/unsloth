@@ -205,6 +205,7 @@ export {
   createPastedTextFile,
   isPastedTextContent,
   isPastedTextFile,
+  isPlainPasteChord,
   pasteLongTextAsFile,
   pastedTextContentBytes,
   pastedTextContentPreview,

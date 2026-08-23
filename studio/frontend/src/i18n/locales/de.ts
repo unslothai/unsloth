@@ -1126,7 +1126,7 @@ export const de = {
         exportChat: "Chat exportieren",
       },
       pastedTextThreshold: "Lange Einfügungen verdichten",
-      pastedTextThresholdDescription: "Eingefügter Text, der länger ist, wird zu einem .txt-Anhang, statt das Nachrichtenfeld zu füllen.",
+      pastedTextThresholdDescription: "Eingefügter Text, der länger ist, wird zu einem .txt-Anhang, statt das Nachrichtenfeld zu füllen. Mit {shortcut} wird trotzdem in das Nachrichtenfeld eingefügt.",
       pastedTextThresholdOff: "Aus",
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:

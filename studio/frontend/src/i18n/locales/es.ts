@@ -1117,7 +1117,7 @@ export const es = {
         exportChat: "Exportar chat",
       },
       pastedTextThreshold: "Condensar pegados largos",
-      pastedTextThresholdDescription: "El texto pegado más largo que esto se convierte en un adjunto .txt en lugar de llenar el cuadro de mensaje.",
+      pastedTextThresholdDescription: "El texto pegado más largo que esto se convierte en un adjunto .txt en lugar de llenar el cuadro de mensaje. Pulsa {shortcut} para pegar en el cuadro de mensaje de todos modos.",
       pastedTextThresholdOff: "Desactivado",
       showResponseModel: "Mostrar el modelo de respuesta",
       showResponseModelDescription:

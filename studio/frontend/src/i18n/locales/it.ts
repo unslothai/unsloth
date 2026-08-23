@@ -1091,7 +1091,7 @@ export const it = {
         exportChat: "Esporta chat",
       },
       pastedTextThreshold: "Condensa incolla lunghi",
-      pastedTextThresholdDescription: "Il testo incollato più lungo di questo valore diventa un allegato .txt invece di riempire il campo del messaggio.",
+      pastedTextThresholdDescription: "Il testo incollato più lungo di questo valore diventa un allegato .txt invece di riempire il campo del messaggio. Premi {shortcut} per incollare comunque nel campo del messaggio.",
       pastedTextThresholdOff: "Disattivato",
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:
