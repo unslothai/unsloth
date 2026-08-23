@@ -2843,6 +2843,8 @@ def test_local_model_task_classifies_suffix_only_gguf_from_architecture(tmp_path
     )
 
     assert models_route._local_model_task(model) == "text-to-image"
+
+
 def test_arch_to_task_tags_speech_archs_as_speech():
     # llama.cpp cannot load these at all, so chat must not claim them.
     for arch in models_route._SPEECH_GGUF_ARCHS:
@@ -6755,6 +6757,8 @@ def test_cached_model_rows_keeps_a_recovered_repo_that_can_serve_a_load(monkeypa
 
     assert rows["Org/Whole"]["load_id"] == str(complete_snapshot)
     assert "Org/Half" not in rows
+
+
 # ── the architectures published CSM bundles actually declare ────────────────────
 
 # ggml-org/sesame-csm-1b-GGUF ships its Mimi vocoder with a SENTENCE where the architecture

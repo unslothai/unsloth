@@ -341,13 +341,10 @@ def _local_dir_holds_a_payload(path: Path) -> bool:
         return True
     if _local_payload_is_torn(path):
         return False
-    return (
-        any(
-            _is_main_gguf_filename(file.name) and not is_appledouble_metadata(file)
-            for file in path.glob("*.gguf")
-        )
-        or _is_model_directory(path)
-    )
+    return any(
+        _is_main_gguf_filename(file.name) and not is_appledouble_metadata(file)
+        for file in path.glob("*.gguf")
+    ) or _is_model_directory(path)
 
 
 def _local_is_a_diffusers_pipeline(model) -> bool:

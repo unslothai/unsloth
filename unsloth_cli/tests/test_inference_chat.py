@@ -2032,7 +2032,12 @@ def test_catalog_adapter_classifies_the_exact_cached_base_revision(monkeypatch, 
     ]
 
 
-def _catalog_local_row(path, name = None, source = "models_dir", model_format = None):
+def _catalog_local_row(
+    path,
+    name = None,
+    source = "models_dir",
+    model_format = None,
+):
     return types.SimpleNamespace(
         id = str(path),
         display_name = name or Path(path).name,
@@ -2090,9 +2095,7 @@ def test_catalog_rejects_incomplete_local_and_exported_payloads(monkeypatch, tmp
     assert cat._local_dir_holds_a_payload(zero_gguf / "m-Q4_K_M.gguf") is False
     assert cat._local_dir_holds_a_payload(lone_shard / "s-Q4_K_M-00001-of-00003.gguf") is False
     assert cat._local_dir_holds_a_payload(good_gguf / "m-Q4_K_M.gguf") is True
-    assert (
-        cat._local_dir_holds_a_payload(whole_shards / "s-Q4_K_M-00001-of-00002.gguf") is True
-    )
+    assert cat._local_dir_holds_a_payload(whole_shards / "s-Q4_K_M-00001-of-00002.gguf") is True
 
     exports = [
         ("zero-gguf", str(zero_gguf / "m-Q4_K_M.gguf"), "gguf", None),
