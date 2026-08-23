@@ -378,13 +378,15 @@ def test_an_allowed_action_that_ran_and_missed_its_slot_still_fails(tmp_path):
     assert main(["--assert-liveness", str(path), "--allow-not-run", "image_upload"]) == 1
 
 
-def test_a_missed_slot_that_never_ran_is_still_excused_by_name(tmp_path):
-    """The guard against tightening the org's CI by accident.
+def test_a_missed_slot_is_not_excused_by_a_not_run_allowance(tmp_path):
+    """`--allow-not-run` excuses an action the platform cannot perform, not one it was late for.
 
-    `scene/schedule.py` records a real missed slot as `ran = False, slot_missed = True`, so a slow
-    runner that cannot reach a fixed-duration film's slot lands in the NOT RUN branch and stays
-    excusable by name. That is the runner failing to keep up, not a defect in the code under test,
-    and narrowing the allowance must not turn it red.
+    `scene/schedule.py` records an overrun as `ran = False, slot_missed = True`, so checking the
+    allowance first let a listed name inherit an excuse written for a different failure. The
+    action could have been performed; the machine was too slow to reach the window. On
+    `image_upload`, the only allowance this repo ships, that is the difference between a timed
+    benchmark and an untimed one, and the help text already promises a listed action is still
+    held to its slot.
     """
 
     path = write_payload(
@@ -402,4 +404,4 @@ def test_a_missed_slot_that_never_ran_is_still_excused_by_name(tmp_path):
             )
         ],
     )
-    assert main(["--assert-liveness", str(path), "--allow-not-run", "image_upload"]) == 0
+    assert main(["--assert-liveness", str(path), "--allow-not-run", "image_upload"]) == 1

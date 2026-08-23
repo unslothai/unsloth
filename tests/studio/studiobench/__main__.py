@@ -1768,19 +1768,25 @@ def assert_liveness(args) -> int:
             problems.append(f"{where}: the cell did not complete")
         for action in row.get("actions") or []:
             name = action.get("action") or action.get("name") or "?"
-            if not action.get("ran"):
+            if action.get("slot_missed"):
+                # A MISSED SLOT IS NOT AN ACTION THE PLATFORM CANNOT PERFORM, so it is checked
+                # before the allowance rather than inside it. `scene/schedule.py` records an
+                # overrun as `ran = False, slot_missed = True`, so a listed name reached the
+                # not-ran branch and inherited an excuse written for a different failure: the
+                # machine was too slow to reach a window it could otherwise have used. That is
+                # the scheduling regression this gate is for, and on the only allowance the repo
+                # actually ships it would have been the difference between a timed benchmark and
+                # an untimed one.
+                problems.append(f"{where}: {name} missed its slot")
+            elif not action.get("ran"):
                 # THE ALLOWANCE IS EXACTLY WHAT ITS NAME SAYS. `--allow-not-run` excuses an action
                 # the fixture cannot mount at all; it is not a blanket exemption from the gate.
-                # Applied before the branches it would also excuse a listed action that DID run
-                # and then missed its slot or failed its own assertion, which is the failure this
-                # gate exists to catch. `image_upload` is listed in studiobench-ci.yml only
-                # because the fixture cannot mount it, so if it ever does mount, an upload that
-                # produces no attachment must be a failure rather than an inherited excuse.
+                # `image_upload` is listed in studiobench-ci.yml only because the fixture cannot
+                # mount it, so if it ever does mount, an upload that produces no attachment must
+                # be a failure rather than an excuse inherited from a different reason.
                 if name in allowed:
                     continue
                 problems.append(f"{where}: {name} NOT RUN ({action.get('reason') or 'no reason'})")
-            elif action.get("slot_missed"):
-                problems.append(f"{where}: {name} missed its slot")
             elif action.get("expect_ok") is False:
                 # RAN IS NOT DID WHAT IT CLAIMED. `scoring/from_payload.py` and
                 # `report/payload.py` both already refuse a timing whose own assertion failed;
