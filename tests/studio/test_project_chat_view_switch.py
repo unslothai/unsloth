@@ -1395,8 +1395,7 @@ def test_a_late_deferred_clear_cannot_wipe_an_attachment_a_newer_attempt_staged(
         out["beforeLate"]["state"]["attempt"] == 3
     ), "the second detour plus the return must start a newer attempt for the same nonce"
     assert out["afterLate"]["cleared"] == out["beforeLate"]["cleared"], (
-        "the older switch's deferred clear must not wipe the composer the newer "
-        "attempt opened"
+        "the older switch's deferred clear must not wipe the composer the newer attempt opened"
     )
     assert out["afterLate"]["state"]["activeNonce"] == "n1"
     assert out["unhandled"] == 0
