@@ -427,7 +427,7 @@ class OutDirLock:
         try:
             self._lock_fd_exclusive(fd)
         except OSError:
-            held = self._await_marker(self.path)
+            held = self._read_marker_once_written(self.path)
             os.close(fd)
             who = (
                 f"session {held[0]} is still running as pid {held[1]}"
@@ -466,6 +466,16 @@ class OutDirLock:
         if fd is None:
             return
         self._fd = None
+        # BLANKED BEFORE IT IS RELEASED, and only while this process still holds the lock, so
+        # nothing can be reading it as authoritative. The file stays (see above); what goes is
+        # its CONTENT, because a retained `pid session` line outlives the run that wrote it and
+        # the next contender to lose a race would otherwise be handed it as the holder. Not a
+        # substitute for the liveness test in `_read_marker_once_written`: a killed run never
+        # reaches this line.
+        try:
+            os.ftruncate(fd, 0)
+        except OSError:
+            pass
         self._unlock_fd(fd)
         try:
             os.close(fd)
@@ -499,30 +509,6 @@ class OutDirLock:
             except OSError:
                 pass
 
-    @classmethod
-    def _await_marker(
-        cls,
-        path: Path,
-        timeout_s: float = 2.0,
-    ) -> "Optional[tuple[str, int]]":
-        """(session, pid) of the holder, waiting out the gap between its lock and its write.
-
-        THE LOCK IS TAKEN BEFORE THE IDENTITY IS WRITTEN, and it has to be: a run does not know
-        it may write until it holds the lock. So there is a window in which the marker is locked
-        but still empty, and `_read_marker` on a loser that arrives inside it returns None. The
-        refusal then cannot name the holder, which is the one thing it exists to do. This is the
-        pidfile window libbsd's `pidfile_open` handles the same way, with a bounded retry: an
-        empty marker means indeterminate, not unheld. A holder that died before writing released
-        the lock with it, so this loser would have won it instead of waiting here; the deadline
-        only backstops a marker from some other writer that never says who it is.
-        """
-        deadline = time.monotonic() + timeout_s
-        while True:
-            got = cls._read_marker(path)
-            if got is not None or time.monotonic() >= deadline:
-                return got
-            time.sleep(0.005)
-
     @staticmethod
     def _read_marker(path: Path) -> "Optional[tuple[str, int]]":
         """(session, pid) written in a marker, or None if it does not yet say."""
@@ -534,6 +520,52 @@ class OutDirLock:
             )
         except (OSError, ValueError, IndexError):
             return None
+
+    @classmethod
+    def _read_marker_once_written(
+        cls,
+        path: Path,
+        budget_s: float = 0.5,
+    ) -> "Optional[tuple[str, int]]":
+        """`_read_marker`, waiting out the gap between taking the lock and writing into it.
+
+        THE HOLDER LOCKS FIRST AND WRITES SECOND, and it has to: the write is what makes the marker
+        say anything, and writing before the lock would let a loser publish itself as the holder. So
+        there is a window in which the marker exists, is locked, and is still empty, and a contender
+        that reads it there gets nothing and refuses without naming anybody -- which is exactly what
+        the refusal is not allowed to do, because a reader then goes looking for a phantom.
+
+        The window is microseconds wide and closes on its own, so it is waited out rather than
+        designed around. Bounded, because a holder that died between the lock and the write leaves
+        an empty marker that never fills, and the generic wording is right for that one. Measured:
+        the gap is `ftruncate` + `write` + `fsync`; half a second is three orders of magnitude of
+        headroom on a path that is about to exit anyway. Two-core CI is where this was observed --
+        the same test passes on an unloaded machine, which is what made it look flaky rather than
+        like a hole in the message.
+        """
+        deadline = time.monotonic() + budget_s
+        while True:
+            got = cls._read_marker(path)
+            # A RETAINED RECORD IS NOT A HOLDER. The marker is deliberately never unlinked, so on
+            # any directory that has been used before it already contains the PREVIOUS run's
+            # `pid session` line. That record is non-empty, so a bare "did it read" test stops on
+            # it and the refusal names a run that finished hours ago as the current holder --
+            # worse than saying nothing, because it sends the reader after a specific dead pid.
+            # Measured: a clean `close()` leaves `2235618 sessionAAAA`, and a contender that meets
+            # a NEW holder inside this window was told `session sessionAAAA is still running as
+            # pid 2235618` while the actual holder was pid 2235621.
+            #
+            # Liveness is what separates them. The holder is by definition a running process, and
+            # the run that wrote a retained record has exited. `close()` also blanks the marker
+            # while it still holds the lock, so a clean exit leaves nothing to mistake; this covers
+            # the unclean ones. What is left is a retained record whose pid has been RECYCLED onto
+            # a live process, which needs an unclean exit and a wrapped pid space in the same
+            # directory.
+            if got is not None and cls._alive(got[1]):
+                return got
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.01)
 
     @staticmethod
     def _alive(pid: int) -> bool:
