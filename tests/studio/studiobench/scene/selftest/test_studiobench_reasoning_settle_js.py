@@ -95,7 +95,11 @@ globalThis.document = {
 globalThis.window = {
   __sbNextPaint: async () => { frame += 1; now += PAINT_MS; },
   __sb: { dom: {
-    reasoningTriggers: () => Array.from({ length: cfg.panes }, () => ({ click: () => {} })),
+    // The click handler costs real time, because it is the app's own handler running
+    // synchronously and it is the first half of what "opening the panes" means.
+    reasoningTriggers: () => Array.from({ length: cfg.panes }, () => ({
+      click: () => { now += cfg.clickMs; },
+    })),
     reasoningOpenCount: () => openCount(),
   } },
 };
@@ -137,11 +141,13 @@ def run_settle(
     spans_static: bool = False,
     lose_state_after: int = 0,
     lose_state_for: int = 0,
+    click_ms: float = 0.0,
 ) -> dict:
     """Run the SHIPPED `REASONING_JS` against a page with a late flip and a later mount."""
     exe = _node()
     cfg = {
         "panes": PANES,
+        "clickMs": click_ms,
         "flipFrame": flip_frame,
         "mountDoneFrame": mount_done_frame,
         "spansBefore": SPANS_BEFORE,
@@ -245,3 +251,38 @@ def test_losing_the_state_restarts_the_streak():
     assert out["openCensored"] is False
     # It cannot have returned during the window where the count was below `want`.
     assert out["openFrames"] >= 2 + 1 + 6
+
+
+def test_the_timing_includes_the_click_dispatch_it_names():
+    """`open_ms` must cover the clicks, not just the wait that follows them.
+
+    `t.click()` runs the app's own handler synchronously, and on a long thread that is React state
+    plus layout, once per pane. It is the first half of opening the panes. A timing that starts
+    after the whole loop has returned is a smaller number for the same action, and it moves for a
+    reason a reader cannot see: an arm that makes the handler slower and the settle faster would
+    look unchanged, or better.
+
+    With a 40 ms handler on 16 panes the settle alone reads 96 ms against 640 ms of dispatch it had
+    just performed.
+    """
+    out = run_settle(flip_frame = 2, mount_done_frame = 3, spans_static = True, click_ms = 40.0)
+    dispatch = PANES * 40.0
+    assert out["openDispatchMs"] == dispatch
+    assert out["openMs"] >= dispatch, (
+        "open_ms excluded the click dispatch, so it names an operation larger than the one it "
+        "measures. That is this branch's own defect, committed by the fix for it."
+    )
+    # And the two halves are reported apart, because they answer different questions.
+    assert out["openMs"] == pytest.approx(out["openDispatchMs"] + out["openSettleMs"], abs = 0.2)
+    assert out["openSettleMs"] < out["openMs"]
+
+
+def test_the_state_reached_mark_shares_the_timing_origin():
+    """`open_state_reached_ms` is quoted against `open_ms`, so it cannot start from a later zero."""
+    out = run_settle(flip_frame = 3, mount_done_frame = 20, click_ms = 25.0)
+    dispatch = PANES * 25.0
+    assert out["openStateReachedMs"] >= dispatch, (
+        "the state-reached mark was measured from the settle's start while open_ms was measured "
+        "from before the clicks, so subtracting one from the other yields a phantom interval"
+    )
+    assert out["openStateReachedMs"] <= out["openMs"]

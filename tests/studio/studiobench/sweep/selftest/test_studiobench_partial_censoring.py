@@ -172,3 +172,87 @@ def test_a_metric_censored_at_every_rung_is_not_a_partial_case(tmp_path):
             }
         )
     assert payload_rules.refuse_partial_censoring(rows, "reasoning_toggle.open_ms") is None
+
+
+def _peer_censored_payload(tmp_path: Path) -> Path:
+    """`open_ms` censors above 100K; `close_ms` was measured everywhere but is discarded with it.
+
+    `reasoning_toggle`'s `ok` is one conjunction over four clauses, so a censored open fails the
+    whole action and `_action_timings` then drops every timing it carries -- including a `close_ms`
+    that succeeded on its own terms. `close_censored` stays False, so nothing marked the loss.
+    """
+    rows: list[dict] = [
+        {
+            "row_type": "run_meta",
+            "tier": "standard",
+            "session_id": "s1",
+            "corpus_hash": "abc",
+            "rungs": ["100K", "500K"],
+        }
+    ]
+    for rung, censored in ((MEASURED_RUNG, False), (CENSORED_RUNG, True)):
+        for arm, mult in (("base", 1.0), ("treatment", 1.1)):
+            for rep in (0, 1):
+                cid = f"{rung}.{arm}.rep{rep}"
+                rows.append(
+                    {"row_type": "cell", "cell_id": cid, "session_id": "s1", "completed": True}
+                )
+                if censored:
+                    rows.append(
+                        {
+                            "row_type": "action",
+                            "cell_id": cid,
+                            "session_id": "s1",
+                            "action": "reasoning_toggle",
+                            "ran": True,
+                            "expect_ok": False,
+                            "timings": {"close_ms": 900.0 * mult},
+                            "counts": {},
+                            "expect": {"open_censored": True, "close_censored": False},
+                        }
+                    )
+                else:
+                    rows.append(
+                        {
+                            "row_type": "action",
+                            "cell_id": cid,
+                            "session_id": "s1",
+                            "action": "reasoning_toggle",
+                            "ran": True,
+                            "expect_ok": True,
+                            "timings": {"open_ms": 1000.0 * mult, "close_ms": 300.0 * mult},
+                            "counts": {},
+                            "expect": {"open_censored": False, "close_censored": False},
+                        }
+                    )
+    out = tmp_path / "sbench_peer"
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows), encoding = "utf-8")
+    return path
+
+
+def test_a_timing_discarded_with_its_action_counts_as_censored(tmp_path):
+    """The surviving half of a failed action is unavailable too, and must be marked so.
+
+    Unmarked, the close row was pooled from the 100K cells alone and printed +10.0% under a bare
+    metric name on a 100K/500K ladder -- the same survivorship bias the open row is marked for,
+    one level down and completely silent.
+    """
+    path = _peer_censored_payload(tmp_path)
+    found = floor_table.partial_censoring([path])
+    assert "reasoning_toggle.close_ms" in found, (
+        "close_ms was thrown away at 500K with the action that failed, then pooled from 100K and "
+        "printed as a ladder number. Nothing refused it because close_censored was False."
+    )
+    stats = floor_table.summarise([path])
+    assert stats["reasoning_toggle.close_ms"]["poolable"] is False
+    assert stats["reasoning_toggle.open_ms"]["poolable"] is False
+
+
+def test_a_fully_measured_action_is_still_poolable(tmp_path):
+    """The rule must not mark everything: an action that passed keeps its verdict."""
+    path = _payload(tmp_path)
+    stats = floor_table.summarise([path])
+    assert stats["keystroke.p50_ms"].get("poolable") is not False
+    assert stats["reasoning_toggle.close_ms"].get("poolable") is not False

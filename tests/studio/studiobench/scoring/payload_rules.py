@@ -81,16 +81,34 @@ def censored_metrics(records: Iterable[dict]) -> dict[str, set[str]]:
     pooled: the cells that survive are the fast ones, and their mean is survivorship bias wearing
     a number. `reasoning_toggle.open_ms` is censored on every cell above the 100K rung, so a row
     labelled `open_ms` on a 100K/500K/1M ladder is silently a 100K-only figure.
+
+    A TIMING IS ALSO UNAVAILABLE WHEN ITS ACTION WAS DISCARDED, which is the case that reaches
+    furthest. `_action_timings` drops every timing of an action whose `expect_ok` is False, so a
+    measurement that succeeded on its own terms still contributes nothing -- and nothing marked it.
+
+    `reasoning_toggle` is where this bites. `ok` is one conjunction over four clauses, so a
+    censored `open_ms` above 100K makes the whole action fail, and `close_ms` is thrown away with
+    it while `close_censored` stays False. On a 100K/500K ladder the close row was then pooled from
+    the 100K cells alone and printed under a bare metric name with no refusal, exactly the
+    survivorship bias the open row is marked for. The rule is not specific to that pair: an action
+    that was discarded contributes nothing, so every timing it carries is censored at that cell.
     """
     out: dict[str, set[str]] = {}
     for r in records:
         if r.get("row_type") != "action":
             continue
+        action = r.get("action")
+        cell = r.get("cell_id")
         expect = r.get("expect") or {}
         for key, value in expect.items():
             if key.endswith("_censored") and value:
-                metric = f"{r.get('action')}.{key[:-len('_censored')]}_ms"
-                out.setdefault(metric, set()).add(r.get("cell_id"))
+                metric = f"{action}.{key[:-len('_censored')]}_ms"
+                out.setdefault(metric, set()).add(cell)
+        # The row still CARRIES the timings the scoring layer refuses to read, so the names are
+        # known here even though the values will never be pooled.
+        if r.get("ran") and r.get("expect_ok") is False:
+            for key in r.get("timings") or {}:
+                out.setdefault(f"{action}.{key}", set()).add(cell)
     return out
 
 

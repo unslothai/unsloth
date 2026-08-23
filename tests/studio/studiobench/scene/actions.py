@@ -345,7 +345,18 @@ async ([timeoutMs, quietFrames]) => {
   // Wait for the open count to reach `want` AND for the span census to stop moving. Returns the
   // elapsed time, the number of frames spent, and why it stopped, so a censored reading is
   // distinguishable from a fast one rather than both arriving as a number.
-  const settle = async (want) => {
+  //
+  // `origin` IS THE CALLER'S MARK, TAKEN BEFORE THE CLICKS, AND THE REPORTED TIMING RUNS FROM IT.
+  // Dispatching the clicks is the first half of opening the panes: `t.click()` runs the app's own
+  // handler synchronously, and on a long thread that is React state plus layout, sixteen times
+  // over. Timing from the settle's own start instead silently redefines `open_ms` as "the wait
+  // after the work", which is a smaller number for the same action -- measured on a page with a
+  // 40 ms handler per pane, `open_ms` read 96 ms against 640 ms of dispatch it had just done.
+  // That is the defect this whole branch is about, so it must not be introduced by the fix for it.
+  //
+  // The BUDGET still runs from the settle's own start, so what counts as censored is unchanged.
+  // The two are reported separately: `ms` is the whole operation, `settle_ms` is the wait alone.
+  const settle = async (want, origin) => {
     const started = performance.now();
     let frames = 0;
     let quiet = 0;
@@ -376,9 +387,15 @@ async ([timeoutMs, quietFrames]) => {
       last = now;
       if (stateReached && quiet >= quietFrames) {
         return {
-          ms: performance.now() - started,
+          // From the caller's mark, so the click dispatch this action performed is inside the
+          // number that names it.
+          ms: performance.now() - origin,
+          settle_ms: performance.now() - started,
+          dispatch_ms: started - origin,
           frames,
-          state_reached_ms: reachedAt,
+          // Rebased onto the same origin as `ms`, or the two would be quoted against each other
+          // from different zeroes.
+          state_reached_ms: reachedAt === null ? null : reachedAt + (started - origin),
           spans: now,
           censored: false,
           reason: null,
@@ -387,8 +404,10 @@ async ([timeoutMs, quietFrames]) => {
     }
     return {
       ms: null,
+      settle_ms: performance.now() - started,
+      dispatch_ms: started - origin,
       frames,
-      state_reached_ms: reachedAt,
+      state_reached_ms: reachedAt === null ? null : reachedAt + (started - origin),
       spans: null,
       censored: true,
       reason: reachedAt === null
@@ -404,11 +423,11 @@ async ([timeoutMs, quietFrames]) => {
   // reported on an axis of thread length.
   const openStart = performance.now();
   for (const t of triggers) t.click();
-  const opened = await settle(triggers.length);
+  const opened = await settle(triggers.length, openStart);
   const openCount = D.reasoningOpenCount();
   const closeStart = performance.now();
   for (const t of D.reasoningTriggers()) t.click();
-  const closed = await settle(0);
+  const closed = await settle(0, closeStart);
   return {
     ran: true,
     panes: triggers.length,
@@ -430,6 +449,13 @@ async ([timeoutMs, quietFrames]) => {
     closeFrames: closed.frames,
     openStateReachedMs: opened.state_reached_ms === null
       ? null : Math.round(opened.state_reached_ms * 10) / 10,
+    // THE SPLIT, so a reader can see how much of the timing was the app's click handlers and how
+    // much was waiting for the DOM to stop moving. They answer different questions and a single
+    // total hides which of the two a change actually moved.
+    openDispatchMs: Math.round(opened.dispatch_ms * 10) / 10,
+    closeDispatchMs: Math.round(closed.dispatch_ms * 10) / 10,
+    openSettleMs: Math.round(opened.settle_ms * 10) / 10,
+    closeSettleMs: Math.round(closed.settle_ms * 10) / 10,
     quietFramesRequired: quietFrames,
     timeoutMs,
   };
