@@ -397,15 +397,22 @@ export const AUTO_CONTINUE_LEASE_TTL_MS = 180_000;
 export const AUTO_CONTINUE_LEASE_RENEW_MS = 30_000;
 
 /**
- * What a lease is cut back to when the run behind it reaches a terminal state.
+ * How long a record stays behind once the run it covered has finished.
  *
- * Released rather than held, so the TTL only ever covers a crash. Not deleted outright:
- * another tab still showing the pre-continuation branch has not seen the sibling that was
- * just written and would take the message straight back, which is the duplicate this
- * whole file exists to stop. A short settle window is long enough for that tab to pick up
- * the saved thread and short enough to be invisible otherwise.
+ * A lease answers "is somebody running this message"; this answers "has this message
+ * already been continued", which is what the per-tab claim set answers inside the tab that
+ * won and what no other tab has any way of learning. Nothing tells a second tab that the
+ * sibling was written: `notifyChatHistoryUpdated` dispatches a same-window event, no chat
+ * key has a `storage` listener, and persisted messages are re-read only by `history.load`
+ * when a thread is opened. So a tab still holding the pre-continuation branch in memory
+ * takes the message straight back the moment the record goes -- on the next remount of the
+ * bar, which leaving the chat and returning is enough to produce -- and the user pays for a
+ * second continuation from a history that is missing the first.
+ *
+ * Long enough to outlive the sitting the continuation happened in, not permanent: the ids
+ * are pruned like any other record, so the key cannot grow without bound.
  */
-export const AUTO_CONTINUE_LEASE_SETTLE_MS = 30_000;
+export const AUTO_CONTINUE_CONTINUED_TTL_MS = 86_400_000;
 
 /** The `localStorage` key holding the leases, one record per claimed message id. */
 export const AUTO_CONTINUE_LEASE_KEY = "unsloth_chat_auto_continue_leases";
@@ -437,7 +444,16 @@ export type AutoContinueLockManager = {
   request<T>(name: string, callback: () => T | Promise<T>): Promise<T>;
 };
 
-type Lease = { token: string; expires: number };
+type Lease = {
+  token: string;
+  expires: number;
+  /**
+   * The run this record covered reached a terminal state, so the message HAS been
+   * continued. A plain lease that lapses means only that its holder stopped answering and
+   * the message is free again; this one means the work is done and nobody should repeat it.
+   */
+  done?: boolean;
+};
 
 /**
  * The browser's own storage, or nothing when there is not one to read.
@@ -493,7 +509,9 @@ function readLeases(storage: AutoContinueLeaseStorage): Record<string, Lease> {
     const token = (value as Lease | undefined)?.token;
     const expires = (value as Lease | undefined)?.expires;
     if (typeof token === "string" && typeof expires === "number") {
-      out[id] = { token, expires };
+      out[id] = (value as Lease).done === true
+        ? { token, expires, done: true }
+        : { token, expires };
     }
   }
   return out;
@@ -705,6 +723,7 @@ export function createAutoContinueTab({
     holder: string,
     expires: number,
     now: number,
+    done = false,
   ): boolean {
     const held = ownTokens.get(messageId);
     if (!held || held.holder !== holder) {
@@ -721,7 +740,9 @@ export function createAutoContinueTab({
         ownTokens.delete(messageId);
         return false;
       }
-      leases[messageId] = { token: held.token, expires };
+      leases[messageId] = done
+        ? { token: held.token, expires, done: true }
+        : { token: held.token, expires };
       store.setItem(AUTO_CONTINUE_LEASE_KEY, JSON.stringify(leases));
       return true;
     } catch {
@@ -785,12 +806,20 @@ export function createAutoContinueTab({
       }
       await exclusively(
         () =>
-          restamp(messageId, holder, now + AUTO_CONTINUE_LEASE_SETTLE_MS, now),
+          restamp(
+            messageId,
+            holder,
+            now + AUTO_CONTINUE_CONTINUED_TTL_MS,
+            now,
+            true,
+          ),
         false,
       );
-      // Held no longer: nothing renews this one, and it lapses at the settle window. Only
-      // this message, so the next round of the same turn -- claimed under this same holder
-      // before this release lands -- keeps its own lease and its own renewals.
+      // Held no longer, and marked done rather than handed back: the message HAS been
+      // continued now, and the only thing that could hand it to another tab is a lease that
+      // lapses, which is reserved for a holder that stopped answering. Only this message, so
+      // the next round of the same turn -- claimed under this same holder before this
+      // release lands -- keeps its own lease and its own renewals.
       ownTokens.delete(messageId);
     },
     reset() {
@@ -889,15 +918,6 @@ export function releaseAutoContinueLease(
 }
 
 /**
- * How long a hold waits for its run to appear before it stops expecting one.
- *
- * Only ever drops the bookkeeping, never the lease: a hold that never armed has renewed
- * nothing, so what is left behind is a lease running out its own TTL, which is exactly the
- * state a tab that closed mid-claim leaves behind.
- */
-export const AUTO_CONTINUE_ARM_TIMEOUT_MS = 60_000;
-
-/**
  * Whether the thread a lease was taken for is generating right now.
  *
  * Deliberately NOT "is the thread on screen running". A run keeps streaming when the user
@@ -923,6 +943,17 @@ export type AutoContinueRunSignal = {
  * again is claimed while the finished round is still winding down, so a hold that armed on
  * "the thread is running" would arm on its predecessor's run and be released when THAT one
  * ended, mid-stream. So a hold taken while the thread is busy waits to see it idle first.
+ *
+ * A hold whose run has not appeared YET is kept and renewed, never timed out. No deadline
+ * separates "this run is never coming" from "this run is still in preflight", because the
+ * preflight has no bound: `chat-adapter.ts` awaits the thread's own settings pairing (up to
+ * 30 seconds by itself), then `waitForModelReady`, which polls every 500ms for as long as a
+ * model is loading -- minutes for a large local GGUF, and exactly the state a tab just
+ * opened on a truncated reply is in. A fixed arming timeout dropped the hold in the middle
+ * of that, its renewals stopped, and the lease lapsed under a run that had since started
+ * streaming, so another tab could claim the message and pay for the same continuation twice.
+ * Renewing instead costs only this: a claim whose run genuinely never starts holds its lease
+ * until the tab is closed, and the manual Continue button is never gated on any of it.
  */
 export function createAutoContinueLeaseKeeper({
   signal,
@@ -948,7 +979,6 @@ export function createAutoContinueLeaseKeeper({
     idle: boolean;
     /** That run has started. Only an armed hold is ever released. */
     armed: boolean;
-    takenAt: number;
   };
   const holds = new Map<string, Hold>();
   let unsubscribe: (() => void) | null = null;
@@ -972,10 +1002,10 @@ export function createAutoContinueLeaseKeeper({
         release(hold.messageId, hold.threadId, at);
         continue;
       }
-      if (at - hold.takenAt > AUTO_CONTINUE_ARM_TIMEOUT_MS) {
-        // No run ever appeared for it. Drop the bookkeeping; the lease lapses on its own.
-        holds.delete(id);
-      }
+      // Not armed yet, so its run is still in preflight, which has no upper bound (see the
+      // note above this function). Kept and renewed rather than timed out: dropping it here
+      // stopped the renewals while the run was still on its way, and the lease then lapsed
+      // under a live continuation.
     }
     if (holds.size === 0 && unsubscribe) {
       unsubscribe();
@@ -998,7 +1028,6 @@ export function createAutoContinueLeaseKeeper({
         // only fires on a reply that has finished.
         idle: !signal.isRunning(threadId),
         armed: false,
-        takenAt: now(),
       });
       unsubscribe ??= signal.subscribe(observe);
     },
@@ -1007,9 +1036,9 @@ export function createAutoContinueLeaseKeeper({
       observe();
       const at = now();
       for (const hold of holds.values()) {
-        if (hold.armed) {
-          renew(hold.messageId, hold.threadId, at);
-        }
+        // Armed or still waiting for its run: either way this tab is alive and expects to
+        // be running that message, which is the whole question the lease asks.
+        renew(hold.messageId, hold.threadId, at);
       }
     },
     held() {

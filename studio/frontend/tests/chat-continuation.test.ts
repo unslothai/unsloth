@@ -9,10 +9,9 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 registerBundlerResolver();
 
 const {
-  AUTO_CONTINUE_ARM_TIMEOUT_MS,
+  AUTO_CONTINUE_CONTINUED_TTL_MS,
   AUTO_CONTINUE_LEASE_KEY,
   AUTO_CONTINUE_LEASE_RENEW_MS,
-  AUTO_CONTINUE_LEASE_SETTLE_MS,
   AUTO_CONTINUE_LEASE_TTL_MS,
   AUTO_CONTINUE_LIMIT,
   autoContinueCount,
@@ -829,10 +828,11 @@ test("a running continuation keeps its lease past the TTL", async () => {
   assert.equal(await other.claim("m1", { now: past }), "held-elsewhere");
 });
 
-test("a finished run gives its lease back, without handing over a stale branch", async () => {
+test("a finished run leaves the message continued, not free again", async () => {
   // Released on any terminal state, so the full TTL is left to mean one thing: a crash.
-  // Cut to the settle window rather than deleted, because a tab still showing the
-  // pre-continuation branch has not seen the sibling yet and would start the duplicate.
+  // Marked done rather than handed back, because the tab that did not win never learns that
+  // the sibling was written -- no chat-history event crosses tabs -- so a record that simply
+  // lapsed handed the message to a stale tab and bought the same continuation twice.
   const { storage } = storageFake();
   const locks = lockManagerFake();
   const running = createAutoContinueTab({ storage, locks });
@@ -845,22 +845,83 @@ test("a finished run gives its lease back, without handing over a stale branch",
   );
   await running.release("m1", PANE, { now: start });
   assert.equal(
-    await other.claim("m1", { now: start + AUTO_CONTINUE_LEASE_SETTLE_MS - 1 }),
+    await other.claim("m1", { now: start + AUTO_CONTINUE_LEASE_TTL_MS + 1 }),
     "held-elsewhere",
   );
   assert.equal(
-    await other.claim("m1", { now: start + AUTO_CONTINUE_LEASE_SETTLE_MS + 1 }),
-    "started",
-  );
-  // And a release holds nothing, so a later renewal cannot resurrect it.
-  await running.renew("m1", PANE, {
-    now: start + AUTO_CONTINUE_LEASE_SETTLE_MS + 2,
-  });
-  assert.equal(
-    await createAutoContinueTab({ storage, locks }).claim("m1", {
-      now: start + AUTO_CONTINUE_LEASE_SETTLE_MS + 3,
+    await other.claim("m1", {
+      now: start + AUTO_CONTINUE_CONTINUED_TTL_MS - 1,
     }),
     "held-elsewhere",
+  );
+  // And a release holds nothing, so a later renewal cannot resurrect it as a live lease.
+  await running.renew("m1", PANE, { now: start + AUTO_CONTINUE_LEASE_TTL_MS });
+  assert.equal(
+    await createAutoContinueTab({ storage, locks }).claim("m1", {
+      now: start + AUTO_CONTINUE_LEASE_TTL_MS + 2,
+    }),
+    "held-elsewhere",
+  );
+  // Bounded, not permanent: the record is pruned like any other once it is old enough that
+  // no tab can still be holding the pre-continuation branch in memory.
+  assert.equal(
+    await createAutoContinueTab({ storage, locks }).claim("m1", {
+      now: start + AUTO_CONTINUE_CONTINUED_TTL_MS + 1,
+    }),
+    "started",
+  );
+});
+
+test("a stale tab cannot take a message back once it has been continued", async () => {
+  // The case the settle window left open. The second tab's render-time check refuses before
+  // its effect ever runs, so it records nothing locally and holds no state saying it lost;
+  // its `continued` set stays empty. Remount that bar -- leaving the chat and coming back is
+  // enough, which is the same remount the module claim exists for -- and the only thing
+  // between it and a second paid request is what storage remembers. Nothing refreshes its
+  // in-memory history in the meantime: `notifyChatHistoryUpdated` dispatches a same-window
+  // event, no chat key has a `storage` listener, and stored messages are re-read only by
+  // `history.load`.
+  const { storage } = storageFake();
+  const locks = lockManagerFake();
+  const winner = createAutoContinueTab({ storage, locks });
+  const stale = createAutoContinueTab({ storage, locks });
+  const start = 1_000;
+
+  assert.equal(await winner.claim("m1", { now: start, holder: PANE }), "started");
+  // The stale tab renders the truncated reply while the winner is running: refused, and
+  // nothing about that refusal is written down on its side.
+  assert.equal(await stale.claim("m1", { now: start + 1 }), "held-elsewhere");
+  // The winner finishes and writes the sibling. The stale tab still shows the partial.
+  await winner.release("m1", PANE, { now: start + 60_000 });
+  // Its bar remounts, long after any settle window would have passed.
+  assert.equal(
+    stale.claimed("m1", { now: start + 60_000 + AUTO_CONTINUE_LEASE_TTL_MS }),
+    true,
+  );
+  assert.equal(
+    await stale.claim("m1", {
+      now: start + 60_000 + AUTO_CONTINUE_LEASE_TTL_MS,
+    }),
+    "held-elsewhere",
+  );
+});
+
+test("a tab that died mid-run still hands the message back", async () => {
+  // The other half of the same rule, and the reason a permanent flag is wrong: a record is
+  // only marked done by a run that reached a terminal state. A tab killed without cleanup
+  // renews nothing and marks nothing, so its lease lapses and the message is claimable
+  // again. (Web Locks are released with the context too, so nothing is wedged there either.)
+  const { storage } = storageFake();
+  const locks = lockManagerFake();
+  const killed = createAutoContinueTab({ storage, locks });
+  const survivor = createAutoContinueTab({ storage, locks });
+  const start = 1_000;
+
+  assert.equal(await killed.claim("m1", { now: start, holder: PANE }), "started");
+  // No release, no renewal: the tab is gone.
+  assert.equal(
+    await survivor.claim("m1", { now: start + AUTO_CONTINUE_LEASE_TTL_MS + 1 }),
+    "started",
   );
 });
 
@@ -905,12 +966,12 @@ async function sequentialRounds(
     "held-elsewhere",
     "the round that just started keeps its lease",
   );
-  // The round that did finish settles on the usual schedule.
+  // The round that did finish is marked continued, and stays that way.
   assert.equal(
     await otherTab.claim("round-1", {
-      now: start + AUTO_CONTINUE_LEASE_SETTLE_MS + 1,
+      now: start + AUTO_CONTINUE_LEASE_TTL_MS + 1,
     }),
-    "started",
+    "held-elsewhere",
   );
 }
 
@@ -1009,9 +1070,10 @@ test("a run on a background thread keeps its lease while the user reads another 
   await Promise.all(pending);
   assert.equal(
     await otherTab.claim("a-m1", {
-      now: past + AUTO_CONTINUE_LEASE_SETTLE_MS + 1,
+      now: past + AUTO_CONTINUE_LEASE_TTL_MS + 1,
     }),
-    "started",
+    "held-elsewhere",
+    "the message was continued, so nobody continues it again",
   );
   assert.equal(keeper.held(), 0);
 });
@@ -1057,16 +1119,26 @@ test("a hold waits for its own run, not the one already in flight", async () => 
   assert.equal(await otherTab.claim("round-2", { now: past }), "held-elsewhere");
 });
 
-test("a hold whose run never appears is forgotten, and its lease simply lapses", async () => {
+test("a hold keeps its lease while its run is still in preflight", async () => {
+  // The adapter does a lot before the run reaches `runningByThreadId`: it awaits this
+  // thread's own settings pairing, which alone waits up to 30 seconds, and then
+  // `waitForModelReady`, which polls every 500ms for as long as a model is loading -- so a
+  // tab opened on a truncated reply while a large local model loads can sit in preflight for
+  // minutes. A hold dropped on a fixed arming timeout stopped renewing in the middle of
+  // that, its lease lapsed, and another tab claimed a message that was about to stream.
   const { storage } = storageFake();
   const tab = createAutoContinueTab({ storage, locks: null });
   const otherTab = createAutoContinueTab({ storage, locks: null });
   const start = 1_000;
   let clock = start;
-  const runs = runSignalFake(new Set<string>());
+  const pending: Promise<void>[] = [];
+  const running = new Set<string>();
+  const runs = runSignalFake(running);
   const keeper = createAutoContinueLeaseKeeper({
     signal: runs.signal,
-    renew: () => undefined,
+    renew: (messageId, holder, now) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
     release: () => {
       assert.fail("a hold that never armed has nothing to give back");
     },
@@ -1075,17 +1147,31 @@ test("a hold whose run never appears is forgotten, and its lease simply lapses",
 
   await tab.claim("a-m1", { now: start, holder: "thread-A" });
   keeper.hold("a-m1", "thread-A");
-  clock = start + AUTO_CONTINUE_ARM_TIMEOUT_MS + 1;
-  keeper.tick();
-  assert.equal(keeper.held(), 0);
-  // Untouched, so it runs out the TTL, exactly as a tab that closed mid-claim leaves it.
+
+  // Four minutes of preflight, renewed at the keeper's own interval throughout.
+  for (let tick = 1; tick <= 8; tick += 1) {
+    clock = start + tick * AUTO_CONTINUE_LEASE_RENEW_MS;
+    keeper.tick();
+  }
+  await Promise.all(pending);
+  assert.equal(keeper.held(), 1, "the hold is still expecting its run");
   assert.equal(
-    await otherTab.claim("a-m1", { now: start + AUTO_CONTINUE_LEASE_TTL_MS - 1 }),
+    await otherTab.claim("a-m1", { now: clock }),
     "held-elsewhere",
+    "nobody else may take a message this tab is still about to continue",
   );
+
+  // The run finally starts, and the hold arms on it rather than on a predecessor.
+  running.add("thread-A");
+  runs.change();
+  clock += AUTO_CONTINUE_LEASE_RENEW_MS;
+  keeper.tick();
+  await Promise.all(pending);
   assert.equal(
-    await otherTab.claim("a-m1", { now: start + AUTO_CONTINUE_LEASE_TTL_MS + 1 }),
-    "started",
+    await otherTab.claim("a-m1", {
+      now: clock + AUTO_CONTINUE_LEASE_TTL_MS - 1,
+    }),
+    "held-elsewhere",
   );
 });
 
@@ -1132,12 +1218,12 @@ test("one compare pane finishing does not release the other pane's lease", async
     "held-elsewhere",
     "the still-running pane keeps its message",
   );
-  // And the pane that did finish settles on the usual schedule.
+  // And the pane that did finish leaves its message continued.
   assert.equal(
     await otherTab.claim("base-m1", {
-      now: start + AUTO_CONTINUE_LEASE_SETTLE_MS + 1,
+      now: start + AUTO_CONTINUE_LEASE_TTL_MS + 1,
     }),
-    "started",
+    "held-elsewhere",
   );
 });
 
