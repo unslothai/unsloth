@@ -116,6 +116,7 @@ def racy_execution(action: str, reason: str) -> bool:
         return False
     return any(marker in (reason or "") for marker in entry[1])
 
+
 # The six that are NOT here, and why, since dropping an exemption needs as much justification as
 # granting one. `composer_fill`, `keystroke`, `copy_markdown`, `message_menu` and `select_text`
 # fail to run only when the control they need is absent or unresponsive -- "no composer on the
