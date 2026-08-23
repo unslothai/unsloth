@@ -1906,7 +1906,7 @@ def _clear_confirmed_hsa_spoof(physical_gfx: str) -> None:
     )
 
 
-# ROCr filters first and renumbers, then HIP (CUDA_VISIBLE_DEVICES is its alias) filters.
+# First-set-wins order, as _pick_visible_index documents below.
 _VISIBLE_DEVICE_MASKS = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
 
 
@@ -2853,8 +2853,8 @@ def _amd_torch_needs_dependency_pass() -> bool:
     """Return True when setup must run the dependency pass to repair non-ROCm torch.
 
     Scope is the wheel family, not the ROCm family: any ROCm marker keeps the fast path
-    even when the repair would reroute it. Fail closed when the host or torch is
-    uncertain. This probe never installs.
+    even when the repair would reroute it. Fails closed on an uncertain host or torch,
+    and never installs.
     """
     if NO_TORCH or not IS_LINUX:
         return False
