@@ -574,7 +574,11 @@ def _checked_link_target(
 
 
 def _plan_resolve(
-    path: Path, base: Path, replaced: set[str], archive: dict, depth: int = 0
+    path: Path,
+    base: Path,
+    replaced: set[str],
+    archive: dict,
+    depth: int = 0,
 ) -> Path:
     """``path`` with every component resolved as the tree will have it after extraction.
 
