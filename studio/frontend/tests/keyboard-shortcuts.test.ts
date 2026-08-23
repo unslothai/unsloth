@@ -288,6 +288,13 @@ test("macOS Option still fires an ⌥ chord when AltGraph is reported", () => {
   );
 });
 
+test("the tab-search chord counts as browser-owned on both platforms", () => {
+  // Chrome's tab search on both, and Firefox's add-ons manager off macOS, so
+  // the tab warns about it wherever a user picks it.
+  assert.ok(isBrowserReservedBinding("Mod+Shift+KeyA", true));
+  assert.ok(isBrowserReservedBinding("Mod+Shift+KeyA", false));
+});
+
 test("no default takes a chord the browser owns without a reason", () => {
   // The exceptions are the spec chords Studio keeps for the desktop build,
   // where they work; everything else has to be reachable on the web.
@@ -423,7 +430,7 @@ test("both slots resolve together", () => {
     alternate: "Mod+Alt+ArrowRight",
   });
   assert.deepEqual(resolveBindings({}, "archiveChat"), {
-    primary: "Mod+Shift+KeyA",
+    primary: "Mod+Alt+KeyE",
     alternate: null,
   });
 });
@@ -510,7 +517,7 @@ test("an alternate clashing with another action's primary is flagged", () => {
 
 test("an action's own two slots never conflict with each other", () => {
   const conflicts = findConflicts({
-    archiveChat: { alternate: "Mod+Shift+KeyA" },
+    archiveChat: { alternate: "Mod+Alt+KeyE" },
   });
   assert.equal(conflicts.size, 0);
 });

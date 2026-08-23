@@ -154,7 +154,9 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   // shipped, so ⌘N rides along as the alternate for the desktop build.
   def("newChat", "Mod+Shift+KeyO", { defaultAlternateBinding: "Mod+KeyN" }),
   def("newTemporaryChat", "Mod+Shift+KeyN"),
-  def("archiveChat", "Mod+Shift+KeyA"),
+  // ⇧⌘A is Chrome's tab search and Firefox's add-ons manager, so E, the archive
+  // key every mail client uses, on the ⌥ run the rest of these chat chords sit on.
+  def("archiveChat", "Mod+Alt+KeyE"),
   def("newStandaloneChat", "Mod+Alt+KeyO"),
   def("markChatUnread", "Mod+Shift+KeyU"),
   def("togglePinChat", "Mod+Alt+KeyP"),
@@ -280,6 +282,8 @@ const BROWSER_RESERVED_VALUES = new Set<string>([
   "Mod+KeyR",
   "Mod+Shift+KeyR",
   "Mod+KeyP",
+  // Chrome's tab search, and Firefox's add-ons manager.
+  "Mod+Shift+KeyA",
   "Mod+Tab",
   "Mod+Shift+Tab",
   "Ctrl+Tab",
