@@ -103,22 +103,37 @@ function stripIndent(body: string, indent: number): string {
 }
 
 /**
- * Whether `line` closes a fence opened with `marker`.
+ * Whether the line `[from, to)` of `text` closes a fence opened with `marker`.
  *
  * CommonMark 0.31.2 requires the closing fence to use the same character and
  * "at least as many" of it, so the opening length is a MINIMUM and not a match:
  * a four-backtick close is how a model closes a fence whose body contains a
  * three-backtick one. The previous back-reference demanded the exact same run
  * and left the close on screen as if it were code.
+ *
+ * Bounds rather than a line STRING because the caller has thousands of lines and
+ * the only thing most of them need is a look at their first character. Slicing
+ * each one, and testing each one against a regex, cost more than everything else
+ * in the scan put together.
  */
-function closesFence(line: string, marker: string): boolean {
-  let i = 0;
-  while (i < 3 && line[i] === " ") i += 1;
+function closesFenceAt(
+  text: string,
+  from: number,
+  to: number,
+  marker: string,
+): boolean {
+  let i = from;
+  while (i < from + 3 && text[i] === " ") i += 1;
   let run = 0;
-  while (line[i + run] === marker[0]) run += 1;
+  while (i + run < to && text[i + run] === marker[0]) run += 1;
   if (run < marker.length) return false;
-  // A closing fence carries no info string; only trailing spaces are allowed.
-  return /^[ \t]*$/.test(line.slice(i + run));
+  // A closing fence carries no info string; only trailing whitespace is allowed.
+  // A carriage return counts, which is what the per-line regex used to strip.
+  for (let j = i + run; j < to; j += 1) {
+    const c = text[j];
+    if (c !== " " && c !== "\t" && c !== "\r") return false;
+  }
+  return true;
 }
 
 /**
@@ -166,17 +181,29 @@ export function markdownBlockFallback(content: string): MarkdownBlockFallback {
  *   never       still streaming. All of it is content, which is the case the
  *               reader needs most: the failure happens mid-fence, long before it
  *               closes.
+ *
+ * Driven by `indexOf` on the delimiter rather than walked line by line. A close
+ * has to carry at least three of the opening character, so the only lines worth
+ * looking at are the ones holding such a run, and an ordinary code block has
+ * exactly one: its own. Walking every line instead cost ~50ns per LINE, which a
+ * long block pays in full every time it re-renders.
  */
 function fenceBody(body: string, marker: string): string | null {
   // The line break before the closing fence belongs to the fence's line, and a
   // block may or may not carry a trailing one of its own.
   const withoutTrailingBreak = body.replace(/\r?\n$/, "");
-  let start = 0;
+  // Three, not the marker itself: the opening run can be enormous, and a needle
+  // that long is both slow to build and slow to search for. This is a superset
+  // of the candidates, and `closesFenceAt` is what decides.
+  const probe = marker.slice(0, 3);
+  let from = 0;
   for (;;) {
-    const nl = withoutTrailingBreak.indexOf("\n", start);
+    const hit = withoutTrailingBreak.indexOf(probe, from);
+    if (hit === -1) return body;
+    const start = withoutTrailingBreak.lastIndexOf("\n", hit) + 1;
+    const nl = withoutTrailingBreak.indexOf("\n", hit);
     const end = nl === -1 ? withoutTrailingBreak.length : nl;
-    const line = withoutTrailingBreak.slice(start, end).replace(/\r$/, "");
-    if (closesFence(line, marker)) {
+    if (closesFenceAt(withoutTrailingBreak, start, end, marker)) {
       if (nl !== -1) return null;
       // An empty fence closes on the line after it opens, so there is no body at
       // all. Returning the closing run here is what showed ``` as its own code.
@@ -186,6 +213,8 @@ function fenceBody(body: string, marker: string): string | null {
       return withoutTrailingBreak.slice(0, cut);
     }
     if (nl === -1) return body;
-    start = nl + 1;
+    // Past the whole LINE, not past the run: every delimiter left on a line the
+    // scan has already rejected would be re-examined for nothing.
+    from = nl + 1;
   }
 }
