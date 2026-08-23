@@ -5470,3 +5470,41 @@ def test_a_matched_drafter_reports_why_it_cannot_run(
 
 def _record(seen, answer, at):
     return lambda *a: (seen.append(a[at] if at is not None else 1), answer)[1]
+
+
+def _drafter_snapshot(tmp_path, name, config):
+    snapshot = tmp_path / name / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    return tmp_path / name
+
+
+@pytest.mark.parametrize(
+    "config, hidden",
+    [
+        ({"model_type": "qwen3_5_mtp"}, True),
+        ({"model_type": "qwen3", "dflash_config": {"num_layers": 6}}, True),
+        ({"speculators_config": {"algorithm": "eagle3"}}, True),
+        ({"model_type": "qwen3", "num_hidden_layers": 40}, False),
+    ],
+)
+def test_drafter_checkpoints_are_hidden_from_the_cached_model_listing(tmp_path, config, hidden):
+    """The speculative picker downloads drafters into the cache the chat picker lists, and none of
+    them runs as a chat model."""
+    from hub.services.models import cache_inventory
+
+    repo = _drafter_snapshot(tmp_path, "models--org--repo", config)
+    metadata = cache_inventory._cached_model_local_metadata(repo)
+    assert bool(metadata.get("_hidden_drafter")) is hidden
+
+
+def test_an_unreadable_config_never_hides_a_cached_row(tmp_path):
+    """Classification is best effort: a repository it cannot read stays visible."""
+    from hub.services.models import cache_inventory
+
+    snapshot = tmp_path / "models--org--repo" / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text("{ not json", encoding = "utf-8")
+    assert "_hidden_drafter" not in cache_inventory._cached_model_local_metadata(
+        tmp_path / "models--org--repo"
+    )
