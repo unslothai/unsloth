@@ -194,3 +194,55 @@ def test_a_crashed_run_does_not_lock_the_directory_forever(tmp_path):
 
     rec = Recorder(out / "payload.jsonl", new_session_id())
     rec.close()
+
+
+def _lock_then_write_later(repo_root: str, outdir: str, delay_s: float, locked, done) -> None:
+    """Hold the lock across the gap a real holder has between locking and saying who it is."""
+    import os
+    import time
+
+    sys.path.insert(0, repo_root)
+    from tests.studio.studiobench.runtime.types import Recorder
+
+    marker = Path(outdir) / ".running.lock"
+    fd = os.open(marker, os.O_CREAT | os.O_RDWR, 0o644)
+    Recorder._lock_fd_exclusive(fd)
+    locked.set()
+    time.sleep(delay_s)
+    os.ftruncate(fd, 0)
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.write(fd, f"{os.getpid()} heldsession\n".encode())
+    os.fsync(fd)
+    done.wait(timeout = 60)
+
+
+def test_the_refusal_names_the_holder_that_has_not_written_its_marker_yet(tmp_path):
+    """The refusal must survive the window between the holder's lock and its write.
+
+    A holder takes the lock BEFORE it writes its pid and session, because it does not know it may
+    write until it holds the lock. A loser arriving inside that window reads an empty marker, and
+    the refusal used to fall back to "another run is still holding it" -- the phantom the named
+    refusal exists to avoid. The window is microseconds on an idle machine, which is why the
+    barrier tests only caught it on a loaded CI runner; here it is held open on purpose.
+    """
+    out = tmp_path / "held"
+    out.mkdir()
+    ctx = mp.get_context("spawn")
+    locked, done = ctx.Event(), ctx.Event()
+    holder = ctx.Process(
+        target = _lock_then_write_later,
+        args = (str(REPO_ROOT), str(out), 0.5, locked, done),
+    )
+    holder.start()
+    try:
+        assert locked.wait(timeout = 60), "the holder never took the lock"
+        sys.path.insert(0, str(REPO_ROOT))
+        from tests.studio.studiobench.runtime.types import Recorder, new_session_id
+
+        with pytest.raises(SystemExit) as caught:
+            Recorder(out / "payload.jsonl", new_session_id())
+        assert "heldsession is still running" in str(caught.value), str(caught.value)
+        assert f"pid {holder.pid}" in str(caught.value), str(caught.value)
+    finally:
+        done.set()
+        holder.join(timeout = 60)

@@ -425,7 +425,7 @@ class Recorder:
         try:
             self._lock_fd_exclusive(fd)
         except OSError:
-            held = self._read_marker(self._live_marker)
+            held = self._await_marker(self._live_marker)
             os.close(fd)
             who = (
                 f"session {held[0]} is still running as pid {held[1]}"
@@ -472,6 +472,26 @@ class Recorder:
                 fcntl.flock(fd, fcntl.LOCK_UN)
             except OSError:
                 pass
+
+    @classmethod
+    def _await_marker(cls, path: Path, timeout_s: float = 2.0) -> "Optional[tuple[str, int]]":
+        """(session, pid) of the holder, waiting out the gap between its lock and its write.
+
+        THE LOCK IS TAKEN BEFORE THE IDENTITY IS WRITTEN, and it has to be: a run does not know
+        it may write until it holds the lock. So there is a window in which the marker is locked
+        but still empty, and `_read_marker` on a loser that arrives inside it returns None. The
+        refusal then cannot name the holder, which is the one thing it exists to do. This is the
+        pidfile window libbsd's `pidfile_open` handles the same way, with a bounded retry: an
+        empty marker means indeterminate, not unheld. A holder that died before writing released
+        the lock with it, so this loser would have won it instead of waiting here; the deadline
+        only backstops a marker from some other writer that never says who it is.
+        """
+        deadline = time.monotonic() + timeout_s
+        while True:
+            got = cls._read_marker(path)
+            if got is not None or time.monotonic() >= deadline:
+                return got
+            time.sleep(0.005)
 
     @staticmethod
     def _read_marker(path: Path) -> "Optional[tuple[str, int]]":
