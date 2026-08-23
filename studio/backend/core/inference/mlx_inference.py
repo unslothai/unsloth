@@ -410,6 +410,34 @@ def _normalize_mlx_kv_bits(value):
     return bits
 
 
+def _mlx_rng_key_words():
+    """The MLX PRNG key as its two 32-bit words, or None if it cannot be read.
+
+    Deciding it here is what lets the rewind below stay unconditional.
+    """
+    import mlx.core as mx
+
+    try:
+        words = mx.random.state[0].tolist()
+    except Exception:
+        return None
+    return (int(words[0]), int(words[1])) if len(words) == 2 else None
+
+
+def _restore_mlx_rng_key(words):
+    """Rewind the MLX PRNG to a key captured by ``_mlx_rng_key_words``.
+
+    mlx 0.32.1 made mx.random.state a sentinel that refuses item assignment.
+    mx.random.key packs a seed as its two 32-bit halves, so reseeding with a
+    key's own words restores it exactly, over the whole unsigned 64-bit range.
+    """
+    import mlx.core as mx
+
+    if words is None:
+        return
+    mx.random.seed((words[0] << 32) | words[1])
+
+
 def _kv_quant_probe(language_model, entries, bits):
     """Attempt the conversion the runtime will perform, on a real cache.
 
@@ -438,8 +466,7 @@ def _kv_quant_probe(language_model, entries, bits):
         return 0, 0, "it uses a bounded sliding window", True
 
     # The forward pass below draws random numbers, so keep sampled output stable.
-    # mx.random.state is mutated in place, so restore element-wise, not by rebinding.
-    rng_state = list(mx.random.state)
+    rng_key = _mlx_rng_key_words()
     try:
         try:
             language_model(mx.array([[0]]), cache = entries)
@@ -465,7 +492,7 @@ def _kv_quant_probe(language_model, entries, bits):
                 retainable = False
         return converted, skipped, None, retainable
     finally:
-        mx.random.state[:] = rng_state
+        _restore_mlx_rng_key(rng_key)
 
 
 def _kv_quant_eligibility(

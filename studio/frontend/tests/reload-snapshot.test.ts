@@ -38,6 +38,14 @@ const imageDropzoneSource = readFileSync(
   new URL("../src/components/image-dropzone.tsx", import.meta.url),
   "utf8",
 );
+const attachmentPreviewSource = readFileSync(
+  new URL(
+    "../src/components/assistant-ui/attachment-preview.tsx",
+    import.meta.url,
+  ),
+  "utf8",
+);
+
 const attachmentSource = readFileSync(
   new URL("../src/components/assistant-ui/attachment.tsx", import.meta.url),
   "utf8",
@@ -1379,9 +1387,15 @@ test("carries live form state, except what sensitive fields hide", () => {
     attachmentSource,
     /export const ComposerAttachments[\s\S]*?data-reload-snapshot-sensitive/,
   );
+  // The dialog lives in attachment-preview.tsx; attachment.tsx passes the flag.
+  assert.match(attachmentSource, /<AttachmentPreviewDialog redactFromReload=/);
   assert.match(
-    attachmentSource,
-    /AttachmentPreviewDialog:[\s\S]*?redactFromReload[\s\S]*?data-reload-snapshot-sensitive=\{redactFromReload \? "" : undefined\}/,
+    attachmentPreviewSource,
+    /AttachmentPreviewDialog[\s\S]*?redactFromReload/,
+  );
+  assert.match(
+    attachmentPreviewSource,
+    /data-reload-snapshot-sensitive=\{redactFromReload \? "" : undefined\}/,
   );
 });
 

@@ -57,10 +57,11 @@ def _post(
     data = None,
     filename = "clip.wav",
     content = b"RIFFfake",
+    content_type = "audio/wav",
 ):
     return cli.post(
         "/v1/audio/transcriptions",
-        files = {"file": (filename, content, "audio/wav")},
+        files = {"file": (filename, content, content_type)},
         data = data or {},
     )
 
@@ -169,3 +170,310 @@ def test_the_studio_json_route_also_forwards_the_request(monkeypatch):
     assert resp.status_code == 200
     assert calls[0]["raw"] == b"RIFFfake"
     assert calls[0]["request"] is not None
+
+
+def _install_external(
+    monkeypatch,
+    *,
+    enabled = True,
+    media_type = "application/json",
+):
+    client_args = []
+    transcription_calls = []
+    credential_calls = []
+    config = {
+        "provider_type": "custom",
+        "display_name": "Whisper Box",
+        "base_url": "http://stt.local:8000/v1",
+        "is_enabled": enabled,
+    }
+
+    monkeypatch.setattr(
+        routes_module.providers_db,
+        "get_provider",
+        lambda provider_id: dict(config) if provider_id == "conn-1" else None,
+    )
+    monkeypatch.setattr(routes_module, "validate_provider_base_url", lambda url: url)
+
+    def _resolve_api_key(
+        provider_id,
+        encrypted_api_key,
+        *,
+        allow_saved_key = True,
+    ):
+        credential_calls.append(
+            {
+                "provider_id": provider_id,
+                "encrypted_api_key": encrypted_api_key,
+                "allow_saved_key": allow_saved_key,
+            }
+        )
+        return "sk-test" if allow_saved_key else ""
+
+    monkeypatch.setattr(routes_module, "resolve_provider_api_key_or_400", _resolve_api_key)
+
+    class _FakeClient:
+        def __init__(self, provider_type, base_url, api_key):
+            client_args.append(
+                {
+                    "provider_type": provider_type,
+                    "base_url": base_url,
+                    "api_key": api_key,
+                }
+            )
+
+        async def create_transcription(self, **kwargs):
+            transcription_calls.append(kwargs)
+            body = b"remote words" if media_type == "text/plain" else b'{"text":"remote words"}'
+            return body, media_type
+
+    monkeypatch.setattr(routes_module, "ExternalProviderClient", _FakeClient)
+    return client_args, transcription_calls, credential_calls
+
+
+def test_provider_id_routes_to_external_endpoint_without_loading_the_sidecar(monkeypatch):
+    cli, sidecar_calls = _make_client(monkeypatch)
+    client_args, transcription_calls, credential_calls = _install_external(monkeypatch)
+    resp = _post(
+        cli,
+        data = {
+            "provider_id": "conn-1",
+            "model": "Systran/faster-distil-whisper-large-v3",
+            "language": "en",
+        },
+        filename = "dictation.webm",
+        content = b"webm-audio",
+        content_type = "audio/webm",
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"text": "remote words"}
+    assert sidecar_calls == []
+    assert client_args == [
+        {
+            "provider_type": "custom",
+            "base_url": "http://stt.local:8000/v1",
+            "api_key": "sk-test",
+        }
+    ]
+    assert transcription_calls == [
+        {
+            "audio": b"webm-audio",
+            "filename": "dictation.webm",
+            "content_type": "audio/webm",
+            "model": "Systran/faster-distil-whisper-large-v3",
+            "language": "en",
+            "response_format": "json",
+        }
+    ]
+    assert credential_calls[0]["allow_saved_key"] is True
+
+
+def test_external_text_response_keeps_plain_text_shape(monkeypatch):
+    cli, sidecar_calls = _make_client(monkeypatch)
+    _install_external(monkeypatch, media_type = "text/plain")
+    resp = _post(
+        cli,
+        data = {
+            "provider_id": "conn-1",
+            "model": "whisper-1",
+            "response_format": "text",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.text == "remote words"
+    assert resp.headers["content-type"].startswith("text/plain")
+    assert sidecar_calls == []
+
+
+def test_external_connection_requires_a_model(monkeypatch):
+    cli, sidecar_calls = _make_client(monkeypatch)
+    client_args, _, _ = _install_external(monkeypatch)
+    resp = _post(cli, data = {"provider_id": "conn-1"})
+
+    assert resp.status_code == 400
+    assert "model is required" in resp.json()["error"]["message"]
+    assert client_args == []
+    assert sidecar_calls == []
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "enabled", "status"),
+    [("missing", True, 404), ("conn-1", False, 400)],
+)
+def test_external_connection_must_exist_and_be_enabled(monkeypatch, provider_id, enabled, status):
+    cli, sidecar_calls = _make_client(monkeypatch)
+    client_args, _, _ = _install_external(monkeypatch, enabled = enabled)
+    resp = _post(
+        cli,
+        data = {"provider_id": provider_id, "model": "whisper-1"},
+    )
+
+    assert resp.status_code == status
+    assert client_args == []
+    assert sidecar_calls == []
+
+
+def test_external_connection_validates_the_url_before_reading_its_key(monkeypatch):
+    cli, sidecar_calls = _make_client(monkeypatch)
+    _, _, credential_calls = _install_external(monkeypatch)
+
+    def _reject_url(_url):
+        raise ValueError("refused target")
+
+    monkeypatch.setattr(routes_module, "validate_provider_base_url", _reject_url)
+    resp = _post(
+        cli,
+        data = {"provider_id": "conn-1", "model": "whisper-1"},
+    )
+
+    assert resp.status_code == 400
+    assert credential_calls == []
+    assert sidecar_calls == []
+
+
+def test_api_key_callers_cannot_spend_a_saved_external_stt_key(monkeypatch):
+    cli, sidecar_calls = _make_client(monkeypatch)
+    client_args, _, credential_calls = _install_external(monkeypatch)
+    resp = cli.post(
+        "/v1/audio/transcriptions",
+        files = {"file": ("clip.wav", b"RIFFfake", "audio/wav")},
+        data = {"provider_id": "conn-1", "model": "whisper-1"},
+        headers = {"Authorization": "Bearer sk-unsloth-test"},
+    )
+
+    assert resp.status_code == 200
+    assert credential_calls[0]["allow_saved_key"] is False
+    assert client_args[0]["api_key"] == ""
+    assert sidecar_calls == []
+
+
+def test_external_connection_accepts_a_legacy_encrypted_key(monkeypatch):
+    cli, sidecar_calls = _make_client(monkeypatch)
+    _, _, credential_calls = _install_external(monkeypatch)
+    resp = _post(
+        cli,
+        data = {
+            "provider_id": "conn-1",
+            "model": "whisper-1",
+            "encrypted_api_key": "sealed-key",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert credential_calls[0]["encrypted_api_key"] == "sealed-key"
+    assert sidecar_calls == []
+
+
+def test_external_upstream_errors_are_502(monkeypatch):
+    import httpx
+
+    cli, sidecar_calls = _make_client(monkeypatch)
+    _install_external(monkeypatch)
+
+    async def _reject(self, **kwargs):
+        request = httpx.Request("POST", "http://stt.local:8000/v1/audio/transcriptions")
+        response = httpx.Response(503, text = "not ready", request = request)
+        raise httpx.HTTPStatusError("rejected", request = request, response = response)
+
+    monkeypatch.setattr(routes_module.ExternalProviderClient, "create_transcription", _reject)
+    resp = _post(
+        cli,
+        data = {"provider_id": "conn-1", "model": "whisper-1"},
+    )
+
+    assert resp.status_code == 502
+    assert "HTTP 503" in resp.json()["error"]["message"]
+    assert sidecar_calls == []
+
+
+def test_external_disconnect_cancels_the_upstream_request(monkeypatch):
+    import asyncio
+
+    _install_external(monkeypatch)
+    upstream_cancelled = asyncio.Event()
+
+    class _DisconnectingRequest:
+        headers = {}
+
+        async def is_disconnected(self):
+            return True
+
+    class _BlockingClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def create_transcription(self, **_kwargs):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                upstream_cancelled.set()
+                raise
+
+    monkeypatch.setattr(routes_module, "ExternalProviderClient", _BlockingClient)
+
+    async def _run():
+        with pytest.raises(asyncio.CancelledError):
+            await routes_module._external_stt_transcription(
+                provider_id = "conn-1",
+                raw = b"RIFFfake",
+                filename = "clip.wav",
+                content_type = "audio/wav",
+                model = "whisper-1",
+                language = None,
+                response_format = "json",
+                encrypted_api_key = None,
+                request = _DisconnectingRequest(),
+            )
+
+    asyncio.run(_run())
+    assert upstream_cancelled.is_set()
+
+
+def test_external_client_sends_openai_compatible_multipart(monkeypatch):
+    import asyncio
+    import httpx
+
+    import core.inference.external_provider as provider_module
+
+    captured = {}
+
+    class _HttpClient:
+        async def post(self, url, **kwargs):
+            captured.update(url = url, **kwargs)
+            request = httpx.Request("POST", url)
+            return httpx.Response(
+                200,
+                content = b'{"text":"hello"}',
+                headers = {"content-type": "application/json; charset=utf-8"},
+                request = request,
+            )
+
+    monkeypatch.setattr(provider_module, "_http_client", _HttpClient())
+    client = provider_module.ExternalProviderClient(
+        provider_type = "custom",
+        base_url = "https://stt.example.com/v1",
+        api_key = "sk-test",
+    )
+    body, media_type = asyncio.run(
+        client.create_transcription(
+            audio = b"webm-audio",
+            filename = "dictation.webm",
+            content_type = "audio/webm",
+            model = "whisper-1",
+            language = "en",
+        )
+    )
+
+    assert body == b'{"text":"hello"}'
+    assert media_type == "application/json"
+    assert captured["url"] == "https://stt.example.com/v1/audio/transcriptions"
+    assert "Content-Type" not in captured["headers"]
+    assert captured["headers"]["Authorization"] == "Bearer sk-test"
+    assert captured["files"] == {"file": ("dictation.webm", b"webm-audio", "audio/webm")}
+    assert captured["data"] == {
+        "model": "whisper-1",
+        "response_format": "json",
+        "language": "en",
+    }

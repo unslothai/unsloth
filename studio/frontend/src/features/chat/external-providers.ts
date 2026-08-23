@@ -167,6 +167,13 @@ function persistProviderModelCapabilities(): void {
   }
 }
 
+export function getProviderModelCapabilities(
+  providerType: string,
+): Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined {
+  hydrateProviderModelCapabilities();
+  return REGISTRY_MODEL_CAPABILITIES.get(providerType);
+}
+
 export function setProviderModelCapabilities(
   providerType: string,
   capabilities: Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined,

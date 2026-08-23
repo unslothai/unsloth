@@ -31,6 +31,7 @@ from hub.utils.hf_cache_state import (
     snapshot_selection_key,
 )
 from hub.utils.paths import is_valid_repo_id as _is_valid_repo_id
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = get_logger(__name__)
 
@@ -211,6 +212,9 @@ def _variant_main_shard_present(
     entries, complete = _walk_files(snapshot_dir)
     for path in entries:
         relative = path.relative_to(snapshot_dir).as_posix()
+        # A sidecar left by a deleted quant answers the quant matcher, so the job is re-adopted.
+        if is_appledouble_metadata(path):
+            continue
         if variant_file_matcher(relative, companions = False):
             return True
     return None if not complete else False
@@ -266,6 +270,8 @@ def _materialized_bytes(snapshot_dir: Path, variant_file_matcher: "VariantFileMa
         entries = list(snapshot_dir.rglob("*"))  # unordered: the result is a sum
     except OSError:
         return 0
+    # Same false "still active" as the companion clause below, reached by a stranded sidecar.
+    entries = [path for path in entries if not is_appledouble_metadata(path)]
 
     def _accepts(relative: str, *, companions: bool) -> bool:
         # A matcher that understands the distinction gets asked for it; an older one is

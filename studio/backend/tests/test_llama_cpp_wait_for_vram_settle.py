@@ -10,6 +10,7 @@ nvidia-smi involved.
 
 from __future__ import annotations
 
+import importlib.util as _importlib_util
 import sys
 import time
 import types as _types
@@ -26,7 +27,26 @@ if _BACKEND_DIR not in sys.path:
 
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-sys.modules.setdefault("loggers", _loggers_stub)
+# Same reasoning as httpx below: only when the real one is absent. With _BACKEND_DIR on
+# sys.path the in-repo loggers package resolves, and stubbing over it trips the shadowing
+# guard in test_backend_ci_parallel_isolation.py.
+#
+# Probed with find_spec, not `import loggers`: an import bound purely to test
+# resolvability leaves an unused name that scripts/verify_import_hoist.py reads as a
+# botched hoist, and loggers/handlers.py imports structlog at module scope, whose stub is
+# not installed until below, so in the very environment this block exists for the import
+# would fail on that transitive dep and the except branch would stub over the real
+# package. find_spec answers "is it resolvable" without executing the module.
+#
+# Same except clause as _is_installed() in test_backend_ci_parallel_isolation.py:
+# find_spec raises for a missing parent, and ValueError when a prior test left a bare
+# ModuleType (__spec__ is None) in sys.modules, where the stub is already there anyway.
+try:
+    _real_loggers = _importlib_util.find_spec("loggers") is not None
+except (ImportError, ValueError):
+    _real_loggers = False
+if not _real_loggers:
+    sys.modules.setdefault("loggers", _loggers_stub)
 
 _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
