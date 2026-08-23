@@ -2025,8 +2025,7 @@ def test_a_correction_is_not_buried_by_the_increments_that_follow_it():
 
     assert "Actually build Tetris instead" in items, "the correction must survive"
     assert items.index("Build Flappy Bird") < items.index("Actually build Tetris instead")
-    # The pair is paid for by the OLDEST turn the newest-first walk would have taken, so
-    # the newest increments are all still there.
+    # Paid for by the OLDEST turn, so the newest increments are all still there.
     assert items[-1] == "Add feature 7"
 
 
@@ -2060,8 +2059,7 @@ def test_the_opening_pair_is_taken_whole_or_not_at_all():
     two = carried_forward_items(messages, max_tokens = 4096, max_items = 2)
     three = carried_forward_items(messages, max_tokens = 4096, max_items = 3)
 
-    # Two slots: the plain newest-first walk decides, and it never states a task it was
-    # not told. Nothing here is wrong, only missing.
+    # Two slots: the plain newest-first walk decides. Nothing wrong, only missing.
     assert two == ["Add feature 1", "Add feature 2"]
     # Three: the opening request and the correction to it, plus the newest turn.
     assert three == ["Build Flappy Bird", "Actually build Tetris instead", "Add feature 2"]
@@ -2253,8 +2251,7 @@ def test_the_carried_opening_pair_survives_the_next_compaction():
     assert truncation["fits"] is True
     assert correction in items, "the correction must not be dropped while the opening stays"
     assert items.index(opening) < items.index(correction)
-    # Paid by the OLDEST increment, exactly as the fresh walk pays for the pair, so the
-    # newest direction the user gave is still there.
+    # Paid by the OLDEST increment, as the fresh walk pays, so the newest direction stays.
     assert items[-1] == increments[-1]
     assert increments[0] not in items
 
@@ -2276,8 +2273,8 @@ def test_the_merged_recap_abandons_the_pair_the_same_way_the_fresh_walk_does():
 
     assert merged == [newest], "the abandoned opening must not outlive the correction"
     assert merged == carried_forward_items(_user_turns(opening, correction, newest), max_tokens = 40)
-    # Never empty, and never at the cost of the newest direction: the pair is reserved
-    # BEHIND the newest affordable item, so the newest is taken before the pair is priced.
+    # Never at the cost of the newest direction: the pair is reserved BEHIND the newest
+    # affordable item, so the newest is taken before the pair is priced.
     assert newest in merged
 
 
@@ -2347,7 +2344,7 @@ def test_a_one_bullet_block_is_not_paired_with_a_turn_it_never_preceded():
 
     assert truncation["fits"] is True
     # 358 tokens: the newest turn (94) and the carried bullet (75), never the 279-token
-    # spec. Pairing the bullet with the spec would drop the bullet along with it.
+    # spec. Pairing the bullet with the spec would drop it too.
     assert items == [carried, newest]
 
 
@@ -2420,8 +2417,8 @@ def test_the_merge_never_states_the_abandoned_task_whichever_bullet_corrects_it(
     assert opening not in merged, "the abandoned request must not outlive its correction"
     # Never at the cost of the newest direction, and never empty.
     assert merged[-1] == fresh[-1]
-    # The plain walk is not the safe fallback here: it states the abandoned task itself,
-    # so "stop reserving on the merged path" would not have fixed this.
+    # The plain walk is no safe fallback: it states the abandoned task itself, so "stop
+    # reserving on the merged path" would not have fixed this.
     plain = checkpoint._recap(prior + fresh, max_tokens = 60, max_items = 8)
     assert opening in plain and correction not in plain
 
