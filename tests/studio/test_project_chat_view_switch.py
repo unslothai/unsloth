@@ -1994,7 +1994,12 @@ def test_outstanding_claims_stay_bounded():
     )
     assert out["started"] == 40, "every switch really was started"
     assert len(out["claims"]) == 16, "the claim list is capped"
-    assert out["claims"][-1] == "thread-39", "and it keeps the newest, dropping the oldest"
+    assert out["claims"][-1] == {"id": "thread-39", "settled": False}, (
+        "and it keeps the newest, dropping the oldest"
+    )
+    assert all(claim["settled"] is False for claim in out["claims"]), (
+        "none of these switches ever settled, which is why nothing retired them"
+    )
     assert out["unhandled"] == 0
 
 
@@ -2100,4 +2105,65 @@ def test_a_saved_switch_failing_late_does_not_detach_the_saved_chat_that_replace
     assert (
         out["activeThreadId"] == "thread-b"
     ), "a superseded saved switch failing must not detach the saved chat now on screen"
+    assert out["unhandled"] == 0
+
+
+def test_a_claim_whose_switch_settled_off_view_does_not_outlive_it():
+    """A claim has to be retired by its own switch settling, not by a view happening to
+    notice that thread.
+
+    A is delayed, B becomes visible, A settles anyway: the B view reasserts B and spends a
+    B claim, and A's claim stays armed with nothing left to correct. Opening A normally
+    later spends the stale claim instead of the new one, so returning to a project composer
+    reads the legitimate A as a stale arrival and starts a SECOND switchToNewThread
+    alongside the landing's own -- which can switch away from a thread the user has already
+    sent a message on.
+    """
+    out = _run(
+        "renderProvider, renderSettled, switchState, world",
+        """
+        await renderSettled({ newThreadNonce: "n1" });
+
+        // A is opened and held.
+        let releaseA: any;
+        world.switchToThreadGate = new Promise((resolve) => { releaseA = resolve; });
+        renderProvider({ initialThreadId: "thread-a" });
+        await tick();
+
+        // B is opened and lands, so B is what the user is looking at.
+        world.switchToThreadGate = null;
+        await renderSettled({ initialThreadId: "thread-b" });
+
+        // A settles anyway, off view. The B view reasserts B.
+        releaseA();
+        await tick();
+        await tick();
+        await renderSettled({ initialThreadId: "thread-b" });
+        const armedAfterB = switchState().pendingSavedThreadIds.length;
+
+        // Later the user opens A normally, and it lands while on screen.
+        await renderSettled({ initialThreadId: "thread-a" });
+
+        // Then goes to the project composer on a fresh nonce.
+        const before = world.switchedToNewThread;
+        await renderSettled({ newThreadNonce: "n2" });
+        await tick();
+        await tick();
+
+        console.log(JSON.stringify({
+          armedAfterB,
+          claims: switchState().pendingSavedThreadIds,
+          newThreadSwitches: world.switchedToNewThread - before,
+          unhandled: unhandled.length,
+        }));
+        """,
+    )
+    assert out["armedAfterB"] == 0, (
+        "a switch that settled while another saved chat was visible leaves nothing armed"
+    )
+    assert out["newThreadSwitches"] == 1, (
+        "the landing's own switch and no correction: a legitimate saved chat that the user "
+        "opened and left is not a stale arrival"
+    )
+    assert out["claims"] == []
     assert out["unhandled"] == 0

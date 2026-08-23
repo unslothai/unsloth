@@ -1601,6 +1601,8 @@ function createRuntimeHook(modelType: ModelType, pairId?: string) {
 // is only here so a never-settling switch cannot grow the list for the life of the tab.
 const MAX_PENDING_SAVED_THREAD_SWITCHES = 16;
 
+type PendingSavedThreadSwitch = { id: string; settled: boolean };
+
 type NewThreadSwitchState = {
   activeNonce: string | null;
   hasSwitched: boolean;
@@ -1616,7 +1618,12 @@ type NewThreadSwitchState = {
   // A list, not the most recent id: opening two saved chats faster than either settles
   // leaves two switches out, and whichever lands second would find a claim already spent
   // by the first and be left as the main thread under a project composer.
-  pendingSavedThreadIds: string[];
+  //
+  // Each entry records whether its OWN switch has settled, so a claim cannot outlive the
+  // switch it stands for. One that settled while a different saved chat was visible has
+  // had its chance to be corrected and must be retired, or opening that thread legitimately
+  // later would spend the stale entry and leave the fresh one to be misread as an arrival.
+  pendingSavedThreadIds: PendingSavedThreadSwitch[];
 };
 
 function ThreadAutoSwitch({
@@ -1657,7 +1664,8 @@ function ThreadAutoSwitch({
       // the id once would let the first stale arrival spend the only claim and the second
       // be accepted beneath the project composer. Each arrival spends exactly one entry.
       const claims = newThreadSwitchStateRef.current.pendingSavedThreadIds;
-      claims.push(threadId);
+      const claim: PendingSavedThreadSwitch = { id: threadId, settled: false };
+      claims.push(claim);
       // Bounded because a claim is only spent when its id arrives, and a switch that
       // never settles never spends one. Oldest first: the longest-outstanding switch is
       // the least likely to still be able to take a view.
@@ -1670,17 +1678,28 @@ function ThreadAutoSwitch({
       const switchResult = aui.threads().switchToThread(threadId) as unknown;
       if (
         switchResult &&
-        typeof (switchResult as Promise<void>).catch === "function"
+        typeof (switchResult as Promise<void>).then === "function"
       ) {
-        void (switchResult as Promise<void>).catch(() => {
-          // Only if this switch is still the current one. Unguarded, a rejection landing
-          // after the user moved to a project landing cleared the active id that view had
-          // just set, detaching a chat this failure has nothing to do with.
-          if (newThreadSwitchStateRef.current.attempt !== attemptAtStart) return;
-          if (syncActiveThreadId) {
-            useChatRuntimeStore.getState().setActiveThreadId(null);
-          }
-        });
+        // Both arms retire the claim, because both end the switch. A rejected switch never
+        // assigns a main thread, so its claim could otherwise sit armed for ever.
+        void (switchResult as Promise<void>).then(
+          () => {
+            claim.settled = true;
+          },
+          () => {
+            claim.settled = true;
+            // Only if this switch is still the current one. Unguarded, a rejection landing
+            // after the user moved to a project landing cleared the active id that view had
+            // just set, detaching a chat this failure has nothing to do with.
+            if (newThreadSwitchStateRef.current.attempt !== attemptAtStart) return;
+            if (syncActiveThreadId) {
+              useChatRuntimeStore.getState().setActiveThreadId(null);
+            }
+          },
+        );
+      } else {
+        // A synchronous switch is already over by the time this line runs.
+        claim.settled = true;
       }
     }
   }, [
@@ -1700,11 +1719,14 @@ function ThreadAutoSwitch({
     // The switch landed while this view is still mounted, so it was not stale and the
     // nonce view has nothing to correct. Released here rather than in the promise: this
     // effect only runs while the saved chat is on screen, which is exactly the condition.
-    const claims = newThreadSwitchStateRef.current.pendingSavedThreadIds;
-    const claimed = claims.indexOf(threadId);
-    if (claimed !== -1) {
-      claims.splice(claimed, 1);
-    }
+    // Every settled claim, not just this thread's. The view is stable on `threadId` with
+    // that thread already the main one, so any switch that has ALREADY finished has had its
+    // chance to be recognised as a stale arrival and cannot be one now. Switches still in
+    // flight are untouched: those can still land somewhere they do not belong.
+    const state = newThreadSwitchStateRef.current;
+    state.pendingSavedThreadIds = state.pendingSavedThreadIds.filter(
+      (claim) => !claim.settled,
+    );
     if (!syncActiveThreadId) {
       return;
     }
@@ -1827,7 +1849,9 @@ function ThreadNewChatSwitch({
     if (switchState.activeNonce !== nonce) {
       return;
     }
-    const claimed = mainThreadId ? switchState.pendingSavedThreadIds.indexOf(mainThreadId) : -1;
+    const claimed = mainThreadId
+      ? switchState.pendingSavedThreadIds.findIndex((claim) => claim.id === mainThreadId)
+      : -1;
     if (claimed === -1) {
       return;
     }
