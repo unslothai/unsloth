@@ -197,6 +197,32 @@ def test_tuning_carries_over_from_the_bare_repo_entry(override_store):
         assert kept[field] == value, f"{field} was lost saving under the qualified key"
 
 
+def test_carry_over_does_not_activate_tuning_from_a_row_no_load_reads(override_store):
+    # The carry-over above walks a list of spellings, but a load does not: it stops at
+    # the first non-empty row (resolve_override_for_load) rather than merging across
+    # them. So tuning sitting in a row the qualified key shadows is dormant, and pulling
+    # it up into the winning row would switch it on -- from a save that was about
+    # something else entirely, on a client with no control for these fields to show it.
+    bare_id = "unsloth/Repo-GGUF"
+    _put(bare_id, **PRE_TUNING_PAYLOAD, **TUNING_PAYLOAD, mirrors_server_tuning = True)
+    # The qualified row exists and wins, and has none of the group.
+    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_server_tuning = True)
+    _, active = settings.resolve_override_for_load(MODEL)
+    assert active, "precondition: the qualified row is what a load resolves to"
+    assert not any(field in active for field in SERVER_TUNING_FIELDS)
+
+    # The older client saves the qualified key, sending none of the group.
+    _put(MODEL, **PRE_TUNING_PAYLOAD)
+
+    kept = settings.get_model_override(MODEL)
+    for field in SERVER_TUNING_FIELDS:
+        assert field not in kept, f"{field} was promoted out of a row no load reads"
+    # And the row it came from is left exactly as it was, still dormant behind the
+    # qualified key rather than emptied by having been read.
+    for field, value in TUNING_PAYLOAD.items():
+        assert settings.get_model_override(bare_id)[field] == value
+
+
 def test_a_fill_pass_adds_the_tuning_group_without_disturbing_the_row(override_store):
     # The one merge path there is, and the one the backfill uses. A fill must not be
     # able to cause the erasure above, or the upgrade pass itself would strip the row

@@ -1567,15 +1567,20 @@ def update_openai_auto_switch_override(
             ):
                 if _candidate and _candidate not in _alias_ids:
                     _alias_ids.append(_candidate)
+            # Taken as a unit from the first row that exists, not field by field down
+            # the list. A load stops at the first non-empty row (resolve_override_for_load)
+            # rather than merging, so tuning in a row that never wins is dormant, and
+            # filling a gap in the winner from a loser would switch it on as a side effect
+            # of saving something unrelated. Single-valued above, so the distinction only
+            # shows up here.
             for _alias_id in _alias_ids:
-                if all(_kept_tuning[name] is not None for name in _tuning_fields):
-                    break
                 _stored_tuning = get_model_override(_alias_id)
                 if not _stored_tuning:
                     continue
                 for name in _tuning_fields:
                     if _kept_tuning[name] is None:
                         _kept_tuning[name] = _stored_tuning.get(name)
+                break
         if payload.remove is True:
             # An explicit remove wins over any other field. Remove the key a load resolves to,
             # not the literal one sent (the browser normalizes casing), and every spelling:
