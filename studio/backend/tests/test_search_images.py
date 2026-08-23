@@ -1115,9 +1115,9 @@ def test_a_selective_clear_does_not_abort_a_fetch_for_an_image_it_spared(monkeyp
         tools, "_fetch_url_raw", lambda url, **kw: (None, _png_bytes((40, 30)), "image/png")
     )
 
-    assert search_images.thumbnail_bytes(spared["id"]) is not None, (
-        "a clear that deliberately kept this image must not take its in-flight fetch down"
-    )
+    assert (
+        search_images.thumbnail_bytes(spared["id"]) is not None
+    ), "a clear that deliberately kept this image must not take its in-flight fetch down"
     assert list(tmp_path.glob(f"{spared['id']}.jpg")), "and its bytes belong on disk"
 
 
@@ -1160,8 +1160,8 @@ def test_an_overflowing_reap_record_falls_back_to_aborting_everything(monkeypatc
     search_images.clear_cache(reaped_ids)
 
     assert search_images._reaped_at == {}, "the per-id record is dropped, not half-kept"
-    assert search_images._full_clear_generation > before, (
-        "so the blunt signal has to take over, or a reaped id would look spared"
-    )
+    assert (
+        search_images._full_clear_generation > before
+    ), "so the blunt signal has to take over, or a reaped id would look spared"
     with search_images._registry_lock:
         assert search_images._reaped_since_locked("aaaaaaaaaaaa", before) is True
