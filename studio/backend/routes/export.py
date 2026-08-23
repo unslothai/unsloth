@@ -215,8 +215,8 @@ async def get_export_logs(
     proxies -- notably Cloudflare quick tunnels (`*.trycloudflare.com`) used by
     `--secure` mode -- buffer streamed GET responses until the stream closes.
     This endpoint returns the same ring-buffer lines as a short, complete JSON
-    response that Quick Tunnels deliver promptly,
-    so the frontend can poll it and still show logs in near real time.
+    response that no proxy buffers, so the frontend can poll it and still show
+    logs in near real time even where the stream itself does not arrive.
 
     Shares the orchestrator's monotonic `seq` cursor with the SSE stream, so the
     two transports can run together and the client de-dupes by seq.
@@ -508,6 +508,8 @@ def _format_sse(
     return "\n".join(lines)
 
 
+# POST too: quick tunnels hold a streamed GET until it closes. A separate GET
+# registration (not one api_route) keeps old clients without sharing an operationId.
 @router.post("/logs/stream")
 @router.get("/logs/stream", include_in_schema = False)
 async def stream_export_logs(

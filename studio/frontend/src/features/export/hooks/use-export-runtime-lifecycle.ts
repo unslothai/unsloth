@@ -12,7 +12,7 @@ import { useExportRuntimeStore } from "../stores/export-runtime-store";
 
 const STATUS_POLL_INTERVAL_MS = 5000;
 const STREAM_RECONNECT_DELAY_MS = 600;
-// short-response fallback cadence for dropped or stalled export streams
+// Short-response fallback cadence, for a proxy that drops or stalls the log stream.
 const LOG_POLL_INTERVAL_MS = 750;
 
 /**

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import copy
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Optional
 from urllib.parse import urlparse
@@ -38,6 +39,10 @@ from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_err
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+# Job event keepalive cadence. Well inside the ~100s a quick tunnel allows between
+# body bytes, and rare enough that a long quiet job costs a few bytes a minute.
+_KEEPALIVE_EVERY_S = 15.0
 
 # A stdio provider is a command this host would run, so only a UI session may
 # supply one. Annotated, not a Depends default, so a direct call gets False.
@@ -615,6 +620,8 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
     }
 
 
+# POST too: quick tunnels hold a streamed GET until it closes. A separate GET
+# registration (not one api_route) keeps old clients without sharing an operationId.
 @router.post("/jobs/{job_id}/events")
 @router.get("/jobs/{job_id}/events", include_in_schema = False)
 async def job_events(request: Request, job_id: str):
@@ -640,6 +647,7 @@ async def job_events(request: Request, job_id: str):
 
     async def gen():
         try:
+            last_sent = time.monotonic()
             for event in sub.replay:
                 yield sub.format_sse(event)
 
@@ -648,9 +656,19 @@ async def job_events(request: Request, job_id: str):
                     break
                 event = await sub.next_event(timeout_sec = 1.0)
                 if event is None:
+                    # A quiet job sends nothing for minutes, and a quick tunnel drops a
+                    # response whose origin has gone ~100s without a body byte (524).
+                    if time.monotonic() - last_sent >= _KEEPALIVE_EVERY_S:
+                        last_sent = time.monotonic()
+                        yield ": keepalive\n\n"
                     continue
+                last_sent = time.monotonic()
                 yield sub.format_sse(event)
         finally:
             mgr.unsubscribe(sub)
 
-    return StreamingResponse(gen(), media_type = "text/event-stream")
+    return StreamingResponse(
+        gen(),
+        media_type = "text/event-stream",
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

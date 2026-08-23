@@ -263,8 +263,8 @@ export interface ExportLogsResponse {
 }
 
 /**
- * short-response fallback for {@link streamExportLogs}. it carries the same
- * ring-buffer lines when a proxy drops or stalls a stream. Poll it while a run
+ * Short-response fallback for {@link streamExportLogs}, carrying the same
+ * ring-buffer lines when a proxy drops or stalls the stream. Poll it while a run
  * is active and merge entries into the store, de-duped by seq.
  */
 export async function fetchExportLogs(

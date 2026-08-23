@@ -812,6 +812,8 @@ def job_status(job_id: str, subject: str = Depends(get_current_subject)) -> dict
     }
 
 
+# POST too: quick tunnels hold a streamed GET until it closes. A separate GET
+# registration (not one api_route) keeps old clients without sharing an operationId.
 @router.post("/jobs/{job_id}/events")
 @router.get("/jobs/{job_id}/events", include_in_schema = False)
 def job_events(job_id: str, subject: str = Depends(get_current_subject)) -> StreamingResponse:
@@ -866,6 +868,7 @@ def folder_job_status(job_id: str, subject: str = Depends(get_current_subject)) 
     return _folder_job_view(row)
 
 
+# POST too, for the same reason as /jobs/{job_id}/events above.
 @router.post("/linked-folder-jobs/{job_id}/events")
 @router.get("/linked-folder-jobs/{job_id}/events", include_in_schema = False)
 def folder_job_events(

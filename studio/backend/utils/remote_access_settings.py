@@ -239,7 +239,10 @@ def remote_access_status(app_state) -> dict:
         "can_stop": can_stop,
         "block_reason": block_reason,
         "password_pending": password_pending,
-        # this capability tracks standard get sse; studio streams use post through quick tunnels.
+        # Plain GET/EventSource support, not Studio's own streams. Measured on three
+        # fresh quick tunnels: a streamed GET delivers nothing until it closes, and no
+        # response header changes that (no-store, no-transform, identity all still
+        # buffer), so Studio's streams use POST instead and this stays false.
         "streaming_supported": status["url"] is None,
     }
 

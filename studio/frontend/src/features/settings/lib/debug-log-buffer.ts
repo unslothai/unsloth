@@ -62,8 +62,8 @@ export interface LogBufferState {
 
 export const EMPTY_BUFFER: LogBufferState = { lines: [], cursor: null };
 
-/** poll delay for a mode, or null when the user drives it by hand. "live" uses
- * short requests so it remains usable through temporary tunnels and proxies.
+/** Poll delay for a mode, or null when the user drives it by hand. "live" polls
+ * with short requests rather than streaming, so it survives any proxy.
  */
 export function pollDelayMs(mode: RefreshMode): number | null {
   switch (mode) {
