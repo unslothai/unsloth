@@ -153,7 +153,9 @@ def order_is_balanced(plan: list[tuple[Target, Cell, RungPlan]]) -> bool:
 
 
 def unmeasured_planned_cells(
-    records: list[dict], planned: Sequence[str], session_id: Optional[str] = None
+    records: list[dict],
+    planned: Sequence[str],
+    session_id: Optional[str] = None,
 ) -> list[str]:
     """The planned cells this session has no completed reading for, in plan order.
 

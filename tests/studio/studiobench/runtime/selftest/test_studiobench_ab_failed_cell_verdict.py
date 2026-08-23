@@ -36,7 +36,13 @@ SIDES = [
 LADDER = (("10K", 10_000, 100.0, 200.0), ("100K", 100_000, 100.0, 80.0))
 
 
-def _cell_row(cell_id, arm, tokens, *, completed = True):
+def _cell_row(
+    cell_id,
+    arm,
+    tokens,
+    *,
+    completed = True,
+):
     return {
         "row_type": "cell",
         "cell_id": cell_id,
@@ -61,7 +67,12 @@ def _keystroke(cell_id, p95):
     }
 
 
-def _table(tmp_path, *, failed: str | None, planned_known: bool = True) -> str:
+def _table(
+    tmp_path,
+    *,
+    failed: str | None,
+    planned_known: bool = True,
+) -> str:
     """Write the payload one A/B session would write, then render it the way `run()` does."""
 
     paths = Paths.under(tmp_path / "out")

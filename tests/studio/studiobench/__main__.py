@@ -1005,7 +1005,13 @@ def _sweep_surfaces(sides: list, ctx, paths) -> None:
         ctx.recorder.gate(f"surface_sweep:{label}", passed, manifest)
 
 
-def _render_ab(paths, sides, session_id: str, corpus_hash: str, planned = ()) -> None:
+def _render_ab(
+    paths,
+    sides,
+    session_id: str,
+    corpus_hash: str,
+    planned = (),
+) -> None:
     """Render the A/B table from the payload the run just wrote.
 
     Read back from disk rather than kept in memory on purpose: it is the same path a tester takes
@@ -1417,7 +1423,11 @@ def payload_mark(payload_path) -> int:
         return 0
 
 
-def rollback_session_rows(payload_path, mark: int, log = _log) -> int:
+def rollback_session_rows(
+    payload_path,
+    mark: int,
+    log = _log,
+) -> int:
     """Undo everything this session appended, back to `mark`. The bytes dropped.
 
     THE RULE `prepare_payload` STATES: a refusal has to leave the payload it refused exactly as it
