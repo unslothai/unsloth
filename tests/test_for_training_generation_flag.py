@@ -22,9 +22,7 @@ def _for_training(module, class_name):
     path = Path(__file__).parents[1] / "unsloth" / "models" / module
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     model_class = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == class_name
+        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name
     )
     method = next(
         node
