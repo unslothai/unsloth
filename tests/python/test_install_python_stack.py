@@ -795,9 +795,7 @@ class TestDuplicateCoreMetadataRepair:
         monkeypatch.setattr(
             ips.install_manifest, "installed_versions", lambda _n: ["", "2026.8.15"]
         )
-        monkeypatch.setattr(
-            ips.install_manifest, "invalid_metadata_paths", lambda _n: [malformed]
-        )
+        monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _n: [malformed])
         monkeypatch.setattr(ips.install_manifest, "pip_backup_metadata_paths", lambda _n: [])
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         # The rewrite is what normally saves this record; deny it to reach the branch.
@@ -814,7 +812,6 @@ class TestDuplicateCoreMetadataRepair:
         assert "cannot be read or rewritten" in capsys.readouterr().err
         assert malformed.is_dir()
         assert (malformed / "METADATA").read_bytes() == b"\xff\xfe"
-
 
     def test_an_unrecorded_stale_record_fails_closed_even_beside_a_good_one(
         self, tmp_path, monkeypatch, capsys
@@ -1981,9 +1978,7 @@ class TestDuplicateCoreMetadataRepair:
 
         monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _n: next(probes))
         monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _n: [])
-        monkeypatch.setattr(
-            ips.install_manifest, "pip_backup_metadata_paths", lambda _n: [backup]
-        )
+        monkeypatch.setattr(ips.install_manifest, "pip_backup_metadata_paths", lambda _n: [backup])
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
         monkeypatch.setattr(ips, "_stage_replacement", lambda _n: None)
@@ -1991,8 +1986,6 @@ class TestDuplicateCoreMetadataRepair:
         assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
         assert backup.is_dir()
         assert "Name: unsloth" in (backup / "METADATA").read_text()
-
-
 
     def test_staging_builds_a_wheel_so_the_offline_install_can_work(self):
         """pip download leaves an sdist for a source-only index, and the install
