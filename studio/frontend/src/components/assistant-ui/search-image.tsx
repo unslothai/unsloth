@@ -44,6 +44,11 @@ function useSearchThumbnail(id: string, nearViewport: boolean): LoadState {
     authFetch(searchImagePath(id), { signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) {
+          // Guarded like the success path below: a non-ok response for the id this
+          // element used to hold would otherwise write that id's state back, and the
+          // render below falls through to idle for it -- a skeleton that never resolves
+          // because the effect has no reason to run again.
+          if (controller.signal.aborted) return;
           setState({ id, load: { status: "failed" } });
           return;
         }

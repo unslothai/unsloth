@@ -840,3 +840,100 @@ test("the automatic lookup reads this run's approval level, not the open chat's"
   assert.match(captured, /\n\s*confirmToolCalls,\n/);
   assert.match(captured, /\n\s*permissionMode,\n/);
 });
+
+test("every export path strips the tokens, not just the clipboard", () => {
+  // The tokens are renderer markup. A per-message export, a reply saved as a
+  // project source and a whole chat saved as one all reach disk (or back into
+  // model context) by a different route than the copy button.
+  const threadSource = readFileSync(
+    fileURLToPath(
+      new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    ),
+    "utf8",
+  );
+  const exporter = threadSource.slice(
+    threadSource.indexOf("async function exportMessageMarkdown("),
+    threadSource.indexOf("const AssistantActionBar"),
+  );
+  assert.ok(exporter.length > 0, "exportMessageMarkdown moved");
+  assert.match(
+    exporter,
+    /downloadFile\(\s*(\/\/[^\n]*\n\s*)*stripSearchImageTokens\(content\)/,
+    "the per-message markdown export must strip the tokens",
+  );
+  assert.match(
+    threadSource,
+    /stripSearchImageTokens\(\s*replySourceMarkdown\(/,
+    "a reply saved as a project source must strip the tokens",
+  );
+  const dialogSource = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  const saveSource = dialogSource.slice(
+    dialogSource.indexOf("async function saveConversationAsProjectSource("),
+    dialogSource.indexOf("export async function saveChatItemAsProjectSource("),
+  );
+  assert.ok(saveSource.length > 0, "saveConversationAsProjectSource moved");
+  assert.match(
+    saveSource,
+    /stripSearchImageTokens\(messageToMarkdown\(msg\)\)/,
+    "a chat saved as a project source must strip the tokens",
+  );
+});
+
+test("the web search card survives a query that is not a string", () => {
+  // Local models emit `"query": 42` and `"query": {}` routinely, and .trim() on
+  // one threw straight through the renderer.
+  const cardSource = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/components/assistant-ui/tool-ui-web-search.tsx",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  const args = cardSource.slice(
+    cardSource.indexOf("const query ="),
+    cardSource.indexOf("const isUrlFetch ="),
+  );
+  assert.ok(args.length > 0, "the args derivation moved");
+  const derive = new Function(
+    "args",
+    ts.transpileModule(`${args}\nreturn [query.trim(), url];`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText,
+  ) as (args: unknown) => [string, string];
+  assert.deepEqual(derive({ query: 42 }), ["42", ""]);
+  assert.deepEqual(derive({ query: null, url: 7 }), ["", "7"]);
+  assert.deepEqual(derive({}), ["", ""]);
+  assert.deepEqual(derive({ query: " dogs " }), ["dogs", ""]);
+});
+
+test("a thumbnail response that lands after the id changed is ignored", () => {
+  // Render falls through to idle for a state written under the previous id, and
+  // the effect has no reason to run again: a skeleton that never resolves.
+  const source = readFileSync(
+    fileURLToPath(
+      new URL("../src/components/assistant-ui/search-image.tsx", import.meta.url),
+    ),
+    "utf8",
+  );
+  const effect = source.slice(
+    source.indexOf("authFetch(searchImagePath(id)"),
+    source.indexOf("function useNearViewport"),
+  );
+  assert.ok(effect.length > 0, "the thumbnail effect moved");
+  const notOk = effect.slice(effect.indexOf("if (!response.ok)"));
+  assert.match(
+    notOk.slice(0, notOk.indexOf("return;") + 7),
+    /controller\.signal\.aborted/,
+    "the not-ok branch must check the abort like the success branch does",
+  );
+});
