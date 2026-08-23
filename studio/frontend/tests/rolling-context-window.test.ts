@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  type ContextTruncation,
   compactionBoundary,
   mergeContextTruncation,
   promptWasShortened,
@@ -66,7 +67,11 @@ test("a shortened refusal records its boundary, so the notice survives a reload"
   assert.equal(promptWasShortened(rescued), true);
 
   // A boundary is absolute, so refitting three times does not inflate it.
-  let refits = { fits: false, dropped_messages: 4, boundary_messages: 4 };
+  let refits: ContextTruncation = {
+    fits: false,
+    dropped_messages: 4,
+    boundary_messages: 4,
+  };
   for (const chunk of [
     { fits: false, dropped_messages: 6, boundary_messages: 6 },
     { fits: false, dropped_messages: 6, boundary_messages: 6 },
@@ -82,7 +87,7 @@ test("a record with no boundary never guesses one from a summed drop count", () 
   // those all fit. On anything else the count is a per-refit SUM, not a position, and
   // reading it as one sets a high-water mark `showsNotice` cannot see exceeded again.
   const oneRefit = { dropped_messages: 2, fits: false };
-  let toolLoop = { fits: false, dropped_messages: 4 };
+  let toolLoop: ContextTruncation = { fits: false, dropped_messages: 4 };
   for (const chunk of [
     { fits: false, dropped_messages: 6 },
     { fits: false, dropped_messages: 6 },
