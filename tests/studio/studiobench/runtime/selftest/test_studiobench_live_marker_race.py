@@ -202,11 +202,11 @@ def _lock_then_write_later(repo_root: str, outdir: str, delay_s: float, locked, 
     import time
 
     sys.path.insert(0, repo_root)
-    from tests.studio.studiobench.runtime.types import Recorder
+    from tests.studio.studiobench.runtime.types import OutDirLock
 
     marker = Path(outdir) / ".running.lock"
     fd = os.open(marker, os.O_CREAT | os.O_RDWR, 0o644)
-    Recorder._lock_fd_exclusive(fd)
+    OutDirLock._lock_fd_exclusive(fd)
     locked.set()
     time.sleep(delay_s)
     os.ftruncate(fd, 0)

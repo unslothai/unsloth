@@ -43,7 +43,7 @@ from studiobench.runtime import browser as browser_mod  # noqa: E402
 from studiobench.runtime import bundle_guard, lifecycle  # noqa: E402
 from studiobench.runtime import session as session_mod  # noqa: E402
 from studiobench.runtime.lifecycle import StudioAuth, StudioInstall  # noqa: E402
-from studiobench.runtime.types import Paths  # noqa: E402
+from studiobench.runtime.types import OutDirLock, Paths  # noqa: E402
 
 
 class _Verdict:
@@ -509,6 +509,47 @@ def test_an_unreadable_probe_is_refused_before_the_payload_is_archived(studio, m
     assert sorted(p.name for p in paths.out.glob("payload-*.jsonl")) == []
     # The refusal is still ahead of everything it was ahead of before.
     assert studio["installed"] == ["main"]
+
+
+def test_a_duplicate_run_is_refused_before_it_archives_or_installs_anything(studio):
+    """REGRESSION. A run refused for the directory must not have moved the live payload first.
+
+    The guard against two runs in one `--out` used to be taken where the `Recorder` opens
+    `payload.jsonl`, which is after `prepare_payload` has archived what was already there and after
+    every clone, build and launch. A second launcher pointed at a busy directory therefore renamed
+    the FIRST run's live payload out from under it -- the writer keeps its inode through a rename,
+    so that run went on recording into `payload-<stamp>.jsonl` while `payload.jsonl`, the one name
+    `--report`, `--assert-liveness` and the next `--resume` open, was gone -- and put a clone and a
+    build on the machine the first run was measuring, before saying the word it could have said in
+    the first millisecond.
+
+    The holder here stands for that first run: it is the same lock a live run holds, so the second
+    invocation meets exactly what it meets in the field.
+    """
+
+    paths = Paths.under(studio["out"])
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+    recorded = paths.payload_jsonl.read_text(encoding = "utf-8")
+
+    studio["installed"].clear()
+    holder = OutDirLock.take(paths.out)
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            sb.run(_args(studio, "--branch", "main"))
+    finally:
+        holder.release()
+
+    assert "still running" in str(excinfo.value)
+    assert paths.payload_jsonl.read_text(encoding = "utf-8") == recorded, (
+        "the refused duplicate archived the live payload of the run it was refused in favour of"
+    )
+    assert sorted(p.name for p in paths.out.glob("payload-*.jsonl")) == []
+    assert studio["installed"] == [], (
+        "the duplicate installed a Studio on a machine that was already measuring, which is the "
+        "contention the guard exists to prevent, paid as the cost of refusing it"
+    )
+    # And the directory is free again the moment the holder lets go.
+    assert sb.run(_args(studio, "--branch", "main", "--resume")) == 0
 
 
 def test_a_resume_under_the_same_probe_still_resumes(studio, probe):

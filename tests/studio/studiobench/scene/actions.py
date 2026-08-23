@@ -425,17 +425,40 @@ async ([timeoutMs, quietFrames]) => {
   //
   // The BUDGET still runs from the settle's own start, so what counts as censored is unchanged.
   // The two are reported separately: `ms` is the whole operation, `settle_ms` is the wait alone.
-  const settle = async (want, origin) => {
+  const settle = async (want, origin, requireTornDown) => {
     const started = performance.now();
     let frames = 0;
     let quiet = 0;
     let last = spanCount();
     let reachedAt = null;
+    // The RAW state, tracked apart from `reachedAt` so a censored close can say whether the panes
+    // closed and did not tear down, or never closed at all.
+    let countReachedAt = null;
     while (performance.now() - started < timeoutMs) {
       await window.__sbNextPaint();
       frames += 1;
       const now = spanCount();
-      const stateReached = D.reasoningOpenCount() === want;
+      // A COLLAPSE IS NOT DONE WHEN THE STATE SAYS CLOSED, IT IS DONE WHEN THE CONTENT IS GONE.
+      //
+      // This is the same defect as the one the quiet streak fixes for the open direction, arriving
+      // from the other side. There, the state flips before the spans mount, and a streak counted
+      // from frame one was satisfied by a census that had not started moving. Here the state flips
+      // before the spans UNMOUNT: both mechanisms keep the children in the document for the length
+      // of the exit animation (Radix until `animationend`, the grid arm until the
+      // `grid-template-rows` `transitionend` or its 250 ms backstop), so `pre span` is frozen at
+      // its open value for that entire window. Four quiet frames land inside it whenever a frame is
+      // shorter than the animation -- about 83 ms at 60 Hz against 200 -- and `close_ms` then names
+      // the state flip plus four frames rather than the collapse.
+      //
+      // That is not a constant offset either, which is what makes it a comparison problem rather
+      // than a units one: whether the streak ends before or after the teardown depends on the
+      // paint interval against the animation duration, and the paint interval is what differs
+      // between the arms and the rungs this instrument exists to compare. See
+      // `dom.reasoningContentMounted`.
+      const countReached = D.reasoningOpenCount() === want;
+      if (countReached && countReachedAt === null) countReachedAt = performance.now() - started;
+      const stateReached =
+        countReached && (!requireTornDown || D.reasoningContentMounted() === 0);
       const justReached = stateReached && reachedAt === null;
       if (justReached) reachedAt = performance.now() - started;
       // THE QUIET STREAK BELONGS ENTIRELY TO THE WINDOW AFTER THE STATE IS REACHED.
@@ -479,11 +502,23 @@ async ([timeoutMs, quietFrames]) => {
       state_reached_ms: reachedAt === null ? null : reachedAt + (started - origin),
       spans: null,
       censored: true,
+      // THE REASON NAMES WHICH HALF OF "SETTLED" WAS MISSING. A close that reached the state but
+      // whose panes never tore down is a different finding from one whose panes never closed, and
+      // reporting both as "the open count never reached 0" would send a reader to the wrong half
+      // of the app.
       reason: reachedAt === null
-        ? `the open count never reached ${want} within ${timeoutMs}ms`
-        : `the open count reached ${want} after ${Math.round(reachedAt)}ms but the span census `
-          + `was still changing when the ${timeoutMs}ms budget ran out, so nothing here is a `
-          + `reading of a settled document`,
+        ? (requireTornDown && countReachedAt !== null
+            ? `the open count reached ${want} after ${Math.round(countReachedAt)}ms but the `
+              + `collapsed panes were still mounted when the ${timeoutMs}ms budget ran out, so `
+              + `nothing here is a reading of a collapsed document`
+            : `the open count never reached ${want} within ${timeoutMs}ms`)
+        : (requireTornDown
+            ? `the panes closed after ${Math.round(countReachedAt)}ms and unmounted after `
+              + `${Math.round(reachedAt)}ms but the span census was still changing when the `
+              + `${timeoutMs}ms budget ran out, so nothing here is a reading of a settled document`
+            : `the open count reached ${want} after ${Math.round(reachedAt)}ms but the span `
+              + `census was still changing when the ${timeoutMs}ms budget ran out, so nothing `
+              + `here is a reading of a settled document`),
     };
   };
 
@@ -492,11 +527,12 @@ async ([timeoutMs, quietFrames]) => {
   // reported on an axis of thread length.
   const openStart = performance.now();
   for (const t of triggers) t.click();
-  const opened = await settle(triggers.length, openStart);
+  const opened = await settle(triggers.length, openStart, false);
   const openCount = D.reasoningOpenCount();
   const closeStart = performance.now();
   for (const t of D.reasoningTriggers()) t.click();
-  const closed = await settle(0, closeStart);
+  // `true`: the collapse is settled when the panes have UNMOUNTED, not when they report closed.
+  const closed = await settle(0, closeStart, true);
   return {
     ran: true,
     panes: triggers.length,

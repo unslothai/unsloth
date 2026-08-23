@@ -584,6 +584,52 @@ def stop_owned_sides(
 
 
 def run(args, ab_ref = None) -> int:
+    """Take the output directory FIRST, then run inside it.
+
+    THE LOCK IS THE FIRST THING THE RUN DOES, and it used to be almost the last. It was taken where
+    the `Recorder` opens `payload.jsonl`, which is after `prepare_payload` has archived what was
+    already in the directory and after every clone, build and launch. So a second invocation into a
+    busy `--out` without `--resume` was refused only once it had:
+
+      * RENAMED THE LIVE PAYLOAD of the run it was about to be refused in favour of. `rename` does
+        not disturb a writer -- the first run's descriptor names the inode, not the path -- so that
+        run went on recording into `payload-<stamp>.jsonl` while `payload.jsonl`, the one name
+        `--report`, `--assert-liveness` and the next `--resume` all open, was gone. The rule
+        `prepare_payload` states for itself is that a refusal leaves the payload exactly as it
+        found it, and this broke it in the one case the guard exists for.
+      * CLONED, BUILT AND LAUNCHED A STUDIO ON A MACHINE THAT WAS MEASURING. Contention between two
+        runs sharing one `--out` is the whole reason for the guard, so it may not be the price of
+        the refusal.
+
+    Held through setup and the cells, and handed to the `Recorder` rather than taken twice. The
+    `finally` releases it on every path, including the refusals that leave by returning, so a
+    second `run()` in one process -- which is how the tests drive this -- still gets the directory.
+    """
+    from .runtime.types import OutDirLock, Paths
+
+    # THE ARM NAMES, BEFORE A SINGLE PROCESS EXISTS AND BEFORE A SINGLE DIRECTORY. Nothing below
+    # this line can be undone without the cleanup `finally`, and that block is a long way down; see
+    # `_windowed_arms`. The labels are READ OFF THE SPECS rather than spelled a second time, so the
+    # check and the sides cannot drift into disagreeing about what an arm is called -- and
+    # `side_specs` is a pure list build, so asking it this early starts nothing.
+    #
+    # AHEAD OF THE OUTPUT DIRECTORY as well as ahead of the processes. A mistyped `--windowed-arm`
+    # must cost nothing at all, and a directory tree with a lock file in it is not nothing. See
+    # test_studiobench_windowed_arm_names.
+    specs = side_specs(args, ab_ref)
+    arm_labels = [label for label, _ref, _attach, _port, _password in specs]
+    windowed = _windowed_arms(getattr(args, "windowed_arm", ""), arm_labels)
+
+    out = Path(args.out or f"studiobench-{args.tier}-{int(time.time())}").resolve()
+    paths = Paths.under(out)
+    out_lock = OutDirLock.take(paths.out)
+    try:
+        return _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_lock)
+    finally:
+        out_lock.release()
+
+
+def _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_lock) -> int:
     from .fixture.corpus import Corpus
     from .instruments import build as build_instruments  # noqa: F401
     from .pacer import Pacer
@@ -604,19 +650,7 @@ def run(args, ab_ref = None) -> int:
     from .runtime.readiness import MODE_FULL, MODE_WINDOWED
     from .runtime.session import CellRunner, build_cells, ensure_probe_image, make_context
     from .runtime import resources
-    from .runtime.types import Paths
 
-    # THE ARM NAMES, BEFORE A SINGLE PROCESS EXISTS. Nothing below this line can be undone without
-    # the cleanup `finally`, and that block is a long way down; see `_windowed_arms`. The labels are
-    # READ OFF THE SPECS rather than spelled a second time, so the check and the sides cannot drift
-    # into disagreeing about what an arm is called -- and `side_specs` is a pure list build, so
-    # asking it this early starts nothing.
-    specs = side_specs(args, ab_ref)
-    arm_labels = [label for label, _ref, _attach, _port, _password in specs]
-    windowed = _windowed_arms(getattr(args, "windowed_arm", ""), arm_labels)
-
-    out = Path(args.out or f"studiobench-{args.tier}-{int(time.time())}").resolve()
-    paths = Paths.under(out)
     _log(f"studiobench {TOOL_VERSION}  tier={args.tier}  out={paths.out}")
 
     corpus = Corpus.load()
@@ -729,10 +763,10 @@ def run(args, ab_ref = None) -> int:
                 side_install, owns = None, False
                 _log(f"  {label}: attaching to {side_url}")
             else:
-                home = side_home(args.home, out, label, ab = bool(ab_ref))
+                home = side_home(args.home, paths.out, label, ab = bool(ab_ref))
                 _log(f"  {label}: installing Studio from {ref} into {home} (this takes a while)")
                 side_install = install_studio(ref, home)
-                launch_studio(side_install, port, out / "logs" / f"studio_{label}.log")
+                launch_studio(side_install, port, paths.out / "logs" / f"studio_{label}.log")
                 side_url, owns = side_install.base_url, True
                 _log(f"  {label}: Studio up at {side_url}")
             installs.append((side_install, owns))
@@ -990,7 +1024,16 @@ def run(args, ab_ref = None) -> int:
         # back the way it found it. See `rollback_session_rows`.
         mark = payload_mark(paths.payload_jsonl)
         ctx, session = make_context(
-            bundle, base_url, args.tier, args.instrument_level, paths, _log, procs
+            bundle,
+            base_url,
+            args.tier,
+            args.instrument_level,
+            paths,
+            _log,
+            procs,
+            # ADOPTED, NOT TAKEN AGAIN. `run()` has held this directory since before the payload
+            # was archived; the `Recorder` writes its session id into the marker it already holds.
+            out_lock = out_lock,
         )
         rec = ctx.recorder
         # The ladder this run PROMISED, resolved before it is announced. Recorded rather than
