@@ -863,11 +863,21 @@ def _rocm_visibility_masks_are_stacked() -> bool:
     )
 
 
+def _rocm_device_ordinal_active() -> bool:
+    """Whether GPU_DEVICE_ORDINAL renumbers HIP devices.
+
+    It sits at the ROCclr layer, so it applies on Windows too, and no visibility
+    spec here reads it: a torch ordinal cannot be paired with a physical id while
+    it is set.
+    """
+    return bool(os.environ.get("GPU_DEVICE_ORDINAL", "").strip())
+
+
 def _amd_smi_ids_for_hip_ids(hip_ids: Optional[list[int]]) -> Optional[list[int]]:
     """Translate visible HIP ordinals to amd-smi physical GPU IDs."""
     if hip_ids is None or not hip_ids:
         return hip_ids
-    if os.environ.get("GPU_DEVICE_ORDINAL", "").strip():
+    if _rocm_device_ordinal_active():
         logger.debug("Skipping amd-smi VRAM query: GPU_DEVICE_ORDINAL filters HIP devices")
         return None
     if _rocm_visibility_masks_are_stacked():
@@ -977,7 +987,11 @@ def _context_free_cuda_memory_info(idx: int, total_bytes: int) -> Optional[int]:
 
     # Native Windows ROCm exposes per-adapter dedicated usage without entering
     # HIP. Reuse the same conservative mapping as the System telemetry route.
-    if platform.system() == "Windows":
+    # Decline under GPU_DEVICE_ORDINAL for the same reason amd-smi does: it
+    # renumbers torch ordinals but not the visible spec, so device_ids[idx] would
+    # be a different card. The Linux path above already declines via
+    # _rocm_visibility_mask_active.
+    if platform.system() == "Windows" and not _rocm_device_ordinal_active():
         numeric_ids = parent_visible_spec.get("numeric_ids")
         device_ids = (
             numeric_ids if numeric_ids else list(range(_torch_get_physical_gpu_count() or 0))

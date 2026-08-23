@@ -485,6 +485,27 @@ def test_context_free_free_never_goes_negative(monkeypatch):
     assert hw._context_free_cuda_memory_info(0, round(99.5 * gib)) == 0
 
 
+def test_context_free_rocm_windows_declines_gpu_device_ordinal(monkeypatch):
+    # GPU_DEVICE_ORDINAL=1 makes physical GPU 1 torch ordinal 0, but it is a
+    # ROCclr-layer variable that _get_parent_visible_gpu_spec never reads, so the
+    # adapter list is still [0, 1] and ordinal 0 would publish GPU 0's VRAM.
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setenv("GPU_DEVICE_ORDINAL", "1")
+    monkeypatch.setattr(
+        hw,
+        "_get_parent_visible_gpu_spec",
+        lambda: {"raw": None, "numeric_ids": [0, 1], "supports_explicit_gpu_ids": True},
+    )
+    monkeypatch.setattr(
+        hw,
+        "_rocm_windows_per_device_vram",
+        lambda ids: pytest.fail("an external GPU ordinal filter must decline the adapter path"),
+    )
+
+    assert hw._context_free_cuda_memory_info(0, 24 << 30) is None
+
+
 def test_context_free_nvidia_smi_declines_whole_gpu_metrics_for_mig(monkeypatch):
     gib = 1 << 30
     monkeypatch.setattr(hw, "IS_ROCM", False)
