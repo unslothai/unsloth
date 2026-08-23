@@ -137,6 +137,49 @@ test("a dense feed still tracks a rate change within the smoothing span", () => 
   assert.ok(Math.abs(rate - 50 * MB) < 1);
 });
 
+// The trim keeps a floor of increases, and a transfer that has stopped has
+// none, so nothing was eligible to drop: a tab left open on a wedged download
+// grew the buffer by one sample per poll forever. 16 is what the age-only trim
+// this replaced held, so the bound is no worse than before the floor existed.
+test("a transfer that stops does not grow the sample buffer without bound", () => {
+  const samples: TransferSample[] = [];
+  for (let t = 0; t <= 6 * 60 * 60; t += 1) publishedRate(samples, t, 1_000);
+  assert.ok(
+    samples.length <= 16,
+    `buffer held ${samples.length} samples after 6h`,
+  );
+});
+
+test("a long plateau keeps the span it is measured over", () => {
+  // Collapsing the plateau must not lose when it began.
+  const samples: TransferSample[] = [];
+  publishedRate(samples, 0, 0);
+  for (let t = 1; t <= 300; t += 1) publishedRate(samples, t, 500 * MB);
+  assert.equal(samples[samples.length - 1].t, 300);
+  assert.equal(samples[samples.length - 1].b, 500 * MB);
+});
+
+// One outlier gap (a suspend, or a backgrounded tab whose timer the browser
+// clamped to 1/min) used to be the only gap left in the buffer, so it became
+// the median cadence and the stall window stretched to hours. A dead transfer
+// then kept showing its last speed indefinitely.
+test("one outlier gap does not disable stall detection", () => {
+  const samples: TransferSample[] = [];
+  let bytes = 0;
+  for (let t = 0; t <= 600; t += 1) {
+    if (t % 5 === 0) bytes += 5 * MB;
+    publishedRate(samples, t, bytes);
+  }
+  // 30 minutes asleep, then one burst lands, then the transfer dies.
+  for (let t = 601; t <= 2_400; t += 60) publishedRate(samples, t, bytes);
+  bytes += 5 * MB;
+  publishedRate(samples, 2_401, bytes);
+  let rate = 0;
+  for (let t = 2_402; t <= 3_000; t += 1)
+    rate = publishedRate(samples, t, bytes);
+  assert.equal(rate, 0, "a dead transfer should stop reporting a rate");
+});
+
 test("a restart drops the samples from the previous run", () => {
   const samples: TransferSample[] = [];
   for (let t = 0; t <= 10; t++) publishedRate(samples, t, t * 20 * MB);

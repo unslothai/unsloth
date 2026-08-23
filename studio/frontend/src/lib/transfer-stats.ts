@@ -28,8 +28,12 @@ export const MIN_WINDOW_SECONDS = 3;
 export const MAX_WINDOW_SECONDS = 15;
 /** Buffer depth by age; {@link MIN_RETAINED_INCREASES} overrides it when sparse. */
 export const MAX_RETAIN_SECONDS = 60;
-/** Increases kept regardless of age, so a slow cadence still leaves a span. */
-export const MIN_RETAINED_INCREASES = 3;
+/**
+ * Increases kept regardless of age, so a slow cadence still leaves a span.
+ * Deep enough that one outlier gap (a sleep, or a backgrounded tab whose timer
+ * the browser clamped) cannot become the median cadence on its own.
+ */
+export const MIN_RETAINED_INCREASES = 8;
 /** Floor on the no-progress timeout, before any cadence has been observed. */
 export const STALL_WINDOW_SECONDS = 15;
 /** A silence this many times the observed increase cadence reads as a stall. */
@@ -49,7 +53,16 @@ export function appendSample(
   if (samples.length > 0 && b < samples[samples.length - 1].b) {
     samples.length = 0;
   }
-  samples.push({ t, b });
+  const n = samples.length;
+  // Collapse a plateau to its first and latest reading. The ones between carry
+  // no increase, so nothing here reads them, and retaining them grows the
+  // buffer without bound on a transfer that has stopped: the trim below cannot
+  // run while there are too few increases left to protect.
+  if (n >= 2 && !(b > samples[n - 1].b) && !(samples[n - 1].b > samples[n - 2].b)) {
+    samples[n - 1] = { t, b };
+  } else {
+    samples.push({ t, b });
+  }
   const cutoff = t - maxWindowSeconds;
   // Age alone cannot decide this: on a slow link one blob takes minutes, so
   // trimming by seconds drops the older increase measurableSpan needs.
