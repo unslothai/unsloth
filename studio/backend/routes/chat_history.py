@@ -30,6 +30,9 @@ from storage.studio_db import (
     build_chat_history_export,
     clear_chat_history,
     clear_chat_history_with_replay_status,
+    mark_clear_operation_caches_cleared,
+    record_clear_operation_reap_scope,
+    unreaped_clear_operation_image_ids,
     count_chat_threads,
     count_forks_for_message,
     delete_chat_attachment,
@@ -1355,8 +1358,15 @@ async def clear_history(
         Both in ONE threadpool call, so there is no await between them. Split across two,
         the event loop can run another request in the gap: a chat created there survives
         the transaction, but its images register before the snapshot and the reap takes
-        them, leaving its cards 404ing out of thumbnail_bytes. This is the clear boundary
-        the snapshot has to be taken at, and the only way to be at it is to not yield.
+        them, leaving its cards 404ing out of thumbnail_bytes.
+
+        Narrowed, NOT closed, and the difference is worth stating. Another worker thread can
+        still register between the commit and the read a few instructions later, and only one
+        thing would truly close that: holding ``_registry_lock`` across the transaction. That
+        lock is what every image registration in the process takes, and this transaction is a
+        BEGIN IMMEDIATE that waits out contention for seconds, so paying for it means stalling
+        every search in every chat for the length of a clear. The window bought back is a few
+        instructions wide and its cost is one chat's thumbnails re-fetching. Not worth it.
         """
         from core.inference.search_images import registered_image_ids
 
@@ -1371,8 +1381,18 @@ async def clear_history(
             payload.ids,
             operation_id = payload.operationId,
         )
-        # A replay reaps nothing, so it does not pay for the snapshot either.
-        return cleared, cleared_runs, replayed, None if replayed else registered_image_ids()
+        if replayed:
+            # A replay takes no snapshot of its own -- the chats created since the original
+            # clear are not its to reap. It may still have to FINISH that clear's reap,
+            # though, if the process died between the commit and the cleanup.
+            return cleared, cleared_runs, True, unreaped_clear_operation_image_ids(
+                payload.operationId
+            )
+        snapshot = registered_image_ids()
+        # Recorded before the reap runs, so a crash in the seconds of cleanup that follow
+        # leaves a retry able to finish exactly this set and nothing wider.
+        record_clear_operation_reap_scope(payload.operationId, snapshot)
+        return cleared, cleared_runs, False, snapshot
 
     # The clear reports what it deleted, which is what gets cleaned up: a thread
     # added between the listing above and the delete is gone too, and its
@@ -1404,15 +1424,25 @@ async def clear_history(
     # is NOT gated on `payload is None`, which the frontend never sends and which
     # therefore meant the reap never ran.
     #
-    # A REPLAY is the one case that must not: the transaction above deliberately keeps
-    # chats created since the original clear, and this registry is global, so wiping it
-    # takes the images of a chat this call is not deleting and leaves its cards 404ing
-    # out of thumbnail_bytes. Nothing is missed by skipping it -- the request that
-    # recorded the operation reaps them, and Starlette does not cancel a handler when
-    # the client hangs up, so the attempt this retry replaces still runs to here.
-    if not replayed:
+    # A REPLAY must not reap the registry wholesale: the transaction above deliberately keeps
+    # chats created since the original clear, and this registry is global, so wiping it takes
+    # the images of a chat this call is not deleting and leaves its cards 404ing out of
+    # thumbnail_bytes. Ordinarily it has nothing to do -- the request that recorded the
+    # operation reaps them, and Starlette does not cancel a handler when the client hangs up,
+    # so the attempt this retry replaces still runs to here.
+    #
+    # The exception is a process that DIED in between. The operation is recorded and the
+    # thumbnails of every deleted chat are still on disk, saying what was searched for, and
+    # only a replay is left to notice. `reapable_image_ids` is then the original clear's own
+    # snapshot, read back off the ledger, so finishing its reap is bounded to exactly what it
+    # was responsible for and cannot reach a newer chat's images.
+    if not replayed or reapable_image_ids:
         from core.inference.search_images import clear_cache
         await run_in_threadpool(clear_cache, reapable_image_ids)
+        if payload is not None:
+            await run_in_threadpool(
+                mark_clear_operation_caches_cleared, payload.operationId
+            )
     return {
         "status": "deleted",
         "deletedThreadIds": cleared,

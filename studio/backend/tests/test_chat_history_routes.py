@@ -945,7 +945,12 @@ def test_a_chat_created_in_the_gap_after_the_clear_keeps_its_images(monkeypatch,
     separate calls, the event loop can run another request in between: a chat created there
     survives the transaction (the clear only deletes what it saw), but its images register
     before the snapshot, so the reap that follows takes them and its cards 404 out of
-    thumbnail_bytes. One threadpool call for both leaves no gap to interleave into.
+    thumbnail_bytes. One threadpool call for both removes that gap.
+
+    It does not make the two atomic -- another worker THREAD can still land between the
+    commit and the read, and closing that would mean holding the image registry's lock across
+    the whole transaction, stalling every search in the process for the length of a clear.
+    This pins the gap that was worth removing.
 
     The interleave is forced rather than raced: `run_in_threadpool` is wrapped so the other
     tab registers its image immediately after the FIRST hop returns, which is exactly the
@@ -1026,3 +1031,134 @@ def test_the_clear_and_its_image_snapshot_share_one_threadpool_hop():
     ), "a second hop for the snapshot reopens the gap the first one closed"
     body = source.split("def _clear_rows(", 1)[1].split("\n    # The clear reports", 1)[0]
     assert "registered_image_ids()" in body, "the snapshot belongs inside the clear's hop"
+
+
+def test_a_replay_finishes_a_reap_the_original_clear_died_before_running(monkeypatch, tmp_path):
+    """A crash between the clear's commit and its thumbnail reap must not lose the reap.
+
+    The reap runs after the transaction, behind seconds of archive and sandbox cleanup. Killed
+    in that window the operation is already recorded, so the retry the frontend sends replays
+    -- and a replay deliberately reaps nothing, because the chats created since the original
+    clear are not its to take. The thumbnails of every deleted chat then stay on disk for good,
+    saying what was searched for, which is the worse of the two failures this path weighs.
+
+    The ledger now carries the original clear's own snapshot and whether the reap finished, so
+    the replay can complete exactly that set. The crash is simulated by making the first reap
+    raise, which is the same state a SIGKILL leaves behind: committed, recorded, unreaped.
+    """
+    from core.inference import search_images
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(search_images, "_registry", {})
+    monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path / "thumbs")
+    (tmp_path / "thumbs").mkdir(parents = True, exist_ok = True)
+
+    doomed_image_id = "aaaabbbbcccc"
+    search_images._registry[doomed_image_id] = {
+        "thumbnail": "https://example.invalid/x.jpg",
+        "source": "https://example.invalid/",
+        "created": 0.0,
+        "policy": None,
+    }
+
+    reaps: list = []
+
+    def reap(only_ids = None):
+        reaps.append(only_ids)
+        if len(reaps) == 1:
+            raise RuntimeError("process died before the reap finished")
+
+    monkeypatch.setattr(search_images, "clear_cache", reap)
+
+    async def remove_sandboxes(_thread_ids, _delete_files):
+        return 0, []
+
+    monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
+    monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
+    monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
+    monkeypatch.setattr(
+        chat_history, "_remove_conversation_archives", lambda _ids, cutoff = None: None
+    )
+    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+
+    def clear():
+        return asyncio.run(
+            chat_history.clear_history(
+                request,
+                chat_history.ChatClearRequest(ids = [], operationId = "clear-operation-crash"),
+                current_subject = "test-user",
+            )
+        )
+
+    studio_db.upsert_chat_thread(_clear_thread_row("before-clear"))
+    with pytest.raises(RuntimeError):
+        clear()
+    assert reaps == [{doomed_image_id}], "the first attempt got as far as its own reap"
+
+    # A chat started after the crash, whose images the replay must NOT take.
+    studio_db.upsert_chat_thread(_clear_thread_row("after-crash"))
+    later_image_id = "ddddeeeeffff"
+    search_images._registry[later_image_id] = {
+        "thumbnail": "https://example.invalid/y.jpg",
+        "source": "https://example.invalid/",
+        "created": 0.0,
+        "policy": None,
+    }
+
+    clear()
+    assert len(reaps) == 2, "the replay has to finish the reap the crash interrupted"
+    finished = reaps[1]
+    assert finished == {doomed_image_id}, (
+        "bounded to the original clear's own snapshot, so a chat created since keeps its images"
+    )
+    assert later_image_id not in finished
+
+    # And a further retry has nothing left to do.
+    clear()
+    assert len(reaps) == 2, "the finished reap must be recorded, not repeated on every retry"
+
+
+def test_a_plain_replay_with_nothing_outstanding_still_reaps_nothing(monkeypatch, tmp_path):
+    """The ordinary retry. The first attempt completed its reap, so the replay must stay out
+    of the global registry entirely -- that is what the replay branch is for."""
+    from core.inference import search_images
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(search_images, "_registry", {})
+    monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path / "thumbs")
+    (tmp_path / "thumbs").mkdir(parents = True, exist_ok = True)
+
+    reaps: list = []
+    monkeypatch.setattr(search_images, "clear_cache", lambda only_ids = None: reaps.append(only_ids))
+
+    async def remove_sandboxes(_thread_ids, _delete_files):
+        return 0, []
+
+    monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
+    monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
+    monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
+    monkeypatch.setattr(
+        chat_history, "_remove_conversation_archives", lambda _ids, cutoff = None: None
+    )
+    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+
+    def clear():
+        return asyncio.run(
+            chat_history.clear_history(
+                request,
+                chat_history.ChatClearRequest(ids = [], operationId = "clear-operation-plain"),
+                current_subject = "test-user",
+            )
+        )
+
+    studio_db.upsert_chat_thread(_clear_thread_row("before-clear"))
+    clear()
+    assert len(reaps) == 1
+    clear()
+    assert len(reaps) == 1, "a replay behind a completed reap must not touch the registry"

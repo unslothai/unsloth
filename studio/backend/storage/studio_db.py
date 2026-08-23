@@ -429,7 +429,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             id TEXT NOT NULL PRIMARY KEY,
             active_research_run_ids_json TEXT NOT NULL,
             deleted_thread_ids_json TEXT NOT NULL DEFAULT '[]',
-            cleared_at INTEGER NOT NULL
+            cleared_at INTEGER NOT NULL,
+            reapable_image_ids_json TEXT,
+            caches_cleared_at INTEGER
         ) WITHOUT ROWID
         """
     )
@@ -440,6 +442,19 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE chat_clear_operations ADD COLUMN deleted_thread_ids_json TEXT NOT NULL DEFAULT '[]'"
         )
+    # The thumbnail reap happens AFTER this transaction commits, behind seconds of archive and
+    # sandbox cleanup. A crash in that window leaves the operation recorded and the cache
+    # unreaped, and the retry that follows replays -- skipping the one cleanup that had not
+    # run. These two columns let the replay finish it: the ids the original clear was
+    # responsible for, and whether the reap has since completed. NULL in either means the
+    # answer is unknown (a row written by an older build), which is treated as done, since a
+    # replay must never reap on a guess.
+    if "reapable_image_ids_json" not in chat_clear_operation_cols:
+        conn.execute(
+            "ALTER TABLE chat_clear_operations ADD COLUMN reapable_image_ids_json TEXT"
+        )
+    if "caches_cleared_at" not in chat_clear_operation_cols:
+        conn.execute("ALTER TABLE chat_clear_operations ADD COLUMN caches_cleared_at INTEGER")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_messages (
@@ -2166,6 +2181,89 @@ def delete_chat_threads_with_active_research_runs(ids: list[str]) -> list[str]:
 def delete_chat_threads(ids: list[str]) -> list[str]:
     """Delete threads and return the active research runs removed with them."""
     return delete_chat_threads_with_active_research_runs(ids)
+
+
+def unreaped_clear_operation_image_ids(operation_id: Optional[str]) -> Optional[set]:
+    """The ids a recorded clear was responsible for but never reaped, or None.
+
+    None means there is nothing for a replay to finish: no such operation, a row from a build
+    that did not record the snapshot, or a reap that already completed. A replay must never
+    reap on a guess -- the whole point of bounding it is that the images of chats created
+    since the original clear are NOT its to take -- so anything unknown answers None.
+
+    Exists because the reap runs after the clear's transaction commits, behind seconds of
+    archive and sandbox cleanup. Killed in that window, the operation is recorded and the
+    thumbnails of every deleted chat are still on disk; the retry that follows replays and,
+    without this, skips the one cleanup that had not run. Those files say what was searched
+    for, so leaving them is the worse of the two failures this module weighs.
+    """
+    if operation_id is None:
+        return None
+    try:
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                """
+                SELECT reapable_image_ids_json, caches_cleared_at
+                FROM chat_clear_operations WHERE id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+            if row is None or row["caches_cleared_at"] is not None:
+                return None
+            stored = row["reapable_image_ids_json"]
+            if stored is None:
+                return None
+            return set(json.loads(stored))
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 -- an unreadable ledger just means nothing to finish
+        return None
+
+
+def record_clear_operation_reap_scope(
+    operation_id: Optional[str], image_ids: Optional[set]
+) -> None:
+    """Persist what this clear's reap is responsible for, before it runs.
+
+    Written as its own statement rather than in the clear's INSERT: the snapshot is taken
+    immediately after that transaction commits, and moving the commit later to include it
+    would widen the window where a concurrent retry sees no ledger row at all.
+
+    A None snapshot means "clear everything", which no replay may repeat blindly, so it is
+    stored as an explicit absence and read back as nothing to finish."""
+    if operation_id is None:
+        return
+    try:
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE chat_clear_operations SET reapable_image_ids_json = ? WHERE id = ?",
+                (None if image_ids is None else json.dumps(sorted(image_ids)), operation_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 -- best effort; failing here must not fail the clear
+        logger.debug("could not record the reap scope for clear %s", operation_id)
+
+
+def mark_clear_operation_caches_cleared(operation_id: Optional[str]) -> None:
+    """Record that the thumbnail reap for this clear finished, so a replay does not redo it."""
+    if operation_id is None:
+        return
+    try:
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE chat_clear_operations SET caches_cleared_at = ? WHERE id = ?",
+                (int(datetime.now(timezone.utc).timestamp() * 1000), operation_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 -- a missed mark costs one redundant reap on a retry
+        logger.debug("could not mark the reap complete for clear %s", operation_id)
 
 
 def clear_chat_history_with_active_research_runs(
