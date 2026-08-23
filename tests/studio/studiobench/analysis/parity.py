@@ -892,6 +892,26 @@ def compare_visible(base: Optional[dict], treat: Optional[dict]) -> dict:
             # conversation on the strength of unrelated jitter in the same action.
             "severe": True,
         }
+    # THE STREAMING PROBE, on the same footing it has in `compare`, because this mode is scored
+    # from its own payload and never sees the structural verdict. `in_flight` above walks the
+    # `data-status` / `aria-busy` hooks, so a build that renames them reports every row settled;
+    # the two arms are two different builds, so that can be true on ONE of them while the other's
+    # reply has genuinely finished, and the differing digests below are then two points in a stream
+    # scored as a rendering difference.
+    #
+    # AFTER the two lost-conversation findings above and BEFORE the digest comparison, for the
+    # reason `compare` puts it after `mount_count_mismatch`: different messages on screen, or one
+    # viewport emptied, are readings that do not depend on the stream split at all, and a build
+    # that loses the thread while a reply runs stays a finding rather than a shrug.
+    blind = streaming_probe(base, treat)
+    if blind is not None:
+        return {
+            "verdict": NOT_COMPARABLE,
+            "reason": blind,
+            "moved": [],
+            "claim": CLAIM_VISIBLE,
+            "not_digested": uncomparable,
+        }
     if moved:
         return {
             "verdict": DIFFER,

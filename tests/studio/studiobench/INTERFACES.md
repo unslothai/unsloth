@@ -605,6 +605,24 @@ only by a batch that mounted a message element, so a stream (text churn inside m
 none. A row that can be placed by neither route is stamped with no ordinal and counted in
 `unplaced_rows` rather than given a guess.
 
+**The streaming probe's positive control travels with the VISIBLE payload too, because
+`compare_visible` never sees the structural one.** A windowed pair is scored from
+`parityVisible.capture()` alone, and its per-row `in_flight` is read off the same
+`streamingMessages()` call the control counts. The two arms are two separately installed builds
+(`--ab REF` gives the treatment its own `UNSLOTH_STUDIO_HOME`), so a head that renames or moves the
+`data-status` / `aria-busy` hook is blinded on ONE arm only: nothing cancels out, every row on that
+arm reads settled, and a reply that is mid-tail on one side and finished on the other used to land
+in the per-ordinal loop as "N visible message(s) rendered differently" -- the wall-clock false alarm
+this mode exists to avoid, arriving through the one door left open. The null control cannot absorb
+it either, being base-vs-base: both arms are blinded or neither, `derive_unstable` counts the
+resulting `NOT_COMPARABLE` as blind rather than as an observation, and the action never becomes
+unstable. So the capture carries `streaming` and `in_flight_unplaced` (from `dom.generating()`, read
+GLOBALLY -- a reply streaming below the fold is an ordinary state and must refuse nothing), and
+`compare_visible` reuses `streaming_probe` to return `NOT_COMPARABLE`. It sits after the
+different-messages-on-screen and viewport-ended-empty findings and before the digest comparison, the
+same ordering `compare` uses around `mount_count_mismatch`: losing the thread stays a finding
+whether or not the stream could be placed.
+
 **The visible-region noise floor is keyed by (rung, action), and needs more than one observation.**
 `visible_unstable_set` derives it from a base-vs-base null control. It returned ACTION NAMES, so a
 single differing null pair silenced that action for every rep and every rung -- and a payload

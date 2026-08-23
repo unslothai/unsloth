@@ -618,7 +618,13 @@
             VIS.ever.add(entry.target.__sbOrdinal);
           }
         }
-        const nodes = (D().messages && D().messages()) || [];
+        const dom = D();
+        const nodes = (dom.messages && dom.messages()) || [];
+        // THE SAME NODE SET THE POSITIVE CONTROL BELOW COUNTS. The rows used to re-walk the
+        // `data-status` / `aria-busy` selectors inline, so "the rows read the same hooks as the
+        // control" was true only while two copies happened to agree. Read from one call and the
+        // control cannot fire while a row still claims to be in flight, or the reverse.
+        const live = new Set((dom.streamingMessages && dom.streamingMessages()) || []);
         const byOrdinal = {};
         let mounted_ever_visible = 0;
         for (let i = 0; i < nodes.length; i++) {
@@ -659,12 +665,31 @@
             // Still being written at capture time, so its digest names a point in a stream rather
             // than a rendering. Carried here for the same reason as in the structural capture and
             // handled the same way by `compare_visible`: residue, never a difference.
-            in_flight: el.querySelector('[data-status="running"], [aria-busy="true"]') !== null,
+            in_flight: live.has(el),
           };
         }
         const ever = [...VIS.ever].sort((a, b) => a - b);
+        // THE SAME POSITIVE CONTROL THE STRUCTURAL CAPTURE CARRIES, because this payload is scored
+        // by `compare_visible` on its own and never consults the structural one. The per-row
+        // `in_flight` above is taken from the SAME `streamingMessages()` call, so it goes quiet in
+        // the same way and at the same moment, and the arms of an A/B are two DIFFERENT builds --
+        // `--ab REF` installs the treatment under its own `UNSLOTH_STUDIO_HOME` -- so a renamed
+        // hook on the treatment only is the asymmetric case rather than a symmetric one that
+        // cancels out. Both rows then read
+        // `in_flight: false`, one arm's reply is mid-tail and the other's has finished, and the
+        // loop in `compare_visible` scores that as a rendering difference: the wall-clock false
+        // alarm this whole change exists to remove.
+        //
+        // READ GLOBALLY, not over the visible rows. "Is a reply being written" and "is the message
+        // it is being written into on screen" are different questions, and a reply streaming below
+        // the fold is an ordinary state that must not refuse anything.
+        const generating = dom.generating
+          ? Boolean(dom.generating())
+          : Boolean(dom.isRunning && dom.isRunning());
         return {
           visible_attempted: true,
+          streaming: generating,
+          in_flight_unplaced: Boolean(generating && live.size === 0),
           // Every ordinal the viewport ever showed during the window, INCLUDING any that have
           // since been unmounted. The gap between this and `messages` is the honest measure of
           // what a windowed arm could not be asked about at capture time.
