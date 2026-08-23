@@ -42,6 +42,11 @@ def _window(monkeypatch, ctx):
     monkeypatch.setattr(tools, "_loaded_context_tokens", lambda: ctx)
 
 
+def _spill_path(out: str) -> str:
+    """The spill path out of a notice, without the punctuation that follows it."""
+    return out.split("saved to ")[1].split(" ")[0].rstrip(".,)")
+
+
 def _room(value):
     tools._REQUEST_RESULT_BUDGET.set(value)
 
@@ -157,7 +162,7 @@ class TestPagingTheRest:
         assert f"showing lines 1-{shown} of 500" in out
         assert f"sed -n '{shown + 1}," in out
         # The named line really is the next one, read back off the spill.
-        spill = out.split("saved to ")[1].split(" ")[0]
+        spill = _spill_path(out)
         full = (tmp_path / spill).read_text().splitlines()
         assert full[shown] == f"line {shown + 1}"
 
@@ -192,7 +197,7 @@ class TestPagingTheRest:
         assert "sed -n" not in out, "a line number cannot resume a mid-line cut"
         assert "tail -c +501" in out
         # And it really does resume at the first unseen byte.
-        spill = out.split("saved to ")[1].split(" ")[0]
+        spill = _spill_path(out)
         assert (tmp_path / spill).read_text()[500:501] == "A"
 
     def test_a_boundary_cut_still_resumes_by_line(self, tmp_path):
@@ -219,7 +224,7 @@ class TestPagingTheRest:
 
         out = tools._truncate(text, 300, workdir = str(tmp_path))
 
-        spill = out.split("saved to ")[1].split(" ")[0]
+        spill = _spill_path(out)
         assert (tmp_path / spill).read_text() == text
 
     def test_the_spill_is_hidden_from_the_created_files_card(self, tmp_path):
@@ -231,6 +236,62 @@ class TestPagingTheRest:
 
         assert after == before
 
+    def test_a_cmd_only_windows_host_gets_no_command_it_cannot_run(self, tmp_path, monkeypatch):
+        """`_get_shell_cmd` falls back to `cmd /c` when the host has no trusted bash, and
+        cmd has no sed, tail or head. Naming one anyway hands the model a command that
+        fails, and the likely next move is re-running the call that truncated."""
+        monkeypatch.setattr(tools.sys, "platform", "win32")
+        monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+
+        out = tools._truncate(
+            "\n".join(f"line {i}" for i in range(1, 501)), 200, workdir = str(tmp_path)
+        )
+
+        assert "saved to" in out, "the spill is still worth naming"
+        assert "continue with" not in out
+        for tool in ("sed -n", "tail -c", "head -c"):
+            assert tool not in out
+
+    def test_a_windows_host_with_bash_still_gets_the_command(self, tmp_path, monkeypatch):
+        """The guard must not strip paging from the Windows hosts that can page."""
+        monkeypatch.setattr(tools.sys, "platform", "win32")
+        monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+
+        out = tools._truncate(
+            "\n".join(f"line {i}" for i in range(1, 501)), 200, workdir = str(tmp_path)
+        )
+
+        assert "continue with" in out
+        assert "sed -n" in out
+
+    def test_the_spill_is_written_without_newline_translation(self, tmp_path, monkeypatch):
+        """The byte offset in the hint is counted from the untranslated text, so the file
+        has to hold those same bytes. The default text mode writes os.linesep, which on
+        Windows adds a byte per line and moves every later offset, resuming early and
+        repeating output.
+
+        Asserted on the open() call rather than on the bytes, because this platform does
+        not translate: comparing the file here would pass with or without the fix and
+        prove nothing about the platform the bug is on.
+        """
+        import builtins
+
+        seen = {}
+        real_open = builtins.open
+
+        def _recording_open(path, mode = "r", *args, **kwargs):
+            if "w" in mode and str(path).endswith(".txt"):
+                seen.update(kwargs)
+            return real_open(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", _recording_open)
+        text = "\n".join(f"line {i}" for i in range(1, 200))
+        tools._truncate(text, 120, workdir = str(tmp_path))
+
+        assert seen.get("newline") == "", f"spill opened with newline={seen.get('newline')!r}"
+        spill = next((tmp_path / tools._SPILL_DIR).iterdir())
+        assert spill.read_bytes() == text.encode("utf-8")
+
     def test_no_workdir_falls_back_to_the_plain_notice(self):
         """A hint naming a file that is not there is worse than admitting it is gone."""
         out = tools._truncate("\n".join(str(i) for i in range(5_000)), 200)
@@ -240,12 +301,26 @@ class TestPagingTheRest:
         assert "saved to" not in out
 
     def test_spills_do_not_accumulate_without_bound(self, tmp_path):
-        text = "\n".join(str(i) for i in range(5_000))
-        for _ in range(tools._SPILL_KEEP + 6):
-            tools._truncate(text, 200, workdir = str(tmp_path))
+        # Distinct bodies, so each really is a new spill: identical output is content
+        # addressed onto one file and would never exercise the prune at all.
+        for n in range(tools._SPILL_KEEP + 6):
+            tools._truncate(f"run {n}\n" + "\n".join(str(i) for i in range(5_000)),
+                            200, workdir = str(tmp_path))
 
         kept = os.listdir(tmp_path / tools._SPILL_DIR)
         assert len(kept) <= tools._SPILL_KEEP
+
+    def test_the_same_output_twice_reuses_one_spill(self, tmp_path):
+        """Content addressed, so the notice is identical between the streaming and
+        non-streaming runs of one call, and printing the same file twice does not fill
+        the sandbox with copies."""
+        text = "\n".join(f"line {i}" for i in range(1, 2_000))
+
+        first = tools._truncate(text, 200, workdir = str(tmp_path))
+        second = tools._truncate(text, 200, workdir = str(tmp_path))
+
+        assert first == second
+        assert len(os.listdir(tmp_path / tools._SPILL_DIR)) == 1
 
 
 # Three characters per token, which is what the code tools actually print: minified HTML,

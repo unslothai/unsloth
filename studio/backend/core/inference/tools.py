@@ -13985,10 +13985,19 @@ def _truncate(
         offset = len(head.encode("utf-8", "surrogatepass"))
         resume = f"tail -c +{offset + 1} {spill} | head -c {max(1, offset)}"
         where = f"showing the first {len(head)} chars of {len(text)}"
-    return head + (
+    # The workdir sentence stays whatever else the notice says: it is about the files the
+    # CODE wrote, not the spill, and it is the only thing telling the model those survive.
+    common = (
         f"\n\n... (truncated to {limit} chars for the model; {where}, {len(text)} chars "
-        f"total. Full output saved to {spill} -- continue with:\n  {resume})"
+        f"total. Full output saved to {spill}, and any files the code wrote persist in "
+        "the working directory"
     )
+    if not _posix_tools_available():
+        # A cmd-only Windows host has none of sed, tail or head, so the command would fail
+        # and the model would most likely re-run the command that truncated. Name where
+        # the output is and stop there, rather than promising paging that cannot happen.
+        return head + common + ".)"
+    return head + common + f" -- continue with:\n  {resume})"
 
 
 def _head_whole_lines(text: str, limit: int) -> "tuple[str, bool]":
@@ -14011,6 +14020,18 @@ def _head_whole_lines(text: str, limit: int) -> "tuple[str, bool]":
     return head, head.endswith("\n")
 
 
+def _posix_tools_available() -> bool:
+    """Whether the shell these tools run in has sed/tail/head.
+
+    `_get_shell_cmd` falls back to `cmd /c` on a Windows host with no trusted bash, and
+    none of those exist there, so a hint naming them is a command the model cannot run.
+    The spill is still worth naming; the command is not.
+    """
+    if sys.platform != "win32":
+        return True
+    return _windows_bash() is not None
+
+
 # Dot-directory on purpose: `_snapshot_workdir_files` skips those, so the spill never
 # appears as a file the model created and never earns a download card in the UI. A plain
 # name here would put a phantom artifact beside every truncated result.
@@ -14030,8 +14051,22 @@ def _spill_full_output(text: str, workdir: str | None) -> "str | None":
     try:
         target_dir = os.path.join(workdir, _SPILL_DIR)
         os.makedirs(target_dir, exist_ok = True)
-        name = f"{uuid.uuid4().hex[:8]}.txt"
-        with open(os.path.join(target_dir, name), "w", encoding = "utf-8") as handle:
+        # Named from the CONTENT, not at random. The result has to come back byte-identical
+        # with and without an output_callback (the streaming invariant asserted by
+        # test_truncated_result_identical_and_notice_neutral_with_streaming), and a random
+        # name puts a different path in the notice on each of the two runs. Content
+        # addressing also means asking for the same file twice reuses one spill instead of
+        # filling the sandbox with copies, which is the repeat case this whole change is
+        # about.
+        digest = hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+        name = f"{digest}.txt"
+        # newline="" so the bytes on disk are the bytes measured. The default translates
+        # "\n" to os.linesep, which on Windows writes an extra byte per line, and the
+        # byte offset in the continuation hint is counted from the untranslated text --
+        # so a mid-line resume would start one byte early for every preceding newline.
+        with open(
+            os.path.join(target_dir, name), "w", encoding = "utf-8", newline = ""
+        ) as handle:
             handle.write(text)
         _prune_spills(target_dir)
         # Relative, so the command works from the cwd the tools already run in, and so
