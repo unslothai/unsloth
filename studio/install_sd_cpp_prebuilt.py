@@ -620,22 +620,20 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     the ``lib*.so`` links upstream sd.cpp releases ship and leaves ``sd-cli``
     with ``file too short`` libraries (#9268)."""
     base = target.resolve()
-    # The installer writes these itself after extraction. A symlink member at one of them makes
-    # _write_install_record follow it and overwrite whatever it points at, while the record still
-    # reads back correctly, so a corrupted install reports success.
+    # The installer writes these itself. A link at one makes _write_install_record follow it and
+    # overwrite the target, while the record still reads back, so a broken install reports success.
     reserved = {base / INSTALL_RECORD, base / OWNERSHIP_MARKER}
     links: list[tuple[Path, str, zipfile.ZipInfo]] = []
     plain: list[zipfile.ZipInfo] = []
     written: list[tuple[Path, str]] = []
     for member in zf.infolist():
-        # extractall DROPS ".." components instead of cancelling the one before them, so
-        # "a/.." is "a" to it. Normalising here would compare a path it never writes to, and
-        # with a link at "a" the member lands outside base. No release ships "..", so refuse it.
+        # extractall DROPS ".." instead of cancelling the component before it, so "a/.." is "a"
+        # to it and normalising here checks a path it never writes. No release ships one.
         parts = PurePosixPath(member.filename).parts
         if ".." in parts:
             raise RuntimeError(f"unsafe path in archive: {member.filename!r}")
-        # Lexical, never resolve()d. Extraction MERGES, so resolving would follow the link the
-        # PREVIOUS install wrote and end with the real library replaced by a link to itself.
+        # Lexical, never resolve()d: extraction MERGES, and resolving would follow the previous
+        # install's link and leave the real library replaced by a link to itself.
         dest = Path(os.path.normpath(base / member.filename))
         checked = dest.resolve()
         if (dest != base and base not in dest.parents) or (
@@ -647,9 +645,8 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
             links.append((dest, _checked_link_target(zf, member, dest, base), member))
         else:
             plain.append(member)
-    # No member may sit under a directory this same archive turns into a link: extraction would
-    # write through the link, and the creation-time check below would only catch it once part of
-    # the tree had already been replaced. Refused here, before the first write.
+    # No member may sit under a directory this archive turns into a link: extraction would write
+    # through it, and catching that at creation time means part of the tree is already replaced.
     link_dests = {d for d, _, _ in links}
     for dest, filename in written:
         for parent in dest.parents:
@@ -659,25 +656,21 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
                 raise RuntimeError(
                     f"unsafe path in archive: {filename!r} is under a symlink member"
                 )
-    # Every destination this archive writes stops being whatever it is now, so a stale link at
-    # one of them must not be followed: it is about to become this archive's own member.
+    # Every destination this archive writes is about to become its own member, so a stale link
+    # at one must not be followed.
     replaced = {str(d) for d, _ in written}
     archive = {str(d): t for d, t, _ in links}
     replaced |= {str(_plan_key(d, base, replaced, archive)) for d, _ in written}
-    # A member path is not where the link lands: a directory link a PREVIOUS bundle left
-    # (alias -> .) makes alias/<record> land on the record itself, and a lexical comparison
-    # here misses it, so _write_install_record would follow the link and overwrite whatever
-    # it points at while still reading back as a valid install. Same for a directory already
-    # sitting where a link goes: checked here rather than at creation, so a refused archive
-    # has not yet replaced a working binary.
+    # A member path is not where the link lands: a previous bundle's alias -> . puts
+    # alias/<record> on the record itself, which a lexical compare misses. Same for a directory
+    # already sitting there. Checked here, so a refused archive has replaced nothing.
     keys = {str(d): _plan_key(d, base, replaced, archive) for d, _, _ in links}
     for dest, link_target, member in links:
         key = keys[str(dest)]
         if key in reserved:
             raise RuntimeError(f"symlink at a reserved installer path: {member.filename!r}")
-        # And neither may one POINT at them: the marker exists before extraction on any root
-        # Studio owns, so sd-cli -> the marker resolves to a file and _locate_sd_cli reports
-        # an empty one as the executable, with the install still claiming success.
+        # Nor may one POINT at them: the marker is already there on a root Studio owns, so
+        # sd-cli -> marker leaves _locate_sd_cli reporting an empty file as the executable.
         landing = _plan_resolve(
             Path(os.path.normpath(key.parent / link_target)), base, replaced, archive
         )
@@ -685,12 +678,10 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
             raise RuntimeError(f"symlink onto a reserved installer path: {member.filename!r}")
         if key.is_dir() and not key.is_symlink():
             raise RuntimeError(f"symlink member collides with a directory: {member.filename!r}")
-    # Chains are normal (libwebp.so -> libwebp.so.7 -> libwebp.so.7.2.0) but must terminate: a
-    # cycle installs a library nothing can read, so every load would reinstall it again. Walk the
-    # graph the tree will HAVE, archive edges first and then links a previous bundle left, since
-    # an archive edge can close a loop with one this archive never ships. Keyed by landing point
-    # for the same reason: alias/a and real/b are one cycle once alias -> real is followed.
-    # Done here rather than after creating the links, so a refused archive has written nothing.
+    # Chains are normal (libwebp.so -> .so.7 -> .so.7.2.0) but must terminate: a cycle installs
+    # a library nothing can read, so every load reinstalls it. Walk the graph the tree WILL have,
+    # archive edges plus links a previous bundle left, keyed by landing point so alias/a and
+    # real/b count as one cycle. Before any write, so a refused archive has written nothing.
     by_dest = {str(keys[str(d)]): t for d, t, _ in links}
     for dest, _, member in links:
         seen, cur = set(), str(keys[str(dest)])
@@ -703,16 +694,16 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
             else:
                 break
             nxt = Path(os.path.normpath(os.path.join(os.path.dirname(cur), nxt)))
-            # a -> a/x never reaches a second node, so exact-node repetition never catches it:
-            # every attempt to resolve a walks a again. Anything under the link is a loop.
+            # a -> a/x never reaches a second node, so repetition never fires, yet resolving a
+            # walks a again. Anything under the link is a loop.
             if Path(cur) in nxt.parents:
                 raise RuntimeError(f"symlink cycle in archive: {member.filename!r}")
             cur = str(_plan_key(nxt, base, replaced, archive))
         else:
             raise RuntimeError(f"symlink cycle in archive: {member.filename!r}")
-    # Last thing decided before the first write: whether this filesystem can hold links at all.
-    # Some mounts (exFAT, SMB without unix extensions) refuse with EPERM, and finding out at
-    # creation time means extractall has already put the new binary over the working one.
+    # Last thing decided before the first write: can this filesystem hold links at all? Some
+    # mounts (exFAT, SMB without unix extensions) refuse, and learning that at creation time
+    # means extractall has already put the new binary over the working one.
     if links:
         probe = base / f".unsloth-symlink-probe-{os.getpid()}"
         try:
@@ -723,12 +714,9 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
                 raise RuntimeError(f"this filesystem cannot store symlinks: {exc}") from exc
         else:
             probe.unlink()
-    # Validated before the first write, so a rejected archive leaves the install untouched.
-    #
-    # extractall opens each destination "wb", which FOLLOWS a link a previous bundle left there
-    # and writes the member into the file it points at. Drop stale links first: a name that one
-    # bundle ships as a link the next can ship as a regular file (the mirror ships plain copies
-    # where upstream ships links), and an accelerator switch lands exactly that way.
+    # extractall opens each destination "wb", which FOLLOWS a link a previous bundle left and
+    # writes the member into its target. Drop stale links first: a name one bundle ships as a
+    # link the next can ship as a file (the mirror ships copies where upstream ships links).
     for dest, _ in written:
         if dest.is_symlink():
             dest.unlink()
