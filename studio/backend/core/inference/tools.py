@@ -8773,16 +8773,15 @@ def _is_spill_artifact(sandbox: str, parent: str, name: str) -> bool:
     root = os.path.join(sandbox, _SPILL_DIR)
     if parent != root and os.path.dirname(parent) != root:
         return False
-    if not os.path.isfile(os.path.join(root, _SPILL_OWNER_MARKER)):
-        # See `_SPILL_OWNER_MARKER`: unmarked, so this directory is the user's and so is
-        # everything in it, however the files are named.
+    identity, owned = _spill_record(root)
+    if identity is None or identity != _spill_identity(root):
+        # No record of this directory: it came with the sandbox or was replaced, so
+        # everything in it is the user's, however the files are named.
         return False
-    if parent == root and name == _SPILL_OWNER_MARKER:
-        return True
     if os.path.islink(os.path.join(parent, name)):
         return False
     relative = os.path.relpath(os.path.join(parent, name), root).replace(os.sep, "/")
-    return relative in _spill_manifest(root)
+    return relative in owned
 
 
 def _holds_no_user_files(target: str, owner: "str | None" = None) -> bool:
@@ -12246,7 +12245,24 @@ def _exact_prefix_chars(
     return floor
 
 
-def _dense_char_limit(text: str, max_chars: int) -> int:
+def _text_token_cost(text: str, ctx: int) -> float:
+    """What ``text`` really costs, measured when the serving model can measure it.
+
+    The estimate is the inverse of `_dense_prefix_chars`: ASCII at the English four
+    characters per token, everything else at one. Doubled when nothing can check it, for
+    the same reason `_UNMEASURED_ROOM_MARGIN` halves a room that cannot be measured.
+    """
+    counter = _loaded_token_counter(ctx) if ctx else None
+    if counter is not None:
+        try:
+            return float(counter(text))
+        except Exception:
+            logger.debug("token count failed", exc_info = True)
+    estimate = sum(0.25 if character.isascii() else 1.0 for character in text)
+    return estimate if counter is not None else estimate / _UNMEASURED_ROOM_MARGIN
+
+
+def _dense_char_limit(text: str, max_chars: int, reserve_tokens: float = 0.0) -> int:
     """`max_chars`, lowered when `text` tokenises denser than four characters per token.
 
     Without this the window-derived caps above reserve their share only for English. On
@@ -12258,7 +12274,10 @@ def _dense_char_limit(text: str, max_chars: int) -> int:
     ctx = _window_context_tokens()
     room = _request_result_room()
     if room is None and (not ctx or len(text) <= _MIN_PAGE_CHARS):
-        return max_chars
+        # Nothing measured, so the caller's cap is the only budget there is, and the
+        # reserve comes off it at the same four characters per token used everywhere else
+        # the real rate is unknown.
+        return max(0, max_chars - int(reserve_tokens * 4))
     if room is not None and _loaded_token_counter(ctx or 0) is None:
         # Nothing here can measure this model's tokens: `_loaded_token_counter` answers
         # only for a resident GGUF, and a native safetensors model is served through a
@@ -12273,7 +12292,13 @@ def _dense_char_limit(text: str, max_chars: int) -> int:
     # one character short of it. Unknown window, known room: the room is the whole answer,
     # which is the native case where nothing here can see a context length.
     share = float(ctx * _PAGE_CONTEXT_SHARE) if ctx else float(room)
+    # Whatever the caller will append is part of what has to fit, and it is taken off the
+    # TOKEN budget rather than off the character cap: a punctuation-heavy path tokenises
+    # far more densely than the prose characters that would otherwise be dropped to make
+    # room for it, so subtracting its length in characters buys less room than it costs.
+    share = max(0.0, share - reserve_tokens)
     if room is not None:
+        room = max(0, int(room - reserve_tokens))
         # The share is a fraction of the WINDOW and does not fall as the thread fills, so
         # on its own it lets the last result before an overflow claim as much as the
         # first. Whichever of the two is smaller is the one that has to hold.
@@ -14021,17 +14046,24 @@ def _truncate(
     # Same correction as a fetched page: a character cap reserves its share of the window
     # only for English, and a command that prints CJK or percent-escaped text costs two to
     # three times what the cap assumed.
-    limit = _dense_char_limit(text, limit)
-    # The hint is appended to whatever comes back and goes to the model with it, so it is
-    # part of what has to fit. Measured here rather than added afterwards: a failing path
-    # is dense, tokenises badly, and on a thread with no room left a few hundred unbudgeted
-    # characters are the overflow this whole change exists to prevent. It may take at most
-    # half the room; past that the output is worth more than the advice about it.
     if hint:
-        if len(hint) * 2 <= limit:
-            limit -= len(hint)
+        # Priced in tokens, not characters, and taken off the budget before it is converted
+        # (see `_dense_char_limit`). A failing absolute path is dense: subtracting its
+        # LENGTH from the character cap frees fewer tokens than the hint then spends, which
+        # is the unbudgeted overflow this whole change exists to prevent. It may take at
+        # most half the room; past that the output is worth more than the advice about it.
+        plain = _dense_char_limit(text, limit)
+        cost = _text_token_cost(hint, _window_context_tokens())
+        with_hint = _dense_char_limit(text, limit, cost)
+        if plain > 0 and (len(text) <= with_hint or with_hint * 2 >= plain):
+            limit = with_hint
         else:
-            hint = ""
+            # Nothing to spend on advice: at zero room the stub IS the message, and when
+            # paying for it would cut the output in half the output is worth more than the
+            # advice about it. Nothing is dropped while the result fits anyway.
+            limit, hint = plain, ""
+    else:
+        limit = _dense_char_limit(text, limit)
     # Mode-neutral notice: this result serves both the streaming UI and
     # non-streaming callers and must stay byte-identical with and without an
     # output_callback (a regression-tested invariant), so it can't claim the
@@ -14209,8 +14241,7 @@ _SPILL_NAME_RE = re.compile(r"[0-9a-f]{12}\.txt")
 # rather than inferred from the names inside: a sandbox can be a project the user opened,
 # a directory of this name in it may be theirs, and a file name proves nothing about who
 # wrote it. Without the marker nothing here writes, prunes or discounts anything there.
-_SPILL_OWNER_MARKER = ".studio-owned"
-_SPILL_OWNER_HEADER = "Unsloth Studio truncated tool output. Safe to delete."
+_SPILL_RECORD_HEADER = "unsloth-studio tool output "
 # One lock per spill root. Appending a spill and rewriting the manifest after a prune are
 # a read-modify-write over one shared file, and a project's chats share a sandbox: two
 # calls spilling at once could otherwise have the pruner drop the entry the other just
@@ -14225,87 +14256,110 @@ def _spill_lock(root: str) -> "threading.Lock":
         return _SPILL_LOCKS.setdefault(key, threading.Lock())
 
 
-def _own_marker_path(root: str) -> str:
-    return os.path.join(root, _SPILL_OWNER_MARKER)
+def _spill_records_dir() -> str:
+    """Where the spill manifests live: Studio's own storage, NOT the sandbox.
 
-
-def _marker_is_ours(root: str) -> bool:
-    """Whether the ownership marker is a real file this process can trust.
-
-    A LINK is not one, whatever it points at. Tool code runs in the sandbox and can
-    replace the marker after the directory is created: `os.path.isfile` follows the link,
-    so the directory would still read as owned and the next manifest write would truncate
-    whatever the link names, with the backend's own permissions.
+    The sandbox is a directory tool code writes to, so nothing kept inside it can be
+    evidence about the sandbox. A marker file there was replaceable by a link, and once it
+    is a plain file the model can rewrite its contents and name the user's own files as
+    Studio's, which turns the cleanup into a delete and the prune into an unlink. Held
+    beside the other records this file already keeps outside the sandboxes.
     """
-    marker = _own_marker_path(root)
-    return os.path.isfile(marker) and not os.path.islink(marker)
+    try:
+        from utils.paths.storage_roots import studio_root  # noqa: PLC0415
+
+        return os.path.join(str(studio_root()), "tool-output-records")
+    except Exception:
+        return os.path.join(
+            os.path.dirname(os.path.realpath(sandbox_root())), "tool-output-records"
+        )
+
+
+def _spill_record_path(root: str) -> str:
+    """The record for one spill root, named by a digest of its real path."""
+    digest = hashlib.sha256(os.path.realpath(root).encode("utf-8", "surrogatepass")).hexdigest()
+    return os.path.join(_spill_records_dir(), f"{digest[:24]}.txt")
+
+
+def _spill_identity(root: str) -> "str | None":
+    """The directory's device and inode, which is what the record claims ownership OF.
+
+    Tool code can delete `.unsloth_tool_output` and make its own in the same place. That
+    is a different directory with the same path, and a record that only knew the path
+    would hand the new one's contents to the prune.
+    """
+    try:
+        stat = os.lstat(root)
+    except OSError:
+        return None
+    if not os.path.isdir(root) or os.path.islink(root):
+        return None
+    return f"{stat.st_dev}:{stat.st_ino}"
 
 
 def _own_spill_root(root: str) -> bool:
     """Whether the spill directory is one this process made, creating it if it is absent.
 
-    See `_SPILL_OWNER_MARKER`. A pre-existing directory of that name without the marker is
-    the user's: this returns False and the caller falls back to a notice with no spill,
-    which is the same fallback as a read-only mount.
+    Ownership is recorded outside the sandbox (`_spill_records_dir`) and is of a specific
+    directory, not of a path: a `.unsloth_tool_output` that came with the sandbox, or one
+    tool code deleted and recreated, has no matching record and is left alone entirely.
     """
     if os.path.islink(root):
         return False
-    if not os.path.isdir(root):
-        if os.path.exists(root):
-            return False
-        os.makedirs(root, exist_ok = True)
-    if os.path.islink(_own_marker_path(root)):
-        # Replaced since this directory was created, so nothing here is trustworthy any
-        # more. See `_marker_is_ours`.
-        return False
-    if not _marker_is_ours(root):
-        with _spill_lock(root):
-            # Re-checked under the lock: two calls can reach here at once, and the loser
-            # would otherwise rewrite an empty manifest over the winner's first spill.
-            if not _marker_is_ours(root):
-                if os.listdir(root):
-                    # Not ours and not empty, so it came with the sandbox.
+    try:
+        if not os.path.isdir(root):
+            if os.path.exists(root):
+                return False
+            os.makedirs(root, exist_ok = True)
+            os.makedirs(_spill_records_dir(), exist_ok = True)
+            with _spill_lock(root):
+                identity = _spill_identity(root)
+                if identity is None:
                     return False
-                _write_spill_manifest(root, [])
-    return _marker_is_ours(root)
+                _write_spill_manifest(root, [], identity = identity)
+        return _spill_record(root)[0] == _spill_identity(root)
+    except OSError:
+        logger.debug("tool result spill ownership check failed", exc_info = True)
+        return False
+
+
+def _spill_record(root: str) -> "tuple[str | None, set[str]]":
+    """The recorded identity of ``root`` and the spills written into it.
+
+    ``(None, set())`` when there is no record, which is the answer for any directory this
+    process did not create. An unreadable or half-written record reads the same way, which
+    retains too much rather than deleting something that was never ours.
+    """
+    try:
+        with open(_spill_record_path(root), encoding = "utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return None, set()
+    if not lines or not lines[0].startswith(_SPILL_RECORD_HEADER):
+        return None, set()
+    identity = lines[0][len(_SPILL_RECORD_HEADER):].strip() or None
+    return identity, {line.strip() for line in lines[1:] if line.strip()}
 
 
 def _spill_manifest(root: str) -> "set[str]":
-    """The spills this process wrote, by path relative to ``root``.
-
-    The marker records ownership of each FILE, not only of the directory. Tool code runs
-    in the sandbox and can create `.unsloth_tool_output/abcdef123456.txt` itself once the
-    directory exists, and a name is not evidence of who wrote it: without this the prune
-    would unlink that file and the cleanup would discount it as Studio's.
-
-    An unreadable or half-written manifest reads as empty, which retains too much rather
-    than deleting something that was never ours.
-    """
-    if os.path.islink(_own_marker_path(root)):
-        return set()
-    try:
-        with open(_own_marker_path(root), encoding = "utf-8") as handle:
-            lines = handle.read().splitlines()
-    except OSError:
-        return set()
-    return {line.strip() for line in lines[1:] if line.strip()}
+    """The spills this process wrote into ``root``, by path relative to it."""
+    return _spill_record(root)[1]
 
 
-def _write_spill_manifest(root: str, names) -> None:
-    """Rewrite the marker with ``names``, atomically and without following a link.
-
-    Written to a fresh file and moved into place, for the same reason the spills are: an
-    open with O_TRUNC over a path tool code can replace is a write through whatever it
-    points at now.
-    """
+def _write_spill_manifest(root: str, names, identity: "str | None" = None) -> None:
+    """Rewrite the record with ``names``, atomically."""
+    if identity is None:
+        identity = _spill_record(root)[0]
+    path = _spill_record_path(root)
+    os.makedirs(os.path.dirname(path), exist_ok = True)
     tmp = None
     try:
-        fd, tmp = tempfile.mkstemp(dir = root, prefix = ".tmp-owner-")
+        fd, tmp = tempfile.mkstemp(dir = os.path.dirname(path), prefix = ".tmp-record-")
         with os.fdopen(fd, "w", encoding = "utf-8") as handle:
-            handle.write(_SPILL_OWNER_HEADER + "\n")
+            handle.write(f"{_SPILL_RECORD_HEADER}{identity or ''}\n")
             for name in sorted(names):
                 handle.write(f"{name}\n")
-        os.replace(tmp, _own_marker_path(root))
+        os.replace(tmp, path)
         tmp = None
     finally:
         if tmp is not None and os.path.exists(tmp):
@@ -14316,18 +14370,13 @@ def _write_spill_manifest(root: str, names) -> None:
 
 
 def _record_spill(root: str, relative: str) -> None:
-    """Append one written spill to the marker.
-
-    Appended rather than rewritten so two calls spilling at once cannot lose each other's
-    line, and a lost line only means a file this never prunes.
-    """
-    flags = os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+    """Append one written spill to the record. See `_spill_record`."""
     try:
         with _spill_lock(root):
-            with os.fdopen(os.open(_own_marker_path(root), flags), "a", encoding = "utf-8") as handle:
+            with open(_spill_record_path(root), "a", encoding = "utf-8") as handle:
                 handle.write(f"{relative}\n")
     except OSError:
-        logger.debug("tool result spill manifest append failed", exc_info = True)
+        logger.debug("tool result spill record append failed", exc_info = True)
 
 
 def _spill_scope(session_id: "str | None", thread_id: "str | None") -> "str | None":
@@ -14495,10 +14544,10 @@ def _prune_spills(target_dir: str, root: "str | None" = None) -> None:
 
 def _prune_spills_locked(target_dir: str, root: str) -> None:
     try:
-        if not _marker_is_ours(root):
-            # Unowned: whatever is in there came with the sandbox, whatever it is called.
+        identity, owned = _spill_record(root)
+        if identity is None or identity != _spill_identity(root):
+            # No record of this directory, so it came with the sandbox or was replaced.
             return
-        owned = _spill_manifest(root)
         removed = set()
         # Newest first within this scope, so the count keeps the ones still being paged.
         for extra in sorted(

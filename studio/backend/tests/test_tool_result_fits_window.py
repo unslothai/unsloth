@@ -20,6 +20,7 @@ newest turn, so compaction may not drop the very result that does not fit.
 from __future__ import annotations
 
 import hashlib
+import shutil
 import os
 
 import pytest
@@ -52,22 +53,29 @@ def _spill_path(out: str) -> str:
     return out.split("saved to ")[1].split(" ")[0].rstrip(".,)")
 
 
+@pytest.fixture(autouse = True)
+def _records(tmp_path_factory, monkeypatch):
+    """Ownership records live in Studio's own storage, so tests get their own copy of it
+    rather than writing into the real one."""
+    where = tmp_path_factory.mktemp("tool-output-records")
+    monkeypatch.setattr(tools, "_spill_records_dir", lambda: str(where))
+
+
 def _own(workdir) -> "os.PathLike":
-    """The spill directory as Studio itself would leave it: created, and marked as ours.
+    """The spill directory as Studio itself would leave it: created, and recorded as ours.
 
     Tests that pre-create it are standing in for a sandbox this process has already
-    spilled into; without the marker it is a directory that came with the sandbox, which
-    is the case `_own_spill_root` deliberately refuses.
+    spilled into. A directory made any other way has no record, which is the case
+    `_own_spill_root` deliberately refuses.
     """
     root = workdir / tools._SPILL_DIR
-    root.mkdir(exist_ok = True)
-    (root / tools._SPILL_OWNER_MARKER).write_text("owned")
+    assert tools._own_spill_root(str(root))
     return root
 
 
 def _spills(directory) -> list:
-    """Everything in a spill directory except Studio's own marker."""
-    return [p for p in directory.iterdir() if p.name != tools._SPILL_OWNER_MARKER]
+    """Everything in a spill directory. The ownership record is not in there."""
+    return list(directory.iterdir())
 
 
 def _room(value):
@@ -895,21 +903,53 @@ class TestTheRetryHintIsInsideTheCap:
     _HINT = " " + "x" * 400
 
     def test_the_hint_is_charged_to_the_limit(self):
+        """Paid for out of the body, and at its token cost rather than its length: a
+        punctuation-heavy path tokenises far more densely than the prose it displaces."""
         text = "\n".join(str(i) for i in range(5_000))
 
-        capped = tools._truncate(text, 1_000, hint = self._HINT)
+        capped = tools._truncate(text, 4_000, hint = self._HINT)
+        plain = tools._truncate(text, 4_000)
 
         assert capped.endswith(self._HINT)
         body = capped.split("\n\n... (")[0]
-        assert len(body) <= 1_000 - len(self._HINT), "the hint was added on top of the cap"
+        assert len(body) + len(self._HINT) <= len(plain.split("\n\n... (")[0])
 
     def test_a_hint_too_large_for_the_room_is_dropped(self):
         """Past half the room the output is worth more than the advice about it."""
         text = "\n".join(str(i) for i in range(5_000))
 
-        capped = tools._truncate(text, 500, hint = self._HINT)
+        capped = tools._truncate(text, 900, hint = self._HINT)
 
         assert self._HINT not in capped
+
+    def test_a_dense_hint_costs_more_than_its_length(self, monkeypatch):
+        """The point of pricing it in tokens. A punctuation-heavy absolute path tokenises
+        far more densely than the prose characters that would be dropped to make room for
+        it, so subtracting its LENGTH from the character cap buys less than it spends."""
+        _window(monkeypatch, 4096)
+        # A separator is its own token and a letter is a quarter of one, which is roughly
+        # what a tokenizer does to a path next to prose.
+        monkeypatch.setattr(
+            tools,
+            "_loaded_token_counter",
+            lambda ctx: (lambda chunk: sum(1.0 if c == "/" else 0.25 for c in chunk)),
+        )
+        _room(400)
+        text = _dense(40_000)
+        hint = "/" * 100
+
+        without = tools._truncate(text, tools._MAX_OUTPUT_CHARS).split("\n\n... (")[0]
+        with_hint = tools._truncate(text, tools._MAX_OUTPUT_CHARS, hint = hint)
+
+        assert with_hint.endswith(hint)
+        body = with_hint.split("\n\n... (")[0]
+        # The hint is 100 tokens and the body runs four characters to the token, so the
+        # body has to give up about 400 characters to pay for it. Charged as prose it
+        # gives up its length, which line rounding can inflate a little: three times over
+        # is comfortably past anything that rounding explains.
+        assert len(without) - len(body) >= 3 * len(hint), (
+            "the body gave up about the hint's length, so the hint was charged as prose"
+        )
 
     def test_a_result_that_fits_still_carries_it(self):
         assert tools._truncate("ok", 1_000, hint = self._HINT) == "ok" + self._HINT
@@ -1106,47 +1146,50 @@ class TestTheNativePathIsBoundedWithoutATokenizer:
         assert limit // _CHARS_PER_TOKEN <= 400
 
 
-class TestTheOwnershipMarkerIsNotAWritePrimitive:
-    """Tool code runs in the sandbox and can replace the marker after the directory is
-    made. `os.path.isfile` follows a link, so the directory would still read as owned and
-    the next manifest write would truncate whatever the link names, with the backend's own
-    permissions."""
+class TestOwnershipIsNotKeptWhereToolCodeCanWriteIt:
+    """The sandbox is a directory the model runs commands in, so nothing kept inside it is
+    evidence about it. A marker file there can be replaced with a link, and once it is a
+    plain file its contents can be rewritten to name the user's own files as Studio's,
+    which turns the cleanup into a delete. The record lives in Studio's own storage."""
 
-    def test_a_symlinked_marker_disowns_the_directory(self, tmp_path):
-        workdir = tmp_path / "sandbox"
-        workdir.mkdir()
-        victim = tmp_path / "victim.txt"
-        victim.write_text("do not overwrite me")
-        root = _own(workdir)
-        (root / tools._SPILL_OWNER_MARKER).unlink()
-        (root / tools._SPILL_OWNER_MARKER).symlink_to(victim)
+    def test_nothing_about_ownership_is_written_into_the_sandbox(self, tmp_path):
+        out = tools._truncate(
+            "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path)
+        )
 
-        out = tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir = str(workdir))
+        names = [p.name for p in (tmp_path / tools._SPILL_DIR).iterdir()]
+        assert names == [os.path.basename(_spill_path(out))]
 
-        assert victim.read_text() == "do not overwrite me"
+    def test_a_directory_that_came_with_the_sandbox_is_never_adopted(self, tmp_path):
+        (tmp_path / tools._SPILL_DIR).mkdir()
+        (tmp_path / tools._SPILL_DIR / "notes.txt").write_text("mine")
+
+        out = tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path))
+
         assert "saved to" not in out
+        assert not tools._holds_no_user_files(str(tmp_path))
 
-    def test_a_symlinked_marker_survives_a_prune(self, tmp_path):
-        victim = tmp_path / "victim.txt"
-        victim.write_text("do not overwrite me")
-        root = _own(tmp_path)
-        (root / tools._SPILL_OWNER_MARKER).unlink()
-        (root / tools._SPILL_OWNER_MARKER).symlink_to(victim)
-        (root / "abcdef123456.txt").write_text("x")
+    def test_a_replaced_directory_loses_the_record(self, tmp_path):
+        """Tool code can delete `.unsloth_tool_output` and make its own in the same place.
+        Same path, different directory, and a record that only knew the path would hand
+        the new one's contents to the prune."""
+        spilled = tools._truncate(
+            "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path)
+        )
+        name = os.path.basename(_spill_path(spilled))
+        root = tmp_path / tools._SPILL_DIR
+        shutil.rmtree(root)
+        root.mkdir()
+        # The same NAME the record already knows, which is what makes the path alone
+        # insufficient: this file is the user's and the record was written about another
+        # directory that no longer exists.
+        theirs = root / name
+        theirs.write_text("mine")
+        for n in range(tools._SPILL_KEEP + 5):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
 
-        tools._prune_spills(str(root))
-
-        assert victim.read_text() == "do not overwrite me"
-
-    def test_the_manifest_is_replaced_rather_than_truncated(self, tmp_path):
-        """So the write cannot follow a link swapped in between the check and the open."""
-        root = _own(tmp_path)
-        before = (root / tools._SPILL_OWNER_MARKER).stat().st_ino
-
-        tools._write_spill_manifest(str(root), ["abcdef123456.txt"])
-
-        assert (root / tools._SPILL_OWNER_MARKER).stat().st_ino != before
-        assert not [p for p in root.iterdir() if p.name.startswith(".tmp-")]
+        assert theirs.read_text() == "mine"
+        assert not tools._is_spill_artifact(str(tmp_path), str(root), name)
 
 
 class TestConcurrentSpillsKeepTheirRecords:
