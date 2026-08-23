@@ -286,9 +286,7 @@ def assemble_rows(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
         "samples": sections.get("samples", []),
         "surfaces": sections.get("surfaces", []),
         "aborted_cells": sections.get("aborted_cells", []),
-        "comparability": (
-            sections["comparability"][0] if sections.get("comparability") else {}
-        ),
+        "comparability": (sections["comparability"][0] if sections.get("comparability") else {}),
         "crashes": sections.get("crashes", []),
         "arms": [],
         "unknown_rows": unknown,
