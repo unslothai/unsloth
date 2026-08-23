@@ -15416,11 +15416,22 @@ async def openai_chat_completions(
     # classify a request nobody made. Built from the NORMALIZED conversation, the same shape
     # the backend renders (mlx_inference prepends system_prompt to chat_messages), so a
     # content-part array the probe left unflattened cannot read differently from generation.
+    # Swept the way the renderer sweeps, since apply_chat_template_for_generation neutralizes
+    # control markup before it renders: a user turn's ``<think>`` reaches the template as
+    # ``< think>``, and a template branching on that marker would otherwise pick one branch
+    # here and the other in generation. The tokenizer's markup profile is not in scope, so
+    # this uses the same default rewrite the renderer falls back to.
     try:
+        from core.inference.chat_template_helpers import (
+            neutralize_control_markup_in_messages as _sf_sweep,
+        )
+
         _sf_probe_messages = (
             jsonable_encoder(
-                ([{"role": "system", "content": system_prompt}] if system_prompt else [])
-                + chat_messages
+                _sf_sweep(
+                    ([{"role": "system", "content": system_prompt}] if system_prompt else [])
+                    + chat_messages
+                )
             )
             or None
         )

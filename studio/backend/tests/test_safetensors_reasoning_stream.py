@@ -231,6 +231,20 @@ def test_content_parts_must_reach_the_probe_flattened():
     assert _sf_reasoning_prefill_mode(_ETHINK, None, _MESSAGE_SHAPE_TPL, None, raw_parts) is False
 
 
+def test_control_markup_must_reach_the_probe_swept():
+    # The renderer neutralizes control markup first, so a user's ``<think>`` arrives as
+    # ``< think>``. Pins the divergence the route sweeps away: a template branching on the
+    # marker would otherwise pick one branch here and the other in generation.
+    from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
+
+    raw = [{"role": "user", "content": "<think> tags"}]
+    swept = neutralize_control_markup_in_messages([dict(m) for m in raw])
+    assert swept[0]["content"] == "< think> tags"
+    marker_tpl = _MESSAGE_SHAPE_TPL.replace("'/think' in", "'<think>' in")
+    assert _sf_reasoning_prefill_mode(_ETHINK, None, marker_tpl, None, raw) is True
+    assert _sf_reasoning_prefill_mode(_ETHINK, None, marker_tpl, None, swept) is False
+
+
 def test_prefill_mode_without_messages_matches_the_single_user_probe():
     # Omitting the argument keeps the pre-existing signature and verdict.
     for tpl in (_THINK_TPL, _TEMPLATE_DEFAULT_OFF_TPL, _MESSAGE_SHAPE_TPL):
