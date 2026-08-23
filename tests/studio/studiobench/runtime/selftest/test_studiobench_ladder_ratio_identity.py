@@ -50,7 +50,11 @@ def _ratio(value: float, source: str, provisional: bool) -> dict:
     }
 
 
-def _payload(tmp_path, cells: list, session: str = "sess-1") -> Paths:
+def _payload(
+    tmp_path,
+    cells: list,
+    session: str = "sess-1",
+) -> Paths:
     """A payload holding `cells`, written through the REAL recorder."""
     paths = Paths.under(tmp_path / "out")
     recorder = Recorder(paths.payload_jsonl, session)

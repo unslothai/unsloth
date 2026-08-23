@@ -403,7 +403,11 @@ def test_a_session_that_died_before_its_first_cell_declares_no_mode(tmp_path):
     )
 
 
-def _one_engine_rung(tmp_path, engine, name = "out") -> Paths:
+def _one_engine_rung(
+    tmp_path,
+    engine,
+    name = "out",
+) -> Paths:
     """A payload holding one measured rung, recorded by a session that launched `engine`."""
 
     paths = Paths.under(tmp_path / name)

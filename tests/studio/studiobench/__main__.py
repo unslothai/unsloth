@@ -830,9 +830,7 @@ def run(args, ab_ref = None) -> int:
             if args.resume:
                 ratio_issues: list = []
                 for recorded in recorded_identities(paths.payload_jsonl):
-                    for problem in ladder_ratio_problems(
-                        recorded, ladder_ratio["chars_per_token"]
-                    ):
+                    for problem in ladder_ratio_problems(recorded, ladder_ratio["chars_per_token"]):
                         if problem not in ratio_issues:
                             ratio_issues.append(problem)
                 if ratio_issues:
