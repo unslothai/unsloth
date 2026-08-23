@@ -297,10 +297,33 @@ def actions_needing_an_excuse(paths: list[Path], min_reps: int) -> set[tuple[str
     the result matched and no excuse was ever consulted, so one missed observation at an
     unrelated rung failed the audit again. The rung is part of the identity here for the same
     reason it is part of it there -- instability is a property of the rung, not only the action.
+
+    THE SAME PREDICATES `report` USES, on both axes, or this scopes a verdict nobody runs. Two
+    ways it drifted, and both fail the job rather than pass it, which is why they are worth as
+    much care as the excusing direction:
+
+      RACY_EXECUTION. `report` does not count a one-arm-only result for the three actions whose
+      ABILITY to run is a race, so no excuse can move their verdict and the null owes them
+      nothing. Scoped anyway, the null observing the same legitimate stream-timing race made
+      `audit_null` return 1 and the workflow fail on stream timing.
+
+      THE DIRECTION. `report` carries the live arm in the corroboration key, so a pair that blames
+      opposite arms across the two repetitions is UNCORROBORATED and cannot move the verdict.
+      Built here as bare four-element tuples it corroborated, entered the scope, and an undecided
+      null then failed a job whose verdict would have been 0.
+
+    The rule for this function is simply: scope is what the verdict's FATAL set turns on. Anything
+    the verdict already declines to count is a question nobody is going to ask.
     """
     results, _ = compare_all(paths)
     differing = [e for e in results if e[3]["verdict"] == P.DIFFER]
-    one_sided = [e for e in results if e[3]["verdict"] == P.NOT_EXERCISED and e[3].get("one_sided")]
+    one_sided = [
+        (e[0], e[1], e[2], e[3], e[3].get("one_sided") or None)
+        for e in results
+        if e[3]["verdict"] == P.NOT_EXERCISED
+        and e[3].get("one_sided")
+        and e[0] not in P.RACY_EXECUTION
+    ]
     firm_differing, _ = corroborated(differing, min_reps)
     firm_one_sided, _ = corroborated(one_sided, min_reps)
     return {(rung_of_cell(e[2]), e[0]) for e in firm_differing + firm_one_sided}

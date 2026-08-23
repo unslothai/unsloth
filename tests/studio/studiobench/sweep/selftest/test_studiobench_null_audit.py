@@ -1248,3 +1248,54 @@ def test_every_racy_execution_entry_states_its_mechanism():
         assert action in P.UNSTABLE_ACTIONS, action
         assert "not_run" in why or "not run" in why, action
         assert len(why) > 60, action
+
+
+# ── the scope is what the VERDICT turns on, not what merely happened ──
+
+
+def test_a_racy_execution_action_is_not_put_in_the_audit_scope(tmp_path):
+    """`report` does not count it, so no excuse can move it and the null owes it nothing.
+
+    Scoped anyway, the null observing the same legitimate stream-timing race made the audit
+    return 1 and failed the workflow on stream timing -- a verdict of 0 with a red job.
+    """
+    path = one_sided_payload(tmp_path, "racy", "stop_generation", ("rep0", "rep1"))
+    assert "stop_generation" in P.RACY_EXECUTION
+    # The verdict does not count it.
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 0
+    # So it must not be in the scope either.
+    assert ("r100K", "stop_generation") not in U.actions_needing_an_excuse([path], 2)
+
+
+def test_a_direction_reversing_one_sided_pair_is_not_put_in_the_audit_scope(tmp_path):
+    # Same rule, the other axis. `report` keys corroboration on the live arm, so a pair blaming
+    # opposite arms is UNCORROBORATED and cannot move the verdict; built here without the
+    # direction it corroborated, entered the scope, and an undecided null failed a passing job.
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            cid = f"r100K.{arm}.{rep}"
+            for i in range(16):
+                rows.append(action_row(cid, f"filler{i}", "SAME"))
+            row = action_row(cid, "settings", "SAME")
+            if (arm == "treatment" and rep == "rep0") or (arm == "base" and rep == "rep1"):
+                row["ran"] = False
+                row["reason"] = "the control never became visible"
+                row["slot_missed"] = False
+            rows.append(row)
+            rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+    out = tmp_path / "swap2"
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+
+    assert U.report([path], "t", frozenset(), min_reps = 2, min_compared = 16) == 0
+    assert ("r100K", "settings") not in U.actions_needing_an_excuse([path], 2)
+
+
+def test_a_control_the_head_cannot_open_is_still_in_the_audit_scope(tmp_path):
+    # The other side, so the two fixes above cannot quietly empty the scope: an action the
+    # verdict DOES fail on is exactly what the null has to have decided.
+    path = one_sided_payload(tmp_path, "real", "settings", ("rep0", "rep1"))
+    assert U.report([path], "t", frozenset(), min_reps = 2, min_compared = 16) == 1
+    assert ("r100K", "settings") in U.actions_needing_an_excuse([path], 2)
