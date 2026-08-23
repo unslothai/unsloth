@@ -74,6 +74,56 @@ function RouteFallback() {
   );
 }
 
+// Retires the retained reload shell (public/reload-snapshot.js). It rides
+// inside the route's own Suspense boundary, so a lazy page that is still
+// resolving keeps the shell up instead of uncovering RouteFallback.
+function signalReloadSnapshotReady() {
+  window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+}
+
+function ReloadSnapshotReady() {
+  useLayoutEffect(() => {
+    signalReloadSnapshotReady();
+  }, []);
+  return null;
+}
+
+// reload-snapshot.js runs outside React during pageswap. Mirror the in-memory
+// privacy state onto the document so Temporary Chat is never serialized even
+// briefly into sessionStorage.
+function ReloadSnapshotPrivacy() {
+  const incognito = useChatRuntimeStore((state) => state.incognito);
+
+  useLayoutEffect(() => {
+    document.documentElement.toggleAttribute(
+      "data-reload-snapshot-private",
+      incognito,
+    );
+    return () => {
+      document.documentElement.removeAttribute(
+        "data-reload-snapshot-private",
+      );
+    };
+  }, [incognito]);
+
+  return null;
+}
+
+function RouteBoundary({
+  children,
+  readyWhenCommitted = true,
+}: {
+  children: ReactNode;
+  readyWhenCommitted?: boolean;
+}) {
+  return (
+    <Suspense fallback={<RouteFallback />}>
+      {readyWhenCommitted && <ReloadSnapshotReady />}
+      {children}
+    </Suspense>
+  );
+}
+
 // ImagesPage is mounted persistently below (not via the /images route) so an in-flight batch survives leaving the tab,
 // mirroring ChatPage. Kept lazy so its bundle still loads only on the first /images visit.
 const ImagesPage = lazy(() =>
@@ -216,6 +266,16 @@ function RootLayout() {
   const t = useT();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
+  const routeOwnsReloadReadiness =
+    pathname === "/hub" ||
+    pathname === "/projects" ||
+    pathname === "/export" ||
+    pathname === "/studio" ||
+    pathname === "/api-monitor" ||
+    pathname === "/login" ||
+    pathname === "/change-password" ||
+    pathname === "/data-recipes" ||
+    pathname.startsWith("/data-recipes/");
   const isAuthFlowRoute = useMatches({
     select: (matches) => matches.some((match) => match.staticData.isAuthFlow),
   });
@@ -372,6 +432,7 @@ function RootLayout() {
   const content = (
     <>
       <PersonalizationSyncMount />
+      <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <SettingsDialog />}
       {/* Opens itself when API traffic arrives; hides on the full monitor page. */}
@@ -383,9 +444,9 @@ function RootLayout() {
       <StopRunningChatsDialog />
       {hideNavbar ? (
         <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
-          <Suspense fallback={<RouteFallback />}>
+          <RouteBoundary readyWhenCommitted={!routeOwnsReloadReadiness}>
             <Outlet />
-          </Suspense>
+          </RouteBoundary>
         </main>
       ) : (
         <SidebarProvider
@@ -429,7 +490,10 @@ function RootLayout() {
                   inert={!isImagesRoute || undefined}
                 >
                   <Suspense fallback={<RouteFallback />}>
-                    <ImagesPage active={isImagesRoute} />
+                    <ImagesPage
+                      active={isImagesRoute}
+                      onInitialReady={signalReloadSnapshotReady}
+                    />
                   </Suspense>
                 </div>
               )}
@@ -444,7 +508,10 @@ function RootLayout() {
                   inert={!isVideoRoute || undefined}
                 >
                   <Suspense fallback={<RouteFallback />}>
-                    <VideoPage active={isVideoRoute} />
+                    <VideoPage
+                      active={isVideoRoute}
+                      onInitialReady={signalReloadSnapshotReady}
+                    />
                   </Suspense>
                 </div>
               )}
@@ -459,7 +526,10 @@ function RootLayout() {
                   inert={!isAudioRoute || undefined}
                 >
                   <Suspense fallback={<RouteFallback />}>
-                    <AudioPage active={isAudioRoute} />
+                    <AudioPage
+                      active={isAudioRoute}
+                      onInitialReady={signalReloadSnapshotReady}
+                    />
                   </Suspense>
                 </div>
               )}
@@ -478,9 +548,9 @@ function RootLayout() {
                     transition={{ duration: 0.06 }}
                     className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-visible"
                   >
-                    <Suspense fallback={<RouteFallback />}>
+                    <RouteBoundary readyWhenCommitted={!routeOwnsReloadReadiness}>
                       <Outlet />
-                    </Suspense>
+                    </RouteBoundary>
                   </motion.div>
                 </AnimatePresence>
               )}

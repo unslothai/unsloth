@@ -285,6 +285,34 @@ def test_stop_training_forwards_job_scope(monkeypatch):
     assert result == {"status": "stopped"}
 
 
+def test_start_training_forwards_as_api_key_caller(monkeypatch):
+    captured = {}
+
+    class FakeTrainingStartRequest:
+        @classmethod
+        def model_validate(cls, config):
+            captured["config"] = config
+            return cls()
+
+    async def fake_start(request, current_subject, via_api_key):
+        assert isinstance(request, FakeTrainingStartRequest)
+        captured["current_subject"] = current_subject
+        captured["via_api_key"] = via_api_key
+        return {"status": "queued"}
+
+    _stub_module(monkeypatch, "models", TrainingStartRequest = FakeTrainingStartRequest)
+    _stub_module(monkeypatch, "routes")
+    _stub_module(monkeypatch, "routes.training", start_training = fake_start)
+
+    tool = _get_tool("start_training")
+    result = asyncio.run(tool.fn(config = {"model_name": "unsloth/test"}))
+
+    assert captured["config"] == {"model_name": "unsloth/test"}
+    assert captured["current_subject"] == "mcp"
+    assert captured["via_api_key"] is True
+    assert result == {"status": "queued"}
+
+
 def test_list_training_runs_clamps_pagination(monkeypatch):
     captured = {}
 
