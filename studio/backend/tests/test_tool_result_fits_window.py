@@ -677,7 +677,7 @@ class TestTheSpillStaysInsideTheSandbox:
         assert "truncated to" in out
         assert "saved to" not in out
 
-    def test_a_symlinked_spill_file_is_replaced_not_followed(self, tmp_path):
+    def test_a_symlinked_spill_file_is_refused(self, tmp_path):
         workdir = tmp_path / "sandbox"
         workdir.mkdir()
         victim = tmp_path / "victim.txt"
@@ -690,11 +690,10 @@ class TestTheSpillStaysInsideTheSandbox:
         out = tools._truncate(text, 200, workdir = str(workdir))
 
         assert victim.read_text() == "do not overwrite me"
-        # Replaced rather than refused: os.replace swaps the directory entry, so the link
-        # is gone and the file it pointed at was never opened.
-        spill = workdir / _spill_path(out)
-        assert not spill.is_symlink()
-        assert spill.read_text().startswith("0\n1\n")
+        # Refused rather than replaced: whatever is at that path is not a spill this
+        # recorded, so it is the user's, and the notice does without a paging hint.
+        assert "saved to" not in out
+        assert (target / f"{digest}.txt").is_symlink()
 
     def test_pruning_does_not_follow_symlinks_either(self, tmp_path):
         target = _own(tmp_path)
@@ -788,8 +787,10 @@ class TestTheSpillCannotBeAimedElsewhere:
         out = tools._truncate(text, 200, workdir = str(workdir))
 
         assert victim.read_text() == "do not overwrite me"
-        # And the spill itself is still written, at a new inode.
-        assert (workdir / _spill_path(out)).read_text().startswith("0\n1\n")
+        # And nothing is written at that name either: it is not a spill this recorded, so
+        # it is the user's, whatever it is linked to.
+        assert "saved to" not in out
+        assert (target / f"{digest}.txt").read_text() == "do not overwrite me"
 
     def test_no_temporary_file_is_left_behind(self, tmp_path):
         tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path))
@@ -1053,6 +1054,23 @@ class TestTheSafetensorsLoopPricesItToo:
         first_of_three = self._run(4096, calls = 3)["result_budget_tokens"]
 
         assert first_of_three <= alone // 3
+
+    def test_every_result_in_a_batch_gets_its_own_notice_reserve(self):
+        """Each truncated result carries its own notice, so an N-call batch spends N of
+        them. Reserved once and divided, the batch pays for one and spends N."""
+        from core.inference.context_window import _RESULT_NOTICE_RESERVE
+
+        assert (
+            tool_result_budget(4096, 512, 500)
+            - tool_result_budget(4096, 512, 500, results = 3)
+            == 2 * _RESULT_NOTICE_RESERVE
+        )
+        # And the loop asks for one per call rather than one per turn. Measured against
+        # its own single-call room, since the spend is whatever that thread costs.
+        alone = self._run(4096)["result_budget_tokens"]
+        first_of_three = self._run(4096, calls = 3)["result_budget_tokens"]
+
+        assert first_of_three <= (alone - 2 * _RESULT_NOTICE_RESERVE) // 3
 
     def test_an_unknown_window_prices_nothing(self):
         """The same leg the GGUF loop takes: no window, no budget, today's behaviour."""
@@ -1349,3 +1367,53 @@ class TestARemovedSandboxTakesItsRecordWithIt:
         assert tools.remove_session_sandbox("__LOCALID_spill333") is False
 
         assert os.path.exists(record)
+
+    def test_rerunning_a_command_does_not_overwrite_replaced_content(self, tmp_path):
+        """The name comes from the content, so running the same command again lands on the
+        same path. If the user's code put its own data there in between, the rename would
+        replace it: the manifest already knows it stopped being ours, and the write has to
+        ask."""
+        text = "\n".join(str(i) for i in range(5_000))
+        spilled = tools._truncate(text, 200, workdir = str(tmp_path))
+        theirs = tmp_path / _spill_path(spilled)
+        theirs.write_text("the user's own data")
+
+        again = tools._truncate(text, 200, workdir = str(tmp_path))
+
+        assert theirs.read_text() == "the user's own data"
+        assert "saved to" not in again
+
+    def test_the_same_output_twice_still_reuses_its_own_spill(self, tmp_path):
+        """The control: an untouched spill is still ours, so the repeat case this whole
+        change is about keeps working instead of refusing on its own file."""
+        text = "\n".join(str(i) for i in range(5_000))
+
+        first = tools._truncate(text, 200, workdir = str(tmp_path))
+        second = tools._truncate(text, 200, workdir = str(tmp_path))
+
+        assert first == second
+        assert len(_spills(tmp_path / tools._SPILL_DIR)) == 1
+
+    def test_a_first_spill_is_not_disowned_by_a_racing_one(self, tmp_path):
+        """Two first-time spills in one sandbox can both see the directory absent. The
+        slower one must not write an empty record over the winner's: that would leave the
+        winner's spill owned by nobody, never pruned and counted as the user's content."""
+        import threading
+
+        ready = threading.Barrier(6)
+        outs = []
+
+        def _spill(n):
+            ready.wait()
+            outs.append(tools._truncate(f"chat {n}\n" + _dense(3_000), 200, workdir = str(tmp_path)))
+
+        threads = [threading.Thread(target = _spill, args = (n,)) for n in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        root = tmp_path / tools._SPILL_DIR
+        recorded = set(tools._spill_manifest(str(root)))
+        on_disk = {p.name for p in root.iterdir()}
+        assert on_disk and on_disk <= recorded, "a spill on disk that the record disowned"

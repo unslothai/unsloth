@@ -1386,7 +1386,11 @@ def run_safetensors_tool_loop(
                             _dense_tokens(conversation)
                             + _dense_tokens(tools or [])
                             + _dense_tokens(results)
-                            + _dense_tokens(pending_args),
+                            # Doubled for the same reason the results above are: a pending
+                            # call can carry base64, minified JSON or a block of code, and
+                            # nothing on this path can price a string exactly.
+                            + 2 * _dense_tokens(pending_args),
+                            results = len(pending) + 1,
                         ) // (len(pending) + 1)
                     if _accepts_output_callback(execute_tool):
                         kwargs["output_callback"] = _output_callback

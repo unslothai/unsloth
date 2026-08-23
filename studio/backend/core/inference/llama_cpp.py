@@ -25471,23 +25471,37 @@ class LlamaCppBackend:
                                     # other calls and their results still need, and the
                                     # finished exchange is protected as the newest turn.
                                     _pending = list(tool_calls or [])[_call_index + 1 :]
-                                    _pending_args = (
-                                        estimate_messages_tokens_dense(
-                                            [
-                                                {
-                                                    "role": "assistant",
-                                                    "content": json.dumps(_call, default = str),
-                                                }
-                                                for _call in _pending
-                                            ]
-                                        )
-                                        if _pending
-                                        else 0
-                                    )
+                                    _pending_msgs = [
+                                        {
+                                            "role": "assistant",
+                                            "content": json.dumps(_call, default = str),
+                                        }
+                                        for _call in _pending
+                                    ]
+                                    # Measured, not estimated: the estimator charges ASCII
+                                    # four characters per token, and a pending call can
+                                    # carry base64, minified JSON or a block of code, which
+                                    # run nearer one or two. Under-priced, the first result
+                                    # is handed room the later ARGUMENTS already occupy.
+                                    _pending_args = 0
+                                    if _pending_msgs:
+                                        try:
+                                            _pending_args = self.count_chat_tokens(
+                                                _pending_msgs, None, None, strict = True
+                                            )
+                                        except Exception:
+                                            logger.debug(
+                                                "result budget: pending call count failed",
+                                                exc_info = True,
+                                            )
+                                            _pending_args = 2 * estimate_messages_tokens_dense(
+                                                _pending_msgs
+                                            )
                                     kwargs["result_budget_tokens"] = tool_result_budget(
                                         self._effective_context_length,
                                         max_tokens,
                                         _spent + _pending_args,
+                                        results = len(_pending) + 1,
                                     ) // (len(_pending) + 1)
                                 if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
                                     if accepts_kwarg(execute_tool, "conversation_token_counter"):

@@ -263,6 +263,7 @@ def tool_result_budget(
     prompt_tokens: int,
     *,
     buffer: float = _TOOL_RESULT_BUDGET_BUFFER,
+    results: int = 1,
 ) -> int:
     """Tokens a tool result may add without pushing the next prompt past its budget.
 
@@ -274,9 +275,17 @@ def tool_result_budget(
     Against ``prompt_budget`` rather than ``context_length``: a result sized to fill the
     physical window leaves the prompt fitting and nothing to answer in. Room for the reply
     is not room for the result. The figure covers the whole tool message, notice included.
+
+    ``results`` is how many results will share this room: one assistant turn can call
+    several tools, and each truncated result carries its own notice, so the reserve is per
+    result rather than per turn. The caller divides what comes back between them.
     """
     target = prompt_budget(context_length, max_tokens)
-    room = int(target * buffer) - int(prompt_tokens or 0) - _RESULT_NOTICE_RESERVE
+    room = (
+        int(target * buffer)
+        - int(prompt_tokens or 0)
+        - _RESULT_NOTICE_RESERVE * max(1, int(results))
+    )
     return max(0, room)
 
 

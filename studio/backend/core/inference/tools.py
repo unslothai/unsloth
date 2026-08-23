@@ -14315,17 +14315,29 @@ def _own_spill_root(root: str) -> bool:
     if os.path.islink(root):
         return False
     try:
-        if not os.path.isdir(root):
-            if os.path.exists(root):
-                return False
-            os.makedirs(root, exist_ok = True)
-            os.makedirs(_spill_records_dir(), exist_ok = True)
-            with _spill_lock(root):
-                identity = _spill_identity(root)
-                if identity is None:
+        # The existence check, the creation and the first record are ONE locked step. Two
+        # first-time spills in a shared project sandbox can both see the directory absent,
+        # and the slower one would otherwise write an empty record over the winner's, which
+        # leaves the winner's spill owned by nobody: never pruned, counted as the user's
+        # content on cleanup, and outside the byte budget for good.
+        with _spill_lock(root):
+            existed = os.path.isdir(root)
+            if not existed:
+                if os.path.exists(root):
                     return False
+                os.makedirs(root, exist_ok = True)
+            identity = _spill_identity(root)
+            if identity is None:
+                return False
+            recorded = _spill_record(root)[0]
+            if recorded is None:
+                if existed and os.listdir(root):
+                    # Not ours and not empty, so it came with the sandbox.
+                    return False
+                os.makedirs(_spill_records_dir(), exist_ok = True)
                 _write_spill_manifest(root, {}, identity = identity)
-        return _spill_record(root)[0] == _spill_identity(root)
+                recorded = identity
+            return recorded == identity
     except OSError:
         logger.debug("tool result spill ownership check failed", exc_info = True)
         return False
@@ -14631,6 +14643,17 @@ def _spill_full_output(
         # and shares the inode of some file outside the sandbox. Truncating that writes
         # through to it with the backend's privileges; replacing a directory entry does
         # not touch the linked file at all.
+        # The name comes from the content, so re-running a command lands on the same path,
+        # and the file there may no longer be the spill this wrote: a later call can have
+        # put the user's own data at it. `_is_recorded_spill` is what says whether it is
+        # still ours, and the rename below would otherwise replace it either way.
+        path = os.path.join(target_dir, name)
+        if os.path.exists(path) and not _is_recorded_spill(
+            os.path.join(workdir, _SPILL_DIR),
+            path,
+            _spill_manifest(os.path.join(workdir, _SPILL_DIR)),
+        ):
+            return None, True
         if not _write_spill_file(target_dir, name, body):
             return None, True
         _record_spill(os.path.join(workdir, _SPILL_DIR), f"{scope}/{name}" if scope else name)
