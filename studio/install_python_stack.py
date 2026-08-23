@@ -2852,9 +2852,9 @@ def _ensure_cpu_torch() -> None:
 def _amd_torch_needs_dependency_pass() -> bool:
     """Return True when setup must run the dependency pass to repair non-ROCm torch.
 
-    Scope is the wheel family, not the ROCm family: a torch carrying any ROCm marker
-    keeps the fast path even when the repair would reroute it to another index.
-    Fail closed when torch or host classification is uncertain. This probe never installs.
+    Scope is the wheel family, not the ROCm family: any ROCm marker keeps the fast path
+    even when the repair would reroute it. Fail closed when the host or torch is
+    uncertain. This probe never installs.
     """
     if NO_TORCH or not IS_LINUX:
         return False
@@ -2870,8 +2870,7 @@ def _amd_torch_needs_dependency_pass() -> bool:
             return False
         if _has_usable_nvidia_gpu():
             return False
-        # An all-hidden mask provides no target to classify. ROCr filters before HIP and
-        # the two stack, so any hidden layer hides the host, not just the first set one.
+        # ROCr and HIP stack, so any hidden layer leaves no target to classify.
         if any(
             (os.environ.get(_mask) or "").strip() in ("", "-1")
             for _mask in _VISIBLE_DEVICE_MASKS

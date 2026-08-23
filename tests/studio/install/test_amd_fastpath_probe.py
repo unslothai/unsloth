@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """Tests for setup.sh's AMD torch fast-path escape."""
 
 import importlib.util
@@ -187,8 +190,7 @@ def test_an_nvidia_host_keeps_the_fast_path(monkeypatch):
 def test_an_nvidia_host_with_an_inferable_amd_arch_keeps_the_fast_path(monkeypatch):
     """_infer_linux_amd_gfx_arch never checks NVIDIA, so this gate carries the host.
 
-    _ensure_rocm_torch declines on its own NVIDIA gate, so without this one the
-    preflight would force a pass the repair refuses.
+    Without it the preflight forces a pass that _ensure_rocm_torch then refuses.
     """
     _host(
         monkeypatch,
@@ -279,7 +281,7 @@ def test_the_cli_reports_keep_the_fast_path_as_a_non_zero_exit(env_name, safe_pa
     [("2.9.0+cpu", None, 0), ("2.9.0+rocm6.4", "6.4.43483", 1)],
 )
 def test_the_cli_answers_end_to_end_over_a_stub_torch(tmp_path, version, hip, expected):
-    """The exit-0 side is the only one that moves setup.sh, so drive it for real.
+    """Exit 0 is the only side that moves setup.sh, so drive it for real.
 
     A ROCm pin skips the hardware gates, leaving the wheel family as the only input.
     """
@@ -314,9 +316,9 @@ def test_a_malformed_probe_call_never_falls_through_to_the_installer(argv):
 
 
 # Repair parity
-# Both directions are asserted, so every row here must be one the two sides agree on.
-# The documented conservative divergences (unreadable torch, hidden mask, mixed arch,
-# a ROCm wheel of the wrong family) are covered above and do not belong in this matrix.
+# Both directions are asserted, so every row must be one the two sides agree on. The
+# conservative divergences (unreadable torch, hidden mask, mixed arch, wrong ROCm
+# family) are covered above and do not belong here.
 
 
 def _repair_installs(monkeypatch):
@@ -362,8 +364,8 @@ def _repair_installs(monkeypatch):
             dict(rocm_ver = None, inferred = "gfx1151", rocm_gpu = False, gfx = ()),
             True,
         ),
-        # The rescue only UNSLOTH_ROCM_GFX_ARCH performs: the runtime enumerates a GPU,
-        # so the row above's "no runtime" disjunct cannot carry it.
+        # Only UNSLOTH_ROCM_GFX_ARCH carries this: a visible GPU defeats the row
+        # above's "no runtime" disjunct.
         (
             "UNSLOTH_ROCM_GFX_ARCH rescuing a visible GPU with an unreadable ROCm",
             dict(rocm_ver = None, inferred = "gfx1151", gfx = ("gfx1151",)),
@@ -401,7 +403,6 @@ def test_the_preflight_and_the_repair_agree(monkeypatch, label, host, expected):
 
     _host(monkeypatch, torch = ("2.9.0+cpu", ""), env = env, **host)
     installs = _repair_installs(monkeypatch)
-    # The invariant: a forced pass always has work to do.
     if preflight:
         assert installs, f"{label}: preflight forced a pass the repair declined"
     else:
