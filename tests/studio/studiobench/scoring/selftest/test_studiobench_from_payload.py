@@ -18,7 +18,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from studiobench.scoring.from_payload import measures_from_records  # noqa: E402
+from studiobench.scoring.from_payload import (  # noqa: E402
+    latest_attempt_rows,
+    measures_from_records,
+)
 from studiobench.scoring.schema import (  # noqa: E402
     PayloadSchemaError,
     validate_payload,
@@ -146,6 +149,45 @@ def test_recorder_never_installed_reads_not_attempted():
     m = measures_from_records(recs)[10_000]
     assert m["jank_index"].attempted is False
     assert "frame recorder" in m["jank_index"].note
+
+
+def test_a_window_that_recorded_no_frames_fails_the_pool_instead_of_dropping_out():
+    """A complete freeze during one action must not be answered for by the windows beside it.
+
+    `compute_frame_stats` already calls a single attempted-but-frameless window a failed
+    measurement. Pooled, that window used to be skipped, and the cell came back with the
+    remaining window's clean numbers.
+    """
+    normal = _window("c1", [16.0] * 50 + [40.0], duration_ms = 1000.0)
+    frozen = _window("c1", [], duration_ms = 4000.0)
+    m = measures_from_records([_cell(), normal, frozen])[10_000]
+    for key in ("time_in_jank_pct", "jank_index", "max_frame_ms"):
+        assert m[key].attempted is True
+        assert m[key].value is None
+        assert "no frames at all" in m[key].note
+    # and the giveaway: without the fix these were byte-identical to the cell without the freeze
+    alone = measures_from_records([_cell(), normal])[10_000]
+    assert alone["max_frame_ms"].value == pytest.approx(40.0)
+
+
+def test_a_window_the_recorder_was_never_installed_in_is_still_only_skipped():
+    """The control. Not-attempted is an absent instrument, not an unmeasured window."""
+    normal = _window("c1", [16.0] * 50 + [40.0], duration_ms = 1000.0)
+    never = _window("c1", [], duration_ms = 4000.0, attempted = False)
+    m = measures_from_records([_cell(), normal, never])[10_000]
+    assert m["max_frame_ms"].value == pytest.approx(40.0)
+    assert m["jank_index"].value is not None
+    assert m["time_in_jank_pct"].value is not None
+
+
+def test_a_pool_where_every_window_has_frames_is_unaffected():
+    """The other control: the ordinary multi-window cell still pools as before."""
+    a = _window("c1", [16.0] * 50 + [40.0], duration_ms = 1000.0)
+    b = _window("c1", [16.0] * 20 + [900.0], duration_ms = 2000.0)
+    m = measures_from_records([_cell(), a, b])[10_000]
+    assert m["max_frame_ms"].value == pytest.approx(900.0)
+    assert m["jank_index"].value is not None and m["jank_index"].value > 0
+    assert m["time_in_jank_pct"].value is not None
 
 
 def test_truncated_window_refuses_a_number_rather_than_scoring_the_fast_frames():
@@ -432,3 +474,82 @@ def _payload_with(cell):
         "footer": None,
         "excluded_cells": [],
     }
+
+
+# ---------------------------------------------------------------------------------------
+# The latest attempt is the last one that WROTE anything, not the last one that finished
+# ---------------------------------------------------------------------------------------
+#
+# `CellRunner.run` writes its terminal cell row in a `finally`, which a SIGKILL, an OOM kill or a
+# lost machine never reaches -- while the Recorder has already flushed and fsynced every action and
+# window row before it. Keyed on cell rows alone, a resume hard-killed inside a cell left the
+# older, completed attempt named as the latest, and `_resume_set` skipped it.
+
+
+def _stamped(row, session):
+    return {**row, "session_id": session}
+
+
+def test_a_killed_attempt_supersedes_the_completed_one_it_was_re_running():
+    records = [
+        _stamped(_cell("c1", completed = True), "sess-1"),
+        _stamped(_action("c1", "keystroke", timings = {"p95_ms": 40.0}), "sess-1"),
+        # sess-2 got this far and was killed: no cell row was ever written.
+        _stamped(_action("c1", "keystroke", timings = {"p95_ms": 900.0}), "sess-2"),
+    ]
+
+    kept = latest_attempt_rows(records)
+
+    # The old attempt's rows are gone, so nothing reports c1 as completed.
+    assert not [r for r in kept if r.get("row_type") == "cell"]
+    assert [r["timings"]["p95_ms"] for r in kept if r.get("row_type") == "action"] == [900.0]
+
+
+def test_a_window_row_alone_is_enough_to_prove_a_newer_attempt():
+    records = [
+        _stamped(_cell("c1", completed = True), "sess-1"),
+        _stamped(_window("c1", [16.0, 17.0]), "sess-1"),
+        _stamped(_window("c1", [400.0]), "sess-2"),
+    ]
+
+    kept = latest_attempt_rows(records)
+
+    assert not [r for r in kept if r.get("row_type") == "cell"]
+    assert len([r for r in kept if r.get("row_type") == "window"]) == 1
+
+
+def test_a_completed_retry_still_supersedes_the_attempt_that_died():
+    """The control this rule already existed for, unchanged: the retry that FINISHED wins."""
+
+    records = [
+        _stamped(_cell("c1", completed = False), "sess-1"),
+        _stamped(_action("c1", "keystroke", timings = {"p95_ms": 900.0}), "sess-1"),
+        _stamped(_action("c1", "keystroke", timings = {"p95_ms": 40.0}), "sess-2"),
+        _stamped(_cell("c1", completed = True), "sess-2"),
+    ]
+
+    kept = latest_attempt_rows(records)
+
+    assert [r["completed"] for r in kept if r.get("row_type") == "cell"] == [True]
+    assert [r["timings"]["p95_ms"] for r in kept if r.get("row_type") == "action"] == [40.0]
+
+
+def test_a_payload_with_no_session_ids_is_kept_whole():
+    """A payload from before the recorder stamped sessions cannot be split into attempts, and
+    dropping it would lose the run."""
+
+    records = [_cell("c1"), _action("c1", "keystroke", timings = {"p95_ms": 40.0})]
+
+    assert latest_attempt_rows(records) == records
+
+
+def test_rows_of_another_cell_are_untouched():
+    records = [
+        _stamped(_cell("c1", completed = True), "sess-1"),
+        _stamped(_action("c2", "keystroke", timings = {"p95_ms": 40.0}), "sess-1"),
+        _stamped(_action("c1", "keystroke", timings = {"p95_ms": 900.0}), "sess-2"),
+    ]
+
+    kept = latest_attempt_rows(records)
+
+    assert any(r.get("cell_id") == "c2" for r in kept)

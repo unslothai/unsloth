@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from ..fixture.corpus import RungPlan, Unit
-from .lifecycle import StudioAuth, request_json
+from .lifecycle import StudioAuth, auth_request_json
 
 # How close the two paths must land to count as equivalent. Not zero: a streamed reply carries a
 # usage record and a duration the seeded one does not, and the composer state differs, so a
@@ -109,10 +109,14 @@ class Seeder:
 
     def create_thread(self, title: str = "studiobench") -> str:
         thread_id = str(uuid.uuid4())
-        request_json(
+        # `auth_request_json`, not `request_json`, and that is not a spelling preference: the
+        # seeder is asked for a thread once per cell for as long as the run lasts, and an access
+        # token is good for 60 minutes. See `StudioAuth`: the token is re-minted before it expires
+        # and once more if a 401 arrives anyway.
+        auth_request_json(
+            self.auth,
             self._url("/api/chat/threads"),
             method = "POST",
-            token = self.auth.access_token,
             timeout = 60,
             body = {
                 "id": thread_id,
@@ -171,10 +175,10 @@ class Seeder:
         if messages:
             # pruneMissing so this REPLACES the thread rather than merging into whatever a
             # previous cell left behind. A merge would make every rung after the first cumulative.
-            request_json(
+            auth_request_json(
+                self.auth,
                 self._url(f"/api/chat/threads/{thread_id}/messages"),
                 method = "PUT",
-                token = self.auth.access_token,
                 timeout = 900,
                 body = {"messages": messages, "pruneMissing": True},
             )
@@ -194,9 +198,9 @@ class Seeder:
         )
 
     def read_back(self, thread_id: str) -> list[dict]:
-        got = request_json(
+        got = auth_request_json(
+            self.auth,
             self._url(f"/api/chat/threads/{thread_id}/messages"),
-            token = self.auth.access_token,
             timeout = 300,
         )
         if isinstance(got, dict):
@@ -332,10 +336,10 @@ def measure_chars_per_token(
         pass
     if auth is not None:
         try:
-            got = request_json(
+            got = auth_request_json(
+                auth,
                 f"{base_url.rstrip('/')}/api/inference/chat/count_tokens",
                 method = "POST",
-                token = auth.access_token,
                 timeout = 120,
                 body = {"model": model_id, "messages": [{"role": "user", "content": sample}]},
             )

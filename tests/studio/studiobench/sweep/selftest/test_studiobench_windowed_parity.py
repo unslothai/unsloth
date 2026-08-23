@@ -1369,6 +1369,52 @@ def test_a_cell_that_lost_messages_gets_no_behavioural_pass_either(tmp_path, cap
     assert "NOTHING WAS COMPARED" in out, out
 
 
+def _follow_gate(
+    cell_id,
+    passed,
+    reason = "the thread fell behind the streamed reply for 38% of the streaming phase",
+):
+    return {
+        "row_type": "gate",
+        "name": "follows_the_stream",
+        "passed": passed,
+        "cell_id": cell_id,
+        "detail": {"reason": reason},
+    }
+
+
+def test_a_cell_that_stopped_following_the_stream_gets_no_behavioural_pass(tmp_path, capsys):
+    """REGRESSION. `follows_the_stream` invalidates a pair for the same reason `thread_complete`
+    does, and this file recognised only the latter.
+
+    A reply that scrolled out of the viewport and was unmounted stops costing anything to render,
+    so the arm was not showing the thing under test -- yet the invariants that do not depend on it
+    still hold. A `select_text` pair matches, `invariants held` grows, and `--mode auto` exits 0
+    over a payload that has already recorded the arm losing the stream.
+    """
+    from studiobench.sweep import ui_parity as U
+
+    rows = [_follow_gate("r100K.treatment.rep0", False)] + _held_invariant_pair()
+    shard = _write(tmp_path, "lost_stream", rows)
+    code = U.behaviour_report([shard], "lost stream")
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert "invariants held:            0" in out, out
+    assert "FAILED its stream-follow gate" in out, out
+
+
+def test_a_cell_that_kept_following_the_stream_still_scores(tmp_path, capsys):
+    """The positive control: the same pair, gate passed, is scored exactly as before."""
+    from studiobench.sweep import ui_parity as U
+
+    rows = [_follow_gate("r100K.treatment.rep0", True)] + _held_invariant_pair()
+    shard = _write(tmp_path, "kept_stream", rows)
+    code = U.behaviour_report([shard], "kept stream")
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "invariants held:            1" in out, out
+
+
 def test_a_complete_cell_still_earns_its_behavioural_pass(tmp_path, capsys):
     """The positive control for the test above: the same pair, gate passed, still scores."""
     from studiobench.sweep import ui_parity as U

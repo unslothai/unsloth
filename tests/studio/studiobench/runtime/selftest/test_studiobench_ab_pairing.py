@@ -151,6 +151,31 @@ def test_a_passing_gate_leaves_its_cell_alone():
     assert pairs[0].ratio == 0.5
 
 
+def test_a_failed_timer_clamp_does_not_throw_away_the_rest_of_the_cell():
+    """A per-cell gate is not automatically fatal, and this one says so itself.
+
+    `timer_clamp` fails whenever idle calibration cannot establish a floor -- an overloaded
+    machine, or the frames instrument simply not being loaded. `session.py` calls that "NOT fatal,
+    and NOT silently zero": blocked time is a subtraction against the floor, so `busy_pct` is null
+    with the reason attached and every other column stands. Excluding the cell would delete
+    keystroke, frame and census readings that were measured correctly, most often on the machines
+    least able to spare a repetition.
+    """
+
+    records = [
+        _cell("r10K.base.rep0", "base"),
+        _keystroke("r10K.base.rep0", 100.0),
+        _gate("timer_clamp", False, cell_id = "r10K.base.rep0"),
+        _cell("r10K.treatment.rep0", "treatment"),
+        _keystroke("r10K.treatment.rep0", 50.0),
+        _gate("timer_clamp", False, cell_id = "r10K.treatment.rep0"),
+    ]
+    assert set(readings_by_arm(records)) == {"base", "treatment"}
+    pairs, _result = _pairs(records)
+    assert len(pairs) == 1
+    assert pairs[0].ratio == 0.5
+
+
 def test_a_failed_run_level_gate_does_not_empty_the_table():
     """`production_build` and `reportable_tier` carry no cell id. Read as per-cell they would
     disqualify every cell on both arms and turn a fast-tier A/B into an empty table."""

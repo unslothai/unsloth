@@ -14,8 +14,9 @@ answer was produced by not having it.
 # 1. Screen: about 5 minutes, direction only
 python -m tests.studio.studiobench --tier fast --ab YOUR_REF --out outputs/screen
 
-# 2. Confirm: about 20 minutes. A NEW --out: the payload is append-only, so writing a standard
-#    run into the screen's directory leaves one file holding two films.
+# 2. Confirm: about 1 hour, and about 2 hours for an A/B. A NEW --out: the payload is
+#    append-only, so writing a standard run into the screen's directory leaves one file
+#    holding two films.
 python -m tests.studio.studiobench --tier standard --reps 4 --ab YOUR_REF --out outputs/mine
 
 # ... and the same film with BOTH arms on the base, as your null control. --ab sets the
@@ -78,7 +79,9 @@ Use it to kill bad ideas cheaply. Do not use it to decide anything.
 
 ## 2. Confirm on the standard tier
 
-`--tier standard --reps 4`. Three rungs, a 243 second film.
+`--tier standard --reps 4`. Three rungs, a 243 second film: twelve cells and about an hour against
+one build, twenty-four cells and about two hours for an A/B wave, before either install. Budget for
+that rather than for the tier's own 20 minute figure, which describes ONE walk of the ladder.
 
 **Use at least 4 repetitions.** At `--reps 2` the null control reported a 38.1% delta on
 `settings.open_ms`. At `--reps 4` the same metric collapsed to 1.2% with 48% spread. Two

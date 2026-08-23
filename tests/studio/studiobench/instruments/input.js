@@ -46,6 +46,10 @@
     dropped: 0,
     keyAt: null,
     unanchored: 0,
+    // Every `input` event this instrument saw, whether it became a sample or was coalesced behind
+    // a paint that had not finished. Without it there is no denominator: `samples` alone cannot
+    // distinguish "the page painted every keystroke" from "most of them never reached here".
+    seen: 0,
   };
 
   const nextPaint = () =>
@@ -77,6 +81,7 @@
 
   const onInput = (ev) => {
     if (!S.armed || ev.target !== S.target) return;
+    S.seen += 1;
     // One in flight at a time. A burst of characters typed faster than the page can paint would
     // otherwise attribute one paint to several keystrokes and report each of them as fast.
     if (S.pending !== null) {
@@ -119,6 +124,7 @@
       S.pending = null;
       S.keyAt = null;
       S.unanchored = 0;
+      S.seen = 0;
       S.armed = true;
       el.addEventListener("input", onInput, true);
       // On the WINDOW, in capture, so the anchor is taken however the app routes the key and even
@@ -127,6 +133,17 @@
       window.removeEventListener("keydown", onKeyDown, true);
       window.addEventListener("keydown", onKeyDown, true);
       return { armed: true, baseline_length: S.baseline.length };
+    },
+
+    // IS ANYTHING STILL IN FLIGHT? The driver polls this instead of waiting a fixed interval.
+    //
+    // A fixed wait loses whichever keystroke had not painted when it expired, and the keystroke
+    // that has not painted yet is the SLOWEST one -- so the metric dropped precisely the sample it
+    // exists to catch, and a build that made typing worse read faster. A bigger constant has the
+    // same defect on a slower machine or a heavier rung; the only wait that does not is one that
+    // ends when the work does.
+    settled() {
+      return { pending: S.pending !== null, samples: S.samples.length, seen: S.seen };
     },
 
     // Drain. `expected` is how many characters the driver actually sent, so the report can say
@@ -143,12 +160,22 @@
         .filter((v) => v !== null && v !== undefined)
         .sort((a, b) => a - b);
       const unanchored = S.unanchored;
+      const seen = S.seen;
+      // A sample still in flight AT THIS MOMENT is one the collect is about to lose. Reported so
+      // the driver can fail the reading rather than publish a percentile over what survived.
+      const pendingNow = S.pending !== null;
       S.samples = [];
       S.unanchored = 0;
+      S.seen = 0;
       return {
         samples: samples.length,
         samples_attempted: true,
         expected: expected === undefined ? null : expected,
+        // The denominator. `inputs_seen` is every keystroke that reached this instrument;
+        // `samples + coalesced` must account for all of them, and `pending_at_collect` says
+        // whether one was thrown away by the drain itself.
+        inputs_seen: seen,
+        pending_at_collect: pendingNow,
         // How many samples could not be anchored on their own key event and fell back to the
         // input handler's clock. A number quoted from those understates the wait by the queueing
         // delay, so it is reported rather than blended in silently.

@@ -52,6 +52,20 @@ def accepts_output_callback(func: Callable[..., str]) -> bool:
     return accepts_kwarg(func, "output_callback")
 
 
+def search_images_kwargs(func: Callable[..., str], tool_name: str) -> dict[str, bool]:
+    """``{"search_images": True}`` when web_search should also return images, else ``{}``.
+
+    Read per call rather than per request so the Settings toggle applies to the
+    next search without a reload, and only for web_search so other tools never
+    pay the settings read.
+    """
+    if tool_name != "web_search" or not accepts_kwarg(func, "search_images"):
+        return {}
+    from .search_images import search_images_enabled
+
+    return {"search_images": True} if search_images_enabled() else {}
+
+
 # Cadence of heartbeat events while a tool blocks with no output. Well under
 # common proxy idle caps (Cloudflare ~100 s, nginx default 60 s).
 TOOL_HEARTBEAT_INTERVAL_S = 10.0

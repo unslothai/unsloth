@@ -46,6 +46,15 @@ def _canvas_constants() -> str:
     )
 
 
+def _prune_helpers() -> str:
+    """isAbandonedAssistantTurn + pruneOutboundHistory, which the outbound builder calls."""
+    return slice_between(
+        read(ADAPTER),
+        "/** Payload the turn carries in its own parts",
+        "function extractImageBase64(",
+    )
+
+
 def _outbound_builder() -> str:
     return slice_between(
         read(ADAPTER),
@@ -114,6 +123,18 @@ function isAnthropicRefusalMessage(_message: any): boolean {
   return false;
 }
 
+function sanitizeAssistantReplayText(text: string): string {
+  return text;
+}
+
+function readIncompleteInfo(_metadata: any): any {
+  return null;
+}
+
+function collectImageParts(_message: any): any[] {
+  return [];
+}
+
 function toOpenAIMessages(message: any): any[] {
   return [{ role: message.role, content: message.text }];
 }
@@ -157,6 +178,7 @@ def _harness_source() -> str:
     return (
         HARNESS
         + _canvas_constants()
+        + _prune_helpers()
         + _outbound_builder()
         + _reasoning_builder()
         + _extras_builder()
