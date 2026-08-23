@@ -5472,6 +5472,30 @@ def _record(seen, answer, at):
     return lambda *a: (seen.append(a[at] if at is not None else 1), answer)[1]
 
 
+@pytest.mark.parametrize(
+    "reason, refused",
+    [
+        ("tokenizer_contract_unavailable", False),
+        ("verifier_contract_unavailable", True),
+        ("checkpoint_not_compatible", True),
+        ("insufficient_unified_memory", True),
+    ],
+)
+def test_only_a_comparison_the_download_can_settle_survives_the_load_refusal(reason, refused):
+    """Comparing tokenizers needs the target's own, which this load is about to download, so the
+    worker judges that pair with both checkpoints resident. The verifier contract is read from
+    the cached drafter alone, so no download settles it and it stays a refusal."""
+    from core.inference.mlx_speculative import (
+        MlxSpeculativeResolution,
+        mlx_speculative_refusal,
+    )
+
+    resolution = MlxSpeculativeResolution("mtp", "org/drafter", reason)
+    assert (mlx_speculative_refusal("mtp", resolution) is not None) is refused
+    # Auto is a request for an accelerator, never a refusal.
+    assert mlx_speculative_refusal("auto", resolution) is None
+
+
 def _drafter_snapshot(tmp_path, name, config):
     snapshot = tmp_path / name / "snapshots" / "abc"
     snapshot.mkdir(parents = True)

@@ -2240,16 +2240,19 @@ def mlx_speculative_request_reason(
     ).reason
 
 
-# A comparison the preflight could not reach, because it needs files the target has not
-# downloaded yet. The load decides it once both checkpoints are on disk.
-_UNPROVEN_REASONS = frozenset({"tokenizer_contract_unavailable", "verifier_contract_unavailable"})
+# Comparing tokenizers reads the target's own, which a target being loaded for the first time
+# has not downloaded yet. The verifier contract is not in this set: it is read from the cached
+# drafter alone, so fetching the target cannot decide it.
+_UNPROVEN_REASONS = frozenset({"tokenizer_contract_unavailable"})
 
 
 def mlx_speculative_reason_is_unproven(reason: Optional[str]) -> bool:
-    """Whether ``reason`` records an undecided comparison rather than an incompatible pair.
+    """Whether ``reason`` records a comparison still missing its inputs, rather than a pair known
+    not to fit.
 
-    A preflight that refuses one rejects a pair that would have loaded, because fetching the
-    target is what makes the comparison possible.
+    Refusing one rejects a pair that would have loaded, because downloading the target is what
+    makes the comparison possible. The worker performs it once both checkpoints are resident,
+    and an explicit method still fails its load there.
     """
     return reason in _UNPROVEN_REASONS
 
@@ -2258,9 +2261,13 @@ def mlx_speculative_refusal(mode: Any, resolution: "MlxSpeculativeResolution") -
     """Why ``resolution`` cannot be loaded, or None to load it.
 
     Auto never fails a load. Its reason is a diagnosis of why the request runs without
-    speculation, not a refusal, so a model that cannot be accelerated still generates.
+    speculation, not a refusal, so a model that cannot be accelerated still generates. A
+    comparison still missing its inputs is carried the same way: the download this load is about
+    to perform supplies them, and the worker judges the pair with both checkpoints resident.
     """
     if normalize_mlx_speculative_mode(mode) in {"off", "auto"} or resolution.reason is None:
+        return None
+    if mlx_speculative_reason_is_unproven(resolution.reason):
         return None
     return mlx_speculative_refusal_text(resolution.reason)
 
