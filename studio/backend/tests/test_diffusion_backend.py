@@ -2587,9 +2587,7 @@ def test_begin_load_publishes_the_requested_companion_base(fake_runtime, monkeyp
     backend.unload()
 
 
-def test_full_pipeline_begin_load_does_not_claim_the_family_fallback(
-    fake_runtime, monkeypatch
-):
+def test_full_pipeline_begin_load_does_not_claim_the_family_fallback(fake_runtime, monkeypatch):
     from core.inference import diffusion as diffusion_module
 
     primary = "unsloth/Custom-Z-Image-Pipeline"
@@ -2601,8 +2599,7 @@ def test_full_pipeline_begin_load_does_not_claim_the_family_fallback(
     )
     monkeypatch.setattr(
         "utils.model_cache_reservations.reserve_inference_load",
-        lambda *repos, variant = None: reserved.extend(repo for repo in repos if repo)
-        or reservation,
+        lambda *repos, variant = None: reserved.extend(repo for repo in repos if repo) or reservation,
     )
     monkeypatch.setattr(
         diffusion_module.threading,
@@ -2636,9 +2633,7 @@ def test_unload_cancels_in_flight_load(fake_runtime):
         )
 
 
-def test_unload_keeps_the_cache_reserved_until_the_load_worker_exits(
-    fake_runtime, monkeypatch
-):
+def test_unload_keeps_the_cache_reserved_until_the_load_worker_exits(fake_runtime, monkeypatch):
     from core.inference import diffusion as diffusion_module
     from hub.utils.download_registry import get_models_registry
 
@@ -2721,9 +2716,7 @@ def test_hidream_load_reserves_its_external_llama_repo(fake_runtime, monkeypatch
     operations.end_delete(HIDREAM_LLAMA_REPO)
 
 
-def test_begin_load_hands_route_preclaims_to_the_worker_reservation(
-    fake_runtime, monkeypatch
-):
+def test_begin_load_hands_route_preclaims_to_the_worker_reservation(fake_runtime, monkeypatch):
     from core.inference import diffusion as diffusion_module
     from utils import model_cache_reservations
     from utils.model_cache_reservations import ModelCacheOperations

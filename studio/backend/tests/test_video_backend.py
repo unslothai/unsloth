@@ -923,9 +923,7 @@ def test_worker_reserves_h3_prequant_before_verification(fake_runtime, monkeypat
     assert "unsloth/MiniMax-H3-FP8" in backend._loading.asset_repos
 
 
-def test_h3_te_preflight_uses_the_selected_gpu_and_cache_only_mode(
-    fake_runtime, monkeypatch
-):
+def test_h3_te_preflight_uses_the_selected_gpu_and_cache_only_mode(fake_runtime, monkeypatch):
     from core.inference import video as video_module
     from core.inference.video_families import detect_video_family
     from core.inference.video_minimax_h3_te import H3_TE_QUANT_REPO
@@ -942,7 +940,14 @@ def test_h3_te_preflight_uses_the_selected_gpu_and_cache_only_mode(
     )
     seen = {}
 
-    def verified(_fam, _quant, _base, _token, local_files_only = False, target = None):
+    def verified(
+        _fam,
+        _quant,
+        _base,
+        _token,
+        local_files_only = False,
+        target = None,
+    ):
         seen["local_files_only"] = local_files_only
         seen["target"] = target
         return "int8"
@@ -970,9 +975,7 @@ def test_h3_te_preflight_uses_the_selected_gpu_and_cache_only_mode(
     assert H3_TE_QUANT_REPO in repositories
 
 
-def test_video_preflight_returns_the_ltx_hosted_encoder_repository(
-    fake_runtime, monkeypatch
-):
+def test_video_preflight_returns_the_ltx_hosted_encoder_repository(fake_runtime, monkeypatch):
     from core.inference import video as video_module
     from core.inference.video_families import detect_video_family
 
@@ -1071,9 +1074,7 @@ def test_worker_reuses_the_h3_te_preflight_decision(fake_runtime, monkeypatch):
     assert H3_TE_QUANT_REPO in reserved
 
 
-def test_begin_load_hands_route_preclaims_to_the_worker_reservation(
-    fake_runtime, monkeypatch
-):
+def test_begin_load_hands_route_preclaims_to_the_worker_reservation(fake_runtime, monkeypatch):
     from core.inference import video as video_module
     from core.inference.video_families import detect_video_family
     from utils import model_cache_reservations
@@ -1105,9 +1106,7 @@ def test_begin_load_hands_route_preclaims_to_the_worker_reservation(
     backend.unload()
 
 
-def test_worker_reserves_ltx23_extras_before_estimating_them(
-    fake_runtime, monkeypatch, tmp_path
-):
+def test_worker_reserves_ltx23_extras_before_estimating_them(fake_runtime, monkeypatch, tmp_path):
     from core.inference import video as video_module
     from core.inference.video_ltx2 import LTX23_EXTRAS_REPO
 
@@ -1123,18 +1122,10 @@ def test_worker_reserves_ltx23_extras_before_estimating_them(
     reservation = types.SimpleNamespace(add = lambda *repos: reserved.extend(repos))
 
     monkeypatch.setattr(backend, "_te_prequant_sources", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(
-        backend, "_h3_planned_auto_denoiser_scheme", lambda *_args, **_kwargs: None
-    )
-    monkeypatch.setattr(
-        backend, "_denoiser_prequant_verified", lambda *_args, **_kwargs: False
-    )
-    monkeypatch.setattr(
-        backend, "_h3_te_quant_scheme_verified", lambda *_args, **_kwargs: None
-    )
-    monkeypatch.setattr(
-        "core.inference.video_ltx2.is_ltx23_checkpoint", lambda _path: True
-    )
+    monkeypatch.setattr(backend, "_h3_planned_auto_denoiser_scheme", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(backend, "_denoiser_prequant_verified", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(backend, "_h3_te_quant_scheme_verified", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("core.inference.video_ltx2.is_ltx23_checkpoint", lambda _path: True)
 
     def _estimate(*_args, **kwargs):
         if kwargs.get("ltx23"):
@@ -3558,8 +3549,7 @@ def test_begin_load_publishes_the_h3_companion_claim_with_the_loading_state(
     )
     monkeypatch.setattr(
         "utils.model_cache_reservations.reserve_inference_load",
-        lambda *repos, variant = None: reserved.extend(repo for repo in repos if repo)
-        or reservation,
+        lambda *repos, variant = None: reserved.extend(repo for repo in repos if repo) or reservation,
     )
     # Never started: the window under test is before the load thread is scheduled.
     monkeypatch.setattr(
@@ -3596,8 +3586,7 @@ def test_begin_load_claims_no_companion_repos_for_a_non_h3_family(fake_runtime, 
     )
     monkeypatch.setattr(
         "utils.model_cache_reservations.reserve_inference_load",
-        lambda *repos, variant = None: reserved.extend(repo for repo in repos if repo)
-        or reservation,
+        lambda *repos, variant = None: reserved.extend(repo for repo in repos if repo) or reservation,
     )
     monkeypatch.setattr(
         threading, "Thread", lambda *a, **k: SimpleNamespace(start = lambda: None, daemon = True)
@@ -3631,9 +3620,7 @@ def test_a_cached_modular_index_is_read_without_reaching_the_hub(monkeypatch, tm
             raise FileNotFoundError("not cached")
         return str(index)
 
-    monkeypatch.setattr(
-        "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download
-    )
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
 
     assert video_module.resolve_modular_pipeline_root("acme/cached") == tmp_path
     assert attempts == [True]

@@ -954,7 +954,11 @@ class TestLoadHubDownloadExclusion:
             return frozenset()
 
         class _Registry:
-            def inference_load_epoch(self, _repo_id, _variant = None):
+            def inference_load_epoch(
+                self,
+                _repo_id,
+                _variant = None,
+            ):
                 return 0
 
             def claim(self, *_args, admission_check, **_kwargs):

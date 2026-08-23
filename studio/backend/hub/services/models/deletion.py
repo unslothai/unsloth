@@ -229,9 +229,7 @@ def _unlink_snapshot_matches(
                     failures.append(f"{name}: cache link target is unavailable")
                     continue
                 link_target = snap.readlink()
-                candidate = (
-                    link_target if link_target.is_absolute() else snap.parent / link_target
-                )
+                candidate = link_target if link_target.is_absolute() else snap.parent / link_target
                 if candidate.resolve(strict = False) != blob.resolve(strict = False):
                     failures.append(f"{name}: cache link target changed during delete")
                     if blob_key is not None:
@@ -264,9 +262,7 @@ def _unlink_snapshot_matches(
     return removed, removed_bytes, removed_links, protected_blobs, failures
 
 
-def _restore_snapshot_links(
-    links: list[tuple[Path, Path, str]],
-) -> tuple[int, list[str]]:
+def _restore_snapshot_links(links: list[tuple[Path, Path, str]]) -> tuple[int, list[str]]:
     restored = 0
     failures: list[str] = []
     for snap, target, name in links:
@@ -357,8 +353,7 @@ def _delete_unreferenced_match_blobs(
 
 
 def _validated_keep_snapshot(
-    keep_snapshot: Optional[str | Path],
-    repo_dir: Optional[Path],
+    keep_snapshot: Optional[str | Path], repo_dir: Optional[Path]
 ) -> Optional[Path]:
     if keep_snapshot is None or repo_dir is None:
         return None
@@ -388,10 +383,7 @@ def _validated_keep_snapshot(
 
 
 def _is_stale_snapshot_copy(
-    snap: Path,
-    blob: Optional[Path],
-    repo_dir: Optional[Path],
-    keep_snapshot: Optional[Path],
+    snap: Path, blob: Optional[Path], repo_dir: Optional[Path], keep_snapshot: Optional[Path]
 ) -> bool:
     if blob is None or repo_dir is None or keep_snapshot is None:
         return False
@@ -530,9 +522,7 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
 
 
 def _remove_empty_snapshot_dirs(
-    target_repos: list,
-    *,
-    preserve_refs: bool = False,
+    target_repos: list, *, preserve_refs: bool = False
 ) -> tuple[int, list[str]]:
     removed = 0
     failures: list[str] = []
@@ -630,8 +620,8 @@ def _delete_gguf_variant_from_repos(
             )
         )
 
-        removed, freed, removed_links, protected_blobs, unlink_failures = (
-            _unlink_snapshot_matches(matched)
+        removed, freed, removed_links, protected_blobs, unlink_failures = _unlink_snapshot_matches(
+            matched
         )
         removed_snapshots += removed
         deleted_bytes += freed
@@ -940,8 +930,8 @@ def reclaim_replaced_gguf_variant(
         if not stale_matches:
             continue
 
-        removed, freed, removed_links, protected_blobs, unlink_failures = (
-            _unlink_snapshot_matches(stale_matches)
+        removed, freed, removed_links, protected_blobs, unlink_failures = _unlink_snapshot_matches(
+            stale_matches
         )
         removed_snapshots += removed
         deleted_bytes += freed
@@ -1137,9 +1127,7 @@ def _llama_cpp_blocks_delete(
 
 
 def _inference_backend_delete_block(
-    repo_id: str,
-    *,
-    cache_root: Optional[str | Path] = None,
+    repo_id: str, *, cache_root: Optional[str | Path] = None
 ) -> Optional[_DeleteBlock]:
     """Why the subprocess inference backend blocks deleting *repo_id*, if it does."""
     try:
@@ -1159,24 +1147,17 @@ def _inference_backend_delete_block(
     # cannot land between the two reads and briefly make the model look unheld.
     loading_names = tuple(getattr(backend, "loading_models", ()) or ())
     active_name = backend.active_model_name
-    if active_name and _loaded_id_matches_repo(
-        active_name, repo_id, cache_root = cache_root
-    ):
+    if active_name and _loaded_id_matches_repo(active_name, repo_id, cache_root = cache_root):
         return _DELETE_USER_MUST_ACT, _MODEL_ACTIVE_DELETE_DETAIL
     if any(
-        loading_name
-        and _loaded_id_matches_repo(loading_name, repo_id, cache_root = cache_root)
+        loading_name and _loaded_id_matches_repo(loading_name, repo_id, cache_root = cache_root)
         for loading_name in loading_names
     ):
         return _DELETE_RETRY_LATER, _MODEL_LOADING_DELETE_DETAIL
     return None
 
 
-def _media_variant_exempt(
-    status: dict,
-    held_id: str,
-    variant: Optional[str],
-) -> bool:
+def _media_variant_exempt(status: dict, held_id: str, variant: Optional[str]) -> bool:
     """Whether *held_id* is the engine's own checkpoint at a quantization other than
     *variant*.
 
@@ -1258,9 +1239,7 @@ def _video_blocks_delete(
     wanted = (variant or "").strip().replace("\\", "/").lower() or None
     for held_id, held_variant in getattr(backend, "loaded_gguf_dependency_scopes", tuple)():
         held_key = str(held_variant).strip().replace("\\", "/").lower()
-        if _loaded_id_matches_repo(
-            str(held_id), repo_id, cache_root = cache_root
-        ) and (
+        if _loaded_id_matches_repo(str(held_id), repo_id, cache_root = cache_root) and (
             wanted is None or wanted == held_key
         ):
             return _DELETE_USER_MUST_ACT, _MODEL_ACTIVE_DELETE_DETAIL
@@ -1295,16 +1274,14 @@ def _load_state_delete_block(
     cache_root: Optional[str | Path] = None,
 ) -> Optional[_DeleteBlock]:
     cache_scope = {} if cache_root is None else {"cache_root": cache_root}
-    if llama_cpp_block := _llama_cpp_blocks_delete(
-        repo_id, variant, **cache_scope
-    ):
+    if llama_cpp_block := _llama_cpp_blocks_delete(repo_id, variant, **cache_scope):
         return llama_cpp_block
     inference_block = _inference_backend_delete_block(repo_id, **cache_scope)
     if inference_block:
         return inference_block
-    return _diffusion_blocks_delete(
+    return _diffusion_blocks_delete(repo_id, variant, **cache_scope) or _video_blocks_delete(
         repo_id, variant, **cache_scope
-    ) or _video_blocks_delete(repo_id, variant, **cache_scope)
+    )
 
 
 async def load_state_delete_block(
@@ -1326,10 +1303,7 @@ async def load_state_delete_block(
         return 503, _LOAD_STATE_UNVERIFIABLE_DETAIL
 
 
-def _explicit_delete_cache_root(
-    repo_id: str,
-    cache_path: Optional[str],
-) -> Optional[Path]:
+def _explicit_delete_cache_root(repo_id: str, cache_path: Optional[str]) -> Optional[Path]:
     if not cache_path:
         return None
     cache_root = scoped_delete_root("model", repo_id, cache_path)
@@ -1411,10 +1385,7 @@ def _cache_conflict_delete_detail(variant: Optional[str], reason: Optional[str])
     return f"Another operation is using {scope}. Wait for it to finish, then delete."
 
 
-def cache_reservation_delete_block(
-    repo_id: str,
-    variant: Optional[str],
-) -> Optional[_DeleteBlock]:
+def cache_reservation_delete_block(repo_id: str, variant: Optional[str]) -> Optional[_DeleteBlock]:
     reason = downloads.registry.delete_admission_conflict(repo_id)
     if reason is None:
         return None
@@ -1510,9 +1481,7 @@ async def delete_cached_model_response(
         # Logged, not just returned: a reservation outlives its UI marker (a load worker owns it
         # until it returns), so a wedged worker shows up here as a repo that never becomes
         # deletable and nowhere else.
-        logger.info(
-            "Delete of %s [%s] refused: cache scope held (%s)", repo_key, variant, conflict
-        )
+        logger.info("Delete of %s [%s] refused: cache scope held (%s)", repo_key, variant, conflict)
         raise HTTPException(
             status_code = _DELETE_RETRY_LATER,
             detail = _cache_conflict_delete_detail(variant, conflict),

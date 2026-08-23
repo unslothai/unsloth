@@ -15205,9 +15205,7 @@ class LlamaCppBackend:
                     f"'{model_identifier}', skipping reload"
                 )
                 # Retry probe only if a prior attempt didn't finish.
-                if not self._audio_probed and not self._retry_audio_probe(
-                    on_audio_codec_resolved
-                ):
+                if not self._audio_probed and not self._retry_audio_probe(on_audio_codec_resolved):
                     return False
                 if not self._healthy:
                     return False
@@ -26202,7 +26200,6 @@ class LlamaCppBackend:
         if detected in ("snac", "bicodec", "dac"):
             if on_audio_codec_resolved is not None:
                 from utils.audio_codec_repositories import audio_codec_repositories
-
                 for repo_id in audio_codec_repositories(detected):
                     on_audio_codec_resolved(repo_id)
             with self._lock:
@@ -26264,8 +26261,7 @@ class LlamaCppBackend:
         return applied
 
     def _retry_audio_probe(
-        self,
-        on_audio_codec_resolved: Optional[Callable[[str], None]] = None,
+        self, on_audio_codec_resolved: Optional[Callable[[str], None]] = None
     ) -> bool:
         """:meth:`_apply_detected_audio` for a server this load ADOPTED, after an earlier
         attempt left the probe unfinished. Returns True to continue the load.

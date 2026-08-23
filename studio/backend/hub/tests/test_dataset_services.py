@@ -633,9 +633,7 @@ def test_delete_cached_dataset_reports_retryable_cache_conflict(
     assert caught.value.detail == expected_detail
 
 
-def test_cancelled_dataset_delete_keeps_its_reservation_until_the_worker_finishes(
-    monkeypatch,
-):
+def test_cancelled_dataset_delete_keeps_its_reservation_until_the_worker_finishes(monkeypatch):
     worker = {"started": False, "release": False, "finished": False}
 
     class Registry:
@@ -672,9 +670,7 @@ def test_cancelled_dataset_delete_keeps_its_reservation_until_the_worker_finishe
     monkeypatch.setattr(asyncio, "to_thread", run_controlled)
 
     async def drive():
-        task = asyncio.create_task(
-            cache_inventory.delete_cached_dataset_response("Org/Data")
-        )
+        task = asyncio.create_task(cache_inventory.delete_cached_dataset_response("Org/Data"))
         for _ in range(100):
             if worker["started"]:
                 break
@@ -1324,7 +1320,12 @@ def test_dataset_claim_register_cancel_uses_registry_marker_owner(monkeypatch):
         def current_generation(self, _key):
             return 1
 
-        def register_process(self, _key, _proc, _cleanup_owner = None):
+        def register_process(
+            self,
+            _key,
+            _proc,
+            _cleanup_owner = None,
+        ):
             return False
 
         def persist_cancel_for_key(self, *_args, **_kwargs):

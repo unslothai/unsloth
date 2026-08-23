@@ -33,12 +33,7 @@ def _cache_repo(tmp_path: Path) -> tuple[Path, Path]:
     return root, repo
 
 
-def _snapshot_file(
-    repo: Path,
-    revision: str,
-    name: str,
-    payload: bytes,
-) -> Path:
+def _snapshot_file(repo: Path, revision: str, name: str, payload: bytes) -> Path:
     snapshot_file = repo / "snapshots" / revision / name
     snapshot_file.parent.mkdir(parents = True, exist_ok = True)
     snapshot_file.write_bytes(payload)
@@ -90,10 +85,7 @@ def test_first_download_captures_the_expected_root_and_promotes_it(tmp_path, mon
     assert result == snapshot_reclaim.SnapshotPromotionResult(None)
 
 
-def test_model_promotion_preserves_the_previous_snapshot_for_exact_resume(
-    tmp_path,
-    monkeypatch,
-):
+def test_model_promotion_preserves_the_previous_snapshot_for_exact_resume(tmp_path, monkeypatch):
     root, repo = _cache_repo(tmp_path)
     old_file = _snapshot_file(repo, OLD, "model.safetensors", b"old")
     new_file = _snapshot_file(repo, NEW, "model.safetensors", b"new")
@@ -114,8 +106,7 @@ def test_model_promotion_preserves_the_previous_snapshot_for_exact_resume(
 
 
 def test_dataset_promotion_moves_main_without_reclaiming_the_previous_snapshot(
-    tmp_path,
-    monkeypatch,
+    tmp_path, monkeypatch
 ):
     root = tmp_path / "hub"
     repo = root / "datasets--Org--Model"
@@ -152,11 +143,7 @@ def test_dataset_promotion_moves_main_without_reclaiming_the_previous_snapshot(
 
 
 @pytest.mark.parametrize("line_ending", [b"\n", b"\r\n"])
-def test_main_ref_line_ending_is_normalized_during_promotion(
-    line_ending,
-    tmp_path,
-    monkeypatch,
-):
+def test_main_ref_line_ending_is_normalized_during_promotion(line_ending, tmp_path, monkeypatch):
     root, repo = _cache_repo(tmp_path)
     main = repo / "refs" / "main"
     main.write_bytes(OLD.encode("ascii") + line_ending)
@@ -192,10 +179,7 @@ def test_main_ref_parser_rejects_non_cosmetic_whitespace(raw):
     assert snapshot_reclaim._parse_main_ref(raw) is None
 
 
-def test_line_terminated_main_ref_still_detects_a_concurrent_advance(
-    tmp_path,
-    monkeypatch,
-):
+def test_line_terminated_main_ref_still_detects_a_concurrent_advance(tmp_path, monkeypatch):
     root, repo = _cache_repo(tmp_path)
     main = repo / "refs" / "main"
     main.write_bytes(f"{OLD}\n".encode("ascii"))
@@ -220,10 +204,7 @@ def test_line_terminated_main_ref_still_detects_a_concurrent_advance(
     [("model", "models"), ("dataset", "datasets")],
 )
 def test_redirected_repo_delegates_activation_to_huggingface(
-    repo_type,
-    repo_prefix,
-    tmp_path,
-    monkeypatch,
+    repo_type, repo_prefix, tmp_path, monkeypatch
 ):
     root = tmp_path / "hub"
     target = tmp_path / "relocated"
@@ -248,12 +229,7 @@ def test_redirected_repo_delegates_activation_to_huggingface(
     assert previous.promotion_safe is False
     assert previous.allow_unpinned_download is True
     assert "Hub cache repo is redirected" in (previous.reason or "")
-    assert hf_download._snapshot_activation_plan(
-        repo_type,
-        REPO_ID,
-        NEW,
-        True,
-    ) == (None, None)
+    assert hf_download._snapshot_activation_plan(repo_type, REPO_ID, NEW, True) == (None, None)
 
 
 @pytest.mark.parametrize(
@@ -265,11 +241,7 @@ def test_redirected_repo_delegates_activation_to_huggingface(
     [("model", "models"), ("dataset", "datasets")],
 )
 def test_invalid_regular_main_ref_delegates_activation_to_huggingface(
-    raw_ref,
-    repo_type,
-    repo_prefix,
-    tmp_path,
-    monkeypatch,
+    raw_ref, repo_type, repo_prefix, tmp_path, monkeypatch
 ):
     root = tmp_path / "hub"
     repo = root / f"{repo_prefix}--Org--Model"
@@ -288,12 +260,7 @@ def test_invalid_regular_main_ref_delegates_activation_to_huggingface(
 
     assert previous.promotion_safe is False
     assert previous.allow_unpinned_download is True
-    assert hf_download._snapshot_activation_plan(
-        repo_type,
-        REPO_ID,
-        NEW,
-        True,
-    ) == (None, None)
+    assert hf_download._snapshot_activation_plan(repo_type, REPO_ID, NEW, True) == (None, None)
 
 
 @pytest.mark.parametrize(
@@ -301,10 +268,7 @@ def test_invalid_regular_main_ref_delegates_activation_to_huggingface(
     [("model", "models"), ("dataset", "datasets")],
 )
 def test_unreadable_regular_main_ref_delegates_activation_to_huggingface(
-    repo_type,
-    repo_prefix,
-    tmp_path,
-    monkeypatch,
+    repo_type, repo_prefix, tmp_path, monkeypatch
 ):
     root = tmp_path / "hub"
     repo = root / f"{repo_prefix}--Org--Model"
@@ -329,12 +293,7 @@ def test_unreadable_regular_main_ref_delegates_activation_to_huggingface(
     assert previous.promotion_safe is False
     assert previous.allow_unpinned_download is True
     assert "refs/main could not be read" in (previous.reason or "")
-    assert hf_download._snapshot_activation_plan(
-        repo_type,
-        REPO_ID,
-        NEW,
-        True,
-    ) == (None, None)
+    assert hf_download._snapshot_activation_plan(repo_type, REPO_ID, NEW, True) == (None, None)
 
 
 @pytest.mark.parametrize(
@@ -343,11 +302,7 @@ def test_unreadable_regular_main_ref_delegates_activation_to_huggingface(
 )
 @pytest.mark.parametrize("failure_point", ["repo", "refs_lstat", "refs_resolve", "main"])
 def test_transient_cache_inspection_error_delegates_activation_to_huggingface(
-    repo_type,
-    repo_prefix,
-    failure_point,
-    tmp_path,
-    monkeypatch,
+    repo_type, repo_prefix, failure_point, tmp_path, monkeypatch
 ):
     root = tmp_path / "hub"
     repo = root / f"{repo_prefix}--Org--Model"
@@ -362,6 +317,7 @@ def test_transient_cache_inspection_error_delegates_activation_to_huggingface(
     )
 
     if failure_point == "repo":
+
         def transient_repo(*_args, **_kwargs):
             raise OSError(errno.EIO, "cache temporarily unavailable")
 
@@ -398,12 +354,7 @@ def test_transient_cache_inspection_error_delegates_activation_to_huggingface(
     assert previous.promotion_safe is False
     assert previous.allow_unpinned_download is True
     assert "cache temporarily unavailable" in (previous.reason or "")
-    assert hf_download._snapshot_activation_plan(
-        repo_type,
-        REPO_ID,
-        NEW,
-        True,
-    ) == (None, None)
+    assert hf_download._snapshot_activation_plan(repo_type, REPO_ID, NEW, True) == (None, None)
 
 
 @pytest.mark.parametrize(
@@ -411,10 +362,7 @@ def test_transient_cache_inspection_error_delegates_activation_to_huggingface(
     [("model", "models"), ("dataset", "datasets")],
 )
 def test_structurally_unsafe_refs_still_block_activation(
-    repo_type,
-    repo_prefix,
-    tmp_path,
-    monkeypatch,
+    repo_type, repo_prefix, tmp_path, monkeypatch
 ):
     root = tmp_path / "hub"
     repo = root / f"{repo_prefix}--Org--Model"
@@ -442,10 +390,7 @@ def test_structurally_unsafe_refs_still_block_activation(
         )
 
 
-def test_promotion_only_accepts_a_concurrent_promotion_to_the_same_revision(
-    tmp_path,
-    monkeypatch,
-):
+def test_promotion_only_accepts_a_concurrent_promotion_to_the_same_revision(tmp_path, monkeypatch):
     root, repo = _cache_repo(tmp_path)
     new_file = _snapshot_file(repo, NEW, "model.safetensors", b"new")
     previous = _capture(monkeypatch, root)
@@ -466,9 +411,7 @@ def test_promotion_only_accepts_a_concurrent_promotion_to_the_same_revision(
 def test_repo_lock_serializes_main_ref_promotion(tmp_path, monkeypatch):
     root, repo = _cache_repo(tmp_path)
     new_file = _snapshot_file(repo, NEW, "model.safetensors", b"new")
-    detached_file = _snapshot_file(
-        repo, DETACHED, "model.safetensors", b"detached"
-    )
+    detached_file = _snapshot_file(repo, DETACHED, "model.safetensors", b"detached")
     previous = _capture(monkeypatch, root)
     first_at_claim = threading.Event()
     release_first = threading.Event()
@@ -482,7 +425,12 @@ def test_repo_lock_serializes_main_ref_promotion(tmp_path, monkeypatch):
             assert release_first.wait(5)
         return real_rename(source, target)
 
-    def promote(label: str, revision: str, snapshot: Path, done = None):
+    def promote(
+        label: str,
+        revision: str,
+        snapshot: Path,
+        done = None,
+    ):
         try:
             snapshot_reclaim.promote_verified_snapshot(
                 "model", REPO_ID, revision, snapshot, previous
@@ -516,9 +464,7 @@ def test_repo_lock_serializes_main_ref_promotion(tmp_path, monkeypatch):
 def test_repo_lock_spans_post_promotion_work(tmp_path, monkeypatch):
     root, repo = _cache_repo(tmp_path)
     new_file = _snapshot_file(repo, NEW, "model.safetensors", b"new")
-    detached_file = _snapshot_file(
-        repo, DETACHED, "model.safetensors", b"detached"
-    )
+    detached_file = _snapshot_file(repo, DETACHED, "model.safetensors", b"detached")
     previous = _capture(monkeypatch, root)
     newer_previous = snapshot_reclaim.PreviousMainRef(repo, NEW, True)
     callback_started = threading.Event()
@@ -575,9 +521,7 @@ def test_invalid_snapshot_path_does_not_switch_main(tmp_path, monkeypatch):
     previous = _capture(monkeypatch, root)
 
     with pytest.raises(ValueError, match = "Unexpected model snapshot path"):
-        snapshot_reclaim.promote_verified_snapshot(
-            "model", REPO_ID, NEW, wrong, previous
-        )
+        snapshot_reclaim.promote_verified_snapshot("model", REPO_ID, NEW, wrong, previous)
 
     assert (repo / "refs" / "main").read_text(encoding = "utf-8") == OLD
 
@@ -617,17 +561,14 @@ def test_external_main_advance_during_download_is_not_overwritten(tmp_path, monk
             NEW,
             new_file.parent,
             previous,
-    )
+        )
 
     assert (repo / "refs" / "main").read_text(encoding = "utf-8") == DETACHED
     assert old_file.read_bytes() == b"old"
     assert new_file.read_bytes() == b"new"
 
 
-def test_external_main_advance_at_promotion_boundary_is_not_overwritten(
-    tmp_path,
-    monkeypatch,
-):
+def test_external_main_advance_at_promotion_boundary_is_not_overwritten(tmp_path, monkeypatch):
     root, repo = _cache_repo(tmp_path)
     new_file = _snapshot_file(repo, NEW, "model.safetensors", b"new")
     previous = _capture(monkeypatch, root)
@@ -653,10 +594,7 @@ def test_external_main_advance_at_promotion_boundary_is_not_overwritten(
     assert main.read_text(encoding = "utf-8") == DETACHED
 
 
-def test_redirected_main_at_claim_is_not_restored_as_the_active_ref(
-    tmp_path,
-    monkeypatch,
-):
+def test_redirected_main_at_claim_is_not_restored_as_the_active_ref(tmp_path, monkeypatch):
     root, repo = _cache_repo(tmp_path)
     refs = repo / "refs"
     main = refs / "main"
@@ -777,10 +715,7 @@ def test_main_ref_claim_failure_keeps_the_old_revision(tmp_path, monkeypatch):
     assert pauses == list(snapshot_reclaim._MAIN_REF_CHANGE_RETRY_DELAYS_SECONDS)
 
 
-def test_main_ref_claim_does_not_retry_a_non_windows_permission_error(
-    tmp_path,
-    monkeypatch,
-):
+def test_main_ref_claim_does_not_retry_a_non_windows_permission_error(tmp_path, monkeypatch):
     root, repo = _cache_repo(tmp_path)
     new_file = _snapshot_file(repo, NEW, "model.safetensors", b"new")
     previous = _capture(monkeypatch, root)
@@ -846,10 +781,7 @@ def test_main_ref_claim_retries_a_transient_windows_lock(tmp_path, monkeypatch):
     assert (repo / "refs" / "main").read_text(encoding = "utf-8") == NEW
 
 
-def test_main_ref_claim_retry_does_not_overwrite_a_concurrent_advance(
-    tmp_path,
-    monkeypatch,
-):
+def test_main_ref_claim_retry_does_not_overwrite_a_concurrent_advance(tmp_path, monkeypatch):
     root, repo = _cache_repo(tmp_path)
     new_file = _snapshot_file(repo, NEW, "model.safetensors", b"new")
     previous = _capture(monkeypatch, root)
@@ -911,10 +843,7 @@ def test_atomic_ref_replace_preserves_shared_cache_permissions(tmp_path, monkeyp
     [errno.EPERM, getattr(errno, "EOPNOTSUPP", errno.EPERM)],
 )
 def test_promotion_falls_back_when_hardlinks_are_unsupported(
-    previous_revision,
-    link_errno,
-    tmp_path,
-    monkeypatch,
+    previous_revision, link_errno, tmp_path, monkeypatch
 ):
     repo, previous = _promotion_cache(tmp_path, monkeypatch, previous_revision)
     if previous_revision is not None:
@@ -993,18 +922,12 @@ def test_libc_noreplace_result_classification(error_code, expected, tmp_path, mo
 
     if expected == "occupied":
         with pytest.raises(FileExistsError):
-            snapshot_reclaim._libc_rename_noreplace(
-                "renameat2", [], (), source, destination
-            )
+            snapshot_reclaim._libc_rename_noreplace("renameat2", [], (), source, destination)
     elif expected == "unsupported":
-        assert not snapshot_reclaim._libc_rename_noreplace(
-            "renameat2", [], (), source, destination
-        )
+        assert not snapshot_reclaim._libc_rename_noreplace("renameat2", [], (), source, destination)
     else:
         with pytest.raises(OSError) as caught:
-            snapshot_reclaim._libc_rename_noreplace(
-                "renameat2", [], (), source, destination
-            )
+            snapshot_reclaim._libc_rename_noreplace("renameat2", [], (), source, destination)
         assert caught.value.errno == errno.EIO
 
 
@@ -1037,9 +960,7 @@ def test_main_ref_native_rename_source_lifecycle(native_supported, tmp_path, mon
 
 @pytest.mark.parametrize("previous_revision", [None, OLD])
 def test_native_noreplace_does_not_overwrite_an_external_creation(
-    previous_revision,
-    tmp_path,
-    monkeypatch,
+    previous_revision, tmp_path, monkeypatch
 ):
     repo, previous = _promotion_cache(tmp_path, monkeypatch, previous_revision)
     refs = repo / "refs"
@@ -1076,10 +997,7 @@ def test_native_noreplace_does_not_overwrite_an_external_creation(
     assert list(refs.glob(".unsloth-main-previous-*")) == []
 
 
-def test_windows_noreplace_retry_never_overwrites_a_created_destination(
-    tmp_path,
-    monkeypatch,
-):
+def test_windows_noreplace_retry_never_overwrites_a_created_destination(tmp_path, monkeypatch):
     source = tmp_path / "source"
     destination = tmp_path / "main"
     source.write_text(NEW, encoding = "utf-8")
@@ -1113,9 +1031,7 @@ def test_hardlink_winerror_classification_does_not_trust_lossy_errno():
 
 @pytest.mark.parametrize("previous_revision", [None, OLD])
 def test_hardlink_fallback_exclusive_create_does_not_overwrite_an_external_advance(
-    previous_revision,
-    tmp_path,
-    monkeypatch,
+    previous_revision, tmp_path, monkeypatch
 ):
     repo, previous = _promotion_cache(tmp_path, monkeypatch, previous_revision)
     main = repo / "refs" / "main"
@@ -1153,9 +1069,7 @@ def test_hardlink_fallback_exclusive_create_does_not_overwrite_an_external_advan
 
 @pytest.mark.parametrize("previous_revision", [None, OLD])
 def test_hardlink_fallback_detects_a_path_replacement_after_exclusive_create(
-    previous_revision,
-    tmp_path,
-    monkeypatch,
+    previous_revision, tmp_path, monkeypatch
 ):
     repo, previous = _promotion_cache(tmp_path, monkeypatch, previous_revision)
     main = repo / "refs" / "main"
@@ -1200,9 +1114,7 @@ def test_hardlink_fallback_detects_a_path_replacement_after_exclusive_create(
 
 @pytest.mark.parametrize("previous_revision", [None, OLD])
 def test_hardlink_fallback_cleans_an_interrupted_exclusive_write(
-    previous_revision,
-    tmp_path,
-    monkeypatch,
+    previous_revision, tmp_path, monkeypatch
 ):
     repo, previous = _promotion_cache(tmp_path, monkeypatch, previous_revision)
     main = repo / "refs" / "main"
@@ -1287,10 +1199,7 @@ def test_exclusive_copy_close_failure_restores_the_previous_ref(tmp_path, monkey
     assert main.read_text(encoding = "utf-8") == OLD
 
 
-def test_failed_partial_ref_cleanup_preserves_the_displaced_previous_ref(
-    tmp_path,
-    monkeypatch,
-):
+def test_failed_partial_ref_cleanup_preserves_the_displaced_previous_ref(tmp_path, monkeypatch):
     root, repo = _cache_repo(tmp_path)
     refs = repo / "refs"
     main = refs / "main"
@@ -1331,10 +1240,7 @@ def test_failed_partial_ref_cleanup_preserves_the_displaced_previous_ref(
     assert displaced[0].read_text(encoding = "utf-8") == OLD
 
 
-def test_failed_partial_ref_cleanup_is_reported_when_main_was_absent(
-    tmp_path,
-    monkeypatch,
-):
+def test_failed_partial_ref_cleanup_is_reported_when_main_was_absent(tmp_path, monkeypatch):
     repo, previous = _promotion_cache(tmp_path, monkeypatch, None)
     refs = repo / "refs"
     main = refs / "main"
@@ -1371,10 +1277,7 @@ def test_failed_partial_ref_cleanup_is_reported_when_main_was_absent(
     assert list(refs.glob(".unsloth-main-previous-*")) == []
 
 
-def test_hardlink_fallback_preserves_a_mode_changed_at_the_claim_boundary(
-    tmp_path,
-    monkeypatch,
-):
+def test_hardlink_fallback_preserves_a_mode_changed_at_the_claim_boundary(tmp_path, monkeypatch):
     root, repo = _cache_repo(tmp_path)
     main = repo / "refs" / "main"
     main.chmod(0o600)
@@ -1612,10 +1515,7 @@ def test_verified_download_fails_when_activation_fails(monkeypatch, tmp_path):
     [(False, True), (True, False)],
 )
 def test_full_worker_never_promotes_without_attested_verification(
-    manifest_written,
-    verified,
-    monkeypatch,
-    tmp_path,
+    manifest_written, verified, monkeypatch, tmp_path
 ):
     promoted = []
     snapshot_calls = []
@@ -1718,11 +1618,7 @@ def test_verification_failure_never_moves_main(monkeypatch, tmp_path):
     ],
 )
 def test_scoped_worker_pins_and_promotes_only_an_attested_snapshot(
-    manifest_written,
-    verified,
-    should_promote,
-    monkeypatch,
-    tmp_path,
+    manifest_written, verified, should_promote, monkeypatch, tmp_path
 ):
     previous = snapshot_reclaim.PreviousMainRef(tmp_path, OLD, True)
     captured = []
@@ -1737,9 +1633,7 @@ def test_scoped_worker_pins_and_promotes_only_an_attested_snapshot(
         "_model_info_with_retry",
         lambda *_args, **_kwargs: SimpleNamespace(
             sha = NEW,
-            siblings = [
-                SimpleNamespace(rfilename = "weights.bin", size = 4, lfs = None)
-            ],
+            siblings = [SimpleNamespace(rfilename = "weights.bin", size = 4, lfs = None)],
         ),
     )
 
@@ -1798,9 +1692,7 @@ def test_scoped_worker_pins_and_promotes_only_an_attested_snapshot(
     assert captured == (["Org/Model"] if manifest_written else [])
     assert bool(promoted) is should_promote
     if should_promote:
-        assert promoted == [
-            (("model", "Org/Model", NEW, str(snapshot), previous), {})
-        ]
+        assert promoted == [(("model", "Org/Model", NEW, str(snapshot), previous), {})]
 
 
 @pytest.mark.parametrize(
@@ -1813,12 +1705,7 @@ def test_scoped_worker_pins_and_promotes_only_an_attested_snapshot(
     ],
 )
 def test_dataset_worker_promotes_only_an_attested_exact_snapshot(
-    manifest_written,
-    verified,
-    completion_written,
-    should_promote,
-    monkeypatch,
-    tmp_path,
+    manifest_written, verified, completion_written, should_promote, monkeypatch, tmp_path
 ):
     previous = snapshot_reclaim.PreviousMainRef(tmp_path, OLD, True)
     captured = []
@@ -1882,6 +1769,4 @@ def test_dataset_worker_promotes_only_an_attested_exact_snapshot(
     assert captured == ([("Org/Data", "dataset")] if manifest_written else [])
     assert bool(promoted) is should_promote
     if should_promote:
-        assert promoted == [
-            (("dataset", "Org/Data", NEW, str(snapshot), previous), {})
-        ]
+        assert promoted == [(("dataset", "Org/Data", NEW, str(snapshot), previous), {})]

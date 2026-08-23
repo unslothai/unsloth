@@ -122,11 +122,13 @@ def exercise_offline_hub(browser, storage_state) -> None:
     blocked_hf_requests: list[str] = []
     reveal_payloads: list[dict] = []
     delete_payloads: list[dict] = []
-    hugging_face_url = re.compile(
-        r"^https://(?:[^/]+\.)?(?:huggingface\.co|hf\.co)(?:/|$)"
-    )
+    hugging_face_url = re.compile(r"^https://(?:[^/]+\.)?(?:huggingface\.co|hf\.co)(?:/|$)")
 
-    def fulfill_json(route, body, status = 200):
+    def fulfill_json(
+        route,
+        body,
+        status = 200,
+    ):
         route.fulfill(
             status = status,
             content_type = "application/json",
@@ -230,12 +232,8 @@ def exercise_offline_hub(browser, storage_state) -> None:
             wait_until = "domcontentloaded",
             timeout = 60_000,
         )
-        cached_row = hub_page.get_by_role(
-            "button", name = cached_title, exact = True
-        )
-        local_row = hub_page.get_by_role(
-            "button", name = local_title, exact = True
-        )
+        cached_row = hub_page.get_by_role("button", name = cached_title, exact = True)
+        local_row = hub_page.get_by_role("button", name = local_title, exact = True)
         cached_row.wait_for(state = "visible")
         local_row.wait_for(state = "visible")
 
@@ -244,18 +242,12 @@ def exercise_offline_hub(browser, storage_state) -> None:
             predicate = lambda request: hugging_face_url.match(request.url) is not None,
         ):
             cached_row.click()
-        hub_page.wait_for_function(
-            "() => new URL(window.location.href).searchParams.has('model')"
-        )
-        hub_page.get_by_role(
-            "heading", name = cached_title, exact = True
-        ).wait_for(state = "visible")
+        hub_page.wait_for_function("() => new URL(window.location.href).searchParams.has('model')")
+        hub_page.get_by_role("heading", name = cached_title, exact = True).wait_for(state = "visible")
         if not blocked_hf_requests:
             raise AssertionError("the selected cached row made no rejected Hugging Face request")
 
-        hub_page.get_by_role(
-            "button", name = "Back to Hub", exact = True
-        ).click()
+        hub_page.get_by_role("button", name = "Back to Hub", exact = True).click()
         cached_row.wait_for(state = "visible")
         cached_row.hover()
         hub_page.locator('[role="tooltip"]').filter(
@@ -278,17 +270,11 @@ def exercise_offline_hub(browser, storage_state) -> None:
             raise AssertionError(f"unexpected reveal payloads: {reveal_payloads!r}")
 
         more_options.click()
-        hub_page.get_by_role(
-            "menuitem", name = "Delete", exact = True
-        ).click()
+        hub_page.get_by_role("menuitem", name = "Delete", exact = True).click()
         delete_dialog = hub_page.get_by_role("alertdialog")
-        delete_dialog.get_by_test_id("delete-impact-reclaimed").wait_for(
-            state = "visible"
-        )
+        delete_dialog.get_by_test_id("delete-impact-reclaimed").wait_for(state = "visible")
         with hub_page.expect_response("**/api/hub/delete-cached"):
-            delete_dialog.get_by_role(
-                "button", name = "Delete", exact = True
-            ).click()
+            delete_dialog.get_by_role("button", name = "Delete", exact = True).click()
         if delete_payloads != [
             {
                 "repo_id": cached_repo,
@@ -311,9 +297,7 @@ def exercise_offline_hub(browser, storage_state) -> None:
             raise AssertionError("the removed Hub Train action is still advertised")
         if hub_page_errors:
             raise AssertionError(f"Hub page errors: {hub_page_errors!r}")
-        info(
-            "OK offline Hub: inventory, selection, reveal, delete, and dataset copy"
-        )
+        info("OK offline Hub: inventory, selection, reveal, delete, and dataset copy")
     finally:
         hub_context.close()
 

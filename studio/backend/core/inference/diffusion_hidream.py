@@ -54,7 +54,6 @@ def hidream_te4_prequant_source(
     if fam is None or not _hidream_te4_fp8_engages(fam, te_quant_mode, target):
         return None
     from .diffusion_te_prequant import resolve_te_prequant_source
-
     return resolve_te_prequant_source(fam, "text_encoder_4", "fp8")
 
 
@@ -101,7 +100,6 @@ def hidream_te4_kwargs(
     source = hidream_te4_prequant_source(fam, te_quant_mode, target)
     if source is not None:
         from .diffusion_te_prequant import load_prequant_text_encoder
-
         encoder = load_prequant_text_encoder(
             HIDREAM_LLAMA_REPO,
             "text_encoder_4",

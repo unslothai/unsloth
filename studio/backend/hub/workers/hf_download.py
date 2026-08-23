@@ -547,10 +547,7 @@ def _recover_manifest_after_download(
 
 
 def _snapshot_activation_plan(
-    repo_type: RepoType,
-    repo_id: str,
-    commit_hash: str | None,
-    manifest_written: bool,
+    repo_type: RepoType, repo_id: str, commit_hash: str | None, manifest_written: bool
 ) -> tuple[str | None, PreviousMainRef | None]:
     if commit_hash is None or not manifest_written:
         return None, None
@@ -884,10 +881,10 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
             "completion could not be attested."
         )
     if download_revision is not None and previous_main is not None:
+
         def reclaim_after_promotion() -> None:
             try:
                 from hub.services.models.deletion import reclaim_replaced_gguf_variant
-
                 reclaim_replaced_gguf_variant(
                     repo_id,
                     variant,

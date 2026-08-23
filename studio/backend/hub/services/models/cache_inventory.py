@@ -314,10 +314,7 @@ def _cache_copy_from_row(row: Optional[dict]) -> Optional[dict]:
     return copy
 
 
-def _cache_copy_key(
-    copy: dict,
-    cache_copy_keys: Optional[dict[str, str]] = None,
-) -> str:
+def _cache_copy_key(copy: dict, cache_copy_keys: Optional[dict[str, str]] = None) -> str:
     cache_path = str(copy.get("cache_path") or "")
     if cache_copy_keys is not None and cache_path in cache_copy_keys:
         return cache_copy_keys[cache_path]

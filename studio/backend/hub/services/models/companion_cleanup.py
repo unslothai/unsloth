@@ -40,15 +40,11 @@ logger = get_logger(__name__)
 _DELETE_IMPACT_LOAD_STATE_TIMEOUT_S = 1.0
 _DELETE_IMPACT_LOAD_STATE_CAPACITY = threading.BoundedSemaphore(2)
 _DELETE_IMPACT_LOAD_STATE_LOCK = threading.Lock()
-_DELETE_IMPACT_LOAD_STATE_PROBES: dict[
-    tuple[str, Optional[str], Optional[str]], Future
-] = {}
+_DELETE_IMPACT_LOAD_STATE_PROBES: dict[tuple[str, Optional[str], Optional[str]], Future] = {}
 
 
 def _delete_impact_load_state_probe_key(
-    repo_id: str,
-    variant: Optional[str],
-    cache_root: Optional[str | Path],
+    repo_id: str, variant: Optional[str], cache_root: Optional[str | Path]
 ) -> tuple[str, Optional[str], Optional[str]]:
     return (
         repo_id.strip().lower(),
@@ -239,9 +235,7 @@ def _variant_is_a_required_companion_asset(repo_id: str, variant: str) -> bool:
 
 
 def _delete_impact_blocking(
-    repo_id: str,
-    variant: Optional[str],
-    cache_path: Optional[str],
+    repo_id: str, variant: Optional[str], cache_path: Optional[str]
 ) -> dict:
     scans = cache_inventory.all_hf_cache_scans()
     by_id = _repos_by_id(scans)
@@ -353,6 +347,7 @@ async def delete_impact_response(
         impact = await asyncio.to_thread(_delete_impact_blocking, repo_id, variant, cache_path)
         delete_block = reservation_block
     else:
+
         async def bounded_load_state():
             try:
                 probe = _submit_delete_impact_load_state_probe(

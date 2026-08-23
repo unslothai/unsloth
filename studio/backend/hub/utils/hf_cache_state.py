@@ -739,9 +739,7 @@ class AmbiguousDeleteTargetError(RuntimeError):
         self.cache_paths = tuple(
             str(root / repo_cache_dir_name(repo_type, repo_id)) for root in cache_roots
         )
-        super().__init__(
-            "Multiple cached copies were found. Choose a cache location to delete."
-        )
+        super().__init__("Multiple cached copies were found. Choose a cache location to delete.")
 
     @property
     def detail(self) -> dict[str, object]:

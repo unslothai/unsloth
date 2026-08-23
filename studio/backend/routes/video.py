@@ -306,7 +306,6 @@ async def load_video_model_gated(
             load_reservation.add(*modular_component_repos)
             if not user_initiated:
                 from core.inference.media_locality import pipeline_components_present
-
                 complete = await asyncio.to_thread(
                     pipeline_components_present,
                     modular_root,

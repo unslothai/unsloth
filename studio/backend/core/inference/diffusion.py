@@ -2002,7 +2002,6 @@ class DiffusionBackend:
             repositories.append(HIDREAM_LLAMA_REPO)
         if kind == "gguf" and loras:
             from .diffusion_lora import repo_ids_for_specs
-
             repositories.extend(repo_ids_for_specs(loras))
         if fam is not None:
             from .diffusion_te_prequant import te_prequant_sources
@@ -2031,8 +2030,7 @@ class DiffusionBackend:
             if kind == "gguf" and not _has_active_lora(loras):
                 schemes = TQ_SCHEMES if quant_auto else ((quant_mode,) if quant_mode else ())
                 repositories.extend(
-                    family_prequant_repo(fam, scheme, base_repo = base)
-                    for scheme in schemes
+                    family_prequant_repo(fam, scheme, base_repo = base) for scheme in schemes
                 )
         return DiffusionLoadPreflight(
             resolved_base_repo = base,
@@ -2129,11 +2127,7 @@ class DiffusionBackend:
         initial_base = (
             repo_id if kind == "pipeline" else (settled_base_repo or "").strip() or fam.base_repo
         )
-        companion_repos = (
-            ()
-            if kind == "pipeline"
-            else (initial_base, mirror_repo(initial_base))
-        )
+        companion_repos = () if kind == "pipeline" else (initial_base, mirror_repo(initial_base))
         # A GGUF pick claims only its own quantization, so a sibling quant can keep
         # downloading side by side; companion repos are claimed whole, as the load
         # pulls all of them.
@@ -2257,9 +2251,7 @@ class DiffusionBackend:
                     target = target,
                 )
                 asset_repos.extend(
-                    source.location
-                    for source in te_sources.values()
-                    if source.kind == "repo"
+                    source.location for source in te_sources.values() if source.kind == "repo"
                 )
                 if fam.name == HIDREAM_FAMILY_NAME:
                     source = hidream_te4_prequant_source(fam, te_mode, target)

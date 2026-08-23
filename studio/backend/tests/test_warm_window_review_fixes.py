@@ -803,9 +803,7 @@ def test_the_delete_guard_keeps_its_short_circuit_and_fail_closed():
         isinstance(node, ast.Return)
         for statement in llama_guard.body
         for node in ast.walk(statement)
-    ), (
-        "the llama.cpp guard no longer returns before the inference backend query"
-    )
+    ), "the llama.cpp guard no longer returns before the inference backend query"
 
     fn = next(
         node

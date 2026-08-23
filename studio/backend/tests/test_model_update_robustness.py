@@ -818,9 +818,7 @@ def _copy_layout_reclaim_repo(tmp_path):
 
 @pytest.mark.parametrize("refs_state", ["invalid", "redirected", "unreadable"])
 def test_reclaim_replaced_gguf_variant_fails_closed_on_unverifiable_refs(
-    monkeypatch,
-    tmp_path,
-    refs_state,
+    monkeypatch, tmp_path, refs_state
 ):
     repo_id, repo_path, _old_revision, new_revision, old_snap, new_snap, repo_info = (
         _copy_layout_reclaim_repo(tmp_path)
@@ -1107,9 +1105,7 @@ def test_reclaim_replaced_gguf_variant_rejects_external_keep_snapshot(monkeypatc
     assert current_snap.exists() is True
 
 
-def test_reclaim_replaced_gguf_variant_restores_link_when_blob_unlink_fails(
-    monkeypatch, tmp_path
-):
+def test_reclaim_replaced_gguf_variant_restores_link_when_blob_unlink_fails(monkeypatch, tmp_path):
     repo_id = "org/repo-GGUF"
     repo_path = tmp_path / "models--org--repo-GGUF"
     old_dir = repo_path / "snapshots" / ("a" * 40)

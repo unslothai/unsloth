@@ -9586,7 +9586,6 @@ async def _load_model_impl(
 
         if load_reservation is None:
             from utils.model_cache_reservations import reserve_inference_load
-
             load_reservation = reserve_inference_load(
                 request.model_path,
                 variant = request.gguf_variant,
@@ -9656,7 +9655,6 @@ async def _load_model_impl(
             extra_llama_args = []
         if config.is_gguf and placement.diffusion_kind is not True:
             from core.inference.llama_cpp import _extra_args_mtp_draft_source
-
             draft_source, draft_is_remote = _extra_args_mtp_draft_source(extra_llama_args)
             if draft_source:
                 if draft_is_remote:
@@ -26085,9 +26083,7 @@ async def load_diffusion_model_gated(
                 text_encoder_quant = request.text_encoder_quant,
                 transformer_quant = request.transformer_quant,
                 loras = (
-                    [(spec.id, spec.weight) for spec in request.loras]
-                    if request.loras
-                    else None
+                    [(spec.id, spec.weight) for spec in request.loras] if request.loras else None
                 ),
                 gpu_ordinal = gpu_ordinal,
                 allow_network = user_initiated,
@@ -26110,10 +26106,7 @@ async def load_diffusion_model_gated(
         if kind != "pipeline" and pending_name != ENGINE_SD_CPP:
             initial_base_repo = (request.base_repo or "").strip() or family_base_repo
         load_reservation.add(initial_base_repo, mirror_repo(initial_base_repo))
-        if (
-            pending_name != ENGINE_SD_CPP
-            and getattr(fam, "name", None) == HIDREAM_FAMILY_NAME
-        ):
+        if pending_name != ENGINE_SD_CPP and getattr(fam, "name", None) == HIDREAM_FAMILY_NAME:
             load_reservation.add(HIDREAM_LLAMA_REPO)
         if pending_name != ENGINE_SD_CPP and kind == "gguf" and request.loras:
             load_reservation.add(
@@ -26165,9 +26158,7 @@ async def load_diffusion_model_gated(
         preflight_base_repo = None
         if pending_name is not None and (needs_gpu or pending_name != active_engine_name()):
             preflighted = engine_for(pending_name)
-            dependency_repos, preflight_base_repo = await asyncio.to_thread(
-                _preflight, preflighted
-            )
+            dependency_repos, preflight_base_repo = await asyncio.to_thread(_preflight, preflighted)
             load_reservation.add(*dependency_repos)
 
         # Pick the engine for this host (diffusers on GPU, native sd.cpp otherwise), installing sd-cli if needed, BEFORE evicting chat.
@@ -26180,9 +26171,7 @@ async def load_diffusion_model_gated(
         # companion; a correct prediction already made this call, so it is never paid twice. Runs
         # on the CPU path too when a preflight was owed there, since the switch is what is at stake.
         if (needs_gpu or preflighted is not None) and engine is not preflighted:
-            dependency_repos, preflight_base_repo = await asyncio.to_thread(
-                _preflight, engine
-            )
+            dependency_repos, preflight_base_repo = await asyncio.to_thread(_preflight, engine)
             load_reservation.add(*dependency_repos)
         # And the precision gate, against the engine that was actually activated. When
         # predict_engine RAISED, pending_name stayed None and both arms above were skipped, so

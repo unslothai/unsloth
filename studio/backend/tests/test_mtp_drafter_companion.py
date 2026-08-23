@@ -1509,9 +1509,7 @@ def test_deleting_the_last_variant_reclaims_an_opt_in_dspark_drafter(tmp_path):
     assert not (snap / "dspark" / "dspark-DeepSeek-V4-Flash-0731-BF16.gguf").is_symlink()
 
 
-def test_deleting_a_cancelled_last_variant_reclaims_stranded_companions(
-    tmp_path, monkeypatch
-):
+def test_deleting_a_cancelled_last_variant_reclaims_stranded_companions(tmp_path, monkeypatch):
     from hub.services.models import deletion
 
     repo, snap = _cache_repo(

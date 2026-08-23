@@ -184,11 +184,7 @@ def _repo_cache_prefix(repo_type: str) -> str:
 
 
 def _canonical_repo_dir(
-    root: Path,
-    repo_type: str,
-    repo_id: str,
-    *,
-    require_existing: bool,
+    root: Path, repo_type: str, repo_id: str, *, require_existing: bool
 ) -> Path:
     if not is_valid_repo_id(repo_id):
         raise ValueError(f"Invalid Hugging Face repo id: {repo_id!r}")
@@ -308,10 +304,7 @@ def capture_previous_main_ref(repo_id: str, *, repo_type: str = "model") -> Prev
 
 
 def _validated_snapshot_target(
-    repo_type: str,
-    repo_id: str,
-    revision: str,
-    snapshot_path: str | Path,
+    repo_type: str, repo_id: str, revision: str, snapshot_path: str | Path
 ) -> tuple[Path, Path]:
     repo_label = repo_type.capitalize()
     normalized_revision = _normalized_revision(revision)
@@ -450,18 +443,14 @@ def referenced_snapshot_revisions(repo_dir: str | Path) -> frozenset[str]:
                 try:
                     revision = _parse_main_ref(payload.decode("utf-8"))
                 except UnicodeError as exc:
-                    raise SnapshotRefsUnverifiable(
-                        f"ref is not valid UTF-8: {name}"
-                    ) from exc
+                    raise SnapshotRefsUnverifiable(f"ref is not valid UTF-8: {name}") from exc
                 if revision is None:
                     raise SnapshotRefsUnverifiable(f"ref is invalid: {name}")
                 revisions.add(revision)
     except SnapshotRefsUnverifiable:
         raise
     except (OSError, RuntimeError, ValueError) as exc:
-        raise SnapshotRefsUnverifiable(
-            f"refs scan failed ({type(exc).__name__}: {exc})"
-        ) from exc
+        raise SnapshotRefsUnverifiable(f"refs scan failed ({type(exc).__name__}: {exc})") from exc
     return frozenset(revisions)
 
 
@@ -498,9 +487,7 @@ def _assert_main_unchanged(refs: Path, expected: Optional[str]) -> Optional[int]
 
 
 def _retry_main_ref_change(
-    change: Callable[[], None],
-    refs: Path,
-    expected_previous: Optional[str],
+    change: Callable[[], None], refs: Path, expected_previous: Optional[str]
 ) -> None:
     for attempt in range(len(_MAIN_REF_CHANGE_RETRY_DELAYS_SECONDS) + 1):
         try:
@@ -521,11 +508,7 @@ def _hardlink_fallback_allowed(exc: OSError) -> bool:
 
 
 def _libc_rename_noreplace(
-    function_name: str,
-    argument_types: list,
-    arguments: tuple,
-    source: Path,
-    destination: Path,
+    function_name: str, argument_types: list, arguments: tuple, source: Path, destination: Path
 ) -> bool:
     try:
         operation = getattr(ctypes.CDLL(None, use_errno = True), function_name)
@@ -625,11 +608,7 @@ def _assert_created_ref(path: Path, created_stat: os.stat_result) -> None:
         raise ConcurrentMainRefError("refs/main changed during promotion")
 
 
-def _copy_main_ref_exclusively(
-    refs: Path,
-    payload: bytes,
-    mode: int,
-) -> None:
+def _copy_main_ref_exclusively(refs: Path, payload: bytes, mode: int) -> None:
     main = refs / "main"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     for attempt in range(len(_MAIN_REF_CHANGE_RETRY_DELAYS_SECONDS) + 1):
@@ -677,12 +656,7 @@ def _copy_main_ref_exclusively(
             raise
 
 
-def _create_main_ref(
-    refs: Path,
-    source: Path,
-    *,
-    try_hardlink: bool,
-) -> None:
+def _create_main_ref(refs: Path, source: Path, *, try_hardlink: bool) -> None:
     payload, mode = _read_ref_bytes(source)
     if try_hardlink:
         try:
@@ -703,10 +677,7 @@ def _create_main_ref(
 
 
 def _publish_main_ref(
-    refs: Path,
-    temporary: Path,
-    expected_previous: Optional[str],
-    previous_mode: Optional[int],
+    refs: Path, temporary: Path, expected_previous: Optional[str], previous_mode: Optional[int]
 ) -> None:
     main = refs / "main"
     if expected_previous is None:
@@ -795,11 +766,7 @@ def _publish_main_ref(
                 pass
 
 
-def _atomic_write_main_ref(
-    repo_dir: Path,
-    revision: str,
-    expected_previous: Optional[str],
-) -> None:
+def _atomic_write_main_ref(repo_dir: Path, revision: str, expected_previous: Optional[str]) -> None:
     refs = repo_dir / "refs"
     try:
         refs_stat = refs.lstat()

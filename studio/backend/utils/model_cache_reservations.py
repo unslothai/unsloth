@@ -19,9 +19,7 @@ _T = TypeVar("_T")
 _MAX_INFERENCE_LOAD_EPOCHS = 4096
 
 
-def _default_variant_scopes_overlap(
-    first: Optional[str], second: Optional[str]
-) -> bool:
+def _default_variant_scopes_overlap(first: Optional[str], second: Optional[str]) -> bool:
     return first is None or second is None or first == second
 
 
@@ -32,9 +30,7 @@ class ModelCacheOperations:
         # repo -> {owner: the variant that owner reads, None for the whole repo}.
         self._inference_loads: dict[str, dict[object, Optional[str]]] = {}
         self._inference_load_repos: dict[object, set[str]] = {}
-        self._inference_load_epochs: OrderedDict[
-            tuple[str, Optional[str]], int
-        ] = OrderedDict()
+        self._inference_load_epochs: OrderedDict[tuple[str, Optional[str]], int] = OrderedDict()
         self._inference_load_epoch_sequence = 0
         self._inference_load_epoch_floor = 0
         self._repository_owners: dict[str, object] = {}
@@ -42,15 +38,11 @@ class ModelCacheOperations:
         # terminal watcher persists markers and removes abandoned partials, even though
         # the user-facing job state is already complete/cancelled/error.
         self._writer_cleanups: dict[str, set[object]] = {}
-        self._active_writer_state: Optional[
-            Callable[[str, Optional[str]], Optional[str]]
-        ] = None
-        self._delete_blocked_by_active: Optional[
-            Callable[[str, Optional[str]], bool]
-        ] = None
-        self._variant_scopes_overlap: Callable[
-            [Optional[str], Optional[str]], bool
-        ] = _default_variant_scopes_overlap
+        self._active_writer_state: Optional[Callable[[str, Optional[str]], Optional[str]]] = None
+        self._delete_blocked_by_active: Optional[Callable[[str, Optional[str]], bool]] = None
+        self._variant_scopes_overlap: Callable[[Optional[str], Optional[str]], bool] = (
+            _default_variant_scopes_overlap
+        )
 
     @staticmethod
     def _repo_key(repo_id: str) -> str:
@@ -67,7 +59,11 @@ class ModelCacheOperations:
             self._delete_blocked_by_active = delete_blocked_by_active
             self._variant_scopes_overlap = variant_scopes_overlap
 
-    def cache_writer_conflict(self, repo_id: str, variant: Optional[str] = None) -> Optional[str]:
+    def cache_writer_conflict(
+        self,
+        repo_id: str,
+        variant: Optional[str] = None,
+    ) -> Optional[str]:
         """Why a writer of *repo_id*/*variant* cannot start right now, or None.
 
         The overlap rule the download registry already applies to its own jobs and to
@@ -83,8 +79,7 @@ class ModelCacheOperations:
                 return "repository_owned"
             held_scopes = self._inference_loads.get(repo)
             if held_scopes and any(
-                self._variant_scopes_overlap(held, variant_key)
-                for held in held_scopes.values()
+                self._variant_scopes_overlap(held, variant_key) for held in held_scopes.values()
             ):
                 return "inference_loading"
         return None
@@ -101,10 +96,7 @@ class ModelCacheOperations:
         with self.lock:
             return self._delete_admission_conflict_locked(repo)
 
-    def _delete_admission_conflict_locked(
-        self,
-        repo: str,
-    ) -> Optional[str]:
+    def _delete_admission_conflict_locked(self, repo: str) -> Optional[str]:
         if repo in self._repository_owners:
             return "repository_owned"
         # Whole-repo on purpose, unlike cache_writer_conflict's per-quant answer above: a
@@ -156,9 +148,7 @@ class ModelCacheOperations:
         variant_key = (variant or "").strip().lower() or None
         repos = tuple(
             dict.fromkeys(
-                repo
-                for repo in (self._repo_key(repo_id) for repo_id in repo_ids)
-                if repo
+                repo for repo in (self._repo_key(repo_id) for repo_id in repo_ids) if repo
             )
         )
         if not repos:
@@ -173,8 +163,7 @@ class ModelCacheOperations:
                     continue
                 held = owners[owner]
                 if held is not None and (
-                    variant_key is None
-                    or not self._variant_scopes_overlap(held, variant_key)
+                    variant_key is None or not self._variant_scopes_overlap(held, variant_key)
                 ):
                     scopes[repo] = None
             if not scopes:
@@ -201,11 +190,7 @@ class ModelCacheOperations:
                 self._record_inference_load_epoch_locked(repo, scope)
         return None
 
-    def _record_inference_load_epoch_locked(
-        self,
-        repo: str,
-        scope: Optional[str],
-    ) -> None:
+    def _record_inference_load_epoch_locked(self, repo: str, scope: Optional[str]) -> None:
         self._inference_load_epoch_sequence += 1
         key = (repo, scope)
         self._inference_load_epochs[key] = self._inference_load_epoch_sequence
@@ -349,7 +334,11 @@ class InferenceLoadReservation:
     draft model) are claimed whole, as a load pulls all of them.
     """
 
-    def __init__(self, *identifiers: Optional[str], variant: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        *identifiers: Optional[str],
+        variant: Optional[str] = None,
+    ) -> None:
         self._owner = object()
         self._released = False
         self._primary_variant = variant
@@ -361,11 +350,7 @@ class InferenceLoadReservation:
     def add_primary(self, *identifiers: Optional[str]) -> None:
         self._claim(identifiers, self._primary_variant)
 
-    def _claim(
-        self,
-        identifiers: Sequence[Optional[str]],
-        variant: Optional[str],
-    ) -> None:
+    def _claim(self, identifiers: Sequence[Optional[str]], variant: Optional[str]) -> None:
         if self._released:
             raise RuntimeError("Inference load reservation is already released")
         repo_ids = tuple(
@@ -375,9 +360,7 @@ class InferenceLoadReservation:
                 if repo_id is not None
             )
         )
-        conflict = get_model_cache_operations().claim_inference_load(
-            repo_ids, self._owner, variant
-        )
+        conflict = get_model_cache_operations().claim_inference_load(repo_ids, self._owner, variant)
         if conflict is not None:
             conflict_key, conflict_state = conflict
             # The conflict names the internal lowercased key; show the caller's spelling.
@@ -403,8 +386,7 @@ class InferenceLoadReservation:
 
 
 def reserve_inference_load(
-    *identifiers: Optional[str],
-    variant: Optional[str] = None,
+    *identifiers: Optional[str], variant: Optional[str] = None
 ) -> InferenceLoadReservation:
     return InferenceLoadReservation(*identifiers, variant = variant)
 
@@ -437,10 +419,7 @@ async def wait_for_reserved_worker(work: Awaitable[_T]) -> _T:
 
 
 def run_reserved_inference_load(
-    reservation: InferenceLoadReservation,
-    target: Callable[..., Any],
-    /,
-    **kwargs,
+    reservation: InferenceLoadReservation, target: Callable[..., Any], /, **kwargs
 ) -> None:
     try:
         target(**kwargs)

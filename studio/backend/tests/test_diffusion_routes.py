@@ -515,10 +515,7 @@ def test_diffusers_preflight_carries_the_resolved_base_by_name(client, monkeypat
     )
 
     assert response.loaded is True
-    assert backend.last_load_kwargs["_preclaimed_repositories"] == (
-        dependency,
-        resolved_base,
-    )
+    assert backend.last_load_kwargs["_preclaimed_repositories"] == (dependency, resolved_base)
     assert backend.last_load_kwargs["_preflight_resolved_base_repo"] == resolved_base
 
 
@@ -1444,9 +1441,7 @@ def test_cpu_native_load_skips_gpu_arbiter(client, monkeypatch):
     "busy_repo",
     ["Tongyi-MAI/Z-Image-Turbo", "unsloth/Z-Image-Turbo"],
 )
-def test_native_load_ignores_a_busy_unused_diffusers_base(
-    client, monkeypatch, busy_repo
-):
+def test_native_load_ignores_a_busy_unused_diffusers_base(client, monkeypatch, busy_repo):
     import core.inference.diffusion_engine_router as router
     from core.inference.diffusion_families import detect_family
     from core.inference.sd_cpp_engine import ENGINE_SD_CPP

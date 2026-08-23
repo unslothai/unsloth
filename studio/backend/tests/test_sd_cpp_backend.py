@@ -139,8 +139,7 @@ def test_begin_load_claims_and_records_only_native_assets(monkeypatch):
     )
     monkeypatch.setattr(
         "utils.model_cache_reservations.reserve_inference_load",
-        lambda *repos, variant = None: reserved.extend(repo for repo in repos if repo)
-        or reservation,
+        lambda *repos, variant = None: reserved.extend(repo for repo in repos if repo) or reservation,
     )
     monkeypatch.setattr(
         backend,

@@ -255,7 +255,6 @@ def _read_refs_by_commit(refs_dir: Path) -> Optional[dict[str, set[str]]]:
 
 def _repo_has_download_state(repo_type: str, repo_id: str, hub_cache: Path) -> bool:
     from hub.utils import download_manifest
-
     try:
         if download_manifest.read_manifest(
             repo_type, repo_id, hub_cache = hub_cache
@@ -266,12 +265,8 @@ def _repo_has_download_state(repo_type: str, repo_id: str, hub_cache: Path) -> b
         return any(
             next(entries, None) is not None
             for entries in (
-                download_manifest.iter_variant_manifests(
-                    repo_type, repo_id, hub_cache = hub_cache
-                ),
-                download_manifest.iter_variant_markers(
-                    repo_type, repo_id, hub_cache = hub_cache
-                ),
+                download_manifest.iter_variant_manifests(repo_type, repo_id, hub_cache = hub_cache),
+                download_manifest.iter_variant_markers(repo_type, repo_id, hub_cache = hub_cache),
             )
         )
     except Exception:

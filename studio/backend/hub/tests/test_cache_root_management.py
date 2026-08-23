@@ -27,10 +27,7 @@ def test_delete_target_root_selection_matrix(monkeypatch, tmp_path):
     _select_active_cache(monkeypatch, active)
 
     assert hf_cache_state.resolve_delete_target_root("model", "Org/Model", None, []) == active
-    assert (
-        hf_cache_state.resolve_delete_target_root("model", "Org/Model", None, [first])
-        == first
-    )
+    assert hf_cache_state.resolve_delete_target_root("model", "Org/Model", None, [first]) == first
     assert (
         hf_cache_state.resolve_delete_target_root(
             "model", "Org/Model", None, [first, active, second]
@@ -38,9 +35,7 @@ def test_delete_target_root_selection_matrix(monkeypatch, tmp_path):
         == active
     )
     with pytest.raises(hf_cache_state.AmbiguousDeleteTargetError) as raised:
-        hf_cache_state.resolve_delete_target_root(
-            "model", "Org/Model", None, [first, second]
-        )
+        hf_cache_state.resolve_delete_target_root("model", "Org/Model", None, [first, second])
     assert raised.value.detail == {
         "message": "Multiple cached copies were found. Choose a cache location to delete.",
         "cache_paths": [
@@ -59,8 +54,7 @@ def test_explicit_delete_target_stays_valid_or_400_compatible(monkeypatch, tmp_p
     monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [active, previous])
 
     assert (
-        hf_cache_state.resolve_delete_target_root("model", "Org/Model", str(repo), [])
-        == previous
+        hf_cache_state.resolve_delete_target_root("model", "Org/Model", str(repo), []) == previous
     )
     assert (
         hf_cache_state.resolve_delete_target_root(
@@ -232,10 +226,14 @@ def test_gguf_scan_aggregates_copies_whichever_root_is_scanned_first(monkeypatch
         lambda repo: sizes[str(repo.repo_path)],
     )
     monkeypatch.setattr(cache_inventory, "_repo_gguf_last_modified", lambda _repo: 0)
-    monkeypatch.setattr(cache_inventory, "_gguf_variant_state_summary", lambda *_a, **_k: (False, 0))
+    monkeypatch.setattr(
+        cache_inventory, "_gguf_variant_state_summary", lambda *_a, **_k: (False, 0)
+    )
     monkeypatch.setattr(cache_inventory, "_is_hidden_infra_repo", lambda *_a: False)
     monkeypatch.setattr(cache_inventory, "_cached_model_snapshot_path", lambda _path: None)
-    monkeypatch.setattr(cache_inventory, "_repo_gguf_payload_snapshots", lambda _repo: (None, frozenset()))
+    monkeypatch.setattr(
+        cache_inventory, "_repo_gguf_payload_snapshots", lambda _repo: (None, frozenset())
+    )
     monkeypatch.setattr(cache_inventory, "_cached_row_task", lambda *_a, **_k: None)
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
@@ -274,9 +272,7 @@ def test_gguf_scan_aggregates_copies_whichever_root_is_scanned_first(monkeypatch
         ]
 
 
-def test_non_gguf_scan_aggregates_copies_whichever_root_is_scanned_first(
-    monkeypatch, tmp_path
-):
+def test_non_gguf_scan_aggregates_copies_whichever_root_is_scanned_first(monkeypatch, tmp_path):
     active_root = tmp_path / "active"
     previous_root = tmp_path / "previous"
     repo_name = "models--Org--Model"

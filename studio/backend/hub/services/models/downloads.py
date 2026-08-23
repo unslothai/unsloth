@@ -128,7 +128,6 @@ def _diffusion_load_in_flight(repo_id: str) -> bool:
 def _gguf_load_in_flight(repo_id: str) -> bool:
     try:
         from core.inference.llama_cpp import hf_gguf_load_in_flight
-
         return hf_gguf_load_in_flight(repo_id)
     except Exception:
         return False
@@ -185,11 +184,7 @@ def _revision_has_cache_scope(revision: Path, variant: Optional[str]) -> bool:
     return False
 
 
-def _active_cache_has_scope(
-    repo_id: str,
-    variant: Optional[str],
-    root: Path | str,
-) -> bool:
+def _active_cache_has_scope(repo_id: str, variant: Optional[str], root: Path | str) -> bool:
     scan_errors: list = []
     entries = list(
         iter_active_repo_cache_dirs(
@@ -219,9 +214,7 @@ def _active_cache_has_scope(
 
 
 def _raise_model_rewrite_block(
-    repo_id: str,
-    variant: Optional[str],
-    block: Optional[tuple[int, str]],
+    repo_id: str, variant: Optional[str], block: Optional[tuple[int, str]]
 ) -> None:
     if block is None:
         return
@@ -239,10 +232,7 @@ def _raise_model_rewrite_block(
 
 
 async def _reject_if_model_is_resident(
-    repo_id: str,
-    variant: Optional[str],
-    *,
-    cache_root: Path | str,
+    repo_id: str, variant: Optional[str], *, cache_root: Path | str
 ) -> None:
     """Refuse to replace cache files an inference process has open.
 
@@ -418,7 +408,6 @@ async def download_model_response(
     admission_block: Optional[tuple[int, str]] = None
     if scope_variant is None:
         from hub.services.models import deletion
-
         admission_block = await deletion.load_state_rewrite_block(
             repo_id,
             variant,

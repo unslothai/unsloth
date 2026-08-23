@@ -94,7 +94,6 @@ class _FakeBackend(video_module.VideoBackend):
     def loaded(self, value: bool) -> None:
         # Minimal committed state required by inherited generation validation.
         import types
-
         self._state = (
             types.SimpleNamespace(
                 family = detect_video_family("Lightricks/LTX-2"),
@@ -383,9 +382,7 @@ def test_modular_component_repositories_are_reserved_before_gpu_handoff(
         return True
 
     def _acquire(_role, register = None):
-        guarded.extend(
-            repo for repo in dependencies if operations.delete_admission_conflict(repo)
-        )
+        guarded.extend(repo for repo in dependencies if operations.delete_admission_conflict(repo))
         return register()
 
     async def _inline(func, /, *args, **kwargs):

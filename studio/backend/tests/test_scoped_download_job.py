@@ -383,9 +383,7 @@ def test_a_whole_variant_download_still_refuses_the_resident_quant(monkeypatch):
         deletion,
         "_llama_cpp_blocks_delete",
         lambda _repo_id, variant, **_kwargs: (
-            (400, deletion._MODEL_ACTIVE_DELETE_DETAIL)
-            if variant in (None, "Q4_K_M")
-            else None
+            (400, deletion._MODEL_ACTIVE_DELETE_DETAIL) if variant in (None, "Q4_K_M") else None
         ),
     )
     monkeypatch.setattr(
@@ -455,17 +453,13 @@ def test_a_sibling_quant_downloads_while_a_media_model_of_the_same_repo_is_resid
     monkeypatch.setattr(
         deletion, "_inference_backend_delete_block", lambda _repo_id, **_kwargs: None
     )
-    monkeypatch.setattr(
-        diffusion_engine_router, "get_active_diffusion_engine", lambda: _Engine()
-    )
+    monkeypatch.setattr(diffusion_engine_router, "get_active_diffusion_engine", lambda: _Engine())
     monkeypatch.setattr(
         deletion,
         "_video_blocks_delete",
         lambda _repo_id, _rewrite_variant = None, **_kwargs: None,
     )
-    monkeypatch.setattr(
-        dl.gguf_variants, "gguf_variant_blob_hashes", lambda *a, **k: frozenset()
-    )
+    monkeypatch.setattr(dl.gguf_variants, "gguf_variant_blob_hashes", lambda *a, **k: frozenset())
 
     repo = "unsloth/FLUX.1-dev-GGUF"
     with pytest.raises(HTTPException) as resident:

@@ -1544,14 +1544,15 @@ class VideoBackend:
         h3_native = is_h3_native(fam, kind)
         claimed_assets = tuple(
             dict.fromkeys(
-                ((H3_GGUF_REPO, H3_COMPONENT_REPO) if h3_native else ())
-                + _modular_component_repos
+                ((H3_GGUF_REPO, H3_COMPONENT_REPO) if h3_native else ()) + _modular_component_repos
             )
         )
         initial_base = (
             ""
             if h3_native
-            else repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
+            else repo_id
+            if kind == "pipeline"
+            else resolve_video_base_repo(fam, base_repo)
         )
 
         from hub.utils.gguf import gguf_variant_key
@@ -1566,11 +1567,7 @@ class VideoBackend:
         # partition + Qwen encoder), so it claims the repo whole.
         load_reservation = reserve_inference_load(
             repo_id,
-            variant = (
-                gguf_variant_key(gguf_filename)
-                if kind == "gguf" and not h3_native
-                else None
-            ),
+            variant = (gguf_variant_key(gguf_filename) if kind == "gguf" and not h3_native else None),
         )
         token: Optional[int] = None
         try:
@@ -1637,9 +1634,7 @@ class VideoBackend:
         # READ, not popped: load_pipeline takes it too (it is in this thread's kwargs by contract).
         local_files_only = bool(kwargs.get("local_files_only"))
         preflight_h3_te_scheme = kwargs.pop("_preflight_h3_te_scheme", None)
-        preflight_h3_te_scheme_settled = bool(
-            kwargs.pop("_preflight_h3_te_scheme_settled", False)
-        )
+        preflight_h3_te_scheme_settled = bool(kwargs.pop("_preflight_h3_te_scheme_settled", False))
         try:
             fam = _detect_load_family(
                 kwargs["repo_id"], kwargs.get("gguf_filename"), kwargs.get("family_override")
@@ -1710,9 +1705,7 @@ class VideoBackend:
                     load_reservation,
                     *(
                         video_family_prequant_repo(fam, scheme, base_repo = base)
-                        for scheme in video_family_prequant_schemes(
-                            fam, kwargs.get("h3_task")
-                        )
+                        for scheme in video_family_prequant_schemes(fam, kwargs.get("h3_task"))
                     ),
                 )
             skip_transformer_weights = self._denoiser_prequant_verified(

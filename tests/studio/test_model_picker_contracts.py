@@ -679,8 +679,7 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # because a new download can land in another snapshot.
     block = re.search(r"onSelect\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and (
-        "loadId: downloaded === true ? (variantLoadId ?? loadId) : undefined,"
-        in block.group(0)
+        "loadId: downloaded === true ? (variantLoadId ?? loadId) : undefined," in block.group(0)
     )
     # The primary copy still asks for the complete remote listing, while secondary
     # cache roots contribute only their downloaded variants.
@@ -2943,16 +2942,10 @@ def test_a_cached_repo_keeps_the_settings_saved_under_its_old_key():
         "ggufVariant);" in config
     )
 
-    picker = " ".join(
-        _read("features/model-picker/components/model-selector.tsx").split()
-    )
-    migration = (
-        "if (meta.loadId) { adoptLegacyConfigKey(id, meta.loadId, meta.ggufVariant); }"
-    )
+    picker = " ".join(_read("features/model-picker/components/model-selector.tsx").split())
+    migration = "if (meta.loadId) { adoptLegacyConfigKey(id, meta.loadId, meta.ggufVariant); }"
     assert picker.count(migration) == 2
-    open_config = picker.split("const openConfigPage =", 1)[1].split(
-        "const handlePick =", 1
-    )[0]
+    open_config = picker.split("const openConfigPage =", 1)[1].split("const handlePick =", 1)[0]
     handle_pick = picker.split("const handlePick =", 1)[1].split("return (", 1)[0]
     assert open_config.index(migration) < open_config.index("setConfigTarget(")
     assert handle_pick.index(migration) < handle_pick.index("resolveInitialConfig(")

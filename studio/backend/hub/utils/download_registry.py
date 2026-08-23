@@ -1929,23 +1929,14 @@ class DownloadRegistry:
                     if target is None:
                         return True
                     continue
-                if (
-                    target is not None
-                    and gguf_variant_scopes_overlap(active_variant, target)
-                ):
+                if target is not None and gguf_variant_scopes_overlap(active_variant, target):
                     return True
         return False
 
-    def delete_admission_conflict(
-        self,
-        repo_id: str,
-    ) -> Optional[str]:
+    def delete_admission_conflict(self, repo_id: str) -> Optional[str]:
         return self._cache_operations.delete_admission_conflict(repo_id)
 
-    def begin_delete(
-        self,
-        repo_id: str,
-    ) -> Optional[str]:
+    def begin_delete(self, repo_id: str) -> Optional[str]:
         """Reserve *repo_id* for deletion. Returns None on
         success, else the conflict reason: an owning load, a model load reading the repo,
         another delete, or an active download. Variant deletion still owns the repository
@@ -1953,10 +1944,7 @@ class DownloadRegistry:
         writers until :func:`end_delete` runs."""
         return self._cache_operations.begin_delete(repo_id)
 
-    def end_delete(
-        self,
-        repo_id: str,
-    ) -> None:
+    def end_delete(self, repo_id: str) -> None:
         self._cache_operations.end_delete(repo_id)
 
     def request_cancel(

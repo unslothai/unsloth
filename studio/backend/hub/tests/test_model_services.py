@@ -420,9 +420,9 @@ def test_standard_inference_delete_guard_keeps_blocking_the_active_model(monkeyp
     )
     monkeypatch.setattr(inference_orchestrator, "peek_inference_backend", lambda: backend)
 
-    assert (
-        deletion._inference_backend_delete_block("unsloth/Qwen3.5-2B")
-        == (400, deletion._MODEL_ACTIVE_DELETE_DETAIL)
+    assert deletion._inference_backend_delete_block("unsloth/Qwen3.5-2B") == (
+        400,
+        deletion._MODEL_ACTIVE_DELETE_DETAIL,
     )
     assert deletion._inference_backend_delete_block("unsloth/Qwen3.5-2B-Chat") is None
 
@@ -436,9 +436,9 @@ def test_standard_inference_delete_guard_blocks_a_transformers_model_while_loadi
     )
     monkeypatch.setattr(inference_orchestrator, "peek_inference_backend", lambda: backend)
 
-    assert (
-        deletion._inference_backend_delete_block("unsloth/Qwen3.5-2B")
-        == (409, deletion._MODEL_LOADING_DELETE_DETAIL)
+    assert deletion._inference_backend_delete_block("unsloth/Qwen3.5-2B") == (
+        409,
+        deletion._MODEL_LOADING_DELETE_DETAIL,
     )
     assert deletion._inference_backend_delete_block("unsloth/Qwen3.5-2B-Chat") is None
 
@@ -461,9 +461,9 @@ def test_standard_inference_delete_guard_blocks_an_mlx_snapshot_while_loading(
         else iter(()),
     )
 
-    assert (
-        deletion._inference_backend_delete_block("mlx-community/Qwen3.5-2B-4bit")
-        == (409, deletion._MODEL_LOADING_DELETE_DETAIL)
+    assert deletion._inference_backend_delete_block("mlx-community/Qwen3.5-2B-4bit") == (
+        409,
+        deletion._MODEL_LOADING_DELETE_DETAIL,
     )
     assert deletion._inference_backend_delete_block("mlx-community/Another-Model") is None
 
@@ -580,9 +580,7 @@ def test_a_download_refuses_to_rewrite_the_resident_model(monkeypatch, tmp_path)
         deletion,
         "_llama_cpp_blocks_delete",
         lambda _repo_id, variant, **_kwargs: (
-            (400, deletion._MODEL_ACTIVE_DELETE_DETAIL)
-            if variant in (None, "Q4_K_M")
-            else None
+            (400, deletion._MODEL_ACTIVE_DELETE_DETAIL) if variant in (None, "Q4_K_M") else None
         ),
     )
     monkeypatch.setattr(
@@ -600,9 +598,7 @@ def test_a_download_refuses_to_rewrite_the_resident_model(monkeypatch, tmp_path)
     )
 
     with pytest.raises(HTTPException) as caught:
-        asyncio.run(
-            downloads.download_model_response(_download_body(gguf_variant = "Q4_K_M"))
-        )
+        asyncio.run(downloads.download_model_response(_download_body(gguf_variant = "Q4_K_M")))
     assert caught.value.status_code == 409
     assert "Org/Model (Q4_K_M)" in caught.value.detail
 
@@ -645,14 +641,10 @@ def test_a_reserved_load_leaves_a_sibling_quant_downloadable(monkeypatch):
     sibling_key = downloads._download_job_key("Org/Model", "Q8_0")
     try:
         with pytest.raises(HTTPException) as same_quant:
-            asyncio.run(
-                downloads.download_model_response(_download_body(gguf_variant = "Q4_K_M"))
-            )
+            asyncio.run(downloads.download_model_response(_download_body(gguf_variant = "Q4_K_M")))
         assert same_quant.value.status_code == 409
 
-        result = asyncio.run(
-            downloads.download_model_response(_download_body(gguf_variant = "Q8_0"))
-        )
+        result = asyncio.run(downloads.download_model_response(_download_body(gguf_variant = "Q8_0")))
         assert result["accepted"] is True
     finally:
         downloads._registry.set_job(sibling_key, "complete")
@@ -693,9 +685,7 @@ def test_an_unreadable_backend_blocks_an_existing_cache_rewrite(monkeypatch, tmp
     ) == (503, deletion._LOAD_STATE_REWRITE_UNVERIFIABLE_DETAIL)
 
 
-def test_an_unreadable_cache_probe_fails_closed_during_a_backend_failure(
-    monkeypatch, tmp_path
-):
+def test_an_unreadable_cache_probe_fails_closed_during_a_backend_failure(monkeypatch, tmp_path):
     def _explode_backend(_repo_id, _variant, **_kwargs):
         raise RuntimeError("backend unavailable")
 
@@ -712,9 +702,7 @@ def test_an_unreadable_cache_probe_fails_closed_during_a_backend_failure(
     ) == (503, deletion._LOAD_STATE_REWRITE_UNVERIFIABLE_DETAIL)
 
 
-def test_an_unresolvable_loaded_path_fails_closed_for_a_cache_rewrite(
-    monkeypatch, tmp_path
-):
+def test_an_unresolvable_loaded_path_fails_closed_for_a_cache_rewrite(monkeypatch, tmp_path):
     loaded_path = tmp_path / "models--Org--Model" / "snapshots" / "revision"
     backend = SimpleNamespace(
         model_identifier = str(loaded_path),
@@ -791,7 +779,11 @@ def test_a_download_rechecks_residency_when_it_claims_the_cache(monkeypatch):
         return frozenset()
 
     class _Registry:
-        def inference_load_epoch(self, _repo_id, _variant = None):
+        def inference_load_epoch(
+            self,
+            _repo_id,
+            _variant = None,
+        ):
             return 0
 
         def claim(self, *_args, admission_check, **_kwargs):
@@ -824,19 +816,13 @@ def test_a_download_rechecks_residency_when_it_claims_the_cache(monkeypatch):
     monkeypatch.setattr(downloads, "_registry", _Registry())
 
     with pytest.raises(HTTPException) as caught:
-        asyncio.run(
-            downloads.download_model_response(
-                _download_body(gguf_variant = "Q4_K_M")
-            )
-        )
+        asyncio.run(downloads.download_model_response(_download_body(gguf_variant = "Q4_K_M")))
 
     assert caught.value.status_code == 409
     assert "Org/Model (Q4_K_M)" in caught.value.detail
 
 
-def test_atomic_recheck_fails_closed_if_the_cache_appears_during_preparation(
-    monkeypatch,
-):
+def test_atomic_recheck_fails_closed_if_the_cache_appears_during_preparation(monkeypatch):
     cache_checks: list[bool] = []
 
     def _cache_has_scope(*_args):
@@ -847,7 +833,11 @@ def test_atomic_recheck_fails_closed_if_the_cache_appears_during_preparation(
         raise RuntimeError("backend unavailable")
 
     class _Registry:
-        def inference_load_epoch(self, _repo_id, _variant = None):
+        def inference_load_epoch(
+            self,
+            _repo_id,
+            _variant = None,
+        ):
             return 0
 
         def claim(self, *_args, admission_check, **_kwargs):
@@ -876,11 +866,7 @@ def test_atomic_recheck_fails_closed_if_the_cache_appears_during_preparation(
     monkeypatch.setattr(downloads, "_registry", _Registry())
 
     with pytest.raises(HTTPException) as caught:
-        asyncio.run(
-            downloads.download_model_response(
-                _download_body(gguf_variant = "Q4_K_M")
-            )
-        )
+        asyncio.run(downloads.download_model_response(_download_body(gguf_variant = "Q4_K_M")))
 
     assert caught.value.status_code == 503
     assert caught.value.detail == deletion._LOAD_STATE_REWRITE_UNVERIFIABLE_DETAIL
@@ -893,7 +879,11 @@ def test_a_completed_load_between_recheck_and_claim_invalidates_admission(monkey
     class _Registry:
         epoch = 0
 
-        def inference_load_epoch(self, _repo_id, _variant = None):
+        def inference_load_epoch(
+            self,
+            _repo_id,
+            _variant = None,
+        ):
             return self.epoch
 
         def claim(self, *_args, admission_check, **_kwargs):
@@ -927,11 +917,7 @@ def test_a_completed_load_between_recheck_and_claim_invalidates_admission(monkey
     monkeypatch.setattr(downloads, "_registry", registry)
 
     with pytest.raises(HTTPException) as caught:
-        asyncio.run(
-            downloads.download_model_response(
-                _download_body(gguf_variant = "Q4_K_M")
-            )
-        )
+        asyncio.run(downloads.download_model_response(_download_body(gguf_variant = "Q4_K_M")))
 
     assert caught.value.status_code == 409
 
@@ -949,13 +935,19 @@ def test_an_inference_load_does_not_block_a_sibling_quant_download():
     assert operations.claim_inference_load(("Org/Repo",), owner, "Q4_K_M") is None
     try:
         assert registry.claim(
-            "Org/Repo::Q8_0", "http", repo_type = "model", repo_id = "Org/Repo",
+            "Org/Repo::Q8_0",
+            "http",
+            repo_type = "model",
+            repo_id = "Org/Repo",
             variant = "Q8_0",
         ) == (True, "running")
         # The quantization it actually reads, a whole-repo snapshot, and a scoped job (an
         # arbitrary file list, so no quant bounds its writes) all still wait.
         assert registry.claim(
-            "Org/Repo::Q4_K_M", "http", repo_type = "model", repo_id = "Org/Repo",
+            "Org/Repo::Q4_K_M",
+            "http",
+            repo_type = "model",
+            repo_id = "Org/Repo",
             variant = "Q4_K_M",
         ) == (False, "inference_loading")
         assert registry.claim("Org/Repo", "http", repo_type = "model", repo_id = "Org/Repo") == (
@@ -963,7 +955,10 @@ def test_an_inference_load_does_not_block_a_sibling_quant_download():
             "inference_loading",
         )
         assert registry.claim(
-            "Org/Repo::@diffusion", "http", repo_type = "model", repo_id = "Org/Repo",
+            "Org/Repo::@diffusion",
+            "http",
+            repo_type = "model",
+            repo_id = "Org/Repo",
             variant = "@diffusion",
         ) == (False, "inference_loading")
     finally:
@@ -983,7 +978,10 @@ def test_a_whole_repo_inference_load_blocks_every_download():
     assert operations.claim_inference_load(("Org/Repo",), owner) is None
     try:
         assert registry.claim(
-            "Org/Repo::Q8_0", "http", repo_type = "model", repo_id = "Org/Repo",
+            "Org/Repo::Q8_0",
+            "http",
+            repo_type = "model",
+            repo_id = "Org/Repo",
             variant = "Q8_0",
         ) == (False, "inference_loading")
     finally:
@@ -1045,9 +1043,7 @@ def test_inference_load_epochs_are_bounded_without_losing_change_history(monkeyp
     assert operations.inference_load_epoch("Org/Repo", "Q4_K_M") == changed
 
 
-def test_inference_load_epoch_does_not_drift_when_an_unrelated_event_is_evicted(
-    monkeypatch,
-):
+def test_inference_load_epoch_does_not_drift_when_an_unrelated_event_is_evicted(monkeypatch):
     from utils import model_cache_reservations
 
     monkeypatch.setattr(model_cache_reservations, "_MAX_INFERENCE_LOAD_EPOCHS", 2)
@@ -1118,9 +1114,7 @@ def test_dependency_claim_widens_an_existing_variant_hold_atomically(monkeypatch
     operations = model_cache_reservations.ModelCacheOperations()
     registry = DownloadRegistry(cache_operations = operations)
     monkeypatch.setattr(model_cache_reservations, "_model_cache_operations", operations)
-    reservation = model_cache_reservations.reserve_inference_load(
-        "Org/Repo", variant = "Q4_K_M"
-    )
+    reservation = model_cache_reservations.reserve_inference_load("Org/Repo", variant = "Q4_K_M")
     assert registry.claim(
         "Org/Repo::Q8_0", "http", repo_type = "model", repo_id = "Org/Repo", variant = "Q8_0"
     ) == (True, "running")
@@ -1244,9 +1238,7 @@ def test_a_refused_delete_names_the_operation_that_holds_the_scope():
     assert "delete" in deletion._cache_conflict_delete_detail(None, "deleting").lower()
     assert "download" not in deletion._cache_conflict_delete_detail(None, "deleting").lower()
     assert "download" in deletion._cache_conflict_delete_detail("Q4_K_M", "downloading").lower()
-    assert "model load" in deletion._cache_conflict_delete_detail(
-        None, "inference_loading"
-    ).lower()
+    assert "model load" in deletion._cache_conflict_delete_detail(None, "inference_loading").lower()
     repository_owned = deletion._cache_conflict_delete_detail(None, "repository_owned").lower()
     assert "dictation model download" in repository_owned
     assert "model load" not in repository_owned
@@ -1267,8 +1259,7 @@ def test_inference_load_reservation_import_graph_is_neutral():
     for node in ast.walk(neutral_tree):
         if isinstance(node, ast.Import):
             assert all(
-                alias.name != "hub" and not alias.name.startswith("hub.")
-                for alias in node.names
+                alias.name != "hub" and not alias.name.startswith("hub.") for alias in node.names
             )
         elif isinstance(node, ast.ImportFrom):
             assert node.module != "hub" and not (node.module or "").startswith("hub.")
@@ -1277,10 +1268,7 @@ def test_inference_load_reservation_import_graph_is_neutral():
         tree = ast.parse(path.read_text(encoding = "utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
-                assert all(
-                    alias.name != "hub.services.models.downloads"
-                    for alias in node.names
-                )
+                assert all(alias.name != "hub.services.models.downloads" for alias in node.names)
             elif isinstance(node, ast.ImportFrom):
                 assert node.module != "hub.services.models.downloads"
                 assert not (
@@ -1299,15 +1287,13 @@ def test_active_cache_writers_block_inference_load_atomically():
     assert (claimed, state) == (True, "running")
     registry.release_active_slot("Org/Downloading")
     repository_owner = object()
-    assert registry.claim_repository_owner("Org/Owned", repository_owner) == (
-        True,
-        "owned",
-    )
+    assert registry.claim_repository_owner("Org/Owned", repository_owner) == (True, "owned")
 
     load_owner = object()
-    assert operations.claim_inference_load(
-        ("Org/Unrelated", "Org/Downloading"), load_owner
-    ) == ("org/downloading", "running")
+    assert operations.claim_inference_load(("Org/Unrelated", "Org/Downloading"), load_owner) == (
+        "org/downloading",
+        "running",
+    )
     assert registry.begin_delete("Org/Unrelated") is None
     registry.end_delete("Org/Unrelated")
     assert operations.claim_inference_load(("Org/Owned",), load_owner) == (
@@ -1317,9 +1303,7 @@ def test_active_cache_writers_block_inference_load_atomically():
 
     registry.set_job("Org/Downloading", "complete")
     assert registry.release_repository_owner("Org/Owned", repository_owner) is True
-    assert operations.claim_inference_load(
-        ("Org/Downloading", "Org/Owned"), load_owner
-    ) is None
+    assert operations.claim_inference_load(("Org/Downloading", "Org/Owned"), load_owner) is None
     operations.release_inference_load(load_owner)
 
 
@@ -1338,8 +1322,7 @@ def test_inference_load_reservation_reports_an_active_cache_writer(monkeypatch):
     assert caught.value.status_code == 409
     # The detail keeps the caller's spelling, not the lowercased reservation key.
     assert caught.value.detail == (
-        "Cache files for 'Org/Downloading' are busy. "
-        "Wait for the active operation to finish."
+        "Cache files for 'Org/Downloading' are busy. Wait for the active operation to finish."
     )
     # Media load workers stamp str(exc) into load-progress, so it must read as the sentence alone.
     assert str(caught.value) == caught.value.detail
@@ -1431,9 +1414,7 @@ def test_inference_load_reservation_preserves_hf_snapshot_identity(monkeypatch, 
     registry.end_delete("Org/Model")
 
 
-def test_inference_load_reservation_accepts_mixed_case_hf_cache_prefix(
-    monkeypatch, tmp_path
-):
+def test_inference_load_reservation_accepts_mixed_case_hf_cache_prefix(monkeypatch, tmp_path):
     from hub.utils.download_registry import DownloadRegistry
     from utils import model_cache_reservations
 
@@ -1546,8 +1527,7 @@ def _ast_shape(source: str) -> str:
 def _has_ast_shape(node: ast.AST, source: str) -> bool:
     expected = _ast_shape(source)
     return any(
-        ast.dump(candidate, include_attributes = False) == expected
-        for candidate in ast.walk(node)
+        ast.dump(candidate, include_attributes = False) == expected for candidate in ast.walk(node)
     )
 
 
@@ -1557,8 +1537,10 @@ def _calls_named(node: ast.AST, name: str) -> list[ast.Call]:
         for candidate in ast.walk(node)
         if isinstance(candidate, ast.Call)
         and (
-            isinstance(candidate.func, ast.Name) and candidate.func.id == name
-            or isinstance(candidate.func, ast.Attribute) and candidate.func.attr == name
+            isinstance(candidate.func, ast.Name)
+            and candidate.func.id == name
+            or isinstance(candidate.func, ast.Attribute)
+            and candidate.func.attr == name
         )
     ]
 
@@ -1566,8 +1548,7 @@ def _calls_named(node: ast.AST, name: str) -> list[ast.Call]:
 def _keyword_has_shape(call: ast.Call, name: str, source: str) -> bool:
     expected = _ast_shape(source)
     return any(
-        keyword.arg == name
-        and ast.dump(keyword.value, include_attributes = False) == expected
+        keyword.arg == name and ast.dump(keyword.value, include_attributes = False) == expected
         for keyword in call.keywords
     )
 
@@ -1764,9 +1745,7 @@ def test_cancelled_cached_delete_keeps_ownership_until_its_worker_finishes(monke
     monkeypatch.setattr(
         deletion, "_diffusion_blocks_delete", lambda _repo, _rewrite_variant = None: None
     )
-    monkeypatch.setattr(
-        deletion, "_video_blocks_delete", lambda _repo, _rewrite_variant = None: None
-    )
+    monkeypatch.setattr(deletion, "_video_blocks_delete", lambda _repo, _rewrite_variant = None: None)
     monkeypatch.setattr(deletion, "resolve_cached_repo_id_case", lambda repo, **_kw: repo)
 
     def blocking_delete(*_args, **_kwargs):
@@ -1785,9 +1764,7 @@ def test_cancelled_cached_delete_keeps_ownership_until_its_worker_finishes(monke
     monkeypatch.setattr(deletion, "_delete_cached_model_blocking", blocking_delete)
 
     async def drive():
-        task = asyncio.create_task(
-            deletion.delete_cached_model_response(target)
-        )
+        task = asyncio.create_task(deletion.delete_cached_model_response(target))
         for _ in range(100):
             if worker_started.is_set():
                 break
@@ -3775,7 +3752,7 @@ def test_worker_gguf_variant_targets_skip_missing_rfilename(monkeypatch):
                 SimpleNamespace(rfilename = None, size = 1),
                 _sibling("model-Q4_K_M.gguf", 10, "main"),
                 _sibling("mmproj-F16.gguf", 5, "mm"),
-            ]
+            ],
         ),
     )
 
@@ -3822,7 +3799,7 @@ def test_download_gguf_variant_purges_only_main_quant_hashes(monkeypatch, tmp_pa
                 _sibling("model-Q4_K_M.gguf", 10, "q4-main"),
                 _sibling("model-Q8_0.gguf", 20, "q8-main"),
                 _sibling("mmproj-F16.gguf", 5, "shared-mmproj"),
-            ]
+            ],
         ),
     )
     monkeypatch.setattr(
@@ -3882,17 +3859,12 @@ def test_download_gguf_variant_purges_only_main_quant_hashes(monkeypatch, tmp_pa
             },
         )
     ]
-    assert [file.path for file in written[0][0][3]] == [
-        "model-Q4_K_M.gguf",
-        "mmproj-F16.gguf",
-    ]
+    assert [file.path for file in written[0][0][3]] == ["model-Q4_K_M.gguf", "mmproj-F16.gguf"]
     assert written[0][1] == {"commit_hash": commit, "metadata_derived": True}
     assert snapshot_calls[0]["allow_patterns"] == ["model-Q4_K_M.gguf", "mmproj-F16.gguf"]
     assert snapshot_calls[0]["revision"] == commit
     assert verified == [("model", "Org/Vision", "Q4_K_M", str(snapshot))]
-    assert promotion_calls == [
-        (("model", "Org/Vision", commit, str(snapshot), previous_main), {})
-    ]
+    assert promotion_calls == [(("model", "Org/Vision", commit, str(snapshot), previous_main), {})]
     assert reclaim_calls == [
         (
             ("Org/Vision", "Q4_K_M", frozenset({"q4-main"}), None),
@@ -3984,11 +3956,7 @@ def test_download_gguf_variant_manifest_resume_never_reclaims(monkeypatch, tmp_p
     [("a" * 40, True), ("b" * 40, False)],
 )
 def test_download_gguf_variant_manifest_resume_preserves_active_revision(
-    monkeypatch,
-    tmp_path,
-    rewrite_succeeds,
-    active_revision,
-    should_activate,
+    monkeypatch, tmp_path, rewrite_succeeds, active_revision, should_activate
 ):
     commit = "a" * 40
     snapshot = tmp_path / "models--Org--Vision" / "snapshots" / commit
@@ -4065,11 +4033,7 @@ def test_download_gguf_variant_manifest_resume_preserves_active_revision(
     assert written[0][1] == {"commit_hash": commit, "metadata_derived": True}
     if should_activate:
         assert promoted[0][0][:4] == ("model", "Org/Vision", commit, str(snapshot))
-        assert reclaimed[0][0][:3] == (
-            "Org/Vision",
-            "Q4_K_M",
-            frozenset({"q4-main"}),
-        )
+        assert reclaimed[0][0][:3] == ("Org/Vision", "Q4_K_M", frozenset({"q4-main"}))
     else:
         assert promoted == []
         assert reclaimed == []
@@ -4080,10 +4044,7 @@ def test_download_gguf_variant_manifest_resume_preserves_active_revision(
     [(False, True), (True, False)],
 )
 def test_download_gguf_variant_requires_attested_verification_before_promotion_or_reclaim(
-    monkeypatch,
-    tmp_path,
-    manifest_written,
-    verified,
+    monkeypatch, tmp_path, manifest_written, verified
 ):
     commit = "a" * 40
     snapshot = tmp_path / "models--Org--Model" / "snapshots" / commit
@@ -5291,7 +5252,10 @@ def test_offline_gguf_progress_recognizes_a_complete_manifest_in_the_jobs_cache(
     manifest_scopes = []
 
     def _preferred_repo_cache_dirs(
-        *_args, force_active = False, active_root = None, **_kwargs
+        *_args,
+        force_active = False,
+        active_root = None,
+        **_kwargs,
     ):
         manifest_scopes.append((force_active, active_root))
         return [entry]
@@ -6865,7 +6829,11 @@ def test_model_download_records_completed_baseline_for_new_gguf_variant(monkeypa
     class _Registry:
         claim_kwargs = None
 
-        def inference_load_epoch(self, _repo_id, _variant = None):
+        def inference_load_epoch(
+            self,
+            _repo_id,
+            _variant = None,
+        ):
             return 0
 
         def claim(self, _key, _transport, **kwargs):
@@ -6878,7 +6846,12 @@ def test_model_download_records_completed_baseline_for_new_gguf_variant(monkeypa
         def get_job(self, _key):
             return SimpleNamespace(state = "running")
 
-        def register_process(self, _key, _proc, _cleanup_owner = None):
+        def register_process(
+            self,
+            _key,
+            _proc,
+            _cleanup_owner = None,
+        ):
             return False
 
         def peer_blob_hashes(self, _key):
@@ -6950,7 +6923,11 @@ def test_gguf_model_download_skips_completed_baseline_for_variant_resume_state(
     class _Registry:
         claim_kwargs = None
 
-        def inference_load_epoch(self, _repo_id, _variant = None):
+        def inference_load_epoch(
+            self,
+            _repo_id,
+            _variant = None,
+        ):
             return 0
 
         def claim(self, _key, _transport, **kwargs):
@@ -6963,7 +6940,12 @@ def test_gguf_model_download_skips_completed_baseline_for_variant_resume_state(
         def get_job(self, _key):
             return SimpleNamespace(state = "running")
 
-        def register_process(self, _key, _proc, _cleanup_owner = None):
+        def register_process(
+            self,
+            _key,
+            _proc,
+            _cleanup_owner = None,
+        ):
             return False
 
         def peer_blob_hashes(self, _key):
@@ -7146,7 +7128,11 @@ def test_model_claim_register_cancel_uses_registry_marker_owner(monkeypatch):
     killed = []
 
     class _Registry:
-        def inference_load_epoch(self, _repo_id, _variant = None):
+        def inference_load_epoch(
+            self,
+            _repo_id,
+            _variant = None,
+        ):
             return 0
 
         def claim(self, *_args, **_kwargs):
@@ -7155,7 +7141,12 @@ def test_model_claim_register_cancel_uses_registry_marker_owner(monkeypatch):
         def current_generation(self, _key):
             return 1
 
-        def register_process(self, _key, _proc, _cleanup_owner = None):
+        def register_process(
+            self,
+            _key,
+            _proc,
+            _cleanup_owner = None,
+        ):
             return False
 
         def persist_cancel_for_key(self, *_args, **_kwargs):
@@ -7250,11 +7241,7 @@ def test_model_cancel_registered_worker_requests_and_kills(monkeypatch):
     ],
 )
 def test_terminal_download_cleanup_keeps_delete_blocked(
-    child_source,
-    cancel,
-    terminal_state,
-    monkeypatch,
-    tmp_path,
+    child_source, cancel, terminal_state, monkeypatch, tmp_path
 ):
     import subprocess
 
@@ -7307,13 +7294,16 @@ def test_terminal_download_cleanup_keeps_delete_blocked(
         watch_name = "terminal-cleanup-delete-barrier",
     )
     if cancel:
-        assert download_lifecycle.cancel_worker(
-            registry,
-            key,
-            generation = registry.current_generation(key),
-            label = "Org/Model",
-            logger = logger,
-        ) == "cancelling"
+        assert (
+            download_lifecycle.cancel_worker(
+                registry,
+                key,
+                generation = registry.current_generation(key),
+                label = "Org/Model",
+                logger = logger,
+            )
+            == "cancelling"
+        )
 
     assert sweep_started.wait(10)
     assert registry.get_job(key).state == terminal_state
@@ -7337,9 +7327,7 @@ def test_terminal_download_cleanup_keeps_delete_blocked(
     registry.end_delete("Org/Model")
 
 
-def test_pending_cancel_keeps_delete_blocked_until_spawned_worker_is_reaped(
-    monkeypatch,
-):
+def test_pending_cancel_keeps_delete_blocked_until_spawned_worker_is_reaped(monkeypatch):
     registry = download_registry.DownloadRegistry()
     key = "Org/Model::Q4_K_M"
     claimed, _state = registry.claim(
@@ -7401,7 +7389,11 @@ def test_model_download_watcher_invalidates_hf_cache_scan(monkeypatch):
     invalidated = []
 
     class _Registry:
-        def inference_load_epoch(self, _repo_id, _variant = None):
+        def inference_load_epoch(
+            self,
+            _repo_id,
+            _variant = None,
+        ):
             return 0
 
         def claim(self, *_args, **_kwargs):
@@ -7410,7 +7402,12 @@ def test_model_download_watcher_invalidates_hf_cache_scan(monkeypatch):
         def current_generation(self, _key):
             return 1
 
-        def register_process(self, _key, _proc, _cleanup_owner = None):
+        def register_process(
+            self,
+            _key,
+            _proc,
+            _cleanup_owner = None,
+        ):
             return True
 
         def get_job(self, _key):
@@ -8088,9 +8085,7 @@ def test_delete_variant_never_unlinks_external_snapshot_target(monkeypatch, tmp_
 
 
 @pytest.mark.parametrize("failure_point", ["stat", "unlink"])
-def test_delete_variant_surfaces_locked_file_as_conflict(
-    failure_point, monkeypatch, tmp_path
-):
+def test_delete_variant_surfaces_locked_file_as_conflict(failure_point, monkeypatch, tmp_path):
     repo_dir = tmp_path / "models--Org--Repo-GGUF"
     repo = _build_variant_cache_repo(
         repo_dir,
@@ -8189,8 +8184,7 @@ def test_delete_variant_keeps_companions_when_main_blob_is_locked(monkeypatch, t
 
 
 def test_delete_variant_does_not_sweep_companions_from_an_unmatched_cache_copy(
-    monkeypatch,
-    tmp_path,
+    monkeypatch, tmp_path
 ):
     matched_dir = tmp_path / "models--Org--Repo-GGUF"
     matched_repo = _build_variant_cache_repo(
@@ -8229,10 +8223,7 @@ def test_delete_variant_does_not_sweep_companions_from_an_unmatched_cache_copy(
     assert (unmatched_dir / "blobs" / "mmprojblob").exists()
 
 
-def test_delete_variant_does_not_apply_partial_state_across_repo_entries(
-    monkeypatch,
-    tmp_path,
-):
+def test_delete_variant_does_not_apply_partial_state_across_repo_entries(monkeypatch, tmp_path):
     matched_dir = tmp_path / "models--Org--Repo-GGUF"
     matched_repo = _build_variant_cache_repo(
         matched_dir,
@@ -8340,9 +8331,7 @@ def test_snapshot_reference_scan_retries_transient_and_skips_vanished_entries(
     assert deletion._snapshot_blob_reference_counts(repo_dir) == {blob.resolve(): 2}
 
 
-@pytest.mark.parametrize(
-    "failure", ["missing_blob", "unreadable_link", "unreadable_entry"]
-)
+@pytest.mark.parametrize("failure", ["missing_blob", "unreadable_link", "unreadable_entry"])
 def test_delete_variant_keeps_a_symlink_it_cannot_restore(failure, monkeypatch, tmp_path):
     repo_dir = tmp_path / "models--Org--Repo-GGUF"
     repo = _build_variant_cache_repo(
@@ -8408,8 +8397,7 @@ def test_download_snapshot_writes_manifest_for_xet(monkeypatch, tmp_path):
         hf_download,
         "_model_info_with_retry",
         lambda *_args, **_kwargs: SimpleNamespace(
-            sha = commit,
-            siblings = [SimpleNamespace(rfilename = "config.json", size = 12)]
+            sha = commit, siblings = [SimpleNamespace(rfilename = "config.json", size = 12)]
         ),
     )
     monkeypatch.setattr(
@@ -8458,8 +8446,7 @@ def test_download_gguf_variant_writes_manifest_for_xet(monkeypatch, tmp_path):
         hf_download,
         "_model_info_with_retry",
         lambda *_args, **_kwargs: SimpleNamespace(
-            sha = commit,
-            siblings = [_sibling("model-Q4_K_M.gguf", 10, "main")]
+            sha = commit, siblings = [_sibling("model-Q4_K_M.gguf", 10, "main")]
         ),
     )
     monkeypatch.setattr(

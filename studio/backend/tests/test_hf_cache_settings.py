@@ -60,9 +60,7 @@ def test_studio_cache_switch_is_live_and_keeps_history(settings_store, tmp_path)
 
 
 def test_known_cache_paths_deduplicate_same_filesystem_identity(
-    settings_store,
-    tmp_path,
-    monkeypatch,
+    settings_store, tmp_path, monkeypatch
 ):
     first = tmp_path / "Cache"
     alias = tmp_path / "cache"

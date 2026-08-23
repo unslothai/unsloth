@@ -87,10 +87,7 @@ def test_gguf_codec_dependency_is_published_before_initialization():
     assert backend._apply_detected_audio(
         "snac", lambda repo_id: events.append(("reserve", repo_id))
     )
-    assert events == [
-        ("reserve", "hubertsiuzdak/snac_24khz"),
-        ("init", "snac"),
-    ]
+    assert events == [("reserve", "hubertsiuzdak/snac_24khz"), ("init", "snac")]
 
 
 def test_new_gguf_server_is_unloaded_when_codec_init_fails(monkeypatch):
@@ -141,10 +138,7 @@ def test_new_gguf_server_is_unloaded_when_codec_reservation_conflicts(monkeypatc
         backend._apply_detected_audio_for_new_server("snac", reject_reservation)
 
     assert caught.value.status_code == 409
-    assert events == [
-        ("reserve", "hubertsiuzdak/snac_24khz"),
-        ("unload", None),
-    ]
+    assert events == [("reserve", "hubertsiuzdak/snac_24khz"), ("unload", None)]
 
 
 def _backend_with_failing_codec(monkeypatch):
