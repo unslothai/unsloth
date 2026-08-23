@@ -882,3 +882,47 @@ def test_evaluate_cannot_settle_on_a_single_sample():
     assert evaluate(probe, probe, 18, MODE_FULL)["settled"] is True
     grew = dict(probe, elements = 101)
     assert evaluate(grew, probe, 18, MODE_FULL)["settled"] is False
+
+
+# ── the viewport itself, asserted rather than inferred ────────────────────────
+
+
+def test_a_windowed_thread_with_no_viewport_is_refused(browser):
+    """REGRESSION. Every other windowed condition degrades to a pass when the scroller is gone.
+
+    `from_bottom` is null so the arithmetic is skipped, and the app's own answer is read off
+    `.aui-thread-scroll-to-bottom`, which is a DESCENDANT of the viewport but is looked up at
+    DOCUMENT scope. Renaming the viewport class therefore leaves that control reachable,
+    `app_says_at_bottom` true and `anchored_at_end` true, and the cell was admitted with no
+    viewport at all: the completeness probe then returns `probe_attempted: false`, the scroll
+    actions return `not_run`, a not-run action blanks only its own timings, and the census viewport
+    fields go null. Nothing refused, so the film was scored without the surface it was measuring.
+    """
+    page = _page(browser, "windowed")
+    got, log = _lines()
+    try:
+        renamed = page.evaluate(
+            """() => {
+                 const vp = document.querySelector(".aui-thread-viewport");
+                 if (!vp) return false;
+                 vp.classList.remove("aui-thread-viewport");
+                 vp.classList.add("aui-thread-scroller");
+                 return true;
+               }"""
+        )
+        assert renamed, "the fixture has no viewport to rename"
+        with pytest.raises(ThreadNotReady) as caught:
+            wait_for_thread_ready(
+                page,
+                MESSAGES,
+                marker = turn_marker(TURNS - 1, TURNS - 1),
+                mode = MODE_WINDOWED,
+                timeout_s = 3,
+                log = log,
+            )
+    finally:
+        page.close()
+
+    # Named in the refusal, so the reader is told the surface is missing rather than left to infer
+    # it from a condition that is really about something else.
+    assert "viewport_present" in str(caught.value), str(caught.value)

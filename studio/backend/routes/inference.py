@@ -26773,53 +26773,74 @@ async def _generate_openai_images(
 
     # Use the active engine (diffusers OR native sd.cpp), the same accessor /images/generate uses.
     backend = get_active_diffusion_engine()
-    status = backend.status()
-    if not status.get("loaded"):
-        # Mirror /v1/completions and /v1/embeddings, which 503 when their backend is not loaded.
-        raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
+    from core.inference.diffusion_memory import ImageActivationShortfallError
+    from core.inference.diffusion_families import DiffusionModelReplacedError, load_identity
 
-    # An edit-only model needs an input image this API cannot supply; refuse with a 400 rather than a backend 500.
-    workflows = status.get("workflows") or []
-    if workflows and "txt2img" not in workflows:
-        raise HTTPException(
-            status_code = 400,
-            detail = openai_error_body(
-                "The loaded image model is edit-only (it requires an input image); "
-                "load a text-to-image model to use this endpoint.",
-                status = 400,
-                param = "model",
-            ),
-        )
-
-    # Fall back to the resolved base repo so a local-path load still gets the right per-model steps/guidance.
-    steps, guidance = default_generation_params(status.get("repo_id"), status.get("base_repo"))
-    try:
-        result = await asyncio.to_thread(
-            backend.generate,
-            prompt = body.prompt,
-            width = width,
-            height = height,
-            steps = steps,
-            guidance = guidance,
-            batch_size = body.n,
-        )
-    except Exception as exc:  # noqa: BLE001 (single boundary, sanitized envelope)
-        # A RuntimeError with the model now unloaded means it was evicted mid-call (a race): 503. Every other failure is a real 500 whose raw message must not reach the client.
-        if isinstance(exc, RuntimeError) and not backend.is_loaded:
+    # A replacement can commit between this status() read and generate() taking its lock, running the
+    # new model with the old one's steps/guidance and edit-only verdict (#9448). Pin the read to the
+    # generation, then re-decide from fresh state once.
+    result = None
+    for attempt in range(2):
+        status = backend.status()
+        if not status.get("loaded"):
+            # Mirror /v1/completions and /v1/embeddings, which 503 when their backend is not loaded.
             raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
-        # The activation refusal is the one message here written FOR the caller: it names the
-        # resolution, the budget and the remedies. Sanitising it into "Image generation failed."
-        # left an OpenAI client with a 500 for a request only they can fix, while the Studio
-        # route showed the reason. Typed, so no other ValueError's raw text escapes.
-        from core.inference.diffusion_memory import ImageActivationShortfallError
 
-        if isinstance(exc, ImageActivationShortfallError):
+        # An edit-only model needs an input image this API cannot supply; refuse with a 400 rather than a backend 500.
+        workflows = status.get("workflows") or []
+        if workflows and "txt2img" not in workflows:
             raise HTTPException(
                 status_code = 400,
-                detail = openai_error_body(str(exc), status = 400, param = "size"),
+                detail = openai_error_body(
+                    "The loaded image model is edit-only (it requires an input image); "
+                    "load a text-to-image model to use this endpoint.",
+                    status = 400,
+                    param = "model",
+                ),
             )
-        logger.error("openai_images.generate_failed: %s", exc)
-        raise HTTPException(status_code = 500, detail = "Image generation failed.")
+
+        # Fall back to the resolved base repo so a local-path load still gets the right per-model steps/guidance.
+        steps, guidance = default_generation_params(status.get("repo_id"), status.get("base_repo"))
+        try:
+            result = await asyncio.to_thread(
+                backend.generate,
+                prompt = body.prompt,
+                width = width,
+                height = height,
+                steps = steps,
+                guidance = guidance,
+                batch_size = body.n,
+                expected_load = load_identity(
+                    status.get("repo_id"), status.get("base_repo"), status.get("family")
+                ),
+            )
+            break
+        except DiffusionModelReplacedError:
+            if attempt > 0:
+                raise HTTPException(
+                    status_code = 503,
+                    detail = openai_error_body(
+                        "The image model was replaced while this request waited; retry with fresh parameters.",
+                        status = 503,
+                        param = "model",
+                    ),
+                )
+            continue
+        except Exception as exc:  # noqa: BLE001 (single boundary, sanitized envelope)
+            # A RuntimeError with the model now unloaded means it was evicted mid-call (a race): 503. Every other failure is a real 500 whose raw message must not reach the client.
+            if isinstance(exc, RuntimeError) and not backend.is_loaded:
+                raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
+            # The activation refusal is the one message here written FOR the caller: it names the
+            # resolution, the budget and the remedies. Sanitising it into "Image generation failed."
+            # left an OpenAI client with a 500 for a request only they can fix, while the Studio
+            # route showed the reason. Typed, so no other ValueError's raw text escapes.
+            if isinstance(exc, ImageActivationShortfallError):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(str(exc), status = 400, param = "size"),
+                )
+            logger.error("openai_images.generate_failed: %s", exc)
+            raise HTTPException(status_code = 500, detail = "Image generation failed.")
 
     # A local-directory load puts the host path in repo_id and the monitor row goes out over
     # the tunnel, so the label gets the same path-free treatment as active_model.
