@@ -4908,6 +4908,10 @@ class LlamaCppBackend:
         # False when a launch is fully offloaded to a discrete GPU, where
         # page-locking host RAM is skipped on purpose.
         self._memory_mlock_applicable: bool = True
+        # The exact "--load-mode none" tokens the FIT emitted, if any, so the
+        # paths that replace the placement it was derived from can take them
+        # back out. Empty for a mode the user asked for, which is theirs to keep.
+        self._fit_load_mode_flags: list[str] = []
         # True between recording a launch's placement and the child being
         # spawned, so a save landing in that window still has a launch to
         # compare against.
@@ -8698,6 +8702,90 @@ class LlamaCppBackend:
         # filling RAM to the last byte is the paging case this is trying to avoid.
         return (footprint_bytes - free_vram_bytes) <= max(0, avail - headroom_mib) * 1024 * 1024
 
+    def _fit_derived_load_mode(
+        self,
+        *,
+        model_size: Optional[int],
+        mmproj_pinned_bytes: int = 0,
+        kv_cache_bytes: int = 0,
+        kv_sized: bool = True,
+        mtp_bytes: int = 0,
+        mtp_unsized: bool = False,
+        compute_buffer_flat: int = 0,
+        compute_buffer_ctx: int = 0,
+        soft_overhead: int = 0,
+        gpus: Optional[Iterable[tuple]] = None,
+        gpu_indices: Optional[Iterable[int]] = None,
+        shared_gpu_ids: Iterable[int] = (),
+        is_vulkan_backend: bool = False,
+        avail_mib: Optional[int] = None,
+    ) -> Optional[str]:
+        """``"none"`` when the fit proves the load needs no demand paging, else None.
+
+        mmap exists to demand-page a footprint the machine cannot hold, and llama.cpp
+        builds its async pinned-buffer upload path ONLY when mmap is off
+        (llama-model-loader.cpp, ``upload_backend``), so a load that fits wants
+        ``none``: same residency, faster load, no model-sized mapping left behind.
+        Anything that does not fit, or that cannot be priced, keeps llama.cpp's own
+        ``auto``, where the mapping is what stops an over-committed load from being
+        killed outright.
+
+        The footprint is charged WHOLE, weights and KV and scratch, because
+        understating it would claim a fit that is not there and hand the load a loader
+        that cannot page. Every term that cannot be read abstains for the same reason:
+        unreadable weights, an unsized KV (the estimator returns 0 without the dims,
+        and a 0 KV term on a long-context load is exactly the missing term) and a
+        drafter engaged but unsized, which the placement itself covers with a flat
+        cushion rather than a number.
+
+        Apple Silicon abstains outright. Metal is the one backend where
+        ``buffer_from_host_ptr`` IS supported, so mmap wraps the weights in a Metal
+        buffer in place, zero copy and file backed; ``none`` would allocate the same
+        bytes anonymously, and an evictable 30 GB mapping on a 32 GB machine is the
+        difference between working and being jetsammed. The host figure is the wrong
+        ceiling there anyway (see ``_apple_metal_memory_budget_bytes``), so a fit read
+        off ``MemAvailable`` would not be one worth acting on.
+        """
+        from utils.hardware import is_apple_silicon
+
+        if not model_size or not kv_sized or mtp_unsized or is_apple_silicon():
+            return None
+        rows = list(gpus or ())
+        footprint = (
+            model_size
+            # Left model_size when the projector was pinned to the CPU, but it is
+            # still resident, and this is a footprint rather than a VRAM budget.
+            + max(0, mmproj_pinned_bytes)
+            + max(0, kv_cache_bytes)
+            # Carries the drafter's own weights and KV.
+            + max(0, mtp_bytes)
+            + max(0, compute_buffer_flat)
+            + max(0, compute_buffer_ctx)
+            + max(0, soft_overhead)
+        )
+        # Unified memory is ONE pool: an APU's reported free VRAM is the same host RAM
+        # the spill would come out of, so adding both would fit a model twice over into
+        # memory that holds it once. shared_gpu_ids already names Vulkan iGPUs; the
+        # ROCm APUs it cannot see are added here, off the same predicate the rest of
+        # the launch uses. Both end up priced against host RAM alone.
+        shared = set(shared_gpu_ids or ())
+        pinned = list(gpu_indices) if gpu_indices is not None else [idx for idx, _free in rows]
+        if rows and not is_vulkan_backend and self._amd_apu_wants_unified_memory(pinned):
+            shared |= {idx for idx, _free in rows}
+        if self._fits_without_paging(
+            footprint,
+            rows,
+            gpu_indices = gpu_indices,
+            shared_gpu_ids = shared,
+            avail_mib = avail_mib,
+        ):
+            logger.info(
+                "Load mode: the whole load (%.1f GB) fits without paging, using --load-mode none.",
+                footprint / (1024**3),
+            )
+            return "none"
+        return None
+
     METAL_CTX_OVERCOMMIT_ENV = "UNSLOTH_ALLOW_METAL_CTX_OVERCOMMIT"
 
     @staticmethod
@@ -11237,6 +11325,7 @@ class LlamaCppBackend:
         self._memory_state = None
         self._memory_policy_active = False
         self._memory_mlock_applicable = True
+        self._fit_load_mode_flags = []
         self._memory_launch_pending = False
         self._n_ubatch = self._DEFAULT_N_UBATCH
         self._requested_n_batch = None
@@ -14801,6 +14890,16 @@ class LlamaCppBackend:
         )
         if replay is None:
             return None
+        # The replay runs on no GPU at all, so the VRAM half of the fit that
+        # chose "none" is void and the whole model has to live in host RAM. mmap
+        # is what makes that survivable, so hand the CPU attempt llama.cpp's auto
+        # back. Only Unsloth's own tokens; a user's --load-mode is theirs.
+        if self._fit_load_mode_flags:
+            replay = _without_subsequence(replay, self._fit_load_mode_flags)
+            logger.info(
+                "Load mode: dropping the fit's --load-mode none for the CPU "
+                "fallback; it runs entirely from host RAM."
+            )
         cpu_binary = self._cpu_isolated_binary(binary)
         if cpu_binary is None:
             return None
@@ -18082,42 +18181,26 @@ class LlamaCppBackend:
                     # keeps llama.cpp's "auto", where the mapping is what stops
                     # an over-committed load from being killed outright.
                     #
-                    # Charged over the WHOLE footprint, weights and KV and
-                    # scratch, because an understated one would claim a fit that
-                    # is not there. An unsized KV abstains for the same reason:
-                    # the estimator returns 0 without the dims, and a 0 KV term
-                    # on a large-context load is exactly the missing term that
-                    # would turn a paging load into "none".
-                    if self._can_estimate_kv():
-                        _fit_devices = max(1, len(gpu_indices or ()) or len(gpus))
-                        _fit_footprint = (
-                            (model_size or 0)
-                            # Left model_size when the projector was pinned to the
-                            # CPU, but it is still resident, and this term is a
-                            # footprint rather than a VRAM budget.
-                            + _mmproj_pinned_bytes
-                            + kv_cache_bytes
-                            + _mtp_bytes(effective_ctx)
-                            + _compute_buffer_pipeline
-                            + _cc_bytes(effective_ctx, _fit_devices)
-                            + max(0, _soft_overhead)
-                        )
-                        # `gpus`, not `_detected_gpus`: the arch gate empties this
-                        # one when it forces the child onto the CPU with
-                        # "--device none", and crediting VRAM the child never
-                        # reaches would claim a fit that has to come from RAM.
-                        if self._fits_without_paging(
-                            _fit_footprint,
-                            gpus,
-                            gpu_indices = gpu_indices,
-                            shared_gpu_ids = _shared_gpu_ids,
-                        ):
-                            _fit_load_mode = "none"
-                            logger.info(
-                                "Load mode: the whole load (%.1f GB) fits without "
-                                "paging, using --load-mode none.",
-                                _fit_footprint / (1024**3),
-                            )
+                    # `gpus`, not `_detected_gpus`: the arch gate empties this one
+                    # when it forces the child onto the CPU with "--device none",
+                    # and crediting VRAM the child never reaches would claim a fit
+                    # that has to come from RAM. See _fit_derived_load_mode.
+                    _fit_devices = max(1, len(gpu_indices or ()) or len(gpus))
+                    _fit_load_mode = self._fit_derived_load_mode(
+                        model_size = model_size,
+                        mmproj_pinned_bytes = _mmproj_pinned_bytes,
+                        kv_cache_bytes = kv_cache_bytes,
+                        kv_sized = self._can_estimate_kv(),
+                        mtp_bytes = _mtp_bytes(effective_ctx),
+                        mtp_unsized = bool(_flat_mtp_engages and mtp_overhead_fn is None),
+                        compute_buffer_flat = _compute_buffer_pipeline,
+                        compute_buffer_ctx = _cc_bytes(effective_ctx, _fit_devices),
+                        soft_overhead = _soft_overhead,
+                        gpus = gpus,
+                        gpu_indices = gpu_indices,
+                        shared_gpu_ids = _shared_gpu_ids,
+                        is_vulkan_backend = is_vulkan_backend,
+                    )
                 except Exception as e:
                     logger.warning(f"GPU selection failed ({e}), using --fit on")
                     gpu_indices, use_fit = None, True
@@ -19105,6 +19188,12 @@ class LlamaCppBackend:
                     weights_in_host_memory = _mem_host_resident,
                     requested_load_mode = _resolved_load_mode,
                 )
+                # Only when the FIT chose it. A user's own pick is theirs and
+                # survives every fallback below; this one is a conclusion about a
+                # placement, and has to go when that placement does.
+                self._fit_load_mode_flags = (
+                    list(_load_mode_managed) if (_fit_load_mode and not load_mode) else []
+                )
                 # Remembered so the reload hint and the duplicate-load comparator do
                 # not demand an mlock this launch deliberately skipped.
                 self._memory_mlock_applicable = _mem_host_resident
@@ -19773,6 +19862,21 @@ class LlamaCppBackend:
                             _run = list(run_cmd)
                             if "--fit" in _run:
                                 _run[_run.index("--fit") + 1] = "on"
+                            # Same reasoning as the page-lock below, one step
+                            # earlier: the fit picked "none" BECAUSE it had
+                            # proved the load fits, and that proof is what just
+                            # failed. Handing the retry a loader that cannot page
+                            # is the opposite of what an offloading retry needs,
+                            # so give it back llama.cpp's auto. Only Unsloth's own
+                            # tokens; a user's --load-mode is untouched.
+                            if self._fit_load_mode_flags:
+                                _run = _without_subsequence(_run, self._fit_load_mode_flags)
+                                self._fit_load_mode_flags = []
+                                logger.info(
+                                    "Load mode: dropping the fit's --load-mode none "
+                                    "for the --fit on retry; the fit it was derived "
+                                    "from did not hold."
+                                )
                             # The full-offload prediction that suppressed the
                             # page-lock was the very thing that just proved
                             # wrong, so llama.cpp may now leave weights in host
