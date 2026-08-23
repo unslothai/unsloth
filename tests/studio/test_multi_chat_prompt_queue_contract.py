@@ -912,3 +912,53 @@ def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
     ):
         assert call in autosave, f"{call} must still run while backgrounded"
         assert autosave.index(call) < guard_at, f"{call} must not sit behind the visibility guard"
+
+
+def test_the_history_adapters_publish_stands_down_with_the_autosaves():
+    """``ThreadBackendAutosave`` is not the only place a pane names itself the active thread.
+
+    The history adapter's ``append()`` publishes the same id, on the same store, for every
+    persisted message -- including the assistant message of the background run the shared
+    provider (#9129) exists to keep alive. ``enterCompare`` blanks the active id on the way
+    in, so the ``!== remoteId`` test is satisfied and a hidden pane republishes itself,
+    reaching the same ``exportThreadIds = [model1, model2, activeThreadId]`` the autosave
+    guard was added for.
+
+    Both publications must stand down together, or gating one is decorative.
+    """
+    append = _between(
+        RUNTIME_PROVIDER,
+        "      append({ parentId, message }: ExportedMessageRepositoryItem) {",
+        "\n  // Always register the adapter so the mic stays clickable",
+    )
+
+    assert "store.setActiveThreadId(remoteId);" in append, (
+        "this test is about the history adapter's publication; if it moved, follow it"
+    )
+    assert 'if (modelType === "base" && !pairId && !backgroundedRef?.current) {' in append, (
+        "the history adapter's publication needs the same visibility gate as the autosave's"
+    )
+
+    # Read at publish time, through a ref, for the same reason the autosave does: the write
+    # is queued when the message arrives and resolves after Compare may have hidden the pane.
+    assert "const backgroundedRef = useRef(backgrounded);" in RUNTIME_PROVIDER
+    assert "backgroundedRef.current = backgrounded;" in RUNTIME_PROVIDER
+
+    # ...and the ref has to actually reach it. A ref rather than the boolean, so handing it
+    # down cannot change the memoized runtime hook's identity and rebuild the runtime.
+    hook_build = _between(
+        RUNTIME_PROVIDER,
+        "  const runtimeHook = useMemo(",
+        "  const runtime = useRemoteThreadListRuntime({",
+    )
+    assert "backgroundedRef," in hook_build, "createRuntimeHook has to be handed the ref"
+    assert "[initialThreadId, modelType, onInitialHistoryReady, pairId]," in hook_build, (
+        "and the ref must NOT join the dependency array: a new hook identity rebuilds the "
+        "runtime, which is the one thing the shared provider must never do"
+    )
+
+    # The write itself is untouched. Only the publication is gated.
+    assert "await awaitStoredChatThreadWrites(remoteId);" in append
+    assert append.index("await awaitStoredChatThreadWrites(remoteId);") < append.index(
+        "!backgroundedRef?.current"
+    ), "persisting a background run's message must not sit behind the visibility guard"

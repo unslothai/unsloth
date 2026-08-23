@@ -187,6 +187,8 @@ export const world: any = {
   // user has actually sent to it; a blank placeholder is not, and minting a fresh one is
   // the older behaviour that must survive.
   remoteIds: {} as Record<string, string>,
+  // Threads the runtime store no longer holds an entry for, so getItemById throws.
+  missingThreadIds: {} as Record<string, boolean>,
   // Which component's effects are replaying right now, so a module-level call can be
   // attributed to a caller. Set by the emulator, never read by the sliced source.
   component: "none",
@@ -278,9 +280,16 @@ const auiFixture: any = {
   threads: () => ({
     __internal_getAssistantRuntime: () => ({
       threads: {
-        getItemById: (id: string) => ({
-          getState: () => ({ remoteId: world.remoteIds[id] }),
-        }),
+        // Throws for an unknown id rather than returning undefined, as assistant-ui does:
+        // getThreadListItemState returns SKIP_UPDATE and ShallowMemoizeSubject's constructor
+        // turns that into "Entry not available in the store". A fixture that returned
+        // undefined would quietly excuse a caller that cannot survive the real one.
+        getItemById: (id: string) => {
+          if (world.missingThreadIds[id]) {
+            throw new Error("Entry not available in the store");
+          }
+          return { getState: () => ({ remoteId: world.remoteIds[id] }) };
+        },
       },
     }),
     // Both outcomes go through the gate, so a failure can be held open as long as a
@@ -368,17 +377,29 @@ __PENDING_SWITCH_CAP__
 
 const newThreadSwitchStateRef: any = { current: __REF_INITIAL_VALUE__ };
 
-// The four fields the exact-state assertions below were written to lock. `nonceThreadId`
-// is deliberately NOT among them: it is bookkeeping for the reattach correction, its value
-// is whatever thread a given test happens to be on, and folding it into twenty unrelated
-// pins would add churn rather than coverage. It has its own accessor, and its own tests.
+// The four fields the exact-state assertions below were written to lock. `nonceThread` and
+// `landedAttempt` are deliberately NOT among them: both are bookkeeping for the reattach
+// correction, their values are whatever thread and attempt a given test happens to be on,
+// and folding them into twenty unrelated pins would add churn rather than coverage. Each
+// has its own accessor, and its own tests.
 export function switchState(): any {
-  const { nonceThread: _ignored, ...pinned } = newThreadSwitchStateRef.current;
+  const {
+    nonceThread: _ignored,
+    landedAttempt: _alsoIgnored,
+    ...pinned
+  } = newThreadSwitchStateRef.current;
   return pinned;
 }
 
 export function nonceThreadId(): any {
   return newThreadSwitchStateRef.current.nonceThread?.threadId ?? null;
+}
+
+// Whether the nonce's own switch has landed, which is what makes the current main thread
+// its own rather than the one the user came from.
+export function nonceOwnershipIsSettled(): boolean {
+  const { landedAttempt, attempt } = newThreadSwitchStateRef.current;
+  return landedAttempt === attempt;
 }
 
 const providerMemo: any[] = [];
@@ -2415,5 +2436,187 @@ def test_a_reopen_that_lands_after_the_nonce_rotated_does_not_take_the_view():
     assert out["mainThreadId"] != out["started"], (
         "a reopen that lost the race to a rotated nonce must not leave the overview on the "
         "old conversation"
+    )
+    assert out["unhandled"] == 0
+
+
+def test_a_nonce_does_not_adopt_the_chat_the_user_came_from():
+    """Ownership is only recorded from a thread the nonce's OWN switch opened.
+
+    Entering New Chat from a saved chat leaves that saved chat as ``mainThreadId`` until
+    switchToNewThread() resolves, and its claim was already retired while it was on screen,
+    so it is unclaimed too. Treating "unclaimed and current" as ownership recorded the chat
+    the user had just LEFT: a detour before the fresh switch settled kept that record, and
+    coming back to the same ?new= URL reopened it, so the next prompt appended to the wrong
+    conversation.
+    """
+    out = _run(
+        "renderProvider, renderSettled, nonceThreadId, nonceOwnershipIsSettled, world",
+        """
+        // A saved chat that has been sent to, so it has a row worth reopening.
+        world.remoteIds["thread-a"] = "remote-a";
+        await renderSettled({ initialThreadId: "thread-a" });
+
+        // New Chat, with its switch held open: the view is still on thread-a.
+        let releaseNew: any;
+        world.newThreadGate = new Promise((resolve) => { releaseNew = resolve; });
+        renderProvider({ newThreadNonce: "n1" });
+        await tick();
+        const ownedWhilePending = nonceThreadId();
+        const settledWhilePending = nonceOwnershipIsSettled();
+
+        // The user leaves for another saved chat before the fresh switch lands.
+        world.newThreadGate = null;
+        releaseNew();
+        await renderSettled({ initialThreadId: "thread-b" });
+
+        // Back to the same ?new= URL.
+        await renderSettled({ newThreadNonce: "n1" });
+
+        console.log(JSON.stringify({
+          ownedWhilePending,
+          settledWhilePending,
+          mainThreadId: world.mainThreadId,
+          unhandled: unhandled.length,
+        }));
+        """,
+    )
+    assert out["settledWhilePending"] is False, (
+        "the nonce's own switch has not landed yet, so nothing it sees is its own"
+    )
+    assert out["ownedWhilePending"] is None, (
+        "the outgoing saved chat must not be recorded as the nonce's own thread"
+    )
+    assert out["mainThreadId"] != "thread-a", (
+        "returning to the nonce must not reopen the chat the user left, or their next "
+        "message appends to it"
+    )
+    assert out["unhandled"] == 0
+
+
+def test_a_nonce_still_owns_the_thread_its_own_switch_opened():
+    """The other half: once the nonce's switch HAS landed, the thread it opened is its own,
+    including after materialization renames it. Without this the reopen never arms and
+    ``test_returning_to_a_nonce_reopens_the_chat_started_under_it`` is the regression."""
+    out = _run(
+        "renderSettled, nonceThreadId, nonceOwnershipIsSettled, world",
+        """
+        world.remoteIds["thread-a"] = "remote-a";
+        await renderSettled({ initialThreadId: "thread-a" });
+
+        // New Chat, allowed to land this time.
+        await renderSettled({ newThreadNonce: "n1" });
+        const opened = world.mainThreadId;
+        const ownedAfterLanding = nonceThreadId();
+        const settledAfterLanding = nonceOwnershipIsSettled();
+
+        // The user sends: the thread materializes and gets a row.
+        world.remoteIds[opened] = "remote-1";
+        await renderSettled({ newThreadNonce: "n1" });
+
+        // Detour and back: the reopen must find it.
+        await renderSettled({ initialThreadId: "thread-b" });
+        const mintedBefore = world.switchedToNewThread;
+        await renderSettled({ newThreadNonce: "n1" });
+
+        console.log(JSON.stringify({
+          opened,
+          ownedAfterLanding,
+          settledAfterLanding,
+          mainThreadId: world.mainThreadId,
+          mintedOnReturn: world.switchedToNewThread - mintedBefore,
+          unhandled: unhandled.length,
+        }));
+        """,
+    )
+    assert out["settledAfterLanding"] is True
+    assert out["ownedAfterLanding"] == out["opened"], (
+        "the thread this nonce's own switch opened is the one it owns"
+    )
+    assert out["mainThreadId"] == out["opened"], "and coming back must reopen it"
+    assert out["mintedOnReturn"] == 0, "without minting another blank thread to do it"
+    assert out["unhandled"] == 0
+
+
+def test_a_superseded_landing_does_not_hand_ownership_to_a_newer_attempt():
+    """A switch that lands after a newer one started must not mark the newer attempt as
+    settled: the newer switch is still in flight, and its view is still on whatever the
+    older one left behind."""
+    out = _run(
+        "renderProvider, renderSettled, nonceOwnershipIsSettled, world",
+        """
+        world.remoteIds["thread-a"] = "remote-a";
+        await renderSettled({ initialThreadId: "thread-a" });
+
+        // First New Chat, held on its own gate.
+        let releaseFirst: any;
+        world.newThreadGate = new Promise((resolve) => { releaseFirst = resolve; });
+        renderProvider({ newThreadNonce: "n1" });
+        await tick();
+
+        // A second nonce supersedes it, held on a gate of its own so it stays in flight.
+        world.newThreadGate = new Promise(() => {});
+        renderProvider({ newThreadNonce: "n2" });
+        await tick();
+
+        // Only now does the FIRST switch land.
+        releaseFirst();
+        await tick();
+        await tick();
+
+        console.log(JSON.stringify({
+          settled: nonceOwnershipIsSettled(),
+          unhandled: unhandled.length,
+        }));
+        """,
+    )
+    assert out["settled"] is False, (
+        "an older switch landing says nothing about the attempt that replaced it"
+    )
+    assert out["unhandled"] == 0
+
+
+def test_a_remembered_thread_the_store_has_dropped_does_not_take_the_app_down():
+    """``nonceThread`` is a REMEMBERED id, in a ref that outlives every view switch now, and
+    the reopen looks it up with ``getItemById``. That call does not return undefined for an
+    unknown id -- assistant-ui throws "Entry not available in the store" out of
+    ``ShallowMemoizeSubject``'s constructor -- so the optional chain around it catches
+    nothing, and an effect that throws with no error boundary above it blanks the app.
+
+    Studio deletes chats through storage and tombstones rather than ``runtime.threads.delete()``,
+    so nothing evicts an entry today. The reopen must not be the thing that depends on that.
+    """
+    out = _run(
+        "renderSettled, world",
+        """
+        // Open a nonce chat and send to it, so it is remembered as the nonce's own.
+        await renderSettled({ newThreadNonce: "n1" });
+        const opened = world.mainThreadId;
+        world.remoteIds[opened] = "remote-1";
+        await renderSettled({ newThreadNonce: "n1" });
+
+        // Away and back, but the runtime has since dropped the entry.
+        await renderSettled({ initialThreadId: "thread-a" });
+        world.missingThreadIds[opened] = true;
+
+        let threw: any = null;
+        try {
+          await renderSettled({ newThreadNonce: "n1" });
+        } catch (error: any) {
+          threw = String(error?.message ?? error);
+        }
+
+        console.log(JSON.stringify({
+          threw,
+          mainThreadId: world.mainThreadId,
+          unhandled: unhandled.length,
+        }));
+        """,
+    )
+    assert out["threw"] is None, (
+        f"the reopen threw out of the effect: {out['threw']}"
+    )
+    assert out["mainThreadId"] != "thread-a", (
+        "and it still has to leave the saved chat it came from"
     )
     assert out["unhandled"] == 0

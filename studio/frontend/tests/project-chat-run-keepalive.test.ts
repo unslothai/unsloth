@@ -194,7 +194,7 @@ test("a staged attachment does not follow the user into the next view", () => {
   );
   assert.match(
     runtimeProvider,
-    /const newThreadSwitchStateRef = useRef<NewThreadSwitchState>\(\{\s*activeNonce: null,\s*hasSwitched: false,\s*attempt: 0,\s*pendingSavedThreadIds: \[\],\s*nonceThread: null,\s*\}\);/,
+    /const newThreadSwitchStateRef = useRef<NewThreadSwitchState>\(\{\s*activeNonce: null,\s*hasSwitched: false,\s*attempt: 0,\s*pendingSavedThreadIds: \[\],\s*nonceThread: null,\s*landedAttempt: 0,\s*\}\);/,
   );
   assert.match(
     runtimeProvider,
@@ -235,5 +235,56 @@ test("the outgoing thread id is captured before the provider blanks it", () => {
     page.includes("initialActiveThreadRef"),
     false,
     "no effect-assigned ref left behind",
+  );
+});
+
+test("a nonce only owns a thread its own switch opened", () => {
+  const switchSource = componentSource(provider, "function ThreadNewChatSwitch(");
+  // The record is the thing the reopen runs on. Taking it from whatever thread happens to
+  // be current recorded the chat the user came FROM, because that chat's own claim was
+  // retired while it was on screen and an unclaimed current thread looks like an arrival.
+  assert.match(
+    switchSource,
+    /if \(mainThreadId && switchState\.landedAttempt === switchState\.attempt\) \{\s*switchState\.nonceThread = \{ nonce, threadId: mainThreadId \};/,
+  );
+  // ...and the only thing that sets landedAttempt is that attempt's own switch resolving.
+  assert.match(
+    switchSource,
+    /if \(switchStateNow\.attempt === attempt\) \{\s*switchStateNow\.landedAttempt = attempt;/,
+  );
+});
+
+test("the remembered thread is looked up defensively", () => {
+  const switchSource = componentSource(provider, "function ThreadNewChatSwitch(");
+  // getItemById throws for an id the store has dropped rather than returning undefined, so
+  // the optional chain is not the guard it looks like, and an effect that throws with no
+  // error boundary above it takes the app down. The id here is remembered across every view
+  // switch, which is exactly the kind that can go stale.
+  assert.match(
+    switchSource,
+    /try \{\s*recordedRemoteId = runtimeThreads\?\.threads\s*\.getItemById\(recorded\)\s*\.getState\(\)\?\.remoteId;\s*\} catch \{/,
+  );
+});
+
+test("every active-thread publication stands down while backgrounded", () => {
+  // ThreadBackendAutosave's publication is gated, and so is the history adapter's sibling
+  // inside append() -- which is the one a background run reaches when its assistant message
+  // is persisted during compare. Ungated, a hidden pane names itself active and compare's
+  // exportThreadIds ([model1, model2, activeThreadId]) picks up the unrelated base chat.
+  const publications = provider.match(/setActiveThreadId\(/g) ?? [];
+  assert.ok(publications.length >= 6, "expected the publications to still be here");
+  assert.match(
+    provider,
+    /if \(modelType === "base" && !pairId && !backgroundedRef\?\.current\) \{[\s\S]*?store\.setActiveThreadId\(remoteId\);/,
+  );
+  assert.match(
+    provider,
+    /if \(modelType === "base" && !pairId && !backgroundedRef\.current\) \{[\s\S]*?store\.setActiveThreadId\(remoteId\);/,
+  );
+  // The ref reaches the adapter without joining the memo's dependencies: a new runtime-hook
+  // identity would rebuild the runtime, and not rebuilding it is the whole point.
+  assert.match(
+    provider,
+    /createRuntimeHook\(\s*modelType,\s*pairId,\s*initialThreadId,\s*onInitialHistoryReady,\s*backgroundedRef,\s*\),\s*\[initialThreadId, modelType, onInitialHistoryReady, pairId\],/,
   );
 });

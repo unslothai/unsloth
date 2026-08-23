@@ -1138,6 +1138,9 @@ function useStudioRuntimeAdapters(
   pairId?: string,
   reloadReadyThreadId?: string,
   onInitialHistoryReady?: () => void,
+  // A ref, so handing it down never changes the memoized runtime hook's identity: a new
+  // hook identity would rebuild the runtime, which is the one thing this PR must not do.
+  backgroundedRef?: { current: boolean },
 ): StudioRuntimeAdapters {
   const aui = useAui();
 
@@ -1482,7 +1485,16 @@ function useStudioRuntimeAdapters(
           }
           // published before the reads below: a temporary chat has no row to confirm, and a read
           // that fails must not leave the runtime pointing at the previously open chat
-          if (modelType === "base" && !pairId) {
+          //
+          // ...but not while this pane is only mounted to keep its run attached. This is the
+          // sibling of ThreadBackendAutosave's publication and needs the same gate for the same
+          // reason: a hidden pane naming itself active reaches Compare's exportThreadIds
+          // ([model1, model2, activeThreadId]), so Export would pull the unrelated base chat.
+          // Reachable precisely because of this PR -- the background run whose assistant message
+          // lands here is the one the shared provider keeps alive, and enterCompare blanked the
+          // active id, so the guard below would otherwise be satisfied. Read through a ref, at
+          // publish time: the write may have been queued while the pane was still on screen.
+          if (modelType === "base" && !pairId && !backgroundedRef?.current) {
             const store = useChatRuntimeStore.getState();
             const visibleThreadId = aui.threads().getState().mainThreadId;
             if (
@@ -1552,6 +1564,7 @@ function useStudioRuntimeAdapters(
     }),
     [
       aui,
+      backgroundedRef,
       modelType,
       onInitialHistoryReady,
       pairId,
@@ -1608,12 +1621,14 @@ function useRuntimeHook(
   pairId?: string,
   reloadReadyThreadId?: string,
   onInitialHistoryReady?: () => void,
+  backgroundedRef?: { current: boolean },
 ): ReturnType<typeof useLocalRuntime> {
   const adapters = useStudioRuntimeAdapters(
     modelType,
     pairId,
     reloadReadyThreadId,
     onInitialHistoryReady,
+    backgroundedRef,
   );
   const persistedChatAdapter = useMemo(
     () =>
@@ -1630,6 +1645,7 @@ function createRuntimeHook(
   pairId?: string,
   reloadReadyThreadId?: string,
   onInitialHistoryReady?: () => void,
+  backgroundedRef?: { current: boolean },
 ) {
   return function useConfiguredRuntimeHook(): ReturnType<
     typeof useLocalRuntime
@@ -1639,6 +1655,7 @@ function createRuntimeHook(
       pairId,
       reloadReadyThreadId,
       onInitialHistoryReady,
+      backgroundedRef,
     );
   };
 }
@@ -1667,6 +1684,13 @@ type NewThreadSwitchState = {
   // URL survives materialization, so Back returns to the same nonce; the pair is what tells
   // a returning nonce from a new one.
   nonceThread: { nonce: string; threadId: string } | null;
+  // The newest attempt whose own switch has LANDED. Ownership is only recorded from a main
+  // thread this nonce's switch actually opened. Entering a nonce from a saved chat leaves
+  // that chat as `mainThreadId` until switchToNewThread() resolves, and its claim was
+  // already retired while it was on screen -- so "unclaimed and current" is not proof of
+  // ownership, and recording it there let a later return to the nonce reopen the chat the
+  // user had LEFT, appending their next prompt to the wrong conversation.
+  landedAttempt: number;
 };
 
 function ThreadAutoSwitch({
@@ -1817,9 +1841,25 @@ function ThreadNewChatSwitch({
         ? switchState.nonceThread.threadId
         : null;
     const runtimeThreads = aui.threads().__internal_getAssistantRuntime?.();
-    const recordedRemoteId = recorded
-      ? runtimeThreads?.threads.getItemById(recorded).getState()?.remoteId
-      : undefined;
+    // Guarded, unlike the reads elsewhere in this file that pass an id the runtime just
+    // handed back: this one is REMEMBERED, in a ref that now outlives every view switch.
+    // getItemById() does not return undefined for an id the store has dropped -- it throws
+    // "Entry not available in the store" from ShallowMemoizeSubject's constructor, so the
+    // optional chain below would not catch it, and an effect that throws with no error
+    // boundary above it takes the app down. Not reachable today, since Studio deletes chats
+    // through storage and tombstones rather than runtime.threads.delete(); the point is that
+    // a remembered id must not depend on that staying true.
+    let recordedRemoteId: string | undefined;
+    if (recorded) {
+      try {
+        recordedRemoteId = runtimeThreads?.threads
+          .getItemById(recorded)
+          .getState()?.remoteId;
+      } catch {
+        // The thread this nonce remembers is gone; treat it as a nonce that owns nothing.
+        recordedRemoteId = undefined;
+      }
+    }
     const returningToOwnChat = Boolean(recorded && recordedRemoteId);
     if (!returningToOwnChat) {
       // A new nonce owns nothing yet; the old record must not survive into it.
@@ -1887,6 +1927,15 @@ function ThreadNewChatSwitch({
     ).then(
       () => {
         settleReopenClaim();
+        // This attempt's own switch has landed, so the main thread from here on is one it
+        // opened. Only for the CURRENT attempt: a superseded switch landing late says
+        // nothing about the thread a newer one is on.
+        {
+          const switchStateNow = newThreadSwitchStateRef.current;
+          if (switchStateNow.attempt === attempt) {
+            switchStateNow.landedAttempt = attempt;
+          }
+        }
         if (!clearAfterSwitch) return;
         const switchStateNow = newThreadSwitchStateRef.current;
         // By attempt as well as nonce, matching the rejection arm. A saved-thread detour
@@ -1944,7 +1993,9 @@ function ThreadNewChatSwitch({
     if (claimed === -1) {
       // Not a stale arrival, so this is the thread this view owns. Recorded here, not at
       // the switch: the id changes on materialization and a reattach needs the persisted one.
-      if (mainThreadId) {
+      // Only once this nonce's own switch has landed, though -- until then `mainThreadId` is
+      // still the chat the user came FROM.
+      if (mainThreadId && switchState.landedAttempt === switchState.attempt) {
         switchState.nonceThread = { nonce, threadId: mainThreadId };
       }
       return;
@@ -2541,6 +2592,12 @@ export function ChatRuntimeProvider({
   backgrounded?: boolean;
   onInitialHistoryReady?: () => void;
 }): ReactElement {
+  // Read by the history adapter's own active-thread publication, which is the sibling of
+  // ThreadBackendAutosave's and needs the same stand-down. Kept in a ref so the memo below
+  // never sees it change: rebuilding the runtime hook would rebuild the runtime, and the
+  // whole point of the shared provider is that it does not.
+  const backgroundedRef = useRef(backgrounded);
+  backgroundedRef.current = backgrounded;
   const runtimeHook = useMemo(
     () =>
       createRuntimeHook(
@@ -2548,6 +2605,7 @@ export function ChatRuntimeProvider({
         pairId,
         initialThreadId,
         onInitialHistoryReady,
+        backgroundedRef,
       ),
     [initialThreadId, modelType, onInitialHistoryReady, pairId],
   );
@@ -2570,6 +2628,7 @@ export function ChatRuntimeProvider({
     attempt: 0,
     pendingSavedThreadIds: [],
     nonceThread: null,
+    landedAttempt: 0,
   });
   useEffect(() => {
     if (!initialThreadId && !newThreadNonce) {
