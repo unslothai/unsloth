@@ -134,6 +134,35 @@ def _blame_latest_turn(context_tokens: int):
     return role, not (window and latest_turn >= window)
 
 
+def _history_cannot_help(context_tokens: int) -> bool:
+    """True when the prompt is over the window with every evictable turn already gone.
+
+    `irreducible_tokens` is not "the prompt": it is what the fit measured AFTER dropping
+    every group `truncate_oldest_messages` is willing to drop, and a refusal is only ever
+    recorded once that evictor returned zero (the fit's loop exits on `dropped == 0`, and
+    any other exit means the prompt fits). So it prices the floor eviction cannot go
+    below: the template wrapper, the tool catalogue, every system/developer turn, the
+    latest user turn and the final group. Deleting ordinary history changes none of those,
+    which is why this number is invariant under the one action the generic advice asks for.
+
+    Against the WINDOW for the same reason `_blame_latest_turn` uses it: llama-server
+    admits a prompt on size alone ("n_tokens() >= n_ctx"), so at or over it the request is
+    refused no matter how short the conversation gets. Below it, shortening really can
+    work -- the fit refuses at `prompt_target` but passes the untrimmed messages on, and
+    llama-server serves anything under `n_ctx` -- so that case keeps the generic advice.
+    """
+    refusal = latest_refusal()
+    if not refusal:
+        return False
+    recorded_context = _int(refusal.get("context_length"))
+    if context_tokens and recorded_context and recorded_context != context_tokens:
+        # A different load or backend: it cannot describe this refusal.
+        return False
+    irreducible = _int(refusal.get("irreducible_tokens"))
+    window = recorded_context or context_tokens
+    return irreducible > 0 and window > 0 and irreducible >= window
+
+
 # Per role: what to call the turn when it merely dominates, what to call it when it does
 # not fit at all, and the lever worth offering. The lever is why this splits by role --
 # "send it in smaller pieces" is useless for turns the user did not type.
@@ -180,6 +209,20 @@ def describe_oversize(request_tokens: int, context_tokens: int) -> str:
     blamed = _blame_latest_turn(context_tokens)
     advice = _ROLE_ADVICE.get(blamed[0]) if blamed else None
     if advice is None:
+        if _history_cannot_help(context_tokens):
+            # No turn to name, and yet "shorten the conversation" is not merely vague
+            # here, it is an action that provably cannot work: what survives eviction is
+            # already at or over the window. Named levers rather than a role, because the
+            # bulk is spread across the parts eviction never touches, and the recorded
+            # fields cannot say which of them it is -- `shared_prompt_tokens` bundles the
+            # template wrapper with the catalogue, so a large one does not prove there
+            # are tools. Both levers are offered, and neither is claimed to be the cause.
+            return (
+                head + "Even with every earlier turn dropped, this prompt would still be "
+                "too long, so shortening the conversation will not help. Increase the "
+                "Context Length in Model settings, or reduce what every request carries: "
+                "the system prompt and any tools that are enabled."
+            )
         return (
             head + "Try increasing the Context Length in Model settings, or shorten the "
             "conversation."

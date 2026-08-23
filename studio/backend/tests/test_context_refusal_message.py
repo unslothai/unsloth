@@ -128,10 +128,20 @@ def test_a_dominating_assistant_prefill_hedges_the_same_way():
 
 
 @pytest.mark.parametrize("role", ["", "moderator"])
-def test_an_unnameable_role_falls_back_to_the_generic_advice(role):
+def test_an_unnameable_role_is_never_blamed(role):
     # Unspecific advice beats advice aimed at the wrong turn.
     context_refusal.record_fit(_refusal(irreducible = 5600, latest_turn = 5400, role = role))
-    assert "shorten the conversation" in _friendly_error(ValueError(_SERVER_ERROR))
+    message = _friendly_error(ValueError(_SERVER_ERROR))
+    for named in (
+        "the message just sent",
+        "a single tool result",
+        "the reply being continued",
+        "the system instructions",
+    ):
+        assert named not in message
+    # Still says what IS known: this floor is over the window, so no shorter conversation
+    # reaches the server either.
+    assert "Even with every earlier turn dropped" in message
 
 
 def test_every_wording_keeps_the_counts_and_the_client_markers():
@@ -160,8 +170,10 @@ def test_every_wording_keeps_the_counts_and_the_client_markers():
 @pytest.mark.parametrize(
     "latest_turn,expected",
     [
-        # Below two thirds, the rest of the prompt is a real share of the problem.
-        (3379, "shorten the conversation"),
+        # Below two thirds, the rest of the prompt is a real share of the problem, so no
+        # turn is named. This floor stands at the window, hence the fixed-overhead
+        # wording rather than the generic one.
+        (3379, "Even with every earlier turn dropped"),
         # Over that share but inside the window: the bulk of the prompt, yet servable by
         # itself. Note 4097, over the 4096 PROMPT BUDGET the fit (not the server) refuses.
         (3380, "Most of this prompt is the message just sent"),
@@ -277,10 +289,16 @@ def _refuse_and_explain(
     system_tokens: int,
     turn_tokens: int,
     role: str = "user",
+    history_turns: int = 6,
 ):
     """Drive the real path: fit -> recorded diagnosis -> the message the user reads."""
     _, truncation = fit_rolling_context(
-        _thread(system_tokens = system_tokens, turn_tokens = turn_tokens, role = role),
+        _thread(
+            system_tokens = system_tokens,
+            turn_tokens = turn_tokens,
+            role = role,
+            history_turns = history_turns,
+        ),
         context_length = window,
         max_tokens = None,
         count_tokens = _tool_catalogue_counter(catalogue),
@@ -319,7 +337,74 @@ def test_a_catalogue_bigger_than_the_window_never_makes_a_tiny_turn_unsendable()
     )
     assert truncation["latest_turn_tokens"] > truncation["context_length"]
     assert "does not fit on its own" not in message
+    assert "message just sent" not in message
+    # And a catalogue over the window puts the FLOOR over it too, so the honest advice is
+    # the fixed-overhead one, not a shorter conversation.
+    assert truncation["irreducible_tokens"] >= truncation["context_length"]
+    assert "shortening the conversation will not help" in message
+
+
+def _servable_without_history(*, window: int, catalogue: int, system_tokens: int) -> bool:
+    """Would the same request go through with the conversation shortened to nothing?
+
+    The one claim the generic advice makes. A refused fit hands the ORIGINAL messages on
+    (dropping turns off a doomed request loses them for nothing), and llama-server admits
+    a prompt on size alone, so "served" is the untrimmed prompt landing under `n_ctx`.
+    """
+    messages = _thread(system_tokens = system_tokens, turn_tokens = 20, history_turns = 0)
+    count = _tool_catalogue_counter(catalogue)
+    sent, _ = fit_rolling_context(
+        messages, context_length = window, max_tokens = None, count_tokens = count
+    )
+    return count(sent) < window
+
+
+def test_a_two_message_thread_is_never_told_to_shorten_the_conversation():
+    """The case this module exists for, on the branch that names no turn.
+
+    A system prompt over the window with a twenty-token "hi" after it: eviction has
+    nothing to take (the primitive protects system turns and the newest user turn), so
+    the floor IS the prompt. "Shorten the conversation" names an action that cannot
+    work, and measurably does not: with the history at zero the request is still refused.
+    """
+    truncation, message = _refuse_and_explain(
+        window = 4096, catalogue = 0, system_tokens = 5000, turn_tokens = 20, history_turns = 0
+    )
+    assert truncation["irreducible_tokens"] >= truncation["context_length"]
+    assert not _servable_without_history(window = 4096, catalogue = 0, system_tokens = 5000)
+    assert "Even with every earlier turn dropped" in message
+    assert "shortening the conversation will not help" in message
+    assert "the system prompt and any tools that are enabled" in message
+    # Never the advice llama-server itself gives, which is the whole point of the rewrite.
+    assert "or shorten the conversation" not in message
+
+
+def test_a_floor_under_the_window_keeps_the_advice_that_still_works():
+    """The other side of the same line, and why it is drawn at the window.
+
+    A catalogue that fits leaves room the conversation is standing in: the fit refuses at
+    `prompt_target`, but the untrimmed prompt is served whenever it lands under `n_ctx`,
+    so trimming history really does clear this one. Advising against it would be the new
+    false claim.
+    """
+    truncation, message = _refuse_and_explain(
+        window = 8192, catalogue = 6000, system_tokens = 200, turn_tokens = 20
+    )
+    assert truncation["irreducible_tokens"] < truncation["context_length"]
+    assert _servable_without_history(window = 8192, catalogue = 6000, system_tokens = 200)
     assert "shorten the conversation" in message
+    assert "will not help" not in message
+
+
+def test_a_diagnosis_for_a_different_window_claims_nothing_about_the_floor():
+    # A reload between the fit and the error: that floor was measured elsewhere, so the
+    # "cannot be shortened" claim has no evidence behind it either.
+    context_refusal.record_fit(
+        _refusal(irreducible = 9000, latest_turn = 300, context_length = 8192)
+    )
+    message = _friendly_error(ValueError(_SERVER_ERROR))
+    assert "shorten the conversation" in message
+    assert "Even with every earlier turn dropped" not in message
 
 
 @pytest.mark.parametrize(
@@ -355,7 +440,7 @@ def test_the_floor_is_never_all_of_either_count():
     context_refusal.record_fit(
         _refusal(irreducible = 5120, latest_turn = 5000) | {"shared_prompt_tokens": 99999}
     )
-    assert "shorten the conversation" in _friendly_error(ValueError(_SERVER_ERROR))
+    assert "Most of this prompt is" not in _friendly_error(ValueError(_SERVER_ERROR))
     for bad in (None, "", -5, "junk"):
         context_refusal.record_fit(
             _refusal(irreducible = 5120, latest_turn = 3500) | {"shared_prompt_tokens": bad}
