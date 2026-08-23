@@ -542,9 +542,9 @@ def test_the_provider_wires_the_pause_and_the_shared_ref():
         "page rather than this provider's, so an unpaused one stops a queue the view on "
         "screen owns"
     )
-    assert "syncActiveThreadId={syncActiveThreadId && !backgrounded}" in jsx, (
-        "a backgrounded provider must not write the active thread the visible view owns"
-    )
+    assert (
+        "syncActiveThreadId={syncActiveThreadId && !backgrounded}" in jsx
+    ), "a backgrounded provider must not write the active thread the visible view owns"
 
 
 def test_the_harness_stubs_every_name_the_queue_boundary_imports():
@@ -642,9 +642,11 @@ def test_a_nonce_rotation_while_visible_switches_and_clears_at_once():
         }));
         """,
     )
-    assert out["midSwitch"] == {"switched": 2, "cleared": 1, "pending": 1}, (
-        "with a live composer the clear is immediate, not deferred behind the switch"
-    )
+    assert out["midSwitch"] == {
+        "switched": 2,
+        "cleared": 1,
+        "pending": 1,
+    }, "with a live composer the clear is immediate, not deferred behind the switch"
     assert out["switched"] == 2
     assert out["cleared"] == 1, "one rotation must clear once, not once per render"
     assert out["stops"] == 2
@@ -732,9 +734,9 @@ def test_a_paused_new_chat_does_not_touch_the_visible_views_thread():
     )
     assert out["switched"] == 0
     assert out["stops"] == 0
-    assert out["activeThreadId"] == "thread-on-screen", (
-        "a paused switch must not blank the active thread the visible view is using"
-    )
+    assert (
+        out["activeThreadId"] == "thread-on-screen"
+    ), "a paused switch must not blank the active thread the visible view is using"
 
 
 def test_a_paused_new_chat_does_not_price_the_shared_context_bar():
@@ -757,9 +759,9 @@ def test_a_paused_new_chat_does_not_price_the_shared_context_bar():
         }}));
         """,
     )
-    assert out["paused"]["refreshes"] == 0, (
-        "a paused view must not price a prompt onto the bar the visible view owns"
-    )
+    assert (
+        out["paused"]["refreshes"] == 0
+    ), "a paused view must not price a prompt onto the bar the visible view owns"
     assert out["paused"]["switched"] == 0
     assert out["refreshes"] == 1, "releasing the pause must price the empty prompt once"
     assert out["switched"] == 1
@@ -936,9 +938,9 @@ def test_new_chat_then_a_saved_thread_then_new_chat_clears_the_staged_attachment
         }));
         """,
     )
-    assert out["midSwitch"]["cleared"] == 0, (
-        "after a saved thread the clear is the deferred one: activeNonce was reset to null"
-    )
+    assert (
+        out["midSwitch"]["cleared"] == 0
+    ), "after a saved thread the clear is the deferred one: activeNonce was reset to null"
     assert out["cleared"] == 1, "the reused new-thread composer must lose its attachment"
     assert out["switched"] == 2
 
@@ -971,9 +973,11 @@ def test_a_saved_thread_that_is_already_the_main_one_still_releases_the_nonce():
     )
     assert out["opened"]["switchedTo"] == [], "a thread already open must not be re-opened"
     assert out["opened"]["stops"] == 0, "nor stop a queue on a switch that did not happen"
-    assert out["opened"]["state"] == {"activeNonce": None, "hasSwitched": True, "attempt": 1}, (
-        "the nonce reset must not sit behind the mainThreadId guard"
-    )
+    assert out["opened"]["state"] == {
+        "activeNonce": None,
+        "hasSwitched": True,
+        "attempt": 1,
+    }, "the nonce reset must not sit behind the mainThreadId guard"
     assert out["switched"] == 2, "the returning New Chat must still open a fresh thread"
     assert out["cleared"] == 1
 
@@ -1018,12 +1022,13 @@ def test_a_deferred_clear_for_a_nonce_that_moved_on_is_dropped():
         }));
         """,
     )
-    assert out["beforeRelease"] == {"switched": 2, "cleared": 1}, (
-        "n2 takes the immediate path and clears before its own switch"
-    )
-    assert out["cleared"] == 1, (
-        "the stale deferred clear must not fire: n1's composer is two views behind"
-    )
+    assert out["beforeRelease"] == {
+        "switched": 2,
+        "cleared": 1,
+    }, "n2 takes the immediate path and clears before its own switch"
+    assert (
+        out["cleared"] == 1
+    ), "the stale deferred clear must not fire: n1's composer is two views behind"
     assert out["switched"] == 2
     assert out["state"] == {"activeNonce": "n2", "hasSwitched": True, "attempt": 2}
     assert out["pending"] == 0, "no switch callback may be left waiting"
@@ -1062,9 +1067,9 @@ def test_three_nonces_faster_than_the_switch_resolves_clear_once_each_at_most():
     )
     assert out["switched"] == 3, "every nonce owes exactly one thread"
     assert out["stops"] == 3
-    assert out["cleared"] == 2, (
-        "n2 and n3 clear immediately; n1's deferred clear is dropped as stale"
-    )
+    assert (
+        out["cleared"] == 2
+    ), "n2 and n3 clear immediately; n1's deferred clear is dropped as stale"
     assert out["beforeRelease"]["cleared"] == 2, "neither immediate clear waited for a switch"
     assert out["state"] == {"activeNonce": "n3", "hasSwitched": True, "attempt": 3}
     assert out["pending"] == 0
@@ -1118,9 +1123,11 @@ def test_a_rejected_switch_releases_the_nonce_so_the_same_one_can_be_retried():
     )
     state = out["afterReject"]
     assert state["switched"] == 2, "the switch was attempted"
-    assert state["state"] == {"activeNonce": None, "hasSwitched": True, "attempt": 2}, (
-        "a nonce whose switch failed must not stay recorded as the live one"
-    )
+    assert state["state"] == {
+        "activeNonce": None,
+        "hasSwitched": True,
+        "attempt": 2,
+    }, "a nonce whose switch failed must not stay recorded as the live one"
     assert state["activeThreadId"] is None
     assert state["mainThreadId"] == "local-1", "the user is still on the previous thread"
     assert state["cleared"] == 1, "the outgoing composer was already emptied"
@@ -1221,9 +1228,11 @@ def test_a_late_rejection_cannot_disturb_a_nonce_that_has_since_moved_on():
     )
     assert out["beforeFailure"]["state"] == {"activeNonce": "n2", "hasSwitched": True, "attempt": 2}
     assert out["beforeFailure"]["switched"] == 2
-    assert out["state"] == {"activeNonce": "n2", "hasSwitched": True, "attempt": 2}, (
-        "n1's late failure must not release the nonce n2 opened a thread for"
-    )
+    assert out["state"] == {
+        "activeNonce": "n2",
+        "hasSwitched": True,
+        "attempt": 2,
+    }, "n1's late failure must not release the nonce n2 opened a thread for"
     assert out["switched"] == 2, "and must not trigger a switch of its own"
     assert out["pending"] == 0
     assert out["unhandled"] == 0
@@ -1311,9 +1320,9 @@ def test_a_late_failure_cannot_release_a_nonce_a_newer_attempt_owns():
         "hasSwitched": True,
         "attempt": 2,
     }, "attempt 1's failure must not release a nonce attempt 2 owns"
-    assert out["afterFailure"]["mainThreadId"] == "local-2", (
-        "and must not disturb the thread attempt 2 opened"
-    )
+    assert (
+        out["afterFailure"]["mainThreadId"] == "local-2"
+    ), "and must not disturb the thread attempt 2 opened"
     assert out["afterFailure"]["switched"] == 2
     assert out["afterNextCommit"] == {
         "state": {"activeNonce": "n1", "hasSwitched": True, "attempt": 2},
@@ -1380,12 +1389,12 @@ def test_a_rejected_saved_thread_switch_blanks_the_bar_only_while_visible():
         }));
         """,
     )
-    assert out["backgroundedRun"]["switchedTo"] == [], (
-        "a backgrounded provider does not attempt the switch at all"
-    )
-    assert out["backgroundedRun"]["activeThreadId"] == "thread-on-screen", (
-        "so it cannot blank the visible view's thread, and its catch is gated as well"
-    )
+    assert (
+        out["backgroundedRun"]["switchedTo"] == []
+    ), "a backgrounded provider does not attempt the switch at all"
+    assert (
+        out["backgroundedRun"]["activeThreadId"] == "thread-on-screen"
+    ), "so it cannot blank the visible view's thread, and its catch is gated as well"
     assert out["activeThreadId"] is None, "the same failure while visible does blank it"
     assert out["unhandled"] == 0, "ThreadAutoSwitch catches its own rejection"
 
@@ -1455,9 +1464,9 @@ def test_a_backgrounded_saved_thread_switch_stops_nothing_and_pays_on_resume():
         "view's queue"
     )
     assert out["backgroundedRun"]["switchedTo"] == [], "nor switch a thread off screen"
-    assert out["backgroundedRun"]["activeThreadId"] is None, (
-        "and the second effect stays gated through syncActiveThreadId"
-    )
+    assert (
+        out["backgroundedRun"]["activeThreadId"] is None
+    ), "and the second effect stays gated through syncActiveThreadId"
     assert out["stops"] == 1, "the resume pays the stop the pause deferred, exactly once"
     event = out["events"][0]
     assert event["firedBy"] == "ThreadAutoSwitch"
@@ -1465,9 +1474,11 @@ def test_a_backgrounded_saved_thread_switch_stops_nothing_and_pays_on_resume():
     assert event["detail"]["threadIds"] == ["temp-chat"]
     assert out["switchedTo"] == ["thread-a"], "and the switch the pause deferred"
     assert out["activeThreadId"] == "thread-a"
-    assert out["state"] == {"activeNonce": None, "hasSwitched": False, "attempt": 0}, (
-        "the nonce reset is deferred with the rest of the effect"
-    )
+    assert out["state"] == {
+        "activeNonce": None,
+        "hasSwitched": False,
+        "attempt": 0,
+    }, "the nonce reset is deferred with the rest of the effect"
 
 
 def test_a_failed_saved_thread_switch_retries_only_while_the_view_is_on_screen():
@@ -1551,9 +1562,9 @@ def test_a_hundred_and_twenty_view_switches_stay_bounded():
     passes = out["switches"] // 2
     assert out["switchedToNewThread"] == passes, "one new thread per project pass, no more"
     assert out["switchedToThread"] == passes, "one saved-thread switch per single pass"
-    assert out["cleared"] == passes - 1, (
-        "one clear per return to the landing, and none on the first arrival"
-    )
+    assert (
+        out["cleared"] == passes - 1
+    ), "one clear per return to the landing, and none on the first arrival"
     assert out["stops"] == 2 * passes, "one stop per switch, not a growing number per switch"
     assert out["listeners"] == 0, "no listener may survive a view switch"
     assert out["pending"] == 0, "no switch callback may be left waiting"
