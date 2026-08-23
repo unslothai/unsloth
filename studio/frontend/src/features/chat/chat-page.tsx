@@ -1204,9 +1204,8 @@ function ProjectLanding({
   newThreadNonce: string;
   rotateNewThreadNonce: () => void;
   dataLoaded: boolean;
-  // #9251 holds the reload shell until the landing can be drawn in full. The signal used
-  // to come from this component's own ChatRuntimeProvider; that provider is hoisted above
-  // the view switch now (#8908), so the owner of the hoisted one reports it down instead.
+  // #9251 holds the reload shell until the landing can be drawn. Its provider is hoisted
+  // above the view switch now (#8908), so the owner of that one reports readiness down.
   runtimeReady: boolean;
 }): ReactElement {
   const navigate = useNavigate();
@@ -2665,12 +2664,9 @@ export function ChatPage({
     keptBaseViewRef.current?.attachmentTargetKey ?? artifactViewKey;
   const baseBackgrounded = view.mode === "compare";
 
-  // #9251's reload gate, re-homed. Its runtime signal used to come from ProjectLanding's
-  // own ChatRuntimeProvider; that provider is hoisted above the view switch now, so the
-  // signal is taken here and reported down. Stored AS the project it belongs to rather
-  // than as a boolean, because the hoisted provider is not remounted when the project
-  // changes and a plain flag would stay true and release the shell for the next landing
-  // before it has drawn.
+  // #9251's reload signal, taken here because the provider is hoisted. Stored as the
+  // project it belongs to, not a boolean: the hoisted provider is not remounted when the
+  // project changes, so a flag would stay true and release the next landing's shell early.
   const projectLandingId =
     baseView?.mode === "project" ? baseView.projectId : null;
   const [projectRuntimeReadyFor, setProjectRuntimeReadyFor] = useState<

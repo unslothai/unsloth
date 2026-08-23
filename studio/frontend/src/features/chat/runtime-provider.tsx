@@ -1643,9 +1643,7 @@ function createRuntimeHook(
   };
 }
 
-// Outstanding saved-thread switches worth remembering. Reaching this needs that many
-// clicks on saved chats with not one switch settling, which is not a real session; the cap
-// is only here so a never-settling switch cannot grow the list for the life of the tab.
+// Only bounds the pathological case: a switch that never settles never spends its claim.
 const MAX_PENDING_SAVED_THREAD_SWITCHES = 16;
 
 type PendingSavedThreadSwitch = { id: string; settled: boolean };
@@ -1657,29 +1655,17 @@ type NewThreadSwitchState = {
   // attempt: leaving for a saved chat and coming back releases it, so two switches for
   // the SAME nonce can be in flight and the older must not speak for the newer.
   attempt: number;
-  // Every saved thread a switch is currently trying to open, so a nonce view can recognise
-  // any of those ids landing after the route moved on. Named rather than inferred from the
-  // id's shape: a shape test cannot tell a stale arrival from the thread a fresh switch
-  // just opened, and correcting the latter switches for ever.
-  //
-  // A list, not the most recent id: opening two saved chats faster than either settles
-  // leaves two switches out, and whichever lands second would find a claim already spent
-  // by the first and be left as the main thread under a project composer.
-  //
-  // Each entry records whether its OWN switch has settled, so a claim cannot outlive the
-  // switch it stands for. One that settled while a different saved chat was visible has
-  // had its chance to be corrected and must be retired, or opening that thread legitimately
-  // later would spend the stale entry and leave the fresh one to be misread as an arrival.
+  // One entry per switch STARTED, so a nonce view can recognise any of these ids landing
+  // after the route moved on. By id rather than id SHAPE, which cannot tell a stale arrival
+  // from the thread a fresh switch just opened. Duplicates matter: two switches for one
+  // thread can overlap. `settled` retires a claim with its own switch, so one that finished
+  // while another chat was visible cannot be spent by a later, legitimate open.
   pendingSavedThreadIds: PendingSavedThreadSwitch[];
-  // The thread a nonce view is on, WITH the nonce it belongs to, so it can be reopened
-  // both after a stale arrival and after a saved-chat detour. switchToNewThread() cannot
-  // stand in for either: once the user has sent a message the thread is materialized and
-  // assistant-ui's newThreadId has been cleared, so asking for "a new thread" mints a
-  // second blank one and walks the composer off the conversation they started.
-  //
-  // A ?new= URL does not change when its chat materializes, so Back from a saved chat
-  // returns to the same nonce -- and the detour released it, so the switch effect runs
-  // again. That is a RETURNING nonce, not a new one, and the pair is what tells them apart.
+  // The thread a nonce view is on, with the nonce it belongs to. Reopened after a stale
+  // arrival and after a detour: once the user has sent, assistant-ui's newThreadId is gone,
+  // so switchToNewThread() mints a SECOND blank thread instead of restoring theirs. A ?new=
+  // URL survives materialization, so Back returns to the same nonce; the pair is what tells
+  // a returning nonce from a new one.
   nonceThread: { nonce: string; threadId: string } | null;
 };
 
@@ -1711,23 +1697,16 @@ function ThreadAutoSwitch({
     }
     newThreadSwitchStateRef.current.activeNonce = null;
     if (mainThreadId !== threadId) {
-      // Bumped, not merely read. switchToThread resolves asynchronously and this provider
-      // is shared, so by the time it settles the view may have moved on to a landing, or
-      // to ANOTHER saved chat, whose own switch owns the runtime. Only new-chat switches
-      // used to advance this, so two saved switches shared one token: a first saved chat
-      // rejecting after a second had settled passed the guard below and cleared the active
-      // id, detaching the chat on screen from its thread-scoped settings and context.
+      // Bumped, not read: this resolves asynchronously into a shared provider, so a newer
+      // switch of EITHER kind must supersede it. Sharing one token across two saved
+      // switches let a late rejection detach the chat already on screen.
       const attemptAtStart = (newThreadSwitchStateRef.current.attempt += 1);
-      // One entry per switch STARTED, duplicates included. Opening A, then B, then A again
-      // before any settles really does start two A switches, and both can land; recording
-      // the id once would let the first stale arrival spend the only claim and the second
-      // be accepted beneath the project composer. Each arrival spends exactly one entry.
+      // One entry per switch started, duplicates included: A, B, A starts two A switches
+      // and both can land, so each arrival must spend exactly one entry.
       const claims = newThreadSwitchStateRef.current.pendingSavedThreadIds;
       const claim: PendingSavedThreadSwitch = { id: threadId, settled: false };
       claims.push(claim);
-      // Bounded because a claim is only spent when its id arrives, and a switch that
-      // never settles never spends one. Oldest first: the longest-outstanding switch is
-      // the least likely to still be able to take a view.
+      // Oldest first: the longest-outstanding switch is least likely to still take a view.
       if (claims.length > MAX_PENDING_SAVED_THREAD_SWITCHES) {
         claims.splice(0, claims.length - MAX_PENDING_SAVED_THREAD_SWITCHES);
       }
@@ -1747,10 +1726,8 @@ function ThreadAutoSwitch({
           },
           () => {
             claim.settled = true;
-            // Before the staleness guard, and deliberately not behind it (#9251). This
-            // releases the retained reload shell, which is waiting to be told the initial
-            // switch is over; a superseded attempt is still over, and returning early
-            // would leave the shell showing its snapshot for ever.
+            // Ahead of the staleness guard, deliberately (#9251): this releases the
+            // retained reload shell, and a superseded attempt still ended.
             onSwitchFailed?.();
             // Only if this switch is still the current one. Unguarded, a rejection landing
             // after the user moved to a project landing cleared the active id that view had
@@ -1784,10 +1761,8 @@ function ThreadAutoSwitch({
     // The switch landed while this view is still mounted, so it was not stale and the
     // nonce view has nothing to correct. Released here rather than in the promise: this
     // effect only runs while the saved chat is on screen, which is exactly the condition.
-    // Every settled claim, not just this thread's. The view is stable on `threadId` with
-    // that thread already the main one, so any switch that has ALREADY finished has had its
-    // chance to be recognised as a stale arrival and cannot be one now. Switches still in
-    // flight are untouched: those can still land somewhere they do not belong.
+    // Every SETTLED claim, not just this thread's: the view is stable here, so a finished
+    // switch has had its chance to be corrected. In-flight ones can still land wrong.
     const state = newThreadSwitchStateRef.current;
     state.pendingSavedThreadIds = state.pendingSavedThreadIds.filter(
       (claim) => !claim.settled,
@@ -1835,9 +1810,8 @@ function ThreadNewChatSwitch({
     if (switchState.activeNonce === nonce) {
       return;
     }
-    // Only a thread this very nonce owns, and only once it has been sent to: a blank
-    // placeholder is still replaced, which is what a genuinely new nonce wants and what a
-    // detour away from an untouched landing has always done.
+    // Only this nonce's own thread, and only once sent to: a blank placeholder is still
+    // replaced, as a new nonce and an untouched landing both expect.
     const recorded =
       switchState.nonceThread?.nonce === nonce
         ? switchState.nonceThread.threadId
@@ -1876,12 +1850,9 @@ function ThreadNewChatSwitch({
     // persisted, so abandoning it must also discard its otherwise unreachable
     // queue. Queue provenance remains reliable even if incognito was cleared first.
     requestTemporaryPromptQueueStop();
-    // A reopen is as cancellable as a saved-thread switch, and for the same reason: a
-    // project landing remounts on the way back from a saved chat and its mount effect
-    // rotates the nonce, but the first render still carries the OLD one, so the reopen is
-    // already in flight when the rotation starts its own switch. Claimed here so that if
-    // the reopen resolves last the correction below recognises it and undoes it, instead
-    // of leaving the overview's composer on the old conversation.
+    // A reopen is as cancellable as a saved switch: a project landing remounts with the
+    // OLD nonce and rotates it in an effect, so the reopen is already in flight when the
+    // rotation starts its own. Claimed so a reopen that resolves last is undone below.
     let reopenClaim: PendingSavedThreadSwitch | null = null;
     if (returningToOwnChat && recorded) {
       reopenClaim = { id: recorded, settled: false };
@@ -1897,10 +1868,8 @@ function ThreadNewChatSwitch({
         );
       }
     }
-    // Dropped outright when this nonce is still the one on screen: the reopen did what it
-    // was for, and a claim left armed would have the correction below undo it. Only when
-    // the nonce has moved on -- a rotation beat it -- is the claim left in place, which is
-    // exactly the arrival that has to be corrected.
+    // Dropped when this nonce is still on screen: the reopen did its job and an armed
+    // claim would have the correction undo it. Left armed only if the nonce moved on.
     const settleReopenClaim = () => {
       if (!reopenClaim) return;
       reopenClaim.settled = true;
@@ -1973,9 +1942,8 @@ function ThreadNewChatSwitch({
       ? switchState.pendingSavedThreadIds.findIndex((claim) => claim.id === mainThreadId)
       : -1;
     if (claimed === -1) {
-      // Not a stale arrival, so this IS the thread this view owns. Recorded here rather
-      // than at the switch, because the id changes underneath us: a fresh local thread
-      // materializes on first message and the persisted id is what a reattach must use.
+      // Not a stale arrival, so this is the thread this view owns. Recorded here, not at
+      // the switch: the id changes on materialization and a reattach needs the persisted one.
       if (mainThreadId) {
         switchState.nonceThread = { nonce, threadId: mainThreadId };
       }
@@ -2071,14 +2039,10 @@ function NonceThreadResumeRestore({
     if (!mainThreadId) {
       return;
     }
-    // ...but an UNTOUCHED landing must stay untouched. Opening one of a project's compare
-    // chats and coming back leaves this runtime holding a blank placeholder thread that no
-    // row exists for, and publishing it makes ProjectLanding read a chat into being: it
-    // sets pendingNewThreadId and swaps the project overview for an empty Thread.
-    //
-    // Discriminated on remoteId, NOT on the id's shape, exactly per the note above: a
-    // materialized new chat keeps its `__LOCALID_` id and carries a remoteId, so it still
-    // restores, while a placeholder that has never been persisted carries none.
+    // ...but an UNTOUCHED landing must stay untouched: a compare round trip leaves a blank
+    // placeholder here, and publishing it makes ProjectLanding swap the overview for an
+    // empty Thread. On remoteId, not id shape (see above): a materialized chat keeps its
+    // `__LOCALID_` id and has a remoteId; a placeholder has none.
     const runtime = aui.threads().__internal_getAssistantRuntime?.();
     const { remoteId } =
       runtime?.threads.getItemById(mainThreadId).getState() ?? {};
@@ -2444,10 +2408,8 @@ function ThreadBackendAutosave({
   const aui = useAui();
   const saveChainRef = useRef(Promise.resolve());
   const pendingFirstSavesRef = useRef(new Map<string, Promise<void>>());
-  // Read through a ref, and deliberately NOT a dependency of saveThread. The save that
-  // publishes may have been queued while this pane was on screen and resolve long after
-  // Compare hid it, so the decision has to use the value at PUBLISH time. A dependency
-  // would freeze the value the save was scheduled with, which is the wrong one.
+  // A ref, not a saveThread dependency: the save may be queued while visible and resolve
+  // after Compare hides the pane, so this must read at PUBLISH time, not schedule time.
   const backgroundedRef = useRef(backgrounded);
   backgroundedRef.current = backgrounded;
 
@@ -2482,12 +2444,9 @@ function ThreadBackendAutosave({
         return;
       }
 
-      // Autosave itself keeps running while backgrounded -- that is the point of this PR,
-      // the run survives the view switch and must still be saved. Only the PUBLICATION is
-      // suppressed: a hidden pane naming itself the active thread reaches Compare's
-      // SharedComposer, whose exportThreadIds is [model1, model2, activeThreadId], so the
-      // base chat would be downloaded alongside the two compare threads, or Export would
-      // light up before either compare thread exists.
+      // The save still runs while backgrounded; only the PUBLICATION is suppressed. A
+      // hidden pane naming itself active reaches Compare's exportThreadIds
+      // ([model1, model2, activeThreadId]), so Export would pull the unrelated base chat.
       if (modelType === "base" && !pairId && !backgroundedRef.current) {
         const store = useChatRuntimeStore.getState();
         const activeThreadId = runtime.threads.getState().mainThreadId;
