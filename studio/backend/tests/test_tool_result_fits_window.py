@@ -1578,3 +1578,39 @@ class TestPruningDeletesOnlyWhatItChecked:
 
         names = [p.name for p in _spills(tmp_path / tools._SPILL_DIR)]
         assert all(tools._SPILL_NAME_RE.fullmatch(n) for n in names), names
+
+
+class TestReadingASpillCannotBeRedirected:
+    """The stamp is taken a moment before the content is read, and this runs in the
+    sandbox's own directory. A plain open by name would follow a symlink installed in
+    between and block forever on a FIFO or a device, with no timeout above it."""
+
+    def test_a_symlink_at_the_name_is_not_followed(self, tmp_path):
+        elsewhere = tmp_path / "elsewhere.txt"
+        elsewhere.write_text("someone else's file")
+        link = tmp_path / "abcdef123456.txt"
+        link.symlink_to(elsewhere)
+
+        assert tools._file_digest(str(link)) is None
+
+    def test_a_fifo_is_refused_rather_than_read(self, tmp_path):
+        fifo = tmp_path / "abcdef123456.txt"
+        os.mkfifo(fifo)
+
+        # Would block forever on a plain open, so a hang here is the failure.
+        assert tools._file_digest(str(fifo)) is None
+
+    def test_a_file_of_the_wrong_size_is_refused_before_it_is_read(self, tmp_path):
+        real = tmp_path / "abcdef123456.txt"
+        real.write_text("x" * 100)
+
+        assert tools._file_digest(str(real), 100)
+        assert tools._file_digest(str(real), 101) is None
+
+    def test_an_ordinary_spill_still_reads(self, tmp_path):
+        """The control: everything above has to leave the normal case working."""
+        spilled = tools._truncate(
+            "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path)
+        )
+
+        assert tools._holds_no_user_files(str(tmp_path)), spilled

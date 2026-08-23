@@ -24,6 +24,7 @@ import re
 import shlex
 import shutil
 import ssl
+import stat
 from stat import S_ISREG
 import subprocess
 import sys
@@ -14472,16 +14473,46 @@ def _spill_stamp(path: str) -> "str | None":
     )
 
 
-def _file_digest(path: str) -> "str | None":
-    """The digest of what is on disk now, or None when it cannot be read."""
+def _stamp_size(stamp: str) -> "int | None":
+    """The size a stamp remembers. See `_spill_stamp`."""
     try:
-        with open(path, "rb") as handle:
-            digest = hashlib.sha256()
+        return int(stamp.split(":")[2])
+    except (IndexError, ValueError):
+        return None
+
+
+def _file_digest(path: str, expected_size: "int | None" = None) -> "str | None":
+    """The digest of what is on disk now, or None when it is not a file this may read.
+
+    Opened O_NOFOLLOW and O_NONBLOCK and checked through the DESCRIPTOR, not the path. The
+    stamp was taken a moment ago and this runs in the sandbox's own directory: between the
+    two, tool code can put a symlink at the name, or a FIFO, or a device. A plain open
+    would follow the first and block forever on the others, and this is called
+    synchronously by the prune and by chat deletion, neither of which has a timeout.
+
+    ``expected_size`` refuses anything that is not the size the record remembers, so a
+    file swapped for an enormous one is not hashed before it is rejected.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = None
+    try:
+        fd = os.open(path, flags)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        if expected_size is not None and info.st_size != expected_size:
+            return None
+        digest = hashlib.sha256()
+        with os.fdopen(fd, "rb") as handle:
+            fd = None
             for chunk in iter(lambda: handle.read(1 << 20), b""):
                 digest.update(chunk)
         return digest.hexdigest()
     except OSError:
         return None
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def _is_recorded_spill(root: str, path: str, owned: "dict[str, tuple[str, str]]") -> bool:
@@ -14496,7 +14527,7 @@ def _is_recorded_spill(root: str, path: str, owned: "dict[str, tuple[str, str]]"
     recorded = owned.get(relative)
     if recorded is None or recorded[0] != _spill_stamp(path):
         return False
-    return recorded[1] == _file_digest(path)
+    return recorded[1] == _file_digest(path, _stamp_size(recorded[0]))
 
 
 def _spill_record(root: str) -> "tuple[str | None, dict[str, tuple[str, str]]]":
@@ -14758,7 +14789,7 @@ def _unlink_verified_spill(root: str, path: str, owned: "dict[str, tuple[str, st
     if (
         stamp is not None
         and stamp.split(":")[:4] == recorded[0].split(":")[:4]
-        and recorded[1] == _file_digest(private)
+        and recorded[1] == _file_digest(private, _stamp_size(recorded[0]))
     ):
         _quiet_unlink(private)
         return True
