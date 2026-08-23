@@ -1359,10 +1359,24 @@ def run_safetensors_tool_loop(
                         # against falls back to the window-independent constant.
                         if _accepts_kwarg(execute_tool, "context_tokens"):
                             kwargs["context_tokens"] = int(context_length)
+                        # Tool results are counted TWICE, which charges them two
+                        # characters per token instead of four. The estimator's rate is an
+                        # English one, and this budget exists because the results these
+                        # tools return are base64, minified JSON, hashes and command
+                        # output, which run nearer two. Under-pricing what is already in
+                        # the conversation hands the next call room that is occupied, and
+                        # this loop has no exact count and no rolling fit to catch it.
+                        results = [
+                            message
+                            for message in conversation
+                            if message.get("role") == "tool"
+                        ]
                         kwargs["result_budget_tokens"] = tool_result_budget(
                             int(context_length),
                             max_tokens,
-                            _dense_tokens(conversation) + _dense_tokens(tools or []),
+                            _dense_tokens(conversation)
+                            + _dense_tokens(tools or [])
+                            + _dense_tokens(results),
                         )
                     if _accepts_output_callback(execute_tool):
                         kwargs["output_callback"] = _output_callback

@@ -8779,7 +8779,10 @@ def _is_spill_artifact(sandbox: str, parent: str, name: str) -> bool:
         return False
     if parent == root and name == _SPILL_OWNER_MARKER:
         return True
-    return bool(_SPILL_NAME_RE.fullmatch(name)) and not os.path.islink(os.path.join(parent, name))
+    if os.path.islink(os.path.join(parent, name)):
+        return False
+    relative = os.path.relpath(os.path.join(parent, name), root).replace(os.sep, "/")
+    return relative in _spill_manifest(root)
 
 
 def _holds_no_user_files(target: str, owner: "str | None" = None) -> bool:
@@ -14207,6 +14210,7 @@ _SPILL_NAME_RE = re.compile(r"[0-9a-f]{12}\.txt")
 # a directory of this name in it may be theirs, and a file name proves nothing about who
 # wrote it. Without the marker nothing here writes, prunes or discounts anything there.
 _SPILL_OWNER_MARKER = ".studio-owned"
+_SPILL_OWNER_HEADER = "Unsloth Studio truncated tool output. Safe to delete."
 
 
 def _own_spill_root(root: str) -> bool:
@@ -14227,9 +14231,48 @@ def _own_spill_root(root: str) -> bool:
         if os.listdir(root):
             # Not ours and not empty, so it came with the sandbox.
             return False
-        with open(marker, "w", encoding = "utf-8") as handle:
-            handle.write("Unsloth Studio truncated tool output. Safe to delete.\n")
+        _write_spill_manifest(root, [])
     return True
+
+
+def _spill_manifest(root: str) -> "set[str]":
+    """The spills this process wrote, by path relative to ``root``.
+
+    The marker records ownership of each FILE, not only of the directory. Tool code runs
+    in the sandbox and can create `.unsloth_tool_output/abcdef123456.txt` itself once the
+    directory exists, and a name is not evidence of who wrote it: without this the prune
+    would unlink that file and the cleanup would discount it as Studio's.
+
+    An unreadable or half-written manifest reads as empty, which retains too much rather
+    than deleting something that was never ours.
+    """
+    try:
+        with open(os.path.join(root, _SPILL_OWNER_MARKER), encoding = "utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return set()
+    return {line.strip() for line in lines[1:] if line.strip()}
+
+
+def _write_spill_manifest(root: str, names) -> None:
+    """Rewrite the marker with ``names``. See `_spill_manifest`."""
+    with open(os.path.join(root, _SPILL_OWNER_MARKER), "w", encoding = "utf-8") as handle:
+        handle.write(_SPILL_OWNER_HEADER + "\n")
+        for name in sorted(names):
+            handle.write(f"{name}\n")
+
+
+def _record_spill(root: str, relative: str) -> None:
+    """Append one written spill to the marker.
+
+    Appended rather than rewritten so two calls spilling at once cannot lose each other's
+    line, and a lost line only means a file this never prunes.
+    """
+    try:
+        with open(os.path.join(root, _SPILL_OWNER_MARKER), "a", encoding = "utf-8") as handle:
+            handle.write(f"{relative}\n")
+    except OSError:
+        logger.debug("tool result spill manifest append failed", exc_info = True)
 
 
 def _spill_scope(session_id: "str | None", thread_id: "str | None") -> "str | None":
@@ -14339,6 +14382,7 @@ def _spill_full_output(
                 handle.write(body)
             os.replace(tmp, path)
             tmp = None
+            _record_spill(os.path.join(workdir, _SPILL_DIR), f"{scope}/{name}" if scope else name)
         finally:
             if tmp is not None and os.path.exists(tmp):
                 try:
@@ -14354,22 +14398,22 @@ def _spill_full_output(
         return None, True
 
 
-def _spill_files(directory: str) -> "list[str]":
-    """The spills in one directory, and nothing else that happens to live there.
+def _spill_files(root: str, directory: str, owned: "set[str]") -> "list[str]":
+    """The spills in one directory: the ones ``owned`` records this process having written.
 
-    Matched by ``_SPILL_NAME_RE`` rather than by extension, because the sandbox can be a
-    directory the user already had: a `.unsloth_tool_output/notes.txt` that Studio did not
-    write is not Studio's to prune. Links are skipped for the same reason.
+    Everything else there is the user's, whatever it is called. Links are never spills.
     """
     try:
         names = os.listdir(directory)
     except OSError:
         return []
-    return [
-        os.path.join(directory, name)
-        for name in names
-        if _SPILL_NAME_RE.fullmatch(name) and not os.path.islink(os.path.join(directory, name))
-    ]
+    paths = []
+    for name in names:
+        path = os.path.join(directory, name)
+        relative = os.path.relpath(path, root).replace(os.sep, "/")
+        if relative in owned and not os.path.islink(path):
+            paths.append(path)
+    return paths
 
 
 def _prune_spills(target_dir: str, root: "str | None" = None) -> None:
@@ -14385,24 +14429,29 @@ def _prune_spills(target_dir: str, root: "str | None" = None) -> None:
     however many there are.
     """
     try:
-        if not os.path.isfile(os.path.join(root or target_dir, _SPILL_OWNER_MARKER)):
+        root = root or target_dir
+        if not os.path.isfile(os.path.join(root, _SPILL_OWNER_MARKER)):
             # Unowned: whatever is in there came with the sandbox, whatever it is called.
             return
+        owned = _spill_manifest(root)
+        removed = set()
         # Newest first within this scope, so the count keeps the ones still being paged.
-        for extra in sorted(_spill_files(target_dir), key = os.path.getmtime, reverse = True)[
-            _SPILL_KEEP:
-        ]:
+        for extra in sorted(
+            _spill_files(root, target_dir, owned), key = os.path.getmtime, reverse = True
+        )[_SPILL_KEEP:]:
             try:
                 os.remove(extra)
+                removed.add(extra)
             except OSError:
                 pass
 
-        root = root or target_dir
-        everything = list(_spill_files(root))
+        everything = [p for p in _spill_files(root, root, owned) if p not in removed]
         for name in sorted(os.listdir(root)):
             scope = os.path.join(root, name)
             if os.path.isdir(scope) and not os.path.islink(scope):
-                everything.extend(_spill_files(scope))
+                everything.extend(
+                    p for p in _spill_files(root, scope, owned) if p not in removed
+                )
         kept, total = 0, 0
         for path in sorted(everything, key = os.path.getmtime, reverse = True):
             try:
@@ -14417,8 +14466,19 @@ def _prune_spills(target_dir: str, root: "str | None" = None) -> None:
                 continue
             try:
                 os.remove(path)
+                removed.add(path)
             except OSError:
                 pass
+        # The manifest follows the files: a name left in it after its file is gone would
+        # keep being counted as something this owns.
+        _write_spill_manifest(
+            root,
+            {
+                name
+                for name in owned
+                if os.path.join(root, *name.split("/")) not in removed
+            },
+        )
         # An emptied scope is a chat that stopped spilling, and leaving its directory
         # behind is what makes the sandbox look non-empty to the cleanup.
         for name in sorted(os.listdir(root)):

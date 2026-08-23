@@ -523,6 +523,7 @@ class TestPruningOnlyTouchesStudioSpills:
         mine = [target / f"{i:012x}.txt" for i in range(tools._SPILL_KEEP + 5)]
         for path in mine:
             path.write_text("spill")
+        tools._write_spill_manifest(str(target), [p.name for p in mine])
         theirs = [target / "notes.txt", target / "receipts-2026.txt"]
         for path in theirs:
             path.write_text("keep me")
@@ -533,6 +534,23 @@ class TestPruningOnlyTouchesStudioSpills:
         assert len([p for p in target.iterdir() if p.name.endswith(".txt")]) == (
             tools._SPILL_KEEP + len(theirs)
         )
+
+    def test_a_spill_named_file_this_did_not_write_is_not_pruned(self, tmp_path):
+        """The marker records the DIRECTORY, and tool code can create a file with a
+        plausible name in it afterwards. A name is not evidence of who wrote it."""
+        target = _own(tmp_path)
+        theirs = target / "abcdef123456.txt"
+        theirs.write_text("mine")
+        for n in range(tools._SPILL_KEEP + 5):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+
+        assert theirs.read_text() == "mine"
+
+    def test_and_the_cleanup_reads_it_the_same_way(self, tmp_path):
+        target = _own(tmp_path)
+        (target / "abcdef123456.txt").write_text("mine")
+
+        assert not tools._holds_no_user_files(str(tmp_path))
 
     def test_an_unowned_directory_is_not_pruned_at_all(self, tmp_path):
         """A name proves nothing about who wrote it. Without the marker this directory came
@@ -903,7 +921,7 @@ class TestTheSafetensorsLoopPricesItToo:
     nothing downstream able to evict it."""
 
     @staticmethod
-    def _run(context_length):
+    def _run(context_length, messages = None):
         """One `terminal` call through the real loop, returning the kwargs it was given."""
         import threading
 
@@ -925,7 +943,7 @@ class TestTheSafetensorsLoopPricesItToo:
         list(
             run_safetensors_tool_loop(
                 single_turn = _model,
-                messages = [{"role": "user", "content": "print game.html"}],
+                messages = list(messages or [{"role": "user", "content": "print game.html"}]),
                 tools = [{"type": "function", "function": {"name": "terminal"}}],
                 execute_tool = lambda name, args, **kwargs: seen.append(kwargs) or "x" * 40_000,
                 cancel_event = threading.Event(),
@@ -948,6 +966,34 @@ class TestTheSafetensorsLoopPricesItToo:
         """A room with no window to size against is not a cap: `_dense_char_limit` has no
         share to take and hands back the window-independent constant."""
         assert self._run(4096).get("context_tokens") == 4096
+
+    def test_a_result_already_in_the_thread_is_priced_densely(self):
+        """The estimator charges ASCII four characters per token, an English rate, and the
+        results these tools return run nearer two. Priced at the English rate the second
+        call is handed room the first call already occupies, and this loop has no exact
+        count and no rolling fit to catch it.
+
+        Differential, so it cannot pass on the arithmetic alone: the same characters in a
+        user turn are ordinary prose and stay at the estimator's rate, while in a tool
+        result they are charged twice.
+        """
+        body = "x" * 4_000
+        as_result = self._run(
+            4096,
+            messages = [
+                {"role": "user", "content": "print it"},
+                {"role": "tool", "content": body},
+            ],
+        )["result_budget_tokens"]
+        as_prose = self._run(
+            4096,
+            messages = [
+                {"role": "user", "content": "print it"},
+                {"role": "user", "content": body},
+            ],
+        )["result_budget_tokens"]
+
+        assert as_result < as_prose
 
     def test_an_unknown_window_prices_nothing(self):
         """The same leg the GGUF loop takes: no window, no budget, today's behaviour."""
