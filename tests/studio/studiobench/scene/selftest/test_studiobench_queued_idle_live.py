@@ -504,3 +504,67 @@ def test_the_blind_branch_reads_the_scaffold_when_the_arms_agree_about_generatio
     got = P.compare(base, treat)
     assert got["verdict"] == P.DIFFER, got
     assert any("thread scaffolding" in m for m in got["moved"]), got["moved"]
+
+
+#: The composer regression this branch has to report rather than excuse: the run-state slot is
+#: empty because the treatment dropped its Send button. `runStateControl` finds none of the six
+#: controls and returns "", so `composer_control` differs while the thread's own run state does
+#: not.
+_NO_CONTROL = '<div class="ml-1.5 flex items-center"></div>'
+
+
+def test_a_composer_regression_between_two_settled_arms_is_reported(page):
+    """THE CIRCLE. `generation_disagrees` reads `composer_control`, so a composer that regressed
+    supplied its own excuse: the refusal said the arms were at different points in the turn on the
+    authority of the very surface whose difference was in question.
+
+    Both arms here are settled. Nothing is generating, nothing is queued, every message and overlay
+    agrees, and the treatment simply has no Send button. That is as plain a rendering regression as
+    this tool can be shown, and NOT COMPARABLE would take it out of the exit code entirely, since
+    `report` files a refusal under `blind` and scores only `stable_bad or one_sided`.
+    """
+    base = _capture_html(page, _page(tail = "same", **_finished()))
+    treat = _capture_html(
+        page,
+        _page(tail = "same", **dict(_finished(), control = _NO_CONTROL)),
+    )
+    # The run state agrees on both independent readings; only the composer moved.
+    assert base["streaming"] is False and treat["streaming"] is False
+    assert bool(base["queued_idle"]) is False and bool(treat["queued_idle"]) is False
+    assert base["composer_control"] == "Send message" and treat["composer_control"] == ""
+    assert P.generation_disagrees(base, treat) is True
+    assert base["digest_scaffold"] != treat["digest_scaffold"]
+    assert [m["digest"] for m in base["messages"]] == [m["digest"] for m in treat["messages"]]
+
+    got = P.compare(base, treat)
+    assert got["verdict"] == P.DIFFER, got
+    assert any("scaffolding" in m for m in got["moved"]), got["moved"]
+
+
+def test_a_finished_against_a_running_arm_is_still_refused_after_that(page):
+    """And the suppression this must not cost: `streaming` disagrees, so the run state itself says
+    the two arms were at different points in one turn and the composer is not evidence of a
+    change."""
+    base = _capture_html(page, _page(tail = "arrived at last", **_finished()))
+    treat = _capture_html(page, _page(tail = "arr", **_writing()))
+    assert base["streaming"] is False and treat["streaming"] is True
+    got = P.compare(base, treat)
+    assert got["verdict"] == P.NOT_COMPARABLE, got
+    assert "composer dock is inside the thread root" in got["reason"]
+
+
+def test_the_queued_idle_arm_against_a_settled_one_is_still_refused(page):
+    """The other legitimate suppression: `isRunning()` cannot separate queued-idle from settled, so
+    `queued_idle` is what carries this pair. Without it the Queue button would read as a
+    regression."""
+    base = _capture_html(page, _page(tail = "same", **QUEUED_IDLE))
+    treat = _capture_html(
+        page,
+        _page(tail = "same", **dict(QUEUED_IDLE, control = _SEND_BUTTON, queue_stack = False)),
+    )
+    assert base["composer_control"] != treat["composer_control"]
+    assert bool(base["queued_idle"]) != bool(treat["queued_idle"]), (
+        base["queued_idle"],
+        treat["queued_idle"],
+    )
+    assert P.compare(base, treat)["verdict"] == P.NOT_COMPARABLE

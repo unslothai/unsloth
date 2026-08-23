@@ -406,6 +406,25 @@ def generation_disagrees(base: dict, treat: dict) -> bool:
     return bool(base.get("streaming")) != bool(treat.get("streaming"))
 
 
+def _run_state_disagrees(base: dict, treat: dict) -> bool:
+    """Do the arms disagree about the run state, read OFF the run state rather than the composer?
+
+    `generation_disagrees` reads `composer_control`, which is the composer. Using it alone to
+    excuse a composer difference proves the premise with the conclusion, so this is the second,
+    independent half: `streaming` is `isRunning()` and `queued_idle` is the queue waiting to be
+    dispatched, both taken from the thread's own run state and neither derivable from which button
+    was drawn.
+
+    Captures older than these fields report neither, and two `False`s then read as agreement --
+    which is the conservative direction here, since it makes the pair a reported difference rather
+    than a silent refusal.
+    """
+    return (
+        bool(base.get("streaming")) != bool(treat.get("streaming"))
+        or bool(base.get("queued_idle")) != bool(treat.get("queued_idle"))
+    )
+
+
 def _messages_moved(
     base: dict,
     treat: dict,
@@ -654,8 +673,24 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
     # usual and this never runs. It is only when the scaffold is the ONLY thing that moved, and the
     # arms disagree about generation, that the reading has no defined moment -- and then the honest
     # answer is a refusal, not a pass. Calling it MATCH would hide a genuine composer regression.
+    #
+    # AND THE RUN STATE HAS TO SAY SO INDEPENDENTLY, or the suppression argues in a circle.
+    # `generation_disagrees` reads `composer_control`, the token naming which control the composer
+    # rendered -- so "the arms were at different points in the turn" is being proved by the very
+    # surface whose difference is in question. A treatment that DROPS the Send button, renames it,
+    # or selects the wrong control reaches this branch with every message and overlay agreeing, and
+    # a refusal here is a green run: `report` files NOT COMPARABLE under `blind` and takes its exit
+    # code from `stable_bad or one_sided`. That is the regression the note above says must not be
+    # hidden, hidden by the branch written to say so.
+    #
+    # `streaming` and `queued_idle` are read off the run state rather than off the composer, so
+    # they are evidence the composer cannot manufacture. Every legitimate suppression still has
+    # one: Stop against Send differs in `streaming`, and Queue against Send in the queued-idle
+    # interval differs in `queued_idle`. What is left, the arms agreeing on both and still
+    # rendering different controls, has no run-state explanation and is a rendering difference.
     if (
         generation_disagrees(base, treat)
+        and _run_state_disagrees(base, treat)
         and scaffold_moved(base, treat)
         and not overlays_moved(base, treat)
         and not _messages_moved(base, treat, streaming)
