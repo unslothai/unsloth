@@ -94,6 +94,7 @@ __all__ = [
     "warn_if_zoo_cannot_merge_moe_experts",
     "_select_moe_detection_targets",
     "_redirect_embedding_targets",
+    "_raise_if_no_lora_targets_left",
     "_raise_if_fast_inference_modules_to_save",
     "make_fast_generate_wrapper",
     "_mark_unsloth_disable_data_parallel",
@@ -4447,51 +4448,60 @@ def warn_if_zoo_cannot_merge_moe_experts():
     )
 
 
-def _redirect_embedding_targets(
-    target_modules,
-    modules_to_save,
-    *,
-    allow_redirect = True,
-    preserve_lm_head_target = False,
-    preserve_embedding_target = False,
-    redirect_lm_head = True,
-):
-    """Move embedding targets to modules_to_save while retaining a required LoRA target."""
+EMBEDDING_MODULES = frozenset(("embed_tokens", "lm_head"))
+
+
+def _redirect_embedding_targets(target_modules, modules_to_save, *, allow_redirect = True):
+    """Move embed_tokens/lm_head from target_modules into modules_to_save.
+
+    LoRA on either module is silently dead in Unsloth: the fused CE loss reads
+    `lm_head.weight` directly instead of calling the module, and PEFT's embedding
+    factors are named `lora_embedding_A/B` so the freeze loop never unfreezes them.
+    `modules_to_save` is the only representation that actually trains, so redirect
+    unconditionally rather than preserving a LoRA target that cannot learn.
+
+    Returns (target_modules, modules_to_save, moved).
+    """
     if type(target_modules) not in (list, tuple) or not allow_redirect:
-        return target_modules, modules_to_save, (), False
+        return target_modules, modules_to_save, ()
 
     target_modules = list(dict.fromkeys(target_modules))
-    embedding_modules = {"embed_tokens"}
-    if redirect_lm_head:
-        embedding_modules.add("lm_head")
-    moved = [module for module in target_modules if module in embedding_modules]
-    remaining = [module for module in target_modules if module not in embedding_modules]
-    preserved_direct_target = False
-    if preserve_lm_head_target and not remaining and "lm_head" in moved:
-        moved.remove("lm_head")
-        remaining = [module for module in target_modules if module not in moved]
-        preserved_direct_target = True
-    elif preserve_embedding_target and not remaining and moved:
-        moved.pop()
-        remaining = [module for module in target_modules if module not in moved]
-        preserved_direct_target = True
-
+    moved = [x for x in target_modules if x in EMBEDDING_MODULES]
     if not moved:
-        adjusted = remaining if preserved_direct_target else target_modules
-        return adjusted, modules_to_save, (), preserved_direct_target
+        return target_modules, modules_to_save, ()
 
-    saved = [] if modules_to_save is None else list(modules_to_save)
-    saved.extend(module for module in moved if module not in saved)
-    return remaining, saved, tuple(moved), preserved_direct_target
+    remaining = [x for x in target_modules if x not in EMBEDDING_MODULES]
+    # A str is a sequence of characters, so list() would shred it into letters.
+    if modules_to_save is None:
+        saved = []
+    elif isinstance(modules_to_save, str):
+        saved = [modules_to_save]
+    else:
+        saved = list(modules_to_save)
+    saved.extend(x for x in moved if x not in saved)
+    return remaining, saved, tuple(moved)
+
+
+def _raise_if_no_lora_targets_left(target_modules, moved):
+    """embed_tokens/lm_head train via modules_to_save, so they cannot be the only targets."""
+    if moved and type(target_modules) in (list, tuple) and len(target_modules) == 0:
+        raise RuntimeError(
+            f"Unsloth: {', '.join(moved)} are trained as full modules via `modules_to_save`, "
+            "not as LoRA targets, so `target_modules` is now empty.\n"
+            "Please add at least one projection module, for example "
+            '`target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", '
+            '"gate_proj", "up_proj", "down_proj"]`.'
+        )
 
 
 def _raise_if_fast_inference_modules_to_save(model, modules_to_save):
     """Reject trainable saved modules that vLLM cannot keep synchronized."""
-    if hasattr(model, "vllm_engine") and modules_to_save is not None:
-        raise NotImplementedError(
-            "Unsloth: Currently fast inference does not work with training "
-            "embeddings or lm_head."
-        )
+    if getattr(model, "vllm_engine", None) is None or not modules_to_save:
+        return
+    raise NotImplementedError(
+        "Unsloth: Currently fast inference does not work with training "
+        f"{', '.join(modules_to_save)}."
+    )
 
 
 def _select_moe_detection_targets(

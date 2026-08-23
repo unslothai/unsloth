@@ -3313,25 +3313,22 @@ class FastLlamaModel:
         train_lm_head = False
         train_embed_tokens = False
         final_modules = []
-        # Embeddings and the lm_head are not located under an attention/MLP
-        # ancestor, so Unsloth's fast regex path would silently drop them when
-        # they are listed in `target_modules`. Move them to `modules_to_save`
-        # instead (which is what the official continued-pretraining guide
-        # actually intends) and warn once.
-        target_modules, modules_to_save, _moved_embedding_modules, _ = _redirect_embedding_targets(
-            target_modules,
-            modules_to_save,
-            preserve_lm_head_target = True,
-            redirect_lm_head = not hasattr(model, "vllm_engine"),
+        # LoRA on embed_tokens/lm_head never trains (see _redirect_embedding_targets),
+        # so route them to modules_to_save, which also makes embedding_learning_rate work.
+        target_modules, modules_to_save, _moved_embedding_modules = _redirect_embedding_targets(
+            target_modules, modules_to_save,
         )
+        _raise_if_no_lora_targets_left(target_modules, _moved_embedding_modules)
         for module in _moved_embedding_modules:
             if module == "embed_tokens":
                 train_embed_tokens = True
             else:
                 train_lm_head = True
+        if _moved_embedding_modules:
             logger.warning_once(
-                f"Unsloth: `{module}` should be placed in `modules_to_save`, not "
-                f"`target_modules`. We will move it for you, but update your code."
+                f"Unsloth: Moved {', '.join(_moved_embedding_modules)} from `target_modules` "
+                f"to `modules_to_save`, so they are trained as full weight matrices.\n"
+                f"This uses more VRAM than LoRA. Please list them in `modules_to_save` directly."
             )
         for module in target_modules:
             try:

@@ -59,12 +59,6 @@ def _run_redirect_check(new_model_path: bool, target_modules):
         config = model.peft_config["default"]
         saved_modules = config.modules_to_save or []
         state = dict(model.named_parameters())
-        if target_modules == ["lm_head"]:
-            assert not saved_modules, saved_modules
-            assert "lm_head" in config.target_modules, config.target_modules
-            assert any("lm_head.lora_A" in k and v.requires_grad for k, v in state.items())
-            return
-
         assert "embed_tokens" in saved_modules, saved_modules
         assert "lm_head" in saved_modules, saved_modules
 
@@ -101,9 +95,28 @@ def _run_redirect_check(new_model_path: bool, target_modules):
     [
         pytest.param(False, TARGET_MODULES, id = "legacy-redirect"),
         pytest.param(True, TARGET_MODULES, id = "new-model-redirect"),
-        pytest.param(True, ["lm_head"], id = "new-model-lm-head-only"),
     ],
 )
 def test_embed_lm_head_target_redirect(new_model_path: bool, target_modules):
-    """Both model paths redirect embeddings without dropping the only LoRA target."""
+    """Both model paths train embed_tokens/lm_head via modules_to_save, not LoRA."""
     _run_redirect_check(new_model_path, target_modules)
+
+
+@pytest.mark.slow
+def test_embedding_only_target_list_raises_instead_of_training_nothing():
+    """Redirecting every target would leave an adapter with no trainable LoRA."""
+    from unsloth import FastLanguageModel
+
+    model, _ = FastLanguageModel.from_pretrained(
+        model_name = MODEL_NAME,
+        load_in_4bit = True,
+        max_seq_length = 512,
+    )
+    try:
+        with pytest.raises(RuntimeError, match = "target_modules` is now empty"):
+            FastLanguageModel.get_peft_model(
+                model, r = 8, lora_alpha = 16, target_modules = ["embed_tokens", "lm_head"],
+            )
+    finally:
+        del model
+        torch.cuda.empty_cache()
