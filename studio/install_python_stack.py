@@ -4278,32 +4278,22 @@ def _repair_duplicate_core_metadata(
                     and _rewrite_minimal_metadata(path, name)
                 )
             ]
-            # A record with no RECORD is the one case _rewrite_minimal_metadata fails
-            # closed on, and it has to fail closed here too rather than wait for the
-            # record_count check below. With another record surviving, the count stays
-            # nonzero, pip uninstalls only that one, and the quarantine is discarded on
-            # success: whatever the older release owned alone stays importable, and the
-            # directory that was the evidence is gone for good.
-            unrecorded = [
-                path for path in unrewritable if not os.path.isfile(os.path.join(path, "RECORD"))
-            ]
-            if unrecorded:
+            # Every record has to end up uninstallable by pip, or nothing is touched.
+            # Quarantining one instead only hides it: pip removes just the readable
+            # records, the quarantine is discarded once the reinstall succeeds, and
+            # whatever the quarantined release owned alone stays on disk and
+            # importable while the repair reports success and deletes the directory
+            # that was the evidence. Waiting for record_count to reach zero missed
+            # every case where another record survives. Refusing leaves the tree as
+            # found, so a later run can still see the conflict.
+            if unrewritable:
                 _safe_print(
                     _red(
                         f"   the metadata for {name} at "
-                        + ", ".join(os.path.basename(os.fspath(p)) for p in unrecorded)
-                        + " is unreadable and has no RECORD, so the files that release "
-                        "owned cannot be identified. Recreate the environment to repair it."
+                        + ", ".join(os.path.basename(os.fspath(p)) for p in unrewritable)
+                        + " cannot be read or rewritten, so the files that release owned "
+                        "cannot be identified. Recreate the environment to repair it."
                     ),
-                    file = sys.stderr,
-                )
-                return False
-            # Whatever could not be made readable still has to leave the tree, because
-            # pip cannot run at all while it is there. Move it aside rather than delete
-            # it: staging can still fail.
-            if not quarantine.take(unrewritable):
-                _safe_print(
-                    _red(f"   could not move invalid metadata for {name} aside"),
                     file = sys.stderr,
                 )
                 return False

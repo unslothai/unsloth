@@ -772,44 +772,49 @@ class TestBuildPipCmdUpgradeIntent:
 
 
 class TestDuplicateCoreMetadataRepair:
-    def test_invalid_metadata_is_removed_before_pip_uninstall(self, tmp_path, monkeypatch):
-        # Unversioned directory, so the rewrite still fails and the record is
-        # quarantined. A RECORD beside it because an unreadable record WITHOUT one
-        # now fails the repair closed: nothing can say which files that release owned.
-        malformed = tmp_path / "unsloth.dist-info"
+    def test_an_unrewritable_record_stops_the_repair_before_pip_runs(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The invariant that replaced quarantine-and-proceed.
+
+        A record that cannot be made readable cannot be uninstalled by pip either.
+        Moving it aside only hid it: pip removed the readable records, the
+        quarantine was discarded once the reinstall succeeded, and whatever the
+        quarantined release owned alone stayed importable while the repair
+        reported success and deleted the directory that was the evidence.
+
+        So nothing may run: no staging, no pip, and the tree is left as found.
+        A non-UTF-8 METADATA also makes pip raise for the whole environment, so
+        refusing before pip is what that used to need quarantining for.
+        """
+        malformed = tmp_path / "unsloth-2026.8.12.dist-info"
         malformed.mkdir()
         (malformed / "METADATA").write_bytes(b"\xff\xfe")
-        (malformed / "RECORD").write_text("unsloth/__init__.py,,\n")
-        probes = iter((["", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"]))
-        commands = []
+        (malformed / "RECORD").write_text("unsloth/gone.py,,\n")
 
         monkeypatch.setattr(
-            ips.install_manifest,
-            "installed_versions",
-            lambda _name: next(probes),
+            ips.install_manifest, "installed_versions", lambda _n: ["", "2026.8.15"]
         )
         monkeypatch.setattr(
-            ips.install_manifest,
-            "invalid_metadata_paths",
-            lambda _name: [malformed],
+            ips.install_manifest, "invalid_metadata_paths", lambda _n: [malformed]
         )
+        monkeypatch.setattr(ips.install_manifest, "pip_backup_metadata_paths", lambda _n: [])
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
-        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        # The rewrite is what normally saves this record; deny it to reach the branch.
+        monkeypatch.setattr(ips, "_rewrite_minimal_metadata", lambda *a, **k: False)
 
-        def record_run(label, cmd):
-            assert not malformed.exists()
-            commands.append((label, cmd))
-            return True
+        def refuse(*_a, **_k):
+            raise AssertionError("nothing may run once a record is unusable")
 
-        monkeypatch.setattr(ips, "_run_ok", record_run)
-        monkeypatch.setattr(ips, "_stage_replacement", lambda _name: "/staged")
-        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: True)
+        monkeypatch.setattr(ips, "_stage_replacement", refuse)
+        monkeypatch.setattr(ips, "_run_ok", refuse)
+        monkeypatch.setattr(ips, "pip_install_try", refuse)
 
-        assert ips._repair_duplicate_core_metadata(("unsloth",)) is True
-        assert not malformed.exists()
-        assert [command for _label, command in commands] == [
-            [sys.executable, "-m", "pip", "uninstall", "-y", "unsloth"]
-        ]
+        assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
+        assert "cannot be read or rewritten" in capsys.readouterr().err
+        assert malformed.is_dir()
+        assert (malformed / "METADATA").read_bytes() == b"\xff\xfe"
+
 
     def test_an_unrecorded_stale_record_fails_closed_even_beside_a_good_one(
         self, tmp_path, monkeypatch, capsys
@@ -838,7 +843,7 @@ class TestDuplicateCoreMetadataRepair:
         monkeypatch.setattr(ips, "_stage_replacement", fake_stage)
 
         assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
-        assert "has no RECORD" in capsys.readouterr().err
+        assert "cannot be read or rewritten" in capsys.readouterr().err
         # The evidence stays on disk so a later run can still see the conflict.
         assert unreadable.is_dir()
 
@@ -1679,8 +1684,9 @@ class TestDuplicateCoreMetadataRepair:
         )
 
         assert ips._repair_duplicate_core_metadata(("unsloth",)) is True
-        # It was rewritten for pip rather than moved aside, so its RECORD is applied.
-        assert taken == [[]]
+        # It was rewritten for pip rather than moved aside, so its RECORD is applied
+        # and nothing is quarantined at all.
+        assert taken == []
         assert "Name: unsloth" in (stale / "METADATA").read_text()
 
     def test_a_repaired_package_is_not_rolled_back_by_a_later_failure(self, monkeypatch):
@@ -1782,31 +1788,37 @@ class TestDuplicateCoreMetadataRepair:
 
         assert "Name: unsloth" in (record / "METADATA").read_text()
 
-    def test_a_backup_failure_leaves_the_record_unrewritten(self, tmp_path, monkeypatch):
-        """No backup means no safe rewrite, so the record is quarantined instead."""
+    def test_an_unbackable_metadata_stops_the_repair(self, tmp_path, monkeypatch, capsys):
+        """The reachable route to an unrewritable record: a METADATA that exists but
+        cannot be read, as an elevated install leaves root-owned. back_up fails, so
+        the rewrite is skipped and the record can never be handed to pip.
+
+        Reproduced in a real venv with the file made unreadable: before this refused,
+        the repair returned True, the module only the stale release shipped stayed
+        importable, and its dist-info was deleted, so nothing could report it again.
+        """
         record = tmp_path / "unsloth-2026.8.12.dist-info"
         record.mkdir()
         (record / "METADATA").write_bytes(b"\xff\xfe")
         (record / "RECORD").write_text("unsloth/gone.py,,\n")
-        probes = iter((["", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"]))
-        taken = []
 
-        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _n: next(probes))
         monkeypatch.setattr(
-            ips.install_manifest, "invalid_metadata_paths", lambda _n: [str(record)]
+            ips.install_manifest, "installed_versions", lambda _n: ["", "2026.8.15"]
         )
+        monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _n: [record])
+        monkeypatch.setattr(ips.install_manifest, "pip_backup_metadata_paths", lambda _n: [])
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
-        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
-        monkeypatch.setattr(ips, "_stage_replacement", lambda _n: "/staged")
-        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
-        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: True)
         monkeypatch.setattr(ips._QuarantinedMetadata, "back_up", lambda _self, _p: False)
-        monkeypatch.setattr(
-            ips._QuarantinedMetadata, "take", lambda _self, paths: taken.append(list(paths)) or True
-        )
 
-        assert ips._repair_duplicate_core_metadata(("unsloth",)) is True
-        assert taken == [[str(record)]]
+        def refuse(*_a, **_k):
+            raise AssertionError("nothing may run once a record is unusable")
+
+        monkeypatch.setattr(ips, "_stage_replacement", refuse)
+        monkeypatch.setattr(ips, "_run_ok", refuse)
+
+        assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
+        assert "cannot be read or rewritten" in capsys.readouterr().err
+        # Untouched, so the next run still sees it.
         assert (record / "METADATA").read_bytes() == b"\xff\xfe"
 
     def test_an_unresolvable_name_stages_nothing(self, monkeypatch):
@@ -1954,90 +1966,33 @@ class TestDuplicateCoreMetadataRepair:
         assert installs == []
         assert "could not uninstall" in capsys.readouterr().err
 
-    def test_invalid_metadata_is_restored_when_staging_fails(self, monkeypatch, tmp_path):
-        """A package whose ONLY record is unreadable must survive a failed repair.
-
-        The record has to move out of pip's way before pip runs at all, but
-        deleting it and then failing to fetch the replacement leaves files with
-        no install, while the message claims nothing was touched.
+    def test_a_quarantined_backup_is_restored_when_staging_fails(self, monkeypatch, tmp_path):
+        """Quarantine's remaining user is pip's ~ leftover, moved aside so the
+        uninstall loop can converge. Moving it and then failing to fetch the
+        replacement would leave the venv worse than it was found, so a failed
+        staging has to put it back.
         """
-        # Unversioned directory, so the rewrite still fails and the record is
-        # quarantined. A RECORD beside it because an unreadable record WITHOUT one
-        # now fails the repair closed: nothing can say which files that release owned.
-        malformed = tmp_path / "unsloth.dist-info"
-        malformed.mkdir()
-        (malformed / "METADATA").write_bytes(b"\xff\xfe")
-        (malformed / "RECORD").write_text("unsloth/__init__.py,,\n")
-        probes = iter(([""], []))
+        backup = tmp_path / "~nsloth-2026.8.12.dist-info"
+        backup.mkdir()
+        (backup / "METADATA").write_text(
+            "Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.8.12\n", encoding = "utf-8"
+        )
+        probes = iter((["2026.8.12", "2026.8.15"], ["2026.8.15"]))
 
-        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _n: next(probes))
+        monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _n: [])
         monkeypatch.setattr(
-            ips.install_manifest, "invalid_metadata_paths", lambda _name: [malformed]
+            ips.install_manifest, "pip_backup_metadata_paths", lambda _n: [backup]
         )
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
-        monkeypatch.setattr(ips, "_stage_replacement", lambda _name: None)
-        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
-        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: True)
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _n: None)
 
         assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
-        assert malformed.is_dir()
-        assert (malformed / "METADATA").read_bytes() == b"\xff\xfe"
+        assert backup.is_dir()
+        assert "Name: unsloth" in (backup / "METADATA").read_text()
 
-    def test_invalid_metadata_is_dropped_once_the_repair_completes(self, monkeypatch, tmp_path):
-        # Unversioned directory, so the rewrite still fails and the record is
-        # quarantined. A RECORD beside it because an unreadable record WITHOUT one
-        # now fails the repair closed: nothing can say which files that release owned.
-        malformed = tmp_path / "unsloth.dist-info"
-        malformed.mkdir()
-        (malformed / "METADATA").write_bytes(b"\xff\xfe")
-        (malformed / "RECORD").write_text("unsloth/__init__.py,,\n")
-        # Unreadable BESIDE a readable record: a sole unreadable one is rewritten so
-        # pip can uninstall its payload, which is a different path.
-        probes = iter((["", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"]))
 
-        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))
-        monkeypatch.setattr(
-            ips.install_manifest, "invalid_metadata_paths", lambda _name: [malformed]
-        )
-        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
-        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
-        monkeypatch.setattr(ips, "_stage_replacement", lambda _name: "/staged")
-        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
-        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: True)
-
-        assert ips._repair_duplicate_core_metadata(("unsloth",)) is True
-        assert not malformed.exists()
-
-    def test_pip_is_never_asked_to_read_the_invalid_record(self, monkeypatch, tmp_path):
-        """A non-UTF-8 METADATA makes pip raise for the whole environment, so the
-        record must already be out of the tree when staging runs."""
-        # Unversioned directory, so the rewrite still fails and the record is
-        # quarantined. A RECORD beside it because an unreadable record WITHOUT one
-        # now fails the repair closed: nothing can say which files that release owned.
-        malformed = tmp_path / "unsloth.dist-info"
-        malformed.mkdir()
-        (malformed / "METADATA").write_bytes(b"\xff\xfe")
-        (malformed / "RECORD").write_text("unsloth/__init__.py,,\n")
-        probes = iter((["", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"]))
-        seen = []
-
-        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))
-        monkeypatch.setattr(
-            ips.install_manifest, "invalid_metadata_paths", lambda _name: [malformed]
-        )
-        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
-        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
-        monkeypatch.setattr(
-            ips,
-            "_stage_replacement",
-            lambda _name: seen.append(malformed.exists()) or "/staged",
-        )
-        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
-        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: True)
-
-        assert ips._repair_duplicate_core_metadata(("unsloth",)) is True
-        assert seen == [False]
 
     def test_staging_builds_a_wheel_so_the_offline_install_can_work(self):
         """pip download leaves an sdist for a source-only index, and the install
