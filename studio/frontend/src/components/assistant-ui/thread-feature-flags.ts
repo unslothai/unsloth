@@ -46,3 +46,12 @@
 // only ARIA delta is Radix's `radix-` id prefix disappearing, and the control relationship resolves
 // on both arms.
 export const GRID_COLLAPSE_REASONING_ENABLED = true;
+
+// Newest-first paging of a long reasoning trace: only the newest page is mounted, behind Show more
+// and Show less controls in `markdown-text.tsx`.
+//
+// OFF. On top of the streaming-render rewrite and the plain-code policy it removes a further 1.9%
+// of the 250K freeze, and it costs Ctrl+A (19% of the thread copied against 97.7%), find-in-page,
+// print, screen-reader access and deep links. Off, the pane renders the whole trace and emits no
+// page container at all.
+export const REASONING_PAGINATION_ENABLED = false;

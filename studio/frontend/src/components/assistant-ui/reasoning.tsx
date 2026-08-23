@@ -13,7 +13,10 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { GRID_COLLAPSE_REASONING_ENABLED } from "@/components/assistant-ui/thread-feature-flags";
+import {
+  GRID_COLLAPSE_REASONING_ENABLED,
+  REASONING_PAGINATION_ENABLED,
+} from "@/components/assistant-ui/thread-feature-flags";
 import {
   CLOSE_FALLBACK_MARGIN_MS,
   UnmeasuredCollapsible,
@@ -333,7 +336,10 @@ function ReasoningText({
 }
 
 const ReasoningImpl: ReasoningMessagePartComponent = () => (
-  <MarkdownText codeHighlighting="plain" paginateReasoning={true} />
+  <MarkdownText
+    codeHighlighting="plain"
+    paginateReasoning={REASONING_PAGINATION_ENABLED}
+  />
 );
 
 const COPY_RESET_MS = 2000;

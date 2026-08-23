@@ -135,10 +135,11 @@ test("token updates keep Streamdown's expensive configuration props stable", () 
 });
 
 test("reasoning selects stable plain-code plugins without disabling rich Markdown", () => {
+  // Pagination is the flag's business; see reasoning-pagination-flag.test.ts.
   assert.match(
     reasoningSource,
-    /<MarkdownText codeHighlighting="plain" paginateReasoning=\{true\} \/>/,
-    "reasoning must select plain code and bounded pagination",
+    /<MarkdownText\s+codeHighlighting="plain"/,
+    "reasoning must select plain code",
   );
 
   const syntaxPlugins = findObjectConfig("STREAMDOWN_SYNTAX_PLUGINS");
