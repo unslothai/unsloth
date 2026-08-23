@@ -161,6 +161,42 @@ def _read_local_header(path: str) -> bytes:
         return b""
 
 
+def _ranged_stream(session: Any, url: str, headers: dict) -> Any:
+    """A context manager over a ranged GET, on either HTTP client huggingface_hub ships.
+
+    ``huggingface_hub`` 1.0 replaced requests with httpx, and ``get_session`` returns whichever
+    the installed version builds. The two streaming APIs do not overlap at all: httpx has no
+    ``stream = True`` keyword (its streaming call is ``Client.stream``), so asking for one on 1.x
+    raises ``TypeError`` inside the worker's blanket except and every remote probe silently reads
+    nothing -- a preflight that refuses nothing at all. studio.txt floors 1.23 on python >= 3.10
+    and pins 0.36 below it, so BOTH are shipped and both have to work.
+
+    ``Client.stream`` is a method; ``requests.Session.stream`` is a plain bool attribute, so the
+    branch tests for a callable rather than for the name."""
+    if callable(getattr(session, "stream", None)):
+        # httpx does not follow redirects by default and the Hub answers a resolve URL with a
+        # 302 to the CDN, so an unfollowed hop would read as "not 206" and fail open.
+        return session.stream(
+            "GET",
+            url,
+            headers = headers,
+            timeout = _HEADER_TIMEOUT_SECONDS,
+            follow_redirects = True,
+        )
+    return session.get(
+        url,
+        headers = headers,
+        timeout = _HEADER_TIMEOUT_SECONDS,
+        stream = True,
+    )
+
+
+def _iter_body(response: Any, chunk_size: int):
+    """The response body in chunks, from httpx's reader or requests'."""
+    reader = getattr(response, "iter_bytes", None) or response.iter_content
+    return reader(chunk_size)
+
+
 def _interrupt_read(response: Any) -> None:
     """Make a read parked on ``response`` return, so the whole-body deadline can be enforced.
 
@@ -168,7 +204,8 @@ def _interrupt_read(response: Any) -> None:
     thread blocked inside ``iter_content``: ``Response.close`` drops the file object while the
     socket stays readable, so the read sits there regardless. Best effort -- and on a urllib3
     older than 2.3, which is where ``shutdown`` first appears, there is nothing here that can wake
-    it. The caller does not depend on this working; it reads on a worker it can abandon.
+    it. An httpx response has no ``raw`` at all, so it takes the ``close`` branch. The caller does
+    not depend on this working; it reads on a worker it can abandon.
 
     ``None`` means the worker has not got a response yet -- it is still inside connect or the
     header wait -- so there is nothing to half-close and abandoning it is the whole bound."""
@@ -209,11 +246,8 @@ def _read_gguf_header(repo_id: str, gguf_filename: str, hf_token: Optional[str])
         try:
             headers = dict(build_hf_headers(token = hf_token))
             headers["Range"] = f"bytes=0-{_GGUF_HEADER_BYTES - 1}"
-            with get_session().get(
-                hf_hub_url(repo_id, gguf_filename),
-                headers = headers,
-                timeout = _HEADER_TIMEOUT_SECONDS,
-                stream = True,
+            with _ranged_stream(
+                get_session(), hf_hub_url(repo_id, gguf_filename), headers
             ) as response:
                 holder[0] = response
                 # 206 or nothing. A server (or a proxy) that ignored the Range header answers 200
@@ -222,7 +256,7 @@ def _read_gguf_header(repo_id: str, gguf_filename: str, hf_token: Optional[str])
                 if response.status_code != 206:
                     return
                 deadline = time.monotonic() + _HEADER_TIMEOUT_SECONDS
-                for chunk in response.iter_content(chunk_size = 65536):
+                for chunk in _iter_body(response, 65536):
                     # extend, not `+=`: augmented assignment to a closed-over name would rebind
                     # it as a local of _fetch and lose every byte.
                     buffer.extend(chunk)
@@ -364,17 +398,24 @@ def flux2_pick_mismatch(
 
 
 # GGUF ``general.architecture`` values nothing in Studio can decode. Beside the FLUX.2 check
-# because both ask whether the pick is loadable, off the same prefix.
-_SPEECH_GGUF_ARCHS = frozenset({"llama-csm"})
+# because both ask whether the pick is loadable, off the same prefix. The set itself lives with
+# the header reader, shared with the chat gate and the listing classifier so they cannot drift.
+from utils.models.gguf_metadata import (  # noqa: E402 -- beside the constant it defines
+    SPEECH_GGUF_ARCHS as _SPEECH_GGUF_ARCHS,
+    is_speech_gguf_architecture,
+)
+
 _SPEECH_ARCH_CACHE: dict[
     tuple[str, str, str, Optional[tuple]], tuple[Optional[str], Optional[float]]
 ] = {}
 _SPEECH_ARCH_CACHE_MAX = 256
-# An uncached remote verdict is keyed on a local identity of None, so a republish under the same
-# filename changes nothing about the key and a cached-forever answer would keep refusing a
-# checkpoint that is runnable now. Snapshot-backed entries need no TTL: their key carries the
-# file identity, and _revalidated_speech_arch asks the Hub for them. Matches the variant
-# listing's own freshness window for moved revisions.
+# Every remote-backed verdict ages out. An UNCACHED one is keyed on a local identity of None, so a
+# republish under the same filename changes nothing about the key. A SNAPSHOT-backed one is keyed
+# on the file's identity, which a republish does change -- but only once the new bytes have been
+# downloaded, and the entry is the memo of a revision check that only ran the first time, so
+# holding it forever means never asking the Hub again for the life of the process. Only a true On
+# Device checkpoint is permanent: it is the file the loader opens, so there is no revision to be
+# behind. Matches the variant listing's own freshness window for moved revisions.
 _SPEECH_REMOTE_TTL_SECONDS = 60.0
 
 
@@ -425,7 +466,12 @@ def _revalidated_speech_arch(
     live = _hub_revision(repo_id, gguf_filename, token)
     if live is None or live == cached:
         return arch
-    return _arch_from_prefix(_read_gguf_header(repo_id, gguf_filename, token), gguf_filename)
+    refreshed = _arch_from_prefix(_read_gguf_header(repo_id, gguf_filename, token), gguf_filename)
+    # A re-read that said nothing -- the range request failed, or the new header is unparseable --
+    # leaves the verdict we already had rather than replacing it with silence. Failing open on an
+    # UNKNOWN pick is the contract here; throwing away a known one is not, and it is what let a
+    # csm file through on nothing worse than a dropped connection.
+    return refreshed if refreshed is not None else arch
 
 
 def _speech_probe_architecture(
@@ -469,9 +515,13 @@ def _speech_probe_architecture(
     with _CACHE_LOCK:
         if len(_SPEECH_ARCH_CACHE) >= _SPEECH_ARCH_CACHE_MAX:
             _SPEECH_ARCH_CACHE.clear()
+        # Permanent only for a true On Device file, which has no revision to be behind. A cached
+        # Hub snapshot ages out like an uncached pick: its entry memoises a revision check, and
+        # holding that forever means the Hub is asked exactly once per file per process.
+        permanent = local is not None and _snapshot_revision(local) is None
         _SPEECH_ARCH_CACHE[key] = (
             arch,
-            None if local else time.monotonic() + _SPEECH_REMOTE_TTL_SECONDS,
+            None if permanent else time.monotonic() + _SPEECH_REMOTE_TTL_SECONDS,
         )
     return arch
 
@@ -498,9 +548,12 @@ def speech_pick_refusal(
     if not repo_id or not gguf_filename or not gguf_filename.lower().endswith(".gguf"):
         return None
     arch = _speech_probe_architecture(repo_id, gguf_filename, hf_token, allow_network)
-    if arch is not None and arch in _SPEECH_GGUF_ARCHS:
+    if is_speech_gguf_architecture(arch):
+        # Named only when the header carried an identifier: the Mimi vocoder puts a whole
+        # sentence in general.architecture, and quoting that back reads as gibberish.
+        named = f"{arch} " if arch in _SPEECH_GGUF_ARCHS else ""
         return (
-            f"'{os.path.basename(gguf_filename)}' is a {arch} speech checkpoint, which no image "
+            f"'{os.path.basename(gguf_filename)}' is a {named}speech checkpoint, which no image "
             "or video backend can decode. Pick one of this folder's media GGUFs instead."
         )
     return None

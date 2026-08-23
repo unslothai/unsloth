@@ -5753,3 +5753,61 @@ def test_the_listing_probe_hides_a_class_the_installed_diffusers_predates(monkey
     installed[0] = "0.33.0"
     assert family_pipeline_available(wan) is True
     assert "diffusers" not in sys.modules, "the listing probe imported diffusers"
+
+
+# ── the architectures published CSM bundles actually declare ────────────────────
+
+# ggml-org/sesame-csm-1b-GGUF ships its Mimi vocoder with a SENTENCE where the architecture
+# identifier belongs. Verified against the live repo, not invented.
+_VOCODER_ARCH = (
+    "this model cannot be used as LLM, use it via --model-vocoder in TTS examples"
+)
+
+
+def test_every_published_csm_spelling_classifies_as_speech():
+    """The gate keyed on "llama-csm" alone, which is one publisher's spelling. Every CSM GGUF
+    on the Hub uses a different one, so the chat picker offered all of them to llama-server."""
+    for arch in ("llama-csm", "csm", "csm-tts", "mimi", "LLAMA-CSM", " csm-tts "):
+        assert models_route._arch_to_task(arch) == models_route._SPEECH_TASK, arch
+    # The vocoder's sentence, and a reworded copy of it.
+    for arch in (_VOCODER_ARCH, "cannot be used as LLM"):
+        assert models_route._arch_to_task(arch) == models_route._SPEECH_TASK, arch
+    # Neighbours that must keep running: Orpheus and OuteTTS ship as plain llama GGUFs.
+    for arch in ("llama", "qwen3", "csmith", "mimic", "flux"):
+        assert models_route._arch_to_task(arch) != models_route._SPEECH_TASK, arch
+
+
+def test_the_real_sesame_bundle_is_classified_as_speech(tmp_path):
+    """The repo this feature was written for. "kyutai-mimi" sorts before both "sesame-" files,
+    and its sentence-shaped architecture used to answer text-generation, which took `fallback`
+    and outranked the two llama-csm results: the whole bundle was offered as a chat model."""
+    bundle = tmp_path / "sesame-csm-1b-GGUF"
+    _arch_gguf(bundle / "kyutai-mimi.gguf", _VOCODER_ARCH)
+    _arch_gguf(bundle / "sesame-csm-backbone.gguf", "llama-csm")
+    _arch_gguf(bundle / "sesame-csm-decoder.gguf", "llama-csm")
+    assert models_route._gguf_folder_task(bundle, ("ggml-org/sesame-csm-1b-GGUF",)) == (
+        models_route._SPEECH_TASK
+    )
+
+    # The other published layouts, each with its own spelling.
+    for repo, files in (
+        ("cartesia/sesame-csm-1b-gguf", {"q8.gguf": "csm"}),
+        ("cstr/csm-1b-GGUF", {"csm-1b-q8_0.gguf": "csm-tts"}),
+        ("johnbenac/sesame-csm-1b-GGUF-encoder", {"kyutai-mimi.gguf": "mimi"}),
+    ):
+        folder = tmp_path / repo.replace("/", "__")
+        for name, arch in files.items():
+            _arch_gguf(folder / name, arch)
+        assert models_route._gguf_folder_task(folder, (repo,)) == models_route._SPEECH_TASK, repo
+
+
+def test_a_speech_arch_is_the_same_answer_in_every_layer():
+    """Three layers gate on this and they used to hold three separate copies of the set. The
+    listing classifier, the chat refusal and the media preflight now read one definition."""
+    from core.inference.diffusion_compat import _SPEECH_GGUF_ARCHS as compat_archs
+    from core.inference.llama_cpp import LlamaCppBackend
+    from utils.models.gguf_metadata import SPEECH_GGUF_ARCHS
+
+    assert models_route._SPEECH_GGUF_ARCHS is SPEECH_GGUF_ARCHS
+    assert compat_archs is SPEECH_GGUF_ARCHS
+    assert LlamaCppBackend._SPEECH_ARCHES is SPEECH_GGUF_ARCHS

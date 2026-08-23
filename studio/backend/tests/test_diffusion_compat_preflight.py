@@ -1409,3 +1409,166 @@ def test_an_automatic_image_load_keeps_the_pre_eviction_preflight_offline():
     # Both engines keep one signature, since the route preflights whichever one it picked.
     for backend in (diffusion.DiffusionBackend, sd_cpp_backend.SdCppDiffusionBackend):
         assert "allow_network" in inspect.signature(backend.preflight_base_access).parameters
+
+
+# The Mimi vocoder in ggml-org/sesame-csm-1b-GGUF writes a SENTENCE where the architecture
+# identifier belongs. Read off the live repo, not invented.
+_VOCODER_ARCH = "this model cannot be used as LLM, use it via --model-vocoder in TTS examples"
+
+
+# ── the HTTP client huggingface_hub actually hands us ──────────────────────────
+
+
+class _HttpxLikeClient:
+    """An httpx.Client's surface, which is what ``get_session`` returns on huggingface_hub 1.x.
+
+    Deliberately NOT a mock of the requests API: `get` rejects `stream`, there is no
+    `iter_content`, and there is no `raw`. requirements/studio.txt floors 1.23 on python >= 3.10,
+    so this is the client every supported install has."""
+
+    def __init__(self, body):
+        self.body = body
+        self.calls: list[tuple[str, str]] = []
+
+    def get(self, url, params = None, headers = None, timeout = None, **kwargs):
+        if "stream" in kwargs:
+            raise TypeError("Client.get() got an unexpected keyword argument 'stream'")
+        raise AssertionError("a ranged header read must use the streaming API")
+
+    def stream(self, method, url, headers = None, timeout = None, follow_redirects = False):
+        self.calls.append((method, (headers or {}).get("Range", "")))
+        assert follow_redirects, "the Hub answers a resolve URL with a 302 to the CDN"
+        return _HttpxLikeStream(self.body)
+
+
+class _HttpxLikeStream:
+    def __init__(self, body):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    @property
+    def status_code(self):
+        return 206
+
+    def iter_bytes(self, chunk_size = 65536):
+        for start in range(0, len(self.body), chunk_size):
+            yield self.body[start : start + chunk_size]
+
+    def close(self):
+        pass
+
+
+def test_the_ranged_read_works_on_the_httpx_client_hub_1_x_returns(monkeypatch):
+    """huggingface_hub 1.0 swapped requests for httpx, and httpx has no ``stream = True``
+    keyword. Asking for one raised TypeError inside the worker's blanket except, so the probe
+    read nothing and EVERY uncached remote pick failed open: a preflight that refused nothing."""
+    client = _HttpxLikeClient(_arch_header("llama-csm"))
+    monkeypatch.setattr("huggingface_hub.utils.get_session", lambda: client)
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+    diffusion_compat._reset_inner_dim_cache()
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    # Still one bounded ranged request, exactly as on the requests client.
+    assert client.calls == [("GET", f"bytes=0-{diffusion_compat._GGUF_HEADER_BYTES - 1}")]
+
+
+def test_the_ranged_read_still_works_on_the_requests_session_hub_0_x_returns(monkeypatch):
+    """The other half of the floor: python < 3.10 pins 0.36, whose session is requests'."""
+    requests_log = _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("llama-csm")})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert len(requests_log) == 1
+
+
+def test_a_requests_session_is_not_mistaken_for_an_httpx_client(monkeypatch):
+    """``requests.Session.stream`` is a plain bool attribute and ``httpx.Client.stream`` is a
+    method, so the branch has to test for a CALLABLE. Testing for the name alone sends a requests
+    session down the httpx path and breaks the client that works today."""
+    import requests
+
+    assert hasattr(requests.Session(), "stream")
+    assert not callable(getattr(requests.Session(), "stream", None))
+
+
+# ── verdict freshness ──────────────────────────────────────────────────────────
+
+
+def test_a_cached_snapshot_verdict_does_not_outlive_its_revision_check(monkeypatch, tmp_path):
+    """A snapshot-backed entry memoises a revision check. Holding it forever meant the Hub was
+    asked once per file per process, so a checkpoint republished later in the session kept the
+    verdict read off bytes that had since been replaced."""
+    cached = _cache_entry(tmp_path, "oldsha", "llama-csm")
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: cached)
+    heads: list = []
+
+    def _head(*a, **k):
+        heads.append(a)
+        return "oldsha"
+
+    monkeypatch.setattr(diffusion_compat, "_hub_revision", _head)
+    _stub_range_reads(monkeypatch, {})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert len(heads) == 1
+    # Inside the window the memo answers, as before.
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert len(heads) == 1
+    # Past it, the Hub is asked again.
+    monkeypatch.setattr(
+        diffusion_compat.time,
+        "monotonic",
+        lambda: 1e9 + diffusion_compat._SPEECH_REMOTE_TTL_SECONDS,
+    )
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert len(heads) == 2
+
+
+def test_an_on_device_verdict_is_still_cached_permanently(monkeypatch, tmp_path):
+    """The other half: an On Device file has no revision to be behind, so its entry is keyed on
+    the file's identity and never needs to age out."""
+    on_device = tmp_path / CSM_FILE
+    on_device.write_bytes(_arch_header("llama-csm"))
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: str(on_device))
+    _stub_range_reads(monkeypatch, {})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    key = next(iter(diffusion_compat._SPEECH_ARCH_CACHE))
+    assert diffusion_compat._SPEECH_ARCH_CACHE[key][1] is None
+
+
+def test_a_failed_refresh_keeps_the_verdict_it_already_had(monkeypatch, tmp_path):
+    """A HEAD that reports a new revision and a re-read that then fails used to replace a known
+    llama-csm verdict with None, opening the gate on nothing worse than a dropped connection.
+    Failing open on an UNKNOWN pick is the contract; discarding a known one is not."""
+    cached = _cache_entry(tmp_path, "oldsha", "llama-csm")
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: cached)
+    monkeypatch.setattr(diffusion_compat, "_hub_revision", lambda *a, **k: "newsha")
+    # The re-read of the new revision returns nothing at all.
+    _stub_range_reads(monkeypatch, {})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+
+    # A re-read that SUCCEEDS still replaces it, in both directions.
+    diffusion_compat._reset_inner_dim_cache()
+    _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("flux")})
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: cached)
+    monkeypatch.setattr(diffusion_compat, "_hub_revision", lambda *a, **k: "newsha")
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is None
+
+
+def test_every_published_csm_spelling_is_refused_by_the_media_preflight(monkeypatch):
+    """The media half of the same set the chat gate uses: a bundle's vocoder reaches a media
+    loader exactly like its backbone does."""
+    for arch in ("llama-csm", "csm", "csm-tts", "mimi"):
+        _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header(arch)})
+        assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None, arch
+    # The vocoder's sentence is quoted back to nobody, but it still refuses.
+    _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header(_VOCODER_ARCH)})
+    reason = diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE)
+    assert reason is not None and "--model-vocoder" not in reason
+

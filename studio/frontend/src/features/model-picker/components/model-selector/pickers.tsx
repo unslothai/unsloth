@@ -113,6 +113,7 @@ import {
   type CommunityModelPolicy,
   allowedHiddenModelIdMatches,
   audioPickIsRoutable,
+  localAudioRowIsUndecodableGguf,
   communityAudioRowIsRunnable,
   curatedAudioInventoryMatches,
   curatedAudioInventoryTask,
@@ -3769,6 +3770,17 @@ export function HubModelPicker({
   const fineTunedRows = useMemo(() => {
     const needle = normalizeForSearch(debouncedQuery.trim());
     return loraModels
+      .filter(
+        (m) =>
+          // A CSM export in a GGUF container loads nowhere: llama.cpp has no decoder and the
+          // Audio page does not list speech GGUFs either. audioType is read off the checkpoint,
+          // so this holds for a row whose path says nothing about its family.
+          !localAudioRowIsUndecodableGguf({
+            audioType: m.audioType,
+            exportType: m.exportType,
+            isDirectGguf: m.isDirectGguf,
+          }),
+      )
       .filter((m) => {
         const text = normalizeForSearch(
           `${m.name} ${m.baseModel ?? ""} ${m.id}`,

@@ -220,6 +220,10 @@ from models.responses import (
     EmbeddingCheckResponse,
 )
 from utils.paths.path_utils import is_appledouble_metadata
+from utils.models.gguf_metadata import (
+    SPEECH_GGUF_ARCHS,
+    is_speech_gguf_architecture,
+)
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -4085,9 +4089,11 @@ _VIDEO_GEN_TASK = "text-to-video"
 # Task tag for the archs above; mirrored by the frontend NON_CHAT_TASKS gate.
 _UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
 
-# TTS-only GGUF archs llama.cpp cannot load, tagged speech so the chat picker routes them to
-# the Audio page instead of llama-server. Mirrors LlamaCppBackend._SPEECH_ARCHES.
-_SPEECH_GGUF_ARCHS = frozenset({"llama-csm"})
+# TTS-only GGUF archs llama.cpp cannot load, tagged speech so the chat picker keeps them out of
+# llama-server. One shared definition rather than a copy per layer: the chat gate, this classifier
+# and the media preflight all have to agree, and no published CSM bundle spells the arch the same
+# way twice.
+_SPEECH_GGUF_ARCHS = SPEECH_GGUF_ARCHS
 _SPEECH_TASK = "text-to-speech"
 
 
@@ -4200,7 +4206,7 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
                 else _UNSUPPORTED_DIFFUSION_TASK
             )
         return _UNSUPPORTED_DIFFUSION_TASK
-    if a in _SPEECH_GGUF_ARCHS:
+    if is_speech_gguf_architecture(a):
         return _SPEECH_TASK
     if a in _DIFFUSION_GGUF_ARCHS:
         # Third gate, mirroring the cached-repo picker: a family no engine here can build can only fail.
