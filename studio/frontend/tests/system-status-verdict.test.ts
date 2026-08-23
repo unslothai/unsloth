@@ -150,6 +150,34 @@ test("the Environment rows wait for the same read", () => {
   }
 });
 
+test("no tile fabricates a usage percentage for a host it has not read", () => {
+  // MetricTile takes percent null for "unknown" and draws a dash and an empty bar. An
+  // unread host is not an idle one with no capacity, so every tile must reach for that
+  // rather than pass 0. Asserted on the source: percent is a prop, not a derivation.
+  const tiles = tabSrc.match(/<MetricTile\b[\s\S]*?\/>/g) ?? [];
+  assert.equal(tiles.length, 4, "the Live monitor's four tiles");
+  for (const tile of tiles) {
+    const label = /label=\{t\("([^"]+)"\)\}/.exec(tile)?.[1] ?? "?";
+    const percent = /percent=\{([^}]*)\}/.exec(tile)?.[1] ?? "";
+    assert.match(
+      percent,
+      /hostUnread \? null :|vramUsageKnown \? metrics\.vramPercent : null/,
+      `${label} gates its percentage`,
+    );
+  }
+});
+
+test("the two non-answers are worded for the whole host, not just its GPUs", () => {
+  // "Checking for GPUs..." beside a RAM reading would be the wrong sentence, so the
+  // non-GPU tiles take common.loading; the failure wording already speaks of the host.
+  const detail = lift(tabSrc, /const hostUnreadDetail =\n?[\s\S]*?;/, "hostUnreadDetail", "resources-tab.tsx");
+  const forStatus = (status: string) =>
+    new Function("systemInfo", "t", `${detail}\nreturn hostUnreadDetail;`)({ status }, t);
+  assert.equal(forStatus("unavailable"), UNREADABLE);
+  assert.equal(forStatus("pending"), "common.loading");
+  assert.notEqual(forStatus("pending"), DETECTING, "which is about GPUs specifically");
+});
+
 test("a host that really has no GPU still gets the CPU-only verdict, and its real rows", () => {
   const out = verdictFor(cpuShaped("ready"));
   assert.equal(out.gpuUnknown, false);

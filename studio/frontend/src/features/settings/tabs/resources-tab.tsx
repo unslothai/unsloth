@@ -359,6 +359,12 @@ export function ResourcesTab() {
     systemInfo.status === "unavailable"
       ? t("settings.resources.gpu.unreadable")
       : t("settings.resources.gpu.detecting");
+  // The same two non-answers for the tiles that are not about the GPU. The failure
+  // wording already speaks of the whole host; only "checking for GPUs" does not.
+  const hostUnreadDetail =
+    systemInfo.status === "unavailable"
+      ? t("settings.resources.gpu.unreadable")
+      : t("common.loading");
   const backendLabel = (
     displayedGpu?.backend ??
     systemInfo.device_backend ??
@@ -427,31 +433,47 @@ export function ResourcesTab() {
 
       <SettingsSection title={t("settings.resources.liveMonitor.title")}>
         <div className="grid gap-2 py-3 sm:grid-cols-2">
+          {/* An unread host is not an idle one with no capacity: percent null is what
+              MetricTile already has for a usage it must not fabricate. */}
           <MetricTile
             label={t("settings.resources.liveMonitor.cpu")}
-            value={cpuFrequencyLabel ?? cpuCoresLabel}
+            value={hostReading(cpuFrequencyLabel ?? cpuCoresLabel)}
             detail={
-              cpuFrequencyLabel
-                ? cpuCoresLabel
-                : t("settings.resources.liveMonitor.currentLoad")
+              hostUnread
+                ? hostUnreadDetail
+                : cpuFrequencyLabel
+                  ? cpuCoresLabel
+                  : t("settings.resources.liveMonitor.currentLoad")
             }
-            percent={systemInfo.cpu?.usage_percent ?? 0}
+            percent={hostUnread ? null : (systemInfo.cpu?.usage_percent ?? 0)}
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.ram")}
-            value={`${formatGiB(metrics.ramUsed)} / ${formatGiB(metrics.ramTotal)}`}
-            detail={t("settings.resources.liveMonitor.free", {
-              value: formatGiB(systemInfo.memory?.available_gb),
-            })}
-            percent={systemInfo.memory?.percent_used ?? 0}
+            value={hostReading(
+              `${formatGiB(metrics.ramUsed)} / ${formatGiB(metrics.ramTotal)}`,
+            )}
+            detail={
+              hostUnread
+                ? hostUnreadDetail
+                : t("settings.resources.liveMonitor.free", {
+                    value: formatGiB(systemInfo.memory?.available_gb),
+                  })
+            }
+            percent={hostUnread ? null : (systemInfo.memory?.percent_used ?? 0)}
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.disk")}
-            value={`${formatGb(metrics.diskUsed)} / ${formatGb(metrics.diskTotal)}`}
-            detail={t("settings.resources.liveMonitor.free", {
-              value: formatGb(metrics.diskFree),
-            })}
-            percent={metrics.diskPercent}
+            value={hostReading(
+              `${formatGb(metrics.diskUsed)} / ${formatGb(metrics.diskTotal)}`,
+            )}
+            detail={
+              hostUnread
+                ? hostUnreadDetail
+                : t("settings.resources.liveMonitor.free", {
+                    value: formatGb(metrics.diskFree),
+                  })
+            }
+            percent={hostUnread ? null : metrics.diskPercent}
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.vram")}
