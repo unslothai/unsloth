@@ -668,6 +668,21 @@ def test_safe_extractall_rejects_a_symlink_at_a_reserved_installer_path(tmp_path
     assert not any(target.iterdir())
 
 
+def test_safe_extractall_rejects_a_symlink_onto_a_reserved_installer_path(tmp_path):
+    # The marker exists before extraction on any root Studio owns, so a link to it resolves
+    # to a file and _locate_sd_cli reports an empty one as the executable.
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / sdmod.OWNERSHIP_MARKER).write_text("")
+    archive = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        _link_member(zf, _CLI, sdmod.OWNERSHIP_MARKER)
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "onto a reserved installer path"):
+            _safe_extractall(zf, target)
+    assert sdmod._locate_sd_cli(target) is None
+
+
 def test_safe_extractall_rejects_a_reserved_path_reached_through_a_directory_alias(tmp_path):
     # A previous bundle's directory link makes alias/<record> land on the record itself, so a
     # lexical comparison misses it and _write_install_record overwrites sd-cli with JSON.

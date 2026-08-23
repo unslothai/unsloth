@@ -671,10 +671,18 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     # sitting where a link goes: checked here rather than at creation, so a refused archive
     # has not yet replaced a working binary.
     keys = {str(d): _plan_key(d, base, replaced, archive) for d, _, _ in links}
-    for dest, _, member in links:
+    for dest, link_target, member in links:
         key = keys[str(dest)]
         if key in reserved:
             raise RuntimeError(f"symlink at a reserved installer path: {member.filename!r}")
+        # And neither may one POINT at them: the marker exists before extraction on any root
+        # Studio owns, so sd-cli -> the marker resolves to a file and _locate_sd_cli reports
+        # an empty one as the executable, with the install still claiming success.
+        landing = _plan_resolve(
+            Path(os.path.normpath(key.parent / link_target)), base, replaced, archive
+        )
+        if landing in reserved:
+            raise RuntimeError(f"symlink onto a reserved installer path: {member.filename!r}")
         if key.is_dir() and not key.is_symlink():
             raise RuntimeError(f"symlink member collides with a directory: {member.filename!r}")
     # Chains are normal (libwebp.so -> libwebp.so.7 -> libwebp.so.7.2.0) but must terminate: a
