@@ -2745,7 +2745,13 @@ def test_the_backfill_fills_in_fields_rather_than_skipping_known_keys():
     assert "fill_absent_fields: bool = False" in route, "the rule this mirrors"
     assert "fill_absent_fields = payload.fill_absent_fields," in route
     # A write mode must not leak into saved fields, or model_id-only removal stops working.
-    assert '"remove", "fill_absent_fields"' in route
+    # Read the exclude set itself rather than one spelling of it: membership is the rule,
+    # while the literal's line breaks and entry order are not. Adding mirrors_server_tuning
+    # pushed this set onto several lines and broke the old single-line substring, even
+    # though both names were still excluded.
+    saved_fields_exclude = route.split("saved_fields = payload.model_dump(", 1)[1].split("}", 1)[0]
+    assert '"remove"' in saved_fields_exclude
+    assert '"fill_absent_fields"' in saved_fields_exclude
 
     # The merge is the server's, in the write's transaction: a client-side one reopens the race.
     db = _read_backend("storage/studio_db.py")
