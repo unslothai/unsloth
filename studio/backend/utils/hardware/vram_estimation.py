@@ -917,9 +917,7 @@ def _full_weight_embedding_elements(arch: ModelArchConfig, target_modules) -> in
     if isinstance(target_modules, str):
         return 0
     targets = set(target_modules or [])
-    return arch.vocab_size * arch.hidden_size * len(
-        targets & {"embed_tokens", "lm_head"}
-    )
+    return arch.vocab_size * arch.hidden_size * len(targets & {"embed_tokens", "lm_head"})
 
 
 def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: list) -> int:

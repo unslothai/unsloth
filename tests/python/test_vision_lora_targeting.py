@@ -199,7 +199,6 @@ def test_ensure_weight_tying_defaults_on_for_a_redirected_tied_pair():
 @pytest.mark.parametrize("moved", [(), ("embed_tokens",), ("lm_head",)])
 def test_ensure_weight_tying_stays_off_unless_both_moved(moved):
     from unsloth.models._utils import _resolve_ensure_weight_tying
-
     assert _resolve_ensure_weight_tying(_Model(tie = True), moved, None) is False
 
 
@@ -214,7 +213,6 @@ def test_explicit_ensure_weight_tying_always_wins(requested):
 
 def test_ensure_weight_tying_handles_models_without_a_config():
     from unsloth.models._utils import _resolve_ensure_weight_tying
-
     class Bare:
         pass
 
