@@ -382,26 +382,65 @@ def compare_rows(base_row: Optional[dict], treat_row: Optional[dict]) -> dict:
     state. That is not worthless, but it is not coverage of the named action and must not be
     counted as it. So it gets its own verdict, and an action that never ran on either arm can no
     longer contribute a pass to anything.
+
+    WHY AN ARM WENT IDLE IS PART OF THE READING, and `one_sided` carries it. An arm that could not
+    PERFORM an action the other performed is a difference between the builds, which is the question
+    this whole instrument asks: a control that no longer opens is exactly that shape, and it is the
+    one regression class that produces no digest to differ. An arm that merely arrived after its
+    slot closed is a slow machine and cannot move a verdict, whether one arm missed it or both.
+    Only the first sets `one_sided`; the caller decides what to do with it.
     """
+    ran: dict[str, bool] = {}
     for label, row in (("base", base_row), ("treatment", treat_row)):
         if not isinstance(row, dict):
             return {
                 "verdict": NOT_COMPARABLE,
                 "reason": f"the {label} arm has no row for this action",
                 "moved": [],
+                "one_sided": "",
                 "style_verdict": NOT_COMPARABLE,
                 "style_reason": "",
             }
-        if not row.get("ran"):
-            reason = row.get("reason") or "no reason recorded"
-            return {
-                "verdict": NOT_EXERCISED,
-                "moved": [],
-                "reason": f"the action did not run on the {label} arm ({reason}), so any "
-                "agreement here is about a surface nothing touched",
-                "style_verdict": NOT_EXERCISED,
-                "style_reason": "",
-            }
+        ran[label] = bool(row.get("ran"))
+    if not all(ran.values()):
+        # Named after the arm that DID run, so an empty string is the symmetric case.
+        live = [label for label in ("base", "treatment") if ran[label]]
+        label = "base" if not ran["base"] else "treatment"
+        row = base_row if label == "base" else treat_row
+        assert isinstance(row, dict)
+        reason = row.get("reason") or "no reason recorded"
+        # A MISSED SLOT IS NOT A BUILD DIFFERENCE, even when only one arm missed it, and this
+        # distinction is the whole load-bearing part of `one_sided`. `ran=false` has two causes
+        # that look identical in the count and mean opposite things. The runner arriving after
+        # the slot closed says nothing about the build: the schedule is fixed, the budgets are
+        # small, and a machine slow enough to miss a slot at 45700ms is slow enough to miss it
+        # on the next repetition too, so corroboration does not separate them -- the misses are
+        # correlated through the runner, not independent draws. Treating that as asymmetric
+        # execution reds the job on machine speed and breaks the invariant the mutation study
+        # established, that a missed slot cannot move this verdict. A precondition failure is
+        # the opposite: `image_upload` records `slot_missed=false` with "no visible attachments
+        # button", and a control that stops opening records exactly that. So the signal is
+        # `slot_missed`, which the driver already writes, and not merely which arm went idle.
+        missed_slot = bool(row.get("slot_missed"))
+        detail = (
+            f"the action did not run on the {label} arm ({reason}), so any "
+            "agreement here is about a surface nothing touched"
+        )
+        if live and not missed_slot:
+            detail = (
+                f"the action RAN on the {live[0]} arm and could not be performed on the "
+                f"{label} arm ({reason}), so the two builds did not behave the same way"
+            )
+        if missed_slot:
+            live = []
+        return {
+            "verdict": NOT_EXERCISED,
+            "moved": [],
+            "one_sided": live[0] if live else "",
+            "reason": detail,
+            "style_verdict": NOT_EXERCISED,
+            "style_reason": "",
+        }
     assert base_row is not None and treat_row is not None
     return compare(base_row.get("parity"), treat_row.get("parity"))
 

@@ -57,7 +57,10 @@ class _Verdict:
 
 
 class _Bundle:
-    engine = "webkit"
+    # WHAT `browser.launch` WOULD HAVE RESOLVED on the machine running this test. `run_meta`
+    # records the engine and `requested_identity` resolves the same way, so a stub that names a
+    # fixed one would make a legitimate resume look like an engine change off Linux and macOS.
+    engine = browser_mod.default_engine()[0]
     engine_note = "stubbed for this test"
     browser = context = page = cdp = None
 
@@ -524,6 +527,117 @@ def test_a_resume_under_the_same_probe_still_resumes(studio, probe):
         )
         is None
     )
+
+
+# ── one Studio, two sides: the attached null control ────────────────────────────────────────
+
+
+class _ProviderBackend:
+    """`lifecycle.register_provider`'s contract, per origin: idempotent by DISPLAY NAME.
+
+    The real one deletes every existing provider whose `display_name` matches before creating the
+    replacement, so registering the pacer twice against ONE Studio destroys the id the first
+    registration handed out. Modelled rather than stubbed to a constant, because that deletion is
+    the whole failure.
+    """
+
+    def __init__(self) -> None:
+        self.live: dict = {}
+        self.registrations: list = []
+        self.deleted: list = []
+        self._issued = 0
+
+    def register(self, base_url, auth, provider):
+        origin = base_url.rstrip("/")
+        rows = self.live.setdefault(origin, {})
+        for pid, name in list(rows.items()):
+            if name == provider.name:
+                del rows[pid]
+                self.deleted.append((origin, pid))
+        self._issued += 1
+        pid = f"provider-{self._issued}"
+        rows[pid] = provider.name
+        provider.id = pid
+        self.registrations.append((origin, pid))
+        return pid
+
+
+def _capture_init_scripts(monkeypatch) -> list:
+    captured: list = []
+
+    def fake_launch(
+        engine,
+        *args,
+        init_scripts = None,
+        **kwargs,
+    ):
+        captured.extend(init_scripts or [])
+        return _Bundle()
+
+    monkeypatch.setattr(browser_mod, "launch", fake_launch)
+    return captured
+
+
+def _selected_provider_ids(scripts: list, origin: str) -> set:
+    """The provider ids the seed scripts for `origin` actually SELECT, out of their checkpoints."""
+
+    import re
+
+    ids = set()
+    for script in scripts:
+        if json.dumps(origin) not in script:
+            continue
+        for match in re.finditer(r"external::([^:]+)::", script):
+            ids.add(match.group(1))
+    return ids
+
+
+def test_an_attached_null_control_registers_one_provider_for_the_one_studio(studio, monkeypatch):
+    """`--attach U --attach-b U` is TWO SIDES ON ONE STUDIO, which `is_null_control` accepts.
+
+    Registering per side registered the pacer twice against that single backend, and the second
+    registration deleted the id the base side's seed script had already captured. Both scripts are
+    scoped to the same origin, Playwright does not define the order init scripts run in, and
+    `StudioAuth.rotate` re-adds them mid-run -- so the base could boot every cell with a DELETED
+    provider selected, which renders as "No longer offered" and throws `Connection not found`
+    without ever asking for a completion.
+    """
+
+    backend = _ProviderBackend()
+    monkeypatch.setattr(lifecycle, "register_provider", backend.register)
+    scripts = _capture_init_scripts(monkeypatch)
+    url = "http://127.0.0.1:5310"
+
+    args = _args(studio, "--attach", url, "--attach-b", url, "--branch", "main", "--ab", "main")
+    assert sb.run(args, ab_ref = "main") == 0
+
+    # THE SYMPTOM FIRST. Whatever the bookkeeping below says, the failure a cell actually meets is
+    # a seed script that SELECTS a provider the backend no longer has, so that is what this pins:
+    # every id named by a script scoped to this origin is still live there, and no live id is
+    # unnamed. Asserting only "nothing was deleted" would pass a future fix that deleted and then
+    # re-seeded both scripts with the survivor, and would fail a fix that never selects at all.
+    selected = _selected_provider_ids(scripts, url)
+    assert selected == set(backend.live[url])
+    assert selected, "the one Studio must still have a provider selected"
+    # And the registration itself: one backend, one registration, nothing destroyed.
+    assert backend.deleted == []
+    assert backend.registrations == [(url, "provider-1")]
+
+
+def test_two_attached_studios_still_get_a_provider_each(studio, monkeypatch):
+    """The control: two DIFFERENT origins are two backends and must each be registered."""
+
+    backend = _ProviderBackend()
+    monkeypatch.setattr(lifecycle, "register_provider", backend.register)
+    scripts = _capture_init_scripts(monkeypatch)
+    base_url, treatment_url = "http://127.0.0.1:5310", "http://127.0.0.1:5311"
+
+    args = _args(studio, "--attach", base_url, "--attach-b", treatment_url, "--ab", "fix")
+    assert sb.run(args, ab_ref = "fix") == 0
+
+    assert backend.registrations == [(base_url, "provider-1"), (treatment_url, "provider-2")]
+    assert _selected_provider_ids(scripts, base_url) == {"provider-1"}
+    assert _selected_provider_ids(scripts, treatment_url) == {"provider-2"}
 
 
 if __name__ == "__main__":

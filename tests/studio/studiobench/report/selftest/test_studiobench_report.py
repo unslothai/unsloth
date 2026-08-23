@@ -371,3 +371,40 @@ def test_a_measured_stream_follow_failure_is_still_fatal():
         "reason": "the thread fell behind for 58% of the streaming phase",
     }
     assert _completion_by_rung(rows)[100_000][0] is False, rows
+
+
+def test_a_bounded_ratio_is_marked_rather_than_printed_as_a_measurement():
+    """An arm under its instrument floor contributes the floor, so the ratio understates the true
+    magnitude. Printed bare it invites `4900% worse` being quoted as a measurement; the marker
+    goes in the ratio cell rather than a footnote for the same reason the void path gives."""
+
+    identity = RunIdentity("studiobench/1", "c", "r", "w", "s1")
+    smooth = Measure.read(0.0, "%", floor = 0.1)
+    janky = Measure.read(5.0, "%", floor = 0.1)
+    result = compare(
+        "main -> fix",
+        [Pair(100_000, "time_in_jank_pct", smooth, janky)],
+        identity,
+        identity,
+    )
+    rendered = render_ab_table(result)
+
+    assert ">=50.000" in rendered
+    assert "no reading" not in rendered
+    assert "regressed" in rendered
+
+
+def test_an_ordinary_ratio_is_still_printed_bare():
+    """The control: nothing sub-floor, nothing marked."""
+
+    identity = RunIdentity("studiobench/1", "c", "r", "w", "s1")
+    result = compare(
+        "main -> fix",
+        [Pair(100_000, "keystroke_p95_ms", Measure.read(100.0, "ms"), Measure.read(120.0, "ms"))],
+        identity,
+        identity,
+    )
+    rendered = render_ab_table(result)
+
+    assert "1.200" in rendered
+    assert ">=" not in rendered and "<=" not in rendered

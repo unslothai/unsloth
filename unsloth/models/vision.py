@@ -2375,9 +2375,9 @@ class FastBaseModel:
             # Set a flag for generation!
             if hasattr(m, "_flag_for_generation"):
                 try:
-                    # Weirdly sometimes cannot succeed so do a try except
+                    # A PEFT wrapper delegates the read but owns nothing to delete
                     del m._flag_for_generation
-                except:
+                except AttributeError:
                     pass
 
         m = model

@@ -200,14 +200,37 @@
         }
       }
       parts.push(">");
+      // ADJACENT TEXT NODES ARE JOINED BEFORE THEY ARE NORMALISED, and this is the difference
+      // between a normaliser that works and one that looks like it works.
+      //
+      // React renders `Thought for {n} seconds` as THREE text nodes -- "Thought for ", "3",
+      // " seconds" -- because the interpolation is its own child. Normalising each node on its
+      // own, `normText("3")` sees a bare digit with no unit after it, the rendered-duration rule
+      // cannot match, and a wall-clock number reaches the digest. Two runs of a BYTE-IDENTICAL
+      // build then disagree by one character, which is exactly what a null control here measured:
+      // `msg22(assistant):17334->17334c`, same length, `3` against `2`, hunted down to this line
+      // by `sweep/parity_null_control.py --hunt`. It was the single largest source of false
+      // alarms in that control, and every one of them read as "this pull request changed the UI".
+      //
+      // The run is joined RAW and normalised once, so what gets normalised is the text as the
+      // page renders it rather than the accident of where React split it. Element boundaries
+      // still break a run, so this cannot weld two separate labels into one string.
+      let run = "";
+      const flush = () => {
+        if (!run) return;
+        const t = normText(run);
+        if (t) parts.push(t);
+        run = "";
+      };
       for (const child of el.childNodes) {
         if (child.nodeType === 3) {
-          const t = normText(child.nodeValue);
-          if (t) parts.push(t);
+          run += child.nodeValue == null ? "" : child.nodeValue;
         } else if (child.nodeType === 1) {
+          flush();
           walk(child, depth + 1);
         }
       }
+      flush();
       parts.push("</" + el.tagName.toLowerCase() + ">");
     };
     walk(root, 0);

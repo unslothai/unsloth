@@ -535,3 +535,325 @@ def test_bootstrap_ci_brackets_the_geometric_mean():
     metric = result.metrics[0]
     assert metric.ci_low is not None
     assert metric.ci_low <= metric.ratio_geomean <= metric.ci_high
+
+
+# ---------------------------------------------------------------------------------------
+# A CI that contains 1.0 is not a result: the pairs have to agree on the sign
+# ---------------------------------------------------------------------------------------
+#
+# The noise floor is a fact about the HARNESS -- whether a difference of this size is resolvable
+# here at all -- and it was the only gate a direction had to pass. Repetitions that disagree
+# produce a geometric mean well clear of the floor anyway: 0.7, 0.7, 1.2, 1.2 averages to 0.917
+# with a CI of 0.700-1.200, and the table said "improved" over it, in the one column anybody
+# quotes. The CI was computed, printed, and never consulted.
+
+
+def _split_pairs(metric: str, ratios: list[float]) -> list[Pair]:
+    """One metric, one ratio per rung, so the pairs can be made to disagree on the sign."""
+    out = []
+    for index, ratio in enumerate(ratios):
+        base = 100.0 + index
+        out.append(
+            Pair(
+                rung_tokens = 1_000 * (index + 1),
+                metric_key = metric,
+                base = Measure.read(base, "ms"),
+                treatment = Measure.read(base * ratio, "ms"),
+            )
+        )
+    return out
+
+
+def test_a_ci_that_spans_no_effect_is_not_an_improvement():
+    result = compare(
+        "treatment",
+        _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2]),
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+    )
+    metric = result.metrics[0]
+    assert metric.beyond_noise is True  # 8.3% clear of a 5% floor
+    assert metric.ci_low <= 1.0 <= metric.ci_high
+    assert metric.ci_spans_no_effect is True
+    assert metric.verdict == "inconclusive"
+    # The headline has no interval of its own, so it is the line most likely to be quoted.
+    assert result.verdict == "INCONCLUSIVE"
+    assert result.regressions == []
+
+
+def test_a_ci_that_spans_no_effect_does_not_clear_a_regression():
+    """An unresolved regression is still a regression: the fail-safe direction is FAIL.
+
+    The mirror of the case above must NOT be symmetric. Refusing to claim a win costs a
+    contributor a headline; refusing to raise a fail lets the regression ship. So the metric is
+    labelled unresolved and still counted.
+    """
+    result = compare(
+        "treatment",
+        _split_pairs("keystroke_p95_ms", [1.4, 1.4, 0.9, 0.9]),
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+    )
+    metric = result.metrics[0]
+    assert metric.ci_spans_no_effect is True
+    assert metric.verdict == "regressed (unresolved)"
+    assert result.verdict == "FAIL"
+    assert any("unresolved" in r for r in result.regressions)
+
+
+def test_agreeing_pairs_still_carry_their_direction():
+    """The gate must not swallow a real effect: four ratios that agree keep their verdict."""
+    result = compare(
+        "treatment",
+        _split_pairs("keystroke_p95_ms", [0.70, 0.72, 0.68, 0.74]),
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+    )
+    metric = result.metrics[0]
+    assert metric.ci_spans_no_effect is False
+    assert metric.verdict == "improved"
+    assert result.verdict == "IMPROVED"
+
+
+def test_the_table_does_not_print_a_direction_it_could_not_resolve():
+    from studiobench.report.render import render_ab_table
+
+    result = compare(
+        "treatment",
+        _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2]),
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+    )
+    text = render_ab_table(result)
+    assert "VERDICT: INCONCLUSIVE" in text
+    assert "improved" not in text
+    assert "do not agree on the sign" in text
+
+
+# ---------------------------------------------------------------------------------------
+# A measured zero is a reading: sub-floor arms bound the ratio rather than voiding the pair
+# ---------------------------------------------------------------------------------------
+#
+# `Pair.usable` required both values to be strictly positive. `time_in_jank_pct` and `jank_index`
+# are 0.0 on any arm smooth enough to have no over-budget frames, which is the ordinary state of a
+# healthy base, so a treatment that introduced jank over a zero-jank base had its pair dropped:
+# the table said `no reading` about two arms that had both read, the regression was absent from
+# `regressions` and from the headline, and as a null control it neither voided nor reached the
+# noise floor derived from it.
+#
+# The rule applied here is the one `score.py` has always applied to the same reading: a sub-floor
+# value is at least as good as the floor, so the floor is what enters the ratio. What that must
+# NOT do is admit a reading that was never taken, which is the distinction `frames.py` protects
+# when it refuses to score an unscheduled rAF loop as zero jank.
+
+JANK_FLOOR = 0.1
+SMOOTH = Measure.read(0.0, "%", floor = JANK_FLOOR)
+JANKY = Measure.read(5.0, "%", floor = JANK_FLOOR)
+
+
+def _jank_pair(base: Measure, treatment: Measure) -> Pair:
+    return Pair(rung_tokens = 100_000, metric_key = "time_in_jank_pct", base = base, treatment = treatment)
+
+
+def test_a_zero_jank_base_still_pairs_against_a_treatment_that_introduced_jank():
+    pair = _jank_pair(SMOOTH, JANKY)
+
+    assert pair.base.has_reading and pair.treatment.has_reading
+    assert pair.usable is True
+    # The floor stands in for the sub-floor arm, so the ratio is a LOWER bound: the true
+    # magnitude is larger, never smaller.
+    assert pair.ratio == 50.0
+    assert pair.bounded is True
+    assert pair.to_json()["bounded"] is True
+
+
+def test_the_regression_over_a_zero_base_reaches_the_table_and_the_headline():
+    result = compare("main -> fix", [_jank_pair(SMOOTH, JANKY)], _identity(), _identity())
+    metric = result.metrics[0]
+
+    assert metric.n_pairs == 1
+    assert metric.verdict == "regressed"
+    assert metric.bounded is True
+    assert any("time_in_jank_pct" in r for r in result.regressions)
+
+
+def test_an_improvement_to_zero_jank_is_bounded_the_other_way():
+    pair = _jank_pair(JANKY, SMOOTH)
+
+    assert pair.usable is True
+    assert pair.ratio == JANK_FLOOR / 5.0
+    assert pair.bounded is True
+
+
+def test_two_arms_below_the_floor_are_not_a_difference():
+    """score.py's reason, at the ratio layer: instrument noise on a fast machine must not invent
+    a difference between two perfect builds."""
+
+    pair = _jank_pair(SMOOTH, Measure.read(0.02, "%", floor = JANK_FLOOR))
+
+    assert pair.usable is True
+    assert pair.ratio == 1.0
+    result = compare("main -> fix", [pair], _identity(), _identity())
+    assert result.metrics[0].verdict == "within noise"
+
+
+def test_a_reading_that_was_never_taken_is_still_not_a_zero():
+    """THE LINE THIS MUST NOT CROSS. Both of these carry `value is None`, which is a different
+    thing from a measured zero, and neither may enter a ratio."""
+
+    never = Measure.not_attempted("%", "no window had the frame recorder installed")
+    failed = Measure.failed("%", "the recorder ran but exported no per-frame deltas")
+
+    assert _jank_pair(never, JANKY).usable is False
+    assert _jank_pair(failed, JANKY).usable is False
+    assert _jank_pair(JANKY, never).usable is False
+    assert _jank_pair(JANKY, failed).usable is False
+    assert (
+        compare("x", [_jank_pair(never, JANKY)], _identity(), _identity()).metrics[0].verdict
+        == "no_reading"
+    )
+
+
+def test_a_zero_with_no_declared_floor_stays_unusable():
+    """Nothing bounds it, so there is no honest ratio to form."""
+
+    pair = Pair(
+        rung_tokens = 100_000,
+        metric_key = "keystroke_p95_ms",
+        base = Measure.read(0.0, "ms"),
+        treatment = Measure.read(40.0, "ms"),
+    )
+
+    assert pair.base.has_reading is True
+    assert pair.usable is False
+
+
+def test_a_null_control_voids_on_jank_it_introduced_over_a_zero_base():
+    """The coupling. The null control decides whether this machine can tell two identical builds
+    apart; blind to the jank transition, it passed and published a floor derived from what was
+    left."""
+
+    result = compare(
+        "null control: main vs itself",
+        [_jank_pair(SMOOTH, JANKY)],
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+        is_null_control = True,
+    )
+
+    assert result.void is True
+    assert "time_in_jank_pct" in (result.void_reason or "")
+
+
+def test_a_bounded_ratio_is_not_published_as_this_machines_noise_floor():
+    """A bound is not a spread. Left in, the 50x ratio above would publish a 4,900% noise floor
+    and swallow every real effect measured on that machine afterwards."""
+
+    result = compare(
+        "null control: main vs itself",
+        [
+            _jank_pair(SMOOTH, JANKY),
+            Pair(
+                rung_tokens = 100_000,
+                metric_key = "max_frame_ms",
+                base = Measure.read(30.0, "ms"),
+                treatment = Measure.read(31.0, "ms"),
+            ),
+        ],
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+        is_null_control = True,
+    )
+    floor, source = noise_floor_from_null_control(result)
+
+    assert floor < 10.0
+    assert "1 bounded metric(s) excluded" in source
+
+
+def test_a_null_control_of_only_bounded_ratios_falls_back_to_the_declared_default():
+    result = compare(
+        "null control: main vs itself",
+        [_jank_pair(SMOOTH, JANKY)],
+        _identity(),
+        _identity(),
+        is_null_control = True,
+    )
+    floor, source = noise_floor_from_null_control(result)
+
+    assert "declared default" in source
+    assert "under an instrument floor" in source
+
+
+def test_an_unresolved_metric_does_not_lend_its_magnitude_to_the_headline():
+    """A metric that cannot resolve its own sign must not supply the number that gets quoted.
+
+    The headline is a weighted geometric mean of point estimates with no interval of its own, so
+    an inconclusive metric that happened to move a long way used to dominate it. keystroke_p95_ms
+    at 0.2, 0.2, 1.5, 1.5 (geomean 0.548, CI 0.200-1.500) beside a resolved menu_open_ms of 0.900
+    produced a headline of 0.631 and the word IMPROVED: a quoted 36.9% win almost entirely made
+    of data the same table labels inconclusive.
+    """
+
+    pairs = _split_pairs("keystroke_p95_ms", [0.2, 0.2, 1.5, 1.5])
+    pairs += _split_pairs("menu_open_ms", [0.9, 0.9, 0.9, 0.9])
+    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct = 5.0)
+
+    by_key = {m.metric_key: m for m in result.metrics}
+    assert by_key["keystroke_p95_ms"].verdict == "inconclusive"
+    assert by_key["menu_open_ms"].verdict == "improved"
+    # Only the resolved metric survives into the headline, so the quoted size is the real one.
+    assert result.headline_ratio == pytest.approx(0.9, abs = 1e-9)
+    assert result.verdict == "IMPROVED"
+
+
+def test_a_run_whose_every_moving_metric_is_unresolved_is_inconclusive_not_no_reading():
+    """Dropping unresolved metrics from the headline must not turn "says nothing" into "no data".
+
+    NO READING means there was nothing to read. This run measured fine and simply failed to
+    resolve a direction, which is a different answer and the one the operator has to act on.
+    """
+
+    pairs = _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2])
+    pairs += _split_pairs("menu_open_ms", [0.6, 0.6, 1.3, 1.3])
+    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct = 5.0)
+
+    assert all(m.ci_spans_no_effect for m in result.metrics)
+    assert result.headline_ratio is None
+    assert result.verdict == "INCONCLUSIVE"
+
+
+def test_an_unresolved_mover_beside_a_flat_metric_is_not_no_difference():
+    """ "No difference" asserts the change did nothing, which is stronger than this data supports.
+
+    Dropping an unresolved mover from the headline can leave only flat metrics behind, putting the
+    aggregate back inside the noise floor. Reading that as NO DIFFERENCE would convert a refusal
+    to answer into a positive finding of no effect, when one metric did move and simply could not
+    resolve its own sign.
+    """
+
+    pairs = _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2])
+    pairs += _split_pairs("menu_open_ms", [1.0, 1.0, 1.0, 1.0])
+    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct = 5.0)
+
+    by_key = {m.metric_key: m for m in result.metrics}
+    assert by_key["keystroke_p95_ms"].unresolved is True
+    assert by_key["menu_open_ms"].verdict == "within noise"
+    assert result.headline_ratio == pytest.approx(1.0, abs = 1e-9)
+    assert result.verdict == "INCONCLUSIVE"
+
+
+def test_an_unresolved_metric_never_clears_a_resolved_regression():
+    """A fail is never cleared by the exclusion: regressions are collected independently."""
+
+    pairs = _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2])
+    pairs += _split_pairs("menu_open_ms", [1.3, 1.3, 1.3, 1.3])
+    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct = 5.0)
+
+    assert result.regressions
+    assert result.verdict == "FAIL"

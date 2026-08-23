@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from ..runtime.types import ActionContext, ActionResult, Cell, Slot, Window, not_run
@@ -192,11 +193,19 @@ FAST = Scene(
     name = "fast",
     slots = _slots(
         [
-            # 18.2 s, not 8 s. `stop_generation` starts and stops its OWN turn, so opening it while the
+            # 18.4 s, not 8 s. `stop_generation` starts and stops its OWN turn, so opening it while the
             # opening tail is still draining starts a second turn on top of the first and truncates the
             # reply being measured -- which is the defect that made the seeded-vs-streamed equivalence
-            # check read a false 20% drift earlier in this project. The worst-case drain across the ladder
-            # is 17.8 s, and the packing test in fixture/selftest holds every film to it.
+            # check read a false 20% drift earlier in this project.
+            #
+            # KEYED TO THE DECLARED TAIL, NOT TO WHAT THE CORPUS HAPPENS TO STREAM. This said 17.8 s
+            # and sat at 18.2 s, which was under the ladder's own ceiling the whole time and only
+            # passed because the 1M rung was streaming recycled text: the manifest was sized at
+            # exactly the top rung's seeded target, so all three streamed turns clamped onto the last
+            # unit. Sizing the manifest from the ladder gave 1M its own material and the drain went
+            # to 18.23 s, which is what a corpus this tier can be pointed at was always allowed to
+            # do. STREAM_TAIL_CHARS (6,000) at field cadence is 18.25 s and every rung is held under
+            # it, so that ceiling is the bound to clear, and clearing it costs 200 ms here.
             #
             # THE SECOND PACKING CONSTRAINT, learned the expensive way. `send_turn` starts a FOLLOW-UP
             # turn, and a follow-up is FOLLOW_UP_CHARS (1,500) at field cadence, so it streams for 4.6 s.
@@ -210,7 +219,7 @@ FAST = Scene(
             ("scroll_during_generation", 1_500, 1_200),
             ("keystroke", 3_000, 1_800),
             ("scroll_during_generation", 6_000, 1_200),
-            ("stop_generation", 18_200, 3_000),
+            ("stop_generation", 18_400, 3_000),
             ("scroll_after", 21_500, 1_200),
             ("reasoning_toggle", 23_000, 3_500),
             ("send_turn", 26_700, 1_500),
@@ -304,10 +313,46 @@ class SceneRunner:
         Taken at the CLOSE of the action window, at the same moment as the census, so the digest
         and the occupancy it should be read against come from one reading of one DOM.
         """
+        want_raw = bool(self.base_args.get("parity_raw"))
         try:
-            return self.page.evaluate("() => window.__sb.parity.capture()")
+            return self.page.evaluate("(raw) => window.__sb.parity.capture({ raw })", want_raw)
         except Exception as exc:  # noqa: BLE001
             return {"parity_attempted": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+    def _parity_shot(self, action: str) -> dict:
+        """A viewport PNG taken at the same instant as the digest, when `--parity-shots` asked.
+
+        WHY THE VIEWPORT AND NOT THE DIFFERING ELEMENT. An element screenshot is the better
+        picture and Playwright takes it by SCROLLING the element into view, which mutates the
+        page. The next slot in the film is scripted against where the thread actually is, so a
+        shot that scrolls has changed the run it was supposed to be observing. The viewport is
+        what the user sees and costs nothing beyond the encode.
+
+        SCROLL IS RECORDED RATHER THAN FORCED, for the same reason. Both arms are driven by one
+        script inside one session so their offsets agree by construction, but "by construction"
+        is a claim, and a pair of shots at different offsets looks exactly like a UI change. The
+        number travels with the image and the composite refuses to present a mismatched pair as
+        a comparison.
+        """
+        out = self.base_args.get("parity_shots")
+        if not out:
+            return {}
+        label = self.base_args.get("arm_label") or "?"
+        try:
+            scroll = self.page.evaluate(
+                "() => { const v = document.querySelector('.aui-thread-viewport');"
+                " return v ? Math.round(v.scrollTop) : -1; }"
+            )
+        except Exception:  # noqa: BLE001
+            scroll = -1
+        name = f"{self.cell.cell_id}__{action}__{label}.png"
+        path = Path(out) / name
+        try:
+            path.parent.mkdir(parents = True, exist_ok = True)
+            self.page.screenshot(path = str(path))
+        except Exception as exc:  # noqa: BLE001
+            return {"shot_error": f"{type(exc).__name__}: {exc}"}
+        return {"shot": name, "shot_scroll_top": scroll}
 
     def _gap_window(self, name: str, until_ms: int, t0: float) -> None:
         now_ms = (time.monotonic() - t0) * 1000
@@ -461,6 +506,9 @@ class SceneRunner:
         observation_ms = (time.monotonic() - window_closed_at) * 1000
         row = result.row(slot.action, window_name, self.cell.cell_id)
         row["window_ms"] = window.duration_ms
+        # READ FROM THE LOCALS ABOVE, not from `window.notes`. The three observations were moved
+        # out of the measured window, so by the time this row is built they are values this method
+        # holds rather than notes the window carries.
         row["census"] = census
         row["parity"] = parity
         row["visible"] = visible
@@ -469,6 +517,16 @@ class SceneRunner:
         # the number is in the payload rather than in someone's hypothesis.
         row["observation_outside_window"] = True
         row["observation_ms"] = round(observation_ms, 1)
+        # THE SCREENSHOT IS TAKEN OUTSIDE THE WINDOW, on purpose and not as a tidiness point.
+        # The film runs on a wall clock and every slot has an absolute start, so an encode charged
+        # to the measured window eats the gap before the next slot -- which is how an action comes
+        # to report a MISSED SLOT on a contended runner. `--assert-liveness` counts those, so a
+        # camera inside the window could turn a healthy run red and it would look like the harness
+        # failing rather than like the instrument taxing itself. Out here it costs the gap, which
+        # is what the gap is for. The DOM has moved on by a few milliseconds; for a picture that
+        # is nothing, and for the digest, which was taken inside, it is not true at all.
+        if isinstance(row.get("parity"), dict) and row["parity"].get("parity_attempted"):
+            row["parity"].update(self._parity_shot(slot.action))
         # An action that ran but overran its budget has pushed nothing (the next slot has its own
         # absolute start), but it has overlapped the next one, so it is flagged.
         row["over_budget_ms"] = round(over_ms, 1) if over_ms > 0 else 0.0

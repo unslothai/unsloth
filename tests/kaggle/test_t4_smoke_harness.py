@@ -391,26 +391,36 @@ def test_a_foreign_kernel_blocks_even_when_a_slot_is_free():
 
 
 def test_this_workflows_own_leftovers_still_occupy_slots():
-    """A previous run of this workflow is not a stranger, and not free either:
-    launching alongside it pushes past Kaggle's cap, gets one of the two kernels
-    rejected and reports half the legs."""
+    """A previous run of this workflow is not a stranger, and not free either.
+
+    Asserted at both widths rather than at whatever the default happens to be,
+    because the default moved: this workflow used to push two kernels and now
+    pushes one, and the property being pinned -- our own in-flight kernels are
+    counted against the cap like anyone else's -- is the same either way.
+    """
     from gate import concurrency_verdict
 
-    clear, why = concurrency_verdict(_busy("danielhanchen/unsloth-t4-ci-abc"))
+    leftover = "danielhanchen/unsloth-t4-ci-abc"
+    # Wanting both slots with one of ours already up overruns the cap.
+    clear, why = concurrency_verdict(_busy(leftover), kernels_needed = 2)
     assert clear is False
     assert "only 1" in why and "already held by this workflow" in why
-    # ...but a run that only needs one slot may take the remaining one.
-    assert concurrency_verdict(_busy("danielhanchen/unsloth-t4-ci-abc"), kernels_needed = 1) == (
-        True,
-        "",
-    )
+    # Wanting one, which is what this workflow now asks for, fits beside it.
+    assert concurrency_verdict(_busy(leftover), kernels_needed = 1) == (True, "")
 
 
-def test_an_idle_account_clears_both_kernels():
-    """The change this refinement exists for: 2 kernels x 2 T4s = 4 legs."""
+def test_an_idle_account_clears_the_kernel_this_workflow_pushes():
+    """One kernel, carrying all four legs, leaving the second slot for Studio.
+
+    This asserted 2, when four legs meant two kernels of two and the notebook
+    leg took the whole account. The legs now queue inside a single kernel, so
+    the same four run in one slot -- and the slot that frees up is the one
+    kaggle-t4-studio-gpu-ci.yml pushes into, which is the point of the change
+    rather than a side effect of it.
+    """
     from gate import KERNELS_PER_INVOCATION, concurrency_verdict
 
-    assert KERNELS_PER_INVOCATION == 2
+    assert KERNELS_PER_INVOCATION == 1
     survey = {
         "busy": [],
         "own": [],
@@ -426,6 +436,9 @@ def test_an_idle_account_clears_both_kernels():
 
     assert KERNELS_PER_INVOCATION <= MAX_CONCURRENT_GPU_KERNELS
     assert concurrency_verdict(survey, MAX_CONCURRENT_GPU_KERNELS + 1)[0] is False
+    # The freed slot is real: one of ours in flight does not stand the next one
+    # down, where at the old width it did.
+    assert concurrency_verdict(_busy("danielhanchen/unsloth-t4-ci-abc"))[0] is True
 
 
 def test_a_survey_that_ran_out_of_time_is_not_read_as_an_idle_account():
@@ -3840,9 +3853,16 @@ def test_probe_mode_reports_rather_than_judges():
 
 
 def test_the_launcher_takes_one_notebook_per_kernel():
-    """A run is two kernels, pushed before either is waited on: waiting between
-    pushes serialises two sessions Kaggle runs happily in parallel and puts an
-    hour between the control leg and the canary leg."""
+    """The launcher stays generic over N kernels, and pushes before it waits.
+
+    This workflow now hands it ONE notebook -- all four legs queue inside a
+    single kernel -- so the push-then-wait ordering below is not currently load
+    bearing for it. It is kept because the launcher is shared with
+    kaggle-t4-studio-gpu-ci.yml and because the property is the expensive one
+    to rediscover: waiting between pushes serialises sessions Kaggle runs
+    happily in parallel, which is what once put an hour between the control leg
+    and the canary leg.
+    """
     import inspect
 
     import launch
@@ -4238,22 +4258,34 @@ def test_the_frontier_leg_does_not_carry_the_zoo_requirement():
         )
 
 
-def test_the_frontier_leg_is_wired_on_the_seat_that_costs_nothing():
-    """A Kaggle session bills wall clock once, not per card.
+def test_the_frontier_leg_rides_in_the_one_kernel_rather_than_opening_a_session():
+    """frontier must never be the reason a second Kaggle session is opened.
 
-    So the second kernel's idle T4 is free capacity and testing the newest
-    transformers and trl every run costs no quota. It passed there on real
-    hardware: transformers 5.15.0, trl 1.9.2, ten steps, canary emitted, two
-    fresh processes agreeing bitwise.
+    This used to read "the seat that costs nothing", on the basis that a
+    session bills its wall clock once rather than per card, so the second
+    kernel's idle T4 carried frontier for free. That is still true about
+    BILLING and is no longer the binding constraint. The account allows two
+    concurrent GPU sessions; two kernels took both, and
+    kaggle-t4-studio-gpu-ci.yml runs on the same account, so the notebook leg
+    locked Studio out for as long as it ran. Everything now packs into one
+    kernel and frontier queues behind the legs ahead of it.
+
+    So the property worth pinning is no longer "frontier shares a full kernel"
+    -- that assertion passes just as happily on a two-session layout -- but
+    "there is one kernel and frontier is in it".
+
+    It has passed on real hardware in both layouts: transformers 5.15.0 /
+    trl 1.9.2 paired, and transformers 5.15.1 / trl 1.10.0 on run 32607621452,
+    ten steps, canary emitted, two fresh processes agreeing bitwise.
     """
     sys.path.insert(0, str(CI_DIR))
     import legs
 
     wired = [kernel for kernel in legs.KERNELS if "frontier" in kernel]
     assert len(wired) == 1, f"frontier appears in {len(wired)} kernels, expected 1"
-    assert len(wired[0]) == legs.MAX_LEGS_PER_KERNEL, (
-        "frontier should share a kernel rather than take one of its own, since "
-        "a second seat in an existing session is free and a new session is not"
+    assert len(legs.KERNELS) == 1, (
+        f"{len(legs.KERNELS)} kernels means {len(legs.KERNELS)} concurrent Kaggle "
+        "sessions, and the account only has two. Studio needs one of them."
     )
     assert "frontier" not in legs.UNWIRED
 

@@ -22,6 +22,7 @@ import platform
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 TOOL_VERSION = "0.1.0"
 TIERS = ("fast", "quick", "standard", "full")
@@ -268,9 +269,89 @@ def side_specs(args, ab_ref) -> list:
     return specs
 
 
-def watchdog_deadline_s(tier: str, specs: list) -> float:
-    """The hard-exit deadline for a whole run: the measurement budget PLUS the setup it must sit
-    through.
+def planned_rungs(args) -> list:
+    """The ladder this run will actually walk: `--rungs` when given, else the tier's own.
+
+    NORMALISED AND CHECKED HERE, because a rung label that `RUNGS` does not carry is not merely a
+    late crash. `--rungs "1K, 10K"` split to `[\"1K\", \" 10K\"]`, and the first thing `run` does
+    with that list is record it: `run_meta` carries the rungs the run PROMISED, `plan_rung` does
+    not reach `RUNGS[rung]` until `build_cells` a hundred lines later, and `recorded_ladder` folds
+    every `run_meta` in the file. So a resumed run mistyped this way appended a rung nothing can
+    ever satisfy to a payload that was complete, and `--report` scored it INCOMPLETE from then on
+    -- the same permanent damage the ladder-ratio refusal had to learn to roll back, arriving
+    through the argument parser. The install and the browser sit between the two points as well,
+    so the check is worth minutes even when the payload is fresh.
+
+    Whitespace around a comma and a lowercase suffix are the two ways to type this that read as
+    correct, so both are accepted rather than rejected; anything else is named against the ladder
+    it was measured against.
+    """
+    if not args.rungs:
+        return list(TIER_RUNGS[args.tier])
+    # Imported here, not at module scope, on the same rule the rest of this file follows: `--help`
+    # has to answer on a machine with nothing installed.
+    from .fixture.corpus import RUNGS
+
+    rungs = [label.strip().upper() for label in args.rungs.split(",")]
+    rungs = [label for label in rungs if label]
+    unknown = [label for label in rungs if label not in RUNGS]
+    if not rungs or unknown:
+        named = ", ".join(repr(label) for label in unknown) or "nothing"
+        raise SystemExit(
+            f"--rungs {args.rungs!r} names {named}, which is not a rung. "
+            f"The ladder is {', '.join(RUNGS)}, comma-separated."
+        )
+    return rungs
+
+
+#: What a cell costs BESIDES its film, measured from the steps `CellRunner._run_inner` runs around
+#: it: seeding the thread and reading it back, the navigation and thread wait, the 1.5 s idle
+#: calibration, the chars-per-token measurement, the drain and the two censuses. Comfortably over
+#: what the small rungs cost and about what 1M costs.
+CELL_OVERHEAD_S = 60
+#: One optional `--surfaces` sweep per arm, before the cells.
+SURFACE_SWEEP_S = 120
+#: The same generosity the tier budget already carries, applied to the planned work.
+WATCHDOG_MARGIN = 3
+#: An absolute ceiling on the MEASUREMENT half of the deadline. The point of a watchdog is that a
+#: wedged run cannot outlive it, so scaling with the plan must not scale without limit: `--reps
+#: 1000` would otherwise arm a deadline measured in months and the watchdog would guarantee
+#: nothing at all. 24 hours is past any plan this tool supports and short of forever.
+WATCHDOG_MAX_MEASUREMENT_S = 24 * 60 * 60
+
+
+def planned_work_s(
+    tier: str,
+    rungs: list,
+    reps: int,
+    arms: int,
+    surfaces: bool = False,
+) -> float:
+    """The wall clock the CELLS THIS RUN PLANNED will take, from the plan itself.
+
+    The film is a fixed-duration one -- that is the whole design of `scene.schedule` -- so its
+    length is known before it runs: `SCENES[tier].duration_ms`, plus the per-cell work around it,
+    times one cell per (rung, rep, arm).
+    """
+    from .scene import schedule as scene_schedule
+
+    scene = scene_schedule.SCENES.get(tier, scene_schedule.QUICK)
+    cells = max(1, len(rungs)) * max(1, int(reps)) * max(1, int(arms))
+    return cells * (scene.duration_ms / 1000.0 + CELL_OVERHEAD_S) + (
+        SURFACE_SWEEP_S * max(1, int(arms)) if surfaces else 0
+    )
+
+
+def watchdog_deadline_s(
+    tier: str,
+    specs: list,
+    *,
+    rungs: Optional[list] = None,
+    reps: int = 1,
+    surfaces: bool = False,
+) -> float:
+    """The hard-exit deadline for a whole run: the measurement it PLANNED plus the setup it must
+    sit through.
 
     THE MEASUREMENT BUDGET IS THE MEASUREMENT'S. `TIER_BUDGET_S` is the wall clock of the cells --
     the README's table says so, and says the install is not in it -- and three times that is the
@@ -280,11 +361,32 @@ def watchdog_deadline_s(tier: str, specs: list) -> float:
     fired during setup on a perfectly healthy run, and it fires through `os._exit`, so the `finally`
     that stops the Studios it started never ran either. Every side this run INSTALLS adds its own
     documented budget; an attached side installs nothing and adds nothing.
+
+    AND THE TIER BUDGET IS NOT THE PLAN. It is one number per tier, and three things the caller
+    controls multiply the work underneath it: `--ab` runs every cell TWICE, `--reps N` runs the
+    whole ladder N times, and `--rungs` can name a ladder the tier never had. A standard A/B at
+    four repetitions -- three rungs, four reps, two arms -- is 24 cells of the 243 second standard
+    film, 5,832 seconds of film before a single thread is seeded, against a deadline of
+    `20 min * 3 = 3,600` seconds for an attached pair that adds no install budget. The watchdog
+    hard-exited a healthy run 40% of the way through it, through `os._exit`, taking the payload's
+    remaining rows and the `finally` that stops the Studios with it. Reps 2 clears it as well once
+    seeding is counted.
+
+    So the measurement half is the LARGER of the tier's own budget and the planned work with the
+    same 3x margin around it, which leaves every documented single-arm ladder exactly where it was
+    -- a fast tier is one 57 second film, nowhere near its 900 seconds -- and grows only when the
+    caller asks for more work than the tier describes. `WATCHDOG_MAX_MEASUREMENT_S` caps it, because
+    a deadline that scales without limit is not a deadline.
     """
     from .runtime.lifecycle import INSTALL_TIMEOUT_S
 
     owned = sum(1 for spec in specs if not spec[2])
-    return TIER_BUDGET_S[tier] * 3 + INSTALL_TIMEOUT_S * owned
+    arms = max(1, len(specs))
+    planned = planned_work_s(
+        tier, list(rungs) if rungs else list(TIER_RUNGS[tier]), reps, arms, surfaces
+    )
+    measurement = max(TIER_BUDGET_S[tier] * WATCHDOG_MARGIN, planned * WATCHDOG_MARGIN)
+    return min(measurement, WATCHDOG_MAX_MEASUREMENT_S) + INSTALL_TIMEOUT_S * owned
 
 
 def completion_exit_code(rows: list, resumed: int = 0) -> int:
@@ -316,15 +418,66 @@ def is_null_control(sides: list) -> bool:
     Two ATTACHED Studios are a different matter: the refs are whatever the caller typed and the
     harness cannot see what is deployed at either URL, so those are only a null control when both
     sides are the same URL.
+
+    WHICH IS WHY THE URL IS ASKED FIRST. That rule was stated here and then not applied: the ref
+    comparison ran ahead of it, so `--attach U --attach-b U --branch main --ab fix` -- one server,
+    two labels the harness cannot check -- returned False on the unequal labels before the equal
+    URL was ever looked at. One Studio measured against itself was then rendered as an ordinary
+    A/B, free to publish temporal noise as an improvement, and `noise_floor_from_null_control` was
+    skipped so nothing downstream had a floor to refuse it with. Two sides on one URL are one
+    build whatever they were called. The owned case is untouched: `side_specs` gives the second
+    side `port + 1`, so two Studios this run launched never share a URL and still fall through to
+    the commit comparison below.
+
+    AND A REF IS A POINTER, which is the rule `commit_problems` already states for `--resume` and
+    this decision did not apply. The two owned sides are cloned into separate repos and fetched one
+    after the other, with a whole clone, build and launch between them; `install_studio` alone
+    budgets 45 minutes. A push to `main` inside that window leaves `--branch main --ab main` with
+    two DIFFERENT builds under one ref name, and calling that a null control does not merely
+    mislabel it: `scoring.ab.compare` voids the run and empties `regressions`, and
+    `noise_floor_from_null_control` hands the delta back as THIS MACHINE'S NOISE FLOOR for the next
+    A/B to be judged against. Measured on a 12% regression between two commits: the regression is
+    erased and 12% is published as the floor, which would then hide every real effect under 12% on
+    that machine. That is a control that could not have detected the effect it was clearing.
+
+    So the BUILDS are compared, not their names. An empty commit on either side is not a
+    difference, the same rule `commit_problems` applies: an attached side has none to declare, and
+    neither does a payload written before commits were recorded.
     """
     if len(sides) < 2:
         return False
     base, treatment = sides[0], sides[1]
-    if base.get("ref") != treatment.get("ref"):
-        return False
     if base.get("base_url") == treatment.get("base_url"):
         return True
-    return bool(base.get("owns") and treatment.get("owns"))
+    if base.get("ref") != treatment.get("ref"):
+        return False
+    if not (base.get("owns") and treatment.get("owns")):
+        return False
+    base_commit = str(base.get("commit") or "")
+    treatment_commit = str(treatment.get("commit") or "")
+    if base_commit and treatment_commit:
+        return base_commit == treatment_commit
+    return True
+
+
+def _ab_label(sides: list, is_null: bool) -> str:
+    """The title on the A/B table, naming the BUILDS whenever the ref alone would mislead.
+
+    A null control states the commit it compared with itself, so a reader can tell which build the
+    machine's noise floor was measured on. And the case this exists for: two installs of one ref
+    that resolved to two different commits are NOT a null control, and printing "main -> main" over
+    them would read as one. Naming both commits is the only honest title for that table.
+    """
+    if len(sides) < 2:
+        return sides[0]["ref"] if sides else ""
+    base_commit = str(sides[0].get("commit") or "")
+    treatment_commit = str(sides[1].get("commit") or "")
+    if is_null:
+        at = f" @ {base_commit[:12]}" if base_commit else ""
+        return f"null control: {sides[0]['ref']}{at} vs itself"
+    if sides[0]["ref"] == sides[1]["ref"] and base_commit and treatment_commit:
+        return f"{sides[0]['ref']} {base_commit[:12]} -> {treatment_commit[:12]}"
+    return f"{sides[0]['ref']} -> {sides[1]['ref']}"
 
 
 def arm_origins(specs: list) -> list:
@@ -495,7 +648,15 @@ def run(args, ab_ref = None) -> int:
     # `_windowed_arms` compares two sets, `Corpus.load` reads a generated fixture and
     # `prepare_payload` writes one file.
     watchdog = browser_mod.install_wall_clock_watchdog(
-        watchdog_deadline_s(args.tier, specs), "studiobench", _log
+        watchdog_deadline_s(
+            args.tier,
+            specs,
+            rungs = planned_rungs(args),
+            reps = args.reps,
+            surfaces = bool(args.surfaces),
+        ),
+        "studiobench",
+        _log,
     )
     if ab_ref:
         if args.attach and not args.attach_b:
@@ -634,6 +795,16 @@ def run(args, ab_ref = None) -> int:
         from .runtime.ab import origin_scoped
 
         init_scripts = []
+        # ONE PROVIDER PER ORIGIN, because the provider lives in the BACKEND and localStorage is
+        # per-origin. An ATTACHED null control is `--attach U --attach-b U`, which `is_null_control`
+        # accepts on purpose: two sides, one Studio. Registering per SIDE there registers the pacer
+        # twice against the same backend, and `lifecycle.register_provider` is idempotent by DISPLAY
+        # NAME -- so the second registration DELETES the id the first side's seed script had already
+        # captured, and that script keeps selecting the dead id on every navigation it wins (the
+        # order init scripts run in is not defined, and `StudioAuth.rotate` re-adds them mid-run).
+        # A base cell that boots with a deleted provider selected renders "No longer offered" and
+        # throws `Connection not found` without ever asking for a completion.
+        registered: dict = {}
         for index, side in enumerate(sides):
             side_install = installs[index][0]
             side_auth = authenticate(
@@ -645,32 +816,49 @@ def run(args, ab_ref = None) -> int:
 
             # BOTH sides register the SAME pacer, so the bytes on the wire are identical by
             # construction rather than by two configurations that are meant to agree.
-            side_provider = pacer_provider(pacer.base_url, [model_id])
-            # Registered in the BACKEND, and the id it assigns is what the selection names. See
-            # lifecycle.register_provider: a provider that exists only in localStorage renders in
-            # the picker as "No longer offered" and send throws `Connection not found` without ever
-            # asking for a completion.
-            register_provider(side["base_url"], side_auth, side_provider)
-            side_checkpoint = external_checkpoint_id(side_provider, model_id)
+            side_origin = side["base_url"].rstrip("/")
+            shared = registered.get(side_origin)
+            if shared is None:
+                side_provider = pacer_provider(pacer.base_url, [model_id])
+                # Registered in the BACKEND, and the id it assigns is what the selection names. See
+                # lifecycle.register_provider: a provider that exists only in localStorage renders
+                # in the picker as "No longer offered" and send throws `Connection not found`
+                # without ever asking for a completion.
+                register_provider(side["base_url"], side_auth, side_provider)
+                side_checkpoint = external_checkpoint_id(side_provider, model_id)
+                registered[side_origin] = (side_provider, side_checkpoint)
+            else:
+                side_provider, side_checkpoint = shared
             _log(
                 f"  {side['label']}: provider {side_provider.provider_type} -> "
                 f"{side_provider.base_url}, checkpoint {side_checkpoint}"
             )
             side["auth"] = side_auth
 
-            seed = seed_init_script(
-                side_auth,
-                [side_provider],
-                extra_local_storage = {
-                    # The SELECTION, without which nothing is ever generated. See
-                    # lifecycle.external_checkpoint_id.
-                    "unsloth_chat_last_external_checkpoint": side_checkpoint,
-                    "unsloth_chat_connections_enabled": "true",
-                },
-            )
+            def _side_seed(
+                auth_now,
+                side = side,
+                provider = side_provider,
+                cp = side_checkpoint,
+            ):
+                return origin_scoped(
+                    side["base_url"],
+                    seed_init_script(
+                        auth_now,
+                        [provider],
+                        extra_local_storage = {
+                            # The SELECTION, without which nothing is ever generated. See
+                            # lifecycle.external_checkpoint_id.
+                            "unsloth_chat_last_external_checkpoint": cp,
+                            "unsloth_chat_connections_enabled": "true",
+                        },
+                    ),
+                )
+
             # Origin-gated even in the single-target case, so the one-build and two-build paths are
             # the same code and the gate cannot rot while unused.
-            init_scripts.append(origin_scoped(side["base_url"], seed))
+            side["seed_script"] = _side_seed
+            init_scripts.append(_side_seed(side_auth))
 
             if getattr(args, "inject_stream_cost_ms", None) and side is not sides[0]:
                 # VALIDATION, not a measurement mode. Burns a known amount of main-thread time per
@@ -771,6 +959,24 @@ def run(args, ab_ref = None) -> int:
             time.sleep(1.0)
             procs = new_roots(os.getpid(), procs_before)
 
+        # AN INIT SCRIPT IS A SNAPSHOT AND THE RUN OUTLIVES IT. The scripts above carry the access
+        # token this run logged in with, they re-run on EVERY navigation, and there is one
+        # navigation per cell -- so after `StudioAuth` re-mints a token, the next `page.goto` would
+        # write the DEAD one back over whatever the SPA had rotated to for itself, which is the
+        # failure this fixes wearing a different hat. Playwright has no way to replace an init
+        # script and does not define the order they run in, so the seed script decides for itself
+        # whether to write: it compares its token's `exp` against the one in storage and defers to
+        # the later one. See `seed_init_script`. At most one extra script per hour of run.
+        for side in sides:
+            side["auth"].on_rotate = lambda auth_now, side = side: bundle.context.add_init_script(
+                side["seed_script"](auth_now)
+            )
+
+        # WHAT WAS IN THE FILE BEFORE THIS SESSION COULD WRITE A BYTE. `make_context` opens the
+        # `Recorder` on the next line, and the only check left after that point -- the ladder ratio,
+        # which is not known until the corpus has been measured -- has to be able to put the payload
+        # back the way it found it. See `rollback_session_rows`.
+        mark = payload_mark(paths.payload_jsonl)
         ctx, session = make_context(
             bundle, base_url, args.tier, args.instrument_level, paths, _log, procs
         )
@@ -778,7 +984,7 @@ def run(args, ab_ref = None) -> int:
         # The ladder this run PROMISED, resolved before it is announced. Recorded rather than
         # left to be re-derived from the tier later: `--report` reads it back to decide which rungs
         # a payload owes, and a `--rungs` override the payload did not carry made that answer wrong.
-        rungs = args.rungs.split(",") if args.rungs else TIER_RUNGS[args.tier]
+        rungs = planned_rungs(args)
         rec.emit(
             {
                 "row_type": "run_meta",
@@ -930,6 +1136,9 @@ def run(args, ab_ref = None) -> int:
                 log = _log,
                 cadence = args.cadence,
                 image_path = image_path,
+                parity_raw = args.parity_raw,
+                parity_shots = args.parity_shots,
+                arm_label = side["label"],
             )
 
         seeder = sides[0]["seeder"]
@@ -938,6 +1147,9 @@ def run(args, ab_ref = None) -> int:
         if args.surfaces:
             _sweep_surfaces(sides, ctx, paths)
 
+        # The ladder is sized by the ratio MEASURED on this corpus, not by the provisional 4.0.
+        # Measured here, before any cell is built, because a rung named in tokens is planned in
+        # characters and the ratio is what makes those the same claim.
         cells = build_cells(
             rungs,
             corpus,
@@ -945,6 +1157,10 @@ def run(args, ab_ref = None) -> int:
             ctx.session_id,
             args.instrument_level,
             reps = args.reps,
+            base_url = sides[0]["base_url"],
+            auth = seeder.auth,
+            model_id = model_id,
+            log = _log,
             stream_tail_chars = args.stream_tail_chars,
             corpus_dollars = args.corpus_dollars,
         )
@@ -957,6 +1173,38 @@ def run(args, ab_ref = None) -> int:
                 f"dollars {'on' if args.corpus_dollars else 'off'}. Compare only against a run "
                 f"with the same pair."
             )
+        if cells:
+            ladder_ratio = cells[0][0].meta["ladder_chars_per_token"]
+            rec.gate("ladder_ratio_measured", not ladder_ratio["provisional"], ladder_ratio)
+
+            # THE RATIO IS PART OF WHAT THE PAYLOAD MEASURED, and this is the first moment it is
+            # known -- the same shape as the commit check above, and for the same reason: the
+            # rungs already in the file were built at the ratio they record, the rungs still owed
+            # would be built at the one measured now, and one report prints both as one ladder.
+            if args.resume:
+                ratio_issues: list = []
+                for recorded in recorded_identities(paths.payload_jsonl):
+                    for problem in ladder_ratio_problems(recorded, ladder_ratio["chars_per_token"]):
+                        if problem not in ratio_issues:
+                            ratio_issues.append(problem)
+                if ratio_issues:
+                    # AND NOTHING THIS SESSION WROTE SURVIVES THE REFUSAL. Unlike the commit check
+                    # above, this one runs after the `Recorder` has opened the payload, so refusing
+                    # is not enough on its own: `run_meta` is already in the file and
+                    # `recorded_ladder` folds every one of them, so a refused
+                    # `--resume --rungs 1K,10K` would leave 10K promised and unrecorded in a
+                    # payload that was complete. See `rollback_session_rows`.
+                    rec.close()
+                    rollback_session_rows(paths.payload_jsonl, mark)
+                    raise SystemExit(
+                        f"refusing to resume {paths.payload_jsonl}: the ladder is sized by a "
+                        "different chars-per-token ratio than the cells already in it.\n  "
+                        + "\n  ".join(ratio_issues)
+                        + "\nA rung is named in tokens and built in characters, so the same rung "
+                        "label would stand over two different character loads in one table. "
+                        "Resume where the tokeniser answers as it did, or re-run into a fresh "
+                        "--out."
+                    )
 
         done = _resume_set(paths) if args.resume else set()
         if done:
@@ -1042,7 +1290,16 @@ def run(args, ab_ref = None) -> int:
         rec.close()
 
     if ab_ref:
-        _render_ab(paths, sides, ctx.session_id, corpus.corpus_hash)
+        # The cells THIS session was asked to measure. A resumed A/B skips whole pairs or none
+        # (`ab.skippable_cells`), so this is either every planned cell or none of them, and it is
+        # what `_render_ab` checks the payload against before it is allowed to print a verdict.
+        _render_ab(
+            paths,
+            sides,
+            ctx.session_id,
+            corpus.corpus_hash,
+            planned = [c.cell_id for _t, c, _p in work if c.cell_id not in done],
+        )
 
     _summarise(rows, paths)
     completed = sum(1 for r in rows if r.get("completed"))
@@ -1159,15 +1416,27 @@ def _probe_init_scripts(path: str, source: str) -> list[str]:
     ]
 
 
-def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
+def _render_ab(
+    paths,
+    sides,
+    session_id: str,
+    corpus_hash: str,
+    planned = (),
+) -> None:
     """Render the A/B table from the payload the run just wrote.
 
     Read back from disk rather than kept in memory on purpose: it is the same path a tester takes
     with `--report`, so the table nobody checks and the table everybody reads are produced by one
     piece of code.
+
+    NO VERDICT OVER A PLAN WITH A HOLE IN IT. `planned` is the cells this session was asked to
+    measure, and a failed cell does not stop the run -- `CellRunner.run` records the failure and
+    returns -- so without this check the comparison is rendered over whatever pairs survived. See
+    `ab.unmeasured_planned_cells`: the loss is not the failed cell but its healthy partner, which
+    the arm intersection removes silently.
     """
     from .report.render import render_ab_table
-    from .runtime.ab import compare_arms
+    from .runtime.ab import compare_arms, unmeasured_planned_cells
 
     records = []
     with paths.payload_jsonl.open(encoding = "utf-8") as fh:
@@ -1191,11 +1460,7 @@ def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
     # a null control that renders as an ordinary A/B invites somebody to quote "7.7% faster" from a
     # build compared with itself. See `is_null_control`.
     is_null = is_null_control(sides)
-    label = (
-        f"null control: {sides[0]['ref']} vs itself"
-        if is_null
-        else f"{sides[0]['ref']} -> {sides[1]['ref']}"
-    )
+    label = _ab_label(sides, is_null)
 
     # NO TABLE AT ALL for a probe run, rather than a table with a warning printed above it. The
     # warning scrolls off; `ab.md` sits in the output directory and gets pasted into a pull
@@ -1239,10 +1504,23 @@ def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
         _log(f"\nA/B table could not be built: {type(exc).__name__}: {exc}")
         return
 
+    missing = unmeasured_planned_cells(records, planned, session_id = session_id)
+    if missing:
+        result.void = True
+        result.void_reason = (
+            f"{len(missing)} of {len(planned)} planned cells did not complete, so what remains is "
+            "a selection rather than the plan: " + ", ".join(missing)
+        )
+
     text = render_ab_table(result)
     print("\n" + text)
     out.write_text(text, encoding = "utf-8")
     _log(f"A/B table written to {out}")
+    if missing:
+        # A noise floor derived from a partial null control is a number about the cells that did
+        # not die, quoted afterwards at every real A/B on this machine.
+        _log("the plan did not complete, so no noise floor is derived from it")
+        return
     if is_null:
         from .scoring.ab import noise_floor_from_null_control
         try:
@@ -1267,13 +1545,15 @@ def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
 #: cell id that stays identical: the tier picks the FILM (the standard film runs 243 s, the quick
 #: one 77.5 s and the fast one 47 s, with different budgets), the cadence picks the rate the reply
 #: streams at, the instrument level decides how much of the number is the instrument, the corpus
-#: hash is the fixture, and the two refs are the builds under test.
+#: hash is the fixture, the engine is what rendered every frame, and the two refs are the builds
+#: under test.
 #:
 #: `rungs` and `reps` are deliberately NOT here. Resuming with more repetitions or another rung is
 #: a legitimate continuation -- it ADDS cells rather than reinterpreting the ones already recorded.
 IDENTITY_AXES = (
     "tier",
     "cadence",
+    "engine",
     "instrument_level",
     "corpus_hash",
     "studio_ref",
@@ -1344,6 +1624,26 @@ HISTORICAL_DEFAULTS = {
     "probe_init_script": None,
 }
 
+#: THE RATIO THE LADDER WAS SIZED BY, carried on every cell's `meta` by `session.build_cells`.
+#: Not in `IDENTITY_AXES`: those are checked by `prepare_payload` before anything is installed,
+#: and this one is not known until `build_cells` has measured the corpus. Checked instead by
+#: `ladder_ratio_problems`, on the same footing as `COMMIT_AXES` -- late enough to have the answer,
+#: early enough that nothing has been measured under it.
+LADDER_RATIO_AXIS = "ladder_chars_per_token"
+
+#: How close two ratios must be to be the same ratio. `measure_chars_per_token` rounds its answer
+#: to three decimals and `PROVISIONAL_CHARS_PER_TOKEN` is exact, so every value that reaches a
+#: payload sits on a 0.001 grid: half a grid step separates "the same measurement, re-read through
+#: JSON" from "a different one". Wide enough that 5.0 never refuses 5.0 for a float's sake, narrow
+#: enough that the case this exists for -- a provisional 4.0 against tiktoken's 3.336 on this
+#: corpus, a fifth of the character load of every rung -- can never be inside it.
+LADDER_RATIO_TOLERANCE = 5e-4
+
+#: The arm a run without `--ab` records every cell under. `Cell.arm` in `runtime.types`; an A/B
+#: overwrites it with the target's label, `base` or `treatment`. Named here because it is what
+#: tells `recorded_identities` which of the two a session already in the payload was.
+SINGLE_ARM = "A0"
+
 #: THE BUILD, as opposed to the name it was asked for by. A ref is a POINTER: `main`, a topic
 #: branch and a movable tag all resolve afresh on every install, and `checkout_ref` is the only
 #: thing that ever knows which commit one named. So these are not in `IDENTITY_AXES` and are not
@@ -1360,11 +1660,20 @@ def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
     `studio_ref` is spelled exactly as `run_meta` records it, so the requested value and the
     recorded one are comparable without a second convention to keep in step.
     """
+    from .runtime.browser import default_engine
+
     base_ref = f"attached:{args.attach.rstrip('/')}" if args.attach else args.branch
     attach_b = (getattr(args, "attach_b", "") or "").rstrip("/")
     return {
         "tier": args.tier,
         "cadence": args.cadence,
+        # THE ENGINE THAT WILL RENDER, not the flag that asked for it. `--engine` defaults to
+        # nothing and `browser.launch` resolves the platform's desktop webview family, so the
+        # requested value has to be resolved the same way `launch` resolves it -- otherwise the
+        # commonest engine change of all, one run naming `--engine chromium` and the resume
+        # naming none, reads as no difference at all. Resolvable here, before anything is
+        # installed, because `default_engine` reads `platform.system()` and nothing else.
+        "engine": getattr(args, "engine", "") or default_engine()[0],
         "instrument_level": args.instrument_level,
         "corpus_hash": corpus_hash,
         "studio_ref": base_ref,
@@ -1392,9 +1701,14 @@ def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
 def recorded_identities(payload_path) -> list:
     """One identity per session already in the payload, from the rows those sessions wrote.
 
-    Read out of `run_meta` and `ab_plan` rather than out of a new field, so a payload written
-    before this check existed is judged on exactly the axes it DID record: an axis a row never
-    declared cannot be a difference, and an older output therefore still resumes.
+    Read out of `run_meta` (including its nested `platform.engine`), `ab_plan` and the cells
+    rather than out of a new field, so a payload written before this check existed is judged on
+    exactly the axes it DID record: an axis a row never declared cannot be a difference, and an
+    older output therefore still resumes.
+
+    `mode` is the one entry here that is not an axis of any single row. It is what the session's
+    cells were recorded under, which is the thing `identity_problems` has to compare and the only
+    thing the payload states about it. See `SINGLE_ARM`.
     """
     by_session: dict = {}
     order: list = []
@@ -1408,15 +1722,44 @@ def recorded_identities(payload_path) -> list:
             except ValueError:
                 continue
             row_type = row.get("row_type")
-            if row_type not in ("run_meta", "ab_plan"):
+            if row_type not in ("run_meta", "ab_plan", "cell"):
                 continue
             session = str(row.get("session_id"))
             if session not in by_session:
                 by_session[session] = {}
                 order.append(session)
+            if row_type == "cell":
+                # THE MODE A SESSION MEASURED IN, declared by the cells it actually wrote rather
+                # than by a header it wrote before it measured anything. A run that died between
+                # `run_meta` and `ab_plan` recorded no cells and so declares no mode, and resuming
+                # it is not a transition; a session holding cells declares the mode those cells
+                # were recorded under, whichever row types the version that wrote them emitted.
+                arm = str((row.get("cell") or {}).get("arm") or row.get("arm") or "")
+                if arm:
+                    by_session[session].setdefault("mode", "single" if arm == SINGLE_ARM else "ab")
+                # THE RATIO THE SESSION'S RUNGS WERE SIZED BY, on the same rule as the mode: read
+                # off a cell the session actually wrote, so a session that recorded none declares
+                # none. See `ladder_ratio_problems`.
+                sized = ((row.get("cell") or {}).get("meta") or {}).get("ladder_chars_per_token")
+                if isinstance(sized, dict) and sized.get("chars_per_token") is not None:
+                    by_session[session].setdefault(
+                        LADDER_RATIO_AXIS, float(sized["chars_per_token"])
+                    )
+                continue
             for axis in IDENTITY_AXES + COMMIT_AXES:
                 if axis in row:
                     by_session[session][axis] = row[axis]
+            # THE ENGINE IS NESTED, under `run_meta.platform`, so the loop above cannot see it.
+            # Read from there rather than from a new top-level field for the same reason as
+            # everything else here: a payload written before this check existed still declares
+            # what it rendered with, and is judged on it. `run_meta` is emitted AFTER
+            # `browser.launch` returns, so what is recorded is the RESOLVED engine and a session
+            # that never got a browser up declares none -- and an axis a row never declared
+            # cannot be a difference, so that session still resumes.
+            if row_type == "run_meta":
+                engine = str((row.get("platform") or {}).get("engine") or "")
+                if engine:
+                    by_session[session]["engine"] = engine
             # `ab_plan` is where the treatment ref is recorded; `run_meta` names only the base.
             if row_type == "ab_plan" and row.get("treatment_ref") is not None:
                 by_session[session]["treatment_ref"] = row["treatment_ref"]
@@ -1426,11 +1769,29 @@ def recorded_identities(payload_path) -> list:
 def identity_problems(recorded: dict, requested: dict) -> list:
     """Every axis on which a recorded session and this invocation disagree."""
     problems = []
-    # Is there a second side on BOTH sides of this comparison? One of the two not being an A/B at
-    # all is not a difference: the arm in the cell id ("A0" against "base"/"treatment") already
-    # keeps those cells apart without a refusal. Decided once, from the ref, so that an A/B whose
-    # treatment this run installed -- which records no treatment URL -- is still judged against an
-    # attached one on the axis where the two of them do differ.
+    # AN A/B AND A RUN THAT IS NOT ONE MAY NOT SHARE A PAYLOAD. The arm in the cell id ("A0"
+    # against "base"/"treatment") keeps the new cells from being SKIPPED, which is why this used
+    # to be waved through -- but it does not keep them out of each other's REPORT. `score_payload`
+    # hands every cell to `measures_from_records`, which keys by rung and keeps the first reading,
+    # and `_completion_by_rung` keeps a failure over a success at the same rung. So a single-build
+    # run that died at 10K, resumed as `--ab fix` and re-measured successfully on both arms, still
+    # printed `INCOMPLETE: the base died at 10K`, scored the rung 0 and reported ONSET RUNG: none,
+    # while the identical resume WITHOUT `--ab` -- same crash, same repair, same cell id, so the
+    # dead attempt is superseded -- scored it 82.2. The mode is part of what a payload measures,
+    # so a run that changes it resumes nothing: it starts a payload of its own.
+    requested_mode = "ab" if requested.get("treatment_ref") else "single"
+    recorded_mode = recorded.get("mode")
+    if recorded_mode is not None and recorded_mode != requested_mode:
+        names = {"ab": "an A/B (base against treatment)", "single": "one build on its own"}
+        problems.append(
+            f"mode: the payload was recorded by a run measuring {names[recorded_mode]}, "
+            f"this run measures {names[requested_mode]}"
+        )
+    # Is there a second side on BOTH sides of this comparison? When there is not, the treatment
+    # axes describe a side one of them does not have, and the mode difference above is the whole
+    # of what they disagree on. Decided from the ref, so that an A/B whose treatment this run
+    # installed -- which records no treatment URL -- is still judged against an attached one on
+    # the axis where the two of them do differ.
     both_ab = bool(requested.get("treatment_ref")) and bool(recorded.get("treatment_ref"))
     for axis in IDENTITY_AXES:
         declared = axis in recorded
@@ -1498,6 +1859,41 @@ def commit_problems(recorded: dict, resolved: dict) -> list:
     return problems
 
 
+def ladder_ratio_problems(recorded: dict, measured: float) -> list:
+    """Whether the rungs this run is about to build carry the character load the payload's do.
+
+    A rung is NAMED in tokens and BUILT in characters, and the chars-per-token ratio is the only
+    thing that makes those the same claim. It is measured afresh on every invocation, `--resume`
+    included, and it is not fixed by anything the identity check already pins: `corpus_hash` is the
+    frozen fixture's own hash and says nothing about how many tokens a tokeniser reads out of it,
+    and `session.ladder_chars_per_token` falls back to `PROVISIONAL_CHARS_PER_TOKEN` whenever no
+    real tokeniser answers. tiktoken is not a dependency of this harness, and even where it is
+    installed `get_encoding` fetches `cl100k_base` over the network on first use, so "no tokeniser
+    answered" is one absent package or one unlucky minute, not a hypothetical.
+
+    So: a run on a machine with no tokeniser sizes every rung at 4.0 and dies at 100K; the resume
+    finds tiktoken and sizes at 3.336. `_resume_set` skips the completed cells by `cell_id`, which
+    is `r{rung}.{arm}.rep{rep}` and carries no ratio, so 1K and 10K stay at 4,000 and 40,000
+    characters while 100K and 1M are built at 333,600 and 3,336,000 -- a sixth less load per rung
+    on the second half of the ladder. Nothing downstream can see the mixture: `score_payload` keys
+    by rung, the report prints one ladder, and ONSET RUNG names a token label that means two
+    different amounts of work in the same table.
+
+    A ratio the payload never recorded is not a difference, the rule `recorded_identities` applies
+    to every other axis: a payload written before the ratio travelled on `meta` still resumes. See
+    `LADDER_RATIO_TOLERANCE` for what counts as the same ratio.
+    """
+    got = recorded.get(LADDER_RATIO_AXIS)
+    if got is None or measured is None:
+        return []
+    if abs(float(got) - float(measured)) <= LADDER_RATIO_TOLERANCE:
+        return []
+    return [
+        f"{LADDER_RATIO_AXIS}: the payload's rungs were sized at {float(got)!r} characters per "
+        f"token, this run measures {float(measured)!r}"
+    ]
+
+
 def archive_payload(paths, log = _log):
     """Move an existing payload aside so a FRESH run starts a file of its own. `None` when empty.
 
@@ -1529,6 +1925,65 @@ def archive_payload(paths, log = _log):
     log(f"  a payload was already in this output directory; moved it to {dest.name}")
     log("  (this run starts a payload of its own. Pass --resume to CONTINUE the previous one.)")
     return dest
+
+
+def payload_mark(payload_path) -> int:
+    """How long the payload was BEFORE this session was allowed to append to it.
+
+    Taken before the `Recorder` opens the file, and paired with `rollback_session_rows`. See there
+    for what the pair is for; `0` for a payload that does not exist yet, which is the length it
+    has.
+    """
+    try:
+        return Path(payload_path).stat().st_size
+    except OSError:
+        return 0
+
+
+def rollback_session_rows(
+    payload_path,
+    mark: int,
+    log = _log,
+) -> int:
+    """Undo everything this session appended, back to `mark`. The bytes dropped.
+
+    THE RULE `prepare_payload` STATES: a refusal has to leave the payload it refused exactly as it
+    found it. `prepare_payload` and `commit_problems` keep it by running before the `Recorder`
+    exists -- the identity axes are known from the CLI, and the commit is known once the sides are
+    installed, both still before the first recorded row. `ladder_ratio_problems` cannot: the ratio
+    is not known until `build_cells` has measured the corpus, which is after `make_context` has
+    opened the file, written `run_meta` and possibly a failed `instrument_unavailable` gate, and
+    after an optional `--surfaces` sweep. So that check keeps the same rule from the other end.
+
+    What a refused resume costs if it does not. `recorded_ladder` folds the `rungs` of EVERY
+    `run_meta` in the file, deliberately -- a session killed after its header still owes what it
+    promised -- so a refused `--resume --rungs 1K,10K` over a finished 1K payload leaves 10K
+    promised and never recorded, and `--report` scores that payload INCOMPLETE from then on.
+    `excluded_from_rows` turns every failed gate into an excluded cell, so the refused session's
+    own `ladder_ratio_measured` gate is charged to the payload it never touched. Neither is
+    recoverable by re-running: the rows are in somebody else's evidence file.
+
+    TRUNCATED, NOT ARCHIVED, which is the opposite of `archive_payload` and for the reason that
+    makes it the opposite: an archive preserves a run's evidence, and a refused resume produced no
+    evidence. There is one writer -- `Recorder` is the only thing that opens this file, on the main
+    thread, and it is closed by the caller before this runs -- so the tail being dropped is this
+    session's rows and nothing else.
+    """
+    path = Path(payload_path)
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return 0
+    if size <= mark:
+        return 0
+    try:
+        os.truncate(path, mark)
+    except OSError as exc:
+        log(f"  could not roll back {path.name}: {exc}")
+        return 0
+    dropped = size - mark
+    log(f"  rolled back {dropped} bytes this refused session had appended to {path.name}")
+    return dropped
 
 
 def prepare_payload(
@@ -1742,7 +2197,7 @@ def report_only(args) -> int:
 
 
 def assert_liveness(args) -> int:
-    """Fail unless every scheduled action in a payload actually ran.
+    """Fail unless every scheduled action in a payload ran, kept its slot and proved its effect.
 
     THE FAILURE THIS CATCHES. The most expensive wrong answers this harness has produced were not
     wrong numbers, they were absent ones reported as "no effect": four scene actions recorded NOT
@@ -1799,10 +2254,29 @@ def assert_liveness(args) -> int:
     # run exited 0 and `--report` scored the retry, while `--assert-liveness` on the same payload
     # failed permanently on a cell that had already been re-run. A gate that cannot be satisfied
     # by fixing the run is a gate people learn to pass with `--allow-not-run`.
-    from .scoring.from_payload import latest_attempt_rows
+    from .scoring.from_payload import ATTEMPT_ROW_TYPES, latest_attempt_rows
 
-    cells = 0
-    for row in latest_attempt_rows(rows):
+    # AN ATTEMPT THAT NEVER REACHED ITS CELL ROW IS A FAILURE, NOT AN ABSENCE. `latest_attempt_rows`
+    # names the latest attempt from ANY attempt-keyed row, because the Recorder flushes and fsyncs
+    # every action and window row while `CellRunner.run` writes the terminal `cell` row in a
+    # `finally` a SIGKILL, an OOM kill or a lost machine never reaches. So the killed attempt
+    # supersedes the completed one and then contributes no cell row of its own -- and this loop,
+    # reading cell rows only, dropped the cell out of the payload entirely. A resume killed inside a
+    # cell whose first attempt had already recorded `completed: false` with NOT RUN actions turned
+    # `1` into `0`: the gate stopped reporting a failure that is still written in the file.
+    attempted, recorded = set(), set()
+    kept = latest_attempt_rows(rows)
+    for row in kept:
+        if row.get("row_type") in ATTEMPT_ROW_TYPES and row.get("cell_id") is not None:
+            attempted.add(str(row.get("cell_id")))
+        if row.get("row_type") == "cell" and row.get("cell_id") is not None:
+            recorded.add(str(row.get("cell_id")))
+    truncated = sorted(attempted - recorded)
+    for where in truncated:
+        problems.append(f"{where}: an attempt wrote rows but never recorded a cell row")
+
+    cells = len(truncated)
+    for row in kept:
         if row.get("row_type") != "cell":
             continue
         cells += 1
@@ -1811,13 +2285,37 @@ def assert_liveness(args) -> int:
             problems.append(f"{where}: the cell did not complete")
         for action in row.get("actions") or []:
             name = action.get("action") or action.get("name") or "?"
-            if name in allowed:
-                continue
             if action.get("slot_missed"):
-                # A machine-speed fact, whether or not the action also reports ran=False.
+                # A MISSED SLOT IS NOT AN ACTION THE PLATFORM CANNOT PERFORM, so it is classified
+                # before the allowance rather than inside it. `scene/schedule.py` records an
+                # overrun as `ran = False, slot_missed = True`, so under an allowance-first order a
+                # listed name never reached this branch at all and its slot miss left the run
+                # silently: an excuse written for "the fixture cannot mount this" swallowed a fact
+                # about the machine. Ordering it first is what keeps the two buckets below honest.
+                # It is a machine-speed fact whether or not the action also reports ran=False, so
+                # it lands in `missed` and is judged against `--allow-slot-misses`, never here.
                 missed.append(f"{where}: {name} missed its slot ({action.get('reason') or '?'})")
             elif not action.get("ran"):
+                # THE ALLOWANCE IS EXACTLY WHAT ITS NAME SAYS. `--allow-not-run` excuses an action
+                # the fixture cannot mount at all; it is not a blanket exemption from the gate.
+                # `image_upload` is listed in studiobench-ci.yml only because the fixture cannot
+                # mount it, so if it ever does mount, an upload that produces no attachment must
+                # be a failure rather than an excuse inherited from a different reason.
+                if name in allowed:
+                    continue
                 problems.append(f"{where}: {name} NOT RUN ({action.get('reason') or 'no reason'})")
+            elif action.get("expect_ok") is False:
+                # RAN IS NOT DID WHAT IT CLAIMED. `scoring/from_payload.py` and
+                # `report/payload.py` both already refuse a timing whose own assertion failed;
+                # this loop did not, so `ran = True` with `expect_ok = False` fell past both
+                # branches above and the gate exited 0. A selector regression that fails EVERY
+                # cell's assertion left the workflow green with the surface non-functional --
+                # the same "absent reported as no effect" this gate exists for, one branch over.
+                # It is a scene problem, not machine speed, so no allowance and no slack reach it.
+                problems.append(
+                    f"{where}: {name} ran but its own assertion failed "
+                    f"({action.get('reason') or 'no reason'})"
+                )
 
     if cells == 0:
         # An empty payload passing every check is the same false negative in a different costume.
@@ -1896,16 +2394,18 @@ def parse_args(argv: list):
         metavar = "PAYLOAD",
         dest = "assert_liveness",
         help = "exit non-zero unless every scheduled action in an existing "
-        "payload.jsonl actually ran. Offline. This is the gate that catches an "
-        "action which never fired reporting as 'no effect'",
+        "payload.jsonl actually ran, kept its slot and passed its own assertion. "
+        "Offline. This is the gate that catches an action which never fired, or "
+        "never did what it claimed, reporting as 'no effect'",
     )
     ap.add_argument(
         "--allow-not-run",
         metavar = "ACTIONS",
         dest = "allow_not_run",
-        help = "comma-separated action names --assert-liveness may excuse. Use only "
-        "for an action a platform genuinely cannot perform, and say which in "
-        "the pull request: every name here is a hole in the gate",
+        help = "comma-separated action names --assert-liveness may excuse for NOT RUNNING "
+        "only. A listed action that does run is still held to its slot and its own "
+        "assertion. Use only for an action a platform genuinely cannot perform, and say "
+        "which in the pull request: every name here is a hole in the gate",
     )
     ap.add_argument(
         "--windowed-arm",
@@ -2025,6 +2525,23 @@ def parse_args(argv: list):
         "parity digest of each. The film covers the chat thread; this covers "
         "the rest of the app. Off by default: it costs about a minute per arm "
         "and it does not measure performance",
+    )
+    ap.add_argument(
+        "--parity-shots",
+        metavar = "DIR",
+        dest = "parity_shots",
+        help = "write a viewport PNG per action per arm into DIR, taken at the same instant as "
+        "the parity digest, so a mismatch can be SEEN rather than read as a hex pair. Off by "
+        "default",
+    )
+    ap.add_argument(
+        "--parity-raw",
+        action = "store_true",
+        dest = "parity_raw",
+        help = "record the NORMALISED signature text beside every parity digest, so "
+        "`sweep/parity_null_control.py --hunt` can name which bytes moved between two arms "
+        "instead of only that they did. Off by default: it multiplies a payload's size by "
+        "roughly a hundred, and only the hunt reads it",
     )
     ap.add_argument("--headed", action = "store_true")
     ap.add_argument("--keep-studio", action = "store_true")

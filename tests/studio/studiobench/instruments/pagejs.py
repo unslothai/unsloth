@@ -274,6 +274,11 @@ class InputInstrument(_PageInstrument):
             "reason": self.unavailable or "the page did not answer",
         }
 
+    def settled(self) -> dict:
+        """Whether a keystroke's paint is still in flight. `None` when the page cannot answer, so
+        a caller polling on it stops rather than looping to its bound."""
+        return self._eval("() => window.__sb.input.settled()")
+
     def collect(self, expected: int) -> dict:
         return self._eval("(n) => window.__sb.input.collect(n)", expected) or {
             "samples": 0,

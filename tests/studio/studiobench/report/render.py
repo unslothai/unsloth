@@ -217,11 +217,21 @@ def render_ab_table(result: AbResult) -> str:
         lines.append("")
         lines.append("VOID. No numbers are quotable from this comparison.")
         lines.append(f"  {result.void_reason}")
-        lines.append(
-            "  The null-treatment control measures whether this machine can currently tell two "
-            "identical builds apart. When it cannot, nothing measured alongside it can be "
-            "believed, so nothing is printed."
-        )
+        # The paragraph under the reason explains the NULL CONTROL, and printing it under an
+        # incomplete plan named the wrong cause for the void. A void has more than one cause; the
+        # reason line carries which one, and only a null control gets the null-control paragraph.
+        if result.is_null_control:
+            lines.append(
+                "  The null-treatment control measures whether this machine can currently tell "
+                "two identical builds apart. When it cannot, nothing measured alongside it can "
+                "be believed, so nothing is printed."
+            )
+        else:
+            lines.append(
+                "  A comparison is all of its pairs. A cell that did not complete takes its "
+                "healthy partner out of the table with it, so the pairs that remain are a "
+                "selection and no verdict is printed over them."
+            )
         return "\n".join(lines)
 
     lines.append(f"noise floor {result.noise_floor_pct:.2f}%  ({result.noise_floor_source})")
@@ -242,8 +252,19 @@ def render_ab_table(result: AbResult) -> str:
             if metric.ci_low is not None
             else "too few pairs"
         )
+        # A BOUND IS NOT A MEASUREMENT. An arm under its instrument floor contributes the floor,
+        # so the ratio understates the true magnitude and must not be quoted as a point estimate.
+        # Marked in the ratio cell rather than footnoted, for the reason the void path gives: the
+        # table gets screenshotted and the note does not.
+        ratio_cell = (
+            f">={metric.ratio_geomean:.3f}"
+            if metric.bounded and metric.ratio_geomean >= 1.0
+            else f"<={metric.ratio_geomean:.3f}"
+            if metric.bounded
+            else f"{metric.ratio_geomean:.3f}"
+        )
         lines.append(
-            f"{metric.metric_key:<20} {metric.n_pairs:>5}  {metric.ratio_geomean:>7.3f}  "
+            f"{metric.metric_key:<20} {metric.n_pairs:>5}  {ratio_cell:>7}  "
             f"{rng:>17}  {ci:>17}  {metric.verdict}"
         )
     lines.append("")
@@ -254,6 +275,19 @@ def render_ab_table(result: AbResult) -> str:
             f"({abs(1.0 - result.headline_ratio) * 100:.1f}% {direction}, weighted)"
         )
     lines.append(f"VERDICT: {result.verdict}")
+    unresolved = [m for m in result.metrics if m.unresolved]
+    if unresolved:
+        lines.append("")
+        lines.append(
+            "The 95% CI of these metrics contains 1.0, so their repetitions do not agree on the "
+            "sign and no direction is claimed for them. They are excluded from the headline "
+            "ratio above, which would otherwise quote their size as a measured win:"
+        )
+        for metric in unresolved:
+            lines.append(
+                f"  {metric.metric_key}: ratio {metric.ratio_geomean:.3f}, "
+                f"ci95 {metric.ci_low:.3f}-{metric.ci_high:.3f}"
+            )
     if result.regressions:
         lines.append("")
         lines.append(

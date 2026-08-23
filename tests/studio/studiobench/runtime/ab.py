@@ -147,8 +147,24 @@ def skippable_cells(work: list[tuple[Any, Cell, RungPlan]], done: set) -> set:
     produce. The old attempt stays in the payload and `latest_attempt_rows` supersedes it, exactly
     as it already does for a cell that died.
 
+    AND A COMPARISON IS ALL OF ITS PAIRS, which is the same argument one step further out. The
+    session filter that drops a lone completed arm drops a WHOLE completed pair for exactly the
+    same reason, and `_render_ab` then prints a headline and a VERDICT over whatever is left
+    without saying which rungs are missing: an interrupted standard tier whose 10K pair had
+    recorded a 30% regression published `VERDICT: IMPROVED (20.0% faster)` off the 100K pair alone,
+    with nothing in `ab.md` mentioning 10K at all. `render.py` rules out fixing that with a note
+    above the table -- the table gets screenshotted and the warning does not -- and declining to
+    publish costs the same wall clock as re-running while yielding no table. So an A/B with ANY
+    work left re-runs EVERY pair in the new session, at most one tier budget, which is the budget
+    the interrupted run was already paying.
+
+    A FINISHED A/B still skips everything: nothing runs, and `_render_ab` keeps the table that run
+    already wrote. And a legitimate extension -- `--resume --rungs 1K,10K` over a finished 1K run
+    -- now produces a complete two-rung table instead of a 10K-only one.
+
     Single-target work is a degenerate case of the same rule: each pair holds one cell, so nothing
-    changes for a run without `--ab`.
+    changes for a run without `--ab`, whose ladder `report.build.score_payload` reads across
+    sessions anyway.
     """
     by_pair: dict[tuple[str, int], list[str]] = {}
     for _target, cell, _plan in work:
@@ -157,6 +173,12 @@ def skippable_cells(work: list[tuple[Any, Cell, RungPlan]], done: set) -> set:
     for cell_ids in by_pair.values():
         if all(cell_id in done for cell_id in cell_ids):
             out.update(cell_ids)
+    # A pair carrying more than one arm is a comparison, and a comparison is scoped to one session.
+    # Partial skipping is right for a single-target ladder and wrong for a ratio.
+    if any(len(cell_ids) > 1 for cell_ids in by_pair.values()):
+        planned = sum(len(cell_ids) for cell_ids in by_pair.values())
+        if len(out) != planned:
+            return set()
     return out
 
 
@@ -253,6 +275,40 @@ def failed_invalidating_gates(records: Sequence[Mapping[str, Any]]) -> dict[str,
         why = detail.get("reason") or detail.get("coverage_reason") or "the cell's own self-check"
         failed.setdefault(cell_id, f"gate {name}: {why}")
     return failed
+
+
+def unmeasured_planned_cells(
+    records: list[dict],
+    planned: Sequence[str],
+    session_id: Optional[str] = None,
+) -> list[str]:
+    """The planned cells this session has no completed reading for, in plan order.
+
+    A COMPARISON IS ALL OF ITS PAIRS, and a cell that failed removes its HEALTHY PARTNER from the
+    table too: `readings_by_arm` drops the incomplete cell, and `compare_arms` intersects the two
+    arms' keys, so the surviving pairs are a subset chosen by which cell happened to die. The
+    hazard is the one `skippable_cells` describes for an interrupted resume, arriving by the other
+    road -- `CellRunner.run` catches the exception and returns an incomplete row, so the run
+    continues and `_render_ab` is reached with a hole in the plan. A 10K base cell that died
+    published `VERDICT: IMPROVED (20.0% faster)` off the 100K pair alone while the completed 10K
+    pair underneath it was a 26.5% regression, and `ab.md` named neither the missing rung nor the
+    failure.
+
+    The exit code is already nonzero when a cell fails, and it is not enough: `ab.md` outlives the
+    process and is what gets quoted. `render_ab_table` prints no numbers at all when a result is
+    void, for the reason stated there -- the table gets screenshotted and the warning does not --
+    and an incomplete plan is voided on the same grounds.
+    """
+    from ..scoring.from_payload import latest_attempt_rows
+
+    complete: set = set()
+    for row in latest_attempt_rows(records):
+        if row.get("row_type") != "cell" or row.get("completed") is not True:
+            continue
+        if session_id is not None and row.get("session_id") not in (None, session_id):
+            continue
+        complete.add(str(row.get("cell_id")))
+    return [str(cell_id) for cell_id in planned if str(cell_id) not in complete]
 
 
 def readings_by_arm(
@@ -407,6 +463,8 @@ def make_target(
     cadence: str,
     image_path,
     session,
+    parity_raw: bool = False,
+    parity_shots = None,
     username: str,
     password: str,
 ) -> Target:
@@ -438,6 +496,9 @@ def make_target(
         log = log,
         cadence = cadence,
         image_path = image_path,
+        parity_raw = parity_raw,
+        parity_shots = parity_shots,
+        arm_label = label,
     )
     target = Target(label = label, ref = ref, base_url = base_url, seeder = seeder, runner = runner)
     target.auth = auth  # type: ignore[attr-defined]

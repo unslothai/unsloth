@@ -450,6 +450,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 repo_id = cmd.get("repo_id"),
                 hf_token = cmd.get("hf_token"),
                 imatrix_file = cmd.get("imatrix_file"),
+                private = cmd.get("private", False),
             )
         elif export_type == "lora":
             success, message, output_path = backend.export_lora_adapter(
