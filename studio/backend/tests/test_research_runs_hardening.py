@@ -1250,10 +1250,56 @@ def test_stream_completion_rejects_in_band_error_after_partial_report(monkeypatc
     sent = _install_fake_client(monkeypatch, [_response(200, body = stream)])
     supervisor = _make_supervisor(_noop_check_active)
 
-    with pytest.raises(RuntimeError, match = "Local model stream failed"):
+    # The server's own text is the only account of the cause there is, so it is what the
+    # user must be shown. This used to be replaced with "Local model stream failed".
+    with pytest.raises(RuntimeError, match = "generation failed"):
         _run_stream(supervisor)
 
     assert len(sent) == 1
+
+
+def test_stream_completion_reports_an_oversize_context_refusal_with_its_counts(monkeypatch):
+    # Observed live: Deep Research sent 2358 tokens into a 2048 token window. The counts
+    # are what tell the user which setting to change and by how much.
+    error = json.dumps(
+        {
+            "error": {
+                "message": (
+                    "request (2358 tokens) exceeds the available context size "
+                    "(2048 tokens), try increasing it"
+                )
+            }
+        }
+    )
+    stream = f"data: {error}\n\ndata: [DONE]\n\n"
+    _install_fake_client(monkeypatch, [_response(200, body = stream)])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _run_stream(supervisor)
+
+    # .friendly, not str(): str stays the server's own text so the token-count regex in
+    # routes/inference.py still matches and rewrites it into the "Message too long" wording.
+    message = excinfo.value.friendly
+    assert "2358" in message and "2048" in message
+    assert "Context Length in Model settings" in message
+    assert excinfo.value.context_oversize
+
+
+def test_stream_completion_explains_a_shared_kv_starvation(monkeypatch):
+    # Observed live: two chats generating at once starved one unified KV cache and
+    # llama.cpp killed both. Neither request was too long, so the server's own wording
+    # would have misdirected the user.
+    error = json.dumps({"error": {"message": "Context size has been exceeded."}})
+    stream = f"data: {error}\n\ndata: [DONE]\n\n"
+    _install_fake_client(monkeypatch, [_response(200, body = stream)])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _run_stream(supervisor)
+
+    assert "at the same time" in excinfo.value.friendly
+    assert excinfo.value.kv_starvation
 
 
 def test_stream_completion_timeout_is_absolute_despite_keepalives(monkeypatch):

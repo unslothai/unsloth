@@ -164,6 +164,7 @@ function HeadersEditor({
                 onChange={(e) => update(row.id, { key: e.target.value })}
               />
               <Input
+                data-reload-snapshot-sensitive
                 value={row.value}
                 placeholder={copy.valuePlaceholder}
                 onChange={(e) => update(row.id, { value: e.target.value })}

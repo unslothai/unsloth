@@ -1317,7 +1317,7 @@ def run_safetensors_tool_loop(
                     ):
                         from core.inference.context_window import (
                             estimate_messages_tokens_dense,
-                            prompt_budget,
+                            retrieval_budget,
                         )
 
                         # Dense, unlike the eviction estimator: four characters per token
@@ -1326,11 +1326,16 @@ def run_safetensors_tool_loop(
                         # the next prompt over the window. Measured on an 81-message CJK
                         # chat: 1295 estimated against 2737 real, reporting 1777 tokens of
                         # room where 335 remained.
-                        kwargs["conversation_budget_tokens"] = max(
-                            0,
-                            prompt_budget(int(context_length), max_tokens)
-                            - estimate_messages_tokens_dense(conversation)
-                            - estimate_messages_tokens_dense(tools or []),
+                        #
+                        # `reply_returns`, as the GGUF loop does: result and reply are
+                        # both protected on the next fit, so one retrieval cannot spend
+                        # the budget they share.
+                        kwargs["conversation_budget_tokens"] = retrieval_budget(
+                            int(context_length),
+                            max_tokens,
+                            estimate_messages_tokens_dense(conversation)
+                            + estimate_messages_tokens_dense(tools or []),
+                            reply_returns = True,
                         )
                     if _accepts_output_callback(execute_tool):
                         kwargs["output_callback"] = _output_callback

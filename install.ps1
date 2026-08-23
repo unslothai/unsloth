@@ -3946,6 +3946,58 @@ exit 0
         }
     }
 
+    # uv creates only into a path that is absent or an empty directory. The .NET
+    # API counts hidden entries and reads wildcards in the path literally.
+    function Test-DirectoryHasEntries {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+            # Still an existing path to CreateDirectory, which answers
+            # ERROR_ALREADY_EXISTS for a file or a link whose target is gone, so
+            # uv refuses it too. -PathType Container follows the link and cannot
+            # see a dangling one; Get-Item sees the link itself.
+            return ($null -ne (Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue))
+        }
+        try {
+            foreach ($entry in [System.IO.Directory]::EnumerateFileSystemEntries($Path)) {
+                if ($entry) { return $true }
+            }
+        } catch {
+            # Present but unreadable: report it occupied rather than let uv fail on it.
+            return $true
+        }
+        return $false
+    }
+
+    # Move-Item into an existing directory nests the source inside it rather than
+    # renaming it, and uv then refuses that target as in #9479. A migration branch
+    # already means $VenvDir is absent or empty, so clear it: Directory.Delete is
+    # non-recursive, and on a reparse point it unlinks without following.
+    function Clear-MigrationTargetDirectory {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        if (-not (Test-Path -LiteralPath $Path)) { return }
+        $item = Get-Item -LiteralPath $Path -Force
+        if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+            # Not Remove-Item: on Windows PowerShell 5.1 it trips a reparse-tag
+            # mismatch on a directory symlink (PowerShell/PowerShell#621).
+            # Directory.Delete throws on a link to a file or a dangling one,
+            # hence the File.Delete fallback.
+            try { [System.IO.Directory]::Delete($Path) }
+            catch {
+                try { [System.IO.File]::Delete($Path) }
+                catch { throw "$Path is in the way of the environment migration. Move it aside and re-run." }
+            }
+            return
+        }
+        if (-not $item.PSIsContainer) {
+            throw "$Path is a file and is in the way of the environment migration. Move it aside and re-run."
+        }
+        try {
+            [System.IO.Directory]::Delete($Path)
+        } catch {
+            throw "$Path is in the way of the environment migration. Move it aside and re-run."
+        }
+    }
+
     function Get-VenvBaseHome {
         param([Parameter(Mandatory = $true)][string]$VenvRoot)
         $configPath = Join-Path $VenvRoot "pyvenv.cfg"
@@ -3959,6 +4011,14 @@ exit 0
             }
         } catch {}
         return $null
+    }
+
+    # Test-Path follows a link, so a dangling one reads as absent. A rollback holds
+    # whatever Test-DirectoryHasEntries called occupied, so ask the path itself.
+    function Test-StudioPathPresent {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+        if (-not $Path) { return $false }
+        return ($null -ne (Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue))
     }
 
     function Start-StudioVenvRollback {
@@ -4120,7 +4180,7 @@ exit 0
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
         $target = $script:StudioVenvRollbackTarget
-        if (-not $backup -or -not (Test-Path -LiteralPath $backup)) {
+        if (-not (Test-StudioPathPresent -Path $backup)) {
             $script:StudioVenvRollbackActive = $false
             $script:StudioVenvRollbackPartial = $false
             return
@@ -4175,14 +4235,15 @@ exit 0
         $script:StudioVenvRollbackActive = $false
         $script:StudioVenvRollbackDir = $null
         $script:StudioVenvRollbackPartial = $false
-        if ($backup -and (Test-Path -LiteralPath $backup)) {
+        if (Test-StudioPathPresent -Path $backup) {
             Remove-StudioVenvTreeWithRetry -Path $backup -Label "environment rollback" | Out-Null
         }
     }
 
     $studioVenvReplacementCommitted = $false
     try {
-    if (Test-Path -LiteralPath $VenvPython) {
+    # Replace occupied venvs even when python.exe is missing, as in #9479.
+    if ((Test-Path -LiteralPath $VenvPython) -or (Test-DirectoryHasEntries -Path $VenvDir)) {
         # why: matching guard to the .venv branch below -- in env-mode
         # $StudioHome is a user-chosen workspace, so refuse to nuke an
         # existing $StudioHome\unsloth_studio that lacks Unsloth sentinels.
@@ -4233,6 +4294,12 @@ exit 0
         $ErrorActionPreference = $prevEAP2
         if ($legacyOk) {
             substep "legacy environment is healthy -- migrating..."
+            try {
+                Clear-MigrationTargetDirectory -Path $VenvDir
+            } catch {
+                Write-StudioLine "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
+                return (Exit-InstallFailure "Could not clear $VenvDir for the environment migration")
+            }
             Move-Item -LiteralPath $OldVenv -Destination $VenvDir -Force
             substep "moved .venv -> unsloth_studio"
             $_Migrated = $true
@@ -4249,6 +4316,12 @@ exit 0
         # Skip custom-root env-mode so it is not relocated into a workspace root.
         $CwdVenv = Join-Path $env:USERPROFILE "unsloth_studio"
         substep "found CWD-relative Unsloth environment, migrating to $VenvDir..."
+        try {
+            Clear-MigrationTargetDirectory -Path $VenvDir
+        } catch {
+            Write-StudioLine "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
+            return (Exit-InstallFailure "Could not clear $VenvDir for the environment migration")
+        }
         Move-Item -LiteralPath $CwdVenv -Destination $VenvDir -Force
         substep "moved ~/unsloth_studio -> ~/.unsloth/studio/unsloth_studio"
         $_Migrated = $true
@@ -4278,7 +4351,7 @@ exit 0
         Write-StudioLine "        Managed Python: $VenvPython" -ForegroundColor Yellow
         if (-not $recordedBaseHome) { $recordedBaseHome = "unavailable" }
         Write-StudioLine "        Recorded base Python home: $recordedBaseHome" -ForegroundColor Yellow
-        # The ownership marker is written above, so a plain re-run replaces this venv.
+        # The occupied-directory branch makes this venv replaceable on a plain re-run.
         Write-StudioLine "        Restore that Python installation, or just re-run install.ps1." -ForegroundColor Yellow
         return (Exit-InstallFailure "Managed Python is unavailable at $VenvPython (recorded base home: $recordedBaseHome)")
     }
@@ -5574,7 +5647,7 @@ exit 0
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.8.18" }
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.8.19" }
 
     if ($_Migrated) {
         # Migrated env: force-reinstall unsloth+unsloth-zoo for a clean state, preserving
@@ -5584,7 +5657,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.12" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.13" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -5598,7 +5671,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.12" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.13" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -5725,7 +5798,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.12" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.13" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
@@ -5737,7 +5810,7 @@ exit 0
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.12" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.13" }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth -- "$_unslothPkg" }
@@ -5766,7 +5839,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.8.12" "$_unslothReleaseInstallSpec" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.8.13" "$_unslothReleaseInstallSpec" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -5813,8 +5886,27 @@ exit 0
         }
     }
 
-    $installedPackageVersion = (& $VenvPython -c "from importlib.metadata import version; import sys; print(version(sys.argv[1]))" $PackageName 2>$null | Out-String).Trim()
-    if ($LASTEXITCODE -eq 0 -and $installedPackageVersion) {
+    $installedPackageVersion = (& $VenvPython -c "
+import sys
+try:
+    from studio.install_manifest import installed_version_probe
+except Exception:
+    # --package installs something that does not ship studio/. Report what the
+    # old probe would have, rather than claiming the version is unknown.
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        print(version(sys.argv[1]))
+    except PackageNotFoundError:
+        sys.exit(1)
+    sys.exit(0)
+installed, conflict = installed_version_probe(sys.argv[1])
+print(installed)
+sys.exit(2 if conflict else (0 if installed else 1))
+" $PackageName 2>$null | Out-String).Trim()
+    $_installedPackageVersionExit = $LASTEXITCODE
+    if ($_installedPackageVersionExit -eq 2) {
+        substep "duplicate metadata found for $PackageName; the dependency pass will repair it" "Cyan"
+    } elseif ($_installedPackageVersionExit -eq 0 -and $installedPackageVersion) {
         step $PackageName "$installedPackageVersion installed"
     } else {
         substep "[WARN] installed $PackageName version could not be determined" "Yellow"
