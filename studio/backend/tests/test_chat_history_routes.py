@@ -903,9 +903,7 @@ def test_the_replay_bit_comes_from_the_clear_transaction(monkeypatch, tmp_path):
             asyncio.run(
                 chat_history.clear_history(
                     request,
-                    chat_history.ChatClearRequest(
-                        ids = [], operationId = "clear-operation-concurrent"
-                    ),
+                    chat_history.ChatClearRequest(ids = [], operationId = "clear-operation-concurrent"),
                     current_subject = "test-user",
                 )
             )
@@ -935,6 +933,6 @@ def test_clear_history_does_not_read_the_replay_ledger_outside_the_transaction()
     """
     source = inspect.getsource(chat_history.clear_history)
     assert "clear_chat_history_with_replay_status" in source
-    assert "chat_clear_operation_is_recorded" not in source, (
-        "a pre-transaction ledger read cannot tell a replay from a concurrent clear"
-    )
+    assert (
+        "chat_clear_operation_is_recorded" not in source
+    ), "a pre-transaction ledger read cannot tell a replay from a concurrent clear"
