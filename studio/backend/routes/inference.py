@@ -5368,6 +5368,9 @@ def _gguf_request_intent(
     }
     settings.update(
         n_ctx = request.max_seq_length,
+        n_ctx_auto_derived = bool(
+            getattr(request, "max_seq_length_auto_derived", False)
+        ),
         chat_template_override = chat_template_override,
         extra_args = extra_args,
         gpu_ids = gpu_ids,

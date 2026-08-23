@@ -57,6 +57,15 @@ class LoadRequest(BaseModel):
         le = 1048576,
         description = "Maximum sequence length (0 = model default for GGUF)",
     )
+    max_seq_length_auto_derived: bool = Field(
+        False,
+        description = (
+            "Whether max_seq_length is a value a previous load's fitter resolved and "
+            "the client replayed, rather than one the user asked for. Only then may "
+            "the planner re-fit it; the default keeps every existing client's context "
+            "honored verbatim."
+        ),
+    )
     load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
     gguf_variant: Optional[str] = Field(
