@@ -11,6 +11,7 @@ import {
   selectReasoningMarkdownPage,
 } from "../src/components/assistant-ui/reasoning-pagination.ts";
 import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/streaming-markdown.ts";
+import { getCompletedCodeFences } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
 
 const richReasoning = Array.from(
@@ -365,4 +366,116 @@ test("short and non-reasoning Markdown remain exact", () => {
       start: 0,
     },
   );
+});
+
+// Every page of `markdown`, oldest first.
+function paginate(markdown: string, maxCharacters: number) {
+  const pages = [
+    selectReasoningMarkdownPage(markdown, {
+      enabled: true,
+      maxCharacters,
+    }),
+  ];
+  while (pages[0].hasEarlier) {
+    pages.unshift(
+      selectReasoningMarkdownPage(markdown, {
+        enabled: true,
+        end: pages[0].start,
+        maxCharacters,
+      }),
+    );
+  }
+  return pages;
+}
+
+const crlfCode = Array.from(
+  { length: 800 },
+  (_, index) => `const value${index} = ${index};`,
+).join("\r\n");
+const crlfFenceDocument = `intro paragraph\r\n\r\n\`\`\`typescript\r\n${crlfCode}\r\n\`\`\`\r\n`;
+
+test("CRLF pages reopen the fence instead of spilling source as prose", () => {
+  const pages = paginate(crlfFenceDocument, 2_048);
+
+  assert.ok(pages.length > 3);
+  assert.equal(pages[0].markdown.startsWith("intro paragraph\r\n"), true);
+  for (const page of pages.slice(1)) {
+    assert.equal(page.markdown.startsWith("```typescript\r\n"), true);
+    assert.equal(page.markdown.endsWith("\r\n```\r\n"), true);
+  }
+});
+
+test("a paginated CRLF fence keeps the exact bytes of the unpaginated source", () => {
+  const [unpaginated] = getCompletedCodeFences(crlfFenceDocument);
+  assert.equal(unpaginated.source, crlfCode);
+
+  for (const page of paginate(crlfFenceDocument, 2_048)) {
+    assert.deepEqual(page.canonicalCodeSources, [crlfCode]);
+  }
+});
+
+test("an LF fence opener over a CRLF body copies every carriage return", () => {
+  const body = Array.from({ length: 400 }, (_, index) => `x${index}`).join(
+    "\r\n",
+  );
+  const markdown = `\`\`\`txt\n${body}\n\`\`\`\n`;
+  const page = selectReasoningMarkdownPage(markdown, {
+    enabled: true,
+    maxCharacters: 512,
+  });
+  const [source] = page.canonicalCodeSources;
+
+  assert.equal(source, body);
+  assert.equal((source ?? "").split("\r\n").length - 1, 399);
+});
+
+test("CRLF pages preserve display math and quoted fences across cuts", () => {
+  const math = Array.from(
+    { length: 1_500 },
+    (_, index) => `x_{${index}} = ${index}`,
+  ).join("\r\n");
+  for (const page of paginate(`$$$\r\n${math}\r\n$$$\r\n`, 2_048)) {
+    assert.equal(page.markdown.startsWith("$$$\r\n"), true);
+    assert.equal(page.markdown.endsWith("\r\n$$$\r\n"), true);
+  }
+
+  const codeLines = Array.from({ length: 1_500 }, () => "print(1)");
+  const quoted = `> \`\`\`python\r\n${codeLines
+    .map((line, index) => `${index % 2 === 0 ? "> " : ">"}${line}`)
+    .join("\r\n")}\r\n> \`\`\`\r\n`;
+  for (const page of paginate(quoted, 2_048)) {
+    assert.equal(page.markdown.startsWith("> ```python\r\n"), true);
+    assert.equal(page.markdown.endsWith("\r\n> ```\r\n"), true);
+    assert.deepEqual(page.canonicalCodeSources, [codeLines.join("\r\n")]);
+  }
+});
+
+test("CRLF pages partition the source byte for byte", () => {
+  const table = `| step | result |\r\n| ---: | :--- |\r\n${Array.from(
+    { length: 400 },
+    (_, index) => `| ${index} | ${"value ".repeat(4)} |`,
+  ).join("\r\n")}\r\n`;
+  const html = `<details open>\r\n${"hidden line\r\n".repeat(400)}</details>\r\n`;
+  const documents = [
+    crlfFenceDocument,
+    table,
+    html,
+    `${table}\r\n${crlfFenceDocument}\r\n${html}`,
+    "unterminated ```js\r\n".repeat(300),
+  ];
+
+  for (const markdown of documents) {
+    for (const maxCharacters of [512, 2_048]) {
+      const pages = paginate(markdown, maxCharacters);
+      assert.equal(pages[0].start, 0);
+      assert.equal(pages[pages.length - 1].end, markdown.length);
+      for (const [index, page] of pages.slice(1).entries()) {
+        assert.equal(page.start, pages[index].end);
+      }
+      assert.equal(
+        pages.map((page) => markdown.slice(page.start, page.end)).join(""),
+        markdown,
+      );
+    }
+  }
 });

@@ -1005,7 +1005,8 @@ export function getCompletedCodeFences(
           start,
           lineEnd < 0 ? content.length : lineEnd,
         );
-        if (/^ {0,3}(?:`{3,}|~{3,})[^\r\n]*$/.test(openingLine)) {
+        // Slicing to "\n" leaves the CR of a CRLF opening line in place.
+        if (/^ {0,3}(?:`{3,}|~{3,})[^\r\n]*\r?$/.test(openingLine)) {
           fences.push({
             id: `${blockId}:fence:${start}`,
             language: normalizeCodeFenceLanguage(node.lang ?? null),

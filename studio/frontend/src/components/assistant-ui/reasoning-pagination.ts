@@ -14,9 +14,10 @@ const MAX_SYNTHETIC_FENCE_INFO = 128;
 
 const MAX_SYNTHETIC_HTML_OPENING = 256;
 const PAGE_BOUNDARY_CONTEXT_CHARACTERS = 128;
-const FENCE_LINE_RE = /^( {0,3})(`{3,}|~{3,})(.*)$/;
+// `.` never matches CR, so both accept the CR of a CRLF ending explicitly.
+const FENCE_LINE_RE = /^( {0,3})(`{3,}|~{3,})(.*)\r?$/;
 const TABLE_DELIMITER_CELL_RE = /^:?-+:?$/;
-const DISPLAY_MATH_LINE_RE = /^( {0,3})(\${2,})(.*)$/;
+const DISPLAY_MATH_LINE_RE = /^( {0,3})(\${2,})(.*)\r?$/;
 const BLOCK_QUOTE_PREFIX_RE = /^( {0,3}>[ \t]?)/;
 const LIST_PREFIX_RE = /^( {0,3})(?:[*+-]|\d{1,9}[.)])([ \t]{1,4})/;
 const RAW_HTML_TAG_RE = /^(?: {0,3})<(pre|script|style|textarea)(?:\s|>|$)/i;
@@ -154,6 +155,25 @@ type ReasoningMarkdownPageOptions = {
 };
 
 type ContainerLine = ContainerState & { content: string };
+
+// Splitting on "\n" leaves the CR of a CRLF ending on the line.
+function lineAt(markdown: string, start: number, end: number): string {
+  return markdown.slice(
+    start,
+    end > start && markdown[end - 1] === "\r" ? end - 1 : end,
+  );
+}
+
+function firstLineOf(markdown: string): string {
+  const newline = markdown.indexOf("\n");
+  return lineAt(markdown, 0, newline < 0 ? markdown.length : newline);
+}
+
+// Synthetic scaffolding joins in the document's own line ending.
+function documentLineEnding(markdown: string): string {
+  const newline = markdown.indexOf("\n");
+  return newline > 0 && markdown[newline - 1] === "\r" ? "\r\n" : "\n";
+}
 
 function parseContainerLine(line: string): ContainerLine {
   let content = line;
@@ -540,7 +560,7 @@ function boundaryStateAt(markdown: string, offset: number): BoundaryState {
     if (lineEnd > offset) break;
 
     state = nextBoundaryState(
-      markdown.slice(lineStart, lineEnd),
+      lineAt(markdown, lineStart, lineEnd),
       lineStart,
       state,
     );
@@ -558,18 +578,16 @@ function canonicalFenceSource(
   const openingNewline = markdown.indexOf("\n", state.openingOffset);
   if (openingNewline < 0) return "";
 
-  const lines: string[] = [];
+  // Each line keeps its own ending so the source stays byte exact.
+  let source = "";
+  let ending = "";
   let lineStart = openingNewline + 1;
   while (lineStart <= markdown.length) {
     const newline = markdown.indexOf("\n", lineStart);
     const rawLineEnd = newline < 0 ? markdown.length : newline;
-    const lineEnd =
-      rawLineEnd > lineStart && markdown[rawLineEnd - 1] === "\r"
-        ? rawLineEnd - 1
-        : rawLineEnd;
-    const rawLine = markdown.slice(lineStart, lineEnd);
+    const rawLine = lineAt(markdown, lineStart, rawLineEnd);
     const content = containerContent(rawLine, state.container);
-    if (content === null) return lines.join("\n");
+    if (content === null) return source;
 
     const match = content.match(FENCE_LINE_RE);
     if (
@@ -578,18 +596,19 @@ function canonicalFenceSource(
       match[2].length >= state.length &&
       match[3].trim().length === 0
     ) {
-      return lines.join("\n");
+      return source;
     }
 
     let indentation = 0;
     while (indentation < state.indent.length && content[indentation] === " ") {
       indentation += 1;
     }
-    lines.push(content.slice(indentation));
+    source += ending + content.slice(indentation);
+    ending = markdown.slice(lineStart + rawLine.length, rawLineEnd + 1);
     if (newline < 0) break;
     lineStart = newline + 1;
   }
-  return lines.join("\n");
+  return source;
 }
 
 function syntheticFenceOpening(state: FenceState): string {
@@ -709,36 +728,38 @@ export function selectReasoningMarkdownPage(
   let pageMarkdown = markdown.slice(start, end);
   const openingState = boundaryStateAt(markdown, start);
   const closingState = boundaryStateAt(markdown, end);
+  const newline = documentLineEnding(markdown);
 
   if (openingState.rawHtml) {
-    pageMarkdown = `${syntheticRawHtmlOpening(openingState.rawHtml)}\n${pageMarkdown}`;
+    pageMarkdown = `${syntheticRawHtmlOpening(openingState.rawHtml)}${newline}${pageMarkdown}`;
   } else if (openingState.fence) {
-    pageMarkdown = `${syntheticFenceOpening(openingState.fence)}\n${pageMarkdown}`;
+    pageMarkdown = `${syntheticFenceOpening(openingState.fence)}${newline}${pageMarkdown}`;
   } else if (openingState.displayMath) {
-    pageMarkdown = `${syntheticDisplayMathDelimiter(openingState.displayMath)}\n${pageMarkdown}`;
+    pageMarkdown = `${syntheticDisplayMathDelimiter(openingState.displayMath)}${newline}${pageMarkdown}`;
   } else if (openingState.table) {
-    pageMarkdown = `${openingState.table.markdown}\n${openingState.table.delimiter}\n${pageMarkdown}`;
+    pageMarkdown = `${openingState.table.markdown}${newline}${openingState.table.delimiter}${newline}${pageMarkdown}`;
   } else if (openingState.tableHeader) {
-    const firstLine = pageMarkdown.split("\n", 1)[0];
     const content = containerContent(
-      firstLine,
+      firstLineOf(pageMarkdown),
       openingState.tableHeader.container,
     );
     if (content !== null && isTableDelimiter(content)) {
-      pageMarkdown = `${openingState.tableHeader.markdown}\n${pageMarkdown}`;
+      pageMarkdown = `${openingState.tableHeader.markdown}${newline}${pageMarkdown}`;
     }
   } else if (openingState.list) {
-    const firstLine = pageMarkdown.split("\n", 1)[0];
-    if (containerContent(firstLine, openingState.list) !== null) {
-      pageMarkdown = `${openingState.list.openingPrefix.trimEnd()}\n${pageMarkdown}`;
+    if (
+      containerContent(firstLineOf(pageMarkdown), openingState.list) !== null
+    ) {
+      pageMarkdown = `${openingState.list.openingPrefix.trimEnd()}${newline}${pageMarkdown}`;
     }
   }
+  const closingBreak = pageMarkdown.endsWith("\n") ? "" : newline;
   if (closingState.rawHtml) {
-    pageMarkdown += `${pageMarkdown.endsWith("\n") ? "" : "\n"}${syntheticRawHtmlClosing(closingState.rawHtml)}\n`;
+    pageMarkdown += `${closingBreak}${syntheticRawHtmlClosing(closingState.rawHtml)}${newline}`;
   } else if (closingState.fence) {
-    pageMarkdown += `${pageMarkdown.endsWith("\n") ? "" : "\n"}${syntheticFenceClosing(closingState.fence)}\n`;
+    pageMarkdown += `${closingBreak}${syntheticFenceClosing(closingState.fence)}${newline}`;
   } else if (closingState.displayMath) {
-    pageMarkdown += `${pageMarkdown.endsWith("\n") ? "" : "\n"}${syntheticDisplayMathClosing(closingState.displayMath)}\n`;
+    pageMarkdown += `${closingBreak}${syntheticDisplayMathClosing(closingState.displayMath)}${newline}`;
   }
 
   const canonicalCodeSources = getCompletedCodeFences(pageMarkdown).map(
