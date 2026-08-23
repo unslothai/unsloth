@@ -1452,9 +1452,8 @@ def _run_rollback_lifecycle(studio_home, shape):
 def test_rollback_restores_every_shape_the_predicate_moves_aside(tmp_path, shape):
     """Whatever _dir_has_entries calls occupied has to be restorable on failure.
 
-    The restore tested existence with -d, so a regular file or a dangling link was
-    silently dropped: the rollback deactivated itself, the original stayed stranded
-    under the rollback name, and the half-built venv was left at $VENV_DIR.
+    Testing with -d dropped a regular file and a dangling link: the rollback
+    deactivated itself and the half-built venv stayed at $VENV_DIR.
     """
     studio_home = tmp_path / "ws"
     studio_home.mkdir()

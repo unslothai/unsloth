@@ -4013,9 +4013,8 @@ exit 0
         return $null
     }
 
-    # Test-Path follows a link, so a dangling one reads as absent. A rollback can
-    # hold any shape Test-DirectoryHasEntries called occupied, a dangling link and
-    # a plain file included, so existence has to be asked of the path itself.
+    # Test-Path follows a link, so a dangling one reads as absent. A rollback holds
+    # whatever Test-DirectoryHasEntries called occupied, so ask the path itself.
     function Test-StudioPathPresent {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
         if (-not $Path) { return $false }
