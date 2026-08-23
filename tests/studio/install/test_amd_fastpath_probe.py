@@ -242,7 +242,11 @@ def test_a_host_without_rocm_wheels_keeps_the_fast_path(monkeypatch, kwargs):
 # CLI
 
 
-def _run_cli(*args, env = None, safe_path = False):
+def _run_cli(
+    *args,
+    env = None,
+    safe_path = False,
+):
     child = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", **(env or {})}
     if safe_path:
         child["PYTHONSAFEPATH"] = "1"
