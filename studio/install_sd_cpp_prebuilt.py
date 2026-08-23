@@ -434,6 +434,17 @@ def _binary_names() -> tuple[str, ...]:
     return (f"sd-cli{suffix}", f"sd-server{suffix}")
 
 
+def _binary_key(path: Path) -> Path:
+    """How a binary path is compared: parent directories resolved, final component left alone.
+
+    Both halves matter now that the tree can hold symlinks. Resolving the leaf would turn a
+    bundle that ships ``sd-cli -> sd-cli-1.2`` into a name no member has; leaving the parents
+    lexical would spell a member under a symlinked directory differently from the way ``rglob``
+    reports it, and the sweep would delete the binary this bundle just supplied."""
+    p = Path(os.path.abspath(path))
+    return Path(os.path.realpath(p.parent)) / p.name
+
+
 def _archive_binary_paths(zf: zipfile.ZipFile, target: Path) -> set[Path]:
     """Where this archive puts its executables, resolved to absolute paths under ``target``.
 
@@ -443,9 +454,7 @@ def _archive_binary_paths(zf: zipfile.ZipFile, target: Path) -> set[Path]:
     out: set[Path] = set()
     for member in zf.namelist():
         if member.rsplit("/", 1)[-1] in names:
-            # Lexical, to match _discard_superseded_binaries: the tree can now hold restored
-            # symlinks, and resolving one at a binary path yields a name no member has.
-            out.add(Path(os.path.abspath(target / member)))
+            out.add(_binary_key(target / member))
     return out
 
 
@@ -475,7 +484,7 @@ def _discard_superseded_binaries(root: Path, supplied: set[Path]) -> None:
     names = _binary_names()
     for name in names:
         for found in sorted(root.rglob(name)):
-            if not found.is_file() or Path(os.path.abspath(found)) in supplied:
+            if not found.is_file() or _binary_key(found) in supplied:
                 continue
             try:
                 found.unlink()

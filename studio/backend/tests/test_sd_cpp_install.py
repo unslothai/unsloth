@@ -493,6 +493,50 @@ def test_safe_extractall_rejects_a_symlink_redirected_parent(tmp_path):
     assert victim.read_bytes() == b"outside the install dir"
 
 
+def test_the_sweep_keeps_a_binary_supplied_under_a_symlinked_directory(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    # rglob reports the extracted binary under the real directory, so a lexical member path
+    # would not match and the sweep would delete the executable this bundle just supplied.
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / "real").mkdir()
+    (target / "build").mkdir()
+    (target / "build" / "bin").symlink_to(target / "real")
+    archive = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("build/bin/sd-cli", b"\x7fELF new binary")
+
+    with zipfile.ZipFile(archive) as zf:
+        supplied = sdmod._archive_binary_paths(zf, target)
+        _safe_extractall(zf, target)
+    sdmod._discard_superseded_binaries(target, supplied)
+
+    assert sdmod._locate_sd_cli(target) is not None
+    assert (target / "real" / "sd-cli").read_bytes() == b"\x7fELF new binary"
+
+
+def test_the_sweep_keeps_a_binary_the_bundle_ships_as_a_symlink(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    # The other half of _binary_key: resolving the final component would spell the binary as
+    # sd-cli-1.2, a name no member carries, and the sweep would take it.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("build/bin/sd-cli-1.2", b"\x7fELF new binary")
+        _link_member(zf, "build/bin/sd-cli", "sd-cli-1.2")
+
+    with zipfile.ZipFile(archive) as zf:
+        supplied = sdmod._archive_binary_paths(zf, target)
+        _safe_extractall(zf, target)
+    sdmod._discard_superseded_binaries(target, supplied)
+
+    assert (target / "build" / "bin" / "sd-cli").is_symlink()
+    assert sdmod._locate_sd_cli(target) is not None
+
+
 def test_safe_extractall_allows_a_parent_symlinked_inside_the_tree(tmp_path):
     if not _can_create_symlinks(tmp_path):
         pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
