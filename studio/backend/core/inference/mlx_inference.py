@@ -479,8 +479,10 @@ def _restore_mlx_rng_key(words):
 
     if words is None:
         return
-    high, low = words
-    mx.random.seed((high << 32) | low)
+    pair = _as_uint32_pair(int(words[0]), int(words[1]))
+    if pair is None:
+        return
+    mx.random.seed((pair[0] << 32) | pair[1])
 
 
 def _kv_quant_probe(language_model, entries, bits):

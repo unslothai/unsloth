@@ -2989,8 +2989,11 @@ def test_rng_capture_declines_words_that_are_not_32_bit(monkeypatch, words):
     assert mlx_inference._mlx_rng_key_words() is None
     assert any("32-bit word" in w for w in warnings), warnings
 
-    # The rewind must stay a no-op on the value capture actually returns.
+    # The rewind must stay a no-op on the value capture actually returns, and
+    # total besides: handed these words directly it declines rather than raising
+    # into the probe's finally, and never seeds a wrong key.
     mlx_inference._restore_mlx_rng_key(None)
+    mlx_inference._restore_mlx_rng_key(words)
     assert seeded == []
 
 
