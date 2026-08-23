@@ -112,9 +112,9 @@ def test_record_counts_match_what_the_payload_carries(tmp_path):
     payload = assemble_rows(path)
 
     for section in COLLAPSED_SECTIONS:
-        assert payload["record_counts"].get(section) == 1, (
-            f"{section} counts {payload['record_counts'].get(section)} rows but is reported as one"
-        )
+        assert (
+            payload["record_counts"].get(section) == 1
+        ), f"{section} counts {payload['record_counts'].get(section)} rows but is reported as one"
     # `balanced: False` has to reach a reader: it is the only record that linear drift did not
     # cancel, and it is written precisely when the run order was odd.
     assert payload["ab_plan"]["balanced"] is False
