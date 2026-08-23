@@ -262,9 +262,11 @@ def test_a_reply_that_finished_on_reasoning_alone_keeps_its_prompt():
     answered = '{ role: "assistant", content: [{ type: "reasoning", text: "thought" }] }'
     for include_reasoning in ("true", "false"):
         out = _run(_script(f"[{_user('first')}, {answered}, {_user('second')}]", include_reasoning))
-        assert out["kept"] == ["user", "assistant", "user"], (
-            f"includeReasoningContent={include_reasoning}"
-        )
+        assert out["kept"] == [
+            "user",
+            "assistant",
+            "user",
+        ], f"includeReasoningContent={include_reasoning}"
         assert out["keptText"] == ["first", "second"]
 
 
