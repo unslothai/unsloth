@@ -142,8 +142,7 @@ function MetricTile({
           {percentKnown ? formatPercent(safePercent) : "--"}
         </span>
       </div>
-      {/* Both lines truncate in a half-width tile, so carry the full text as a title:
-          a sentence-length detail (the GPU states) is otherwise unrecoverable. */}
+      {/* Both lines truncate, so carry the full text: the GPU states are sentences. */}
       <div className="min-w-0">
         <div
           title={value}
@@ -349,18 +348,15 @@ export function ResourcesTab() {
   const cpuFrequencyLabel = formatFrequency(systemInfo.cpu?.frequency_mhz);
   const hasGpu =
     (displayedGpu?.available ?? false) && metrics.devices.length > 0;
-  // The placeholder reads as a CPU-only host with no GPU. Rendering that verdict
-  // tells an AMD/ROCm user their card is unused, so until the host has actually
-  // been read, report which of the two non-answers it is: still checking, or
-  // asked and got nothing back.
+  // The placeholder reads as a CPU-only host, so rendering it tells an AMD/ROCm user their
+  // card is unused. Until the host is read, say which non-answer it is: checking, or empty.
   const hostUnread = systemInfo.status !== "ready";
   const gpuUnknown = hostUnread && !hasGpu;
   const gpuUnknownLabel =
     systemInfo.status === "unavailable"
       ? t("settings.resources.gpu.unreadable")
       : t("settings.resources.gpu.detecting");
-  // The same two non-answers for the tiles that are not about the GPU. The failure
-  // wording already speaks of the whole host; only "checking for GPUs" does not.
+  // "Checking for GPUs" is the wrong sentence beside a RAM tile; the failure wording fits.
   const hostUnreadDetail =
     systemInfo.status === "unavailable"
       ? t("settings.resources.gpu.unreadable")
@@ -392,8 +388,7 @@ export function ResourcesTab() {
           .join(" · ")
     : null;
   const unknownLabel = t("settings.resources.environment.unknown");
-  // Same rule as the GPU sections: the placeholder's cpu backend and empty package list
-  // are not facts about the host either, so the Environment rows wait for the read too.
+  // The placeholder's cpu backend and empty package list are not facts about the host either.
   const hostReading = (value: string) => (hostUnread ? unknownLabel : value);
 
   return (
@@ -433,8 +428,7 @@ export function ResourcesTab() {
 
       <SettingsSection title={t("settings.resources.liveMonitor.title")}>
         <div className="grid gap-2 py-3 sm:grid-cols-2">
-          {/* An unread host is not an idle one with no capacity: percent null is what
-              MetricTile already has for a usage it must not fabricate. */}
+          {/* An unread host is not an idle one: percent null is MetricTile's "unknown". */}
           <MetricTile
             label={t("settings.resources.liveMonitor.cpu")}
             value={hostReading(cpuFrequencyLabel ?? cpuCoresLabel)}

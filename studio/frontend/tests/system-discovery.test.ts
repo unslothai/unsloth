@@ -39,8 +39,7 @@ test("retries only an unavailable Vulkan inventory after discovery", () => {
 });
 
 test("a settled failure leaves the placeholder, not a live check", () => {
-  // Polling off means nothing retries, so "pending" would outlive the check and
-  // the System tab would claim to be looking for a GPU forever.
+  // Polling off means nothing retries, so "pending" would outlive the check.
   assert.equal(settledFailureStatus("pending"), "unavailable");
   assert.equal(settledFailureStatus("unavailable"), "unavailable");
 });

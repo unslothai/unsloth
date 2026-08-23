@@ -42,9 +42,8 @@ export interface SystemGpuInfo {
 export { aggregateGpuMemoryTotalGb } from "./gpu-vram";
 
 export interface SystemInfoResponse {
-  /** Client-side, not sent by the backend. Readers that render a verdict about
-   * the host -- "no GPU", "CPU only" -- must check it, or they state the
-   * placeholder below as fact. */
+  /** Client-side, not sent by the backend. Readers rendering a host verdict -- "no GPU",
+   * "CPU only" -- must check it, or they state the placeholder below as fact. */
   status: SystemInfoStatus;
   platform: string;
   python_version: string;
@@ -189,9 +188,8 @@ export function useSystemInfo({
     let cancelled = false;
     let timeoutId: number | null = null;
 
-    // Every successful read is published here. A placeholder has nothing to retry it
-    // once its own request settled, so it takes the shared snapshot; a reading already
-    // on screen is left to this hook's poll, which the live-updates switch governs.
+    // A placeholder has nothing to retry it once its own request settled, so it takes any
+    // published read; a reading on screen is left to this hook's poll (the live-updates switch).
     const unsubscribe = subscribeSystemInfo((info) => {
       if (cancelled) return;
       setSystemInfo((previous) => (previous.status === "ready" ? previous : info));
