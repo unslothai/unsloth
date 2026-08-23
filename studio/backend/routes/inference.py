@@ -14765,6 +14765,20 @@ async def validate_model(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
+        # Asked again now the configuration is here. The preflight above defers a target it
+        # could not read yet, so this is where a drafter that does not pair is caught; leaving
+        # it to /load answers only after the caller has committed to the switch.
+        _mlx_spec_reason = await asyncio.to_thread(
+            mlx_speculative_request_reason,
+            model_identifier,
+            request.mlx_speculative_mode,
+            request.mlx_draft_model,
+        )
+        if _mlx_spec_reason is not None:
+            raise HTTPException(
+                status_code = 400, detail = mlx_speculative_refusal_text(_mlx_spec_reason)
+            )
+
         # The caller's own list when it sent one, or the resolver hands back this
         # fourth argument unchanged and a --ctx-size the load is about to use would
         # be missing from the estimate that approves it.

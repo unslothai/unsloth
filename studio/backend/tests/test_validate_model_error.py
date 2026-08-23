@@ -161,6 +161,25 @@ def test_a_target_no_drafter_can_attach_to_is_refused_before_the_model_is_unload
     assert _drive_validate(monkeypatch, is_gguf = False, mlx_speculative_mode = "auto")
 
 
+def test_the_pairing_is_judged_again_once_the_target_configuration_arrives(monkeypatch):
+    # The preflight defers a target whose configuration is not fetched yet, so the pairing is
+    # judged after the fetch: here, where a refusal costs the caller nothing, rather than at
+    # /load once the switch has been committed to.
+    asked = []
+
+    def _reason(*_a, **_k):
+        asked.append(1)
+        return "checkpoint_not_compatible" if len(asked) > 1 else None
+
+    monkeypatch.setattr(inf, "mlx_speculative_request_reason", _reason)
+    with pytest.raises(HTTPException) as excinfo:
+        _drive_validate(monkeypatch, is_gguf = False, mlx_speculative_mode = "mtp")
+    assert excinfo.value.status_code == 400
+    # Asked once before the fetch and once after, and answered on the second.
+    assert len(asked) == 2
+    assert "vision-language" not in excinfo.value.detail
+
+
 def test_resolve_loaded_trc_prefers_stored_value():
     # A value stored at load time wins, so a status refresh does not re-derive it.
     assert (

@@ -222,12 +222,15 @@ export async function getInferenceStatus(
 
 export async function getMlxSpeculativeOptions(
   targetModel: string,
+  hfToken?: string | null,
   signal?: AbortSignal,
 ): Promise<MlxSpeculativeOptions> {
   const query = new URLSearchParams({ target_model: targetModel });
+  // The probe behind this reads the target's configuration, which a gated repository answers
+  // only for a caller that carries the token.
   const response = await authFetch(
     `/api/inference/mlx-speculative/options?${query}`,
-    { signal },
+    { headers: hubTokenHeader(hfToken), signal },
   );
   return parseJsonOrThrow<MlxSpeculativeOptions>(response);
 }
