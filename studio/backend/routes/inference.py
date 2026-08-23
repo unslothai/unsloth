@@ -5002,6 +5002,13 @@ async def _monitored_media_request(
     except Exception as exc:
         api_monitor.fail(monitor_id, _friendly_error(exc))
         raise
+    except BaseException as exc:
+        # KeyboardInterrupt and SystemExit are not Exception, so without this arm the
+        # row never leaves "running" and the monitor keeps a dead request forever.
+        # fail_open only touches a row that is still open, so it cannot stamp an error
+        # onto one a handler above already settled.
+        api_monitor.fail_open(monitor_id, _friendly_error(exc))
+        raise
     api_monitor.finish(monitor_id)
 
 
@@ -12362,7 +12369,10 @@ async def openai_audio_transcriptions(
             request = request,
         )
         text = str(result.get("text", ""))
-        api_monitor.relabel(monitor_id, str(result.get("model") or ""))
+        # Same path-free treatment the image route gives its label: sidecar ids are
+        # curated or owner/model today, but the row goes out over the tunnel.
+        _served_model = str(result.get("model") or "")
+        api_monitor.relabel(monitor_id, public_model_id(_served_model) or _served_model)
         api_monitor.set_reply(monitor_id, text)
 
     if fmt == "text":
@@ -12371,10 +12381,14 @@ async def openai_audio_transcriptions(
         return JSONResponse(
             content = {
                 "task": "transcribe",
-                # The sidecar does not surface Whisper's detection, so this echoes
-                # the requested language and is null when none was given.
-                "language": result.get("language"),
-                "duration": result.get("duration"),
+                # OpenAI types language as a required string and duration as a required
+                # number, so a null for either fails validation inside the official
+                # clients before the caller ever sees the transcript. The sidecar does
+                # not surface Whisper's own detection, so an auto-detect request has no
+                # language to echo and falls back to Whisper's default rather than null.
+                "language": str(result.get("language") or "en"),
+                # None for a clip that decoded to no samples; that clip is 0 seconds.
+                "duration": float(result.get("duration") or 0.0),
                 "text": text,
             }
         )
