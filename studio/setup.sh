@@ -1964,6 +1964,25 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
     fi
 fi
 
+# A current package can still have CPU/CUDA torch because the fast path skips ROCm repair.
+# Exit 0 forces the dependency pass; failures and timeouts keep the fast path.
+if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -x "$VENV_DIR/bin/python" ]; then
+    _setup_amd_torch_stale=false
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 180 "$VENV_DIR/bin/python" \
+            "$SCRIPT_DIR/install_python_stack.py" --amd-torch-needs-dependency-pass \
+            >/dev/null 2>&1 && _setup_amd_torch_stale=true
+    elif "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
+            --amd-torch-needs-dependency-pass >/dev/null 2>&1; then
+        _setup_amd_torch_stale=true
+    fi
+    if [ "$_setup_amd_torch_stale" = true ]; then
+        substep "installed PyTorch is not a ROCm build on this AMD host -- forcing dependency pass to repair..."
+        substep "   (set UNSLOTH_TORCH_BACKEND=cpu to keep a deliberate CPU install)"
+        _SKIP_PYTHON_DEPS=false
+    fi
+fi
+
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
 else
