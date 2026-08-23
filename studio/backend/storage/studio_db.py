@@ -2383,6 +2383,22 @@ def lift_chat_thread_tombstone(thread_id: str) -> None:
         conn.close()
 
 
+def lift_all_chat_thread_tombstones() -> None:
+    """Forget every deleted thread id. An empty Studio is a blank slate.
+
+    Lifting one tombstone and then importing that chat would leave the rest
+    skipped: the next transcript would see a nonempty history and treat its
+    own tombstone as a targeted delete. Clearing them all first is what lets
+    Import from Cursor / Claude Code bring the whole history back.
+    """
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM chat_thread_tombstones")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _tombstone_chat_threads(conn: sqlite3.Connection, thread_ids: Iterable[str]) -> None:
     deleted_at = int(datetime.now(timezone.utc).timestamp() * 1000)
     conn.executemany(
