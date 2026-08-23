@@ -208,6 +208,28 @@ test("a resume after a long stall is not priced across the stall", () => {
   }
 });
 
+// One gap is not a rhythm. When the only two increases seen straddle an outage,
+// that gap used to become the cadence and size the stall window from itself, so
+// the window meant to catch the outage was three times its length: a dead
+// transfer published 0.28 MB/s with a 98h ETA for 90 minutes.
+test("a lone outage gap is not mistaken for the burst cadence", () => {
+  const samples: TransferSample[] = [];
+  let bytes = 0;
+  let t = 0;
+  for (; t <= 5; t += 1) publishedRate(samples, t, bytes);
+  bytes += 500 * MB;
+  publishedRate(samples, ++t, bytes);
+  for (; t <= 1_800; t += 1) publishedRate(samples, t, bytes);
+  bytes += 500 * MB;
+  publishedRate(samples, ++t, bytes);
+  // Two increases, one gap. Progress now stops for good.
+  let published = 0;
+  for (const end = t + 5_400; t <= end; t += 1) {
+    if (publishedRate(samples, t, bytes) > 0) published += 1;
+  }
+  assert.equal(published, 0, `published a rate on ${published} ticks after death`);
+});
+
 test("a restart drops the samples from the previous run", () => {
   const samples: TransferSample[] = [];
   for (let t = 0; t <= 10; t++) publishedRate(samples, t, t * 20 * MB);

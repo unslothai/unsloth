@@ -37,6 +37,12 @@ export const MIN_RETAINED_INCREASES = 8;
 export const STALL_WINDOW_SECONDS = 15;
 /** A silence this many times the observed increase cadence reads as a stall. */
 export const STALL_CADENCE_MULTIPLIER = 3;
+/**
+ * Gaps needed before the median is trusted as the cadence. One gap may be an
+ * outage rather than a rhythm, and sizing the stall window from it is circular:
+ * the outage would set the window meant to catch it.
+ */
+export const MIN_CADENCE_GAPS = 2;
 
 /**
  * Mutate ``samples`` in place: append the sample, drop those out of the rolling
@@ -97,7 +103,7 @@ function stallWindowSeconds(samples: readonly TransferSample[]): number {
     if (previous >= 0) gaps.push(samples[i].t - samples[previous].t);
     previous = i;
   }
-  if (gaps.length < 1) return STALL_WINDOW_SECONDS;
+  if (gaps.length < MIN_CADENCE_GAPS) return STALL_WINDOW_SECONDS;
   gaps.sort((a, b) => a - b);
   const median = gaps[Math.floor(gaps.length / 2)];
   return Math.max(STALL_WINDOW_SECONDS, median * STALL_CADENCE_MULTIPLIER);
