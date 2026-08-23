@@ -1882,7 +1882,12 @@ export function AudioPage({
             // The catalog rows are already filtered to families with a GGUF sibling; these
             // have none, so offering them only produces that error.
             .filter((lora) => !isMac || lora.export_type === "gguf")
-            .filter((lora) => isTtsAudioType(lora.audio_type))
+            // The GGUF flag matters: GGUF_TTS_AUDIO_TYPES leaves csm out because llama.cpp has
+            // no CSM decoder, so a csm LoRA exported to GGUF fails at load. Without it the
+            // wider Transformers list answered and the row was offered anyway.
+            .filter((lora) =>
+              isTtsAudioType(lora.audio_type, lora.export_type === "gguf"),
+            )
             .map((lora) => ({
               id: lora.adapter_path,
               name: audioModelLabel(lora.adapter_path),

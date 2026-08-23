@@ -366,6 +366,14 @@ from state.tool_approvals import (
 )
 from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
 
+# The leaf module, not utils.models: importing anything from that package runs its __init__,
+# which pulls in model_config and therefore PyYAML. This is the chat backend, imported wherever
+# Studio's Python is, so it must not make the whole models package a hard import dependency.
+from utils.gguf_archs import (
+    SPEECH_GGUF_ARCHS as _SPEECH_GGUF_ARCHS,
+    is_speech_gguf_architecture,
+)
+
 logger = get_logger(__name__)
 
 # Floor for a GGUF TTS read, scaled by requested tokens at the call site. This backend
@@ -12325,6 +12333,9 @@ class LlamaCppBackend:
     _DIFFUSION_ARCHES = (
         _IMAGE_ARCHES | _AMBIGUOUS_IMAGE_ARCHES | _VIDEO_ARCHES | _UNRUNNABLE_MEDIA_ARCHES
     )
+    # TTS archs llama.cpp cannot load (CSM support is only on an unmerged upstream branch). One
+    # shared definition, so this gate and the listing classifier cannot drift.
+    _SPEECH_ARCHES = _SPEECH_GGUF_ARCHS
 
     # Not architectures: the literal placeholders gguf-connector writes into
     # general.architecture for its diffusion GGUFs (gguf-org/flux2-dev-gguf and
@@ -12426,13 +12437,25 @@ class LlamaCppBackend:
         # so the remote probe's prefix can carry it even where bulkier later metadata leaves
         # the walk unfinished. The walk still gates the no-architecture fallback below, the
         # one case where an incomplete read is indistinguishable from declaring nothing.
-        if arch not in self._DIFFUSION_ARCHES and not getattr(self, "_gguf_header_parsed", False):
+        if (
+            arch not in self._DIFFUSION_ARCHES
+            and not is_speech_gguf_architecture(arch)
+            and not getattr(self, "_gguf_header_parsed", False)
+        ):
             return None
         if arch in self._PLACEHOLDER_ARCHES:
             # Names no architecture, so treat it like a GGUF that declares none and let the
             # name-based branch below name a page.
             arch = ""
         if arch:
+            if is_speech_gguf_architecture(arch):
+                # Points at the Transformers build, not this file on the Audio page: that page
+                # cannot list a speech GGUF either, so it would promise a row that is not there.
+                return (
+                    "This is a text-to-speech GGUF, which llama.cpp cannot load: it has no "
+                    "CSM decoder. Run the model's Transformers build (for example "
+                    "unsloth/csm-1b) from the Audio page instead."
+                )
             if arch in self._UNRUNNABLE_MEDIA_ARCHES:
                 return (
                     f"This is an image / video generation GGUF (architecture '{arch}'), "
@@ -13209,6 +13232,14 @@ class LlamaCppBackend:
         arch_match = re.search(r"unknown model architecture:\s*'([^']+)'", lowered)
         if arch_match:
             arch = arch_match.group(1)
+            if is_speech_gguf_architecture(arch):
+                # Same wording rule as the pre-launch refusal above: name the build that runs,
+                # not a page this file will not appear on.
+                return (
+                    f"'{arch}' is a text-to-speech GGUF, which llama-server cannot run as a "
+                    "chat/completion model. Run the model's Transformers build (for example "
+                    "unsloth/csm-1b) from Unsloth's Audio page instead."
+                )
             if arch in LlamaCppBackend._UNRUNNABLE_MEDIA_ARCHES:
                 return (
                     f"'{arch}' is an image / video generation GGUF, which llama-server "
