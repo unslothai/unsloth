@@ -1959,8 +1959,10 @@ def _rocm_windows_per_device_vram(
             # APU-only price for a context, as _torch_get_device_inventory. The
             # free half of this reading is the untrusted one, the total is fine.
             total_is_pool = False
-            if _rocm_props_total_is_carve_out(props) and hasattr(mod, "mem_get_info"):
-                try:
+            try:
+                # Classifier inside the try: it is a probe, and a probe that
+                # throws must cost this device its correction, not its existence.
+                if _rocm_props_total_is_carve_out(props) and hasattr(mod, "mem_get_info"):
                     pool_bytes = int(mod.mem_get_info(ordinal)[1])
                     # Only a WIDER total is worth adopting. The classifier says
                     # carve-out for a discrete card on an unsettled runtime too,
@@ -1969,8 +1971,8 @@ def _rocm_windows_per_device_vram(
                     if pool_bytes > total_bytes:
                         total_bytes = pool_bytes
                         total_is_pool = True
-                except Exception as e:
-                    logger.debug("ROCm APU driver total failed for ordinal %d: %s", ordinal, e)
+            except Exception as e:
+                logger.debug("ROCm APU driver total failed for ordinal %d: %s", ordinal, e)
             dev_meta.append(
                 {
                     "index": phys_idx,

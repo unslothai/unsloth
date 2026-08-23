@@ -548,3 +548,36 @@ def test_a_driver_total_below_the_carve_out_is_not_adopted(win_rocm, monkeypatch
     assert [d["total_gb"] for d in devices] == [48.0, 8.0]
     assert devices[0]["used_gb"] == pytest.approx(40.0, abs = 0.01)
     assert all(d["used_gb"] <= d["total_gb"] for d in devices if d["used_gb"] is not None)
+
+
+def test_a_failing_carve_out_probe_keeps_the_device(win_rocm, monkeypatch):
+    """The correction is a probe, and it is the first thing this path asks the
+    classifier. A probe that throws must cost the device its correction, not its
+    place in the visible set: dropping it shows the System tab no GPU at all."""
+    torch = _fake_torch(DEVICES, free_equals_total = True)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    def _boom(props):
+        raise RuntimeError("classifier unavailable")
+
+    monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", _boom)
+    monkeypatch.setattr(
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(REPORTER_ADAPTERS))
+    )
+
+    devices, _ = hw._rocm_windows_per_device_vram([0, 1])
+    assert [d["total_gb"] for d in devices] == [48.0, 8.0]
+    assert devices[0]["used_gb"] == pytest.approx(40.0, abs = 0.01)
+
+
+@pytest.mark.parametrize("system", ["Linux", "Darwin"])
+def test_the_windows_path_is_inert_off_windows(win_rocm, monkeypatch, system):
+    """Linux, macOS and WSL (which reports Linux) never reach this path, so no
+    change to it can reach them."""
+    monkeypatch.setattr(hw.platform, "system", lambda: system)
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(DEVICES))
+    monkeypatch.setattr(
+        hw, "_rocm_props_total_is_carve_out", lambda props: pytest.fail("not on this platform")
+    )
+
+    assert hw._rocm_windows_per_device_vram([0, 1]) == ([], None)
