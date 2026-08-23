@@ -14325,6 +14325,8 @@ def _digest_and_head(text: str, max_bytes: int) -> "tuple[str, int, bytes]":
         if len(head) < max_bytes:
             head += chunk[: max_bytes - len(head)]
     return digest.hexdigest()[:12], total, bytes(head)
+
+
 _SPILL_MAX_TOTAL_BYTES = 64 * 1024 * 1024
 # Exactly the names `_spill_full_output` generates: twelve hex characters of a content
 # digest. The prune below deletes what it matches, and the sandbox is the user's own

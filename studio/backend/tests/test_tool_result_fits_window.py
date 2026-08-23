@@ -941,9 +941,7 @@ class TestTheRetryHintIsInsideTheCap:
             tools,
             "_loaded_token_counter",
             lambda ctx: (
-                lambda chunk, token_budget = 0.0: sum(
-                    1.0 if c == "/" else 0.25 for c in chunk
-                )
+                lambda chunk, token_budget = 0.0: sum(1.0 if c == "/" else 0.25 for c in chunk)
             ),
         )
         _room(400)
@@ -1969,9 +1967,7 @@ class TestSpillingDoesNotCopyTheResultAgain:
 
         whole = hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:12]
         assert complete and spilled.endswith(f"{whole}.txt")
-        assert (tmp_path / _spill_path(f"saved to {spilled} ")).read_text(
-            encoding = "utf-8"
-        ) == text
+        assert (tmp_path / _spill_path(f"saved to {spilled} ")).read_text(encoding = "utf-8") == text
 
     def test_an_oversized_result_is_still_cut_at_the_cap(self, tmp_path, monkeypatch):
         monkeypatch.setattr(tools, "_SPILL_MAX_BYTES", 4_096)

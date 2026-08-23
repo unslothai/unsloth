@@ -83,9 +83,7 @@ _DENSE_RUN_RE = re.compile(r"\S{%d,}" % _DENSE_RUN_CHARS)
 
 
 def estimate_messages_tokens_conservative(
-    messages: list[dict],
-    *,
-    dense_ascii: bool = False,
+    messages: list[dict], *, dense_ascii: bool = False
 ) -> int:
     """`estimate_messages_tokens_dense`, with unbroken ASCII runs charged as the blobs
     they are.
