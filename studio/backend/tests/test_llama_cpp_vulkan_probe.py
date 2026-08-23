@@ -129,6 +129,7 @@ def _row(
 
 def _host_memory(monkeypatch, *, available_mib, total_mib):
     """Set deterministic host-memory bounds for iGPU tests."""
+    monkeypatch.setattr(_llama_mod, "_is_wsl", lambda: False)
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: available_mib)
     )

@@ -60,7 +60,7 @@ def test_scope_keys_apart_from_the_full_snapshot():
 
 
 def test_scope_requires_files_and_rejects_a_variant(monkeypatch):
-    monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
+    monkeypatch.setattr(dl, "_load_in_flight", lambda repo_id: False)
     monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
 
     with pytest.raises(Exception) as no_files:
@@ -75,7 +75,7 @@ def test_scope_requires_files_and_rejects_a_variant(monkeypatch):
 def test_scoped_start_spawns_a_file_scoped_worker(monkeypatch):
     spawned: dict = {}
 
-    monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
+    monkeypatch.setattr(dl, "_load_in_flight", lambda repo_id: False)
     monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
     monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset({"h1"}))
 
@@ -90,17 +90,21 @@ def test_scoped_start_spawns_a_file_scoped_worker(monkeypatch):
     monkeypatch.setattr(download_lifecycle, "launch_worker", _fake_launch)
     monkeypatch.setattr(download_lifecycle, "spawn_worker", _fake_spawn)
 
-    result = asyncio.run(dl.download_model_response(_request()))
-    assert result["accepted"] is True
     scope_variant = dl._scope_variant("diffusion")
-    assert result["job_key"].endswith(scope_variant)
+    key = dl._download_job_key("black-forest-labs/FLUX.1-dev", scope_variant)
+    try:
+        result = asyncio.run(dl.download_model_response(_request()))
+        assert result["accepted"] is True
+        assert result["job_key"].endswith(scope_variant)
 
-    args = spawned["args"]
-    assert "--variant" in args and args[args.index("--variant") + 1] == scope_variant
-    # The file list travels in a temp JSON file, not argv: a pipeline repo lists hundreds.
-    manifest_path = args[args.index("--files-json") + 1]
-    assert json.loads(Path(manifest_path).read_text(encoding = "utf-8")) == FILES
-    Path(manifest_path).unlink(missing_ok = True)
+        args = spawned["args"]
+        assert "--variant" in args and args[args.index("--variant") + 1] == scope_variant
+        # The file list travels in a temp JSON file, not argv: a pipeline repo lists hundreds.
+        manifest_path = args[args.index("--files-json") + 1]
+        assert json.loads(Path(manifest_path).read_text(encoding = "utf-8")) == FILES
+        Path(manifest_path).unlink(missing_ok = True)
+    finally:
+        dl._registry.set_job(key, "complete")
 
 
 def test_scoped_files_survive_into_the_registry(monkeypatch):
@@ -112,19 +116,21 @@ def test_scoped_files_survive_into_the_registry(monkeypatch):
         captured.update(kwargs)
         return real_claim(key, transport, **kwargs)
 
-    monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
+    monkeypatch.setattr(dl, "_load_in_flight", lambda repo_id: False)
     monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
     monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
     monkeypatch.setattr(dl._registry, "claim", _spy_claim)
     monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
 
-    asyncio.run(dl.download_model_response(_request()))
-    assert captured["scoped_files"] == FILES
+    key = dl._download_job_key("black-forest-labs/FLUX.1-dev", dl._scope_variant("diffusion"))
+    try:
+        asyncio.run(dl.download_model_response(_request()))
+        assert captured["scoped_files"] == FILES
 
-    metadata = dl._registry.get_job_metadata(
-        dl._download_job_key("black-forest-labs/FLUX.1-dev", dl._scope_variant("diffusion"))
-    )
-    assert metadata is not None and list(metadata.scoped_files) == FILES
+        metadata = dl._registry.get_job_metadata(key)
+        assert metadata is not None and list(metadata.scoped_files) == FILES
+    finally:
+        dl._registry.set_job(key, "complete")
 
 
 def test_files_manifest_round_trips():
@@ -138,7 +144,7 @@ def test_files_manifest_round_trips():
 def test_a_different_file_set_is_not_adopted(monkeypatch):
     # Two quants of one repo are two downloads sharing the "@diffusion" slot. Adopting the running one made the UI wait on the
     # wrong file set and load a file that was never fetched, so the second request is refused while the first runs.
-    monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
+    monkeypatch.setattr(dl, "_load_in_flight", lambda repo_id: False)
     monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
     monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
     monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
@@ -169,7 +175,7 @@ def test_a_different_file_set_is_not_adopted(monkeypatch):
 def test_the_http_retry_keeps_the_scoped_file_list_on_the_record(monkeypatch):
     # The retry reclaims the slot with replace_active, which OVERWRITES the stored metadata. Dropping the file list there left
     # the record claiming an empty scope, so the next identical scoped start compared [] against the real list and 409'd.
-    monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
+    monkeypatch.setattr(dl, "_load_in_flight", lambda repo_id: False)
     monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
     monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
     monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
@@ -273,7 +279,7 @@ def test_active_downloads_publish_the_scoped_file_list(monkeypatch):
     write) has no local record of what a live job is fetching. Every file set of one repo shares
     the "@scope" slot, so without this list it cannot tell its own transfer from a sibling
     checkpoint's and would report a never-fetched file as already downloading."""
-    monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
+    monkeypatch.setattr(dl, "_load_in_flight", lambda repo_id: False)
     monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
     monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
     monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
@@ -293,7 +299,7 @@ def test_active_downloads_publish_the_scoped_file_list(monkeypatch):
 
 def test_a_full_snapshot_download_reports_no_file_list(monkeypatch):
     # Only a scoped job has a deliberate subset; a full snapshot must not claim one, or the client matches its whole-repo job against a scoped request.
-    monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
+    monkeypatch.setattr(dl, "_load_in_flight", lambda repo_id: False)
     monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
     monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
 
@@ -312,3 +318,187 @@ def test_a_full_snapshot_download_reports_no_file_list(monkeypatch):
         assert full[0].files is None
     finally:
         dl._registry.set_job(key, "complete")
+
+
+def test_a_scoped_job_is_admitted_while_the_media_model_is_resident(monkeypatch):
+    """A shared companion repo is resident for as long as the model that pulled it is, and the
+    media guards answer whole-repo for one. Staging runs BEFORE the switch unloads anything, so
+    refusing here would break every family pair that shares a text encoder or VAE (klein and
+    z-image both take Qwen3-4B from unsloth/Z-Image-Turbo-ComfyUI). A scoped job only adds
+    the files it names and never reclaims a superseded revision, so it cannot replace what
+    the resident model has open."""
+    from hub.services.models import deletion
+
+    monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
+    monkeypatch.setattr(dl, "_load_in_flight", lambda _repo_id: False)
+    monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
+    monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
+    monkeypatch.setattr(
+        deletion,
+        "_llama_cpp_blocks_delete",
+        lambda _repo_id, _variant: (400, deletion._MODEL_ACTIVE_DELETE_DETAIL),
+    )
+    monkeypatch.setattr(deletion, "_inference_backend_delete_block", lambda _repo_id: None)
+    monkeypatch.setattr(
+        deletion,
+        "_diffusion_blocks_delete",
+        lambda _repo_id, _rewrite_variant = None: (400, deletion._MODEL_ACTIVE_DELETE_DETAIL),
+    )
+    monkeypatch.setattr(
+        deletion, "_video_blocks_delete", lambda _repo_id, _rewrite_variant = None: None
+    )
+
+    repo = "unsloth/Z-Image-Turbo-ComfyUI"
+    key = dl._download_job_key(repo, dl._scope_variant("diffusion"))
+    try:
+        result = asyncio.run(
+            dl.download_model_response(
+                _request(
+                    repo_id = repo,
+                    files = [
+                        # Already on disk from the resident model.
+                        "split_files/text_encoders/qwen_3_4b.safetensors",
+                        # The one this pick still needs.
+                        "split_files/vae/ae.safetensors",
+                    ],
+                )
+            )
+        )
+        assert result["accepted"] is True
+    finally:
+        dl._registry.set_job(key, "complete")
+
+
+def test_a_whole_variant_download_still_refuses_the_resident_quant(monkeypatch):
+    """The scoped exemption is scoped: a plain variant download reclaims the revision it
+    supersedes, so it stays refused while that quant serves -- and a sibling quant, which
+    reclaims only its own files, stays downloadable."""
+    from hub.services.models import deletion
+
+    monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
+    monkeypatch.setattr(dl, "_load_in_flight", lambda _repo_id: False)
+    monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
+    monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
+    monkeypatch.setattr(
+        deletion,
+        "_llama_cpp_blocks_delete",
+        lambda _repo_id, variant, **_kwargs: (
+            (400, deletion._MODEL_ACTIVE_DELETE_DETAIL)
+            if variant in (None, "Q4_K_M")
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        deletion, "_inference_backend_delete_block", lambda _repo_id, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        deletion,
+        "_diffusion_blocks_delete",
+        lambda _repo_id, _rewrite_variant = None, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        deletion,
+        "_video_blocks_delete",
+        lambda _repo_id, _rewrite_variant = None, **_kwargs: None,
+    )
+
+    repo = "unsloth/Qwen3-4B-GGUF"
+    with pytest.raises(HTTPException) as resident:
+        asyncio.run(
+            dl.download_model_response(
+                DownloadModelRequest(repo_id = repo, gguf_variant = "Q4_K_M", use_xet = False)
+            )
+        )
+    assert resident.value.status_code == 409
+    assert "Q4_K_M" in resident.value.detail
+
+    sibling_key = dl._download_job_key(repo, "Q8_0")
+    try:
+        result = asyncio.run(
+            dl.download_model_response(
+                DownloadModelRequest(repo_id = repo, gguf_variant = "Q8_0", use_xet = False)
+            )
+        )
+        assert result["accepted"] is True
+    finally:
+        dl._registry.set_job(sibling_key, "complete")
+
+
+def test_a_sibling_quant_downloads_while_a_media_model_of_the_same_repo_is_resident(monkeypatch):
+    """A media GGUF repo ships many quants, and the reclaim a variant download runs matches main
+    GGUF files by quant label -- so the resident one is out of scope and its sibling must start.
+    The resident quant itself stays refused, and so does the companion repo, whose files no
+    variant scope names."""
+    from core.inference import diffusion_engine_router
+    from hub.services.models import deletion
+
+    class _Engine:
+        def status(self):
+            return {
+                "loaded": True,
+                "repo_id": "unsloth/FLUX.1-dev-GGUF",
+                "gguf_variant": "Q4_K_M",
+            }
+
+        def loaded_repo_ids(self):
+            return ("unsloth/FLUX.1-dev-GGUF", "unsloth/flux-text-encoders")
+
+        def loading_repo_ids(self):
+            return ()
+
+    monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
+    monkeypatch.setattr(dl, "_load_in_flight", lambda _repo_id: False)
+    monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
+    monkeypatch.setattr(
+        deletion, "_llama_cpp_blocks_delete", lambda _repo_id, _variant, **_kwargs: False
+    )
+    monkeypatch.setattr(
+        deletion, "_inference_backend_delete_block", lambda _repo_id, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        diffusion_engine_router, "get_active_diffusion_engine", lambda: _Engine()
+    )
+    monkeypatch.setattr(
+        deletion,
+        "_video_blocks_delete",
+        lambda _repo_id, _rewrite_variant = None, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        dl.gguf_variants, "gguf_variant_blob_hashes", lambda *a, **k: frozenset()
+    )
+
+    repo = "unsloth/FLUX.1-dev-GGUF"
+    with pytest.raises(HTTPException) as resident:
+        asyncio.run(
+            dl.download_model_response(
+                DownloadModelRequest(repo_id = repo, gguf_variant = "Q4_K_M", use_xet = False)
+            )
+        )
+    assert resident.value.status_code == 409
+
+    assert deletion._diffusion_blocks_delete(repo, "Q4_K_M") is not None
+    assert deletion._diffusion_blocks_delete(repo, "Q8_0") is None
+    assert deletion._diffusion_blocks_delete("unsloth/flux-text-encoders", "Q8_0") is not None
+
+    with pytest.raises(HTTPException) as companion:
+        asyncio.run(
+            dl.download_model_response(
+                DownloadModelRequest(
+                    repo_id = "unsloth/flux-text-encoders",
+                    gguf_variant = "Q8_0",
+                    use_xet = False,
+                )
+            )
+        )
+    assert companion.value.status_code == 409
+
+    sibling_key = dl._download_job_key(repo, "Q8_0")
+    try:
+        result = asyncio.run(
+            dl.download_model_response(
+                DownloadModelRequest(repo_id = repo, gguf_variant = "Q8_0", use_xet = False)
+            )
+        )
+        assert result["accepted"] is True
+    finally:
+        dl._registry.set_job(sibling_key, "complete")

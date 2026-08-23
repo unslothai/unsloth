@@ -85,19 +85,94 @@ def _loaded_backend(fam_name = "z-image", engine = None):
     return b
 
 
+def test_begin_load_hands_route_preclaims_to_the_worker_reservation(monkeypatch):
+    from utils import model_cache_reservations
+    from utils.model_cache_reservations import ModelCacheOperations
+
+    operations = ModelCacheOperations()
+    monkeypatch.setattr(model_cache_reservations, "_model_cache_operations", operations)
+    captured = {}
+
+    def capture_thread(*_args, **kwargs):
+        captured["reservation"] = kwargs["args"][0]
+        return types.SimpleNamespace(start = lambda: None)
+
+    monkeypatch.setattr(bk.threading, "Thread", capture_thread)
+    backend = SdCppDiffusionBackend(engine = _FakeEngine())
+    dependency = "unsloth/Z-Image-Turbo-ComfyUI"
+    backend.begin_load(
+        "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        family_override = "z-image",
+        _preclaimed_repositories = (dependency,),
+    )
+
+    assert operations.cache_writer_conflict(dependency) == "inference_loading"
+    captured["reservation"].release()
+    backend.unload()
+
+
 def test_loaded_repo_ids_includes_native_companions():
     # The one-shot native engine re-reads its companion VAE / text-encoder files every generation, so the delete-cached guard
     # queries loaded_repo_ids(). It must surface the family's VAE + encoder repos, not just the GGUF, and be empty once unloaded.
-    b = _loaded_backend("flux.1")
+    b = _loaded_backend("z-image")
     ids = set(b.loaded_repo_ids())
-    fam = detect_family("flux.1")
+    fam = detect_family("z-image")
     assert "unsloth/Z-Image-Turbo-GGUF" in ids  # the main GGUF repo
-    assert fam.base_repo in ids
-    assert fam.sd_cpp_vae[0] in ids  # black-forest-labs/FLUX.1-schnell (VAE)
+    assert fam.base_repo not in ids
+    assert fam.sd_cpp_vae[0] in ids
     for terepo, _f, _k in fam.sd_cpp_text_encoders:
         assert terepo in ids  # unsloth/flux-text-encoders
     b._state = None
     assert b.loaded_repo_ids() == ()
+
+
+def test_begin_load_claims_and_records_only_native_assets(monkeypatch):
+    primary = "unsloth/Z-Image-Turbo-GGUF"
+    asset = "unsloth/Z-Image-Turbo-ComfyUI"
+    fam = detect_family("z-image")
+    backend = SdCppDiffusionBackend(engine = _FakeEngine())
+    reserved: list[str] = []
+    reservation = types.SimpleNamespace(
+        add = lambda *repos: reserved.extend(repo for repo in repos if repo),
+        release = lambda: None,
+    )
+    monkeypatch.setattr(
+        "utils.model_cache_reservations.reserve_inference_load",
+        lambda *repos, variant = None: reserved.extend(repo for repo in repos if repo)
+        or reservation,
+    )
+    monkeypatch.setattr(
+        backend,
+        "_asset_specs",
+        lambda *_args, **_kwargs: [
+            (primary, "z-image-turbo-Q4_K_M.gguf", "diffusion_model"),
+            (asset, "split_files/vae/ae.safetensors", "vae"),
+        ],
+    )
+    monkeypatch.setattr(backend, "_flux2_inner_dim", lambda *_args, **_kwargs: None)
+    recorded: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "hub.utils.companion_assets.record_companion_link",
+        lambda checkpoint, companion: recorded.append((checkpoint, companion)),
+    )
+    monkeypatch.setattr(
+        bk.threading,
+        "Thread",
+        lambda *args, **kwargs: types.SimpleNamespace(start = lambda: None),
+    )
+
+    backend.begin_load(
+        primary,
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        family_override = "z-image",
+    )
+
+    assert fam.base_repo not in reserved
+    assert fam.base_repo not in backend.loading_repo_ids()
+    assert recorded == [(primary, asset)]
+    assert {primary, asset} <= set(reserved)
+    backend.unload()
 
 
 def test_loaded_repo_ids_tracks_variant_encoder_by_gguf_filename():
@@ -574,7 +649,7 @@ def test_download_plan_and_fetch_assets_pick_the_same_repo(monkeypatch):
     assert {(e["repo_id"], f) for e in plan["entries"] for f in e["files"]} == set(pulled)
 
 
-def test_delete_guard_covers_the_mirrored_asset_repos(monkeypatch):
+def test_delete_guard_covers_native_assets_but_not_the_unused_diffusers_base(monkeypatch):
     """The bytes land under whichever of the pair was fetched, so guarding only the upstream leaves
     the mirror cache deletable under a one-shot sd-cli that re-reads it."""
     b = _loaded_backend("flux.1")
@@ -590,7 +665,7 @@ def test_delete_guard_covers_the_mirrored_asset_repos(monkeypatch):
     )
     loading = set(b.loading_repo_ids())
     assert {"black-forest-labs/FLUX.1-schnell", "unsloth/FLUX.1-schnell"} <= loading
-    assert {"black-forest-labs/FLUX.1-dev", "unsloth/FLUX.1-dev"} <= loading
+    assert {"black-forest-labs/FLUX.1-dev", "unsloth/FLUX.1-dev"}.isdisjoint(loading)
 
 
 def test_download_plan_refuses_a_pick_native_cannot_serve():
@@ -1988,6 +2063,56 @@ def test_generate_oneshot_applies_loras_via_prompt_tags(monkeypatch):
     assert "<lora:myalias:0.8>" in params.prompt
 
 
+def test_native_generation_reserves_hub_lora_until_engine_returns(monkeypatch):
+    from core.inference import diffusion_lora as dl
+    from utils import model_cache_reservations
+    from utils.model_cache_reservations import ModelCacheOperations
+
+    repo_id = "Org/Native-Generation-Lora"
+    operations = ModelCacheOperations()
+    monkeypatch.setattr(model_cache_reservations, "_model_cache_operations", operations)
+    observed: list[str] = []
+
+    class GuardedEngine(_FakeEngine):
+        def generate(self, *args, **kwargs):
+            assert operations.cache_writer_conflict(repo_id) == "inference_loading"
+            assert operations.begin_delete(repo_id) is not None
+            observed.append("engine")
+            return super().generate(*args, **kwargs)
+
+    def resolve_specs(specs, **_kwargs):
+        assert operations.cache_writer_conflict(repo_id) == "inference_loading"
+        assert operations.begin_delete(repo_id) is not None
+        observed.append("resolve")
+        return [
+            dl.ResolvedLora(
+                specs[0][0],
+                "native_generation_lora",
+                "/cache/native_generation_lora.safetensors",
+                "safetensors",
+                specs[0][1],
+            )
+        ]
+
+    monkeypatch.setattr(dl, "supports_lora", lambda **_kwargs: True)
+    monkeypatch.setattr(dl, "resolve_specs", resolve_specs)
+    monkeypatch.setattr(dl, "materialize_native_dir", _fake_materialize)
+    backend = _loaded_backend(engine = GuardedEngine())
+
+    result = backend.generate(
+        prompt = "a fox",
+        steps = 4,
+        seed = 1,
+        loras = [(f"{repo_id}:adapter.safetensors", 0.8)],
+    )
+
+    assert result["images"]
+    assert observed == ["resolve", "engine"]
+    assert operations.cache_writer_conflict(repo_id) is None
+    assert operations.begin_delete(repo_id) is None
+    operations.end_delete(repo_id)
+
+
 def test_generate_server_stages_loras_and_sends_structured_field(monkeypatch, tmp_path):
     # Server-mode LoRA rides the structured `lora` field (the sdcpp API ignores prompt tags): staged into --lora-model-dir and referenced by relative path.
     from pathlib import Path as _P
@@ -2236,6 +2361,89 @@ def test_the_worker_publishes_the_real_encoder_repos_before_fetching(monkeypatch
     assert nine_b <= set(
         seen_at_fetch[0]
     ), "the delete guard did not name the encoders this load is about to write"
+
+
+@pytest.mark.parametrize("sibling_active_before_publish", [True, False])
+def test_the_worker_keeps_the_primary_cache_reservation_variant_scoped(
+    monkeypatch, sibling_active_before_publish
+):
+    from hub.utils.download_registry import DownloadRegistry
+    from utils import model_cache_reservations
+
+    primary = "Org/Native-GGUF"
+    variant = "Q4_K_M"
+    sibling_key = f"{primary}::Q8_0"
+    operations = model_cache_reservations.ModelCacheOperations()
+    registry = DownloadRegistry(cache_operations = operations)
+    monkeypatch.setattr(model_cache_reservations, "_model_cache_operations", operations)
+    sibling_active = False
+    if sibling_active_before_publish:
+        assert registry.claim(
+            sibling_key,
+            "http",
+            repo_type = "model",
+            repo_id = primary,
+            variant = "Q8_0",
+        ) == (True, "running")
+        sibling_active = True
+
+    reservation = model_cache_reservations.reserve_inference_load(primary, variant = variant)
+    backend = SdCppDiffusionBackend(engine = _FakeEngine())
+    backend._load_token = 7
+    backend._loading = bk._SdLoading(primary, "Org/Base")
+    monkeypatch.setattr(backend, "_resolve_backend", lambda: ("oneshot", None, _FakeEngine()))
+    monkeypatch.setattr(
+        backend,
+        "_asset_specs",
+        lambda *_args, **_kwargs: [
+            (primary, "model-Q4_K_M.gguf", "diffusion_model"),
+            ("Org/Companion", "vae.safetensors", "vae"),
+        ],
+    )
+    monkeypatch.setattr(
+        bk,
+        "_fetch_repo_map",
+        lambda specs, _token: {repo: repo for repo, _filename, _kind in specs},
+    )
+    monkeypatch.setattr(backend, "_preflight_companion_repos", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "hub.utils.companion_assets.record_companion_link",
+        lambda *_args, **_kwargs: None,
+    )
+    fetched = False
+
+    def stop_after_publish(*_args, **_kwargs):
+        nonlocal fetched
+        fetched = True
+        raise SdCppCancelled("stop after publish")
+
+    monkeypatch.setattr(backend, "_fetch_assets", stop_after_publish)
+    try:
+        backend._run_load(
+            repo_id = primary,
+            gguf_filename = "model-Q4_K_M.gguf",
+            base = "Org/Base",
+            fam = detect_family("z-image"),
+            hf_token = None,
+            local_files_only = True,
+            _load_token = 7,
+            _load_reservation = reservation,
+        )
+
+        assert fetched is True
+        if not sibling_active_before_publish:
+            assert registry.claim(
+                sibling_key,
+                "http",
+                repo_type = "model",
+                repo_id = primary,
+                variant = "Q8_0",
+            ) == (True, "running")
+            sibling_active = True
+    finally:
+        if sibling_active:
+            registry.set_job(sibling_key, "complete")
+        reservation.release()
 
 
 def test_generate_reports_the_build_the_recipe_persists():

@@ -72,6 +72,12 @@ from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 _REAL_POPEN = subprocess.Popen
 
 
+@pytest.fixture(autouse = True)
+def _native_linux_memory_scope(monkeypatch):
+    """Keep synthetic UMA layouts independent of the host running the suite."""
+    monkeypatch.setattr("core.inference.llama_cpp._is_wsl", lambda: False)
+
+
 def _write_gguf(path: Path, architecture: str = "llama") -> Path:
     def string(value: str) -> bytes:
         data = value.encode()
@@ -103,7 +109,7 @@ def _backend(tmp_path: Path, *, vulkan: bool, memory):
     backend._is_vulkan_backend = lambda _binary = None: vulkan
     backend._wait_for_health = lambda timeout: True
     backend._detect_audio_type_strict = lambda: None
-    backend._apply_detected_audio = lambda _detected: True
+    backend._apply_detected_audio = lambda _detected, _on_audio_codec_resolved = None: True
     return backend, gguf
 
 

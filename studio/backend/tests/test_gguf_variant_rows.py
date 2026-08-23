@@ -846,6 +846,30 @@ def test_deleting_a_container_variant_accepts_the_bare_quant_the_download_admits
     assert not (snap / "weights" / "model-Q4_K_M.gguf").is_symlink()
 
 
+def test_unresolved_variant_delete_offers_an_offline_whole_model_purge(monkeypatch, tmp_path):
+    from fastapi import HTTPException
+    from hub.services.models import deletion, gguf_variants
+
+    monkeypatch.setattr(
+        deletion.gguf_variants,
+        "delete_variant_incomplete_blobs_result",
+        lambda *_args, **_kwargs: gguf_variants.VariantIncompleteDeleteResult(0, True),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        deletion._delete_gguf_variant_from_repos(
+            "org/Model-GGUF",
+            "Q4_K_M",
+            [],
+            None,
+            root = tmp_path,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "entire cached model" in exc_info.value.detail
+    assert "offline" in exc_info.value.detail
+
+
 def test_deleting_an_h3_variant_requires_the_full_stem(tmp_path):
     from fastapi import HTTPException
     from hub.services.models.deletion import _delete_gguf_variant_from_repos

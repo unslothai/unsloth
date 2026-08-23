@@ -272,7 +272,7 @@ def test_a_pass_through_layer_flag_cannot_re_enable_the_corrupt_offload(monkeypa
         return True
 
     monkeypatch.setattr(backend, "adopt_load_intent_if_matched", _capture)
-    monkeypatch.setattr(backend, "_apply_detected_audio", lambda _d: True)
+    monkeypatch.setattr(backend, "_apply_detected_audio", lambda _d, _on_resolved = None: True)
     backend._audio_probed = True
     backend._healthy = True
     backend.load_model(
@@ -305,7 +305,7 @@ def test_a_real_mac_keeps_its_offload_flags(monkeypatch):
         return True
 
     monkeypatch.setattr(backend, "adopt_load_intent_if_matched", _capture)
-    monkeypatch.setattr(backend, "_apply_detected_audio", lambda _d: True)
+    monkeypatch.setattr(backend, "_apply_detected_audio", lambda _d, _on_resolved = None: True)
     backend._audio_probed = True
     backend._healthy = True
     backend.load_model(
@@ -1697,7 +1697,7 @@ def test_the_launch_normalizes_a_manual_cpu_request_too(monkeypatch):
         return True
 
     monkeypatch.setattr(backend, "adopt_load_intent_if_matched", _capture)
-    monkeypatch.setattr(backend, "_apply_detected_audio", lambda _d: True)
+    monkeypatch.setattr(backend, "_apply_detected_audio", lambda _d, _on_resolved = None: True)
     backend._audio_probed = True
     backend._healthy = True
     backend.load_model(
@@ -1734,7 +1734,7 @@ def test_a_real_mac_keeps_its_tensor_override_on_a_manual_cpu_load(monkeypatch):
         return True
 
     monkeypatch.setattr(backend, "adopt_load_intent_if_matched", _capture)
-    monkeypatch.setattr(backend, "_apply_detected_audio", lambda _d: True)
+    monkeypatch.setattr(backend, "_apply_detected_audio", lambda _d, _on_resolved = None: True)
     backend._audio_probed = True
     backend._healthy = True
     backend.load_model(

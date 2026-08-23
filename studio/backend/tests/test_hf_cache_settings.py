@@ -15,7 +15,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from hub.services.models.common import _local_model_info
+from hub.services.models.common import _local_model_info, _runtime_for_format
 from utils import hf_cache_settings
 from utils import native_path_leases
 
@@ -57,6 +57,29 @@ def test_studio_cache_switch_is_live_and_keeps_history(settings_store, tmp_path)
     reset = hf_cache_settings.set_hf_cache_home(None)
     assert reset.source == "default"
     assert second in hf_cache_settings.known_hf_cache_homes()
+
+
+def test_known_cache_paths_deduplicate_same_filesystem_identity(
+    settings_store,
+    tmp_path,
+    monkeypatch,
+):
+    first = tmp_path / "Cache"
+    alias = tmp_path / "cache"
+    first.mkdir()
+    alias.mkdir()
+    settings_store[hf_cache_settings.CACHE_HISTORY_SETTING_KEY] = [str(alias)]
+    monkeypatch.setattr(hf_cache_settings, "_default_cache_home", lambda: first)
+    real_samefile = Path.samefile
+
+    def samefile(path, other):
+        if {Path(path), Path(other)} == {first, alias}:
+            return True
+        return real_samefile(path, other)
+
+    monkeypatch.setattr(Path, "samefile", samefile)
+
+    assert hf_cache_settings.known_hf_cache_homes() == [first]
 
 
 def test_environment_cache_is_read_only(monkeypatch, tmp_path):
@@ -288,6 +311,21 @@ def test_inactive_cache_model_loads_from_snapshot_path(tmp_path):
     assert row.model_id == "org/model"
     assert row.active_cache is False
     assert row.load_id == str(snapshot)
+    assert row.runtime == "transformers"
+
+
+@pytest.mark.parametrize(
+    ("model_format", "runtime"),
+    [
+        ("gguf", "llama_cpp"),
+        ("safetensors", "transformers"),
+        ("checkpoint", "transformers"),
+        ("adapter", "adapter"),
+        ("unknown", "unknown"),
+    ],
+)
+def test_hub_inventory_runtime_contract_tracks_model_format(model_format, runtime):
+    assert _runtime_for_format(model_format) == runtime
 
 
 def test_diffusion_cache_root_follows_a_live_switch(settings_store, tmp_path):

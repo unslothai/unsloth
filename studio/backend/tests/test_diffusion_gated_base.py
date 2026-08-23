@@ -294,6 +294,70 @@ def test_the_pre_eviction_preflight_clears_an_open_base(monkeypatch):
     assert probed == []
 
 
+def test_diffusers_preflight_returns_the_card_base_and_hosted_encoder(monkeypatch):
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family("unsloth/Qwen-Image-2512-GGUF")
+    assert fam is not None
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo",
+        lambda *args, **kwargs: "Qwen/Qwen-Image-2512",
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._assert_base_repo_accessible",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion.resolve_diffusion_device_target",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion_precision.te_quant_supported",
+        lambda *args, **kwargs: True,
+    )
+
+    preflight = DiffusionBackend().preflight_load_repositories(
+        "unsloth/Qwen-Image-2512-GGUF",
+        fam,
+        gguf_filename = "qwen-image-2512-Q4_K_M.gguf",
+        model_kind = "gguf",
+        text_encoder_quant = "fp8",
+    )
+
+    assert preflight.resolved_base_repo == "Qwen/Qwen-Image-2512"
+    assert "Qwen/Qwen-Image-2512" in preflight.repositories
+    assert "unsloth/Qwen-Image-FP8" in preflight.repositories
+
+
+def test_diffusers_preflight_returns_hidreams_hosted_fourth_encoder(monkeypatch):
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family("unsloth/HiDream-I1-Full")
+    assert fam is not None
+    monkeypatch.setattr(
+        "core.inference.diffusion._assert_base_repo_accessible",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion.resolve_diffusion_device_target",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion_precision.te_quant_supported",
+        lambda *args, **kwargs: True,
+    )
+
+    preflight = DiffusionBackend().preflight_load_repositories(
+        "unsloth/HiDream-I1-Full",
+        fam,
+        model_kind = "pipeline",
+        text_encoder_quant = "fp8",
+    )
+
+    assert preflight.resolved_base_repo == "unsloth/HiDream-I1-Full"
+    assert "unsloth/HiDream-I1-Full-FP8" in preflight.repositories
+
+
 def test_the_native_pre_eviction_preflight_refuses_a_gated_companion(monkeypatch):
     # A forced-native load on a GPU box takes the arbiter too, so sd.cpp needs the same entry point.
     # Mirror swap off so this pins the preflight itself; the #7952 mirror rescue is covered below.
@@ -319,6 +383,26 @@ def test_the_native_pre_eviction_preflight_refuses_a_gated_companion(monkeypatch
         )
 
     assert GATED_REPO in str(excinfo.value)
+
+
+def test_native_preflight_returns_its_vae_and_encoder_repositories(monkeypatch):
+    from core.inference.diffusion_families import detect_family
+    from core.inference.sd_cpp_backend import SdCppDiffusionBackend
+
+    fam = detect_family("unsloth/Z-Image-Turbo-GGUF")
+    assert fam is not None
+    backend = SdCppDiffusionBackend()
+    monkeypatch.setattr(backend, "_preflight_companion_repos", lambda *args, **kwargs: None)
+
+    repositories = backend.preflight_load_repositories(
+        "unsloth/Z-Image-Turbo-GGUF",
+        fam,
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+    )
+
+    assert fam.sd_cpp_vae[0] in repositories
+    assert fam.sd_cpp_text_encoders[0][0] in repositories
+    assert backend.preflight_load_repositories("unused", None) == ()
 
 
 def test_run_load_stamps_the_gated_error_on_the_load(monkeypatch):

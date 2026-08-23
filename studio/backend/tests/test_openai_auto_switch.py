@@ -88,7 +88,9 @@ class _LoadRecorder:
         current_subject = None,
         *,
         current_request_counted = False,
+        load_reservation = None,
     ):
+        assert load_reservation is not None
         # Mirror the production load boundary before recording any replacement.
         await inference_route._wait_for_model_switch_idle(
             current_request_counted = current_request_counted
@@ -4896,7 +4898,9 @@ def test_auto_switch_serializes_across_event_loops(monkeypatch):
         current_subject = None,
         *,
         current_request_counted = False,
+        load_reservation = None,
     ):
+        assert load_reservation is not None
         with slock:
             state["cur"] += 1
             state["max"] = max(state["max"], state["cur"])

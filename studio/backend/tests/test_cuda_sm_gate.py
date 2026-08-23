@@ -234,7 +234,7 @@ def _gated_backend(
     backend._clear_server_pid = lambda: None
     backend._prepare_cpu_fallback_launch = lambda *_a, **_kw: None
     backend._detect_audio_type_strict = lambda: None
-    backend._apply_detected_audio = lambda _detected: True
+    backend._apply_detected_audio = lambda _detected, _on_audio_codec_resolved = None: True
     backend._wait_for_health = lambda timeout: True
     backend._llama_server_env_for_binary = lambda _binary: {"PATH": os.environ.get("PATH", "")}
     return backend, gguf

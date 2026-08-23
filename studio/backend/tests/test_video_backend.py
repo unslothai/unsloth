@@ -845,6 +845,315 @@ def test_loading_repo_ids_guards_in_flight_delete():
     assert backend.loading_repo_ids() == ("org/ckpt",)
 
 
+def test_worker_reserves_ltx_hosted_prequant_before_planning(fake_runtime, monkeypatch):
+    from core.inference import video as video_module
+
+    backend = VideoBackend()
+    backend._load_token = 7
+    backend._loading = video_module._VideoLoadingState(
+        repo_id = "unsloth/LTX-2.3-GGUF",
+        base_repo = "Lightricks/LTX-2",
+    )
+    reserved = []
+    reservation = types.SimpleNamespace(add = lambda *repos: reserved.extend(repos))
+
+    monkeypatch.setattr(
+        backend,
+        "_te_prequant_sources",
+        lambda *_args, **_kwargs: {
+            "text_encoder": types.SimpleNamespace(
+                kind = "repo",
+                location = "unsloth/LTX-2-FP8",
+            )
+        },
+    )
+    monkeypatch.setattr(
+        backend,
+        "_h3_planned_auto_denoiser_scheme",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("stop after reserve")),
+    )
+
+    backend._run_load(
+        repo_id = "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "ltx-2.3-Q4_K_M.gguf",
+        family_override = "ltx-2",
+        base_repo = "Lightricks/LTX-2",
+        text_encoder_quant = "fp8",
+        _load_token = 7,
+        _load_reservation = reservation,
+    )
+
+    assert "unsloth/LTX-2-FP8" in reserved
+    assert "unsloth/LTX-2-FP8" in backend._loading.asset_repos
+
+
+def test_worker_reserves_h3_prequant_before_verification(fake_runtime, monkeypatch):
+    from core.inference import video as video_module
+
+    backend = VideoBackend()
+    backend._load_token = 8
+    backend._loading = video_module._VideoLoadingState(
+        repo_id = "unsloth/MiniMax-H3-GGUF",
+        base_repo = "MiniMaxAI/MiniMax-H3",
+    )
+    reserved = []
+    reservation = types.SimpleNamespace(add = lambda *repos: reserved.extend(repos))
+
+    monkeypatch.setattr(backend, "_te_prequant_sources", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        backend,
+        "_h3_planned_auto_denoiser_scheme",
+        lambda *_args, **_kwargs: "int8",
+    )
+
+    def _verify(*_args, **_kwargs):
+        assert "unsloth/MiniMax-H3-FP8" in reserved
+        raise RuntimeError("stop after reserve")
+
+    monkeypatch.setattr(backend, "_denoiser_prequant_verified", _verify)
+    backend._run_load(
+        repo_id = "unsloth/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        family_override = "minimax-h3",
+        model_kind = "single_file",
+        _load_token = 8,
+        _load_reservation = reservation,
+    )
+
+    assert "unsloth/MiniMax-H3-FP8" in backend._loading.asset_repos
+
+
+def test_h3_te_preflight_uses_the_selected_gpu_and_cache_only_mode(
+    fake_runtime, monkeypatch
+):
+    from core.inference import video as video_module
+    from core.inference.video_families import detect_video_family
+    from core.inference.video_minimax_h3_te import H3_TE_QUANT_REPO
+
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert fam is not None
+    backend = VideoBackend()
+    target = object()
+    ordinals = []
+    monkeypatch.setattr(
+        video_module,
+        "resolve_diffusion_device_target",
+        lambda ordinal = None: ordinals.append(ordinal) or target,
+    )
+    seen = {}
+
+    def verified(_fam, _quant, _base, _token, local_files_only = False, target = None):
+        seen["local_files_only"] = local_files_only
+        seen["target"] = target
+        return "int8"
+
+    monkeypatch.setattr(backend, "_h3_te_quant_scheme_verified", verified)
+    scheme = backend.preflight_h3_te_quant_scheme(
+        fam,
+        None,
+        fam.base_repo,
+        None,
+        gpu_ordinal = 2,
+        local_files_only = True,
+    )
+    monkeypatch.setattr(backend, "_te_prequant_sources", lambda *_args, **_kwargs: {})
+    repositories = backend.preflight_load_repositories(
+        fam.base_repo,
+        fam,
+        model_kind = "pipeline",
+        h3_te_scheme = scheme,
+    )
+
+    assert ordinals == [2]
+    assert seen == {"local_files_only": True, "target": target}
+    assert "unsloth/MiniMax-H3-FP8" in repositories
+    assert H3_TE_QUANT_REPO in repositories
+
+
+def test_video_preflight_returns_the_ltx_hosted_encoder_repository(
+    fake_runtime, monkeypatch
+):
+    from core.inference import video as video_module
+    from core.inference.video_families import detect_video_family
+
+    torch = sys.modules["torch"]
+    monkeypatch.setattr(torch, "float8_e4m3fn", _FakeDtype("float8_e4m3fn"), raising = False)
+    target = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
+    monkeypatch.setattr(
+        video_module,
+        "resolve_diffusion_device_target",
+        lambda ordinal = None: target,
+    )
+    fam = detect_video_family("Lightricks/LTX-2")
+    assert fam is not None
+
+    repositories = VideoBackend().preflight_load_repositories(
+        "unsloth/LTX-2.3-GGUF",
+        fam,
+        model_kind = "gguf",
+        text_encoder_quant = "fp8",
+    )
+
+    assert "unsloth/LTX-2-FP8" in repositories
+
+
+def test_h3_native_preflight_skips_diffusers_prequant_repositories(monkeypatch):
+    from core.inference.video_families import detect_video_family
+    from core.inference.video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
+
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert fam is not None
+    backend = VideoBackend()
+    monkeypatch.setattr(
+        backend,
+        "_te_prequant_sources",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("diffusers TE probe")),
+    )
+
+    repositories = backend.preflight_load_repositories(
+        "unsloth/MiniMax-H3-GGUF",
+        fam,
+        model_kind = "gguf",
+        text_encoder_quant = "fp8",
+        h3_task = "fl2va",
+        h3_te_scheme = "int8",
+    )
+
+    assert set(repositories) == {H3_GGUF_REPO, H3_COMPONENT_REPO}
+
+
+def test_worker_reuses_the_h3_te_preflight_decision(fake_runtime, monkeypatch):
+    from core.inference import video as video_module
+    from core.inference.video_minimax_h3_te import H3_TE_QUANT_REPO
+
+    backend = VideoBackend()
+    backend._load_token = 10
+    backend._loading = video_module._VideoLoadingState(
+        repo_id = "MiniMaxAI/MiniMax-H3",
+        base_repo = "MiniMaxAI/MiniMax-H3",
+    )
+    reserved = []
+    reservation = types.SimpleNamespace(add = lambda *repos: reserved.extend(repos))
+    monkeypatch.setattr(backend, "_te_prequant_sources", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        backend,
+        "_h3_planned_auto_denoiser_scheme",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        backend,
+        "_denoiser_prequant_verified",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        backend,
+        "_h3_te_quant_scheme_verified",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("re-probed")),
+    )
+    seen = {}
+
+    def stop_after_decision(*_args, **kwargs):
+        seen["scheme"] = kwargs["h3_te_scheme"]
+        raise RuntimeError("stop after decision")
+
+    monkeypatch.setattr(backend, "_estimate_download_bytes", stop_after_decision)
+    backend._run_load(
+        repo_id = "MiniMaxAI/MiniMax-H3",
+        model_kind = "pipeline",
+        text_encoder_quant = "fp8",
+        _load_token = 10,
+        _load_reservation = reservation,
+        _preflight_h3_te_scheme = "int8",
+        _preflight_h3_te_scheme_settled = True,
+    )
+
+    assert seen["scheme"] == "int8"
+    assert H3_TE_QUANT_REPO in reserved
+
+
+def test_begin_load_hands_route_preclaims_to_the_worker_reservation(
+    fake_runtime, monkeypatch
+):
+    from core.inference import video as video_module
+    from core.inference.video_families import detect_video_family
+    from utils import model_cache_reservations
+    from utils.model_cache_reservations import ModelCacheOperations
+
+    fam = detect_video_family("Lightricks/LTX-2")
+    assert fam is not None
+    backend = VideoBackend()
+    monkeypatch.setattr(backend, "validate_load_request", lambda *_args, **_kwargs: fam)
+    monkeypatch.setattr(video_module, "assert_video_precision_available", lambda *a, **k: None)
+    operations = ModelCacheOperations()
+    monkeypatch.setattr(model_cache_reservations, "_model_cache_operations", operations)
+    captured = {}
+
+    def capture_thread(*_args, **kwargs):
+        captured["reservation"] = kwargs["args"][0]
+        return types.SimpleNamespace(start = lambda: None)
+
+    monkeypatch.setattr(video_module.threading, "Thread", capture_thread)
+    dependency = "unsloth/LTX-2-FP8"
+    backend.begin_load(
+        "Lightricks/LTX-2",
+        model_kind = "pipeline",
+        _preclaimed_repositories = (dependency,),
+    )
+
+    assert operations.cache_writer_conflict(dependency) == "inference_loading"
+    captured["reservation"].release()
+    backend.unload()
+
+
+def test_worker_reserves_ltx23_extras_before_estimating_them(
+    fake_runtime, monkeypatch, tmp_path
+):
+    from core.inference import video as video_module
+    from core.inference.video_ltx2 import LTX23_EXTRAS_REPO
+
+    checkpoint = tmp_path / "ltx-2.3-Q4_K_M.gguf"
+    checkpoint.write_bytes(b"checkpoint")
+    backend = VideoBackend()
+    backend._load_token = 9
+    backend._loading = video_module._VideoLoadingState(
+        repo_id = str(checkpoint),
+        base_repo = "Lightricks/LTX-2",
+    )
+    reserved = []
+    reservation = types.SimpleNamespace(add = lambda *repos: reserved.extend(repos))
+
+    monkeypatch.setattr(backend, "_te_prequant_sources", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        backend, "_h3_planned_auto_denoiser_scheme", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        backend, "_denoiser_prequant_verified", lambda *_args, **_kwargs: False
+    )
+    monkeypatch.setattr(
+        backend, "_h3_te_quant_scheme_verified", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        "core.inference.video_ltx2.is_ltx23_checkpoint", lambda _path: True
+    )
+
+    def _estimate(*_args, **kwargs):
+        if kwargs.get("ltx23"):
+            assert LTX23_EXTRAS_REPO in reserved
+            raise RuntimeError("stop after reserve")
+        return 0
+
+    monkeypatch.setattr(backend, "_estimate_download_bytes", _estimate)
+    backend._run_load(
+        repo_id = str(checkpoint),
+        gguf_filename = checkpoint.name,
+        family_override = "ltx-2",
+        _load_token = 9,
+        _load_reservation = reservation,
+    )
+
+    assert LTX23_EXTRAS_REPO in backend._loading.asset_repos
+
+
 def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     backend = VideoBackend()
     status = _load_gguf(backend, tmp_path)
@@ -3240,6 +3549,18 @@ def test_begin_load_publishes_the_h3_companion_claim_with_the_loading_state(
     from core.inference.video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
 
     backend = VideoBackend()
+    fam = _detect_load_family("unsloth/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    reserved: list[str] = []
+    reservation = SimpleNamespace(
+        add = lambda *repos: reserved.extend(repo for repo in repos if repo),
+        release = lambda: None,
+    )
+    monkeypatch.setattr(
+        "utils.model_cache_reservations.reserve_inference_load",
+        lambda *repos, variant = None: reserved.extend(repo for repo in repos if repo)
+        or reservation,
+    )
     # Never started: the window under test is before the load thread is scheduled.
     monkeypatch.setattr(
         threading, "Thread", lambda *a, **k: SimpleNamespace(start = lambda: None, daemon = True)
@@ -3255,6 +3576,8 @@ def test_begin_load_publishes_the_h3_companion_claim_with_the_loading_state(
     claimed = backend.loading_repo_ids()
     assert H3_GGUF_REPO in claimed
     assert H3_COMPONENT_REPO in claimed
+    assert fam.base_repo not in claimed
+    assert fam.base_repo not in reserved
 
 
 def test_begin_load_claims_no_companion_repos_for_a_non_h3_family(fake_runtime, monkeypatch):
@@ -3266,15 +3589,120 @@ def test_begin_load_claims_no_companion_repos_for_a_non_h3_family(fake_runtime, 
     from core.inference.video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
 
     backend = VideoBackend()
+    reserved: list[str] = []
+    reservation = SimpleNamespace(
+        add = lambda *repos: reserved.extend(repo for repo in repos if repo),
+        release = lambda: None,
+    )
+    monkeypatch.setattr(
+        "utils.model_cache_reservations.reserve_inference_load",
+        lambda *repos, variant = None: reserved.extend(repo for repo in repos if repo)
+        or reservation,
+    )
     monkeypatch.setattr(
         threading, "Thread", lambda *a, **k: SimpleNamespace(start = lambda: None, daemon = True)
     )
 
-    backend.begin_load("Wan-AI/Wan2.2-TI2V-5B-Diffusers", family_override = "wan2.2-ti2v-5b")
+    primary = "unsloth/Custom-Wan2.2-TI2V-5B-Pipeline"
+    fam = _detect_load_family(primary, None, "wan2.2-ti2v-5b")
+    assert fam is not None
+    backend.begin_load(primary, family_override = "wan2.2-ti2v-5b")
 
     claimed = backend.loading_repo_ids()
+    assert set(reserved) == {primary}
+    assert fam.base_repo not in claimed
     assert H3_GGUF_REPO not in claimed
     assert H3_COMPONENT_REPO not in claimed
+
+
+def test_a_cached_modular_index_is_read_without_reaching_the_hub(monkeypatch, tmp_path):
+    """A load that may download still reads a staged index from the cache: going to the Hub
+    for a few KB it already has costs an offline host the whole HEAD timeout first."""
+    from core.inference import video as video_module
+
+    index = tmp_path / "modular_model_index.json"
+    index.write_text("{}", encoding = "utf-8")
+    attempts: list[bool] = []
+
+    def _download(repo_id, filename, _token, **kwargs):
+        assert filename == "modular_model_index.json"
+        attempts.append(kwargs["local_files_only"])
+        if kwargs["local_files_only"] and repo_id == "acme/uncached":
+            raise FileNotFoundError("not cached")
+        return str(index)
+
+    monkeypatch.setattr(
+        "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download
+    )
+
+    assert video_module.resolve_modular_pipeline_root("acme/cached") == tmp_path
+    assert attempts == [True]
+
+    # Only a genuine cache miss reaches the network, and only when one is permitted.
+    attempts.clear()
+    assert video_module.resolve_modular_pipeline_root("acme/uncached") == tmp_path
+    assert attempts == [True, False]
+
+    attempts.clear()
+    with pytest.raises(RuntimeError):
+        video_module.resolve_modular_pipeline_root("acme/uncached", local_files_only = True)
+    assert attempts == [True]
+
+
+def test_begin_load_carries_modular_component_repositories_into_the_worker_claim(
+    fake_runtime, monkeypatch
+):
+    from core.inference import video as video_module
+
+    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    assert fam is not None
+    backend = VideoBackend()
+    monkeypatch.setattr(backend, "validate_load_request", lambda *a, **k: fam)
+    monkeypatch.setattr(video_module, "assert_video_precision_available", lambda *a, **k: None)
+    monkeypatch.setattr(
+        threading, "Thread", lambda *a, **k: types.SimpleNamespace(start = lambda: None)
+    )
+    reserved: list[str] = []
+    reservation = types.SimpleNamespace(
+        add = lambda *repos: reserved.extend(repos),
+        release = lambda: None,
+    )
+    monkeypatch.setattr(
+        "utils.model_cache_reservations.reserve_inference_load",
+        lambda *repos, variant = None: reserved.extend(repos) or reservation,
+    )
+
+    dependencies = ("unsloth/MiniMax-H3-VAE", "community/h3-conditioner")
+    backend.begin_load(
+        "MiniMaxAI/MiniMax-H3",
+        model_kind = "pipeline",
+        _modular_component_repos = dependencies,
+    )
+
+    assert set(dependencies).issubset(reserved)
+    assert backend._loading is not None
+    assert backend._loading.asset_repos == dependencies
+
+
+def test_begin_load_publishes_the_requested_companion_base(fake_runtime, monkeypatch):
+    monkeypatch.setattr("core.inference.video._ensure_mp4_encoder_available", lambda: None)
+    backend = VideoBackend()
+    finished = threading.Event()
+
+    def _finish(**_kwargs):
+        finished.set()
+
+    monkeypatch.setattr(backend, "_run_load", _finish)
+    backend.begin_load(
+        "someone/LTX-2-GGUF",
+        gguf_filename = "ltx-2-dev-Q4_K_M.gguf",
+        family_override = "ltx-2",
+        base_repo = "unsloth/Custom-Video-Companion",
+    )
+
+    assert finished.wait(5)
+    assert "unsloth/Custom-Video-Companion" in backend.loading_repo_ids()
+    backend.unload()
 
 
 def test_h3_native_load_honors_install_switch_and_maps_xpu_to_vulkan(monkeypatch, tmp_path):
@@ -3931,7 +4359,7 @@ def test_h3_native_load_publishes_the_companion_repos_while_downloading(monkeypa
     assert len(guarded) == 4
     for ids in guarded:
         assert "leejet/MiniMax-H3-GGUF" in ids
-        assert fam.base_repo in ids
+        assert fam.base_repo not in ids
         assert H3_GGUF_REPO in ids
         assert H3_COMPONENT_REPO in ids
 
@@ -4233,9 +4661,11 @@ def test_h3_native_loaded_repo_ids_cover_the_companion_repos():
         H3_GGUF_REPO,
         H3_COMPONENT_REPO,
     )
+    assert backend.loaded_gguf_dependency_scopes() == ((H3_GGUF_REPO, "Q4_K_M"),)
     # A diffusers load holds its weights in memory, and base_repo already names its repo.
     object.__setattr__(backend._state, "engine", "diffusers")
     assert backend.loaded_repo_ids() == ()
+    assert backend.loaded_gguf_dependency_scopes() == ()
 
 
 def test_h3_modular_load_forwards_the_hub_token_to_the_component_loads(fake_runtime):

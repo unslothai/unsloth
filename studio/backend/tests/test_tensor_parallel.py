@@ -1568,6 +1568,24 @@ def test_tensor_fallback_propagates_non_tensor_crash():
         )
 
 
+def test_tensor_fallback_preserves_non_retryable_control_flow_error():
+    class ReservationConflict(Exception):
+        pass
+
+    async def loader(_tensor, _extras):
+        raise ReservationConflict("cache is being deleted")
+
+    with pytest.raises(ReservationConflict, match = "cache is being deleted"):
+        asyncio.run(
+            load_with_tensor_fallback(
+                loader,
+                requested_tensor = True,
+                extra_args = None,
+                retryable_exception = lambda exc: not isinstance(exc, ReservationConflict),
+            )
+        )
+
+
 # ── _plan_tensor_parallel: total-based headroom + ubatch (review fixes) ──
 
 

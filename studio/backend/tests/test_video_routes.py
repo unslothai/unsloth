@@ -12,6 +12,7 @@ video_gallery code.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 
@@ -27,8 +28,13 @@ from core.inference.video_families import (
     VIDEO_CANCELLED_MSG,
     VIDEO_GENERATION_BUSY_MSG,
     VIDEO_NOT_LOADED_MSG,
+    detect_video_family,
 )
 from routes.video import router as video_router
+
+
+async def _run_inline(function, /, *args, **kwargs):
+    return function(*args, **kwargs)
 
 
 def _defaults():
@@ -89,7 +95,6 @@ class _FakeBackend(video_module.VideoBackend):
         # Minimal committed state required by inherited generation validation.
         import types
 
-        from core.inference.video_families import detect_video_family
         self._state = (
             types.SimpleNamespace(
                 family = detect_video_family("Lightricks/LTX-2"),
@@ -135,7 +140,7 @@ class _FakeBackend(video_module.VideoBackend):
             raise ValueError(
                 f"'{model_path}' is not a supported text-to-video model. Supported families: ltx-2."
             )
-        return object()
+        return detect_video_family("Lightricks/LTX-2")
 
     def begin_load(self, model_path, **kwargs):
         # The real backend loads on a thread; the fake completes instantly.
@@ -309,6 +314,109 @@ def test_load_happy_path_and_arbiter_acquired(client, monkeypatch):
     assert acquired == [gpu_arbiter.VIDEO]  # the GPU was handed to VIDEO
 
 
+def test_modular_component_repositories_are_reserved_before_gpu_handoff(
+    client, monkeypatch, tmp_path
+):
+    import asyncio
+    import contextlib
+    import types
+    from pathlib import Path
+
+    import core.inference.diffusion_device as devmod
+    import core.inference.media_locality as media_locality
+    import routes.inference as inference_routes
+    import routes.video as video_routes
+    import utils.hf_xet_fallback as hf_xet_fallback
+    from models.inference import VideoLoadRequest
+    from routes.video import load_video_model_gated
+    from utils import model_cache_reservations
+    from utils.model_cache_reservations import ModelCacheOperations
+
+    dependencies = ("unsloth/MiniMax-H3-VAE",)
+    modular = tmp_path / "h3"
+    modular.mkdir()
+    (modular / "modular_model_index.json").write_text(
+        '{"vae": ["diffusers", "AutoencoderKLMiniMaxH3", '
+        '{"pretrained_model_name_or_path": "unsloth/MiniMax-H3-VAE"}]}',
+        encoding = "utf-8",
+    )
+    downloads: list[tuple[str, bool]] = []
+
+    def _download_index(repo_id, _filename, _token, **kwargs):
+        downloads.append((repo_id, kwargs["local_files_only"]))
+        return str(modular / "modular_model_index.json")
+
+    monkeypatch.setattr(
+        hf_xet_fallback,
+        "hf_hub_download_with_xet_fallback",
+        _download_index,
+    )
+
+    backend = video_module.get_video_backend()
+    fam = types.SimpleNamespace(
+        base_repo = "MiniMaxAI/MiniMax-H3",
+        modular_workflow = "fl2va",
+    )
+    monkeypatch.setattr(backend, "validate_load_request", lambda *a, **k: fam)
+    monkeypatch.setattr(video_module, "assert_video_precision_available", lambda *a, **k: None)
+    monkeypatch.setattr(video_routes, "_guard_video_load_against_training", lambda: None)
+    monkeypatch.setattr(inference_routes, "_diffusion_training_admission", contextlib.nullcontext)
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cuda")
+    )
+
+    operations = ModelCacheOperations()
+    monkeypatch.setattr(model_cache_reservations, "_model_cache_operations", operations)
+    guarded: list[str] = []
+    rechecked: list[Path] = []
+    h3_te_preflights: list[bool] = []
+
+    def _h3_te_preflight(*_args, **kwargs):
+        h3_te_preflights.append(kwargs["local_files_only"])
+        return None
+
+    monkeypatch.setattr(backend, "preflight_h3_te_quant_scheme", _h3_te_preflight)
+
+    def _components_present(root):
+        assert all(operations.delete_admission_conflict(repo) for repo in dependencies)
+        rechecked.append(root)
+        return True
+
+    def _acquire(_role, register = None):
+        guarded.extend(
+            repo for repo in dependencies if operations.delete_admission_conflict(repo)
+        )
+        return register()
+
+    async def _inline(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(gpu_arbiter, "acquire_for", _acquire)
+    monkeypatch.setattr(media_locality, "pipeline_components_present", _components_present)
+    monkeypatch.setattr(asyncio, "to_thread", _inline)
+
+    response = asyncio.run(
+        asyncio.wait_for(
+            load_video_model_gated(
+                VideoLoadRequest(model_path = "acme/h3", model_kind = "pipeline"),
+                "test-user",
+                user_initiated = False,
+            ),
+            timeout = 5,
+        )
+    )
+
+    assert response.loaded is True
+    assert tuple(guarded) == dependencies
+    assert downloads == [("acme/h3", True)]
+    assert rechecked == [modular]
+    assert backend.last_load_kwargs["_modular_component_repos"] == dependencies
+    assert backend.last_load_kwargs["local_files_only"] is True
+    assert backend.last_load_kwargs["_preflight_h3_te_scheme_settled"] is True
+    assert h3_te_preflights == [True]
+    assert all(not operations.delete_admission_conflict(repo) for repo in dependencies)
+
+
 def test_load_forwards_the_gpu_selection(client, monkeypatch):
     # /video/load carried no gpu_ids at all, so sd.cpp and diffusers both pinned ordinal 0.
     import types
@@ -390,6 +498,169 @@ def test_load_threads_options_through_to_backend(client):
     assert kwargs.get("attention_backend") == "cudnn"
     assert kwargs.get("transformer_cache") == "fbcache"
     assert kwargs.get("transformer_cache_threshold") == 0.1
+
+
+def test_full_pipeline_load_ignores_a_busy_unused_family_base(client, monkeypatch):
+    from core.inference.video_families import detect_video_family
+    from models.inference import VideoLoadRequest
+    from routes.video import load_video_model_gated
+    from utils import model_cache_reservations
+    from utils.model_cache_reservations import ModelCacheOperations
+
+    backend = video_module.get_video_backend()
+    fam = detect_video_family("Lightricks/LTX-2")
+    assert fam is not None
+    monkeypatch.setattr(backend, "validate_load_request", lambda *args, **kwargs: fam)
+    operations = ModelCacheOperations()
+    monkeypatch.setattr(model_cache_reservations, "_model_cache_operations", operations)
+    monkeypatch.setattr(asyncio, "to_thread", _run_inline)
+    owner = object()
+    assert operations.claim_repository_owner(fam.base_repo, owner) == (True, "owned")
+
+    response = asyncio.run(
+        load_video_model_gated(
+            VideoLoadRequest(
+                model_path = "unsloth/Custom-LTX-2-Pipeline",
+                model_kind = "pipeline",
+                family_override = "ltx-2",
+            ),
+            "test-user",
+            user_initiated = True,
+        )
+    )
+
+    assert response.loaded is True
+    assert operations.release_repository_owner(fam.base_repo, owner) is True
+
+
+def test_video_gguf_reserves_the_resolved_base_before_handoff(client, monkeypatch):
+    from core.inference.video_families import detect_video_family
+    from fastapi import HTTPException
+    from models.inference import VideoLoadRequest
+    from routes.video import load_video_model_gated
+    from utils import model_cache_reservations
+    from utils.model_cache_reservations import ModelCacheOperations
+
+    backend = video_module.get_video_backend()
+    fam = detect_video_family("Lightricks/LTX-2")
+    assert fam is not None
+    monkeypatch.setattr(backend, "validate_load_request", lambda *args, **kwargs: fam)
+    operations = ModelCacheOperations()
+    monkeypatch.setattr(model_cache_reservations, "_model_cache_operations", operations)
+    monkeypatch.setattr(asyncio, "to_thread", _run_inline)
+    owner = object()
+    assert operations.claim_repository_owner(fam.base_repo, owner) == (True, "owned")
+    evicted: list[str] = []
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: evicted.append("chat"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            load_video_model_gated(
+                VideoLoadRequest(
+                    model_path = "unsloth/LTX-2.3-GGUF",
+                    gguf_filename = "ltx-2.3-distilled-Q4_K_M.gguf",
+                    family_override = "ltx-2",
+                ),
+                "test-user",
+                user_initiated = True,
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert evicted == []
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
+    assert operations.release_repository_owner(fam.base_repo, owner) is True
+
+
+def test_video_prequant_conflict_is_refused_before_chat_eviction(client, monkeypatch):
+    import types
+
+    import core.inference.diffusion_device as device_module
+    from core.inference.video_families import detect_video_family
+    from models.inference import VideoLoadRequest
+    from routes.video import load_video_model_gated
+    from utils import model_cache_reservations
+    from utils.model_cache_reservations import ModelCacheOperations
+
+    backend = video_module.get_video_backend()
+    fam = detect_video_family("Lightricks/LTX-2")
+    assert fam is not None
+    monkeypatch.setattr(backend, "validate_load_request", lambda *args, **kwargs: fam)
+    busy_repo = "unsloth/LTX-2-FP8"
+    monkeypatch.setattr(
+        backend,
+        "preflight_load_repositories",
+        lambda *_args, **_kwargs: (busy_repo,),
+    )
+    monkeypatch.setattr(video_module, "assert_video_precision_available", lambda *a, **k: None)
+    monkeypatch.setattr(
+        device_module,
+        "resolve_diffusion_device_target",
+        lambda *args, **kwargs: types.SimpleNamespace(device = "cuda"),
+    )
+    monkeypatch.setattr(asyncio, "to_thread", _run_inline)
+    operations = ModelCacheOperations()
+    monkeypatch.setattr(model_cache_reservations, "_model_cache_operations", operations)
+    owner = object()
+    assert operations.claim_repository_owner(busy_repo, owner) == (True, "owned")
+    evicted: list[str] = []
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: evicted.append("chat"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            load_video_model_gated(
+                VideoLoadRequest(
+                    model_path = "unsloth/LTX-2.3-GGUF",
+                    gguf_filename = "ltx-2.3-distilled-Q4_K_M.gguf",
+                    family_override = "ltx-2",
+                    text_encoder_quant = "fp8",
+                ),
+                "test-user",
+                user_initiated = True,
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert evicted == []
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
+    assert backend.loaded is False
+    assert operations.release_repository_owner(busy_repo, owner) is True
+
+
+def test_h3_native_load_ignores_a_busy_unused_family_base(client, monkeypatch):
+    from core.inference.video_families import detect_video_family
+    from models.inference import VideoLoadRequest
+    from routes.video import load_video_model_gated
+    from utils import model_cache_reservations
+    from utils.model_cache_reservations import ModelCacheOperations
+
+    backend = video_module.get_video_backend()
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert fam is not None
+    monkeypatch.setattr(backend, "validate_load_request", lambda *args, **kwargs: fam)
+    operations = ModelCacheOperations()
+    monkeypatch.setattr(model_cache_reservations, "_model_cache_operations", operations)
+    monkeypatch.setattr(asyncio, "to_thread", _run_inline)
+    owner = object()
+    assert operations.claim_repository_owner(fam.base_repo, owner) == (True, "owned")
+
+    response = asyncio.run(
+        load_video_model_gated(
+            VideoLoadRequest(
+                model_path = "unsloth/MiniMax-H3-GGUF",
+                gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+                model_kind = "gguf",
+                family_override = "minimax-h3",
+            ),
+            "test-user",
+            user_initiated = True,
+        )
+    )
+
+    assert response.loaded is True
+    assert operations.release_repository_owner(fam.base_repo, owner) is True
 
 
 def test_load_threads_transformer_quant_and_guidance_2(client, monkeypatch):
@@ -1034,9 +1305,39 @@ def test_delete_guard_protects_the_loaded_video_companion_base(monkeypatch):
     assert deletion._video_blocks_delete("unsloth/something-else") is None
 
 
-def test_delete_guard_protects_the_native_video_companion_repos(monkeypatch):
-    # The native H3 runtime re-reads its Qwen encoder and both VAEs from companion repos that are
-    # neither repo_id nor the BF16 base_repo the status publishes, so the guard needs loaded_repo_ids().
+def test_the_media_guard_lets_a_sibling_video_quant_change(monkeypatch):
+    # A variant download or delete touches only the main GGUF files carrying that quant label.
+    # The companion base has no quant scope and remains protected.
+    from hub.services.models import deletion
+
+    class _Backend:
+        def status(self):
+            return {
+                "loaded": True,
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "base_repo": "unsloth/LTX-2.3",
+                "gguf_variant": "Q4_K_M",
+            }
+
+        def loaded_repo_ids(self):
+            return ("unsloth/LTX-2.3-GGUF", "unsloth/LTX-2.3")
+
+        def loading_repo_ids(self):
+            return ()
+
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
+    monkeypatch.setattr(deletion, "_llama_cpp_blocks_delete", lambda *_args: None)
+    monkeypatch.setattr(deletion, "_inference_backend_delete_block", lambda *_args: None)
+    monkeypatch.setattr(deletion, "_diffusion_blocks_delete", lambda *_args: None)
+    assert deletion._video_blocks_delete("unsloth/LTX-2.3-GGUF", "Q8_0") is None
+    assert deletion._video_blocks_delete("unsloth/LTX-2.3-GGUF", "Q4_K_M") is not None
+    assert deletion._video_blocks_delete("unsloth/LTX-2.3", "Q8_0") is not None
+    assert deletion._video_blocks_delete("unsloth/LTX-2.3-GGUF") is not None
+    assert deletion._load_state_delete_block("unsloth/LTX-2.3-GGUF", "Q8_0") is None
+    assert deletion._load_state_delete_block("unsloth/LTX-2.3-GGUF", "Q4_K_M") is not None
+
+
+def test_h3_bundled_encoder_scope_blocks_only_its_own_variant(monkeypatch):
     from hub.services.models import deletion
 
     class _Backend:
@@ -1045,6 +1346,44 @@ def test_delete_guard_protects_the_native_video_companion_repos(monkeypatch):
                 "loaded": True,
                 "repo_id": "unsloth/MiniMax-H3-GGUF",
                 "base_repo": "MiniMaxAI/MiniMax-H3",
+                "gguf_variant": "Q6_K",
+            }
+
+        def loaded_gguf_dependency_scopes(self):
+            return (("unsloth/MiniMax-H3-GGUF", "Q4_K_M"),)
+
+        def loaded_repo_ids(self):
+            return (
+                "unsloth/MiniMax-H3-GGUF",
+                "Comfy-Org/MiniMax-H3",
+            )
+
+        def loading_repo_ids(self):
+            return ()
+
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
+    assert deletion._video_blocks_delete("unsloth/MiniMax-H3-GGUF", "Q4_K_M") is not None
+    assert (
+        deletion._video_blocks_delete(
+            "unsloth/MiniMax-H3-GGUF",
+            "minimax_h3_fl2va-Q4_K_M",
+        )
+        is None
+    )
+
+
+def test_delete_guard_protects_the_native_video_companion_repos(monkeypatch):
+    # The native H3 runtime re-reads its Qwen encoder and both VAEs between generations, so the
+    # guard needs the extra repositories that status does not publish.
+    from hub.services.models import deletion
+
+    class _Backend:
+        def status(self):
+            return {
+                "loaded": True,
+                "repo_id": "unsloth/MiniMax-H3-GGUF",
+                "base_repo": "MiniMaxAI/MiniMax-H3",
+                "engine": "sd_cpp",
             }
 
         def loaded_repo_ids(self):
@@ -1055,6 +1394,7 @@ def test_delete_guard_protects_the_native_video_companion_repos(monkeypatch):
 
     monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
     assert deletion._video_blocks_delete("Comfy-Org/MiniMax-H3") is not None
+    assert deletion._video_blocks_delete("MiniMaxAI/MiniMax-H3") is None
     assert deletion._video_blocks_delete("unsloth/something-else") is None
 
 

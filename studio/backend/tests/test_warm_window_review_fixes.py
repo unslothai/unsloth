@@ -746,22 +746,24 @@ def test_detection_wait_requires_a_device_not_just_the_event():
 
 
 def test_the_delete_guard_runs_off_the_event_loop():
-    """Both load-state guards must go to a worker, in one hop.
-    _inference_backend_blocks_delete() is sync and reaches get_inference_backend(), whose
-    cold build waits on detection: inline, an authed DELETE held the loop for the import."""
+    """The synchronous load-state checks must run together in one worker."""
     path = _BACKEND / "hub" / "services" / "models" / "deletion.py"
     tree = ast.parse(path.read_text(encoding = "utf-8"))
-    fn = next(
+    response = next(
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "delete_cached_model_response"
     )
-
-    # The guards belong to the nested helper handed to the worker, not the body.
-    nested = {node.name for node in ast.walk(fn) if isinstance(node, ast.FunctionDef)}
-    assert "_load_state_blocks_delete" in nested, (
-        "the load-state guards are called inline again; get_inference_backend() "
-        "then blocks the event loop for the remaining torch import"
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "load_state_delete_block"
+        for node in ast.walk(response)
+    ), "the delete path no longer reaches the offloaded load-state guard"
+    fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "load_state_delete_block"
     )
 
     offloaded = set()
@@ -772,30 +774,43 @@ def test_the_delete_guard_runs_off_the_event_loop():
             and sub.args
         ):
             offloaded.add(getattr(sub.args[0], "id", None))
-    assert "_load_state_blocks_delete" in offloaded
+    assert "_load_state_delete_block" in offloaded
 
 
 def test_the_delete_guard_keeps_its_short_circuit_and_fail_closed():
-    """The offload must not change what the guard decides. The `or` matters: with a GGUF model
-    loaded the first guard answers and the second never runs. And an unreadable load state
-    must still raise rather than fall through to unlinking weights under a live process."""
+    """A GGUF block skips later queries, and unreadable state fails closed."""
     path = _BACKEND / "hub" / "services" / "models" / "deletion.py"
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     helper = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "_load_state_blocks_delete"
+        if isinstance(node, ast.FunctionDef) and node.name == "_load_state_delete_block"
     )
-    bool_ops = [sub for sub in ast.walk(helper) if isinstance(sub, ast.BoolOp)]
-    assert bool_ops and isinstance(bool_ops[0].op, ast.Or), (
-        "the guard no longer short-circuits; the inference lookup would run even "
-        "when llama.cpp has already answered"
+    llama_guard = next(
+        (
+            node
+            for node in helper.body
+            if isinstance(node, ast.If)
+            and any(
+                isinstance(call, ast.Call)
+                and getattr(call.func, "id", None) == "_llama_cpp_blocks_delete"
+                for call in ast.walk(node.test)
+            )
+        ),
+        None,
+    )
+    assert llama_guard is not None and any(
+        isinstance(node, ast.Return)
+        for statement in llama_guard.body
+        for node in ast.walk(statement)
+    ), (
+        "the llama.cpp guard no longer returns before the inference backend query"
     )
 
     fn = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "delete_cached_model_response"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "load_state_delete_block"
     )
 
     # Bind to the specific Try, not any Try whose dump mentions to_thread: a decoy elsewhere
@@ -806,7 +821,7 @@ def test_the_delete_guard_keeps_its_short_circuit_and_fail_closed():
             and isinstance(call.func, ast.Attribute)
             and call.func.attr == "to_thread"
             and any(
-                isinstance(a, ast.Name) and a.id == "_load_state_blocks_delete" for a in call.args
+                isinstance(a, ast.Name) and a.id == "_load_state_delete_block" for a in call.args
             )
             for stmt in node.body
             for call in ast.walk(stmt)
@@ -818,14 +833,19 @@ def test_the_delete_guard_keeps_its_short_circuit_and_fail_closed():
         if isinstance(sub, ast.Try) and sub.handlers and _offloads_the_delete_guard(sub)
     ]
     assert guarded, "the offloaded guard is no longer inside a try/except"
-    # The raise must be in a handler: in the body it says nothing about an unreadable state.
-    raises = [
+    fail_closed = [
         sub
         for handler in guarded[0].handlers
         for sub in ast.walk(handler)
-        if isinstance(sub, ast.Raise)
+        if isinstance(sub, ast.Return)
+        and isinstance(sub.value, ast.Tuple)
+        and len(sub.value.elts) == 2
+        and isinstance(sub.value.elts[0], ast.Constant)
+        and sub.value.elts[0].value == 503
+        and isinstance(sub.value.elts[1], ast.Name)
+        and sub.value.elts[1].id == "_LOAD_STATE_UNVERIFIABLE_DETAIL"
     ]
-    assert raises, "an unreadable load state no longer raises; delete would proceed"
+    assert fail_closed, "an unreadable load state no longer blocks deletion"
 
 
 # ------------------------------------------------- the kill switch and health
@@ -2068,7 +2088,7 @@ def test_deleting_a_cached_model_does_not_construct_the_backend():
     fn = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "_inference_backend_blocks_delete"
+        if isinstance(node, ast.FunctionDef) and node.name == "_inference_backend_delete_block"
     )
     assert not [
         sub
@@ -2093,7 +2113,7 @@ def test_the_delete_guard_lets_a_delete_through_when_nothing_is_loaded():
     before = orch._inference_backend
     try:
         orch._inference_backend = None
-        assert deletion._inference_backend_blocks_delete("unsloth/Qwen3.5-2B") is False
+        assert deletion._inference_backend_delete_block("unsloth/Qwen3.5-2B") is None
         assert orch._inference_backend is None, "the delete guard constructed an orchestrator"
     finally:
         orch._inference_backend = before

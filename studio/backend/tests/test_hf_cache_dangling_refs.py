@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from hub.utils import inventory_scan
+from hub.utils import download_manifest, inventory_scan, state_dir
 
 SNAPSHOT = "a" * 40
 UPSTREAM_HEAD = "b" * 40
@@ -173,6 +173,38 @@ def test_a_download_that_has_only_written_its_ref_is_not_invented(tmp_path, monk
 
     assert _scanned_repo_ids(tmp_path, monkeypatch) == []
     assert _ref_names(repo_dir) == ["main"]
+
+
+def test_cancelled_gguf_with_only_a_dangling_ref_stays_on_device(tmp_path, monkeypatch):
+    repo_dir = _build_repo(tmp_path, snapshots = ())
+    (repo_dir / "snapshots").mkdir()
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Model",
+        "Q4_K_M",
+        [
+            download_manifest.ExpectedFile(
+                path = "model-Q4_K_M.gguf",
+                size = 4096,
+                sha256 = "a" * 64,
+            )
+        ],
+        "http",
+        hub_cache = tmp_path,
+    )
+    assert download_manifest.write_cancel_marker(
+        "model", "Org/Model", "Q4_K_M", "http", hub_cache = tmp_path
+    )
+
+    repo = _only_repo(tmp_path, monkeypatch)
+    rows = _autoload_rows(tmp_path, monkeypatch, gguf = True)
+
+    assert repo.repo_path == repo_dir
+    assert repo.revisions == frozenset()
+    assert [(row["repo_id"], row["size_bytes"], row["partial"]) for row in rows] == [
+        ("Org/Model", 4096, True)
+    ]
 
 
 def test_a_broken_symlink_costs_its_file_and_not_the_repo(tmp_path, monkeypatch):

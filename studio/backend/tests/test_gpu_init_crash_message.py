@@ -1318,8 +1318,9 @@ def test_empty_probe_cpu_recovery_releases_chat_ownership(monkeypatch):
     backend = LlamaCppBackend()
     backend.matches_load_source = lambda _intent: False
 
-    # /load now hands the loader its scoped cancel event alongside the intent.
-    def _recover_on_cpu(*, intent, load_cancel_event = None):
+    # /load hands the loader its scoped cancel event and the audio-codec
+    # reservation callback alongside the intent.
+    def _recover_on_cpu(*, intent, load_cancel_event = None, on_audio_codec_resolved = None):
         backend._gpu_memory_mode = "manual"
         backend._gpu_layers = 0
         backend._gpu_offload_active = backend._zero_offload_gpu_flag(

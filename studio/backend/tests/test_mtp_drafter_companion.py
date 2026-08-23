@@ -21,6 +21,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+from hub.utils import download_manifest, state_dir
 from hub.utils.download_manifest import ExpectedFile
 from hub.utils.gguf import (
     is_mtp_drafter_path,
@@ -1505,6 +1506,42 @@ def test_deleting_the_last_variant_reclaims_an_opt_in_dspark_drafter(tmp_path):
     )
 
     assert not (snap / "model-Q4_K_M.gguf").is_symlink()
+    assert not (snap / "dspark" / "dspark-DeepSeek-V4-Flash-0731-BF16.gguf").is_symlink()
+
+
+def test_deleting_a_cancelled_last_variant_reclaims_stranded_companions(
+    tmp_path, monkeypatch
+):
+    from hub.services.models import deletion
+
+    repo, snap = _cache_repo(
+        tmp_path,
+        "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        ["dspark/dspark-DeepSeek-V4-Flash-0731-BF16.gguf"],
+    )
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    assert download_manifest.write_cancel_marker(
+        "model",
+        repo.repo_id,
+        "Q6_K",
+        "http",
+        hub_cache = tmp_path,
+    )
+    monkeypatch.setattr(
+        deletion.gguf_variants,
+        "delete_variant_incomplete_blobs_result",
+        lambda *_args, **_kwargs: SimpleNamespace(deleted = 0, unresolved = False),
+    )
+
+    result = deletion._delete_gguf_variant_from_repos(
+        repo.repo_id,
+        "Q6_K",
+        [repo],
+        None,
+        root = tmp_path,
+    )
+
+    assert result["status"] == "deleted"
     assert not (snap / "dspark" / "dspark-DeepSeek-V4-Flash-0731-BF16.gguf").is_symlink()
 
 

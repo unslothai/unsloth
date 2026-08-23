@@ -5142,7 +5142,11 @@ def test_the_cached_model_reveal_still_goes_through_the_moved_helper(tmp_path, m
     link.symlink_to(real)
 
     opened = []
-    monkeypatch.setattr(models, "_resolve_cached_model_path", lambda repo_id, variant: link)
+    monkeypatch.setattr(
+        models,
+        "_resolve_cached_model_path",
+        lambda repo_id, variant, cache_path: link,
+    )
     monkeypatch.setattr(
         path_utils,
         "reveal_in_file_manager",
@@ -5151,7 +5155,10 @@ def test_the_cached_model_reveal_still_goes_through_the_moved_helper(tmp_path, m
 
     result = asyncio.new_event_loop().run_until_complete(
         models.reveal_cached_model(
-            repo_id = "unsloth/Llama-3.2-1B", variant = None, current_subject = "unsloth"
+            repo_id = "unsloth/Llama-3.2-1B",
+            variant = None,
+            cache_path = None,
+            current_subject = "unsloth",
         )
     )
     assert result == {"status": "ok", "path": str(link)}

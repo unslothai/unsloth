@@ -118,6 +118,23 @@ def test_hidden_model_matchers_custom_repo_publishes_exact_ids(monkeypatch):
     assert exact_paths == []
 
 
+def test_hidden_model_matchers_keep_default_pair_after_override(monkeypatch):
+    monkeypatch.setattr(rag_config, "EMBEDDING_MODEL", "org/default-embedder")
+    monkeypatch.setattr(rag_config, "default_gguf_repo", lambda: "org/default-embedder-GGUF")
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "org/override-embedder")
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/override-embedder-GGUF")
+
+    _needles, exact_ids, exact_paths = models_route.hidden_model_matchers()
+
+    assert set(exact_ids) >= {
+        "org/default-embedder",
+        "org/default-embedder-gguf",
+        "org/override-embedder",
+        "org/override-embedder-gguf",
+    }
+    assert exact_paths == []
+
+
 def test_hidden_model_matchers_local_owner_name_path_is_exact_path(monkeypatch, tmp_path):
     # A local embedder shaped like owner/name that exists on disk must be an
     # exact resolved path, not a Hub repo id (mirroring is_hidden_model), so the

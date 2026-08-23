@@ -31,6 +31,31 @@ def test_sanitize_alias_strips_path_ext_and_unsafe_chars():
     assert "." not in dl.sanitize_alias("model.v1.0.safetensors")
 
 
+def test_repo_ids_for_specs_resolves_catalog_and_direct_hub_sources(monkeypatch):
+    catalog_entry = dl.LoraCatalogEntry(
+        id = "catalog-style",
+        display_name = "Catalog style",
+        source = "hub",
+        fmt = "safetensors",
+        repo_id = "org/catalog-lora",
+    )
+    monkeypatch.setattr(dl, "_CURATED", (catalog_entry,))
+    monkeypatch.setattr(
+        dl,
+        "_scan_local",
+        lambda: pytest.fail("repository extraction must not scan local adapters"),
+    )
+
+    assert dl.repo_ids_for_specs(
+        [
+            ("catalog-style", 1.0),
+            ("org/direct-lora:weights.safetensors", 0.5),
+            ("org/disabled", 0.0),
+            ("not-a-repo", 1.0),
+        ]
+    ) == ("org/catalog-lora", "org/direct-lora")
+
+
 def test_inject_prompt_tags_appends_with_spacing():
     r = dl.ResolvedLora("id", "style", "/p.safetensors", "safetensors", 0.8)
     assert dl.inject_prompt_tags("a cat", [r]) == "a cat <lora:style:0.8>"

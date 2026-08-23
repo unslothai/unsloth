@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import json
 
+import pytest
+from fastapi import HTTPException
+
 from utils.models.model_config import _AUDIO_TOKEN_PATTERNS, is_audio_input_type
 
 
@@ -71,6 +74,139 @@ def test_a_codec_family_is_not_shadowed_by_a_stray_audio_marker():
         )
         == "dac"
     )
+
+
+def test_gguf_codec_dependency_is_published_before_initialization():
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = LlamaCppBackend()
+    backend._healthy = True
+    events = []
+    backend.init_audio_codec = lambda audio_type: events.append(("init", audio_type))
+
+    assert backend._apply_detected_audio(
+        "snac", lambda repo_id: events.append(("reserve", repo_id))
+    )
+    assert events == [
+        ("reserve", "hubertsiuzdak/snac_24khz"),
+        ("init", "snac"),
+    ]
+
+
+def test_new_gguf_server_is_unloaded_when_codec_init_fails(monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = LlamaCppBackend()
+    backend._healthy = True
+    events = []
+
+    def failing_init(audio_type):
+        events.append(("init", audio_type))
+        raise RuntimeError("codec weights missing")
+
+    monkeypatch.setattr(
+        backend,
+        "_teardown_model",
+        lambda: events.append(("unload", None)) or True,
+    )
+    monkeypatch.setattr(backend, "init_audio_codec", failing_init)
+
+    assert backend._apply_detected_audio_for_new_server("dac") is False
+    assert events == [("init", "dac"), ("unload", None)]
+
+
+def test_new_gguf_server_is_unloaded_when_codec_reservation_conflicts(monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = LlamaCppBackend()
+    backend._healthy = True
+    events = []
+
+    def reject_reservation(repo_id):
+        events.append(("reserve", repo_id))
+        raise HTTPException(status_code = 409, detail = "cache busy")
+
+    monkeypatch.setattr(
+        backend,
+        "_teardown_model",
+        lambda: events.append(("unload", None)) or True,
+    )
+    monkeypatch.setattr(
+        backend,
+        "init_audio_codec",
+        lambda audio_type: events.append(("init", audio_type)),
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        backend._apply_detected_audio_for_new_server("snac", reject_reservation)
+
+    assert caught.value.status_code == 409
+    assert events == [
+        ("reserve", "hubertsiuzdak/snac_24khz"),
+        ("unload", None),
+    ]
+
+
+def _backend_with_failing_codec(monkeypatch):
+    """A spawned-server backend whose codec init fails and uses the real teardown."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    def failing_init(audio_type):
+        raise RuntimeError("codec weights missing")
+
+    # Class state a sibling test may have left behind; unloading it here would import torch.
+    monkeypatch.setattr(LlamaCppBackend, "_codec_mgr", None)
+    backend = LlamaCppBackend()
+    backend._healthy = True
+    monkeypatch.setattr(backend, "init_audio_codec", failing_init)
+    return backend
+
+
+def test_the_new_gguf_server_teardown_leaves_no_cancellation_behind(monkeypatch):
+    # unload_model arms the load-cancel event so an in-flight download stops. Nothing is
+    # downloading here, and leaving it armed makes load_cancelled() report a user cancellation,
+    # which skips the tensor-parallel -> layer retry this teardown exists to let run cleanly.
+    backend = _backend_with_failing_codec(monkeypatch)
+
+    assert backend._apply_detected_audio_for_new_server("dac") is False
+    assert backend.load_cancelled() is False
+
+
+def test_a_real_cancellation_survives_the_new_gguf_server_teardown(monkeypatch):
+    # An unload that landed while the probe ran is a cancellation the load must still see.
+    backend = _backend_with_failing_codec(monkeypatch)
+    backend._cancel_event.set()
+
+    assert backend._apply_detected_audio_for_new_server("dac") is False
+    assert backend.load_cancelled() is True
+
+
+def test_an_unload_during_audio_abort_teardown_remains_cancelled(monkeypatch):
+    import threading
+
+    backend = _backend_with_failing_codec(monkeypatch)
+    teardown_started = threading.Event()
+    finish_teardown = threading.Event()
+
+    def blocking_kill():
+        teardown_started.set()
+        assert finish_teardown.wait(5)
+
+    monkeypatch.setattr(backend, "_kill_process", blocking_kill)
+    audio_abort = threading.Thread(target = backend._unload_after_audio_abort)
+    user_unload = threading.Thread(target = backend.unload_model)
+
+    audio_abort.start()
+    assert teardown_started.wait(5)
+    user_unload.start()
+    assert backend._cancel_event.wait(5)
+    finish_teardown.set()
+    audio_abort.join(5)
+    user_unload.join(5)
+
+    assert not audio_abort.is_alive()
+    assert not user_unload.is_alive()
+    assert backend.load_cancelled() is True
 
 
 class _Resp:
@@ -320,3 +456,43 @@ def test_a_half_written_tokenizer_stays_unknown(tmp_path):
         None,
         True,
     )
+
+
+def test_an_adopted_server_retries_the_probe_after_a_codec_reservation_conflict(monkeypatch):
+    """The adopted-server retry keeps the running server, so nothing resets the probe flag
+    for it. Latching before the codec is applied left a TTS model reporting loaded with
+    audio dead: every later duplicate load skipped the retry."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = LlamaCppBackend()
+    backend._healthy = True
+    monkeypatch.setattr(backend, "_detect_audio_type_strict", lambda: "snac")
+    monkeypatch.setattr(backend, "init_audio_codec", lambda audio_type: None)
+
+    def reject_reservation(_repo_id):
+        raise HTTPException(status_code = 409, detail = "cache busy")
+
+    with pytest.raises(HTTPException):
+        backend._retry_audio_probe(reject_reservation)
+    assert backend._audio_probed is False
+
+    assert backend._retry_audio_probe(lambda _repo_id: None) is True
+    assert backend._audio_probed is True
+    assert backend._is_audio is True
+
+
+def test_an_adopted_server_probe_that_never_ran_is_not_marked_done(monkeypatch):
+    """A transport failure leaves the codec unknown, not absent, so the next duplicate
+    load has to ask again."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = LlamaCppBackend()
+    backend._healthy = True
+
+    def failing_probe():
+        raise RuntimeError("server not answering yet")
+
+    monkeypatch.setattr(backend, "_detect_audio_type_strict", failing_probe)
+
+    assert backend._retry_audio_probe() is True
+    assert backend._audio_probed is False

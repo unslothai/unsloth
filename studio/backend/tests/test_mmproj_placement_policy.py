@@ -107,7 +107,7 @@ def _backend(
     backend._is_vulkan_backend = lambda _binary = None: False
     backend._wait_for_health = lambda timeout: True
     backend._detect_audio_type_strict = lambda: None
-    backend._apply_detected_audio = lambda _detected: True
+    backend._apply_detected_audio = lambda _detected, _on_audio_codec_resolved = None: True
     backend.probe_server_capabilities = lambda _binary = None: {
         "supports_no_mmproj_offload": True,
         "mtp_token": "draft-mtp",
@@ -624,6 +624,7 @@ def test_the_download_interlock_is_not_relaxed_by_the_vision_switch(tmp_path):
         self,
         intent,
         load_cancel_event = None,
+        on_audio_codec_resolved = None,
     ):
         return True
 

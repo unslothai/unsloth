@@ -17,6 +17,7 @@ so the old POST /api/models/update endpoint and its tests are gone. Update
 import asyncio
 import sys
 import types
+from pathlib import Path
 from types import SimpleNamespace
 
 if "structlog" not in sys.modules:
@@ -718,6 +719,247 @@ def test_reclaim_replaced_gguf_variant_prunes_old_revision_only(monkeypatch, tmp
     assert invalidated == [True]
 
 
+def test_reclaim_replaced_gguf_variant_preserves_non_main_ref(monkeypatch, tmp_path):
+    repo_id = "org/repo-GGUF"
+    repo_path = tmp_path / "models--org--repo-GGUF"
+    old_revision = "a" * 40
+    new_revision = "b" * 40
+    empty_revision = "c" * 40
+    old_snap = repo_path / "snapshots" / old_revision / "model-Q4_K_M.gguf"
+    new_snap = repo_path / "snapshots" / new_revision / "model-Q4_K_M.gguf"
+    empty_snap = repo_path / "snapshots" / empty_revision
+    old_blob = repo_path / "blobs" / "OLDsha"
+    new_blob = repo_path / "blobs" / "NEWsha"
+    for blob, payload in ((old_blob, b"old"), (new_blob, b"new")):
+        blob.parent.mkdir(parents = True, exist_ok = True)
+        blob.write_bytes(payload)
+    for snap, blob in ((old_snap, old_blob), (new_snap, new_blob)):
+        snap.parent.mkdir(parents = True, exist_ok = True)
+        try:
+            snap.symlink_to(blob)
+        except OSError:
+            pytest.skip("symlinks unavailable on this host")
+    refs = repo_path / "refs"
+    (refs / "releases").mkdir(parents = True)
+    empty_snap.mkdir(parents = True)
+    (refs / "main").write_text(new_revision, encoding = "utf-8")
+    (refs / "releases" / "stable").write_text(old_revision, encoding = "utf-8")
+    (refs / "releases" / "empty").write_text(empty_revision, encoding = "utf-8")
+
+    repo_info = SimpleNamespace(
+        repo_id = repo_id,
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [
+            SimpleNamespace(
+                snapshot_path = str(snap.parent),
+                files = [
+                    SimpleNamespace(
+                        file_name = snap.name,
+                        file_path = str(snap),
+                        blob_path = str(blob),
+                    )
+                ],
+            )
+            for snap, blob in ((old_snap, old_blob), (new_snap, new_blob))
+        ],
+    )
+    monkeypatch.setattr(CI, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo_info])])
+    monkeypatch.setattr(CI, "invalidate_hf_cache_scans", lambda: None)
+
+    result = D.reclaim_replaced_gguf_variant(
+        repo_id,
+        "Q4_K_M",
+        frozenset({"NEWsha"}),
+        hub_cache = tmp_path,
+        keep_snapshot = new_snap.parent,
+    )
+
+    assert result["removed_snapshots"] == 0
+    assert result["deleted_blobs"] == 0
+    assert old_snap.is_symlink() and old_snap.exists()
+    assert old_blob.exists()
+    assert new_snap.is_symlink() and new_snap.exists()
+    assert new_blob.exists()
+    assert empty_snap.is_dir()
+
+
+def _copy_layout_reclaim_repo(tmp_path):
+    repo_id = "org/repo-GGUF"
+    repo_path = tmp_path / "models--org--repo-GGUF"
+    old_revision = "a" * 40
+    new_revision = "b" * 40
+    old_snap = repo_path / "snapshots" / old_revision / "model-Q4_K_M.gguf"
+    new_snap = repo_path / "snapshots" / new_revision / "model-Q4_K_M.gguf"
+    for snap, payload in ((old_snap, b"old"), (new_snap, b"new")):
+        snap.parent.mkdir(parents = True, exist_ok = True)
+        snap.write_bytes(payload)
+    (repo_path / "blobs").mkdir()
+    repo_info = SimpleNamespace(
+        repo_id = repo_id,
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [
+            SimpleNamespace(
+                snapshot_path = str(snap.parent),
+                files = [
+                    SimpleNamespace(
+                        file_name = snap.name,
+                        file_path = str(snap),
+                        blob_path = str(snap),
+                    )
+                ],
+            )
+            for snap in (old_snap, new_snap)
+        ],
+    )
+    return repo_id, repo_path, old_revision, new_revision, old_snap, new_snap, repo_info
+
+
+@pytest.mark.parametrize("refs_state", ["invalid", "redirected", "unreadable"])
+def test_reclaim_replaced_gguf_variant_fails_closed_on_unverifiable_refs(
+    monkeypatch,
+    tmp_path,
+    refs_state,
+):
+    repo_id, repo_path, _old_revision, new_revision, old_snap, new_snap, repo_info = (
+        _copy_layout_reclaim_repo(tmp_path)
+    )
+
+    refs = repo_path / "refs"
+    if refs_state == "redirected":
+        external_refs = tmp_path / "external-refs"
+        external_refs.mkdir()
+        (external_refs / "main").write_text(new_revision, encoding = "utf-8")
+        try:
+            refs.symlink_to(external_refs, target_is_directory = True)
+        except OSError:
+            pytest.skip("directory symlinks unavailable on this host")
+    else:
+        refs.mkdir()
+        (refs / "main").write_text(
+            "../invalid" if refs_state == "invalid" else new_revision,
+            encoding = "utf-8",
+        )
+        if refs_state == "unreadable":
+            real_open = Path.open
+
+            def unreadable_ref(path, *args, **kwargs):
+                if path == refs / "main":
+                    raise PermissionError("ref is unreadable")
+                return real_open(path, *args, **kwargs)
+
+            monkeypatch.setattr(Path, "open", unreadable_ref)
+
+    monkeypatch.setattr(CI, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo_info])])
+    monkeypatch.setattr(CI, "invalidate_hf_cache_scans", lambda: None)
+
+    result = D.reclaim_replaced_gguf_variant(
+        repo_id,
+        "Q4_K_M",
+        frozenset({"NEWsha"}),
+        hub_cache = tmp_path,
+        keep_snapshot = new_snap.parent,
+    )
+
+    assert result["removed_snapshots"] == 0
+    assert result["removed_dirs"] == 0
+    assert old_snap.read_bytes() == b"old"
+    assert new_snap.read_bytes() == b"new"
+
+
+def test_reclaim_rechecks_refs_immediately_before_unlink(monkeypatch, tmp_path):
+    repo_id, repo_path, old_revision, new_revision, old_snap, new_snap, repo_info = (
+        _copy_layout_reclaim_repo(tmp_path)
+    )
+    refs = repo_path / "refs"
+    refs.mkdir()
+    (refs / "main").write_text(new_revision, encoding = "utf-8")
+    real_referenced_revisions = D.referenced_snapshot_revisions
+    scans = []
+
+    def create_ref_after_first_scan(path):
+        revisions = real_referenced_revisions(path)
+        scans.append(revisions)
+        if len(scans) == 1:
+            (refs / "dev").write_text(old_revision, encoding = "utf-8")
+        return revisions
+
+    monkeypatch.setattr(D, "referenced_snapshot_revisions", create_ref_after_first_scan)
+    monkeypatch.setattr(CI, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo_info])])
+    monkeypatch.setattr(CI, "invalidate_hf_cache_scans", lambda: None)
+
+    result = D.reclaim_replaced_gguf_variant(
+        repo_id,
+        "Q4_K_M",
+        frozenset({"NEWsha"}),
+        hub_cache = tmp_path,
+        keep_snapshot = new_snap.parent,
+    )
+
+    assert len(scans) >= 2
+    assert result["removed_snapshots"] == 0
+    assert old_snap.read_bytes() == b"old"
+    assert new_snap.read_bytes() == b"new"
+
+
+def test_reclaim_replaced_gguf_variant_never_removes_current_symlink_snapshot(
+    monkeypatch, tmp_path
+):
+    repo_id = "org/repo-GGUF"
+    repo_path = tmp_path / "models--org--repo-GGUF"
+    old_dir = repo_path / "snapshots" / ("a" * 40)
+    current_dir = repo_path / "snapshots" / ("b" * 40)
+    blobs = repo_path / "blobs"
+    old_blob = blobs / "OLDsha"
+    current_blob = blobs / "CURRENTsha"
+    old_snap = old_dir / "model-Q4_K_M.gguf"
+    current_snap = current_dir / "model-Q4_K_M.gguf"
+    for blob, payload in ((old_blob, b"old"), (current_blob, b"current")):
+        blob.parent.mkdir(parents = True, exist_ok = True)
+        blob.write_bytes(payload)
+    for snap, blob in ((old_snap, old_blob), (current_snap, current_blob)):
+        snap.parent.mkdir(parents = True, exist_ok = True)
+        try:
+            snap.symlink_to(blob)
+        except OSError:
+            pytest.skip("symlinks unavailable on this host")
+
+    repo_info = SimpleNamespace(
+        repo_id = repo_id,
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [
+            SimpleNamespace(
+                snapshot_path = str(snap.parent),
+                files = [
+                    SimpleNamespace(
+                        file_name = snap.name,
+                        file_path = str(snap),
+                        blob_path = str(blob),
+                    )
+                ],
+            )
+            for snap, blob in ((old_snap, old_blob), (current_snap, current_blob))
+        ],
+    )
+    monkeypatch.setattr(CI, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo_info])])
+    monkeypatch.setattr(CI, "invalidate_hf_cache_scans", lambda: None)
+
+    result = D.reclaim_replaced_gguf_variant(
+        repo_id,
+        "Q4_K_M",
+        frozenset({"OLDsha"}),
+        hub_cache = tmp_path,
+        keep_snapshot = current_dir,
+    )
+
+    assert result["removed_snapshots"] == 0
+    assert result["deleted_blobs"] == 0
+    assert old_snap.is_symlink() and old_blob.exists()
+    assert current_snap.is_symlink() and current_blob.exists()
+
+
 def test_reclaim_replaced_gguf_variant_keeps_no_symlink_current_file(monkeypatch, tmp_path):
     """No-symlink cache (Windows without Developer Mode): the moved GGUF lives
     directly in snapshots/ and blobs/ is empty, so scan_cache_dir reports
@@ -760,6 +1002,187 @@ def test_reclaim_replaced_gguf_variant_keeps_no_symlink_current_file(monkeypatch
     assert snap.exists() is True  # the current file must survive
     assert result["removed_snapshots"] == 0
     assert result["deleted_blobs"] == 0
+
+
+def test_reclaim_replaced_gguf_variant_prunes_old_no_symlink_copy(monkeypatch, tmp_path):
+    repo_id = "org/repo-GGUF"
+    repo_path = tmp_path / "models--org--repo-GGUF"
+    old_dir = repo_path / "snapshots" / ("a" * 40)
+    current_dir = repo_path / "snapshots" / ("b" * 40)
+    old_snap = old_dir / "model-Q4_K_M.gguf"
+    current_snap = current_dir / "model-Q4_K_M.gguf"
+    for path, payload in ((old_snap, b"old-copy"), (current_snap, b"verified-copy")):
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_bytes(payload)
+    (repo_path / "blobs").mkdir(parents = True)
+
+    repo_info = SimpleNamespace(
+        repo_id = repo_id,
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [
+            SimpleNamespace(
+                snapshot_path = str(old_dir),
+                files = [
+                    SimpleNamespace(
+                        file_name = old_snap.name,
+                        file_path = str(old_snap),
+                        blob_path = str(old_snap),
+                    )
+                ],
+            ),
+            SimpleNamespace(
+                snapshot_path = str(current_dir),
+                files = [
+                    SimpleNamespace(
+                        file_name = current_snap.name,
+                        file_path = str(current_snap),
+                        blob_path = str(current_snap),
+                    )
+                ],
+            ),
+        ],
+    )
+    monkeypatch.setattr(CI, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo_info])])
+    monkeypatch.setattr(CI, "invalidate_hf_cache_scans", lambda: None)
+
+    result = D.reclaim_replaced_gguf_variant(
+        repo_id,
+        "Q4_K_M",
+        frozenset({"REMOTEsha256"}),
+        hub_cache = tmp_path,
+        keep_snapshot = current_dir,
+    )
+
+    assert result["removed_snapshots"] == 1
+    assert old_snap.exists() is False
+    assert current_snap.read_bytes() == b"verified-copy"
+
+
+def test_reclaim_replaced_gguf_variant_rejects_external_keep_snapshot(monkeypatch, tmp_path):
+    repo_id = "org/repo-GGUF"
+    repo_path = tmp_path / "models--org--repo-GGUF"
+    old_dir = repo_path / "snapshots" / ("a" * 40)
+    current_dir = repo_path / "snapshots" / ("b" * 40)
+    old_snap = old_dir / "model-Q4_K_M.gguf"
+    current_snap = current_dir / "model-Q4_K_M.gguf"
+    for path in (old_snap, current_snap):
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_bytes(b"copy")
+    (repo_path / "blobs").mkdir(parents = True)
+    external = tmp_path / "other-repo" / "snapshots" / ("c" * 40)
+    external.mkdir(parents = True)
+
+    repo_info = SimpleNamespace(
+        repo_id = repo_id,
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [
+            SimpleNamespace(
+                snapshot_path = str(path.parent),
+                files = [
+                    SimpleNamespace(
+                        file_name = path.name,
+                        file_path = str(path),
+                        blob_path = str(path),
+                    )
+                ],
+            )
+            for path in (old_snap, current_snap)
+        ],
+    )
+    monkeypatch.setattr(CI, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo_info])])
+    monkeypatch.setattr(CI, "invalidate_hf_cache_scans", lambda: None)
+
+    result = D.reclaim_replaced_gguf_variant(
+        repo_id,
+        "Q4_K_M",
+        frozenset({"REMOTEsha256"}),
+        hub_cache = tmp_path,
+        keep_snapshot = external,
+    )
+
+    assert result["removed_snapshots"] == 0
+    assert old_snap.exists() is True
+    assert current_snap.exists() is True
+
+
+def test_reclaim_replaced_gguf_variant_restores_link_when_blob_unlink_fails(
+    monkeypatch, tmp_path
+):
+    repo_id = "org/repo-GGUF"
+    repo_path = tmp_path / "models--org--repo-GGUF"
+    old_dir = repo_path / "snapshots" / ("a" * 40)
+    current_dir = repo_path / "snapshots" / ("b" * 40)
+    blobs = repo_path / "blobs"
+    old_blob = blobs / "OLDsha"
+    current_blob = blobs / "NEWsha"
+    old_snap = old_dir / "model-Q4_K_M.gguf"
+    current_snap = current_dir / "model-Q4_K_M.gguf"
+    for blob, payload in ((old_blob, b"old"), (current_blob, b"current")):
+        blob.parent.mkdir(parents = True, exist_ok = True)
+        blob.write_bytes(payload)
+    for snap, blob in ((old_snap, old_blob), (current_snap, current_blob)):
+        snap.parent.mkdir(parents = True, exist_ok = True)
+        snap.symlink_to(blob)
+
+    repo_info = SimpleNamespace(
+        repo_id = repo_id,
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [
+            SimpleNamespace(
+                snapshot_path = str(snap.parent),
+                files = [
+                    SimpleNamespace(
+                        file_name = snap.name,
+                        file_path = str(snap),
+                        blob_path = str(blob),
+                    )
+                ],
+            )
+            for snap, blob in ((old_snap, old_blob), (current_snap, current_blob))
+        ],
+    )
+    monkeypatch.setattr(CI, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo_info])])
+    monkeypatch.setattr(CI, "invalidate_hf_cache_scans", lambda: None)
+    locked = True
+    real_unlink = Path.unlink
+
+    def fail_old_blob(self, *args, **kwargs):
+        if locked and self == old_blob:
+            raise PermissionError("file in use")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_old_blob)
+
+    first = D.reclaim_replaced_gguf_variant(
+        repo_id,
+        "Q4_K_M",
+        frozenset({"NEWsha"}),
+        hub_cache = tmp_path,
+        keep_snapshot = current_dir,
+    )
+
+    assert first["removed_snapshots"] == 0
+    assert first["deleted_blobs"] == 0
+    assert old_snap.is_symlink() and old_snap.exists()
+    assert old_blob.exists()
+
+    locked = False
+    second = D.reclaim_replaced_gguf_variant(
+        repo_id,
+        "Q4_K_M",
+        frozenset({"NEWsha"}),
+        hub_cache = tmp_path,
+        keep_snapshot = current_dir,
+    )
+
+    assert second["removed_snapshots"] == 1
+    assert second["deleted_blobs"] == 1
+    assert not old_snap.exists()
+    assert not old_blob.exists()
+    assert current_snap.is_symlink() and current_snap.exists()
 
 
 def test_reclaim_replaced_gguf_variant_only_mutates_worker_cache(monkeypatch, tmp_path):

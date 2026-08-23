@@ -710,13 +710,17 @@ class TestLoadHubDownloadExclusion:
         assert intent.gguf_path is None
         assert intent.hf_variant == "Q8_0"
 
-    def test_resident_gguf_reuse_precedes_model_metadata_resolution(self):
+    def test_resident_gguf_reuse_precedes_metadata_resolution_and_reservation(self, monkeypatch):
         from models.inference import LoadRequest
+        from utils import model_cache_reservations
 
         route = _load_route_module(
             "inference_route_module_for_resident_fast_path_test",
             "routes/inference.py",
         )
+        operations = model_cache_reservations.ModelCacheOperations()
+        monkeypatch.setattr(model_cache_reservations, "_model_cache_operations", operations)
+        assert operations.begin_delete(REPO) is None
         response = object()
         backend = SimpleNamespace(
             is_loaded = True,
@@ -731,6 +735,7 @@ class TestLoadHubDownloadExclusion:
 
         with (
             _reuse_route(route, backend, response),
+            patch.object(route.asyncio, "to_thread", new = _inline_to_thread),
             patch.object(
                 route,
                 "ModelConfig",
@@ -949,6 +954,9 @@ class TestLoadHubDownloadExclusion:
             return frozenset()
 
         class _Registry:
+            def inference_load_epoch(self, _repo_id, _variant = None):
+                return 0
+
             def claim(self, *_args, admission_check, **_kwargs):
                 assert admission_check() is False
                 return False, "admission_blocked"
@@ -1051,6 +1059,108 @@ class TestLoadHubDownloadExclusion:
             hf_token = None,
         )
 
+    def test_scoped_job_still_allows_complete_cached_variantless_load(self):
+        from core.inference.llama_cpp import _hub_download_blocks_gguf_load
+        from hub.utils.download_registry import DownloadRegistry, TRANSPORT_HTTP
+
+        registry = DownloadRegistry()
+        assert registry.claim(
+            f"{REPO}::@diffusion",
+            TRANSPORT_HTTP,
+            repo_type = "model",
+            repo_id = REPO,
+            variant = "@diffusion",
+        ) == (True, "running")
+        assert registry.has_active_variant(REPO, None) is False
+        with (
+            patch("hub.utils.download_registry.get_models_registry", lambda: registry),
+            patch(
+                "core.inference.llama_cpp.cached_gguf_for_load",
+                return_value = "/cached/model.gguf",
+            ) as cached_probe,
+        ):
+            assert _hub_download_blocks_gguf_load(REPO, None) is False
+
+        cached_probe.assert_called_once_with(
+            REPO,
+            None,
+            require_mmproj = False,
+            verify_sizes = True,
+            hf_token = None,
+        )
+
+    @pytest.mark.parametrize(
+        ("active_variant", "load_variant"),
+        [
+            ("weights/model-Q4_K_M", "Q4_K_M"),
+            ("Q4_K_M", "weights/model-Q4_K_M"),
+        ],
+    )
+    def test_alias_equivalent_job_blocks_cached_load(self, active_variant, load_variant):
+        from core.inference.llama_cpp import _hub_download_blocks_gguf_load
+        from hub.utils.download_registry import DownloadRegistry, TRANSPORT_HTTP
+
+        registry = DownloadRegistry()
+        assert registry.claim(
+            f"{REPO}::{active_variant}",
+            TRANSPORT_HTTP,
+            repo_type = "model",
+            repo_id = REPO,
+            variant = active_variant,
+        ) == (True, "running")
+        assert registry.has_active_variant(REPO, load_variant) is True
+        with (
+            patch("hub.utils.download_registry.get_models_registry", lambda: registry),
+            patch(
+                "core.inference.llama_cpp.cached_gguf_for_load",
+                side_effect = AssertionError("alias-equivalent jobs must block before cache reuse"),
+            ),
+        ):
+            assert _hub_download_blocks_gguf_load(REPO, load_variant) is True
+
+    def test_whole_repo_job_only_blocks_complete_variantless_load(self):
+        from core.inference.llama_cpp import _hub_download_blocks_gguf_load
+        from hub.utils.download_registry import DownloadRegistry, TRANSPORT_HTTP
+
+        registry = DownloadRegistry()
+        assert registry.claim(
+            REPO,
+            TRANSPORT_HTTP,
+            repo_type = "model",
+            repo_id = REPO,
+        ) == (True, "running")
+        assert registry.has_active_variant(REPO, VARIANT) is False
+        assert registry.has_active_variant(REPO, None) is True
+        with (
+            patch("hub.utils.download_registry.get_models_registry", lambda: registry),
+            patch(
+                "core.inference.llama_cpp.cached_gguf_for_load",
+                side_effect = AssertionError("the matching variantless job must block reuse"),
+            ),
+        ):
+            assert _hub_download_blocks_gguf_load(REPO, None) is True
+        with (
+            patch("hub.utils.download_registry.get_models_registry", lambda: registry),
+            patch(
+                "core.inference.llama_cpp.cached_gguf_for_load",
+                return_value = "/cached/model.gguf",
+            ) as cached_probe,
+        ):
+            assert _hub_download_blocks_gguf_load(REPO, VARIANT) is False
+
+        cached_probe.assert_called_once_with(
+            REPO,
+            VARIANT,
+            require_mmproj = False,
+            verify_sizes = True,
+            hf_token = None,
+        )
+        with (
+            patch("hub.utils.download_registry.get_models_registry", lambda: registry),
+            patch("core.inference.llama_cpp.cached_gguf_for_load", return_value = None),
+        ):
+            assert _hub_download_blocks_gguf_load(REPO, VARIANT) is True
+
     def test_cancelled_request_keeps_marker_until_load_thread_finishes(self):
         from core.inference.llama_cpp import _with_gguf_load_marker
 
@@ -1065,6 +1175,7 @@ class TestLoadHubDownloadExclusion:
                 self,
                 intent,
                 load_cancel_event = None,
+                on_audio_codec_resolved = None,
             ):
                 started.set()
                 release.wait(timeout = 2)
@@ -1097,6 +1208,33 @@ class TestLoadHubDownloadExclusion:
                 assert not hf_gguf_load_in_flight(REPO)
 
         asyncio.run(scenario())
+
+    def test_load_marker_forwards_audio_codec_callback(self):
+        from core.inference.llama_cpp import _with_gguf_load_marker
+
+        resolved = []
+
+        class FakeBackend:
+            @_with_gguf_load_marker
+            def load_model(
+                self,
+                intent,
+                load_cancel_event = None,
+                on_audio_codec_resolved = None,
+            ):
+                on_audio_codec_resolved("hubertsiuzdak/snac_24khz")
+                return True
+
+        with patch(
+            "core.inference.llama_cpp._hub_download_blocks_gguf_load",
+            return_value = False,
+        ):
+            assert FakeBackend().load_model(
+                GgufLoadIntent(model_identifier = REPO, hf_repo = REPO),
+                on_audio_codec_resolved = resolved.append,
+            )
+
+        assert resolved == ["hubertsiuzdak/snac_24khz"]
 
     def test_load_marker_precedes_hub_guard_which_precedes_the_gpu_handoff(self):
         source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(

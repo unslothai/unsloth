@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 # Keep this test runnable without optional logging deps.
 if "structlog" not in sys.modules:
@@ -26,6 +27,7 @@ if "structlog" not in sys.modules:
     )
 
 import routes.models as models_route
+from hub.services.models import deletion as model_deletion
 from hub.services.models import gguf_variants as GV
 
 
@@ -89,6 +91,84 @@ def test_iter_gguf_paths_matches_extension_case_insensitively(tmp_path):
     result = sorted(path.name for path in models_route._iter_gguf_paths(tmp_path))
 
     assert result == ["Q4_K_M.gguf", "Q8_0.GGUF"]
+
+
+def test_cached_model_path_route_forwards_the_selected_cache_copy(monkeypatch, tmp_path):
+    target = tmp_path / "model.gguf"
+    target.write_bytes(b"GGUF")
+    calls = []
+
+    async def run_inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    def resolve(repo_id, variant, cache_path):
+        calls.append((repo_id, variant, cache_path))
+        return target
+
+    monkeypatch.setattr(models_route.asyncio, "to_thread", run_inline)
+    monkeypatch.setattr(models_route, "_resolve_cached_model_path", resolve)
+
+    result = asyncio.run(
+        models_route.get_cached_model_path(
+            repo_id = "Org/Model",
+            variant = " Q4_K_M ",
+            cache_path = "/cache/models--Org--Model",
+            current_subject = "test",
+        )
+    )
+
+    assert calls == [("Org/Model", "Q4_K_M", "/cache/models--Org--Model")]
+    assert result == {"path": str(target), "is_dir": False}
+
+
+def test_missing_variant_delete_keeps_shared_companions(monkeypatch, tmp_path):
+    repo_dir = tmp_path / "models--Org--Repo-GGUF"
+    blob = repo_dir / "blobs" / "mmprojblob"
+    companion = repo_dir / "snapshots" / "rev1" / "mmproj-F16.gguf"
+    blob.parent.mkdir(parents = True)
+    companion.parent.mkdir(parents = True)
+    blob.write_bytes(b"shared companion")
+    companion.symlink_to(blob)
+    repo = _repo(
+        "Org/Repo-GGUF",
+        [
+            SimpleNamespace(
+                file_name = companion.name,
+                file_path = str(companion),
+                blob_path = str(blob),
+                size_on_disk = blob.stat().st_size,
+            )
+        ],
+        repo_dir,
+    )
+    monkeypatch.setattr(
+        model_deletion.hf_cache_scan,
+        "is_variant_partial",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        model_deletion.gguf_variants,
+        "delete_variant_incomplete_blobs_result",
+        lambda *_args, **_kwargs: GV.VariantIncompleteDeleteResult(0, False),
+    )
+    monkeypatch.setattr(
+        model_deletion.download_manifest,
+        "purge_state",
+        lambda *_args, **_kwargs: False,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        model_deletion._delete_gguf_variant_from_repos(
+            "Org/Repo-GGUF",
+            "Q4_K_M",
+            [repo],
+            None,
+            root = tmp_path,
+        )
+
+    assert exc_info.value.status_code == 404
+    assert companion.is_symlink() and companion.exists()
+    assert blob.exists()
 
 
 def test_legacy_hf_scan_uses_snapshot_path_for_inactive_cache(tmp_path):
@@ -3025,7 +3105,8 @@ def test_delete_cached_rechecks_the_load_guard_after_reserving_the_scope(monkeyp
         asyncio.run(deletion.delete_cached_model_response("unsloth/MiniMax-H3-GGUF"))
         assert False, "expected HTTPException refusing the delete admitted before the load claim"
     except HTTPException as e:
-        assert e.status_code == 400
+        # 409, not 400: the load finishes on its own, so the delete preview may re-read it.
+        assert e.status_code == 409
         assert "Video model load is using this repo" in e.detail
     assert reads["n"] >= 2, "the guard must be re-read after the delete scope is reserved"
 
@@ -3053,7 +3134,7 @@ def test_delete_cached_refuses_repo_a_diffusion_load_is_downloading(monkeypatch)
         asyncio.run(deletion.delete_cached_model_response("unsloth/Qwen-Image-2512-GGUF"))
         assert False, "expected HTTPException refusing the delete mid-download"
     except HTTPException as e:
-        assert e.status_code == 400
+        assert e.status_code == 409
         assert "An Images model load is using this repo" in e.detail
 
 
@@ -3479,6 +3560,14 @@ def test_hub_local_rows_are_tagged_with_their_task():
     src = inspect.getsource(local_inventory.list_local_models_response)
     assert "_local_model_task" in src
     assert 'model_copy(update = {"task"' in src
+
+
+def test_hub_model_response_schemas_keep_the_runtime_contract():
+    from hub.schemas.inventory import CachedGgufRepo, CachedModelRepo, LocalModelInfo
+
+    assert "runtime" in LocalModelInfo.model_fields
+    assert "runtime" in CachedGgufRepo.model_fields
+    assert "runtime" in CachedModelRepo.model_fields
 
 
 def test_pipeline_class_guard_fires_before_any_download():

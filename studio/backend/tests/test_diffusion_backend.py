@@ -975,6 +975,113 @@ def test_generate_progress_active_during_setup(fake_runtime, tmp_path, monkeypat
     assert backend.generate_progress()["active"] is False
 
 
+def test_diffusers_generation_reserves_hub_lora_until_pipe_returns(fake_runtime, monkeypatch):
+    from core.inference import diffusion_lora
+    from utils import model_cache_reservations
+    from utils.model_cache_reservations import ModelCacheOperations
+
+    repo_id = "Org/Generation-Lora"
+    operations = ModelCacheOperations()
+    monkeypatch.setattr(model_cache_reservations, "_model_cache_operations", operations)
+
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        "unsloth/Z-Image-Turbo-unsloth-bnb-4bit",
+        family_override = "z-image",
+    )
+    pipe = backend._state.pipe
+    pipe.load_lora_weights = lambda _path, adapter_name = None: None
+    pipe.set_adapters = lambda _names, adapter_weights = None: None
+    observed: list[str] = []
+
+    def resolve_specs(specs, **_kwargs):
+        assert operations.cache_writer_conflict(repo_id) == "inference_loading"
+        assert operations.begin_delete(repo_id) is not None
+        observed.append("resolve")
+        return [
+            diffusion_lora.ResolvedLora(
+                specs[0][0],
+                "generation_lora",
+                "/cache/generation_lora.safetensors",
+                "safetensors",
+                specs[0][1],
+            )
+        ]
+
+    original_call = type(pipe).__call__
+
+    def guarded_call(self, **kwargs):
+        assert operations.cache_writer_conflict(repo_id) == "inference_loading"
+        assert operations.begin_delete(repo_id) is not None
+        observed.append("denoise")
+        return original_call(self, **kwargs)
+
+    monkeypatch.setattr(diffusion_lora, "resolve_specs", resolve_specs)
+    monkeypatch.setattr(type(pipe), "__call__", guarded_call)
+
+    result = backend.generate(
+        prompt = "a sloth",
+        steps = 4,
+        loras = [(f"{repo_id}:adapter.safetensors", 0.8)],
+    )
+
+    assert result["images"]
+    assert observed == ["resolve", "denoise"]
+    assert operations.cache_writer_conflict(repo_id) is None
+    assert operations.begin_delete(repo_id) is None
+    operations.end_delete(repo_id)
+
+
+def test_diffusers_generation_reserves_remote_controlnet_until_pipe_returns(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion_controlnet
+    from utils import model_cache_reservations
+    from utils.model_cache_reservations import ModelCacheOperations
+
+    repo_id = "Org/Generation-ControlNet"
+    operations = ModelCacheOperations()
+    monkeypatch.setattr(model_cache_reservations, "_model_cache_operations", operations)
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.safetensors",
+        base_repo = "base/repo",
+        family_override = "qwen-image",
+    )
+    observed: list[str] = []
+
+    monkeypatch.setattr(
+        diffusion_controlnet,
+        "resolve_controlnet",
+        lambda *_args, **_kwargs: diffusion_controlnet.ResolvedControlNet(
+            "generation-controlnet", repo_id, is_local = False
+        ),
+    )
+    monkeypatch.setattr(diffusion_controlnet, "union_control_mode", lambda *_args: None)
+
+    def guarded_controlnet_pipe(self, state, _resolved, _cancel):
+        assert operations.cache_writer_conflict(repo_id) == "inference_loading"
+        assert operations.begin_delete(repo_id) is not None
+        observed.append("load")
+        return state.pipe
+
+    monkeypatch.setattr(DiffusionBackend, "_controlnet_pipe", guarded_controlnet_pipe)
+
+    result = backend.generate(
+        prompt = "a sloth",
+        steps = 4,
+        controlnet = (repo_id, _tiny_png_b64(), "canny", 0.8, 0.0, 1.0),
+    )
+
+    assert result["images"]
+    assert observed == ["load"]
+    assert operations.cache_writer_conflict(repo_id) is None
+    assert operations.begin_delete(repo_id) is None
+    operations.end_delete(repo_id)
+
+
 def test_generate_progress_cleared_on_setup_error(fake_runtime, tmp_path, monkeypatch):
     # A setup failure skips the inner finally, so the outer finally must clear the published progress.
     (tmp_path / "model.gguf").write_bytes(b"weights")
@@ -2459,6 +2566,59 @@ def test_begin_load_rejects_concurrent(monkeypatch):
         thread.join(timeout = 5)
 
 
+def test_begin_load_publishes_the_requested_companion_base(fake_runtime, monkeypatch):
+    backend = DiffusionBackend()
+    finished = threading.Event()
+
+    def _finish(**_kwargs):
+        finished.set()
+
+    monkeypatch.setattr(backend, "_run_load", _finish)
+    backend.begin_load(
+        "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z-image-turbo-Q4_K_S.gguf",
+        base_repo = "custom/image-companion",
+        loras = [("org/image-lora", 1.0)],
+    )
+
+    assert finished.wait(5)
+    assert "custom/image-companion" in backend.loading_repo_ids()
+    assert "org/image-lora" in backend.loading_repo_ids()
+    backend.unload()
+
+
+def test_full_pipeline_begin_load_does_not_claim_the_family_fallback(
+    fake_runtime, monkeypatch
+):
+    from core.inference import diffusion as diffusion_module
+
+    primary = "unsloth/Custom-Z-Image-Pipeline"
+    fam = detect_family("z-image")
+    reserved: list[str] = []
+    reservation = types.SimpleNamespace(
+        add = lambda *repos: reserved.extend(repo for repo in repos if repo),
+        release = lambda: None,
+    )
+    monkeypatch.setattr(
+        "utils.model_cache_reservations.reserve_inference_load",
+        lambda *repos, variant = None: reserved.extend(repo for repo in repos if repo)
+        or reservation,
+    )
+    monkeypatch.setattr(
+        diffusion_module.threading,
+        "Thread",
+        lambda *args, **kwargs: types.SimpleNamespace(start = lambda: None),
+    )
+    backend = DiffusionBackend()
+
+    backend.begin_load(primary, model_kind = "pipeline", family_override = "z-image")
+
+    assert set(reserved) == {primary}
+    assert fam.base_repo not in backend.loading_repo_ids()
+    assert backend.loading_repo_ids() == (primary,)
+    backend.unload()
+
+
 def test_unload_cancels_in_flight_load(fake_runtime):
     # An unload (or arbiter eviction) mid-download must cancel the worker: load_pipeline sees the bumped token and aborts.
     backend = DiffusionBackend()
@@ -2474,6 +2634,125 @@ def test_unload_cancels_in_flight_load(fake_runtime):
             base_repo = fam.base_repo,
             _load_token = token,
         )
+
+
+def test_unload_keeps_the_cache_reserved_until_the_load_worker_exits(
+    fake_runtime, monkeypatch
+):
+    from core.inference import diffusion as diffusion_module
+    from hub.utils.download_registry import get_models_registry
+
+    backend = DiffusionBackend()
+    entered = threading.Event()
+    finish = threading.Event()
+    threads = []
+    real_thread = threading.Thread
+
+    def _blocking_load(**_kwargs):
+        entered.set()
+        assert finish.wait(5)
+
+    def _capture_thread(*args, **kwargs):
+        worker = real_thread(*args, **kwargs)
+        threads.append(worker)
+        return worker
+
+    monkeypatch.setattr(backend, "_run_load", _blocking_load)
+    monkeypatch.setattr(diffusion_module.threading, "Thread", _capture_thread)
+    repo_id = "unsloth/Cache-Reservation-Lifetime-GGUF"
+    backend.begin_load(
+        repo_id,
+        gguf_filename = "z-image-turbo-Q4_K_S.gguf",
+        family_override = "z-image",
+    )
+    assert entered.wait(5)
+
+    backend.unload()
+    assert backend.loading_repo_ids() == ()
+    registry = get_models_registry()
+    assert registry.begin_delete(repo_id) is not None
+
+    finish.set()
+    threads[0].join(timeout = 5)
+    assert not threads[0].is_alive()
+    assert registry.begin_delete(repo_id) is None
+    registry.end_delete(repo_id)
+
+
+def test_hidream_load_reserves_its_external_llama_repo(fake_runtime, monkeypatch):
+    from core.inference import diffusion as diffusion_module
+    from core.inference.diffusion_hidream import HIDREAM_LLAMA_REPO
+    from utils import model_cache_reservations
+    from utils.model_cache_reservations import ModelCacheOperations
+
+    operations = ModelCacheOperations()
+    monkeypatch.setattr(model_cache_reservations, "_model_cache_operations", operations)
+    backend = DiffusionBackend()
+    family = detect_family("HiDream-ai/HiDream-I1-Full")
+    monkeypatch.setattr(backend, "validate_load_request", lambda *_args, **_kwargs: family)
+    monkeypatch.setattr(backend, "assert_precision_available", lambda *_args, **_kwargs: None)
+    entered = threading.Event()
+    finish = threading.Event()
+    threads = []
+    real_thread = threading.Thread
+
+    def blocking_load(**_kwargs):
+        entered.set()
+        assert finish.wait(5)
+
+    def capture_thread(*args, **kwargs):
+        worker = real_thread(*args, **kwargs)
+        threads.append(worker)
+        return worker
+
+    monkeypatch.setattr(backend, "_run_load", blocking_load)
+    monkeypatch.setattr(diffusion_module.threading, "Thread", capture_thread)
+    backend.begin_load("unsloth/HiDream-I1-Full", model_kind = "pipeline")
+    assert entered.wait(5)
+
+    assert HIDREAM_LLAMA_REPO in backend.loading_repo_ids()
+    assert operations.cache_writer_conflict(HIDREAM_LLAMA_REPO) == "inference_loading"
+    assert operations.begin_delete(HIDREAM_LLAMA_REPO) is not None
+
+    finish.set()
+    threads[0].join(timeout = 5)
+    assert not threads[0].is_alive()
+    assert operations.begin_delete(HIDREAM_LLAMA_REPO) is None
+    operations.end_delete(HIDREAM_LLAMA_REPO)
+
+
+def test_begin_load_hands_route_preclaims_to_the_worker_reservation(
+    fake_runtime, monkeypatch
+):
+    from core.inference import diffusion as diffusion_module
+    from utils import model_cache_reservations
+    from utils.model_cache_reservations import ModelCacheOperations
+
+    operations = ModelCacheOperations()
+    monkeypatch.setattr(model_cache_reservations, "_model_cache_operations", operations)
+    captured = {}
+
+    def capture_thread(*_args, **kwargs):
+        captured["reservation"] = kwargs["args"][0]
+        captured["load_kwargs"] = kwargs["kwargs"]
+        return types.SimpleNamespace(start = lambda: None)
+
+    monkeypatch.setattr(diffusion_module.threading, "Thread", capture_thread)
+    backend = DiffusionBackend()
+    dependency = "unsloth/Image-Encoder-FP8"
+    backend.begin_load(
+        "unsloth/Qwen-Image-2512-GGUF",
+        gguf_filename = "qwen-image-2512-Q4_K_M.gguf",
+        model_kind = "gguf",
+        family_override = "qwen-image",
+        _preclaimed_repositories = (dependency,),
+        _preflight_resolved_base_repo = "Qwen/Qwen-Image-2512",
+    )
+
+    assert operations.cache_writer_conflict(dependency) == "inference_loading"
+    assert captured["load_kwargs"]["base_repo"] == "Qwen/Qwen-Image-2512"
+    captured["reservation"].release()
+    backend.unload()
 
 
 def test_superseded_load_does_not_cancel_live_generation(fake_runtime):
@@ -2756,6 +3035,92 @@ def test_load_progress_and_delete_guard_follow_the_mirrored_companion(monkeypatc
         "black-forest-labs/FLUX.1-dev",
         "unsloth/FLUX.1-dev",
     )
+
+
+def test_worker_reserves_a_hosted_prequant_before_the_download_plan(fake_runtime, monkeypatch):
+    from core.inference import diffusion as diffusion_module
+
+    backend = DiffusionBackend()
+    backend._load_token = 9
+    backend._loading = _LoadingState(repo_id = "unsloth/test-GGUF", base_repo = "unsloth/base")
+    reserved = []
+    reservation = types.SimpleNamespace(add = lambda *repos: reserved.extend(repos))
+
+    monkeypatch.setattr(diffusion_module, "_resolve_base_repo", lambda *_args: "unsloth/base")
+    monkeypatch.setattr(
+        "core.inference.diffusion_te_prequant.te_prequant_sources",
+        lambda *_args, **_kwargs: {
+            "text_encoder": types.SimpleNamespace(
+                kind = "repo",
+                location = "unsloth/Image-Encoder-FP8",
+            )
+        },
+    )
+    monkeypatch.setattr(
+        backend,
+        "_te_prequant_plan_files",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("stop after reserve")),
+    )
+
+    backend._run_load(
+        repo_id = "unsloth/test-GGUF",
+        gguf_filename = "z-image-turbo-Q4_K_S.gguf",
+        family_override = "z-image",
+        base_repo = "unsloth/base",
+        text_encoder_quant = "fp8",
+        _load_token = 9,
+        _load_reservation = reservation,
+    )
+
+    assert "unsloth/Image-Encoder-FP8" in reserved
+    assert "unsloth/Image-Encoder-FP8" in backend._loading.asset_repos
+
+
+def test_worker_reserves_hidreams_hosted_fourth_encoder(fake_runtime, monkeypatch):
+    from core.inference import diffusion as diffusion_module
+
+    backend = DiffusionBackend()
+    backend._load_token = 10
+    backend._loading = _LoadingState(
+        repo_id = "unsloth/HiDream-I1-Full",
+        base_repo = "unsloth/HiDream-I1-Full",
+    )
+    reserved = []
+    reservation = types.SimpleNamespace(add = lambda *repos: reserved.extend(repos))
+    monkeypatch.setattr(
+        "core.inference.diffusion_te_prequant.te_prequant_sources",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        diffusion_module,
+        "hidream_te4_prequant_source",
+        lambda *_args, **_kwargs: types.SimpleNamespace(
+            kind = "repo",
+            location = "unsloth/HiDream-I1-Full-FP8",
+        ),
+    )
+    monkeypatch.setattr(
+        diffusion_module,
+        "resolve_diffusion_device_target",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_te_prequant_plan_files",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("stop after reserve")),
+    )
+
+    backend._run_load(
+        repo_id = "unsloth/HiDream-I1-Full",
+        model_kind = "pipeline",
+        family_override = "hidream-i1",
+        text_encoder_quant = "fp8",
+        _load_token = 10,
+        _load_reservation = reservation,
+    )
+
+    assert "unsloth/HiDream-I1-Full-FP8" in reserved
+    assert "unsloth/HiDream-I1-Full-FP8" in backend._loading.asset_repos
 
 
 def test_plan_memory_sizes_the_mirrored_companion_cache(monkeypatch, tmp_path):

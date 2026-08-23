@@ -10,10 +10,11 @@ diffusers, weights, or a GPU.
 
 from __future__ import annotations
 
+import asyncio
 import types
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 import core.inference.diffusion as diffusion_module
@@ -21,6 +22,10 @@ import core.inference.gpu_arbiter as gpu_arbiter
 import core.inference.image_gallery as gallery_module
 from auth.authentication import get_current_subject
 from routes.inference import studio_router
+
+
+async def _run_inline(function, /, *args, **kwargs):
+    return function(*args, **kwargs)
 
 
 class _FakeBackend:
@@ -349,6 +354,174 @@ def test_load_rejects_untrusted_base_repo(client):
     assert client.get("/api/inference/images/status").json()["loaded"] is False
 
 
+def test_full_pipeline_load_ignores_a_busy_unused_family_base(client, monkeypatch):
+    from core.inference.diffusion_families import detect_family
+    from models.inference import DiffusionLoadRequest
+    from routes.inference import load_diffusion_model_gated
+    from utils import model_cache_reservations
+    from utils.model_cache_reservations import ModelCacheOperations
+
+    family_base = detect_family("z-image").base_repo
+    operations = ModelCacheOperations()
+    monkeypatch.setattr(model_cache_reservations, "_model_cache_operations", operations)
+    monkeypatch.setattr(asyncio, "to_thread", _run_inline)
+    owner = object()
+    assert operations.claim_repository_owner(family_base, owner) == (True, "owned")
+
+    response = asyncio.run(
+        load_diffusion_model_gated(
+            DiffusionLoadRequest(
+                model_path = "unsloth/Custom-Z-Image-Pipeline",
+                model_kind = "pipeline",
+                family_override = "z-image",
+            ),
+            "test-user",
+            user_initiated = True,
+        )
+    )
+
+    assert response.loaded is True
+    assert operations.release_repository_owner(family_base, owner) is True
+
+
+@pytest.mark.parametrize(
+    "busy_repo",
+    ["Tongyi-MAI/Z-Image-Turbo", "unsloth/Z-Image-Turbo"],
+)
+def test_diffusers_gguf_reserves_the_resolved_base_and_mirror_before_handoff(
+    client, monkeypatch, busy_repo
+):
+    from utils import model_cache_reservations
+    from utils.model_cache_reservations import ModelCacheOperations
+
+    operations = ModelCacheOperations()
+    monkeypatch.setattr(model_cache_reservations, "_model_cache_operations", operations)
+    monkeypatch.setattr(asyncio, "to_thread", _run_inline)
+    owner = object()
+    assert operations.claim_repository_owner(busy_repo, owner) == (True, "owned")
+    evicted: list[str] = []
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: evicted.append("chat"))
+
+    from models.inference import DiffusionLoadRequest
+    from routes.inference import load_diffusion_model_gated
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            load_diffusion_model_gated(
+                DiffusionLoadRequest(
+                    model_path = "unsloth/Z-Image-Turbo-GGUF",
+                    gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+                    family_override = "z-image",
+                ),
+                "test-user",
+                user_initiated = True,
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert evicted == []
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
+    assert operations.release_repository_owner(busy_repo, owner) is True
+
+
+def test_diffusers_dependency_conflict_is_refused_before_chat_eviction(client, monkeypatch):
+    import core.inference.diffusion_device as device_module
+    from models.inference import DiffusionLoadRequest
+    from routes.inference import load_diffusion_model_gated
+    from utils import model_cache_reservations
+    from utils.model_cache_reservations import ModelCacheOperations
+
+    backend = diffusion_module.get_diffusion_backend()
+    busy_repo = "Qwen/Qwen-Image-2512"
+    monkeypatch.setattr(
+        backend,
+        "preflight_load_repositories",
+        lambda *_args, **_kwargs: (busy_repo,),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        device_module,
+        "resolve_diffusion_device_target",
+        lambda *args, **kwargs: types.SimpleNamespace(device = "cuda"),
+    )
+    monkeypatch.setattr(asyncio, "to_thread", _run_inline)
+    operations = ModelCacheOperations()
+    monkeypatch.setattr(model_cache_reservations, "_model_cache_operations", operations)
+    owner = object()
+    assert operations.claim_repository_owner(busy_repo, owner) == (True, "owned")
+    evicted: list[str] = []
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: evicted.append("chat"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            load_diffusion_model_gated(
+                DiffusionLoadRequest(
+                    model_path = "unsloth/Qwen-Image-2512-GGUF",
+                    gguf_filename = "qwen-image-2512-Q4_K_M.gguf",
+                    family_override = "qwen-image",
+                ),
+                "test-user",
+                user_initiated = True,
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert evicted == []
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
+    assert backend.loaded is False
+    assert operations.release_repository_owner(busy_repo, owner) is True
+
+
+def test_diffusers_preflight_carries_the_resolved_base_by_name(client, monkeypatch):
+    from contextlib import nullcontext
+
+    import core.inference.diffusion_device as device_module
+    import routes.inference as inference_routes
+    from models.inference import DiffusionLoadRequest
+    from routes.inference import load_diffusion_model_gated
+
+    backend = diffusion_module.get_diffusion_backend()
+    dependency = "unsloth/Qwen-Image-FP8"
+    resolved_base = "Qwen/Qwen-Image-2512"
+    monkeypatch.setattr(
+        backend,
+        "preflight_load_repositories",
+        lambda *_args, **_kwargs: diffusion_module.DiffusionLoadPreflight(
+            resolved_base_repo = resolved_base,
+            repositories = (dependency, resolved_base),
+        ),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        device_module,
+        "resolve_diffusion_device_target",
+        lambda *args, **kwargs: types.SimpleNamespace(device = "cuda"),
+    )
+    monkeypatch.setattr(asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(inference_routes, "_diffusion_training_admission", nullcontext)
+
+    response = asyncio.run(
+        load_diffusion_model_gated(
+            DiffusionLoadRequest(
+                model_path = "unsloth/Qwen-Image-2512-GGUF",
+                gguf_filename = "qwen-image-2512-Q4_K_M.gguf",
+                family_override = "qwen-image",
+            ),
+            "test-user",
+            user_initiated = True,
+        )
+    )
+
+    assert response.loaded is True
+    assert backend.last_load_kwargs["_preclaimed_repositories"] == (
+        dependency,
+        resolved_base,
+    )
+    assert backend.last_load_kwargs["_preflight_resolved_base_repo"] == resolved_base
+
+
 def test_unload_keeps_ownership_when_a_model_is_still_resident(client, monkeypatch):
     # The unload route must drop DIFFUSION ownership only when nothing is resident: releasing over a concurrent load would let a later chat load skip eviction and OOM.
     backend = diffusion_module.get_diffusion_backend()
@@ -587,6 +760,41 @@ def test_generate_without_load_returns_409(client):
     assert resp.status_code == 409
 
 
+def test_generate_preserves_cache_reservation_conflict(monkeypatch):
+    from core.inference import diffusion_engine_router
+    from models.inference import DiffusionGenerateRequest
+    import routes.inference as inference_routes
+
+    async def run_inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    backend = _FakeBackend()
+    backend.loaded = True
+
+    def conflict(**_kwargs):
+        raise HTTPException(
+            status_code = 409,
+            detail = "Cached model 'org/lora' is being deleted. Wait for deletion to finish.",
+        )
+
+    monkeypatch.setattr(inference_routes.asyncio, "to_thread", run_inline)
+    monkeypatch.setattr(backend, "generate", conflict)
+    monkeypatch.setattr(diffusion_engine_router, "get_active_diffusion_engine", lambda: backend)
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            inference_routes.generate_diffusion_image(
+                DiffusionGenerateRequest(prompt = "p"),
+                "test-subject",
+            )
+        )
+
+    assert caught.value.status_code == 409
+    assert caught.value.detail == (
+        "Cached model 'org/lora' is being deleted. Wait for deletion to finish."
+    )
+
+
 def test_generate_pipeline_error_returns_sanitized_500(client, monkeypatch):
     # A loaded model that fails mid-pipeline (CUDA OOM, a RuntimeError) is a server failure: 500 with FIXED text, not a 409.
     # The class of failure is named so the page can suggest something; the engine's own text can carry local paths and argv.
@@ -718,7 +926,7 @@ def test_gated_base_load_returns_400_without_evicting_chat(client, monkeypatch):
     def _refuse(model_path, fam, **kwargs):
         raise ValueError(detail)
 
-    monkeypatch.setattr(backend, "preflight_base_access", _refuse, raising = False)
+    monkeypatch.setattr(backend, "preflight_load_repositories", _refuse, raising = False)
 
     resp = client.post(
         "/api/inference/images/load",
@@ -746,7 +954,7 @@ def test_cpu_load_skips_the_gated_preflight(client, monkeypatch):
     calls: list = []
     monkeypatch.setattr(
         backend,
-        "preflight_base_access",
+        "preflight_load_repositories",
         lambda *a, **k: calls.append(a),
         raising = False,
     )
@@ -792,7 +1000,7 @@ def test_a_cpu_mispredicted_engine_is_still_preflighted(monkeypatch):
         raise ValueError(detail)
 
     diffusers = _FakeBackend()
-    diffusers.preflight_base_access = _refuse
+    diffusers.preflight_load_repositories = _refuse
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: diffusers)
     monkeypatch.setattr(
         engine_router,
@@ -860,7 +1068,7 @@ def test_gated_pick_on_an_engine_switch_keeps_the_previous_model(monkeypatch, de
         raise ValueError(detail)
 
     diffusers = _FakeBackend()
-    diffusers.preflight_base_access = _refuse
+    diffusers.preflight_load_repositories = _refuse
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: diffusers)
     monkeypatch.setattr(
         engine_router,
@@ -1230,6 +1438,53 @@ def test_cpu_native_load_skips_gpu_arbiter(client, monkeypatch):
     )
     assert resp.status_code == 200
     assert acquired == []  # no arbiter handoff for a CPU native load
+
+
+@pytest.mark.parametrize(
+    "busy_repo",
+    ["Tongyi-MAI/Z-Image-Turbo", "unsloth/Z-Image-Turbo"],
+)
+def test_native_load_ignores_a_busy_unused_diffusers_base(
+    client, monkeypatch, busy_repo
+):
+    import core.inference.diffusion_engine_router as router
+    from core.inference.diffusion_families import detect_family
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+    from models.inference import DiffusionLoadRequest
+    from routes.inference import load_diffusion_model_gated
+    from utils import model_cache_reservations
+    from utils.model_cache_reservations import ModelCacheOperations
+
+    backend = diffusion_module.get_diffusion_backend()
+    acquired = _force_engine(
+        monkeypatch,
+        backend,
+        engine_name = ENGINE_SD_CPP,
+        device = "cpu",
+    )
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **kwargs: ENGINE_SD_CPP)
+    assert detect_family("z-image").base_repo == "Tongyi-MAI/Z-Image-Turbo"
+    operations = ModelCacheOperations()
+    monkeypatch.setattr(model_cache_reservations, "_model_cache_operations", operations)
+    monkeypatch.setattr(asyncio, "to_thread", _run_inline)
+    owner = object()
+    assert operations.claim_repository_owner(busy_repo, owner) == (True, "owned")
+
+    response = asyncio.run(
+        load_diffusion_model_gated(
+            DiffusionLoadRequest(
+                model_path = "unsloth/Z-Image-Turbo-GGUF",
+                gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+                family_override = "z-image",
+            ),
+            "test-user",
+            user_initiated = True,
+        )
+    )
+
+    assert response.loaded is True
+    assert acquired == []
+    assert operations.release_repository_owner(busy_repo, owner) is True
 
 
 def test_gpu_native_load_takes_arbiter(client, monkeypatch):

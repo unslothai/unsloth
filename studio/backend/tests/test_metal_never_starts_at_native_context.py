@@ -112,7 +112,7 @@ def _launch(
     backend._is_vulkan_backend = lambda _binary = None: False
     backend._wait_for_health = lambda timeout: True
     backend._detect_audio_type_strict = lambda: None
-    backend._apply_detected_audio = lambda _detected: True
+    backend._apply_detected_audio = lambda _detected, _on_audio_codec_resolved = None: True
     backend._context_length = ctx_metadata
 
     captured = {}
