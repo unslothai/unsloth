@@ -83,6 +83,12 @@ def test_the_probe_path_is_validated_before_anything_is_started(main_src: str):
     assert "except (OSError, UnicodeDecodeError) as exc:" in main_src
     # Read once, used later. A second read at launch time would reintroduce the window.
     assert main_src.count("Path(extra_init).read_text") == 1
+    # AND ahead of the archive, which is the other thing a refusal must not arrive after. Reusing
+    # an --out without --resume moves the payload aside, so reading the probe after that call let a
+    # path typo take payload.jsonl off its standard path while running no benchmark at all. The
+    # behaviour is pinned in runtime/selftest/test_studiobench_run_acquisition.py; the order is
+    # pinned here because that is what makes it true.
+    assert read_at < main_src.index("prepare_payload(")
 
 
 def test_the_probe_is_installed_without_eval(main_src: str):
@@ -220,6 +226,37 @@ def test_the_probe_is_its_own_script_and_says_when_it_did_not_install(main_src: 
     assert "window.__sbExtraInitScript" in main_src
     assert "never installed: it did not " in main_src
     assert 'bundle.page.on("pageerror"' in main_src
+
+
+def test_the_probe_source_is_the_first_thing_in_its_script():
+    """REGRESSION. A directive prologue is only a prologue while nothing precedes it.
+
+    ECMA-262 defines a Directive Prologue as the run of expression statements a Script or
+    FunctionBody OPENS with, so a probe beginning `"use strict"` stops being strict the moment a
+    statement is put in front of it: the directive degrades into a string expression that does
+    nothing, and an undeclared assignment inside the probe creates a global instead of throwing.
+    The installation stamp used to be that statement. It goes last instead, which changes nothing
+    about the probe and still leaves the stamp unset when the file did not run.
+
+    Playwright wraps each init script in `(() => { ... })();` (`playwright-core`, `class
+    InitScript`), so the file's own prologue is a FunctionBody prologue -- real, and equally
+    destroyed by a prepend.
+    """
+
+    import studiobench.__main__ as sb
+
+    source = '"use strict";\nvar ticks = 0;\n'
+    scripts = sb._probe_init_scripts("probes/p.js", source)
+
+    assert scripts[0].startswith(source), (
+        "something is being prepended to the probe source; a leading directive such as "
+        '"use strict" is no longer in the directive prologue and the probe runs with different '
+        "semantics than the file it was read from"
+    )
+    assert "window.__sbExtraInitScript" in scripts[0]
+    # Appended on its own line, opening with an identifier, so ASI cannot join it to the probe's
+    # last expression.
+    assert scripts[0][len(source) :].lstrip("\n").startswith("window.__sbExtraInitScript")
 
 
 def test_a_refused_run_does_not_leave_a_stale_ab_table(main_src: str):

@@ -457,20 +457,19 @@ def run(args, ab_ref = None) -> int:
     corpus = Corpus.load()
     _log(f"  corpus_hash {corpus.corpus_hash}")
 
-    # BEFORE the first install, the first launch and the first recorded row. See `prepare_payload`:
-    # a refusal that arrives after two clones and two builds has cost the caller an hour to say
-    # something it could have said in a millisecond, and an archive that arrives after the Recorder
-    # has opened the file has already appended this run's header to the payload it was moving.
-    prepare_payload(
-        paths, requested_identity(args, ab_ref, corpus.corpus_hash), resume = bool(args.resume)
-    )
-
-    # READ NOW, BEFORE ANYTHING IS STARTED. The probe's source is not needed until the browser is
-    # launched, but reading it there means a path typo raises after Studio and the pacer are up
-    # and before the cleanup `finally` that would stop them is entered, so a detached Studio keeps
-    # running and holds its port. The cheapest correct fix is to fail while there is nothing to
-    # clean up: a missing, unreadable or non-UTF-8 file is a mistake in the invocation, and the
+    # READ NOW, BEFORE ANYTHING IS STARTED OR MOVED. The probe's source is not needed until the
+    # browser is launched, but reading it there means a path typo raises after Studio and the pacer
+    # are up and before the cleanup `finally` that would stop them is entered, so a detached Studio
+    # keeps running and holds its port. The cheapest correct fix is to fail while there is nothing
+    # to clean up: a missing, unreadable or non-UTF-8 file is a mistake in the invocation, and the
     # right moment to say so is the first second of the run.
+    #
+    # AHEAD OF `prepare_payload` FOR THE SAME REASON THE ARCHIVE IS AHEAD OF THE RECORDER. Reusing
+    # an `--out` without `--resume` archives the payload that is already there, so reading the
+    # probe afterwards meant a path typo exited 2 having run no benchmark and having already taken
+    # `payload.jsonl` off the path every reader looks at: `--report`, `--assert-liveness` and the
+    # next `--resume` all open that name. A refusal that the first millisecond of the run could
+    # have issued must not cost the previous run's payload its standard path.
     extra_init = os.environ.get("SBENCH_EXTRA_INIT_SCRIPT")
     extra_init_source = ""
     if extra_init:
@@ -482,6 +481,15 @@ def run(args, ab_ref = None) -> int:
                 f"{type(exc).__name__}: {exc}"
             )
             return 2
+
+    # BEFORE the first install, the first launch and the first recorded row. See `prepare_payload`:
+    # a refusal that arrives after two clones and two builds has cost the caller an hour to say
+    # something it could have said in a millisecond, and an archive that arrives after the Recorder
+    # has opened the file has already appended this run's header to the payload it was moving.
+    prepare_payload(
+        paths, requested_identity(args, ab_ref, corpus.corpus_hash), resume = bool(args.resume)
+    )
+
     # Armed AFTER the sides are known, because what it has to cover depends on them: see
     # `watchdog_deadline_s`. Nothing between the `side_specs` call above and here can hang --
     # `_windowed_arms` compares two sets, `Corpus.load` reads a generated fixture and
@@ -1108,17 +1116,30 @@ def _probe_init_scripts(path: str, source: str) -> list[str]:
     So the isolation the wrapper was bought for does not exist on webkit either way -- Playwright
     installs webkit's init scripts as one bootstrap unit -- and on the two engines where it does
     exist, separate `add_init_script` calls already provide it without evaluating a string. The
-    source is therefore installed as its own script, in global scope, exactly as it reads on disk.
+    source is therefore installed as its own script, opening it, exactly as it reads on disk.
 
-    The second script is the report. The first line of the probe script stamps
-    `window.__sbExtraInitScript`, so a probe that failed to PARSE leaves it unset and the deferred
-    check names it on the console; a probe that parsed and then THREW arrives as a `pageerror`,
-    which `bundle.page.on("pageerror", ...)` already logs. On webkit the check dies in the same
-    bootstrap unit as the probe, and the `pageerror` is what reports there.
+    THE STAMP GOES AFTER THE SOURCE, NOT BEFORE IT. A directive prologue is the run of expression
+    statements a Script or FunctionBody OPENS with (ECMA-262, "Directive Prologues and the Use
+    Strict Directive"), so a statement in front of a probe's leading `"use strict"` demotes it to a
+    string expression that does nothing. The probe then runs sloppy: an undeclared assignment
+    silently creates a global instead of throwing, and the harness is no longer executing the file
+    as it reads on disk. Playwright wraps every init script in `(() => { ... })();`
+    (`playwright-core/src/server/page.ts`, `class InitScript`), which keeps the file's own prologue
+    working as a FunctionBody prologue -- until something is prepended to it.
+
+    Appending is safe against ASI, because the appended line opens with an identifier: no
+    expression can continue across the newline into `window`.
+
+    The second script is the report. The last line of the probe script stamps
+    `window.__sbExtraInitScript`, so a probe that failed to PARSE, or that THREW on the way down,
+    leaves it unset and the deferred check names it on the console. A throw also arrives as a
+    `pageerror`, which `bundle.page.on("pageerror", ...)` already logs, and that is what separates
+    the two cases. On webkit the check dies in the same bootstrap unit as the probe, and the
+    `pageerror` is what reports there.
     """
     where = json.dumps(path)
     return [
-        f"window.__sbExtraInitScript = {where};\n{source}",
+        f"{source}\nwindow.__sbExtraInitScript = {where};\n",
         (
             "(function () {\n"
             "  setTimeout(function () {\n"
@@ -1126,7 +1147,7 @@ def _probe_init_scripts(path: str, source: str) -> list[str]:
             "    try {\n"
             "      window.console.error(\n"
             f"        'SBENCH_EXTRA_INIT_SCRIPT ' + {where} + ' never installed: it did not "
-            "parse. '" + " +\n"
+            "parse, or it threw before it finished. '" + " +\n"
             "        'This probe reported nothing, which is NOT the same as an arm that did not '"
             " +\n"
             "        'fire.'\n"
