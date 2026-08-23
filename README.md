@@ -409,6 +409,31 @@ It is threaded as `--registry` into the Unsloth frontend `npm`/`bun` installs; t
 
 Cap Unsloth's native CPU thread pools on high-core hosts: `UNSLOTH_CPU_THREADS=8 unsloth studio -p 8888`.
 
+#### Shared machine (several login users)
+Each login user should run the installer **as themselves**. Do not share the Studio virtualenv (`~/.unsloth/studio` or a custom `UNSLOTH_STUDIO_HOME`). `pipx install unsloth` is the CLI only and is not a Studio install.
+
+Share **data**, not software. Point every user at the same writable folders:
+
+| What | Environment variable | Example (Linux) | Example (macOS) |
+| --- | --- | --- | --- |
+| Models / Hugging Face cache | `HF_HOME` | `/srv/unsloth/cache` | `/Users/Shared/UnslothCache` |
+| Projects | `UNSLOTH_STUDIO_PROJECTS_HOME` | `/srv/unsloth/projects` | `/Users/Shared/UnslothProjects` |
+
+```bash
+# each user's shell profile
+export HF_HOME=/srv/unsloth/cache
+export UNSLOTH_STUDIO_PROJECTS_HOME=/srv/unsloth/projects
+```
+```powershell
+# each Windows user's profile
+$env:HF_HOME = "C:\ProgramData\Unsloth\cache"
+$env:UNSLOTH_STUDIO_PROJECTS_HOME = "C:\ProgramData\Unsloth\projects"
+```
+
+Leave `UNSLOTH_STUDIO_HOME` unset so each user keeps `~/.unsloth/studio`. Leave `LLAMA_SERVER_PATH` unset so that user's official llama-server is used. The same variables work on a remote box (for example RunPod) if the folders exist there.
+
+Login, API keys, and `studio.db` live under Studio home. Sharing them (one Studio home, or symlinks) is optional. SQLite is not a multi-writer store — only one `unsloth studio` process should use that database at a time.
+
 #### Uninstall
 The recommended way to fully remove Unsloth Studio is the matching uninstall script for your OS. It stops any running servers, removes the install dir, the launcher data dir, the desktop shortcut, and any platform-specific entries (macOS `.app` bundle + Launch Services on Mac; Start Menu, `HKCU\Software\Unsloth` registry key and user `PATH` entries on Windows):
 
