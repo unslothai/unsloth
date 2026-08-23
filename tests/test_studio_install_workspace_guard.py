@@ -1402,6 +1402,6 @@ def test_install_ps1_helper_answers_on_the_link_itself():
     src = INSTALL_PS1.read_text(encoding = "utf-8")
     helper_start = src.index("function Test-DirectoryHasEntries")
     helper = src[helper_start : src.index("function Clear-MigrationTargetDirectory", helper_start)]
-    assert "Get-Item -LiteralPath $Path -Force" in helper, (
-        "a dangling link is invisible to -PathType Container but still blocks uv"
-    )
+    assert (
+        "Get-Item -LiteralPath $Path -Force" in helper
+    ), "a dangling link is invisible to -PathType Container but still blocks uv"
