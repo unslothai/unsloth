@@ -20,9 +20,10 @@ SKIP=0
     sed -n '/^_setup_run_smi()/,/^}/p'              "$SETUP_SH"
     sed -n '/^_setup_rocminfo_gpu_records()/,/^}/p' "$SETUP_SH"
     sed -n '/^_setup_amd_smi_gpu_records()/,/^}/p'  "$SETUP_SH"
-    echo '_setup_amd_detected=false'
-    echo '_setup_nvidia_usable=false'
-    echo '_setup_gfx_all=""; _setup_mkt=""; _setup_amd_records=""; _setup_gfx=""'
+    # The real initialiser group, not a restated one. Seeding these here would hide the
+    # thing that matters under `set -u`: a variable the selection block reads but no arm
+    # assigns aborts `unsloth studio update` outright.
+    sed -n '/^_setup_amd_detected=false$/,/^_setup_amd_records=""$/p' "$SETUP_SH"
     # Detection through selection. NVIDIA is pinned false: this is about which AMD
     # device gets picked, not about vendor priority.
     awk '/^if \[ "\$_setup_nvidia_usable" != true \]; then/ {on=1}
@@ -35,6 +36,21 @@ grep -q '_setup_amd_record=' "$WORK/block.sh" || {
 grep -q '_setup_amd_smi_gpu_records' "$WORK/block.sh" || {
     echo "FATAL: the amd-smi record parser is not wired into the block" >&2; exit 1; }
 bash -n "$WORK/block.sh" || { echo "FATAL: extracted block does not parse" >&2; exit 1; }
+
+# The same two halves, split, for the arms that reach selection without probing anything.
+sed -n '/^_setup_amd_detected=false$/,/^_setup_amd_records=""$/p' "$SETUP_SH" > "$WORK/init.sh"
+{
+    awk '/^if \[ "\$_setup_nvidia_usable" = true \]; then/ {on=1}
+         on && /UNSLOTH_ROCM_GFX_ARCH env override/ {exit}
+         on {print}' "$SETUP_SH"
+    echo 'fi'
+} > "$WORK/select.sh"
+grep -q '_setup_nvidia_usable=false' "$WORK/init.sh" || {
+    echo "FATAL: initialiser group not found in $SETUP_SH" >&2; exit 1; }
+grep -q '_setup_amd_record=' "$WORK/select.sh" || {
+    echo "FATAL: selection block not found in $SETUP_SH" >&2; exit 1; }
+bash -n "$WORK/init.sh" && bash -n "$WORK/select.sh" || {
+    echo "FATAL: extracted halves do not parse" >&2; exit 1; }
 
 # PATH from scratch: the host running this may itself have a real rocminfo/amd-smi.
 mkdir -p "$WORK/base" "$WORK/roc" "$WORK/smi"
@@ -55,7 +71,8 @@ echo "amd-smi $1" >> "$PROBE_LOG"
 [ -s "$STUB_AMDSMI" ] || exit 1
 case "$1" in
     list)   sed -n 's/^\(GPU: [0-9]*\).*/\1  BDF: 0000:03:00.0  UUID: aaaa-bbbb  KFD_ID: 1/p' "$STUB_AMDSMI" ;;
-    static) cat "$STUB_AMDSMI" ;;
+    # A driver that answers `list` but not `static --asic`: detected, zero records.
+    static) [ -n "${STUB_AMDSMI_MUTE_STATIC:-}" ] || cat "$STUB_AMDSMI" ;;
 esac
 STUB
 chmod +x "$WORK/roc/rocminfo" "$WORK/smi/amd-smi"
@@ -79,9 +96,24 @@ summary() {
     # setup.sh runs under `set -euo pipefail`; match it.
     env -i PATH="$_path" PROBE_LOG="$WORK/probes" \
         STUB_ROCMINFO="$1" STUB_AMDSMI="$2" \
+        ${STUB_AMDSMI_MUTE_STATIC:+STUB_AMDSMI_MUTE_STATIC=1} \
         ${3:+HIP_VISIBLE_DEVICES="$3"} \
         /bin/bash -c 'set -euo pipefail; . "$1"; printf "%s|%s\n" "$_setup_gfx" "$_setup_mkt"' \
         _ "$WORK/block.sh"
+}
+
+# The KFD sysfs arm sets _setup_amd_detected=true and nothing else, so it reaches the
+# selection block with no records and no gfx list. That arm needs a real /dev/kfd, so
+# drive the selection block directly from the same starting state.
+kfd_shape_summary() {
+    env -i PATH="$WORK/base" \
+        /bin/bash -c 'set -euo pipefail
+                      step() { :; }
+                      . "$1"
+                      _setup_amd_detected=true
+                      . "$2"
+                      printf "%s|%s\n" "$_setup_gfx" "$_setup_mkt"' \
+        _ "$WORK/init.sh" "$WORK/select.sh" 2>&1
 }
 # grep -c prints 0 and exits 1 when there is no match, so the status is discarded.
 probe_count() { _n=$(grep -c "^$1" "$WORK/probes" 2>/dev/null) || true; echo "${_n:-0}"; }
@@ -264,6 +296,18 @@ else
     assert_eq "neither tool installed reports nothing" "|" "$(summary - -)"
     assert_eq "both installed but silent reports nothing" "|" "$(summary "$WORK/empty" "$WORK/empty")"
 fi
+
+echo "=== detected, but no arm produced a record ==="
+# Under `set -euo pipefail` an unassigned variable is not an empty string, it is a fatal
+# error: `unsloth studio update` dies here instead of falling through to a source build.
+assert_eq "the KFD-shaped path reaches the end instead of aborting on set -u" \
+    "|" "$(kfd_shape_summary)"
+assert_eq "every variable the selection block reads is initialised up front" \
+    "" "$(grep -oE '\$\{?_setup_(gfx|gfx_all|mkt|amd_records|amd_detected|nvidia_usable)\b' \
+              "$WORK/select.sh" | tr -d '${' | sort -u \
+          | while read -r _v; do grep -q "^$_v=" "$WORK/init.sh" || echo "$_v"; done | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "amd-smi answers list but not static --asic" \
+    "|" "$(STUB_AMDSMI_MUTE_STATIC=1 summary "$WORK/empty" "$WORK/smi_three")"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

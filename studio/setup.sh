@@ -2040,6 +2040,7 @@ fi
 _setup_amd_detected=false
 _setup_nvidia_usable=false
 _setup_gfx_all=""
+_setup_gfx=""
 _setup_mkt=""
 _setup_amd_records=""
 
