@@ -73,6 +73,43 @@
     isRunning() {
       return Boolean(D.stopButton() || D.queueButton());
     },
+    // THE PROMPT QUEUE'S OWN SURFACE. `PromptQueueStack` renders the waiting prompts inside the
+    // composer root with the accessible name "Prompt queue, <n> of <m>", and that is the only
+    // place the queue states its own existence in the DOM. Scoped to the thread root so a queue
+    // running on ANOTHER thread, which the sidebar also renders, is not read as this one's.
+    promptQueue() {
+      return q('[aria-label^="Prompt queue,"]', D.threadRoot());
+    },
+    // A REPLY IS ACTUALLY BEING WRITTEN, which is NOT the question `isRunning()` answers.
+    //
+    // `isRunning()` has to accept the Queue button: with text in the composer a running thread
+    // renders that button and NO Stop button (`queueDisabled` depends on the composer having a
+    // queueable prompt), so an action that waited for Stop would wait out its budget on a live
+    // stream. Every caller that asks "may I send now" wants exactly that broad reading.
+    //
+    // It is the wrong reading for a positive control on the streaming probe, because
+    // `ComposerRightControls` renders "Queue message" in a SECOND place: under
+    // `isQueueRunning && !thread.isRunning`, while a queued prompt waits to be dispatched and
+    // nothing at all is generating. `isRunning()` cannot tell that queued-idle interval from a
+    // live stream whose `data-status` hooks have gone quiet, and those two need opposite
+    // treatment -- one is an ordinary settled thread, the other is an instrument that has stopped
+    // working.
+    //
+    // The queued-idle button always comes with the queue surface: `syncPromptQueueUI` marks the
+    // entry `dispatched` from the active item, and `getPromptQueueUIItemsForRun` drops only
+    // DISPATCHED items, so an undispatched active item -- the one that renders "Queue message"
+    // rather than "Stop queued message" -- is always in the list the stack renders.
+    //
+    // WHAT THIS GIVES UP, pinned in scene/selftest/test_studiobench_queued_idle_live.py: while a
+    // queue run holds further prompts AND a reply is streaming AND the composer has text, the
+    // queue surface is up and the only control is the Queue button, so this reads false and the
+    // control is not armed for that capture. Under-claiming, and cheap: probe blindness is a
+    // renamed selector, which is global, so every other capture in the run still catches it.
+    generating() {
+      if (D.stopButton()) return true;
+      if (!D.queueButton()) return false;
+      return !D.promptQueue();
+    },
     // WHICH MESSAGES ARE STILL BEING WRITTEN, read from the app's own published state rather than
     // guessed at from `isRunning()` plus "it is probably the last one".
     //

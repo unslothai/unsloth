@@ -775,6 +775,10 @@
         const inFlightNodes = (dom.streamingMessages && dom.streamingMessages()) || [];
         const inFlight = new Set(inFlightNodes);
         const running = Boolean(dom.isRunning && dom.isRunning());
+        // The narrower reading, and the positive control below is the one place that needs it.
+        // `isRunning()` is true whenever the composer is refusing a fresh send, and a prompt
+        // waiting in the queue on an IDLE thread refuses one too. See `dom.generating`.
+        const generating = dom.generating ? Boolean(dom.generating()) : running;
         const whole = signature(root);
         const scaffold = signature(root, undefined, new Set(nodes));
         const messages = [];
@@ -831,7 +835,19 @@
           // observation at all. The app says a reply is running through a different control (the
           // Stop button), so when the two disagree the disagreement is carried out rather than
           // resolved here, and `analysis/parity.comparability` refuses the pair.
-          in_flight_unplaced: Boolean(running && inFlightNodes.length === 0),
+          //
+          // IT IS `generating()` AND NOT `isRunning()` that is compared against, and that
+          // difference is most of this field's meaning. `isRunning()` is also true while a queued
+          // prompt waits on a thread that is doing NOTHING, and on that thread no message
+          // publishes a running status because none is running -- so reading it here would refuse
+          // an ordinary settled pair before `compare()` ever reached its settled digests, and
+          // would report the instrument as broken to say it. That is this file's own failure
+          // mode: reading at a moment whose meaning is not stable across the things being
+          // compared. See `dom.generating`.
+          in_flight_unplaced: Boolean(generating && inFlightNodes.length === 0),
+          // The queued-idle interval itself, recorded rather than resolved away, so a reader can
+          // tell why a capture with `streaming: true` placed no message in flight.
+          queued_idle: Boolean(running && !generating),
           messages,
           overlays,
           styles,

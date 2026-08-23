@@ -537,6 +537,25 @@ gone quiet, and a scan that can return zero must not report "nothing was streami
 of never having looked. A build that drops a message while a reply runs is still a finding, because
 that reading does not depend on the stream split.
 
+It reads `dom.generating()` and NOT `dom.isRunning()`, and the two are different questions.
+`isRunning()` answers "is the composer refusing a fresh send", which every wait loop in
+`scene/actions.py` needs and which is why it accepts the Queue button: with text in the composer a
+running thread renders Queue and no Stop at all. But `ComposerRightControls` renders the same
+`aria-label="Queue message"` a second time, under `isQueueRunning && !thread.isRunning`, while a
+queued prompt waits to be dispatched and nothing whatever is generating -- reachable by one
+Cmd/Ctrl+Enter, and held for the pump's 50 ms and for 500 ms per indexing retry. Read there,
+`isRunning()` sets the control on a perfectly ordinary settled thread, `streaming_probe` refuses
+the pair before `compare()` reaches its settled digests, and `sweep/ui_parity` buckets that refusal
+as `blind` and still exits 0. So the queued-idle interval is separated from active streaming:
+`generating()` is `stopButton() || (queueButton() && !promptQueue())`, the queue surface being
+`PromptQueueStack`'s own accessible name, which is present in exactly the states that render the
+queued-idle button. The capture carries `queued_idle` so the distinction is in the record rather
+than only in the verdict. What that gives up, pinned in
+`scene/selftest/test_studiobench_queued_idle_live.py`: with a queue run holding a further prompt
+AND a reply streaming AND text in the composer, the control is not armed for that capture. It
+under-claims rather than over-claims, and probe blindness is a renamed selector, so it is global
+and the run's other captures still catch it.
+
 **What this gives up, measured on a live-DOM battery of 11 injected rendering differences at one
 stream point:** 10 still report `DIFFER`; a reorder that moves the streamed message past another
 message of the same role is demoted to `NOT COMPARABLE`, because the per-message rows are keyed by
