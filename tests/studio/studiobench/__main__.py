@@ -711,6 +711,11 @@ def run(args, ab_ref = None) -> int:
                 side["seed_script"](auth_now)
             )
 
+        # WHAT WAS IN THE FILE BEFORE THIS SESSION COULD WRITE A BYTE. `make_context` opens the
+        # `Recorder` on the next line, and the only check left after that point -- the ladder ratio,
+        # which is not known until the corpus has been measured -- has to be able to put the payload
+        # back the way it found it. See `rollback_session_rows`.
+        mark = payload_mark(paths.payload_jsonl)
         ctx, session = make_context(
             bundle, base_url, args.tier, args.instrument_level, paths, _log, procs
         )
@@ -834,6 +839,14 @@ def run(args, ab_ref = None) -> int:
                         if problem not in ratio_issues:
                             ratio_issues.append(problem)
                 if ratio_issues:
+                    # AND NOTHING THIS SESSION WROTE SURVIVES THE REFUSAL. Unlike the commit check
+                    # above, this one runs after the `Recorder` has opened the payload, so refusing
+                    # is not enough on its own: `run_meta` is already in the file and
+                    # `recorded_ladder` folds every one of them, so a refused
+                    # `--resume --rungs 1K,10K` would leave 10K promised and unrecorded in a
+                    # payload that was complete. See `rollback_session_rows`.
+                    rec.close()
+                    rollback_session_rows(paths.payload_jsonl, mark)
                     raise SystemExit(
                         f"refusing to resume {paths.payload_jsonl}: the ladder is sized by a "
                         "different chars-per-token ratio than the cells already in it.\n  "
@@ -1361,6 +1374,61 @@ def archive_payload(paths, log = _log):
     log(f"  a payload was already in this output directory; moved it to {dest.name}")
     log("  (this run starts a payload of its own. Pass --resume to CONTINUE the previous one.)")
     return dest
+
+
+def payload_mark(payload_path) -> int:
+    """How long the payload was BEFORE this session was allowed to append to it.
+
+    Taken before the `Recorder` opens the file, and paired with `rollback_session_rows`. See there
+    for what the pair is for; `0` for a payload that does not exist yet, which is the length it
+    has.
+    """
+    try:
+        return Path(payload_path).stat().st_size
+    except OSError:
+        return 0
+
+
+def rollback_session_rows(payload_path, mark: int, log = _log) -> int:
+    """Undo everything this session appended, back to `mark`. The bytes dropped.
+
+    THE RULE `prepare_payload` STATES: a refusal has to leave the payload it refused exactly as it
+    found it. `prepare_payload` and `commit_problems` keep it by running before the `Recorder`
+    exists -- the identity axes are known from the CLI, and the commit is known once the sides are
+    installed, both still before the first recorded row. `ladder_ratio_problems` cannot: the ratio
+    is not known until `build_cells` has measured the corpus, which is after `make_context` has
+    opened the file, written `run_meta` and possibly a failed `instrument_unavailable` gate, and
+    after an optional `--surfaces` sweep. So that check keeps the same rule from the other end.
+
+    What a refused resume costs if it does not. `recorded_ladder` folds the `rungs` of EVERY
+    `run_meta` in the file, deliberately -- a session killed after its header still owes what it
+    promised -- so a refused `--resume --rungs 1K,10K` over a finished 1K payload leaves 10K
+    promised and never recorded, and `--report` scores that payload INCOMPLETE from then on.
+    `excluded_from_rows` turns every failed gate into an excluded cell, so the refused session's
+    own `ladder_ratio_measured` gate is charged to the payload it never touched. Neither is
+    recoverable by re-running: the rows are in somebody else's evidence file.
+
+    TRUNCATED, NOT ARCHIVED, which is the opposite of `archive_payload` and for the reason that
+    makes it the opposite: an archive preserves a run's evidence, and a refused resume produced no
+    evidence. There is one writer -- `Recorder` is the only thing that opens this file, on the main
+    thread, and it is closed by the caller before this runs -- so the tail being dropped is this
+    session's rows and nothing else.
+    """
+    path = Path(payload_path)
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return 0
+    if size <= mark:
+        return 0
+    try:
+        os.truncate(path, mark)
+    except OSError as exc:
+        log(f"  could not roll back {path.name}: {exc}")
+        return 0
+    dropped = size - mark
+    log(f"  rolled back {dropped} bytes this refused session had appended to {path.name}")
+    return dropped
 
 
 def prepare_payload(
