@@ -116,6 +116,25 @@ def test_a_whitespace_canonical_does_not_shadow_the_real_thought():
     assert cleaned["choices"][0]["delta"] == {"reasoning_content": "Thought."}
 
 
+def test_details_carrying_no_text_are_not_a_second_copy():
+    """Encrypted or metadata-only details render nothing, so the alias is all there is."""
+    line = "data: " + json.dumps(
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "reasoning": "Thought.",
+                        "reasoning_details": [{"type": "reasoning.encrypted", "data": "zz"}],
+                    }
+                }
+            ]
+        }
+    )
+
+    cleaned = json.loads(sanitize_provider_sse_line(line)[len("data: ") :])
+    assert cleaned["choices"][0]["delta"]["reasoning_content"] == "Thought."
+
+
 @pytest.mark.parametrize(
     "delta",
     [

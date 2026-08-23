@@ -68,9 +68,13 @@ def _normalize_reasoning_deltas(payload: dict[str, Any]) -> bool:
             # An empty alias says nothing, and rewriting it would cost a re-encode.
             continue
         details = delta.get("reasoning_details")
-        if isinstance(details, list) and details:
-            # OpenRouter ships the same thought under both keys and the client
-            # concatenates them, so leave the alias for reasoning_details to win.
+        if isinstance(details, list) and any(
+            isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"]
+            for part in details
+        ):
+            # OpenRouter repeats the same thought in reasoning_details, which the
+            # client concatenates with this one, so leave the alias alone. Details
+            # that carry no text (encrypted, metadata) are not a second copy.
             continue
         canonical = delta.get("reasoning_content")
         if canonical is not None and (not isinstance(canonical, str) or canonical.strip()):
