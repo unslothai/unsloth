@@ -1194,6 +1194,41 @@ def test_an_on_device_speech_checkpoint_is_never_revalidated(monkeypatch, tmp_pa
     assert asked == []
 
 
+def test_a_pick_that_names_the_checkpoint_outright_is_probed_like_the_loader_opens_it(tmp_path):
+    """A file-valued ``repo_id`` is a pick the video loader accepts, so the preflight must read it.
+
+    ``VideoBackend._resolve_checkpoint_path`` answers ``if root.is_file(): return root`` and
+    ignores ``gguf_filename`` entirely, and ``VideoBackend.validate_load_request`` has a branch
+    admitting exactly that pick (it only checks the file's own suffix against the kind), so
+    ``POST /video/load`` with ``model_path`` naming a .gguf reaches the loader today.
+
+    Resolving it as a repo ROOT instead appends the filename under the file, which raises
+    ``FileNotFoundError`` -- an ``OSError``, hence swallowed as "this is a remote id". The pick
+    then has no local path at all: an offline preflight allows it outright, and an online one
+    range-requests a filesystem path off the Hub and fails open. Either way the csm checkpoint
+    survives the gate, the resident pipeline is evicted, and the file reaches the media loader --
+    the exact sequence this preflight exists to prevent."""
+    direct = tmp_path / "wan-models" / CSM_FILE
+    direct.parent.mkdir(parents = True)
+    direct.write_bytes(_arch_header("llama-csm"))
+
+    # Offline, so a probe that found no local path has nothing left to fall back on and must let
+    # the pick through: this asserts the file was actually read, not that the network saved us.
+    reason = diffusion_compat.speech_pick_refusal(str(direct), CSM_FILE, None, False)
+    assert reason is not None and "llama-csm" in reason
+
+    # And it resolves to the very file the loader would open, rather than merely to something.
+    assert diffusion_compat._local_gguf_path(str(direct), CSM_FILE) == str(direct)
+
+    # The runnable sibling named the same way still loads: this must not refuse every direct file.
+    denoiser = direct.parent / DENOISER_FILE
+    denoiser.write_bytes(_arch_header("flux"))
+    assert diffusion_compat.speech_pick_refusal(str(denoiser), DENOISER_FILE, None, False) is None
+
+    # The folder-valued pick keeps resolving through the containment check, unchanged.
+    assert diffusion_compat._local_gguf_path(str(direct.parent), CSM_FILE) == str(direct)
+
+
 # ── Every engine and both stages ───────────────────────────────────────────────
 # The Images and Video pages stage and download BEFORE they call load, so a load-only gate
 # arrives after the bytes. And on all three engines: a mixed VIDEO repo goes through

@@ -5282,6 +5282,31 @@ def test_a_truncated_classification_never_answers_speech(tmp_path, monkeypatch):
     )
 
 
+def test_a_folder_trimmed_exactly_back_to_the_cap_never_answers_speech(tmp_path):
+    """The overflow that leaves the candidate list looking untouched still hides a sibling.
+
+    Candidates are trimmed only once the list passes twice the cap, and the trim cuts it back to
+    the cap exactly. A folder whose walk ENDS on that trim therefore finishes holding precisely
+    ``_MAX_TASK_CLASSIFY_GGUFS`` entries -- the same length a folder that fit would leave -- so
+    completeness read off that length says the whole folder was seen when 65 files were thrown
+    away. Speech is the one verdict that hides the row, so the folder answers text-to-speech off
+    its first 64 csm quants and the runnable qwen3 sorted into the discarded tail becomes
+    unreachable in every picker.
+
+    The boundary repeats: each later trim lands on the same length, hence the second size."""
+    cap = models_route._MAX_TASK_CLASSIFY_GGUFS
+    # 2 * cap + 1 is the count that trips the trim on its final candidate; + 1 more trim's worth
+    # is the next one that does, confirming this is a recurring boundary and not one bad number.
+    for total in (2 * cap + 1, 3 * cap + 2):
+        folder = tmp_path / f"trimmed-{total}"
+        # Every speech quant sorts ahead of the chat one, so the retained 64 are all csm and the
+        # runnable sibling is exactly what the trim discards.
+        for index in range(total - 1):
+            _arch_gguf(folder / f"aaa-{index:04d}-csm.gguf", "llama-csm")
+        _arch_gguf(folder / "zzz-qwen3-Q4_K_M.gguf", "llama")
+        assert models_route._gguf_folder_task(folder, ("someone/trimmed-GGUF",)) is None, total
+
+
 def test_only_a_read_architecture_ever_answers_speech():
     """The frontend gate is fail-CLOSED on a text-to-speech tag while every backend probe fails
     open, and that is only safe because the tag can come from nothing but ``general.architecture``.

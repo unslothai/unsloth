@@ -94,10 +94,21 @@ def _file_identity(path: Optional[str]) -> Optional[tuple]:
 def _local_gguf_path(repo_id: str, gguf_filename: str) -> Optional[str]:
     """The on-disk checkpoint for this pick, or None when it has to come off the Hub.
 
-    Covers a local On Device directory and a Hub file already in either cache root: reading a file
-    we hold beats a range request, and it is the same file ``_resolve_gguf_path`` will open."""
+    Covers a local On Device directory, a pick that NAMES the checkpoint outright, and a Hub file
+    already in either cache root: reading a file we hold beats a range request, and it is the same
+    file ``_resolve_gguf_path`` will open.
+
+    The file case is resolved the way the loader resolves it.
+    ``VideoBackend._resolve_checkpoint_path`` answers a file-valued ``repo_id`` with that file,
+    ignoring ``gguf_filename`` entirely, and
+    ``validate_load_request`` has a branch admitting exactly that pick, so ``/video/load`` really
+    can be handed one. Appending the filename under a file instead raises ``FileNotFoundError``,
+    which is an ``OSError`` and so is swallowed below as "remote id" -- and a preflight that fails
+    open on the pick the loader is about to open directly is the one hole it exists to close."""
     try:
         local_root = Path(repo_id).expanduser()
+        if local_root.is_file():
+            return str(local_root)
         if local_root.exists():
             return str(resolve_local_gguf_child(local_root, gguf_filename))
     # OSError/RuntimeError: invalid path characters, or an unresolvable '~' -> a remote id.

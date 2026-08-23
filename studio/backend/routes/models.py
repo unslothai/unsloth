@@ -4330,6 +4330,13 @@ def _gguf_folder_task(
         # Trimmed back to the cap as it fills: a folder holding thousands of GGUFs should not cost
         # a list of thousands of paths to read 64 of them.
         scored: list[tuple[tuple[str, str], Path]] = []
+        # Recorded as the tail is dropped, never inferred from `scored` afterwards. The trimming
+        # branch cuts the list back to the cap, so a folder that overflows it and then ends leaves
+        # exactly `_MAX_TASK_CLASSIFY_GGUFS` entries behind -- indistinguishable, after the fact,
+        # from a folder that fit. Reading that as a complete scan is what would let a folder of
+        # 129 files answer speech off its first 64 and hide the runnable sibling in the discarded
+        # tail, the one thing the `complete` gate below exists to prevent.
+        overflowed = False
         for path in _iter_gguf_paths(root, deadline):
             name = path.name
             if _is_mmproj_filename(name) or _is_trailing_split_shard(name):
@@ -4338,11 +4345,16 @@ def _gguf_folder_task(
             if len(scored) > _MAX_TASK_CLASSIFY_GGUFS * 2:
                 scored.sort(key = lambda item: item[0])
                 del scored[_MAX_TASK_CLASSIFY_GGUFS:]
+                overflowed = True
         scored.sort(key = lambda item: item[0])
         paths = [path for _, path in scored[:_MAX_TASK_CLASSIFY_GGUFS]]
         # Whether every candidate in the folder made it into `paths`. The walk gives up at its own
         # deadline and the cap drops the tail, so either can leave a sibling unseen.
-        complete = len(scored) <= _MAX_TASK_CLASSIFY_GGUFS and time.monotonic() < deadline
+        complete = (
+            not overflowed
+            and len(scored) <= _MAX_TASK_CLASSIFY_GGUFS
+            and time.monotonic() < deadline
+        )
     except Exception:
         return None
     unsupported: Optional[str] = None
