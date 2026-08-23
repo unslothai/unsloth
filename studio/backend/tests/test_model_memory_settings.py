@@ -1473,6 +1473,60 @@ class TestMlockActiveReporting:
         assert rs._model_memory_response().mlock_active is False
 
 
+class TestMlockApplicable:
+    """mlock_active alone cannot say WHY the lock is off, so the panel could not
+    tell "you vetoed it" from "there was nothing to lock" and said nothing at all
+    (issue #9549). This is the second bit that separates them."""
+
+    def test_a_discrete_full_offload_reports_not_applicable(self, monkeypatch):
+        import routes.settings as rs
+
+        backend = _fake_backend(
+            is_active = True,
+            is_loaded = True,
+            _memory_state = (False, False),
+            _memory_mlock_applicable = False,
+        )
+        _install_backend(monkeypatch, backend, keep = True, no_res = False)
+        body = rs._model_memory_response()
+        assert body.mlock_applicable is False
+        # The three fields the UI had to work from before, all unremarkable.
+        assert body.keep_resident is True
+        assert body.mlock_active is False
+        assert body.reload_required is False
+
+    def test_a_host_resident_launch_reports_applicable(self, monkeypatch):
+        """A unified-memory APU or a partial offload: the lock does apply, and
+        on a real gfx1151 host it is emitted (measured, issue #9549)."""
+        import routes.settings as rs
+
+        backend = _fake_backend(
+            is_active = True,
+            is_loaded = True,
+            _memory_state = (True, False),
+            _memory_mlock_applicable = True,
+        )
+        _install_backend(monkeypatch, backend, keep = True, no_res = False)
+        assert rs._model_memory_response().mlock_applicable is True
+
+    def test_with_nothing_loaded_it_is_applicable(self, monkeypatch):
+        """No launch to describe, so the panel says nothing rather than claiming
+        a placement it cannot know until something loads."""
+        import routes.settings as rs
+
+        _install_backend(monkeypatch, _fake_backend(), keep = True, no_res = False)
+        assert rs._model_memory_response().mlock_applicable is True
+
+    def test_a_diffusion_runner_is_applicable(self, monkeypatch):
+        """state None is a runner this policy does not govern. Its placement
+        cannot contradict the settings, so there is nothing to explain."""
+        import routes.settings as rs
+
+        backend = _fake_backend(is_active = True, is_loaded = True, _memory_state = None)
+        _install_backend(monkeypatch, backend, keep = True, no_res = False)
+        assert rs._model_memory_response().mlock_applicable is True
+
+
 class TestFitOnRetryReArmsResidency:
     """The --fit on fallback fires exactly when the full-offload prediction that
     suppressed the lock turns out to be wrong, so the retry must re-apply it."""

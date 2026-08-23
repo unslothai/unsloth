@@ -16,6 +16,12 @@ export type ModelMemorySettings = {
   defaultNoRamReserve: boolean;
   /** Whether --mlock applies; false when noRamReserve vetoes it. */
   mlockActive: boolean;
+  /**
+   * Whether the loaded model has a host copy to pin at all. False when it is
+   * fully offloaded to a discrete GPU, where the lock is skipped on purpose.
+   * True with nothing loaded.
+   */
+  mlockApplicable: boolean;
   /** A model is loaded whose --mlock state differs from the saved one. */
   reloadRequired: boolean;
   /** Soft RLIMIT_MEMLOCK when finite; null means unlimited or N/A. */
@@ -33,6 +39,8 @@ type ApiModelMemorySettings = {
   default_no_ram_reserve: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   mlock_active: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  mlock_applicable?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   reload_required: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -61,6 +69,9 @@ function fromApi(settings: ApiModelMemorySettings): ModelMemorySettings {
     defaultKeepResident: settings.default_keep_resident,
     defaultNoRamReserve: settings.default_no_ram_reserve,
     mlockActive: settings.mlock_active,
+    // Optional on the wire so a frontend newer than its backend does not start
+    // claiming every load has nothing to lock.
+    mlockApplicable: settings.mlock_applicable ?? true,
     reloadRequired: settings.reload_required,
     memlockLimitBytes: settings.memlock_limit_bytes,
   };

@@ -578,6 +578,14 @@ class ModelMemoryResponse(BaseModel):
     # Whether --mlock is passed on the next load. False when no_ram_reserve
     # vetoes it; the UI surfaces that rather than failing silently.
     mlock_active: bool
+    # Whether page-locking is a thing this launch could do at all. False when the
+    # loaded model is fully offloaded to a discrete GPU: there is no host copy to
+    # pin, so the lock is skipped on purpose and residency is carried by the
+    # idle-unload veto alone. Without this the UI cannot tell "vetoed" from
+    # "nothing to lock", and a user whose model is on the card sees a toggle that
+    # is on, no warning, and no effect. True with nothing loaded, matching
+    # mlock_active's convention of reporting the intent until a launch exists.
+    mlock_applicable: bool = True
     reload_required: bool
     # Soft RLIMIT_MEMLOCK when finite. mlock cannot exceed it, so the UI warns
     # that residency will not fully pin a model larger than this. None means
@@ -870,6 +878,22 @@ def _model_memory_mlock_active(want_mlock: bool) -> bool:
     return bool(state and state[0])
 
 
+def _model_memory_mlock_applicable() -> bool:
+    """Whether the running launch has anything for page-locking to act on.
+
+    False only for a launch that put every weight on a discrete GPU, which is
+    exactly when the policy skips the lock deliberately. With nothing running
+    there is no launch to describe, so this reports True and the UI says nothing
+    -- same convention as _model_memory_mlock_active. A runner this policy does
+    not govern (state None, e.g. the diffusion runner) also reports True: its
+    placement cannot contradict the settings, so there is nothing to explain.
+    """
+    state, _policy_active, applicable = _active_launch_placement()
+    if state is _NO_LAUNCH or state is None:
+        return True
+    return applicable
+
+
 def _model_memory_response() -> ModelMemoryResponse:
     keep_resident, no_ram_reserve = get_model_memory_settings()
     mlock_active = _model_memory_mlock_active(should_mlock())
@@ -877,6 +901,7 @@ def _model_memory_response() -> ModelMemoryResponse:
         keep_resident = keep_resident,
         no_ram_reserve = no_ram_reserve,
         mlock_active = mlock_active,
+        mlock_applicable = _model_memory_mlock_applicable(),
         reload_required = _model_memory_reload_required(),
         memlock_limit_bytes = memlock_limit_bytes() if mlock_active else None,
     )

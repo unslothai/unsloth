@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 import {
   type ModelMemorySettings,
   loadModelMemorySettings,
+  subscribeModelMemorySettings,
   updateModelMemorySettings,
 } from "../api/model-memory";
 import { SettingsRow } from "./settings-row";
@@ -21,7 +22,10 @@ export function ModelMemorySection() {
 
   useEffect(() => {
     let cancelled = false;
-    void loadModelMemorySettings()
+    // Force: mlockApplicable and reloadRequired describe the RUNNING launch, so
+    // a value read before the user loaded a model would keep the panel quiet
+    // about a lock that is being skipped.
+    void loadModelMemorySettings({ force: true })
       .then((loaded) => {
         if (cancelled) return;
         setSettings(loaded);
@@ -35,8 +39,12 @@ export function ModelMemorySection() {
             : t("settings.resources.modelMemory.loadError"),
         );
       });
+    const unsubscribe = subscribeModelMemorySettings((next) => {
+      if (!cancelled) setSettings(next);
+    });
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, [t]);
 
@@ -70,6 +78,15 @@ export function ModelMemorySection() {
     settings?.mlockActive === true && settings.memlockLimitBytes !== null
       ? settings.memlockLimitBytes
       : null;
+  // The loaded model is fully on a discrete GPU, so there is no host copy to
+  // pin and the lock is skipped deliberately. Without this the panel is silent:
+  // the toggle reads on, mlockActive reads false, reloadRequired reads false,
+  // and nothing explains why the setting changed nothing (issue #9549). Not
+  // shown alongside the veto notice, which already gives a reason.
+  const mlockNotApplicable =
+    settings?.mlockApplicable === false &&
+    !mlockVetoed &&
+    (settings.keepResident || settings.noRamReserve);
 
   return (
     <SettingsSection title={t("settings.resources.modelMemory.title")}>
@@ -108,6 +125,11 @@ export function ModelMemorySection() {
           {mlockVetoed ? (
             <p className="pb-1 text-xs text-muted-foreground">
               {t("settings.resources.modelMemory.mlockVetoed")}
+            </p>
+          ) : null}
+          {mlockNotApplicable ? (
+            <p className="pb-1 text-xs text-muted-foreground">
+              {t("settings.resources.modelMemory.mlockNotApplicable")}
             </p>
           ) : null}
           {memlockCap !== null ? (
