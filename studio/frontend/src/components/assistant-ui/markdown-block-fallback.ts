@@ -127,11 +127,14 @@ function closesFenceAt(
   let run = 0;
   while (i + run < to && text[i + run] === marker[0]) run += 1;
   if (run < marker.length) return false;
-  // A closing fence carries no info string; only trailing whitespace is allowed.
-  // A carriage return counts, which is what the per-line regex used to strip.
-  for (let j = i + run; j < to; j += 1) {
+  // A closing fence carries no info string; only trailing spaces and tabs are
+  // allowed, plus the carriage return of a CRLF line, which is the LAST
+  // character of the line and only ever one. Accepting a CR anywhere in the tail
+  // instead would quietly close fences the line-based code did not.
+  const last = text[to - 1] === "\r" ? to - 1 : to;
+  for (let j = i + run; j < last; j += 1) {
     const c = text[j];
-    if (c !== " " && c !== "\t" && c !== "\r") return false;
+    if (c !== " " && c !== "\t") return false;
   }
   return true;
 }
