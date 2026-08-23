@@ -807,6 +807,47 @@ class TestDuplicateCoreMetadataRepair:
             [sys.executable, "-m", "pip", "uninstall", "-y", "unsloth"]
         ]
 
+    def test_pips_tilde_backup_is_moved_aside_so_the_loop_can_converge(
+        self, tmp_path, monkeypatch
+    ):
+        """The commonest real conflict: pip renamed the outgoing distribution to a
+        `~` sibling and was killed. Its METADATA still says Name: unsloth so it
+        counts as a duplicate, but `pip uninstall unsloth` logs "Ignoring invalid
+        distribution" and skips it, so the loop never converges and the repair
+        fails on every future run. Verified in a real venv before this fix.
+        """
+        backup = tmp_path / "~nsloth-2026.8.12.dist-info"
+        backup.mkdir()
+        (backup / "METADATA").write_text(
+            "Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.8.12\n", encoding = "utf-8"
+        )
+        # Two records; one once the backup is aside; none after the uninstall; then
+        # the reinstalled one for the final convergence probe.
+        probes = iter(
+            (["2026.8.12", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"])
+        )
+        monkeypatch.setattr(
+            ips.install_manifest, "installed_versions", lambda _name: next(probes)
+        )
+        monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _name: [])
+        monkeypatch.setattr(
+            ips.install_manifest, "pip_backup_metadata_paths", lambda _name: [backup]
+        )
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _name: "/staged")
+        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: True)
+
+        def record_run(_label, _cmd):
+            # pip only ever sees a tree it can actually act on.
+            assert not backup.exists()
+            return True
+
+        monkeypatch.setattr(ips, "_run_ok", record_run)
+
+        assert ips._repair_duplicate_core_metadata(("unsloth",)) is True
+        assert not backup.exists()
+
     def test_every_duplicate_record_is_uninstalled_before_reinstall(self, monkeypatch):
         probes = {
             "unsloth": iter(

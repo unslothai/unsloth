@@ -4287,17 +4287,30 @@ def _repair_duplicate_core_metadata(
                     file = sys.stderr,
                 )
                 return False
-            if invalid_paths:
+            # pip skips its own abandoned backup ("Ignoring invalid distribution
+            # ~nsloth") while its METADATA still names the project, so the record
+            # counts here but no uninstall by name can consume it. Left in place the
+            # loop below cannot converge and the repair fails on every future run,
+            # which is the loop this whole path exists to end. Quarantined, not
+            # deleted: staging can still fail.
+            backups = install_manifest.pip_backup_metadata_paths(name)
+            if backups and not quarantine.take(backups):
+                _safe_print(
+                    _red(f"   could not move pip's leftover backup for {name} aside"),
+                    file = sys.stderr,
+                )
+                return False
+            if invalid_paths or backups:
                 importlib.invalidate_caches()
                 record_count = len(install_manifest.installed_versions(name))
-            if invalid_paths and not record_count:
+            if (invalid_paths or backups) and not record_count:
                 # Nothing is left for pip to uninstall, so the replacement would be
                 # laid over a payload no record describes.
                 _safe_print(
                     _red(
-                        f"   the metadata for {name} is unreadable and has no usable "
-                        "RECORD, so its files cannot be removed safely. Recreate the "
-                        "environment to repair it."
+                        f"   no usable metadata record is left for {name}, so its "
+                        "files cannot be removed safely. Recreate the environment "
+                        "to repair it."
                     ),
                     file = sys.stderr,
                 )

@@ -119,6 +119,34 @@ def test_installed_versions_marks_malformed_matching_metadata_as_a_conflict(tmp_
     assert im._installed_version("demo") is None
 
 
+def test_a_pip_tilde_backup_is_named_as_a_backup(tmp_path, monkeypatch):
+    """pip's AdjacentTempDirectory leftover counts as a duplicate but pip will
+    not uninstall it, so the repair has to find it by directory name."""
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "2.0")
+    backup = site / "~emo-1.0.dist-info"
+    backup.mkdir()
+    (backup / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: demo\nVersion: 1.0\n", encoding = "utf-8"
+    )
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    assert im.installed_versions("demo") == ["1.0", "2.0"]
+    assert im.pip_backup_metadata_paths("demo") == [backup]
+    # A healthy record must never be mistaken for one.
+    assert im.pip_backup_metadata_paths("demo") != [site / "demo-2.0.dist-info"]
+
+
+def test_a_healthy_install_has_no_pip_backups(tmp_path, monkeypatch):
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "2.0")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    assert im.pip_backup_metadata_paths("demo") == []
+
+
 def test_single_malformed_matching_metadata_is_a_conflict(tmp_path, monkeypatch):
     site = tmp_path / "site-packages"
     site.mkdir()

@@ -203,6 +203,22 @@ def invalid_metadata_paths(dist_name: str) -> List[Path]:
     ]
 
 
+def pip_backup_metadata_paths(dist_name: str) -> List[Path]:
+    """Matching records left behind by an interrupted pip upgrade.
+
+    pip renames the outgoing distribution to a `~` prefixed sibling while it
+    installs the replacement, so a kill mid-operation keeps both. The METADATA
+    inside still names the real project, so the record counts as a duplicate
+    here, but pip calls the directory an invalid distribution and skips it:
+    `pip uninstall <name>` can never consume it.
+    """
+    return [
+        path
+        for _version, path in _installed_metadata_records(dist_name)
+        if path is not None and path.name.startswith("~")
+    ]
+
+
 def metadata_conflict(versions: Sequence[str]) -> bool:
     """Whether matching metadata records are duplicated or unreadable."""
     return len(versions) > 1 or any(not version for version in versions)
