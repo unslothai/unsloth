@@ -746,13 +746,38 @@ _NOTHING_TO_TRAIN = (
 
 
 def _finetune_selectors(config: dict) -> tuple[bool, bool, bool, bool]:
-    """(vision, language, attention, mlp), with the request model's own defaults."""
+    """(vision, language, attention, mlp), read exactly the way the consumers read them.
+
+    A guard that models the run differently from the code it guards rejects runs that would
+    have trained. Every default here is the CUDA consumer's own default for a config that
+    omits the key -- 4d passes finetune_vision_layers through config.get(..., True), and
+    _build_training_worker_config fills the same True. Only the MLX consumer defaults vision
+    False, and _check_mlx_finetune_targets discards the vision element, so True is safe there.
+    """
     return (
-        bool(config.get("finetune_vision_layers", False)),
+        bool(config.get("finetune_vision_layers", True)),
         bool(config.get("finetune_language_layers", True)),
         bool(config.get("finetune_attention_modules", True)),
         bool(config.get("finetune_mlp_modules", True)),
     )
+
+
+def _requests_all_linear(config: dict) -> bool:
+    """Whether target_modules is PEFT's bare "all-linear" keyword rather than a leaf list.
+
+    prepare_model_for_training collapses a lone "all-linear" entry to the bare string before
+    calling get_peft_model, which then forces every selector True for it, so a run that asks
+    for all-linear with the selectors off trains every linear layer today. Rejecting it would
+    break exactly the requests the four selectors are not consulted for. A list that names
+    all-linear alongside other leaves is not the keyword -- the caller strips it and the
+    remaining names go through the normal scoped path, where the selectors do apply.
+    """
+    target_modules = config.get("target_modules")
+    if isinstance(target_modules, str):
+        return target_modules == "all-linear"
+    if isinstance(target_modules, (list, tuple)):
+        return list(target_modules) == ["all-linear"]
+    return False
 
 
 def _check_finetune_targets_after_detect(trainer, config: dict) -> None:
@@ -767,6 +792,8 @@ def _check_finetune_targets_after_detect(trainer, config: dict) -> None:
         return  # Full Finetuning / CPT build adapters from target_modules alone
     if not (getattr(trainer, "is_vlm", False) or getattr(trainer, "is_audio_vlm", False)):
         return  # the text branch ignores these four
+    if _requests_all_linear(config):
+        return  # get_peft_model turns all five selectors on for the keyword; see below
     vision, language, attention, mlp = _finetune_selectors(config)
     # Mirror get_peft_regex's two guards: one layer family AND one module type.
     if not (vision or language) or not (attention or mlp):
@@ -780,7 +807,16 @@ def _check_mlx_finetune_targets(config: dict) -> None:
     selectors for text models too, not only VLMs, so there is no is_vlm gate here. And the
     caller back-fills finetune_language_layers whenever a module type is on, so an empty
     layer family cannot survive -- only an empty module selection can, which leaves
-    target_modules empty after filtering ("target_modules became empty after filtering")."""
+    target_modules empty after filtering ("target_modules became empty after filtering").
+
+    The filter only drops names it recognises as attention or MLP leaves, so a request that
+    names anything else -- lm_head, embed_tokens, a fused qkv under an architecture-specific
+    name, all-linear -- still has targets left with both module types off, and trains. Only
+    the default seven leaves are wholly attention and MLP, so refuse just the runs that let
+    the default stand. An explicit list that does filter down to nothing still gets the
+    loader's own message, which names the two flags."""
+    if config.get("target_modules"):
+        return
     _, _, attention, mlp = _finetune_selectors(config)
     if not (attention or mlp):
         raise ValueError(_NOTHING_TO_TRAIN)
