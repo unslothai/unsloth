@@ -2245,9 +2245,9 @@ if [ "$_setup_nvidia_usable" != true ]; then
             # name instead. Interchangeable adapters are unaffected: every ordinal gives the
             # same answer, and UNSLOTH_ROCM_GFX_ARCH still overrides below.
             if [ "$_setup_amd_space" != hip ] && \
-               [ "$(printf '%s\n' "$_setup_amd_records" \
-                    | awk -F'|' 'NF { print ($1 != "" ? $1 : "name:" $2) }' \
-                    | sort -u | wc -l)" -gt 1 ]; then
+               [ "$(printf '%s\n' "$_setup_amd_records" | awk -F'|' \
+                    'NF { k = ($1 != "" ? $1 : "name:" $2); if (!(k in seen)) { seen[k]; n++ } }
+                     END { print n + 0 }')" -gt 1 ]; then
                 _setup_amd_records=""
                 _setup_gfx_all=""
                 _setup_hip_map_missing=1

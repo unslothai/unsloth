@@ -4868,9 +4868,9 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
             # from the name, so an archless record is compared on its name instead.
             # Interchangeable adapters are unaffected: every ordinal gives the same answer.
             if [ "$_gpu_disp_smi_space" != hip ] && \
-               [ "$(printf '%s\n' "$_gpu_disp_smi_records" \
-                    | awk -F'|' 'NF { print ($1 != "" ? $1 : "name:" $2) }' \
-                    | sort -u | wc -l)" -gt 1 ]; then
+               [ "$(printf '%s\n' "$_gpu_disp_smi_records" | awk -F'|' \
+                    'NF { k = ($1 != "" ? $1 : "name:" $2); if (!(k in seen)) { seen[k]; n++ } }
+                     END { print n + 0 }')" -gt 1 ]; then
                 _gpu_disp_smi_records=""
                 _gpu_disp_gfx_all=""
                 _gpu_disp_hip_map_missing=1
