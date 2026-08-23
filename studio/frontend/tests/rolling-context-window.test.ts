@@ -20,8 +20,8 @@ const transport = readFileSync(
   "utf8",
 );
 
-test("local chat opts into the rolling context policy", () => {
-  assert.match(adapter, /isGguf === true/);
+test("GGUF and Apple Silicon MLX chats opt into automatic context compaction", () => {
+  assert.match(adapter, /isGguf === true \|\| activeModel\?\.isMlx === true/);
   assert.match(adapter, /context_overflow:\s*"truncate_oldest"/);
   assert.match(adapter, /This conversation was compacted/);
 });

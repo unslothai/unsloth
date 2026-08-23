@@ -491,6 +491,7 @@ def run_safetensors_tool_loop(
     renderable_tools = None,
     context_length: Optional[int] = None,
     max_tokens: Optional[int] = None,
+    context_fitter: Optional[Callable[[list, list], dict]] = None,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -633,6 +634,20 @@ def run_safetensors_tool_loop(
         tool_xml_signals = TOOL_XML_SIGNALS if tool_protocol_active else ()
         # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
         _enabled_tool_names = None if unrestricted_tools else set(_active_tool_names(active_tools))
+
+        # MLX keeps its tokenizer in the inference subprocess. The orchestrator
+        # supplies a request-scoped fitter that measures this exact iteration,
+        # archives any evicted turns, and returns the same metadata events as GGUF.
+        if context_fitter is not None:
+            try:
+                fit_result = context_fitter(conversation, active_tools)
+                conversation = list(fit_result.get("messages") or conversation)
+                for fit_event in fit_result.get("events") or ():
+                    yield fit_event
+            except Exception:
+                # A policy failure must never break a chat; the model's normal
+                # context error remains the final authority if the prompt is too large.
+                logger.warning("MLX context preflight failed; continuing unchanged", exc_info = True)
 
         # This loop receives cumulative snapshots, so keep both whole-prefix scans
         # incremental: the stripper settles safe prefixes, the signal detector resumes
