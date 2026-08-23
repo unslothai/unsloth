@@ -3980,6 +3980,9 @@ def _rewrite_minimal_metadata(path: str, name: str) -> bool:
     The version is taken from the directory name, which is where importlib's own
     fallback reads it from when METADATA cannot be parsed.
     """
+    # invalid_metadata_paths() hands back Path objects, so normalise before the
+    # string work below.
+    path = os.fspath(path)
     if not os.path.isfile(os.path.join(path, "RECORD")):
         return False
     stem = os.path.basename(path.rstrip(os.sep)).removesuffix(".dist-info")
@@ -4014,14 +4017,23 @@ class _QuarantinedMetadata:
             self._holding = tempfile.mkdtemp(prefix = "unsloth_metadata_quarantine_")
         return self._holding
 
-    def back_up(self, path: str) -> bool:
+    def back_up(self, path) -> bool:
         """Keep a copy of a file that is about to be rewritten in place.
 
         The rewrite has to happen before staging, and staging can still fail. Without
         this the original is gone and what remains is a synthetic record that parses:
         the next run would see one readable record, decide there is nothing wrong, and
         never attempt the payload repair that is still owed.
+
+        An absent METADATA is nothing to back up rather than a failure. Recording it
+        as absent still lets the rewrite proceed, so pip can uninstall that record by
+        its RECORD; restore() then deletes the synthetic file instead of reinstating
+        one that never existed.
         """
+        path = os.fspath(path)
+        if not os.path.exists(path):
+            self._copied.append((path, None))
+            return True
         target = os.path.join(self._holding_dir(), f"copy_{len(self._copied)}")
         try:
             shutil.copy2(path, target)
@@ -4052,7 +4064,10 @@ class _QuarantinedMetadata:
         while self._copied:
             original, target = self._copied.pop()
             try:
-                shutil.copy2(target, original)
+                if target is None:
+                    os.remove(original)
+                else:
+                    shutil.copy2(target, original)
             except OSError:
                 pass
         self.discard()

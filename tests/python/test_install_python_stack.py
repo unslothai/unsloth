@@ -1439,6 +1439,41 @@ class TestDuplicateCoreMetadataRepair:
         (record / "RECORD").write_text("realpkg/__init__.py,,\n")
         assert ips._rewrite_minimal_metadata(str(record), "realpkg") is False
 
+    def test_a_path_object_is_accepted(self, tmp_path):
+        """install_manifest.invalid_metadata_paths() returns Path, and the repair
+        forwards it verbatim. Passing str here (as the tests around this one do)
+        hid an AttributeError on every real unreadable record.
+        """
+        record = tmp_path / "realpkg-1.2.3.dist-info"
+        record.mkdir()
+        (record / "METADATA").write_bytes(b"\xff\xfe")
+        (record / "RECORD").write_text("realpkg/__init__.py,,\n")
+
+        assert ips._rewrite_minimal_metadata(record, "realpkg") is True
+        assert "Version: 1.2.3" in (record / "METADATA").read_text()
+
+    def test_an_absent_metadata_is_synthesized_not_quarantined(self, tmp_path):
+        """A record with an intact RECORD but no METADATA at all.
+
+        There is nothing to back up, which is not a failure: quarantining it
+        instead drops its RECORD, so the uninstall loop removes only what the
+        readable record claims and a module shipped solely by the older release
+        stays on disk and importable while the repair reports success.
+        """
+        record = tmp_path / "realpkg-1.2.3.dist-info"
+        record.mkdir()
+        (record / "RECORD").write_text("realpkg/__init__.py,,\n")
+
+        quarantine = ips._QuarantinedMetadata()
+        assert quarantine.back_up(record / "METADATA") is True
+        assert ips._rewrite_minimal_metadata(record, "realpkg") is True
+        assert "Name: realpkg" in (record / "METADATA").read_text()
+
+        # A failure after the rewrite must not leave the synthetic file behind: a
+        # readable record would tell the next run there is nothing left to repair.
+        quarantine.restore()
+        assert not (record / "METADATA").exists()
+
     def test_the_repair_refuses_when_the_only_record_cannot_be_made_usable(
         self, tmp_path, monkeypatch, capsys
     ):
