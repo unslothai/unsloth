@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = REPO_ROOT / "install.sh"
@@ -1117,3 +1120,208 @@ def test_install_ps1_replacement_branch_covers_an_occupied_venv_dir():
     assert (
         "-PathType Container" in helper
     ), "Test-DirectoryHasEntries must answer false for a missing directory"
+
+
+def _extract_install_sh_venv_chain() -> str:
+    """Extract the whole venv if/elif chain, past the legacy migration to its closing `fi`.
+
+    _extract_install_sh_guard_block stops at the first elif, so it cannot see how the
+    widened first branch and the legacy $STUDIO_HOME/.venv migration interact.
+    """
+    src = INSTALL_SH.read_text(encoding = "utf-8")
+    m = re.search(
+        r'^(if \[ -x "\$VENV_DIR/bin/python" \] \|\| _dir_has_entries "\$VENV_DIR"; then\n.*?^fi$)',
+        src,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m, "install.sh venv chain not found"
+    return m.group(1) + "\n"
+
+
+def _run_venv_chain(studio_home, redirect = "default"):
+    """Run the full chain, then report what `uv venv` would face at install.sh's create gate."""
+    script = (
+        _INSTALL_GUARD_STUBS
+        + _extract_install_sh_function("_dir_has_entries")
+        + f'STUDIO_HOME="{studio_home}"\n'
+        + 'VENV_DIR="$STUDIO_HOME/unsloth_studio"\n'
+        + f'_STUDIO_HOME_REDIRECT="{redirect}"\n'
+        + 'SKIP_TORCH=true\n_MIGRATED=false\n_PREV_TORCH_VER=""\n'
+        + _extract_install_sh_venv_chain()
+        # Mirrors the `if [ ! -x "$VENV_DIR/bin/python" ]` create gate below the chain.
+        + 'if [ -x "$VENV_DIR/bin/python" ]; then echo UV=skipped_migrated\n'
+        + 'elif [ -d "$VENV_DIR" ] && [ -n "$(ls -A "$VENV_DIR" 2>/dev/null)" ]; then\n'
+        + '    echo UV=would_fail_dir_not_empty\n'
+        + 'else echo UV=would_create_ok; fi\n'
+    )
+    return subprocess.run(
+        ["bash", "-c", script],
+        env = {"PATH": "/usr/bin:/bin"},
+        text = True,
+        capture_output = True,
+    )
+
+
+def _make_legacy_venv(studio_home):
+    """A healthy legacy ~/.unsloth/studio/.venv from before the unsloth_studio layout."""
+    legacy = studio_home / ".venv"
+    (legacy / "bin").mkdir(parents = True)
+    py = legacy / "bin" / "python"
+    py.write_text("#!/bin/sh\nexit 0\n")
+    py.chmod(0o755)
+    (legacy / "marker.txt").write_text("legacy")
+    return legacy
+
+
+def test_legacy_migration_into_empty_venv_dir_does_not_nest(tmp_path):
+    """An empty $VENV_DIR must not make `mv` nest the legacy env inside it (uv then fails)."""
+    studio_home = tmp_path / "ws"
+    studio_home.mkdir()
+    _make_legacy_venv(studio_home)
+    (studio_home / "unsloth_studio").mkdir()
+
+    res = _run_venv_chain(studio_home)
+
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    venv = studio_home / "unsloth_studio"
+    assert not (venv / ".venv").exists(), (
+        "legacy environment was nested at $VENV_DIR/.venv; `uv venv` would then refuse the "
+        "occupied target with the same error as #9479"
+    )
+    assert (venv / "marker.txt").is_file(), "legacy environment must land directly in $VENV_DIR"
+    assert "UV=skipped_migrated" in res.stdout
+
+
+def test_legacy_migration_with_absent_venv_dir_still_migrates(tmp_path):
+    """The ordinary migration must keep working once the empty-directory case is handled."""
+    studio_home = tmp_path / "ws"
+    studio_home.mkdir()
+    _make_legacy_venv(studio_home)
+
+    res = _run_venv_chain(studio_home)
+
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert (studio_home / "unsloth_studio" / "marker.txt").is_file()
+    assert "UV=skipped_migrated" in res.stdout
+
+
+def test_legacy_migration_clears_a_symlinked_empty_venv_dir_without_touching_target(tmp_path):
+    """Unlinking $VENV_DIR must never remove the directory a symlink points at."""
+    studio_home = tmp_path / "ws"
+    studio_home.mkdir()
+    _make_legacy_venv(studio_home)
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (studio_home / "unsloth_studio").symlink_to(target)
+
+    res = _run_venv_chain(studio_home)
+
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert target.is_dir(), "the symlink target must survive"
+    assert (studio_home / "unsloth_studio" / "marker.txt").is_file()
+
+
+def test_occupied_venv_dir_still_wins_over_legacy_migration(tmp_path):
+    """An occupied $VENV_DIR must be replaced rather than migrated into (the #9479 path)."""
+    studio_home = tmp_path / "ws"
+    studio_home.mkdir()
+    legacy = _make_legacy_venv(studio_home)
+    venv = _make_interpreterless_venv(studio_home)
+
+    res = _run_venv_chain(studio_home)
+
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert "UV=would_create_ok" in res.stdout
+    assert not venv.exists(), "$VENV_DIR must be cleared before `uv venv` runs"
+    assert (legacy / "marker.txt").is_file(), "the legacy environment must be left intact"
+
+
+def test_install_sh_reports_a_failed_venv_move(tmp_path):
+    """A failed move must say so, matching install.ps1's Exit-InstallFailure on the same step."""
+    src = INSTALL_SH.read_text(encoding = "utf-8")
+    assert 'if ! _start_studio_venv_replacement "$VENV_DIR"; then' in src, (
+        "install.sh must check the replacement helper rather than relying on bare set -e"
+    )
+    assert "could not move $VENV_DIR aside to reinstall" in src
+
+
+def _dir_has_entries_says(tmp_path, target, pre = ""):
+    """Run the real _dir_has_entries from install.sh against one directory."""
+    script = (
+        _extract_install_sh_function("_dir_has_entries")
+        + f"{pre}\n"
+        + f'if _dir_has_entries "{target}"; then echo yes; else echo no; fi\n'
+    )
+    res = subprocess.run(
+        ["bash", "-c", script], env = {"PATH": "/usr/bin:/bin"}, text = True, capture_output = True,
+    )
+    assert res.returncode == 0, f"stderr={res.stderr!r}"
+    return res.stdout.strip()
+
+
+def test_dir_has_entries_survives_noglob_in_the_caller(tmp_path):
+    """The check is pure globbing, so `set -f` must not make an occupied directory look empty."""
+    occupied = tmp_path / "occupied"
+    occupied.mkdir()
+    (occupied / "file.txt").write_text("x")
+
+    assert _dir_has_entries_says(tmp_path, occupied, pre = "set -f") == "yes"
+    assert _dir_has_entries_says(tmp_path, occupied) == "yes"
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert _dir_has_entries_says(tmp_path, empty, pre = "set -f") == "no", (
+        "an empty directory must still be left for uv to create into"
+    )
+
+
+def test_dir_has_entries_restores_the_callers_noglob_setting(tmp_path):
+    """Saving and restoring `-f` matters because _path_has_dir depends on the flag."""
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    script = (
+        _extract_install_sh_function("_dir_has_entries")
+        + "set -f\n"
+        + f'_dir_has_entries "{empty}" || true\n'
+        + 'case $- in *f*) echo NOGLOB_KEPT ;; *) echo NOGLOB_LOST ;; esac\n'
+        + "set +f\n"
+        + f'_dir_has_entries "{empty}" || true\n'
+        + 'case $- in *f*) echo GLOB_LOST ;; *) echo GLOB_KEPT ;; esac\n'
+    )
+    res = subprocess.run(
+        ["bash", "-c", script], env = {"PATH": "/usr/bin:/bin"}, text = True, capture_output = True,
+    )
+    assert "NOGLOB_KEPT" in res.stdout, "the caller's `set -f` must be restored"
+    assert "GLOB_KEPT" in res.stdout, "a caller without `set -f` must not gain it"
+
+
+@pytest.mark.parametrize("mode", [0o000, 0o111, 0o444])
+def test_dir_has_entries_treats_an_unenumerable_directory_as_occupied(tmp_path, mode):
+    """uv refuses these targets, so reporting them empty would wedge the repair.
+
+    0o444 is readable but not searchable: the globs expand to names, then every
+    -e test fails. 0o111 is the mirror. Both need the same answer as 0o000.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    blocked = tmp_path / f"blocked{mode:o}"
+    blocked.mkdir()
+    (blocked / "file.txt").write_text("x")
+    blocked.chmod(mode)
+    try:
+        # install.ps1's Test-DirectoryHasEntries returns $true from its catch for the
+        # same case; the two installers must not disagree here.
+        assert _dir_has_entries_says(tmp_path, blocked) == "yes"
+    finally:
+        blocked.chmod(0o700)
+
+
+def test_dir_has_entries_still_answers_no_for_a_searchable_empty_dir(tmp_path):
+    """The fail-closed rule must not swallow the empty case uv creates into."""
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    empty.chmod(0o555)
+    try:
+        assert _dir_has_entries_says(tmp_path, empty) == "no"
+    finally:
+        empty.chmod(0o700)

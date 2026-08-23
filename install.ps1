@@ -3962,6 +3962,39 @@ exit 0
         return $false
     }
 
+    # Move-Item into a directory that already exists nests the source inside it
+    # rather than renaming it, and uv then refuses the occupied target with the
+    # same error as #9479. Reaching a migration branch already means $VenvDir is
+    # absent or empty, so clear it first. Directory.Delete is non-recursive, so it
+    # cannot take a directory that gained an entry since the check, and on a
+    # reparse point it removes the link without following it to the target.
+    function Clear-MigrationTargetDirectory {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        if (-not (Test-Path -LiteralPath $Path)) { return }
+        $item = Get-Item -LiteralPath $Path -Force
+        if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+            # Not Remove-Item: on Windows PowerShell 5.1 it trips a reparse-tag
+            # mismatch on a directory symlink (PowerShell/PowerShell#621).
+            # Directory.Delete unlinks without following the link, but throws
+            # DirectoryNotFoundException when the link points at a file or is
+            # dangling, so fall back to File.Delete for those two shapes.
+            try { [System.IO.Directory]::Delete($Path) }
+            catch {
+                try { [System.IO.File]::Delete($Path) }
+                catch { throw "$Path is in the way of the environment migration. Move it aside and re-run." }
+            }
+            return
+        }
+        if (-not $item.PSIsContainer) {
+            throw "$Path is a file and is in the way of the environment migration. Move it aside and re-run."
+        }
+        try {
+            [System.IO.Directory]::Delete($Path)
+        } catch {
+            throw "$Path is in the way of the environment migration. Move it aside and re-run."
+        }
+    }
+
     function Get-VenvBaseHome {
         param([Parameter(Mandatory = $true)][string]$VenvRoot)
         $configPath = Join-Path $VenvRoot "pyvenv.cfg"
@@ -4250,6 +4283,12 @@ exit 0
         $ErrorActionPreference = $prevEAP2
         if ($legacyOk) {
             substep "legacy environment is healthy -- migrating..."
+            try {
+                Clear-MigrationTargetDirectory -Path $VenvDir
+            } catch {
+                Write-StudioLine "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
+                return (Exit-InstallFailure "Could not clear $VenvDir for the environment migration")
+            }
             Move-Item -LiteralPath $OldVenv -Destination $VenvDir -Force
             substep "moved .venv -> unsloth_studio"
             $_Migrated = $true
@@ -4266,6 +4305,12 @@ exit 0
         # Skip custom-root env-mode so it is not relocated into a workspace root.
         $CwdVenv = Join-Path $env:USERPROFILE "unsloth_studio"
         substep "found CWD-relative Unsloth environment, migrating to $VenvDir..."
+        try {
+            Clear-MigrationTargetDirectory -Path $VenvDir
+        } catch {
+            Write-StudioLine "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
+            return (Exit-InstallFailure "Could not clear $VenvDir for the environment migration")
+        }
         Move-Item -LiteralPath $CwdVenv -Destination $VenvDir -Force
         substep "moved ~/unsloth_studio -> ~/.unsloth/studio/unsloth_studio"
         $_Migrated = $true

@@ -685,12 +685,27 @@ _start_studio_venv_replacement() {
 # and dangling symlinks in that check.
 _dir_has_entries() {  # dir
     [ -d "$1" ] || return 1
+    # Not enumerable: without read the globs cannot expand, and without search
+    # the -e/-L tests below fail on every name, so either way the directory would
+    # be reported empty and handed to uv to fail on. Call it occupied instead,
+    # which is what install.ps1's enumeration catch does, and let the move repair
+    # it: rename needs write on the parent, not on the directory itself.
+    { [ -r "$1" ] && [ -x "$1" ]; } || return 0
+    # The globs below are the whole check, so pathname expansion has to be on for
+    # them; a caller that set -f would otherwise make every directory look empty.
+    # Mirrors _path_has_dir, which saves and restores the flag the other way.
+    _dhe_glob=on
+    case $- in *f*) _dhe_glob=off ;; esac
+    set +f
+    _dhe_found=1
     for _dhe_entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
         if [ -e "$_dhe_entry" ] || [ -L "$_dhe_entry" ]; then
-            return 0
+            _dhe_found=0
+            break
         fi
     done
-    return 1
+    [ "$_dhe_glob" = off ] && set -f
+    return "$_dhe_found"
 }
 
 # Clear $VENV_DIR for a recreate without ever destroying the only copy. The
@@ -2794,7 +2809,15 @@ if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
         "import torch; print(torch.__version__)" 2>/dev/null | tail -n 1 || true)
     # New layout already exists — replace only after preserving rollback copy.
     substep "preserving existing environment for rollback..."
-    _start_studio_venv_replacement "$VENV_DIR"
+    # why: the bare call would still abort under `set -e`, but with nothing on
+    # screen except mv's own stderr. install.ps1 already reports this failure
+    # (Exit-InstallFailure "Could not prepare existing environment for reinstall");
+    # say the same thing here, and name the directory that has to be writable.
+    if ! _start_studio_venv_replacement "$VENV_DIR"; then
+        echo "ERROR: could not move $VENV_DIR aside to reinstall." >&2
+        echo "       Check that $STUDIO_HOME is writable, or move $VENV_DIR yourself and re-run." >&2
+        exit 1
+    fi
 elif [ "$_STUDIO_HOME_REDIRECT" != "env" ] && [ -x "$STUDIO_HOME/.venv/bin/python" ]; then
     # Old layout exists — validate before migrating.
     # Skip in env-mode so we don't rm -rf an unrelated .venv at the
@@ -2820,6 +2843,19 @@ torch.testing.assert_close(torch.unique(E), torch.tensor((20,), device=E.device,
     fi
     if [ "$_legacy_ok" = true ]; then
         echo "✅ Legacy environment is healthy — migrating..."
+        # `mv` into a directory that already exists nests the environment inside
+        # it ($VENV_DIR/.venv) instead of renaming it, and `uv venv` then refuses
+        # the occupied target with the same error as #9479. Reaching this branch
+        # already means $VENV_DIR is absent or empty, so clear it first.
+        # rmdir, never rm -rf: it cannot take a directory that gained an entry
+        # since the check. Unlinking a symlink never touches its target.
+        if [ -L "$VENV_DIR" ]; then
+            rm -f "$VENV_DIR"
+        elif [ -d "$VENV_DIR" ] && ! rmdir "$VENV_DIR" 2>/dev/null; then
+            echo "ERROR: $VENV_DIR is in the way of the legacy migration." >&2
+            echo "       Move it aside and re-run." >&2
+            exit 1
+        fi
         mv "$STUDIO_HOME/.venv" "$VENV_DIR"
         echo "   Moved ~/.unsloth/studio/.venv → $VENV_DIR"
         _MIGRATED=true
