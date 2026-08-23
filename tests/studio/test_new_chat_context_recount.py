@@ -48,6 +48,7 @@ BOUND_NAMES = {
     "enabled",
     "ggufContextLength",
     "isLoading",
+    "mainThreadId",
     "runActive",
     "modelLoading",
     "newThreadSwitchStateRef",
@@ -440,6 +441,11 @@ export function renderNewChatSwitch(props: any): void {
   // Compare keeps the shared provider mounted but stood down; the recount tests are
   // all about the view the user is looking at, so it defaults to on screen.
   const paused = props.paused ?? false;
+  // The stale-switch correction reads it. Defaulting to a runtime-made id keeps that
+  // effect inert here: these tests are about the recount, and a local id is what a
+  // `?new=` view actually holds.
+  const mainThreadId = props.mainThreadId ?? "__LOCALID_recount";
+
   // The component reads these through useChatRuntimeStore selectors, so a
   // re-render sees whatever the store holds right now.
   const checkpoint = state.params.checkpoint;
@@ -449,6 +455,7 @@ export function renderNewChatSwitch(props: any): void {
   const scope: any = {
     aui,
     isLoading,
+    mainThreadId,
     newThreadSwitchStateRef,
     nonce,
     paused,

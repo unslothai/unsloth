@@ -1603,6 +1603,11 @@ type NewThreadSwitchState = {
   // attempt: leaving for a saved chat and coming back releases it, so two switches for
   // the SAME nonce can be in flight and the older must not speak for the newer.
   attempt: number;
+  // The saved thread a switch is currently trying to open, so a nonce view can recognise
+  // that exact id landing after the route moved on. Named rather than inferred from the
+  // id's shape: a shape test cannot tell a stale arrival from the thread a fresh switch
+  // just opened, and correcting the latter switches for ever.
+  pendingSavedThreadId: string | null;
 };
 
 function ThreadAutoSwitch({
@@ -1630,7 +1635,13 @@ function ThreadAutoSwitch({
       return;
     }
     newThreadSwitchStateRef.current.activeNonce = null;
+    // Read, not bumped. switchToThread resolves asynchronously and this provider is shared,
+    // so by the time it settles the view may have moved on to a project landing whose own
+    // switch owns the runtime. That switch bumps the attempt, which is how the arms below
+    // tell they have been superseded.
+    const attemptAtStart = newThreadSwitchStateRef.current.attempt;
     if (mainThreadId !== threadId) {
+      newThreadSwitchStateRef.current.pendingSavedThreadId = threadId;
       // Saved chats keep running in the background, but a temporary chat is
       // unreachable after this switch and must not retain an active queue.
       requestTemporaryPromptQueueStop();
@@ -1640,6 +1651,10 @@ function ThreadAutoSwitch({
         typeof (switchResult as Promise<void>).catch === "function"
       ) {
         void (switchResult as Promise<void>).catch(() => {
+          // Only if this switch is still the current one. Unguarded, a rejection landing
+          // after the user moved to a project landing cleared the active id that view had
+          // just set, detaching a chat this failure has nothing to do with.
+          if (newThreadSwitchStateRef.current.attempt !== attemptAtStart) return;
           if (syncActiveThreadId) {
             useChatRuntimeStore.getState().setActiveThreadId(null);
           }
@@ -1657,11 +1672,26 @@ function ThreadAutoSwitch({
   ]);
 
   useEffect(() => {
-    if (!syncActiveThreadId || isLoading || mainThreadId !== threadId) {
+    if (isLoading || mainThreadId !== threadId) {
+      return;
+    }
+    // The switch landed while this view is still mounted, so it was not stale and the
+    // nonce view has nothing to correct. Released here rather than in the promise: this
+    // effect only runs while the saved chat is on screen, which is exactly the condition.
+    if (newThreadSwitchStateRef.current.pendingSavedThreadId === threadId) {
+      newThreadSwitchStateRef.current.pendingSavedThreadId = null;
+    }
+    if (!syncActiveThreadId) {
       return;
     }
     useChatRuntimeStore.getState().setActiveThreadId(threadId);
-  }, [isLoading, mainThreadId, syncActiveThreadId, threadId]);
+  }, [
+    isLoading,
+    mainThreadId,
+    newThreadSwitchStateRef,
+    syncActiveThreadId,
+    threadId,
+  ]);
 
   return null;
 }
@@ -1677,6 +1707,7 @@ function ThreadNewChatSwitch({
 }): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
+  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
@@ -1752,6 +1783,32 @@ function ThreadNewChatSwitch({
     );
     useChatRuntimeStore.getState().setActiveThreadId(null);
   }, [aui, isLoading, newThreadSwitchStateRef, nonce, paused]);
+
+  // Reassert this view's thread when a switch started before it lands anyway.
+  //
+  // Leaving a project landing for a saved chat and coming back before switchToThread
+  // resolves used to end with assistant-ui assigning that saved thread as the main one:
+  // the promise has no idea the route moved, and the provider is shared now, so there is
+  // no remount to absorb it. The composer on screen then belonged to the saved chat, and
+  // the next message went to the wrong conversation.
+  //
+  // Recognised by the exact id that switch asked for, which ThreadAutoSwitch records. The
+  // claim is cleared as soon as it is honoured, so this fires once per stale arrival and
+  // never chases the thread its own correction opens.
+  useEffect(() => {
+    if (isLoading || paused) {
+      return;
+    }
+    const switchState = newThreadSwitchStateRef.current;
+    if (switchState.activeNonce !== nonce) {
+      return;
+    }
+    if (!mainThreadId || switchState.pendingSavedThreadId !== mainThreadId) {
+      return;
+    }
+    switchState.pendingSavedThreadId = null;
+    void Promise.resolve(aui.threads().switchToNewThread()).catch(() => undefined);
+  }, [aui, isLoading, mainThreadId, newThreadSwitchStateRef, nonce, paused]);
 
   // The effect above blanks the bar, and this view reaches no other recount trigger: no persisted
   // thread for the history loader, and ActiveThreadSync is off while a nonce is present. Keyed on
@@ -2325,6 +2382,7 @@ export function ChatRuntimeProvider({
     activeNonce: null,
     hasSwitched: false,
     attempt: 0,
+    pendingSavedThreadId: null,
   });
   useEffect(() => {
     if (!initialThreadId && !newThreadNonce) {
