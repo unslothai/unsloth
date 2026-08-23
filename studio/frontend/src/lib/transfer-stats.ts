@@ -25,19 +25,6 @@ export type TransferStats = {
 export const MIN_SAMPLES = 3;
 export const MIN_WINDOW_SECONDS = 3;
 export const MAX_WINDOW_SECONDS = 15;
-/**
- * Largest inter-sample gap still counted as transfer time (#9378).
- *
- * Not every consumer samples on a timer: ``useTransferStats`` appends only when
- * the byte counter changes, so bursty progress delivery leaves multi-second
- * holes between samples. A window that spans such a hole bills the post-gap
- * burst's bytes against the hole's seconds too — a stable 200 MB/s link showed
- * "3 MB/s · 5h left" right up until dense samples refilled the window and it
- * snapped to "200 MB/s · 2m". Pairs straddling a longer gap are dropped from
- * the rate's numerator AND denominator; the transfer's real pace across the
- * hole is unknowable, and guessing low is what produced the phantom ETA.
- */
-export const MAX_SAMPLE_GAP_SECONDS = 5;
 
 /**
  * Mutate ``samples`` in place: append the sample, drop any out of the rolling
@@ -75,24 +62,14 @@ export function computeTransferStats(
   if (samples.length < MIN_SAMPLES) {
     return { rateBytesPerSecond: 0, etaSeconds: 0, stable: false };
   }
-  // Accumulate the most recent run of consecutive sample pairs whose spacing
-  // stays within MAX_SAMPLE_GAP_SECONDS. Walking from the newest sample means a
-  // long hole ends the run exactly where the trustworthy recent data does.
-  let activeDt = 0;
-  let activeDb = 0;
-  for (let i = samples.length - 1; i > 0; i--) {
-    const dt = samples[i].t - samples[i - 1].t;
-    if (dt > MAX_SAMPLE_GAP_SECONDS) {
-      break;
-    }
-    activeDt += dt;
-    activeDb += samples[i].b - samples[i - 1].b;
-  }
-  if (activeDt < MIN_WINDOW_SECONDS || activeDb <= 0) {
+  const first = samples[0];
+  const last = samples[samples.length - 1];
+  const dt = last.t - first.t;
+  const db = last.b - first.b;
+  if (dt < MIN_WINDOW_SECONDS || db <= 0) {
     return { rateBytesPerSecond: 0, etaSeconds: 0, stable: false };
   }
-  const rate = activeDb / activeDt;
-  const last = samples[samples.length - 1];
+  const rate = db / dt;
   const safeTotal = Number.isFinite(total) && total > 0 ? total : 0;
   const eta =
     safeTotal > 0 && last.b < safeTotal && rate > 0

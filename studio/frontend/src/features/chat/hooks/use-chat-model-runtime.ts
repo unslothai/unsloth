@@ -11,6 +11,11 @@ import {
 import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
+import {
+  type TransferSample,
+  appendSample,
+  computeTransferStats,
+} from "@/lib/transfer-stats";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { defaultInferenceParams } from "../presets/preset-policy";
 import {
@@ -2086,44 +2091,25 @@ export function useChatModelRuntime() {
         const expectedBytes =
           typeof selection !== "string" ? selection.expectedBytes ?? 0 : 0;
 
-        // Rolling window of byte samples for rate/ETA estimation, shared
-        // across download + mmap phases so it survives phase flips.
-        type Sample = { t: number; b: number };
-        const MIN_SAMPLES = 3;
-        const MIN_WINDOW = 3_000; // ms
-        const MAX_WINDOW = 15_000; // ms
-        const dlSamples: Sample[] = [];
-        const mmapSamples: Sample[] = [];
+        // One buffer per phase, so a phase flip cannot price the new phase's
+        // bytes against the old one's clock. This was a private copy of the
+        // shared estimator, which meant fixes to it never reached this toast.
+        // Note the shared helper takes SECONDS; this file clocks in ms.
+        const dlSamples: TransferSample[] = [];
+        const mmapSamples: TransferSample[] = [];
 
         function estimate(
-          samples: Sample[],
+          samples: TransferSample[],
           bytes: number,
           total: number,
         ): { rate: number; eta: number; stable: boolean } {
-          const now = Date.now();
-          // Drop samples if the counter reset (e.g. phase flipped).
-          if (samples.length > 0 && bytes < samples[samples.length - 1].b) {
-            samples.length = 0;
-          }
-          samples.push({ t: now, b: bytes });
-          const cutoff = now - MAX_WINDOW;
-          while (samples.length > 2 && samples[0].t < cutoff) {
-            samples.shift();
-          }
-          if (samples.length < MIN_SAMPLES) {
-            return { rate: 0, eta: 0, stable: false };
-          }
-          const first = samples[0];
-          const last = samples[samples.length - 1];
-          const dt = (last.t - first.t) / 1000;
-          const db = last.b - first.b;
-          if (dt * 1000 < MIN_WINDOW || db <= 0) {
-            return { rate: 0, eta: 0, stable: false };
-          }
-          const rate = db / dt;
-          const eta =
-            total > 0 && bytes < total && rate > 0 ? (total - bytes) / rate : 0;
-          return { rate, eta, stable: true };
+          appendSample(samples, Date.now() / 1000, bytes);
+          const stats = computeTransferStats(samples, total);
+          return {
+            rate: stats.stable ? stats.rateBytesPerSecond : 0,
+            eta: stats.stable ? stats.etaSeconds : 0,
+            stable: stats.stable,
+          };
         }
 
         function composeProgressLabel(
@@ -2131,7 +2117,7 @@ export function useChatModelRuntime() {
           totalGb: number,
           bytes: number,
           total: number,
-          samples: Sample[],
+          samples: TransferSample[],
         ): string {
           const base =
             totalGb > 0

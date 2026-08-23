@@ -62,6 +62,7 @@ export function startExternalJob(init: {
     expectedBytes: Math.max(0, init.expectedBytes),
     fraction: 0,
     bytesPerSec: 0,
+    etaSeconds: 0,
     error: null,
     startedAt: Date.now(),
     external: true,
@@ -85,6 +86,7 @@ export function updateExternalJob(
       expectedBytes > 0 ? Math.min(1, downloadedBytes / expectedBytes) : 0,
     // Unstable early samples read as absurd rates; show nothing until settled.
     bytesPerSec: stats.stable ? stats.rateBytesPerSecond : 0,
+    etaSeconds: stats.stable ? stats.etaSeconds : 0,
   });
 }
 
@@ -98,6 +100,7 @@ export function finishExternalJob(
   patchJob(key, {
     state: outcome,
     bytesPerSec: 0,
+    etaSeconds: 0,
     error: outcome === "error" ? (error ?? "Download failed.") : null,
     ...(outcome === "complete" ? { fraction: 1, completeOnDisk: true } : {}),
   });
