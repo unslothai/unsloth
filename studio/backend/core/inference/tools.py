@@ -14117,6 +14117,24 @@ def _cancel_watcher(
         cancel_event.wait(poll_interval) if cancel_event else None
 
 
+def _appended_by_the_loop(text: str) -> float:
+    """What the tool loop will add to this result after the tool has handed it back.
+
+    `ToolCallCompletion.model_message` appends `TOOL_ERROR_NUDGE` to a result that opens
+    with one of `TOOL_ERROR_PREFIXES`, after this budget has already let the body take the
+    whole room, and a parallel batch of failed calls carries one nudge each. Priced in
+    tokens like the retry hint, and only for the results that will really carry it.
+    """
+    try:
+        from .tool_call_parser import TOOL_ERROR_NUDGE, TOOL_ERROR_PREFIXES  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 -- an unpriced nudge, not a failed tool call
+        logger.debug("result budget: tool error nudge unavailable", exc_info = True)
+        return 0.0
+    if not text.startswith(TOOL_ERROR_PREFIXES):
+        return 0.0
+    return _text_token_cost(TOOL_ERROR_NUDGE, _window_context_tokens())
+
+
 def _truncate(
     text: str,
     limit: int | None = None,
@@ -14131,15 +14149,20 @@ def _truncate(
     # Same correction as a fetched page: a character cap reserves its share of the window
     # only for English, and a command that prints CJK or percent-escaped text costs two to
     # three times what the cap assumed.
-    cap, cost = limit, 0.0
+    # Whatever the loop will append to this result once it has it: the tool-error nudge
+    # goes on after the tool has returned, so a result sized to fill the room arrives at
+    # the prompt with the nudge past the end of it. Charged only to the results that will
+    # actually carry one, since a reserve taken from every result spends room the thread
+    # has.
+    cap, cost = limit, _appended_by_the_loop(text)
     if hint:
         # Priced in tokens, not characters, and taken off the budget before it is converted
         # (see `_dense_char_limit`). A failing absolute path is dense: subtracting its
         # LENGTH from the character cap frees fewer tokens than the hint then spends, which
         # is the unbudgeted overflow this whole change exists to prevent. It may take at
         # most half the room; past that the output is worth more than the advice about it.
-        plain = _dense_char_limit(text, limit)
-        cost = _text_token_cost(hint, _window_context_tokens())
+        plain = _dense_char_limit(text, limit, cost)
+        cost += _text_token_cost(hint, _window_context_tokens())
         with_hint = _dense_char_limit(text, limit, cost)
         if plain > 0 and (len(text) <= with_hint or with_hint * 2 >= plain):
             limit = with_hint
@@ -14147,9 +14170,9 @@ def _truncate(
             # Nothing to spend on advice: at zero room the stub IS the message, and when
             # paying for it would cut the output in half the output is worth more than the
             # advice about it. Nothing is dropped while the result fits anyway.
-            limit, hint, cost = plain, "", 0.0
+            limit, hint, cost = plain, "", _appended_by_the_loop(text)
     else:
-        limit = _dense_char_limit(text, limit)
+        limit = _dense_char_limit(text, limit, cost)
     # Mode-neutral notice: this result serves both the streaming UI and
     # non-streaming callers and must stay byte-identical with and without an
     # output_callback (a regression-tested invariant), so it can't claim the
@@ -15647,14 +15670,17 @@ def _python_exec(
         # paths are judged against the real workdir (project sessions live outside
         # the default sandbox root).
         hint = _missing_path_hint(result, workdir)
+        # Before the fit, not after it. Defusing inserts a space into every line that
+        # opens with a marker, so a result full of them grows after it has been measured
+        # and the text replayed to the model is larger than the prefix that was admitted.
+        # Before ours is appended, and whether or not one is: a program's own marker line
+        # is not an envelope.
+        result = _defuse_sentinels(result)
         result = (
             _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
             if result.strip()
             else "(no output)" + hint
         )
-        # Before ours is appended, and whether or not one is: a program's own
-        # marker line is not an envelope.
-        result = _defuse_sentinels(result)
 
         # Only for a chat that has an id: without one every first turn shares
         # the _default workdir, so a card pinned to it would later download
@@ -15790,12 +15816,12 @@ def _bash_exec(
             result = f"Exit code {proc.returncode}:\n{result}"
         # Same missing-path healing as _python_exec.
         hint = _missing_path_hint(result, workdir)
+        result = _defuse_sentinels(result)  # before the fit; see _python_exec
         result = (
             _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
             if result.strip()
             else "(no output)" + hint
         )
-        result = _defuse_sentinels(result)  # see _python_exec
         # Only for a chat that has an id (see _python_exec).
         if session_id:
             result += _created_file_sentinels(workdir, _before, None, call_token)

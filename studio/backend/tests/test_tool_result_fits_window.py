@@ -2077,3 +2077,74 @@ class TestTheResultIsPricedAsItWillBeSent:
         text = _dense(4_000)
 
         assert tools._loaded_token_counter(4096)(text) == len(text)
+
+
+class TestWhatTheLoopAppendsIsPricedToo:
+    """The tool hands its result back and the loop adds to it: a result that opens with a
+    tool-error prefix gets `TOOL_ERROR_NUDGE`, after this budget has already let the body
+    take the whole room, and a parallel batch of failed calls carries one nudge each."""
+
+    @staticmethod
+    def _fitted(monkeypatch, prefix: str) -> int:
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        _room(400)
+        return len(tools._truncate(prefix + _dense(40_000)))
+
+    def test_an_error_result_is_shortened_by_what_the_nudge_costs(self, monkeypatch):
+        from core.inference.tool_call_parser import TOOL_ERROR_NUDGE
+
+        # The same length, so the only thing between them is the nudge one of them will be
+        # given: "Error" is a `TOOL_ERROR_PREFIXES` entry and "Alpha" is not.
+        failed = self._fitted(monkeypatch, "Error: ")
+        fine = self._fitted(monkeypatch, "Alpha: ")
+
+        # In characters, at the rate the fixture's counter charges them.
+        assert fine - failed >= len(TOOL_ERROR_NUDGE) * 0.9, (failed, fine)
+
+    def test_the_result_and_its_nudge_fit_the_room_together(self, monkeypatch):
+        from core.inference.tool_call_parser import TOOL_ERROR_NUDGE
+
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        _room(400)
+
+        out = tools._truncate("Error: " + _dense(40_000))
+
+        _within_room(out + TOOL_ERROR_NUDGE, 400)
+
+    def test_an_ordinary_result_does_not_pay_for_one(self, monkeypatch):
+        """The control: charged to the results that carry it, not to every result. A
+        reserve taken from all of them spends room the thread has."""
+        assert self._fitted(monkeypatch, "Alpha: ") == self._fitted(monkeypatch, "Bravo: ")
+
+
+class TestTheResultIsFittedAsItIsReplayed:
+    """`_defuse_sentinels` inserts a space into every line that opens with a frontend
+    marker. Applied after the fit, output full of such lines grows once it has been
+    measured, and the text replayed to the model is larger than the prefix admitted."""
+
+    def test_the_body_is_the_length_the_notice_claims(self, monkeypatch):
+        """Through the real terminal path, on output that is all marker lines. The notice
+        names the number of characters the body was cut to, so a body longer than that is
+        text that was added after the measurement."""
+        import re
+
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        # Anchored on the line start, so the text has to carry the break with it.
+        lines = "\n__FILES__:x" * 3
+        assert tools._defuse_sentinels(lines) != lines, "not a marker line any more"
+
+        out = tools.execute_tool(
+            "terminal",
+            {"command": "seq 4000 | sed 's/.*/__FILES__:x/'"},
+            result_budget_tokens = 400,
+        )
+
+        head, _, notice = out.partition("\n\n... (truncated to ")
+        assert notice, out[:200]
+        # At most, not exactly: the head stops on a line boundary, so it comes in under
+        # the limit. Over it is text that was added after the measurement.
+        assert len(head) <= int(re.match(r"(\d+) chars", notice).group(1)), len(head)
+        assert head == tools._defuse_sentinels(head)
