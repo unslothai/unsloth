@@ -168,13 +168,16 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
     # Recovery currently rebuilds text and reasoning deltas, not server-side tool
     # events. Keep any request whose effective policy can enter the local tool loop
     # on the legacy subscriber-owned stream until those events are replayable.
-    from routes.inference import _effective_enable_tools
+    from routes.inference import _checkpoint_recall_may_enable_tools, _effective_enable_tools
+
+    request = request.model_copy(update = {"thread_id": payload.threadId})
 
     if (
         raw.get("tools")
         or request.enable_tools is True
         or bool(request.mcp_enabled)
         or _effective_enable_tools(request) is True
+        or _checkpoint_recall_may_enable_tools(request)
     ):
         raise HTTPException(
             status_code = 400,
@@ -192,8 +195,8 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
     return sanitized
 
 
-def _require_run(run_id: str, owner_subject: str) -> dict[str, Any]:
-    run = db.get_run(run_id, owner_subject)
+def _require_run(run_id: str) -> dict[str, Any]:
+    run = db.get_run(run_id)
     if run is None:
         raise HTTPException(status_code = 404, detail = "Chat generation run not found")
     return run
@@ -260,12 +263,12 @@ async def create_chat_generation_run(
 def active_chat_generation_runs(
     thread_id: str = Query(alias = "threadId"), current_subject: str = Depends(get_current_subject)
 ):
-    return {"runs": db.list_active(current_subject, thread_id)}
+    return {"runs": db.list_active(thread_id)}
 
 
 @router.get("/{run_id}")
 def get_chat_generation_run(run_id: str, current_subject: str = Depends(get_current_subject)):
-    return _require_run(run_id, current_subject)
+    return _require_run(run_id)
 
 
 @router.post("/{run_id}/cancel")
@@ -274,8 +277,8 @@ def cancel_chat_generation_run(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    _require_run(run_id, current_subject)
-    run = db.request_cancel(run_id, current_subject)
+    _require_run(run_id)
+    run = db.request_cancel(run_id)
     if run is None:
         raise HTTPException(status_code = 404, detail = "Chat generation run not found")
     supervisor = getattr(request.app.state, "chat_generation_supervisor", None)
@@ -292,7 +295,7 @@ async def chat_generation_events(
     last_event_id: str | None = Header(None, alias = "Last-Event-ID"),
     current_subject: str = Depends(get_current_subject),
 ):
-    _require_run(run_id, current_subject)
+    _require_run(run_id)
     cursor = _event_cursor(after, last_event_id)
 
     async def stream():
@@ -306,7 +309,7 @@ async def chat_generation_events(
                 cursor,
                 15,
             )
-            snapshot = await asyncio.to_thread(db.get_run, run_id, current_subject)
+            snapshot = await asyncio.to_thread(db.get_run, run_id)
             if snapshot is None:
                 return
             for event in events:

@@ -219,6 +219,7 @@ import {
   resumesExactly,
 } from "../utils/continuation";
 import {
+  generationChunkCountsTowardTiming,
   generationChunkHasSubstantiveDelta,
   generationIsSettled,
 } from "../utils/chat-generation-recovery";
@@ -6021,7 +6022,7 @@ export function createOpenAIStreamAdapter(
                   generationSeq = Math.max(generationSeq, update.event.seq);
                   if (update.event.type === "chunk") {
                     const chunk = update.event.payload as OpenAIChatChunk;
-                    if (!("_reasoningDurationMs" in chunk)) {
+                    if (generationChunkCountsTowardTiming(chunk)) {
                       generationChunkCount += 1;
                       if (generationChunkHasSubstantiveDelta(chunk)) {
                         generationFirstChunkAt ??= update.event.createdAt;

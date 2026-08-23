@@ -12,6 +12,7 @@ const { readIncompleteInfo, restoredAssistantStatus } = await import(
   "../src/features/chat/utils/continuation.ts"
 );
 const {
+  generationChunkCountsTowardTiming,
   generationChunkHasSubstantiveDelta,
   generationIsSettled,
   generationNeedsRecovery,
@@ -42,6 +43,15 @@ test("first-token recovery ignores role and control chunks", () => {
       choices: [{ delta: { content: "token" } }],
     }),
     true,
+  );
+  assert.deepEqual(
+    [
+      { choices: [{ delta: { role: "assistant" } }] },
+      { context_truncated: { checkpoint: true } },
+      { choices: [], usage: { completion_tokens: 1 } },
+      { choices: [{ delta: { content: "token" } }] },
+    ].map(generationChunkCountsTowardTiming),
+    [true, false, false, true],
   );
   assert.equal(
     generationChunkHasSubstantiveDelta({
@@ -199,6 +209,7 @@ test("reload, wake, and stale-tab recovery stays monotonic and truthful", () => 
   assert.deepEqual(
     [
       ["running", 2],
+      ["completed", 2],
       ["completed", 2, true],
       ["completed", 4, true],
       ["failed", 4],
@@ -213,7 +224,8 @@ test("reload, wake, and stale-tab recovery stays monotonic and truthful", () => 
     }),
     [
       [true, { reason: "cancelled" }],
-      [true, { reason: "cancelled" }],
+      [true, undefined],
+      [true, { reason: "length" }],
       [false, { reason: "length" }],
       [false, { reason: "interrupted" }],
       [false, { reason: "cancelled" }],

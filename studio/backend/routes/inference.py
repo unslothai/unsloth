@@ -4084,6 +4084,21 @@ def _checkpoint_needs_search() -> bool:
         return False
 
 
+def _checkpoint_recall_may_enable_tools(payload) -> bool:
+    """Whether checkpoint recovery can force the internal recall tool loop."""
+    from state.tool_policy import get_tool_policy
+
+    return bool(
+        get_tool_policy() is not False
+        and _rolling_context_policy(payload) is not None
+        and _checkpoint_needs_search()
+        and _thread_has_conversation_archive(getattr(payload, "thread_id", None))
+        and _thread_has_checkpoint(
+            getattr(payload, "thread_id", None), getattr(payload, "messages", None)
+        )
+    )
+
+
 def _apply_compaction_nudge(
     nudge: str,
     tools: list[dict],
@@ -15730,16 +15745,8 @@ async def produce_openai_chat_completions(
         if (
             not use_tools
             and not _tool_loop_unusable
-            and _cli_policy is not False
             and llama_backend.supports_tools
-            and _rolling_context_policy(payload) is not None
-            and _checkpoint_needs_search()
-            and _thread_has_conversation_archive(getattr(payload, "thread_id", None))
-            # And an epoch actually happened here: a rolling-window thread archives
-            # identically, and there the loop would open for a repair that cannot happen.
-            and _thread_has_checkpoint(
-                getattr(payload, "thread_id", None), getattr(payload, "messages", None)
-            )
+            and _checkpoint_recall_may_enable_tools(payload)
         ):
             use_tools = True
 

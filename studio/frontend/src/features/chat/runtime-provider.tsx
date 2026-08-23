@@ -89,6 +89,7 @@ import {
   restoredAssistantStatus,
 } from "./utils/continuation";
 import {
+  generationChunkCountsTowardTiming,
   generationChunkHasSubstantiveDelta,
   generationNeedsRecovery,
   loadGenerationOverlaySnapshot,
@@ -942,7 +943,9 @@ function scheduleGenerationRecovery(
               await publish(update.run);
               continue;
             }
-            totalChunks += 1;
+            if (generationChunkCountsTowardTiming(chunk)) {
+              totalChunks += 1;
+            }
             if (generationChunkHasSubstantiveDelta(chunk)) {
               firstChunkAt ??= update.event.createdAt;
             }

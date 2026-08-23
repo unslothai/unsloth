@@ -111,7 +111,7 @@ def test_create_is_owner_scoped_idempotent_and_binds_placeholder(chat_home):
     assert created is True and replay_created is False
     assert replay == run
     assert runs_db.get_run("run-1", "bob") is None
-    assert runs_db.list_active("bob", "thread-1") == []
+    assert [run["id"] for run in runs_db.list_active("thread-1")] == ["run-1"]
     message = studio_db.get_chat_message("thread-1", "assistant-1")
     assert message["metadata"] == {
         "generationRunId": "run-1",
@@ -137,8 +137,21 @@ def test_create_is_owner_scoped_idempotent_and_binds_placeholder(chat_home):
         _create(request = _request(max_tokens = 9))
 
 
-def test_explicit_prune_deletes_terminal_generation_messages(chat_home):
+def test_shared_thread_rejects_a_second_subjects_active_generation(chat_home):
     _create()
+    with pytest.raises(runs_db.ChatGenerationConflictError, match = "active generation"):
+        _create("run-2", owner = "bob")
+    assert [run["id"] for run in runs_db.list_active("thread-1")] == ["run-1"]
+    assert studio_db.get_chat_message("thread-1", "assistant-run-2") is None
+
+
+def test_explicit_prune_deletes_terminal_generation_messages(chat_home):
+    user = studio_db.get_chat_message("thread-1", "user-1")
+    user["attachments"] = [{"id": "file-1", "name": "notes.txt"}]
+    studio_db.upsert_chat_message(user)
+    _create()
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.delete_chat_attachment("user-1", "file-1")
     stale_assistant = studio_db.get_chat_message("thread-1", "assistant-1")
     active = studio_db.sync_chat_messages("thread-1", [], prune_missing = True)
     assert {message["id"] for message in active} == {"user-1", "assistant-1"}
@@ -146,7 +159,9 @@ def test_explicit_prune_deletes_terminal_generation_messages(chat_home):
     token = runs_db.get_worker_token("run-1")
     assert runs_db.mark_running("run-1", token)
     runs_db.finish_run("run-1", worker_token = token, status = "completed")
+    assert studio_db.delete_chat_attachment("user-1", "file-1") is True
     user = studio_db.get_chat_message("thread-1", "user-1")
+    assert user.get("attachments") == []
 
     retained = studio_db.sync_chat_messages("thread-1", [user], prune_missing = True)
     assert {message["id"] for message in retained} == {"user-1", "assistant-1"}
@@ -427,6 +442,14 @@ def test_request_sanitization_rejects_launcher_default_tools():
 
 def test_request_sanitization_rejects_cli_tools_override_even_when_request_disables_tools():
     set_tool_policy(True)
+    with pytest.raises(Exception, match = "legacy streaming path"):
+        _sanitize_request(_model(enable_tools = False))
+
+
+def test_request_sanitization_rejects_checkpoint_recall_tool_loop(monkeypatch):
+    import routes.inference as inference_routes
+
+    monkeypatch.setattr(inference_routes, "_checkpoint_recall_may_enable_tools", lambda request: True, raising = False)
     with pytest.raises(Exception, match = "legacy streaming path"):
         _sanitize_request(_model(enable_tools = False))
 

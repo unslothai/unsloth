@@ -902,10 +902,41 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_chat_generation_runs_owner_thread_status "
         "ON chat_generation_runs(owner_subject, thread_id, status)"
     )
+    conn.execute("DROP INDEX IF EXISTS idx_chat_generation_runs_one_active_thread")
     conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_generation_runs_one_active_thread "
-        "ON chat_generation_runs(owner_subject, thread_id) "
-        "WHERE status IN ('queued','running','cancelling')"
+        "CREATE INDEX IF NOT EXISTS idx_chat_generation_runs_thread_status "
+        "ON chat_generation_runs(thread_id, status)"
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS reject_second_active_chat_generation_insert
+        BEFORE INSERT ON chat_generation_runs
+        WHEN NEW.status IN ('queued','running','cancelling')
+         AND EXISTS (
+             SELECT 1 FROM chat_generation_runs
+             WHERE thread_id = NEW.thread_id
+               AND status IN ('queued','running','cancelling')
+         )
+        BEGIN
+            SELECT RAISE(ABORT, 'thread already has an active chat generation');
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS reject_second_active_chat_generation_update
+        BEFORE UPDATE OF thread_id, status ON chat_generation_runs
+        WHEN NEW.status IN ('queued','running','cancelling')
+         AND EXISTS (
+             SELECT 1 FROM chat_generation_runs
+             WHERE thread_id = NEW.thread_id
+               AND id != NEW.id
+               AND status IN ('queued','running','cancelling')
+         )
+        BEGIN
+            SELECT RAISE(ABORT, 'thread already has an active chat generation');
+        END
+        """
     )
     conn.execute(
         """
@@ -4111,7 +4142,10 @@ def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
         if row is None:
             conn.rollback()
             return False
-        if str(message_id) in _server_managed_message_ids(conn, str(row["thread_id"])):
+        protected_message_ids = _server_managed_message_ids(
+            conn, str(row["thread_id"])
+        ) - _terminal_generation_message_ids(conn, str(row["thread_id"]))
+        if str(message_id) in protected_message_ids:
             conn.rollback()
             raise ChatMessageProtectedError(
                 "Research prompts and responses are server-managed and cannot be edited"

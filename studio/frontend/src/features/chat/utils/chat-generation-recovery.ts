@@ -40,6 +40,21 @@ export function generationChunkHasSubstantiveDelta(payload: unknown): boolean {
   );
 }
 
+export function generationChunkCountsTowardTiming(payload: unknown): boolean {
+  const chunk = payload as
+    | {
+        _reasoningDurationMs?: unknown;
+        context_truncated?: unknown;
+        usage?: unknown;
+        choices?: unknown[];
+      }
+    | null
+    | undefined;
+  if (!chunk || typeof chunk !== "object") return false;
+  if ("_reasoningDurationMs" in chunk || chunk.context_truncated) return false;
+  return !(chunk.usage && Array.isArray(chunk.choices) && chunk.choices.length === 0);
+}
+
 export function recoveredReasoningSummaryMetadata(
   current: Record<string, unknown>,
   reasoningMs: unknown,
@@ -229,7 +244,7 @@ export function generationRecoveryMetadata(options: {
     generationSettled: settled,
     serverManaged: true,
   };
-  if (status === "completed" && settled) {
+  if (status === "completed") {
     if (lengthLimited) {
       next.incomplete = { reason: "length" };
     } else {

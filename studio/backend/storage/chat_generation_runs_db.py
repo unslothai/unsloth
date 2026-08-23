@@ -218,6 +218,13 @@ def create_run(
             or user_message["role"] != "user"
         ):
             raise ValueError("userMessageId must identify a user message in the thread")
+        active = conn.execute(
+            """SELECT 1 FROM chat_generation_runs
+               WHERE thread_id=? AND status IN ('queued','running','cancelling')""",
+            (thread_id,),
+        ).fetchone()
+        if active is not None:
+            raise ChatGenerationConflictError("This thread already has an active generation")
 
         metadata = {
             "generationRunId": run_id,
@@ -300,9 +307,9 @@ def create_run(
         except sqlite3.IntegrityError as exc:
             active = conn.execute(
                 """SELECT 1 FROM chat_generation_runs
-                   WHERE owner_subject=? AND thread_id=?
+                   WHERE thread_id=?
                      AND status IN ('queued','running','cancelling')""",
-                (owner_subject, thread_id),
+                (thread_id,),
             ).fetchone()
             if active is not None:
                 raise ChatGenerationConflictError(
@@ -373,15 +380,15 @@ def get_worker_run(
         conn.close()
 
 
-def list_active(owner_subject: str, thread_id: str) -> list[dict[str, Any]]:
+def list_active(thread_id: str) -> list[dict[str, Any]]:
     conn = get_connection()
     try:
         rows = conn.execute(
             """SELECT * FROM chat_generation_runs
-               WHERE owner_subject=? AND thread_id=?
+               WHERE thread_id=?
                  AND status IN ('queued','running','cancelling')
                ORDER BY created_at, id""",
-            (owner_subject, thread_id),
+            (thread_id,),
         ).fetchall()
         return [_run_from_row(row) for row in rows]
     finally:
@@ -451,14 +458,16 @@ def mark_running(run_id: str, worker_token: str) -> bool:
         conn.close()
 
 
-def request_cancel(run_id: str, owner_subject: str) -> dict[str, Any] | None:
+def request_cancel(run_id: str, owner_subject: str | None = None) -> dict[str, Any] | None:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT * FROM chat_generation_runs WHERE id=? AND owner_subject=?",
-            (run_id, owner_subject),
-        ).fetchone()
+        sql = "SELECT * FROM chat_generation_runs WHERE id=?"
+        args: tuple[Any, ...] = (run_id,)
+        if owner_subject is not None:
+            sql += " AND owner_subject=?"
+            args += (owner_subject,)
+        row = conn.execute(sql, args).fetchone()
         if row is None:
             conn.commit()
             return None
