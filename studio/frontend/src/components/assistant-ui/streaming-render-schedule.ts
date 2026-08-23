@@ -11,6 +11,7 @@ import { type BlockProps, parseMarkdownIntoBlocks } from "streamdown";
 import {
   getTerminalStreamingCodeFence,
   hasClosingFenceLine,
+  isClosingFenceLine,
   normalizeCodeFenceLanguage,
   readFenceMarker,
 } from "./streaming-code-policy.ts";
@@ -888,6 +889,51 @@ function normalizeLineEndings(text: string): string {
  * Semantically identical: `slice` clamps to the string length, so a `b` longer
  * than `a` yields a short slice that cannot equal it.
  */
+/*
+ * Is there a footnote reference or definition here, ignoring fenced code?
+ *
+ * A character class in ordinary code is shaped exactly like a footnote
+ * reference: `/[^a-z]/` matches `FOOTNOTE_REFERENCE_RE`. Testing the repaired
+ * tail as one string therefore reads a regex literal inside an open fence as a
+ * footnote and switches to full-document mode, which is sticky, so every later
+ * token re-repairs and re-lexes the whole reply. That is the quadratic this
+ * class exists to remove, restored by one line of the reply's own code.
+ *
+ * Fenced code is not Markdown, so scan lines and skip the fenced ones. Neither
+ * pattern can span a newline, so testing per line is exactly the whole-string
+ * test with the fenced lines removed.
+ */
+export function hasFootnoteConstruct(markdown: string): boolean {
+  let fence: { marker: "`" | "~"; markerLength: number } | null = null;
+  for (let lineStart = 0; lineStart <= markdown.length; ) {
+    const lf = markdown.indexOf("\n", lineStart);
+    const rawEnd = lf < 0 ? markdown.length : lf;
+    const end =
+      rawEnd > lineStart && markdown[rawEnd - 1] === "\r" ? rawEnd - 1 : rawEnd;
+    const line = markdown.slice(lineStart, end);
+
+    if (fence) {
+      if (isClosingFenceLine(line, fence.marker, fence.markerLength)) {
+        fence = null;
+      }
+    } else {
+      const opening = readFenceMarker(markdown, lineStart);
+      if (opening) {
+        fence = opening;
+      } else if (
+        FOOTNOTE_REFERENCE_RE.test(line) ||
+        FOOTNOTE_DEFINITION_RE.test(line)
+      ) {
+        return true;
+      }
+    }
+
+    if (lf < 0) break;
+    lineStart = lf + 1;
+  }
+  return false;
+}
+
 export const hasPrefix = (a: string, b: string): boolean =>
   a.length >= b.length && a.slice(0, b.length) === b;
 
@@ -1662,10 +1708,7 @@ export class IncrementalMarkdownCache {
     // Streamdown deliberately turns a repaired document containing footnotes
     // into one block so definitions can resolve references anywhere in the
     // document. Such a construct is globally scoped and cannot retain a prefix.
-    if (
-      FOOTNOTE_REFERENCE_RE.test(repaired) ||
-      FOOTNOTE_DEFINITION_RE.test(repaired)
-    ) {
+    if (hasFootnoteConstruct(repaired)) {
       return this.renderFullDocument(markdown);
     }
 

@@ -60,7 +60,7 @@ export function getCodeFenceFilename(language: string | null): string {
   return `snippet.${ext}`;
 }
 
-const isClosingFenceLine = (
+export const isClosingFenceLine = (
   line: string,
   marker: "`" | "~",
   minimumLength: number,

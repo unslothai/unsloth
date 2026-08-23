@@ -8,8 +8,11 @@ import {
   IncrementalMarkdownCache,
   createCompletedCodeFenceCache,
   getCompletedCodeFences,
+  hasFootnoteConstruct,
 } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import { getTerminalStreamingCodeFence } from "../src/components/assistant-ui/streaming-code-policy.ts";
+
+import { renderBlockContents } from "./streaming-render-plan.ts";
 
 /**
  * A fence that has opened and not closed is the whole live tail, and the tail is
@@ -185,4 +188,71 @@ test("streaming an unterminated fence does not re-derive the settled prefix", ()
     render.terminalCodeTail?.source,
     text.slice(text.indexOf("\n", text.indexOf("```")) + 1),
   );
+});
+
+/**
+ * A character class in ordinary code is shaped exactly like a footnote
+ * reference. Reading one as a footnote switches the cache to full-document
+ * mode, which is sticky, so every later token re-repairs and re-lexes the whole
+ * reply: the same quadratic, restored by one line of the reply's own code.
+ */
+test("a character class inside a fence is code, not a footnote", () => {
+  for (const line of [
+    "  slug = re.sub(/[^a-z]/g, '-', name);",
+    "  if (/[^0-9]/.test(value)) return null;",
+    "  grep -v '[^abc]' file.txt",
+  ]) {
+    assert.equal(
+      hasFootnoteConstruct(`\`\`\`js\n${line}\n`),
+      false,
+      `read as a footnote inside an open fence: ${line}`,
+    );
+    assert.equal(
+      hasFootnoteConstruct(`\`\`\`js\n${line}\n\`\`\`\n`),
+      false,
+      `read as a footnote inside a closed fence: ${line}`,
+    );
+    // The same characters outside a fence really are a footnote reference.
+    assert.equal(hasFootnoteConstruct(line), true, line);
+  }
+});
+
+test("real footnotes are still found outside fenced code", () => {
+  for (const markdown of [
+    "See the note[^1] for detail.",
+    "[^1]: the definition\n",
+    "```js\nconst x = 1;\n```\n\nAfter the fence[^note].",
+    "~~~\ncode\n~~~\n\n[^a]: after a tilde fence\n",
+    "````\n```js\nnested\n```\n````\n\nOutside[^x].",
+  ]) {
+    assert.equal(hasFootnoteConstruct(markdown), true, markdown);
+  }
+  for (const markdown of ["plain text", "```\n[^1]: inside\n```\n", ""]) {
+    assert.equal(hasFootnoteConstruct(markdown), false, markdown);
+  }
+});
+
+test("a fence holding a character class keeps the incremental plan", () => {
+  // Entering full-document mode resets the incremental state, which bumps the
+  // epoch. So a flat epoch across the stream is exactly the property at issue.
+  const body = Array.from({ length: 400 }, (_, index) =>
+    index === 3
+      ? "  slug = re.sub(/[^a-z]/g, '-', name);"
+      : `  ${codeLine(index)}`,
+  ).join("\n");
+  const text = `Intro.\n\n\`\`\`js\nfunction process() {\n${body}`;
+
+  const cache = new IncrementalMarkdownCache();
+  let render = cache.update(text.slice(0, 64));
+  for (let end = 128; end < text.length; end += 128) {
+    render = cache.update(text.slice(0, end));
+    assert.equal(
+      render.epoch,
+      0,
+      "the reply's own regex literal dropped the retained prefix",
+    );
+  }
+  render = cache.update(text);
+  assert.equal(render.epoch, 0);
+  assert.equal(renderBlockContents(render).join(""), render.markdown);
 });
