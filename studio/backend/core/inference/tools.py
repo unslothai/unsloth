@@ -11807,12 +11807,22 @@ _MAX_PROBE_CHARS_PER_TOKEN = 256
 # fresh connection. Pricing it once per tool result rather than once per model was the
 # single largest avoidable cost on this path.
 #
-# Keyed on the model's own identity rather than on the backend object, so counts are never
-# read back for a DIFFERENT model that happens to have loaded into the same window: the
-# key carries the GGUF's resolved path/inode/size and the template override, and a reload
-# lands on a different key. An install whose backend can name neither its model nor its
-# GGUF is not cached across calls at all, which is also what keeps the lightweight backend
-# doubles in the tests measuring every prefix exactly as they did before.
+# Keyed on the resident llama-server process, so counts are never read back across a
+# reload. The count depends on the EFFECTIVE chat template, and that is not something this
+# module can reconstruct from the managed fields alone: user pass-through args are appended
+# verbatim after Studio's own flags (`llama_cpp.py`, "User pass-through args go last"), and
+# llama.cpp is last-wins, so an install running `--chat-template` or `--chat-template-file`
+# in its extra args renders through a template `_chat_template_override` never sees. Reload
+# the same GGUF into the same window with only those args changed and every managed field
+# matches while the rendering does not, which would hand a prefix a price from a template
+# that is no longer serving it -- accepting an oversized tool result, or over-truncating a
+# fine one.
+#
+# The process settles it without having to enumerate which flags matter. `is_loaded` is
+# `self._process is not None and self._healthy`, and args reach llama-server only on its
+# command line, so a change to any of them is a new process by construction. The content
+# fields below ride along so that a recycled pid still has to agree on the model, the GGUF
+# inode, the window, the managed override AND the extra args before anything is reused.
 _PROBE_COUNT_CACHE: dict = {}
 
 # One model's counts at a time (a new identity clears the map), so this only bounds a
@@ -11828,18 +11838,23 @@ def _probe_identity(llama, ctx: int):
     None is the safe answer: it costs round trips, it never returns a stale number.
     """
     try:
-        model = getattr(llama, "model_identifier", None)
-        source = getattr(llama, "_gguf_load_identity", None)
-        template = getattr(llama, "_chat_template_override", None)
-        if not isinstance(model, str) and not isinstance(source, tuple):
-            # Nothing here would change when the model does. Do not cache.
+        # The resident llama-server. No process is no key: a backend this module cannot
+        # tie a count to keeps paying for its round trips, which is the safe direction.
+        pid = getattr(getattr(llama, "_process", None), "pid", None)
+        if not isinstance(pid, int):
             return None
-        return (
+        key = (
+            pid,
             ctx,
-            model if isinstance(model, str) else None,
-            source if isinstance(source, tuple) else None,
-            template if isinstance(template, str) else None,
+            getattr(llama, "model_identifier", None),
+            getattr(llama, "_gguf_load_identity", None),
+            getattr(llama, "_chat_template_override", None),
+            # The gap the process id closes, spelled out: whatever the user appended to
+            # the command line, including a template that overrides the managed one.
+            tuple(getattr(llama, "_extra_args", None) or ()),
         )
+        hash(key)  # an unhashable field is also "do not cache", not a TypeError upstream
+        return key
     except Exception:  # noqa: BLE001 -- an unreadable identity is "do not cache"
         return None
 

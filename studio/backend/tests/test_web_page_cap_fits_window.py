@@ -626,8 +626,15 @@ class TestTheProbeIsNotPaidForTwice:
         ctx,
         rate = None,
         identified = True,
+        pid = 4242,
+        extra_args = None,
+        gguf = "/models/qwen3-4b.gguf",
     ):
-        """A loaded llama.cpp backend that counts the calls it is asked to make."""
+        """A loaded llama.cpp backend that counts the calls it is asked to make.
+
+        `is_loaded` really is `self._process is not None and self._healthy`, so a resident
+        backend always has a process, and `pid` is what a reload changes.
+        """
         rate = self._RATE if rate is None else rate
         calls = []
 
@@ -641,9 +648,11 @@ class TestTheProbeIsNotPaidForTwice:
         )
         if identified:
             # What a real backend exposes once a GGUF is resident.
-            backend.model_identifier = f"Qwen3-4B::{ctx}::{rate}"
-            backend._gguf_load_identity = (("/models/qwen3-4b.gguf", 66306, 4242, 1),)
+            backend._process = SimpleNamespace(pid = pid)
+            backend.model_identifier = "Qwen3-4B"
+            backend._gguf_load_identity = ((gguf, 66306, 4242, 1),)
             backend._chat_template_override = None
+            backend._extra_args = list(extra_args) if extra_args else None
         monkeypatch.setattr("routes.inference.get_llama_cpp_backend", lambda: backend)
         return calls, backend
 
@@ -717,19 +726,23 @@ class TestTheProbeIsNotPaidForTwice:
         text = "0123456789abcdef" * 2000
         budget = tools._tool_result_char_budget()
 
-        dense_calls, _ = self._serving(monkeypatch, 5120, rate = 1.33)
+        dense_calls, _ = self._serving(
+            monkeypatch, 5120, rate = 1.33, pid = 111, gguf = "/models/dense.gguf"
+        )
         dense = tools._dense_char_limit(text, budget)
 
-        sparse_calls, _ = self._serving(monkeypatch, 5120, rate = 4.2)
+        sparse_calls, _ = self._serving(
+            monkeypatch, 5120, rate = 4.2, pid = 222, gguf = "/models/sparse.gguf"
+        )
         sparse = tools._dense_char_limit(text, budget)
 
         assert sparse_calls, "the new model must be measured, not looked up"
         assert sparse > dense, "and priced by its own tokenizer"
         assert sparse == budget and dense_calls
 
-    def test_a_backend_that_cannot_name_its_model_is_not_cached(self, monkeypatch):
-        """No identity means no key that would change when the model does, so the safe
-        answer is to keep paying. This is also every lightweight test double."""
+    def test_a_backend_with_no_resident_process_is_not_cached(self, monkeypatch):
+        """Nothing to tie a count to means no key guaranteed to change when the rendering
+        does, so the safe answer is to keep paying. Every lightweight double lands here."""
         _window(monkeypatch, 5120)
         calls, _ = self._serving(monkeypatch, 5120, identified = False)
         text = "0123456789abcdef" * 2000
@@ -761,9 +774,11 @@ class TestTheProbeIsNotPaidForTwice:
                 is_loaded = True,
                 context_length = 5120,
                 count_chat_tokens = count_chat_tokens,
+                _process = SimpleNamespace(pid = 4242),
                 model_identifier = "Qwen3-4B",
                 _gguf_load_identity = (("/models/qwen3-4b.gguf", 66306, 4242, 1),),
                 _chat_template_override = None,
+                _extra_args = None,
             ),
         )
         text = "0123456789abcdef" * 2000
@@ -795,11 +810,93 @@ class TestTheProbeIsNotPaidForTwice:
                 is_loaded = True,
                 context_length = 5120,
                 count_chat_tokens = lambda messages, *a, **k: 11,
+                _process = SimpleNamespace(pid = 7),
                 model_identifier = "Gemma-4",
                 _gguf_load_identity = (("/models/gemma-4.gguf", 66306, 7, 1),),
                 _chat_template_override = None,
+                _extra_args = None,
             ),
         )
 
         assert tools._loaded_token_counter(5120)("0123456789abcdef" * 250) is None
         assert tools._dense_char_limit("0123456789abcdef" * 2000, 7168) == 7168
+
+    def test_a_pass_through_chat_template_is_not_answered_from_the_managed_one(self, monkeypatch):
+        """The gap `_chat_template_override` cannot see.
+
+        User extra args are appended verbatim AFTER Studio's own flags and llama.cpp is
+        last-wins, so `--chat-template` / `--chat-template-file` in extra args changes what
+        `/apply-template` renders while every managed field stays exactly as it was. Same
+        GGUF, same window, same managed override: reuse the counts and a prefix gets a
+        price from a template that is no longer serving it, which is the irreducible
+        overflow this budget exists to prevent, reintroduced through the cache.
+        """
+        _window(monkeypatch, 5120)
+        text = "0123456789abcdef" * 2000
+        budget = tools._tool_result_char_budget()
+
+        self._serving(monkeypatch, 5120, rate = 1.33, pid = 900)
+        dense = tools._dense_char_limit(text, budget)
+
+        # Reloaded with only a pass-through template added. Everything managed is identical.
+        calls, backend = self._serving(
+            monkeypatch,
+            5120,
+            rate = 4.2,
+            pid = 901,
+            extra_args = ["--chat-template", "chatml"],
+        )
+        sparse = tools._dense_char_limit(text, budget)
+
+        assert backend.model_identifier == "Qwen3-4B"
+        assert backend._chat_template_override is None
+        assert calls, "the new template must be measured, not looked up"
+        assert sparse > dense, "and priced by the template actually rendering"
+
+    def test_the_extra_args_alone_are_enough_to_miss(self, monkeypatch):
+        """Belt to the process id's braces: even holding the pid fixed, counts are not
+        shared across a different command line."""
+        _window(monkeypatch, 5120)
+        text = "0123456789abcdef" * 2000
+        budget = tools._tool_result_char_budget()
+
+        self._serving(monkeypatch, 5120, rate = 1.33, pid = 5)
+        tools._dense_char_limit(text, budget)
+
+        calls, _ = self._serving(
+            monkeypatch, 5120, rate = 1.33, pid = 5, extra_args = ["--chat-template-file", "/x.jinja"]
+        )
+        tools._dense_char_limit(text, budget)
+
+        assert calls, "a different command line is a different rendering"
+
+    def test_a_reload_of_the_very_same_configuration_still_misses(self, monkeypatch):
+        """A restart is a new process whatever its arguments, so nothing survives it. This
+        is what makes the key safe against flags nobody has thought of yet."""
+        _window(monkeypatch, 5120)
+        text = "0123456789abcdef" * 2000
+        budget = tools._tool_result_char_budget()
+
+        self._serving(monkeypatch, 5120, pid = 1000)
+        first = tools._dense_char_limit(text, budget)
+
+        calls, _ = self._serving(monkeypatch, 5120, pid = 1001)
+        second = tools._dense_char_limit(text, budget)
+
+        assert second == first, "same configuration, same answer"
+        assert calls, "but re-measured rather than carried over the restart"
+
+    def test_an_unhashable_identity_field_disables_the_cache_rather_than_raising(self, monkeypatch):
+        _window(monkeypatch, 5120)
+        calls, backend = self._serving(monkeypatch, 5120)
+        backend._gguf_load_identity = {"not": "hashable"}
+        text = "0123456789abcdef" * 2000
+        budget = tools._tool_result_char_budget()
+
+        first = tools._dense_char_limit(text, budget)
+        spent = len(calls)
+        calls.clear()
+
+        assert tools._dense_char_limit(text, budget) == first
+        assert len(calls) == spent
+        assert not tools._PROBE_COUNT_CACHE
