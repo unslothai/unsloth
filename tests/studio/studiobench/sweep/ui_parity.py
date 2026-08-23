@@ -57,6 +57,7 @@ if __package__ in (None, ""):  # pragma: no cover
 
 from tests.studio.studiobench.analysis import behaviour as B  # noqa: E402
 from tests.studio.studiobench.analysis import parity as P  # noqa: E402
+from tests.studio.studiobench.runtime.ab import gate_detail_is_unmeasured  # noqa: E402
 from tests.studio.studiobench.scoring.from_payload import latest_attempt_rows  # noqa: E402
 
 # The DECLARED unstable set, each entry carrying its mechanism. It lives in the studiobench
@@ -203,18 +204,16 @@ def incomplete_cells(paths: list[Path]) -> dict[str, str]:
             if keep is not None and r.get("session_id") not in (None, keep):
                 continue
             detail = r.get("detail") if isinstance(r.get("detail"), dict) else {}
-            # NOT MEASURED IS NOT FAILED. An absent page-side sampler or dom helper makes both of
-            # these gates say `passed: False` with `follow_attempted` / `probe_attempted` False,
-            # which is a missing instrument rather than an arm that lost something. Refusing every
-            # pair on it would withhold a verdict from a whole run over the harness not being
-            # loaded. The `unmeasured` coverage verdict is a different value and stays fatal; see
-            # `runtime/ab.py::failed_invalidating_gates`, which draws the same line.
-            # Narrowed to the instrument for the reason given there: `no thread viewport` is the
-            # arm missing the surface under test, not a harness that failed to load.
-            unmeasured = (
-                detail.get("follow_attempted") is False or detail.get("probe_attempted") is False
-            )
-            if unmeasured and "viewport" not in str(detail.get("reason") or "").lower():
+            # NOT MEASURED IS NOT FAILED, and this job draws the line in exactly the same place
+            # the performance side does: `gate_detail_is_unmeasured` is THE definition, imported
+            # rather than restated. The predicate had been copied here, which is the drift
+            # `INVALIDATING_CELL_GATES` was centralised to prevent, arriving one level down.
+            #
+            # It matters most for the stream-coverage clause: that shortfall is a property of the
+            # scene schedule, identical on both arms, and this job compares DOM digests the
+            # shortfall does not touch at all. It refused 32 of 32 pairs here, the null control
+            # included.
+            if gate_detail_is_unmeasured(detail):
                 continue
             # FIRST FAILURE WINS, so a cell that failed both is not relabelled by whichever row
             # happens to come second in the file.

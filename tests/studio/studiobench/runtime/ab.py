@@ -221,6 +221,53 @@ def order_is_balanced(plan: list[tuple[Target, Cell, RungPlan]]) -> bool:
 INVALIDATING_CELL_GATES: frozenset[str] = frozenset({"thread_complete", "follows_the_stream"})
 
 
+def gate_detail_is_unmeasured(detail: Mapping[str, Any]) -> bool:
+    """Did this failed gate row report a MISSING READING rather than a FAILING BUILD?
+
+    ONE DEFINITION FOR BOTH ADMISSION LISTS. `INVALIDATING_CELL_GATES` above was centralised so
+    the scorers could not drift into disagreeing about what invalidates a cell; the predicate that
+    waives a row is the same decision one level down, and `sweep/ui_parity.py` applies it to the
+    same rows for the DOM side. Two copies of it drift the same way the gate names would have, and
+    the drift is invisible because each copy looks locally correct.
+
+    THREE PRODUCERS, all meaning "the instrument did not answer", none meaning "the arm lost
+    something":
+
+    `follow_attempted: False` is `_read_follow` reporting that the page-side sampler is not
+    installed, and `probe_attempted: False` is `probe_thread_completeness` reporting the same for
+    `window.__sb.dom`. `pinned`/`coverage` are then None and the row says `passed: False`. That is
+    an absent INSTRUMENT, not a film that went wrong -- the same thing `timer_clamp` is kept off
+    the list above for -- and reading it as fatal would mark every cell of every run unusable
+    wherever the harness is not loaded, a far larger blast radius than the defect being closed.
+
+    `stream_coverage_unmeasured: True` is the third and the one that was standing open.
+    `attached_fraction_of_stream` is fixed by the scene schedule rather than by the build, so it
+    is identical on both arms by construction and cancels in every comparison drawn from these
+    cells; see the block in `session.py` that writes it for the measurements. Left fatal it voided
+    the entire A/B table -- VERDICT: NO READING -- for a reason that has nothing to do with the two
+    builds being compared, and did so on the null control as readily as on a real pair. The cell's
+    timings still stand: both arms rendered the same share of the same film.
+
+    NARROWED TO THE INSTRUMENT, because `probe_attempted: False` has two producers and only one of
+    them is an absent instrument. `window.__sb.dom is not installed` is the harness not being
+    loaded and is waived. `no thread viewport` is the ARM missing the surface the film measures,
+    which is a defect about the build, and waiving it let a real failure ride the instrument
+    allowance.
+
+    This does NOT relax the `unmeasured` COVERAGE VERDICT of the completeness probe, which is a
+    different value and stays fatal: `record_completeness_gate` refuses to score a cell whose probe
+    RAN and could not answer, because "we could not tell" must not be recorded as "it was fine".
+    The case waived here is the probe never having run at all.
+    """
+
+    unmeasured = (
+        detail.get("follow_attempted") is False
+        or detail.get("probe_attempted") is False
+        or detail.get("stream_coverage_unmeasured") is True
+    )
+    return unmeasured and "viewport" not in str(detail.get("reason") or "").lower()
+
+
 def failed_invalidating_gates(records: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     """`{cell_id: why}` for every cell carrying a FAILED INVALIDATING per-cell gate row.
 
@@ -257,30 +304,11 @@ def failed_invalidating_gates(records: Sequence[Mapping[str, Any]]) -> dict[str,
         if keep is not None and row.get("session_id") not in (None, keep):
             continue
         detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-        # NOT MEASURED IS NOT FAILED, and both of these gates report the two as one value.
-        # `_read_follow` returns `{"follow_attempted": False}` when the page-side sampler is not
-        # installed, and `probe_thread_completeness` returns `{"probe_attempted": False}` when
-        # `window.__sb.dom` is not; `pinned`/`coverage` are then None and the gate row says
-        # `passed: False`. That is an absent INSTRUMENT, not a film that went wrong -- the same
-        # thing `timer_clamp` is kept off this list for -- and reading it as fatal would mark every
-        # cell of every run unusable anywhere the sampler is missing, which is a far larger blast
-        # radius than the defect being closed.
-        #
-        # This does NOT relax the `unmeasured` verdict, which is a different value and stays fatal.
-        # `record_completeness_gate` deliberately refuses to score a cell whose probe RAN and could
-        # not answer, because "we could not tell" must not be recorded as "it was fine". The case
-        # skipped here is the probe never having run at all.
-        #
-        # NARROWED TO THE INSTRUMENT, because `probe_attempted: False` has two producers and only
-        # one of them is an absent instrument. `window.__sb.dom is not installed` is the harness
-        # not being loaded and is waived here. `no thread viewport` is the ARM missing the surface
-        # the film measures, which is a defect about the build, and waiving it let a real failure
-        # ride the instrument allowance. Readiness now refuses that cell outright, so this is the
-        # second of two doors on the same hole.
-        unmeasured = (
-            detail.get("follow_attempted") is False or detail.get("probe_attempted") is False
-        )
-        if unmeasured and "viewport" not in str(detail.get("reason") or "").lower():
+        # NOT MEASURED IS NOT FAILED. See `gate_detail_is_unmeasured`, which is shared with
+        # `sweep/ui_parity.py` so the two admission lists cannot drift apart on it. Readiness now
+        # refuses a cell with no thread viewport outright, so that narrowing is the second of two
+        # doors on the same hole.
+        if gate_detail_is_unmeasured(detail):
             continue
         why = detail.get("reason") or detail.get("coverage_reason") or "the cell's own self-check"
         failed.setdefault(cell_id, f"gate {name}: {why}")
