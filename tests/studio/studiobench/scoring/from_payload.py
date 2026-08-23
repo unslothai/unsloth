@@ -466,6 +466,7 @@ def _stream_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]
     deltas: list[float] = []
     window_ms = 0.0
     max_frame: float | None = None
+    frameless = 0
 
     for w in unaided:
         inst = w.get("instruments") or {}
@@ -490,6 +491,7 @@ def _stream_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]
             continue
         gaps = frames.get("frame_gaps_ms")
         if not gaps:
+            frameless += 1
             continue
         deltas.extend(float(g) for g in gaps)
         window_ms += float(w.get("duration_ms") or 0.0)
@@ -529,6 +531,30 @@ def _stream_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]
             )
         )
     )
+    if frameless:
+        # THE SAME RULE AS `_frame_measures`, ON THE SAME SHAPE OF WINDOW, AND FOR THE SAME REASON.
+        #
+        # `instruments/frames.js` emits `frames_attempted: true` with `frame_gaps_ms: []` and a
+        # null `max_frame_ms` whenever the rAF loop was never scheduled in the window, and rAF
+        # going unscheduled is a rendering fact, not a quiet one: on a headless engine the loop
+        # runs off the rendering pipeline, so a renderer that stalls stops delivering callbacks
+        # while SSE keeps arriving. Skipped rather than refused, such a window contributes no
+        # deltas, no wall time and no worst frame, so the REMAINING unaided windows answer for the
+        # whole streaming stretch: one frozen window beside one smooth one reported a 16.7 ms worst
+        # frame and 0.0% time in jank, byte-identical to the cell without the freeze in it.
+        # An unmeasured window is not an absent one. Only the three FRAME metrics are poisoned --
+        # the cost, busy and character figures come from `stream_cost`, which measured this window
+        # perfectly well.
+        reason = (
+            f"{frameless} unaided streaming window(s) recorded no frames at all (rAF may be "
+            "unscheduled), so the pooled streaming frame metrics would describe only the windows "
+            "that were measured"
+        )
+        out["stream_max_frame_ms"] = Measure.failed("ms", reason)
+        out["stream_time_in_jank_pct"] = Measure.failed("%", reason)
+        out["stream_jank_index"] = Measure.failed("ms", reason)
+        return out
+
     out["stream_max_frame_ms"] = (
         Measure.read(max_frame, "ms", note = "worst frame inside the UNAIDED streaming windows")
         if max_frame is not None
