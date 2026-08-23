@@ -1703,6 +1703,6 @@ def test_the_chat_backend_does_not_import_pyyaml_to_learn_the_speech_verdict():
     # scripts/verify_import_hoist.py blocks one outside a package __init__ anyway.
     gguf_metadata = importlib.import_module("utils.models.gguf_metadata")
     for name in ("SPEECH_GGUF_ARCHS", "is_speech_gguf_architecture"):
-        assert not hasattr(gguf_metadata, name), (
-            f"{name} must be imported from utils.gguf_archs, not through utils.models"
-        )
+        assert not hasattr(
+            gguf_metadata, name
+        ), f"{name} must be imported from utils.gguf_archs, not through utils.models"
