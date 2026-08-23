@@ -393,6 +393,99 @@ def test_an_unrenderable_turn_records_no_floor_to_subtract():
     )
 
 
+def _gemma_style_counter(catalogue_tokens: int):
+    """A counter that renders a lone tool result as nothing, as Gemma 4 does.
+
+    Both bundled Gemma-4 templates skip `role: tool` in the message loop and emit the
+    result only while scanning forward from the assistant tool call that asked for it, so
+    a one-message slice renders byte-for-byte the same prompt as an empty one.
+    """
+
+    def count(messages):
+        total = catalogue_tokens
+        for index, message in enumerate(messages):
+            if message.get("role") == "tool":
+                previous = messages[index - 1] if index else None
+                anchored = bool(previous) and (
+                    previous.get("role") == "tool"
+                    or (previous.get("role") == "assistant" and previous.get("tool_calls"))
+                )
+                if not anchored:
+                    continue
+            total += max(1, len(json.dumps(message, ensure_ascii = False)) // 4)
+        return total
+
+    return count
+
+
+def _tool_loop_thread(turn_tokens: int, system_tokens: int = 200, history_turns: int = 6):
+    """A tool loop caught mid-flight: the result of the call just made is last."""
+    messages = [{"role": "system", "content": "s" * (system_tokens * 4)}]
+    for index in range(history_turns):
+        messages.append({"role": "user", "content": f"q{index} " + "x" * 1200})
+        messages.append({"role": "assistant", "content": f"a{index} " + "y" * 1200})
+    messages.append({"role": "user", "content": "read the file"})
+    messages.append(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": {"path": "big.txt"}},
+                }
+            ],
+        }
+    )
+    messages.append(
+        {
+            "role": "tool",
+            "tool_call_id": "c1",
+            "name": "read_file",
+            "content": "z" * (turn_tokens * 4),
+        }
+    )
+    return messages
+
+
+@pytest.mark.parametrize(
+    "turn_tokens,system_tokens,expected",
+    [
+        # Big enough to be the problem: the tool-specific advice must survive.
+        (5000, 200, "Most of this prompt is a single tool result"),
+        # And a small result beside instructions that do not fit is still not the result's
+        # fault: the estimate must not invent a blame the count never earned.
+        (20, 5000, "shorten the conversation"),
+    ],
+)
+def test_a_turn_the_template_renders_as_nothing_is_not_counted_as_the_floor(
+    turn_tokens, system_tokens, expected
+):
+    """A count no bigger than the empty prompt measured framing, not the turn.
+
+    Gemma 4 renders a lone tool result as nothing, so the one-message slice succeeds and
+    returns the floor exactly. Recording that as an exact turn size makes the turn worth
+    ~0 once the floor comes off both sides, and a 5,000-token tool result reads as the
+    conversation's fault. Fall back to the estimate, as an outright refusal already does.
+    """
+    _, truncation = fit_rolling_context(
+        _tool_loop_thread(turn_tokens, system_tokens = system_tokens),
+        context_length = 8192,
+        max_tokens = None,
+        count_tokens = _gemma_style_counter(1500),
+    )
+    assert truncation is not None and not truncation["fits"]
+    # Not the floor reported as the turn: no floor recorded, and a number that moves with
+    # the result's size instead of pinning to the 1,500-token catalogue.
+    assert truncation["shared_prompt_tokens"] == 0
+    assert truncation["latest_turn_tokens"] != 1500
+    _context_truncated_sse_chunk("cmpl-1", "model", truncation)
+    assert expected in _friendly_error(
+        ValueError("the request (9000 tokens) exceeds the available context size (8192 tokens)")
+    )
+
+
 def test_a_diagnosis_with_no_window_recorded_is_still_usable():
     # The server's own number stands in for the window it did not record.
     refusal = _refusal(irreducible = 5600, latest_turn = 5400)

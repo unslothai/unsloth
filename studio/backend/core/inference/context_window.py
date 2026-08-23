@@ -270,6 +270,18 @@ def turn_diagnosis(
         return {"latest_turn_tokens": 0, "latest_turn_role": "", "shared_prompt_tokens": 0}
     latest, exact = _latest_turn_count(messages, count_tokens)
     shared = _shared_prompt_tokens(count_tokens) if exact else 0
+    if exact and latest <= shared:
+        # Counted, and yet no bigger than the empty prompt: the template rendered the turn
+        # as nothing. Both bundled Gemma-4 templates do exactly that to a `role: tool`
+        # message on its own -- `{%- if message['role'] != 'tool' -%}` skips it, and the
+        # result is emitted only while scanning forward from the assistant tool call that
+        # asked for it, which a one-message slice does not contain. So the number is the
+        # floor and nothing else, and subtracting the floor from it would leave the turn
+        # contributing ~0 and blame the conversation. Same remedy as a template that
+        # refuses the slice outright: price the message's own JSON, and record no floor,
+        # because that estimate does not carry one.
+        latest = int(estimate_messages_tokens(messages[-1:]))
+        shared = 0
     # Never all of either side: a floor at or above them would leave no ratio to compare.
     shared = max(0, min(shared, latest - 1, int(irreducible_tokens) - 1))
     return {
