@@ -66,6 +66,9 @@ _MIRROR_ONLY_TAG_RE = re.compile(r"^master-\d+-[0-9a-f]+-u[0-9a-f]+$")
 # bundle from a CUDA one instead of reusing whatever binary happens to be on disk.
 INSTALL_RECORD = ".unsloth-sd-cpp-install.json"
 
+# Marks the directory as one Studio created, so an uninstall never wipes a user's own tree.
+OWNERSHIP_MARKER = ".unsloth-studio-owned"
+
 
 def accelerator_class(accelerator: Optional[str]) -> str:
     """The accelerator an install actually serves. ``auto`` resolves to the plain build, so it and
@@ -559,8 +562,13 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     the ``lib*.so`` links upstream sd.cpp releases ship and leaves ``sd-cli``
     with ``file too short`` libraries (#9268)."""
     base = target.resolve()
+    # The installer writes these itself after extraction. A symlink member at one of them makes
+    # _write_install_record follow it and overwrite whatever it points at, while the record still
+    # reads back correctly, so a corrupted install reports success.
+    reserved = {base / INSTALL_RECORD, base / OWNERSHIP_MARKER}
     links: list[tuple[Path, str, zipfile.ZipInfo]] = []
     plain: list[zipfile.ZipInfo] = []
+    written: list[Path] = []
     for member in zf.infolist():
         # Lexical, never resolve()d. Extraction MERGES, so resolving would follow the link the
         # PREVIOUS install wrote and end with the real library replaced by a link to itself.
@@ -568,7 +576,10 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
         checked = dest.resolve()
         if checked != base and base not in checked.parents:
             raise RuntimeError(f"unsafe path in archive: {member.filename!r}")
+        written.append(Path(os.path.normpath(dest)))
         if _is_symlink_member(member):
+            if written[-1] in reserved:
+                raise RuntimeError(f"symlink at a reserved installer path: {member.filename!r}")
             links.append((dest, _checked_link_target(zf, member, dest, base), member))
         else:
             plain.append(member)
@@ -583,6 +594,14 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
             seen.add(cur)
             cur = os.path.normpath(os.path.join(os.path.dirname(cur), by_dest[cur]))
     # Validated before the first write, so a rejected archive leaves the install untouched.
+    #
+    # extractall opens each destination "wb", which FOLLOWS a link a previous bundle left there
+    # and writes the member into the file it points at. Drop stale links first: a name that one
+    # bundle ships as a link the next can ship as a regular file (the mirror ships plain copies
+    # where upstream ships links), and an accelerator switch lands exactly that way.
+    for dest in written:
+        if dest.is_symlink():
+            dest.unlink()
     zf.extractall(target, members = plain)
     for dest, link_target, member in links:
         dest = Path(os.path.normpath(dest))
@@ -604,6 +623,16 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
             dest.unlink()
         try:
             dest.symlink_to(link_target)
+            # The graph on disk also holds links a previous bundle left, so an archive edge can
+            # close a cycle with one this archive never saw. Undo ours rather than leave a pair
+            # nothing can read, which the retry would hit again.
+            try:
+                dest.resolve(strict = True)
+            except FileNotFoundError:
+                pass                        # a target this bundle does not ship is still fine
+            except OSError as exc:
+                dest.unlink(missing_ok = True)
+                raise RuntimeError(f"symlink cycle in archive: {member.filename!r}") from exc
         except OSError:
             # No privilege (Windows outside developer mode). Fall back to the flattened
             # member, which is what shipped before this, so the install still finishes.
@@ -754,7 +783,7 @@ def install(
     """
     target = install_dir or default_install_dir()
     # Claim ownership of `target` only if we created it, it was empty, or it is already marked: adopting a user's non-empty dir would let a later uninstall wipe it.
-    marker = target / ".unsloth-studio-owned"
+    marker = target / OWNERSHIP_MARKER
     _may_own = True
     if target.exists():
         if not target.is_dir():

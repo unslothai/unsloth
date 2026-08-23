@@ -517,6 +517,62 @@ def test_safe_extractall_allows_a_parent_symlinked_inside_the_tree(tmp_path):
     assert link.read_bytes() == b"\x7fELFpayload"
 
 
+def test_safe_extractall_drops_a_stale_link_at_a_regular_members_path(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    # An accelerator switch lands exactly here: upstream ships lib*.so as links, the mirror
+    # ships plain copies. extractall opens its destination "wb", so a leftover link would send
+    # one member's bytes into the file it points at and lose them.
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / "real").write_bytes(b"old real lib")
+    (target / "name").symlink_to("real")
+    archive = tmp_path / "next.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("name", b"new name bytes")
+        zf.writestr("real", b"new real bytes")
+
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+
+    assert not (target / "name").is_symlink()
+    assert (target / "name").read_bytes() == b"new name bytes"
+    assert (target / "real").read_bytes() == b"new real bytes"
+
+
+def test_safe_extractall_rejects_a_cycle_closed_by_an_existing_link(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    # The graph on disk also holds links a previous bundle left, so archive-to-archive edges
+    # alone cannot see a cycle. The half this archive created must not survive the rejection,
+    # or the retry meets the same loop.
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / "b").symlink_to("a")
+    archive = tmp_path / "next.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        _link_member(zf, "a", "b")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "symlink cycle"):
+            _safe_extractall(zf, target)
+    assert not (target / "a").is_symlink()
+
+
+def test_safe_extractall_rejects_a_symlink_at_a_reserved_installer_path(tmp_path):
+    # _write_install_record opens the record with "w", which follows a link planted there and
+    # overwrites its target, while the record still reads back, so the install reports success.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("sd-cli", b"\x7fELF real binary")
+        _link_member(zf, sdmod.INSTALL_RECORD, "sd-cli")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "reserved installer path"):
+            _safe_extractall(zf, target)
+    assert not any(target.iterdir())
+
+
 def test_safe_extractall_rejects_symlink_cycles(tmp_path):
     # Chains are normal, a cycle is not: it installs a library nothing can read, so the
     # loader failure would send the backend round the reinstall loop on every load.
