@@ -53,6 +53,11 @@ _cache_generation = 0
 _full_clear_generation = 0
 _reaped_at: dict[str, int] = {}
 _REAPED_AT_MAX = 4096
+# The newest generation whose per-id records have been dropped to stay under that cap. A fetch
+# that started at or after this is still answered exactly, because nothing covering it was
+# dropped; only one older than every record we still hold has to be given up on. Fetches are
+# bounded by THUMBNAIL_FETCH_TIMEOUT_S, so outliving 4096 reaped images is not a real case.
+_reaped_floor_generation = 0
 # Ids whose files a clear could not unlink -- on Windows another process holding the
 # JPEG open is enough. The cache-first read and the sidecar read both go around the
 # registry, so without this they would go on serving a picture the user had cleared.
@@ -512,6 +517,9 @@ def _reaped_since_locked(image_id: str, generation: int) -> bool:
     """Whether a clear covering ``image_id`` landed after ``generation``. Caller holds the lock."""
     if _full_clear_generation > generation:
         return True
+    if generation < _reaped_floor_generation:
+        # Older than every record still held, so this cannot be shown to have been spared.
+        return True
     return _reaped_at.get(image_id, 0) > generation
 
 
@@ -526,7 +534,7 @@ def clear_cache(only_ids: set[str] | None = None) -> None:
     refuse a registration racing a clear -- but the in-flight fetch check is per id, so a
     spared image's fetch is left alone. Aborting it would 404 a card that never retries.
     """
-    global _cache_generation, _full_clear_generation
+    global _cache_generation, _full_clear_generation, _reaped_floor_generation
     # The unlinks are under the lock too, so an in-flight fetch cannot slip its write
     # in between the bump and the delete and leave a cleared thumbnail on disk.
     with _registry_lock:
@@ -543,14 +551,21 @@ def clear_cache(only_ids: set[str] | None = None) -> None:
             _reaped_at.clear()
         else:
             if len(_reaped_at) + len(only_ids) > _REAPED_AT_MAX:
-                # Out of room to be precise. Fall back to the blunt signal rather than
-                # forgetting a reap: over-aborting costs a re-fetch, under-aborting
-                # republishes a thumbnail the user cleared.
-                _reaped_at.clear()
-                _full_clear_generation = _cache_generation
-            else:
-                for image_id in only_ids:
-                    _reaped_at[image_id] = _cache_generation
+                # Out of room. Drop the OLDEST records rather than promoting this to a
+                # full clear: doing that aborts every fetch in flight, including ones for
+                # images this clear deliberately spared, and an aborted fetch is not a
+                # cheap retry -- the card 404s and useSearchThumbnail never asks again.
+                # Raising the floor instead gives up only on fetches older than every
+                # record still held, which the fetch timeout makes unreachable in practice.
+                keep_from = sorted(_reaped_at.values())[len(_reaped_at) // 2 :]
+                floor = keep_from[0] - 1 if keep_from else _cache_generation
+                for stale_id in [
+                    key for key, at in _reaped_at.items() if at <= floor
+                ]:
+                    _reaped_at.pop(stale_id, None)
+                _reaped_floor_generation = max(_reaped_floor_generation, floor)
+            for image_id in only_ids:
+                _reaped_at[image_id] = _cache_generation
         for pattern in ("*.jpg", "*.json", "*.tmp"):
             try:
                 paths = list(_cache_dir().glob(pattern))

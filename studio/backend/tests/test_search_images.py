@@ -1145,23 +1145,63 @@ def test_a_selective_clear_still_aborts_the_fetch_for_an_image_it_reaped(monkeyp
     assert list(tmp_path.glob("*.jpg")) == []
 
 
-def test_an_overflowing_reap_record_falls_back_to_aborting_everything(monkeypatch, tmp_path):
-    """The per-id record is bounded, and losing it must fail SAFE.
+def test_an_overflowing_reap_record_drops_the_oldest_not_everything(monkeypatch, tmp_path):
+    """The per-id record is bounded, and running out of room must not abort live fetches.
 
-    Forgetting that an id was reaped would republish a thumbnail the user cleared, which is
-    the failure this module treats as the worse one. Over-aborting only costs a re-fetch.
+    Clearing it and promoting the clear to a full-clear marker was the first attempt. That
+    aborts every fetch in flight, including ones for images the clear deliberately spared,
+    and an aborted fetch is not a cheap retry: thumbnail_bytes answers None, the endpoint
+    404s, and useSearchThumbnail records a permanent failure for that id.
+
+    Dropping the OLDEST records and raising a floor keeps every fetch that started at or
+    after the floor exactly answerable. The assertion is taken across the clear that
+    actually overflows, which is the only moment the two strategies differ.
     """
-    monkeypatch.setattr(search_images, "_REAPED_AT_MAX", 2)
+    monkeypatch.setattr(search_images, "_REAPED_AT_MAX", 4)
     monkeypatch.setattr(search_images, "_reaped_at", {})
-    reaped_ids = {f"{index:012x}" for index in range(5)}
-    assert len(reaped_ids) > 2, "need more ids than the cap to force the overflow"
+    monkeypatch.setattr(search_images, "_reaped_floor_generation", 0)
+    monkeypatch.setattr(search_images, "_full_clear_generation", 0)
 
-    before = search_images.cache_generation()
-    search_images.clear_cache(reaped_ids)
+    # Two clears that fit, then one that does not.
+    search_images.clear_cache({"000000000000", "000000000001"})
+    search_images.clear_cache({"000001000000", "000001000001"})
+    in_flight_generation = search_images.cache_generation()
+    search_images.clear_cache({"000002000000", "000002000001"})
 
-    assert search_images._reaped_at == {}, "the per-id record is dropped, not half-kept"
-    assert (
-        search_images._full_clear_generation > before
-    ), "so the blunt signal has to take over, or a reaped id would look spared"
+    assert search_images._reaped_at, "records must survive the overflow; clearing them was the bug"
+    assert search_images._reaped_at.get("000002000000") == search_images.cache_generation(), (
+        "the reap that overflowed is exactly the one that must still be remembered"
+    )
+
     with search_images._registry_lock:
-        assert search_images._reaped_since_locked("aaaaaaaaaaaa", before) is True
+        # A fetch already running for an image no clear ever named. Promoting the overflow
+        # to a full clear took this down with everything else.
+        assert search_images._reaped_since_locked("ffffffffffff", in_flight_generation) is False
+        # And the ids that clear really did take are still known to be reaped.
+        assert (
+            search_images._reaped_since_locked("000002000000", in_flight_generation) is True
+        )
+
+
+def test_the_overflow_floor_still_refuses_a_fetch_older_than_every_record(monkeypatch):
+    """The one case the floor gives up on, kept honest: older than anything still held."""
+    monkeypatch.setattr(search_images, "_REAPED_AT_MAX", 4)
+    monkeypatch.setattr(search_images, "_reaped_at", {})
+    monkeypatch.setattr(search_images, "_reaped_floor_generation", 0)
+
+    for round_index in range(4):
+        search_images.clear_cache({f"{round_index:06d}{index:06d}" for index in range(2)})
+
+    floor = search_images._reaped_floor_generation
+    assert floor > 0, "the cap has to have forced a floor for this to mean anything"
+    with search_images._registry_lock:
+        assert search_images._reaped_since_locked("ffffffffffff", floor - 1) is True
+        assert search_images._reaped_since_locked("ffffffffffff", floor) is False
+
+
+def test_a_full_clear_still_aborts_every_fetch_including_unknown_ids():
+    """The blunt signal is still right for a clear-everything: nothing survives it."""
+    before = search_images.cache_generation()
+    search_images.clear_cache()
+    with search_images._registry_lock:
+        assert search_images._reaped_since_locked("ffffffffffff", before) is True
