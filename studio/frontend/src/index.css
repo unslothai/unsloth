@@ -727,7 +727,13 @@ html[data-chat-font] .aui-root {
 }
 :root:not([data-palette]) .palette-card[data-palette-value="standard"],
 :root[data-palette="classic"] .palette-card[data-palette-value="classic"],
-:root[data-palette="minimal"] .palette-card[data-palette-value="minimal"] {
+:root[data-palette="minimal"] .palette-card[data-palette-value="minimal"],
+.reload-snapshot-shell:not([data-palette])
+	.palette-card[data-palette-value="standard"],
+.reload-snapshot-shell[data-palette="classic"]
+	.palette-card[data-palette-value="classic"],
+.reload-snapshot-shell[data-palette="minimal"]
+	.palette-card[data-palette-value="minimal"] {
 	/* Selection keeps the card's own border weight, only darker. */
 	border-color: var(--ring-select);
 }
@@ -3262,4 +3268,32 @@ html[data-chat-font] .aui-root {
 			var(--foreground)
 		);
 	}
+}
+
+/* The retained reload shell. Its contents live in a closed shadow tree. The
+   script repeats this host rule inline because Vite injects development CSS
+   after main.tsx loads; in production this is painted by the render-blocking
+   stylesheet. Click-through: the copy is a picture, and the live document
+   underneath keeps taking input. */
+.reload-snapshot {
+	position: fixed;
+	inset: 0;
+	z-index: 2147483647;
+	pointer-events: none;
+	background: var(--background);
+}
+
+/* The copy is a still, so it must not animate at all. Pausing is not the same
+   thing: a paused animation holds its FIRST keyframe, which for the
+   animate-in/fade-in entrances is opacity 0, so those elements would render
+   invisible for as long as the shell is up. Even collapsing the duration
+   leaves them blank for the frame the animation starts on. Dropping the
+   animation paints the settled style straight away. This rule reaches the copy
+   because the shadow tree loads this same stylesheet and marks its root
+   .reload-snapshot-shell. */
+.reload-snapshot-shell *,
+.reload-snapshot-shell *::before,
+.reload-snapshot-shell *::after {
+	animation: none !important;
+	transition: none !important;
 }

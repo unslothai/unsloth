@@ -5,29 +5,56 @@ import {
   OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS,
   isOpenDocumentAttachmentName,
 } from "../chat/open-document-accept.ts";
+import { TEXT_ATTACHMENT_EXTENSIONS } from "../chat/text-attachment-accept.ts";
 import { RAG_UPLOAD_ACCEPT } from "../rag/types/rag.ts";
 
-const DOC_EXTS = RAG_UPLOAD_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase());
+const DOC_EXTS = RAG_UPLOAD_ACCEPT.split(",").map((ext) =>
+  ext.trim().toLowerCase(),
+);
+
+// RAG types are filtered out, so a dropped .txt/.md keeps being indexed.
+const TEXT_EXTS = TEXT_ATTACHMENT_EXTENSIONS.map((ext) =>
+  ext.toLowerCase(),
+).filter((ext) => !DOC_EXTS.includes(ext));
+
+/** Dropped paths with an inline adapter but no RAG parser. */
+export function isComposerAttachmentName(path: string): boolean {
+  return isOpenDocumentAttachmentName(path) || isTextDropName(path);
+}
+
+function isTextDropName(path: string): boolean {
+  // Rust classifies on Path::extension, which a dotfile like ".env" has none of.
+  const name = nativeFileName(path).toLowerCase();
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return false;
+  return TEXT_EXTS.includes(name.slice(dot));
+}
 
 /** Vision chat attachments; keep in sync with `shared-composer` `IMAGE_ACCEPT`. */
 export const CHAT_IMAGE_DROP_ACCEPT = ".jpg,.jpeg,.png,.webp,.gif";
 
-const IMAGE_EXTS = CHAT_IMAGE_DROP_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase());
+const IMAGE_EXTS = CHAT_IMAGE_DROP_ACCEPT.split(",").map((ext) =>
+  ext.trim().toLowerCase(),
+);
 
 /** Chat audio attachments; keep in sync with `audio-attachment-adapter.ts` `accept`. */
 export const CHAT_AUDIO_DROP_ACCEPT = ".wav,.mp3,.m4a,.ogg,.oga,.flac";
 
-const AUDIO_EXTS = CHAT_AUDIO_DROP_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase());
+const AUDIO_EXTS = CHAT_AUDIO_DROP_ACCEPT.split(",").map((ext) =>
+  ext.trim().toLowerCase(),
+);
 
 /** Chat video attachments; keep in sync with `native_path_policy.rs`
  * `VIDEO_ATTACHMENT_EXTS`. llama-server decodes with ffmpeg, so this is what
  * ffmpeg reads, not what the webview can play. */
 export const CHAT_VIDEO_DROP_ACCEPT = ".mp4,.mov,.webm,.mkv,.avi";
 
-const VIDEO_EXTS = CHAT_VIDEO_DROP_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase());
+const VIDEO_EXTS = CHAT_VIDEO_DROP_ACCEPT.split(",").map((ext) =>
+  ext.trim().toLowerCase(),
+);
 
 /** What the window actually takes, for the rejection toast and the overlay. */
-export const SUPPORTED_DROP_HINT = `Supported files: ${RAG_UPLOAD_ACCEPT}, ${OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS}, ${CHAT_IMAGE_DROP_ACCEPT}, one of ${CHAT_AUDIO_DROP_ACCEPT}, one of ${CHAT_VIDEO_DROP_ACCEPT}, or a single .gguf model.`;
+export const SUPPORTED_DROP_HINT = `Supported files: ${RAG_UPLOAD_ACCEPT}, ${OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS}, source and text files, ${CHAT_IMAGE_DROP_ACCEPT}, one of ${CHAT_AUDIO_DROP_ACCEPT}, one of ${CHAT_VIDEO_DROP_ACCEPT}, or a single .gguf model.`;
 
 /** Last path segment of a native path, for display and extension checks. */
 export function nativeFileName(path: string): string {
@@ -68,7 +95,8 @@ export function classifyDropPaths(paths: string[]): NativeDropClass {
   const docs = paths.filter(
     (path) =>
       DOC_EXTS.some((ext) => hasExt(path, ext)) ||
-      isOpenDocumentAttachmentName(path),
+      isOpenDocumentAttachmentName(path) ||
+      isTextDropName(path),
   );
   const images = paths.filter((path) =>
     IMAGE_EXTS.some((ext) => hasExt(path, ext)),
