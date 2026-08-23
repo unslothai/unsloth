@@ -96,6 +96,7 @@ __all__ = [
     "_redirect_embedding_targets",
     "_raise_if_no_lora_targets_left",
     "_resolve_ensure_weight_tying",
+    "_drop_tied_output_module",
     "_raise_if_fast_inference_modules_to_save",
     "make_fast_generate_wrapper",
     "_mark_unsloth_disable_data_parallel",
@@ -4544,6 +4545,18 @@ def _resolve_ensure_weight_tying(model, modules_to_save, requested):
     if not EMBEDDING_MODULES <= set(modules_to_save or ()):
         return False
     return bool(getattr(getattr(model, "config", None), "tie_word_embeddings", False))
+
+
+def _drop_tied_output_module(modules_to_save, ensure_weight_tying):
+    """Leave the tied output module for PEFT to reconstruct, keeping the input embedding.
+
+    peft 0.18 ties only `tied_weight_keys - modules_to_save`, so naming both there ties
+    nothing and trains two copies that diverge. Measured on 0.18.1 and 0.20.0: this
+    spelling gives one trainable matrix on both.
+    """
+    if not ensure_weight_tying:
+        return modules_to_save
+    return [x for x in modules_to_save if x != "lm_head"]
 
 
 def _raise_if_fast_inference_modules_to_save(model, modules_to_save):

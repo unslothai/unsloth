@@ -214,6 +214,20 @@ def test_ensure_weight_tying_stays_off_without_both_names(modules_to_save):
     assert _resolve_ensure_weight_tying(_Model(tie = True), modules_to_save, None) is False
 
 
+def test_tying_leaves_the_output_module_for_peft_to_reconstruct():
+    """peft 0.18 ties only what modules_to_save does not name, so naming both there ties
+    nothing and trains two copies that diverge."""
+    from unsloth.models._utils import _drop_tied_output_module
+
+    both = ["embed_tokens", "lm_head"]
+    assert _drop_tied_output_module(both, True) == ["embed_tokens"]
+    assert _drop_tied_output_module(both, False) == both
+    # Nothing else moves, and a lone lm_head is not a tied pair (tying stays off).
+    assert _drop_tied_output_module(["embed_tokens", "score"], True) == ["embed_tokens", "score"]
+    assert _drop_tied_output_module(["lm_head"], False) == ["lm_head"]
+    assert _drop_tied_output_module([], True) == []
+
+
 @pytest.mark.parametrize("requested", [True, False])
 def test_explicit_ensure_weight_tying_always_wins(requested):
     from unsloth.models._utils import _resolve_ensure_weight_tying
