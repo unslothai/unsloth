@@ -1015,9 +1015,7 @@ _LEG = [{"label": "control", "passed": False, "steps": []}]
         ("fail", _PASSING + _LEG, 0),
     ],
 )
-def test_only_a_real_assertion_failure_turns_the_job_red(
-    tmp_path, verdict, reports, expected_exit
-):
+def test_only_a_real_assertion_failure_turns_the_job_red(tmp_path, verdict, reports, expected_exit):
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     (evidence / "launch_result.json").write_text(

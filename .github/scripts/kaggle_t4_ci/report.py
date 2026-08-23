@@ -99,6 +99,7 @@ def version_table(reports: list) -> list[str]:
 # is how `import report` starts resolving to the wrong file.
 STUDIO_LABEL = "studio-gpu"
 
+
 def own_verdict(kernel_verdict: str, kernel_reason: str, reports: list, expect: int):
     """This reporter's verdict over ITS OWN payloads, not the kernel's.
 

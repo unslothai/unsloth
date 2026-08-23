@@ -524,11 +524,16 @@ STUDIO_TEST = build_kernel.STUDIO_TEST_NOTEBOOK
 AMBIENT_CUDA = "0,1"
 
 
-def _drive_with_studio(tmp_path, monkeypatch, leg_names, *, gpus = 2, durations = None):
+def _drive_with_studio(
+    tmp_path,
+    monkeypatch,
+    leg_names,
+    *,
+    gpus = 2,
+    durations = None,
+):
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", AMBIENT_CUDA)
-    return _drive_packed(
-        tmp_path, leg_names, gpus = gpus, durations = durations, studio = STUDIO
-    )
+    return _drive_packed(tmp_path, leg_names, gpus = gpus, durations = durations, studio = STUDIO)
 
 
 def test_the_studio_install_never_takes_a_card_and_the_legs_never_wait_for_it(
@@ -545,8 +550,10 @@ def test_the_studio_install_never_takes_a_card_and_the_legs_never_wait_for_it(
         tmp_path,
         monkeypatch,
         ALL_FOUR,
-        durations = {n: 0.30 for n in ("t4_gptoss.ipynb", "t4_frontier.ipynb",
-                                       "t4_canary.ipynb", "t4_control.ipynb")},
+        durations = {
+            n: 0.30
+            for n in ("t4_gptoss.ipynb", "t4_frontier.ipynb", "t4_canary.ipynb", "t4_control.ipynb")
+        },
     )
     assert driven["stood_down"] is None
     calls = {c["notebook"]: c for c in driven["stub"].papermill}
@@ -573,9 +580,7 @@ def test_the_studio_install_never_takes_a_card_and_the_legs_never_wait_for_it(
         assert peak <= 13.0, (card, peak, driven["stub"].same_card_overlaps)
 
 
-def test_the_studio_assertions_wait_for_both_cards_rather_than_borrowing_one(
-    tmp_path, monkeypatch
-):
+def test_the_studio_assertions_wait_for_both_cards_rather_than_borrowing_one(tmp_path, monkeypatch):
     """Studio keeps both T4s visible, and that is deliberate upstream.
 
     Its own driver says so: "Studio's own device selection is part of what is
@@ -592,9 +597,7 @@ def test_the_studio_assertions_wait_for_both_cards_rather_than_borrowing_one(
     assert by_name[STUDIO_TEST]["cuda"] == AMBIENT_CUDA, by_name[STUDIO_TEST]
 
 
-def test_a_failed_studio_install_skips_its_assertions_with_the_reason(
-    tmp_path, monkeypatch
-):
+def test_a_failed_studio_install_skips_its_assertions_with_the_reason(tmp_path, monkeypatch):
     """Otherwise the missing venv is reported as a Studio regression.
 
     The install half is what puts the interpreter, the frontend and the
@@ -608,15 +611,27 @@ def test_a_failed_studio_install_skips_its_assertions_with_the_reason(
         def run(self, cmd, **kw):
             cmd = [str(c) for c in cmd]
             if "papermill" in cmd and STUDIO_INSTALL in " ".join(cmd):
-                self.papermill.append({"notebook": STUDIO_INSTALL, "cuda": None,
-                                       "kernel": None, "compile_location": None})
+                self.papermill.append(
+                    {
+                        "notebook": STUDIO_INSTALL,
+                        "cuda": None,
+                        "kernel": None,
+                        "compile_location": None,
+                    }
+                )
                 Path(cmd[cmd.index("papermill") + 2]).write_text("{}", encoding = "utf-8")
                 return types.SimpleNamespace(returncode = 1, stdout = "", stderr = "")
             return super().run(cmd, **kw)
 
     driver = build_kernel.build_kernel(
-        SMOKE_DIR, ALL_FOUR, unsloth_ref = "main", zoo_ref = "main", extra_args = (),
-        per_run_timeout = 60, skip_reference = True, studio = STUDIO,
+        SMOKE_DIR,
+        ALL_FOUR,
+        unsloth_ref = "main",
+        zoo_ref = "main",
+        extra_args = (),
+        per_run_timeout = 60,
+        skip_reference = True,
+        studio = STUDIO,
     )
     stub = _InstallFails(gpus = 2)
     stub.root = tmp_path
@@ -655,8 +670,14 @@ def test_a_failed_studio_install_skips_its_assertions_with_the_reason(
 def test_studio_is_not_in_the_card_queue(tmp_path, monkeypatch):
     """ORDER is the legs. Either Studio half in it would be handed a card."""
     driver = build_kernel.build_kernel(
-        SMOKE_DIR, ALL_FOUR, unsloth_ref = "main", zoo_ref = "main", extra_args = (),
-        per_run_timeout = 60, skip_reference = True, studio = STUDIO,
+        SMOKE_DIR,
+        ALL_FOUR,
+        unsloth_ref = "main",
+        zoo_ref = "main",
+        extra_args = (),
+        per_run_timeout = 60,
+        skip_reference = True,
+        studio = STUDIO,
     )
     setup = "".join(driver["cells"][0]["source"])
     order = next(l for l in setup.splitlines() if l.startswith("ORDER = "))
@@ -2724,13 +2745,14 @@ def test_studio_waits_for_the_queue_by_default(tmp_path, monkeypatch):
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", AMBIENT_CUDA)
     durations = {f"t4_{n}.ipynb": 0.4 for n in ALL_FOUR}
     durations[STUDIO_INSTALL] = 0.1
-    driven = _drive_packed(
-        tmp_path, ALL_FOUR, gpus = 2, studio = STUDIO, durations = durations
-    )
+    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2, studio = STUDIO, durations = durations)
     calls = {c["notebook"]: c for c in driven["stub"].papermill}
     assert calls[STUDIO_TEST]["cuda"] == AMBIENT_CUDA, calls[STUDIO_TEST]
-    legs = [(c["notebook"], c["cuda"]) for c in driven["stub"].papermill
-            if c["notebook"].startswith("t4_")]
+    legs = [
+        (c["notebook"], c["cuda"])
+        for c in driven["stub"].papermill
+        if c["notebook"].startswith("t4_")
+    ]
     assert len(legs) == len(ALL_FOUR)
 
 
@@ -2750,7 +2772,10 @@ def test_studio_concurrent_takes_a_card_gptoss_is_not_on(tmp_path):
     and deleting the VRAM check left the test green.
     """
     driven = _drive_packed(
-        tmp_path, ["gptoss"], gpus = 2, studio = STUDIO,
+        tmp_path,
+        ["gptoss"],
+        gpus = 2,
+        studio = STUDIO,
         durations = {"t4_gptoss.ipynb": 4.0, STUDIO_INSTALL: 0.05},
         after_gpu_concurrent = True,
     )
@@ -2774,19 +2799,32 @@ def test_studio_concurrent_still_skips_when_its_install_failed(tmp_path):
     did -- and on this path the test half is started from its own thread, so
     the gate had to be re-implemented rather than inherited.
     """
+
     class _InstallFails(_PackedStub):
         def run(self, cmd, **kw):
             cmd = [str(c) for c in cmd]
             if "papermill" in cmd and STUDIO_INSTALL in " ".join(cmd):
-                self.papermill.append({"notebook": STUDIO_INSTALL, "cuda": None,
-                                       "kernel": None, "compile_location": None})
+                self.papermill.append(
+                    {
+                        "notebook": STUDIO_INSTALL,
+                        "cuda": None,
+                        "kernel": None,
+                        "compile_location": None,
+                    }
+                )
                 Path(cmd[cmd.index("papermill") + 2]).write_text("{}", encoding = "utf-8")
                 return types.SimpleNamespace(returncode = 1, stdout = "", stderr = "")
             return super().run(cmd, **kw)
 
     driver = build_kernel.build_kernel(
-        SMOKE_DIR, ALL_FOUR, unsloth_ref = "main", zoo_ref = "main", extra_args = (),
-        per_run_timeout = 60, skip_reference = True, studio = STUDIO,
+        SMOKE_DIR,
+        ALL_FOUR,
+        unsloth_ref = "main",
+        zoo_ref = "main",
+        extra_args = (),
+        per_run_timeout = 60,
+        skip_reference = True,
+        studio = STUDIO,
         after_gpu_concurrent = True,
     )
     stub = _InstallFails(gpus = 2, durations = {f"t4_{n}.ipynb": 0.3 for n in ALL_FOUR})
@@ -2797,9 +2835,11 @@ def test_studio_concurrent_still_skips_when_its_install_failed(tmp_path):
     namespace: dict = {}
     try:
         for cell in driver["cells"][:2]:
-            source = ("".join(cell["source"])
-                      .replace("/tmp/t4ci_venvs", str(tmp_path / "venvs"))
-                      .replace("/kaggle/working", str(tmp_path)))
+            source = (
+                "".join(cell["source"])
+                .replace("/tmp/t4ci_venvs", str(tmp_path / "venvs"))
+                .replace("/kaggle/working", str(tmp_path))
+            )
             exec(compile(source, "<driver-cell>", "exec"), namespace)
     finally:
         sys.modules["subprocess"] = saved

@@ -174,7 +174,11 @@ def _models_from(payload_args: str) -> list[str]:
 
 
 def build_payload_notebook(
-    *, unsloth_ref: str, repo_url: str, payload_args: str, phase: str | None = None
+    *,
+    unsloth_ref: str,
+    repo_url: str,
+    payload_args: str,
+    phase: str | None = None,
 ) -> dict:
     """The notebook that installs Studio and runs the payload against it.
 

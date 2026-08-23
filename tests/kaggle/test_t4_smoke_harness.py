@@ -3262,9 +3262,7 @@ _STUDIO = [{"label": "studio-gpu", "passed": False, "failures": ["x"], "assertio
         ("fail", _TWO_LEGS + _STUDIO, 0),
     ],
 )
-def test_only_a_real_assertion_failure_turns_the_job_red(
-    tmp_path, verdict, reports, expected_exit
-):
+def test_only_a_real_assertion_failure_turns_the_job_red(tmp_path, verdict, reports, expected_exit):
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     (evidence / "launch_result.json").write_text(
