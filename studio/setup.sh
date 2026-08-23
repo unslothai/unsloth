@@ -2041,6 +2041,7 @@ _setup_amd_detected=false
 _setup_nvidia_usable=false
 _setup_gfx_all=""
 _setup_gfx=""
+_setup_hip_map_missing=0
 _setup_mkt=""
 _setup_amd_records=""
 
@@ -2090,7 +2091,9 @@ _setup_rocminfo_gpu_records() {
 # Keep in sync with install.sh.
 _setup_amd_smi_hip_order() {
     # POSIX awk forbids a physical newline in a -v value (gawk --posix makes it fatal),
-    # so the records arrive on stdin ahead of the map, separated by a sentinel.
+    # so the records arrive on stdin ahead of the map, separated by a sentinel. The first
+    # output line reports which index space the records came back in; the caller needs to
+    # know, because a mask cannot be applied to an untranslated list of unlike adapters.
     { printf '%s\n' "$1"; echo "@@hip-map@@"; cat; } | awk '
         function value(line,   v) {
             v = line
@@ -2098,7 +2101,7 @@ _setup_amd_smi_hip_order() {
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
             return v
         }
-        function keep(   i) { for (i = 1; i <= r; i++) print rec[i] }
+        function keep(   i) { print "discovery"; for (i = 1; i <= r; i++) print rec[i] }
         !split_seen && $0 == "@@hip-map@@" { split_seen = 1; next }
         !split_seen { if ($0 != "") rec[++r] = $0; next }
         /^[[:space:]]*GPU:[[:space:]]*[0-9]/ { n++; hip[n] = -1; next }
@@ -2116,6 +2119,7 @@ _setup_amd_smi_hip_order() {
                 used[hip[i]] = 1
                 out[hip[i]] = rec[i]
             }
+            print "hip"
             for (i = 0; i < r; i++) print out[i]
         }
     '
@@ -2228,8 +2232,24 @@ if [ "$_setup_nvidia_usable" != true ]; then
         _setup_amd_detected=true
         # amd-smi owns the device list here, so its indexed records replace rocminfo's.
         _setup_amd_records=$(_setup_run_smi amd-smi static --asic 2>/dev/null | _setup_amd_smi_gpu_records || true)
-        [ -n "$_setup_amd_records" ] && _setup_amd_records=$(_setup_run_smi amd-smi list -e 2>/dev/null \
-            | _setup_amd_smi_hip_order "$_setup_amd_records" || true)
+        if [ -n "$_setup_amd_records" ]; then
+            _setup_amd_smi_out=$(_setup_run_smi amd-smi list -e 2>/dev/null \
+                | _setup_amd_smi_hip_order "$_setup_amd_records" || true)
+            _setup_amd_space=$(printf '%s\n' "$_setup_amd_smi_out" | head -n 1)
+            _setup_amd_records=$(printf '%s\n' "$_setup_amd_smi_out" | tail -n +2)
+            # No map, and the adapters do not agree on an arch: the mask indexes HIP order
+            # and these records are in discovery order, so any ordinal is a guess. Decline
+            # rather than forward a guessed --rocm-gfx to the llama.cpp and whisper
+            # prebuilts. Identical adapters are unaffected, since every ordinal yields the
+            # same arch either way, and UNSLOTH_ROCM_GFX_ARCH still overrides below.
+            if [ "$_setup_amd_space" != hip ] && \
+               [ "$(printf '%s\n' "$_setup_amd_records" | awk -F'|' 'NF { print $1 }' \
+                    | sort -u | wc -l)" -gt 1 ]; then
+                _setup_amd_records=""
+                _setup_gfx_all=""
+                _setup_hip_map_missing=1
+            fi
+        fi
         _setup_gfx_all=$(_setup_run_smi amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         [ -z "$_setup_gfx_all" ] && \
             _setup_gfx_all=$(printf '%s\n' "$_setup_amd_records" | awk -F'|' '$1 != "" { print $1 }')
@@ -2279,6 +2299,11 @@ elif [ "$_setup_amd_detected" = true ]; then
             substep "gfx arch inferred from GPU name: $_setup_gfx"
             substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$_setup_gfx to skip inference next time"
         fi
+    fi
+    # Say why the arch is missing, since the user can supply it and amd-smi cannot.
+    if [ -z "$_setup_gfx" ] && [ "$_setup_hip_map_missing" = 1 ]; then
+        substep "Unlike AMD adapters and no HIP id map (amd-smi list -e needs ROCm 6.4+):"
+        substep "cannot tell which one this session selects. Set UNSLOTH_ROCM_GFX_ARCH to pick."
     fi
     # ROCm version via hipconfig, then amd-smi
     _setup_rocm_ver=""

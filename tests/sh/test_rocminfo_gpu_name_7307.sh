@@ -73,12 +73,13 @@ if gawk --posix 'BEGIN { exit 0 }' >/dev/null 2>&1; then
     _RECS="gfx90a|AMD Instinct MI210
 gfx1100|AMD Radeon RX 7900 XTX"
     echo "=== strict awk ==="
+    # The first line is the index space the records came back in, then the records.
     assert_eq "the HIP reorder runs under a POSIX awk" \
-        "gfx1100|AMD Radeon RX 7900 XTX gfx90a|AMD Instinct MI210" \
+        "hip gfx1100|AMD Radeon RX 7900 XTX gfx90a|AMD Instinct MI210" \
         "$(printf 'GPU: 0\n    HIP_ID: 1\nGPU: 1\n    HIP_ID: 0\n' \
            | PATH="$_POSIX_AWK_DIR:$PATH" _amd_smi_hip_order "$_RECS" | tr '\n' ' ' | sed 's/ $//')"
     assert_eq "and declines cleanly there too, rather than dying" \
-        "gfx90a|AMD Instinct MI210 gfx1100|AMD Radeon RX 7900 XTX" \
+        "discovery gfx90a|AMD Instinct MI210 gfx1100|AMD Radeon RX 7900 XTX" \
         "$(printf '' | PATH="$_POSIX_AWK_DIR:$PATH" _amd_smi_hip_order "$_RECS" | tr '\n' ' ' | sed 's/ $//')"
     rm -rf "$_POSIX_AWK_DIR" "$_HIP_FILE"
 else

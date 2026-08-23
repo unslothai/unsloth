@@ -30,7 +30,7 @@ grep -q '_amd_smi_hip_order' "$WORK/block.sh" || {
 
 # Build PATH from scratch so host AMD tools cannot leak into the test.
 mkdir -p "$WORK/base" "$WORK/roc" "$WORK/smi"
-for _tool in awk grep sed cat tr; do
+for _tool in awk grep sed cat tr sort wc head tail; do
     _p=$(command -v "$_tool") || { echo "FATAL: $_tool not found" >&2; exit 1; }
     ln -sf "$_p" "$WORK/base/$_tool"
 done
@@ -256,6 +256,46 @@ echo "=== a device that reported no name of its own ==="
 assert_eq "keeps its arch and stays unnamed" \
     "gfx1030|" "$(summary "$WORK/roc_blank_name" "$WORK/smi_fixture")"
 
+# amd-smi discovery order is not HIP order; `amd-smi list -e` publishes HIP_ID as the map.
+# Discovery 0/1/2 is HIP 2/1/0 here, so an untranslated mask names the wrong card.
+cat > "$WORK/smi_e_reversed" <<'EOF'
+GPU: 0
+    HIP_ID: 2
+GPU: 1
+    HIP_ID: 1
+GPU: 2
+    HIP_ID: 0
+EOF
+# A partial map (hip_id reads N/A when a KFD node is unreachable) is not a mapping.
+cat > "$WORK/smi_e_partial" <<'EOF'
+GPU: 0
+    HIP_ID: 2
+GPU: 1
+    HIP_ID: N/A
+GPU: 2
+    HIP_ID: 0
+EOF
+
+cat > "$WORK/smi_e_identity" <<'EOF'
+GPU: 0
+    HIP_ID: 0
+GPU: 1
+    HIP_ID: 1
+GPU: 2
+    HIP_ID: 2
+EOF
+# Two of the same card: every ordinal yields the same arch, so there is nothing to decline.
+cat > "$WORK/smi_two_same" <<'EOF'
+GPU: 0
+    ASIC:
+        MARKET_NAME: AMD Instinct MI300X
+        TARGET_GRAPHICS_VERSION: gfx942
+GPU: 1
+    ASIC:
+        MARKET_NAME: AMD Instinct MI300X
+        TARGET_GRAPHICS_VERSION: gfx942
+EOF
+
 echo "=== amd-smi only ==="
 # The arch comes from `static --asic`: `amd-smi list` carries no gfx token at all.
 assert_eq "arch and name both come from amd-smi" \
@@ -265,13 +305,15 @@ assert_eq "an older title-cased Market Name still works" \
 assert_eq "an amd-smi name survives a colon in the middle" \
     "gfx942|AMD Instinct MI300X OAM: 750W SKU" "$(summary "$WORK/empty" "$WORK/smi_colon")"
 assert_eq "each adapter is announced with its own name, device 0" \
-    "gfx90a|AMD Instinct MI210" "$(summary "$WORK/empty" "$WORK/smi_three" 0)"
-assert_eq "device 1" \
-    "gfx1100|AMD Radeon RX 7900 XTX" "$(summary "$WORK/empty" "$WORK/smi_three" 1)"
-assert_eq "device 2" \
-    "gfx1201|AMD Radeon AI PRO R9700" "$(summary "$WORK/empty" "$WORK/smi_three" 2)"
+    "gfx90a|AMD Instinct MI210" \
+    "$(STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three" 0)"
+assert_eq "device 1" "gfx1100|AMD Radeon RX 7900 XTX" \
+    "$(STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three" 1)"
+assert_eq "device 2" "gfx1201|AMD Radeon AI PRO R9700" \
+    "$(STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three" 2)"
 assert_eq "an out-of-range mask falls back to adapter 0" \
-    "gfx90a|AMD Instinct MI210" "$(summary "$WORK/empty" "$WORK/smi_three" 9)"
+    "gfx90a|AMD Instinct MI210" \
+    "$(STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three" 9)"
 # No gfx token anywhere: the name is all there is, so it must be the selected card's.
 assert_eq "a nameless-arch build still names the selected adapter" \
     "|AMD Radeon AI PRO R9700" "$(summary "$WORK/empty" "$WORK/smi_two_nogfx" 1)"
@@ -293,35 +335,22 @@ assert_eq "and the duplicate before it keeps its own name" \
 assert_eq "two identical cards are still two devices" \
     "gfx1201|AMD Radeon AI PRO R9700" "$(summary "$WORK/roc_twins" "$WORK/empty" 2)"
 
-# amd-smi discovery order is not HIP order; `amd-smi list -e` publishes HIP_ID as the map.
-# Discovery 0/1/2 is HIP 2/1/0 here, so an untranslated mask names the wrong card.
-cat > "$WORK/smi_e_reversed" <<'EOF'
-GPU: 0
-    HIP_ID: 2
-GPU: 1
-    HIP_ID: 1
-GPU: 2
-    HIP_ID: 0
-EOF
-# A partial map (hip_id reads N/A when a KFD node is unreachable) is not a mapping.
-cat > "$WORK/smi_e_partial" <<'EOF'
-GPU: 0
-    HIP_ID: 2
-GPU: 1
-    HIP_ID: N/A
-GPU: 2
-    HIP_ID: 0
-EOF
-
 echo "=== amd-smi ordinals are translated into HIP order ==="
 assert_eq "HIP 0 is discovery 2" "gfx1201|AMD Radeon AI PRO R9700" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_reversed" summary "$WORK/empty" "$WORK/smi_three" 0)"
 assert_eq "HIP 2 is discovery 0" "gfx90a|AMD Instinct MI210" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_reversed" summary "$WORK/empty" "$WORK/smi_three" 2)"
-assert_eq "an older CLI that rejects -e keeps discovery order" "gfx90a|AMD Instinct MI210" \
+# No usable map and the adapters disagree on arch: report nothing rather than name one
+# card while the mask selects another.
+assert_eq "an older CLI that rejects -e declines on unlike adapters" "|" \
     "$(summary "$WORK/empty" "$WORK/smi_three" 0)"
-assert_eq "a partial map is declined, not half-applied" "gfx90a|AMD Instinct MI210" \
+assert_eq "a partial map is declined, not half-applied" "|" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_partial" summary "$WORK/empty" "$WORK/smi_three" 0)"
+# Identical adapters, and a single adapter, are never ambiguous.
+assert_eq "identical adapters still resolve without a map" \
+    "gfx942|AMD Instinct MI300X" "$(summary "$WORK/empty" "$WORK/smi_two_same" 1)"
+assert_eq "one adapter resolves without a map" \
+    "gfx1100|AMD Radeon RX 7900 XTX" "$(summary "$WORK/empty" "$WORK/smi_fixture" 0)"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

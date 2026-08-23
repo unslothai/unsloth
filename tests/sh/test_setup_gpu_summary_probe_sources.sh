@@ -57,7 +57,7 @@ bash -n "$WORK/init.sh" && bash -n "$WORK/select.sh" || {
 
 # PATH from scratch: the host running this may itself have a real rocminfo/amd-smi.
 mkdir -p "$WORK/base" "$WORK/roc" "$WORK/smi"
-for _tool in awk grep sed cat tr timeout; do
+for _tool in awk grep sed cat tr timeout sort wc head tail; do
     _p=$(command -v "$_tool") || { echo "FATAL: $_tool not found" >&2; exit 1; }
     ln -sf "$_p" "$WORK/base/$_tool"
 done
@@ -286,28 +286,6 @@ echo "=== a device that reported no name of its own ==="
 assert_eq "keeps its arch and stays unnamed" \
     "gfx1030|" "$(summary "$WORK/roc_blank_name" "$WORK/smi_fixture")"
 
-echo "=== amd-smi owns the device list ==="
-assert_eq "each adapter is announced with its own name, device 0" \
-    "gfx90a|AMD Instinct MI210" "$(summary "$WORK/empty" "$WORK/smi_three" 0)"
-assert_eq "device 1" \
-    "gfx1100|AMD Radeon RX 7900 XTX" "$(summary "$WORK/empty" "$WORK/smi_three" 1)"
-assert_eq "device 2" \
-    "gfx1201|AMD Radeon AI PRO R9700" "$(summary "$WORK/empty" "$WORK/smi_three" 2)"
-assert_eq "an out-of-range mask falls back to adapter 0" \
-    "gfx90a|AMD Instinct MI210" "$(summary "$WORK/empty" "$WORK/smi_three" 9)"
-# With no gfx token the name is what --rocm-gfx comes from: it must be the selected one's.
-assert_eq "a nameless-arch build still names the selected adapter" \
-    "|AMD Radeon AI PRO R9700" "$(summary "$WORK/empty" "$WORK/smi_two_nogfx" 1)"
-
-echo "=== neither tool reports a device ==="
-# The KFD arm below would fire on a host that really has an AMD GPU.
-if [ -e /dev/kfd ]; then
-    echo "  SKIP: /dev/kfd exists on this host, so the KFD arm is reachable"; SKIP=$((SKIP + 1))
-else
-    assert_eq "neither tool installed reports nothing" "|" "$(summary - -)"
-    assert_eq "both installed but silent reports nothing" "|" "$(summary "$WORK/empty" "$WORK/empty")"
-fi
-
 # amd-smi discovery order is not HIP order; `amd-smi list -e` publishes HIP_ID as the map.
 # On this host discovery 0/1/2 is HIP 2/1/0, so an untranslated mask picks the wrong arch,
 # and _setup_gfx is what becomes --rocm-gfx.
@@ -347,6 +325,44 @@ GPU: 2
     HIP_ID: 0
 EOF
 
+# Two of the same card. Discovery order and HIP order may disagree here too, but every
+# ordinal yields the same arch either way, so there is nothing to decline.
+cat > "$WORK/smi_two_same" <<'EOF'
+GPU: 0
+    ASIC:
+        MARKET_NAME: AMD Instinct MI300X
+        TARGET_GRAPHICS_VERSION: gfx942
+GPU: 1
+    ASIC:
+        MARKET_NAME: AMD Instinct MI300X
+        TARGET_GRAPHICS_VERSION: gfx942
+EOF
+
+echo "=== amd-smi owns the device list ==="
+# With the map present each adapter is announced with its own name.
+assert_eq "each adapter is announced with its own name, device 0" \
+    "gfx90a|AMD Instinct MI210" \
+    "$(STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three" 0)"
+assert_eq "device 1" "gfx1100|AMD Radeon RX 7900 XTX" \
+    "$(STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three" 1)"
+assert_eq "device 2" "gfx1201|AMD Radeon AI PRO R9700" \
+    "$(STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three" 2)"
+assert_eq "an out-of-range mask falls back to adapter 0" \
+    "gfx90a|AMD Instinct MI210" \
+    "$(STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three" 9)"
+# With no gfx token the name is what --rocm-gfx comes from: it must be the selected one's.
+assert_eq "a nameless-arch build still names the selected adapter" \
+    "|AMD Radeon AI PRO R9700" "$(summary "$WORK/empty" "$WORK/smi_two_nogfx" 1)"
+
+echo "=== neither tool reports a device ==="
+# The KFD arm below would fire on a host that really has an AMD GPU.
+if [ -e /dev/kfd ]; then
+    echo "  SKIP: /dev/kfd exists on this host, so the KFD arm is reachable"; SKIP=$((SKIP + 1))
+else
+    assert_eq "neither tool installed reports nothing" "|" "$(summary - -)"
+    assert_eq "both installed but silent reports nothing" "|" "$(summary "$WORK/empty" "$WORK/empty")"
+fi
+
 echo "=== amd-smi ordinals are translated into HIP order ==="
 assert_eq "HIP 0 is discovery 2" "gfx1201|AMD Radeon AI PRO R9700" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_reversed" summary "$WORK/empty" "$WORK/smi_three" 0)"
@@ -356,12 +372,22 @@ assert_eq "the middle device is unmoved" "gfx1100|AMD Radeon RX 7900 XTX" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_reversed" summary "$WORK/empty" "$WORK/smi_three" 1)"
 assert_eq "an identity map changes nothing" "gfx90a|AMD Instinct MI210" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three" 0)"
-assert_eq "an older CLI that rejects -e keeps discovery order" "gfx90a|AMD Instinct MI210" \
+# No usable map and the adapters disagree on arch: any ordinal would be a guess, and the
+# guess becomes --rocm-gfx, so nothing is reported rather than the wrong thing.
+assert_eq "an older CLI that rejects -e declines on unlike adapters" "|" \
     "$(summary "$WORK/empty" "$WORK/smi_three" 0)"
-assert_eq "a partial map is declined, not half-applied" "gfx90a|AMD Instinct MI210" \
+assert_eq "a partial map is declined, not half-applied" "|" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_partial" summary "$WORK/empty" "$WORK/smi_three" 0)"
-assert_eq "colliding hip ids are declined" "gfx90a|AMD Instinct MI210" \
+assert_eq "colliding hip ids are declined" "|" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_collide" summary "$WORK/empty" "$WORK/smi_three" 0)"
+# Identical adapters are not ambiguous, so the absent map costs nothing.
+assert_eq "identical adapters still resolve without a map, device 0" \
+    "gfx942|AMD Instinct MI300X" "$(summary "$WORK/empty" "$WORK/smi_two_same" 0)"
+assert_eq "and device 1" \
+    "gfx942|AMD Instinct MI300X" "$(summary "$WORK/empty" "$WORK/smi_two_same" 1)"
+# A single adapter can never be ambiguous either.
+assert_eq "one adapter resolves without a map" \
+    "gfx1100|AMD Radeon RX 7900 XTX" "$(summary "$WORK/empty" "$WORK/smi_fixture" 0)"
 # rocminfo is an HSA client, so its agent list is already in ROCr order.
 assert_eq "the rocminfo path is not reordered by a HIP map" "gfx1100|AMD Radeon RX 7900 XTX" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_reversed" summary "$WORK/roc_three_dup" "$WORK/empty" 1)"
