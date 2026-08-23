@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ModelInventoryFormat } from "../inventory";
+import type { CachedInventoryCopy, ModelInventoryFormat } from "../inventory";
 import { GgufDownloadCard } from "./gguf-download-card";
 import { SafetensorsDownloadCard } from "./safetensors-download-card";
 
@@ -13,21 +13,14 @@ export function DownloadSection({
   partialTransport = null,
   partialResumable = false,
   modelFormat,
-  canRun = true,
-  isActive,
-  activeQuant,
   preferredGgufFile = null,
-
   preferredGgufFileIntent = 0,
-  isLoadingThisModel,
   gpuGb,
   systemRamGb,
   cachePath,
+  activeCache,
+  cacheCopies,
   knownBytes,
-  onLoad,
-  onUseInChat,
-  onEject,
-  onTrain,
   onChange,
 }: {
   repoId: string;
@@ -37,40 +30,28 @@ export function DownloadSection({
   partialTransport?: string | null;
   partialResumable?: boolean;
   modelFormat?: ModelInventoryFormat | null;
-  canRun?: boolean;
-  isActive: boolean;
-  activeQuant: string | null;
   preferredGgufFile?: string | null;
-
   preferredGgufFileIntent?: number;
-  isLoadingThisModel: boolean;
   gpuGb?: number;
   systemRamGb?: number;
   cachePath?: string | null;
+  activeCache?: boolean | null;
+  cacheCopies?: CachedInventoryCopy[];
   knownBytes?: number | null;
-  onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
-  onUseInChat?: () => void;
-  onEject?: () => void;
-  onTrain?: () => void;
   onChange?: () => void;
 }) {
   if (isGguf || preferredGgufFile) {
     return (
       <GgufDownloadCard
         repoId={repoId}
-        isActive={isActive}
-        activeQuant={activeQuant}
         preferredFile={preferredGgufFile}
-
         preferredFileIntent={preferredGgufFileIntent}
-        isLoadingThisModel={isLoadingThisModel}
         gpuGb={gpuGb}
         systemRamGb={systemRamGb}
         cachePath={cachePath}
+        activeCache={activeCache}
+        cacheCopies={cacheCopies}
         isPartial={isPartial}
-        onLoad={onLoad}
-        onUseInChat={onUseInChat}
-        onEject={onEject}
         onChange={onChange}
       />
     );
@@ -83,15 +64,10 @@ export function DownloadSection({
       partialTransport={partialTransport}
       partialResumable={partialResumable}
       modelFormat={modelFormat}
-      canRun={canRun}
-      isActive={isActive}
-      isLoadingThisModel={isLoadingThisModel}
       cachePath={cachePath}
+      activeCache={activeCache}
+      cacheCopies={cacheCopies}
       knownBytes={knownBytes}
-      onLoad={onLoad}
-      onUseInChat={onUseInChat}
-      onEject={onEject}
-      onTrain={onTrain}
       onChange={onChange}
     />
   );

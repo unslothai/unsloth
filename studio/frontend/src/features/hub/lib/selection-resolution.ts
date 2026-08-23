@@ -21,6 +21,16 @@ function idMap<T extends { id: string }>(rows: readonly T[]): Map<string, T> {
   return new Map(rows.map((row) => [row.id, row]));
 }
 
+function cachedIdMap(
+  rows: readonly CachedInventoryRow[],
+): Map<string, CachedInventoryRow> {
+  const map = idMap(rows);
+  for (const row of rows) {
+    map.set(`cache:${row.modelFormat}:${row.repoId}`, row);
+  }
+  return map;
+}
+
 function resolveCachedSelection(
   cached: CachedInventoryRow,
   filteredCachedIds: ReadonlySet<string>,
@@ -112,7 +122,7 @@ export function resolveDownloadedSelection({
   filteredCachedRows: readonly CachedInventoryRow[];
   filteredLocalRows: readonly LocalInventoryRow[];
 }): SelectionResolution {
-  const cachedById = idMap(cachedRows);
+  const cachedById = cachedIdMap(cachedRows);
   const localById = idMap(localRows);
   const filteredCachedIds = idSet(filteredCachedRows);
   const filteredLocalIds = idSet(filteredLocalRows);

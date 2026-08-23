@@ -10,12 +10,6 @@ export type ModelInventoryFormat =
   | "adapter"
   | "checkpoint"
   | "unknown";
-export type ModelInventoryRuntime =
-  | "llama_cpp"
-  | "transformers"
-  | "adapter"
-  | "unknown";
-
 export interface ModelInventoryCapabilities {
   canTrain: boolean;
   canChat: boolean;
@@ -33,6 +27,15 @@ export interface InventoryHint {
   createdAt?: number;
 }
 
+export interface CachedInventoryCopy {
+  cachePath: string;
+  loadId: string | null;
+  bytes: number;
+  activeCache: boolean;
+  partial: boolean;
+  lastModified: number | null;
+}
+
 export interface CachedInventoryRow {
   kind: "cache";
   id: string;
@@ -42,11 +45,14 @@ export interface CachedInventoryRow {
   repo: string;
   isGguf: boolean;
   modelFormat: ModelInventoryFormat;
-  runtime: ModelInventoryRuntime;
   formatVariant?: string | null;
   capabilities: ModelInventoryCapabilities;
   bytes: number;
   cachePath?: string | null;
+  activeCache: boolean | null;
+  copyCount: number;
+  totalBytes: number;
+  cacheCopies: CachedInventoryCopy[];
   loadCachePath?: string | null;
   lastModified?: number | null;
   partial?: boolean;
@@ -85,7 +91,6 @@ export interface LocalInventoryRow {
   path: string;
   isGguf: boolean;
   modelFormat: ModelInventoryFormat;
-  runtime: ModelInventoryRuntime;
   formatVariant?: string | null;
   capabilities: ModelInventoryCapabilities;
   baseModel?: string | null;

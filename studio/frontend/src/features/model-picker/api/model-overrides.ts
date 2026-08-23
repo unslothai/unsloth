@@ -234,10 +234,13 @@ export async function fetchModelOverrides(): Promise<ApiModelOverrides> {
  */
 export async function fetchLoadModelOverride(
   loadId: string,
-  aliasId: string,
-  ggufVariant?: string | null,
-  fallbackKeys: readonly string[] = [],
+  options: {
+    aliasId?: string;
+    ggufVariant?: string | null;
+    fallbackKeys?: readonly string[];
+  } = {},
 ): Promise<ApiModelOverride | null> {
+  const { aliasId = loadId, ggufVariant, fallbackKeys = [] } = options;
   const query = new URLSearchParams({ model_id: loadId, alias_id: aliasId });
   if (ggufVariant) {
     query.set("gguf_variant", ggufVariant);
@@ -277,16 +280,13 @@ export async function fetchLoadModelOverride(
 
 export async function fetchLoadExtraArgs(
   loadId: string,
-  aliasId: string,
-  ggufVariant?: string | null,
-  fallbackKeys: readonly string[] = [],
+  options: {
+    aliasId?: string;
+    ggufVariant?: string | null;
+    fallbackKeys?: readonly string[];
+  } = {},
 ): Promise<ResolvedExtraArgs> {
-  const resolved = await fetchLoadModelOverride(
-    loadId,
-    aliasId,
-    ggufVariant,
-    fallbackKeys,
-  );
+  const resolved = await fetchLoadModelOverride(loadId, options);
   // An explicit empty list is a cleared box, not an absence, and the caller has
   // to send it as one: omitting the field lets /load carry the resident model's
   // arguments over, which is exactly what was cleared.

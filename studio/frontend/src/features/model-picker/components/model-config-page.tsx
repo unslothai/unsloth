@@ -1780,11 +1780,9 @@ export function ModelConfigPage({
   const loadedMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
   );
-  // What settings are stored under, which is not always what loads; the probes keep target.id.
-  const configId = target.configId ?? target.id;
   const gpuDevices = useGpuDevices();
   const resolveInitial = () => {
-    const resolved = resolveInitialConfig(configId, target.ggufVariant);
+    const resolved = resolveInitialConfig(target.id, target.ggufVariant);
     if (loadedConfig) {
       return { config: loadedConfig, remembered: resolved.remembered };
     }
@@ -1831,7 +1829,7 @@ export function ModelConfigPage({
   useEffect(() => {
     setExtraArgsLoadable(true);
     setExtraArgsHydrating(target.isGguf && !isDiffusion);
-  }, [configId, target.ggufVariant, target.isGguf, isDiffusion]);
+  }, [target.id, target.ggufVariant, target.isGguf, isDiffusion]);
 
   // Compare against what the backend was asked for, not what it applied: staging a
   // new value must retire a verdict that answered a different request.
@@ -2064,11 +2062,9 @@ export function ModelConfigPage({
       setExtraArgsHydrating(false);
       return;
     }
-    // The order the auto-switch loader tries, and for the same reason: the settings
-    // UI keys a local row by the path it loads from, while configId is a derived
-    // alias, so reading the alias first lets an older entry stay the one API loads
-    // apply while the panel shows none of it. A loose .gguf was keyed by its
-    // filename label in an early build, which is the fourth candidate here.
+    // The order the auto-switch loader tries, and for the same reason: a
+    // variant-qualified key before the bare one. A loose .gguf was keyed by its
+    // filename label in an early build, which is the last candidate here.
     const loadId = target.id;
     const fileVariant =
       !target.ggufVariant && loadId.toLowerCase().endsWith(".gguf")
@@ -2076,10 +2072,8 @@ export function ModelConfigPage({
         : null;
     const keys = [
       modelOverrideKey(loadId, target.ggufVariant),
-      modelOverrideKey(configId, target.ggufVariant),
       loadId,
       ...(fileVariant ? [`${loadId}:${fileVariant}`] : []),
-      configId,
     ].filter((key, index, all) => all.indexOf(key) === index);
     // Joined because an array literal is a new value on every render.
     const identity = keys.join("\u0000");
@@ -2099,7 +2093,7 @@ export function ModelConfigPage({
     // or opening the panel replaces settings the user never touched here -- a legacy
     // config just migrated in, one saved from another origin -- with the runtime.
     const storedAtStart = resolveInitialConfig(
-      configId,
+      target.id,
       target.ggufVariant,
     ).config;
     const rememberAtStart = rememberRef.current;
@@ -2115,7 +2109,10 @@ export function ModelConfigPage({
     Promise.all([
       // Resolved by the backend, which owns the rules: the local resolver stays as
       // the fallback for a backend that predates the parameter.
-      fetchLoadModelOverride(loadId, configId, target.ggufVariant, keys),
+      fetchLoadModelOverride(loadId, {
+        ggufVariant: target.ggufVariant,
+        fallbackKeys: keys,
+      }),
       loadManagedLlamaFlags(),
     ])
       .then(([resolvedOverride, managed]) => {
@@ -2271,7 +2268,7 @@ export function ModelConfigPage({
           // unsaved makes it a pending change instead, so Save is reachable and reports
           // the failure the way every other write does.
           const hydrationSaved = savePerModelConfig(
-            configId,
+            target.id,
             target.ggufVariant,
             rememberedConfig,
             hydrationEvicted,
@@ -2339,7 +2336,6 @@ export function ModelConfigPage({
       clearTimeout(release);
     };
   }, [
-    configId,
     target.id,
     target.ggufVariant,
     target.isGguf,
@@ -2573,13 +2569,13 @@ export function ModelConfigPage({
     const evicted: { modelId: string; ggufVariant: string | null }[] = [];
     if (remember) {
       saveFailed = !savePerModelConfig(
-        configId,
+        target.id,
         target.ggufVariant,
         normalizedRuntimeConfig,
         evicted,
       );
     } else {
-      saveFailed = !deletePerModelConfig(configId, target.ggufVariant);
+      saveFailed = !deletePerModelConfig(target.id, target.ggufVariant);
     }
     // Mirror to the server so an API load gets these settings, not app defaults. Best-effort, and
     // skipped when the localStorage write failed or the two would permanently disagree. Gated on
@@ -2590,7 +2586,7 @@ export function ModelConfigPage({
       !nativePathToken
     ) {
       syncModelOverride(
-        configId,
+        target.id,
         target.ggufVariant,
         remember ? normalizedRuntimeConfig : null,
       );

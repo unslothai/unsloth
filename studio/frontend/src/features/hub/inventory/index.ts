@@ -26,6 +26,7 @@ export {
   removeScanFolder,
   type CachedDatasetRepo,
   type CachedGgufRepo,
+  type CachedRepoCopy,
   type CachedModelRepo,
   type BaseModelSource,
   type CompanionAssetInfo,
@@ -45,10 +46,10 @@ export {
   buildCachedInventoryRow,
   defaultCapabilities,
   formatLocalUpdated,
+  hasCompleteCacheCopyBeyondSelected,
   localSourceLabel,
   normalizeCapabilities,
   normalizeModelFormat,
-  normalizeRuntime,
   normalizeTimestamp,
 } from "./view-models";
 export {
@@ -81,6 +82,7 @@ export {
 } from "./use-gguf-variants-cache-version";
 export type {
   CachedInventoryRow,
+  CachedInventoryCopy,
   InventoryHint,
   InventoryRow,
   LocalInventoryRow,

@@ -3,6 +3,11 @@
 
 import { authFetch } from "@/features/auth";
 import { getInventoryVersion } from "../stores/inventory-events";
+import {
+  getHiddenModelMatchersSnapshot,
+  type HiddenModelMatchersSnapshot,
+  replaceHiddenModelMatchers,
+} from "./hidden-model-matcher-store";
 
 // Infra models hidden from browse/preview lists (Hub Discover, the chat model
 // selector, and local on-device rows). Mirrors the backend
@@ -10,8 +15,8 @@ import { getInventoryVersion } from "../stores/inventory-events";
 // llama.cpp validation probe are not usable chat models. Server-confirmed cache
 // rows are trusted because the backend applies variant-aware filtering.
 // Optimistic cache rows still use these needles until the server confirms them.
-// The dynamic matchers fetched from `/api/hub/hidden-models` add the user's
-// configured embedder as exact repo ids and exact resolved paths, never
+// The dynamic matchers fetched from `/api/hub/hidden-models` add default and
+// configured embedders as exact repo ids and exact resolved paths, never
 // substring needles. Per-repo views are not filtered, so reinstall flows still
 // show downloaded files.
 const HIDDEN_NEEDLES = [
@@ -41,9 +46,6 @@ const HIDDEN_STT_CACHE_NAMES = [...HIDDEN_STT_REPOS].map((repo) =>
   repo.replace("/", "--"),
 );
 
-let dynamicNeedles: readonly string[] = [];
-let dynamicExactIds: readonly string[] = [];
-let dynamicExactPaths: readonly string[] = [];
 let matchersFetch: Promise<void> | null = null;
 let matchersFetchVersion = -1;
 
@@ -79,9 +81,11 @@ export function ensureHiddenModelMatchers(): Promise<void> {
       ) {
         return;
       }
-      dynamicNeedles = toLowerStrings(data.needles);
-      dynamicExactIds = toLowerStrings(data.exact_ids);
-      dynamicExactPaths = toLowerStrings(data.exact_paths);
+      replaceHiddenModelMatchers({
+        needles: toLowerStrings(data.needles),
+        exactIds: toLowerStrings(data.exact_ids),
+        exactPaths: toLowerStrings(data.exact_paths),
+      });
     } catch {
       if (
         getInventoryVersion() === version &&
@@ -95,7 +99,8 @@ export function ensureHiddenModelMatchers(): Promise<void> {
 }
 
 /** True if any id/path is a hidden infra model. */
-export function isHiddenModelId(
+export function isHiddenModelIdWithMatchers(
+  matchers: HiddenModelMatchersSnapshot,
   ...values: (string | null | undefined)[]
 ): boolean {
   return values.some((v) => {
@@ -111,19 +116,18 @@ export function isHiddenModelId(
         pathParts.includes(`models--${name}`),
       ) ||
       HIDDEN_NEEDLES.some((needle) => lower.includes(needle)) ||
-      dynamicNeedles.some((needle) => lower.includes(needle)) ||
-      dynamicExactIds.includes(lower) ||
-      dynamicExactPaths.includes(lower)
+      matchers.needles.some((needle) => lower.includes(needle)) ||
+      matchers.exactIds.includes(lower) ||
+      matchers.exactPaths.includes(lower)
     );
   });
 }
 
-/** Exact-match configured infra repos without hiding similarly named models. */
-export function isConfiguredHiddenModelId(
-  configuredIds: ReadonlySet<string>,
+export function isHiddenModelId(
   ...values: (string | null | undefined)[]
 ): boolean {
-  return values.some(
-    (value) => value != null && configuredIds.has(value.trim().toLowerCase()),
+  return isHiddenModelIdWithMatchers(
+    getHiddenModelMatchersSnapshot(),
+    ...values,
   );
 }

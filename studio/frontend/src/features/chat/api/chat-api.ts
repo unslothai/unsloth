@@ -15,7 +15,7 @@ import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 // eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
-import { formatApiErrorBody } from "@/lib/format-fastapi-error";
+import { apiErrorText } from "@/lib/format-fastapi-error";
 import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
 import type {
   MessageRecord,
@@ -121,10 +121,6 @@ function notifyChatProjectsUpdated(): void {
   }
 }
 
-function parseErrorText(status: number, body: unknown): string {
-  return formatApiErrorBody(body) ?? `Request failed (${status})`;
-}
-
 /**
  * `/api/inference/load` and `/unload` pad their body so a proxy cannot time the request out,
  * which commits the status early: a later failure can only arrive in-band as `_deferred_error`.
@@ -145,7 +141,7 @@ function deferredError(
     typeof deferred.status_code === "number" ? deferred.status_code : 500;
   return {
     status,
-    message: parseErrorText(status, { detail: deferred.detail }),
+    message: apiErrorText(status, { detail: deferred.detail }),
   };
 }
 
@@ -158,7 +154,7 @@ async function parseJsonOrThrow<T>(
 ): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(parseErrorText(response.status, body));
+    throw new Error(apiErrorText(response.status, body));
   }
   const deferred = deferredError(body);
   if (deferred) {
@@ -434,6 +430,10 @@ export interface CachedGgufRepo {
   load_id?: string | null;
   size_bytes: number;
   cache_path: string;
+  active_cache?: boolean | null;
+  copy_count?: number | null;
+  total_size_bytes?: number | null;
+  cache_copies?: CachedRepoCopy[];
   /** Epoch seconds of the newest downloaded quant; sorts Downloaded
    * newest-first. Optional for older-backend compatibility. */
   last_modified?: number;
@@ -447,6 +447,15 @@ export interface CachedGgufRepo {
   has_variant_state?: boolean;
   partial?: boolean;
   capabilities?: CachedRepoCapabilities | null;
+}
+
+export interface CachedRepoCopy {
+  cache_path: string;
+  load_id?: string | null;
+  size_bytes: number;
+  active_cache: boolean;
+  partial: boolean;
+  last_modified?: number | null;
 }
 
 /** The subset of a row's capabilities auto-load acts on; Hub view models have a wider type. */
@@ -572,6 +581,10 @@ export interface CachedModelRepo {
   repo_id: string;
   load_id?: string | null;
   size_bytes: number;
+  active_cache?: boolean | null;
+  copy_count?: number | null;
+  total_size_bytes?: number | null;
+  cache_copies?: CachedRepoCopy[];
   /** Weights format; "adapter" is a LoRA with no base weights of its own.
    * Optional for older-backend compatibility. */
   model_format?: string | null;
@@ -604,39 +617,6 @@ export async function listCachedModels(
   });
   const data = await parseJsonOrThrow<{ cached: CachedModelRepo[] }>(response);
   return data.cached;
-}
-
-export interface CachedModelPath {
-  path: string;
-  is_dir: boolean;
-}
-
-/** Absolute on-disk path of a cached repo or one of its GGUF variants. */
-export async function getCachedModelPath(
-  repoId: string,
-  variant?: string,
-): Promise<CachedModelPath> {
-  const params = new URLSearchParams({ repo_id: repoId });
-  if (variant) params.set("variant", variant);
-  const response = await authFetch(
-    `/api/models/cached-model-path?${params.toString()}`,
-  );
-  return parseJsonOrThrow<CachedModelPath>(response);
-}
-
-/** Reveal a cached repo (or one GGUF variant's file) in the OS file manager. */
-export async function revealCachedModel(
-  repoId: string,
-  variant?: string,
-): Promise<void> {
-  const payload: Record<string, string> = { repo_id: repoId };
-  if (variant) payload.variant = variant;
-  const response = await authFetch("/api/models/reveal-cached-model", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  await parseJsonOrThrow<unknown>(response);
 }
 
 export async function deleteFineTunedModel(args: {
@@ -761,7 +741,7 @@ export async function fetchChatAttachmentBlob(
   );
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    throw new Error(parseErrorText(response.status, body));
+    throw new Error(apiErrorText(response.status, body));
   }
   return response.blob();
 }
@@ -826,7 +806,7 @@ export async function saveChatThread(
   });
   if (response.status === 410) {
     const body = await response.json().catch(() => null);
-    throw new ChatThreadDeletedError(parseErrorText(response.status, body));
+    throw new ChatThreadDeletedError(apiErrorText(response.status, body));
   }
   const savedThread = await parseJsonOrThrow<ThreadRecord>(response);
   notifyChatHistoryUpdated();
@@ -1200,44 +1180,6 @@ export async function recordChatImportLedger(
   };
 }
 
-export interface BrowseEntry {
-  name: string;
-  has_models: boolean;
-  hidden: boolean;
-}
-
-export interface BrowseFoldersResponse {
-  current: string;
-  parent: string | null;
-  entries: BrowseEntry[];
-  suggestions: string[];
-  truncated?: boolean;
-  model_files_here?: number;
-}
-
-export async function listRecommendedFolders(): Promise<string[]> {
-  const response = await authFetch("/api/models/recommended-folders");
-  const data = await parseJsonOrThrow<{ folders: string[] }>(response);
-  return data.folders;
-}
-
-export async function browseFolders(
-  path?: string,
-  showHidden = false,
-  signal?: AbortSignal,
-): Promise<BrowseFoldersResponse> {
-  const params = new URLSearchParams();
-  if (path !== undefined && path !== null) params.set("path", path);
-  if (showHidden) params.set("show_hidden", "true");
-  const qs = params.toString();
-  // Forward the AbortSignal through authFetch so a cancelled FolderBrowser navigation also cancels the server-side walk.
-  const response = await authFetch(
-    `/api/models/browse-folders${qs ? `?${qs}` : ""}`,
-    signal ? { signal } : undefined,
-  );
-  return parseJsonOrThrow<BrowseFoldersResponse>(response);
-}
-
 export async function listGgufVariants(
   repoId: string,
   hfToken?: string,
@@ -1359,7 +1301,7 @@ export async function* streamChatCompletions(
 
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    throw new Error(parseErrorText(response.status, body));
+    throw new Error(apiErrorText(response.status, body));
   }
 
   if (!response.body) {
@@ -1529,7 +1471,7 @@ export async function generateAudio(
 
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    throw new Error(parseErrorText(response.status, body));
+    throw new Error(apiErrorText(response.status, body));
   }
 
   return (await response.json()) as AudioGenerationResponse;

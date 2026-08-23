@@ -3053,11 +3053,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         if (resolvedExtraArgs === undefined) {
           const stored = await fetchLoadExtraArgs(
             modelPath,
-            // The advertised repository id as well as the path this load resolves
-            // to: cached inventory can hand back a different loadId, and the row
-            // was written under whichever of the two the user was looking at.
-            candidate.id,
-            candidate.ggufVariant ?? null,
+            {
+              // The advertised repository id as well as the path this load resolves
+              // to: cached inventory can hand back a different loadId, and the row
+              // was written under whichever of the two the user was looking at.
+              aliasId: candidate.id,
+              ggufVariant: candidate.ggufVariant ?? null,
+            },
           );
           if (stored.tokens.length > 0) {
             const cleaned = clean(stored.tokens);

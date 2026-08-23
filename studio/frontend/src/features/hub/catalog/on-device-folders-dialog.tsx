@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { FolderBrowser } from "@/components/resource-picker/folder-browser";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -16,14 +17,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  type ScanFolderInfo,
-  addScanFolder,
-  listScanFolders,
-  removeScanFolder,
-  scanFolderStatusCopy,
-} from "@/features/hub";
-import { FolderBrowser } from "@/features/model-picker";
+/* eslint-disable no-restricted-imports -- Narrow leaves keep Chat-heavy Model Picker and Settings UI barrels out of Hub. */
 import {
   openModelsDir,
   pickHuggingFaceCacheDir,
@@ -32,7 +26,8 @@ import {
   type HuggingFaceCacheSettings,
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
-} from "@/features/settings";
+} from "@/features/settings/api/hugging-face-cache";
+/* eslint-enable no-restricted-imports */
 import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -49,6 +44,13 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ScanFolderInfo,
+  addScanFolder,
+  listScanFolders,
+  removeScanFolder,
+} from "../inventory/api";
+import { scanFolderStatusCopy } from "../lib/scan-folder-status";
 
 function pathTail(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);

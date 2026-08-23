@@ -9,6 +9,12 @@ import {
   type ReconciledGpuSelection,
   type GpuIndexKind,
 } from "@/hooks/use-gpu-info";
+import {
+  getFitOnDeviceOnlyPreference,
+  MODELS_FIT_ON_DEVICE_ONLY_KEY,
+  setFitOnDeviceOnlyPreference,
+  subscribeFitOnDeviceOnlyPreference,
+} from "@/lib/model-selection-preferences";
 import { toast } from "@/lib/toast";
 import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
 import { create } from "zustand";
@@ -108,8 +114,6 @@ export const CHAT_EXPAND_QUANTIZATIONS_KEY =
   "unsloth_chat_expand_quantizations";
 export const CHAT_SHOW_ALL_QUANTIZATIONS_KEY =
   "unsloth_chat_show_all_quantizations";
-export const MODELS_FIT_ON_DEVICE_ONLY_KEY =
-  "unsloth_models_fit_on_device_only";
 export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
 export const CHAT_PERMISSION_MODE_KEY = "unsloth_chat_permission_mode";
 
@@ -2973,7 +2977,6 @@ type ChatRuntimeStore = {
   ) => void;
   setExpandQuantizations: (value: boolean) => void;
   setShowAllQuantizations: (value: boolean) => void;
-  setFitOnDeviceOnly: (value: boolean) => void;
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
   setPendingImageEditReference: (
@@ -3124,6 +3127,9 @@ function cacheHydratedSettings(
       continue;
     }
     writeStorageValue(setting.storageKey, setting.encode(value));
+    if (field === "fitOnDeviceOnly" && typeof value === "boolean") {
+      setFitOnDeviceOnlyPreference(value);
+    }
   }
 }
 
@@ -3837,7 +3843,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
   // Off by default: On Device lists what is on disk, not the whole repo.
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, false),
-  fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
+  fitOnDeviceOnly: getFitOnDeviceOnlyPreference(),
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
   customContextLength: null,
@@ -5216,10 +5222,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     saveBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, showAllQuantizations);
     set({ showAllQuantizations });
   },
-  setFitOnDeviceOnly: (fitOnDeviceOnly) => {
-    saveBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, fitOnDeviceOnly);
-    set({ fitOnDeviceOnly });
-  },
   setPendingAudio: (base64, name) =>
     set({ pendingAudioBase64: base64, pendingAudioName: name }),
   clearPendingAudio: () =>
@@ -5253,8 +5255,23 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
 
 // Mirror token edits made through the shared store (e.g. Unsloth's field).
 const unsubscribeHfTokenMirror = mirrorHfTokenInto(useChatRuntimeStore);
+const unsubscribeFitOnDeviceOnlyPreference =
+  subscribeFitOnDeviceOnlyPreference((fitOnDeviceOnly) => {
+    const state = useChatRuntimeStore.getState();
+    if (state.fitOnDeviceOnly === fitOnDeviceOnly) {
+      return;
+    }
+    mirrorSettingToBackend(
+      MODELS_FIT_ON_DEVICE_ONLY_KEY,
+      String(fitOnDeviceOnly),
+    );
+    useChatRuntimeStore.setState({ fitOnDeviceOnly });
+  });
 if (import.meta.hot) {
-  import.meta.hot.dispose(unsubscribeHfTokenMirror);
+  import.meta.hot.dispose(() => {
+    unsubscribeHfTokenMirror();
+    unsubscribeFitOnDeviceOnlyPreference();
+  });
 }
 
 export function resolveSpeculativeSettingsForLoad({

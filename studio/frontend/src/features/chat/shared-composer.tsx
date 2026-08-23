@@ -1340,8 +1340,7 @@ export function SharedComposer({
             if (local === undefined) {
               const resolvedArgs = await fetchLoadExtraArgs(
                 sel.id,
-                sel.id,
-                sel.ggufVariant ?? null,
+                { ggufVariant: sel.ggufVariant ?? null },
               );
               const cleaned = clean(resolvedArgs.tokens);
               if (cleaned.length > 0) {

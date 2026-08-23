@@ -31,7 +31,6 @@ import {
   hfApiToken,
   looksLikeLocalPath,
   matchTokens,
-  normalizeModelIdentity,
   tokenizeQuery,
   useHfTokenStore,
   useHubInfiniteScroll,
@@ -54,6 +53,7 @@ import {
 } from "@/features/training";
 import { useGpuInfo } from "@/hooks";
 import { type TranslationKey, useT } from "@/i18n";
+import { normalizeModelIdentity } from "@/lib/model-identity";
 import { extractParamLabel, parseParamCountB } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";

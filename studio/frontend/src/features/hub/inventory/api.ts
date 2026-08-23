@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth";
 import {
   disposableTimeoutSignal,
+  pollSignal,
   withAbort,
 } from "@/features/hub/lib/abort-signals";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
@@ -39,6 +40,15 @@ export interface BackendModelCapabilities {
   supports_vision?: boolean;
 }
 
+export interface CachedRepoCopy {
+  cache_path: string;
+  load_id?: string | null;
+  size_bytes: number;
+  active_cache: boolean;
+  partial: boolean;
+  last_modified?: number | null;
+}
+
 export interface CachedGgufRepo {
   repo_id: string;
   inventory_id?: string | null;
@@ -49,6 +59,10 @@ export interface CachedGgufRepo {
   capabilities?: BackendModelCapabilities | null;
   size_bytes: number;
   cache_path?: string;
+  active_cache?: boolean | null;
+  copy_count?: number | null;
+  total_size_bytes?: number | null;
+  cache_copies?: CachedRepoCopy[];
   last_modified?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
@@ -70,6 +84,10 @@ export interface CachedModelRepo {
   capabilities?: BackendModelCapabilities | null;
   size_bytes: number;
   cache_path?: string;
+  active_cache?: boolean | null;
+  copy_count?: number | null;
+  total_size_bytes?: number | null;
+  cache_copies?: CachedRepoCopy[];
   last_modified?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
@@ -289,33 +307,76 @@ export interface CompanionAssetInfo {
   needed_by: string[];
 }
 
+export interface DeleteBlockInfo {
+  status_code: number;
+  detail: string;
+  retryable?: boolean;
+}
+
 export interface DeleteImpact {
   repo_id: string;
   variant?: string | null;
   reclaimed_bytes: number;
   retained_companions: CompanionAssetInfo[];
   freeable_companions: CompanionAssetInfo[];
+  delete_block?: DeleteBlockInfo | null;
   blocked_by: string[];
 }
 
-/** What a delete would actually reclaim and leave behind. Never throws: the confirm dialog
- * still has to open if this preview is unavailable, it just falls back to the plain wording. */
+// Tighter than the inventory budget: this preview gates the Delete button, so a wedged
+// cache scan or inference backend must degrade to "unavailable" rather than hang the dialog.
+const DELETE_IMPACT_TIMEOUT_MS = 15_000;
+
+/** What a delete would actually reclaim and leave behind. */
 export async function fetchDeleteImpact(
   repoId: string,
   variant?: string | null,
+  cachePath?: string | null,
+  signal?: AbortSignal,
 ): Promise<DeleteImpact | null> {
+  const bound = signal
+    ? pollSignal(signal, DELETE_IMPACT_TIMEOUT_MS)
+    : disposableTimeoutSignal(DELETE_IMPACT_TIMEOUT_MS);
   try {
-    const response = await authFetch("/api/hub/delete-impact", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(
-        variant ? { repo_id: repoId, variant } : { repo_id: repoId },
-      ),
-    });
-    if (!response.ok) return null;
+    // withAbort as well as fetch's own signal: on a 401 authFetch awaits a shared session
+    // refresh that carries none, so the preview could still hang there.
+    const response = await withAbort(
+      authFetch("/api/hub/delete-impact", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: bound.signal,
+        body: JSON.stringify({
+          repo_id: repoId,
+          ...(variant ? { variant } : {}),
+          ...(cachePath ? { cache_path: cachePath } : {}),
+        }),
+      }),
+      bound.signal,
+    );
+    if (!response.ok) {
+      if (response.status !== 409) return null;
+      return {
+        repo_id: repoId,
+        variant: variant ?? null,
+        reclaimed_bytes: 0,
+        retained_companions: [],
+        freeable_companions: [],
+        delete_block: {
+          status_code: response.status,
+          detail: await readFastApiError(
+            response,
+            "Choose a cache location to delete",
+          ),
+          retryable: false,
+        },
+        blocked_by: [],
+      };
+    }
     return (await response.json()) as DeleteImpact;
   } catch {
     return null;
+  } finally {
+    bound.dispose();
   }
 }
 
@@ -439,16 +500,17 @@ export async function listGgufVariants(
   hfToken?: string,
   options?: {
     preferLocalCache?: boolean;
+    offline?: boolean;
     localPath?: string | null;
     signal?: AbortSignal;
   },
 ): Promise<GgufVariantsResponse> {
-  const offline = isHuggingFaceOffline();
+  const offline = options?.offline === true || isHuggingFaceOffline();
   const localPath = options?.localPath?.trim() || null;
   const preferLocalCache = !!options?.preferLocalCache || offline;
   const signal = options?.signal;
   const key = `${repoId}::${fingerprintToken(hfToken)}::${
-    preferLocalCache ? "local" : "remote"
+    offline ? "offline" : preferLocalCache ? "local" : "remote"
   }::${localPathCacheKey(localPath)}`;
   const now = Date.now();
   const hit = ggufVariantsCache.get(key);

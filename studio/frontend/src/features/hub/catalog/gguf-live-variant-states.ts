@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { normalizeGgufVariantIdentity } from "@/lib/model-identity";
 import type { ManagedDownload } from "../download-manager";
 import type { GgufVariantDetail } from "../inventory";
-import { normalizeGgufVariantIdentity } from "../lib/model-identity";
 
 export type LiveGgufVariantState = {
   state: ManagedDownload["state"];

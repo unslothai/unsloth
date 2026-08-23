@@ -54,7 +54,7 @@ let cachedSettings: OpenAIAutoSwitchSettings | null = null;
 let inFlightSettings: Promise<OpenAIAutoSwitchSettings> | null = null;
 // The generation inFlightSettings was issued at. A caller arriving after an
 // invalidation must not adopt a request issued before it: that reply describes
-// the pre-write world, and the hub poll puts it straight into idleUnloadArmed.
+// the pre-write world, so a consumer would act on a stale idleUnloadActive.
 let inFlightGeneration = -1;
 
 function fromApi(
@@ -137,8 +137,8 @@ export async function loadOpenAIAutoSwitchSettings() {
       return cacheSettings(settings, generation);
     }
     // The request was already in flight when the cache was dropped, so this
-    // response predates the write. Callers put it straight into idleUnloadArmed,
-    // so refetch against the new generation rather than returning it.
+    // response predates the write. Callers act on idleUnloadActive directly, so
+    // refetch against the new generation rather than returning it.
   }
   return settings as OpenAIAutoSwitchSettings;
 }

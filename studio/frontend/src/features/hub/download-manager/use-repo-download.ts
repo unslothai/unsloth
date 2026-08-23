@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useLatestRef } from "../hooks/use-latest-ref";
 import type { ResolvedTransport } from "./constants";
+import type { DownloadStartOutcome } from "./transport-conflict";
 import type { TransportConflictInfo } from "./types";
 import {
   type DownloadKind,
@@ -37,7 +38,7 @@ export interface DownloadJob {
   requestStartDownload: (
     variant: string | null,
     expectedBytes: number,
-  ) => Promise<void>;
+  ) => Promise<DownloadStartOutcome>;
   cancelDownload: (variant: string | null) => void;
   setExpectedBytes: (bytes: number, variant?: string | null) => void;
   resumeConflict: () => void;
@@ -127,9 +128,7 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
 
   const requestStartDownload = useCallback(
     async (variant: string | null, expectedBytes: number) => {
-      // This surface renders the conflict resolver (transportConflict), so the
-      // start outcome is handled by the card UI; the awaited result is ignored.
-      await downloadManager.requestStart({
+      return await downloadManager.requestStart({
         kind,
         repoId,
         variant,

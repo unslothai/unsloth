@@ -4,8 +4,8 @@
 // Barrel import (lint rule); the model-picker cycle is fine because the call
 // happens at runtime, not module eval.
 import { resolveResidentInitialConfig } from "@/features/model-picker";
-// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
-import { modelDisplayName } from "@/features/hub/lib/model-identity";
+// eslint-disable-next-line no-restricted-imports -- Identity code is a non-React model-picker leaf; importing the barrel creates a Chat cycle.
+import { modelDisplayName } from "@/features/model-picker/model-config/model-identity";
 import { getInferenceStatus } from "../api/chat-api";
 import {
   mergeBackendRecommendedInference,
@@ -613,7 +613,7 @@ export function applyActiveModelStatusToStore(
         gpuStatusChanged) &&
       gpuStatusFields),
     // The one load param that only ever seeded from null, so a switch left the previous model's
-    // template in the store, which the Hub settings page reads as the new model's loaded config:
+    // template in the store, which the model settings page reads as the new model's loaded config:
     // Apply then saves A's template under B. A same-model reload from another client moves it
     // too, so the seed also follows a changed status the way the GPU group above does: baseline
     // always, control only while it still sits on that baseline. See resolveChatTemplateSeed.

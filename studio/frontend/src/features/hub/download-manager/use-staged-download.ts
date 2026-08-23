@@ -7,7 +7,9 @@ import { toast } from "@/lib/toast";
 
 import { DOWNLOAD_KIND } from "./constants";
 import { downloadManager } from "./download-manager-controller";
+import { getState, jobKeyOf } from "./download-manager-state";
 import { scopedVariant } from "./download-manager-types";
+import { stagedDownloadStartFeedback } from "./staged-download-feedback";
 import { useRepoDownload } from "./use-repo-download";
 
 /** One repo of a staged plan: the exact files to fetch and their declared size. */
@@ -118,23 +120,17 @@ export function useStagedDownload({
       if (!active) return;
       if (outcome === "started") return;
       if (inFlight.current === started) inFlight.current = null;
-      // A start that never got off the ground (network failure, rejected scoped request, worker refused) will never complete, so
-      // clear the queue instead of leaving the head in place, where the effect never re-runs and onReady never fires.
-      // The pick dies with it, so the consumer's pending auto-load has to go too.
-      if (outcome === "error") {
-        toast.error("Could not start the download", {
-          description: "Check the connection, then select the model again.",
-        });
-      } else if (outcome === "conflict") {
-        toast.info("Resume this download from Models", {
-          description:
-            "An earlier partial download used a different transport. Open the Model hub tab to resume or restart it.",
-        });
-      } else if (outcome === "busy") {
-        toast.info("Download already in progress", {
-          description:
-            "Reselect this model once the running download finishes to load it.",
-        });
+      const failedError =
+        outcome === "error"
+          ? getState().jobs[
+              jobKeyOf(DOWNLOAD_KIND.MODEL, current.repoId, activeVariant)
+            ]?.error
+          : undefined;
+      const feedback = stagedDownloadStartFeedback(outcome, failedError);
+      if (feedback?.tone === "error") {
+        toast.error(feedback.title, { description: feedback.description });
+      } else if (feedback) {
+        toast.info(feedback.title, { description: feedback.description });
       }
       setQueue(null);
       onCancelledRef.current?.();

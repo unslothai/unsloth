@@ -2,15 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { ModelSelector } from "./components/model-selector";
-export { FolderBrowser } from "./components/model-selector/folder-browser";
-export { invalidateLlamaFlagCatalog } from "./api/llama-flags";
-export { ModelRowMenu } from "./components/model-selector/model-row-menu";
-export {
-  makePinRank,
-  pinKey,
-  usePinnedModelsStore,
-} from "./components/model-selector/pinned-models";
-export { hfModelFitsDevice } from "./components/model-selector/recommended-fit";
 export {
   NumericValueInput,
   type NumericValueInputHandle,
@@ -48,7 +39,6 @@ export {
   DEFAULT_PER_MODEL_CONFIG,
   normalizeMaxSeqLength,
   type PerModelConfig,
-  adoptLegacyConfigKey,
   isServedByMlx,
   presetLoadSettingNames,
   resolveInitialConfig,

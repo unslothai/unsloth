@@ -15,9 +15,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
-import { type BrowseFoldersResponse, browseFolders } from "@/features/chat";
 import { useT } from "@/i18n";
 import { ChevronUpStandardIcon } from "@/lib/chevron-icons";
+import {
+  type BrowseFoldersResponse,
+  browseFolders,
+} from "@/lib/model-filesystem-api";
 import { cn } from "@/lib/utils";
 import { Folder02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";

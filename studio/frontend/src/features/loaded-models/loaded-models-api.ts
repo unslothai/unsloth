@@ -15,12 +15,12 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat";
 import { disposableTimeoutSignal } from "@/features/hub/lib/abort-signals";
-import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import {
   getDiffusionStatus,
   unloadDiffusionModel,
 } from "@/features/images/api";
 import { getVideoStatus, unloadVideoModel } from "@/features/video/api";
+import { modelIdsMatch } from "@/lib/model-identity";
 import { notifyModelEjected } from "@/lib/model-lifecycle-events";
 import { ejectChatModel } from "./eject-chat-model";
 import {

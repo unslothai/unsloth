@@ -3,9 +3,9 @@
 
 import {
   OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS,
+  TEXT_ATTACHMENT_EXTENSIONS,
   isOpenDocumentAttachmentName,
-} from "../chat/open-document-accept.ts";
-import { TEXT_ATTACHMENT_EXTENSIONS } from "../chat/text-attachment-accept.ts";
+} from "../../lib/attachment-accept.ts";
 import { RAG_UPLOAD_ACCEPT } from "../rag/types/rag.ts";
 
 const DOC_EXTS = RAG_UPLOAD_ACCEPT.split(",").map((ext) =>

@@ -7,7 +7,6 @@ import {
   type LocalModelInfo,
   type ModelInventoryFormat,
   fetchInventorySource,
-  normalizeModelIdentity,
   useDeviceInventoryStore,
   useHfTokenStore,
   useInventoryVersion,
@@ -25,6 +24,7 @@ import {
   useTrainingConfigStore,
 } from "@/features/training";
 import { translate } from "@/i18n";
+import { normalizeModelIdentity } from "@/lib/model-identity";
 import { toast } from "@/lib/toast";
 import { useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";

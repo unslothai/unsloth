@@ -2,10 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import {
-  bumpInventoryVersion,
-  invalidateGgufVariantsCache,
-} from "@/features/hub";
+/* eslint-disable no-restricted-imports -- Avoid a Settings API -> broad Hub barrel cycle. */
+import { invalidateGgufVariantsCache } from "@/features/hub/inventory/api";
+import { bumpInventoryVersion } from "@/features/hub/stores/inventory-events";
+/* eslint-enable no-restricted-imports */
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
 export type HuggingFaceCacheSettings = {

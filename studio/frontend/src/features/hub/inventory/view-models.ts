@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { cachePathKey } from "@/lib/cache-path-key";
 import { ownerOf, repoOf } from "../lib/format";
 import { looksLikeLocalPath } from "../lib/local-path";
 import { isGgufLike } from "../lib/model-identifiers";
@@ -8,7 +9,6 @@ import type {
   BackendModelCapabilities,
   LocalModelInfo,
   ModelInventoryFormat,
-  ModelInventoryRuntime,
 } from "./api";
 import type {
   ModelInventoryCapabilities,
@@ -38,6 +38,20 @@ export function normalizeTimestamp(value?: number | null): number | null {
     return null;
   }
   return value < 10_000_000_000 ? value * 1000 : value;
+}
+
+export function hasCompleteCacheCopyBeyondSelected(
+  selectedCachePath: string | null | undefined,
+  copies: readonly { cachePath: string; partial: boolean }[],
+): boolean {
+  if (!selectedCachePath) {
+    return false;
+  }
+  const selected = cachePathKey(selectedCachePath);
+  return copies.some(
+    (copy) =>
+      copy.partial === false && cachePathKey(copy.cachePath) !== selected,
+  );
 }
 
 export function formatLocalUpdated(value?: number | null): string {
@@ -94,26 +108,6 @@ export function normalizeModelFormat(
   return fallback;
 }
 
-export function normalizeRuntime(
-  value: string | null | undefined,
-  modelFormat: ModelInventoryFormat,
-): ModelInventoryRuntime {
-  if (
-    value === "llama_cpp" ||
-    value === "transformers" ||
-    value === "adapter" ||
-    value === "unknown"
-  ) {
-    return value;
-  }
-  if (modelFormat === "gguf") return "llama_cpp";
-  if (modelFormat === "adapter") return "adapter";
-  if (modelFormat === "safetensors" || modelFormat === "checkpoint") {
-    return "transformers";
-  }
-  return "unknown";
-}
-
 export function defaultCapabilities(
   modelFormat: ModelInventoryFormat,
   partial = false,
@@ -159,11 +153,29 @@ export function normalizeCapabilities(
   };
 }
 
+export function cachedInventoryId(
+  modelFormat: ModelInventoryFormat,
+  repoId: string,
+): string {
+  return `cache:${modelFormat}:${encodeURIComponent(repoId)}`;
+}
+
 export function buildCachedInventoryRow(
   row: {
     repo_id: string;
     size_bytes: number;
     cache_path?: string;
+    active_cache?: boolean | null;
+    copy_count?: number | null;
+    total_size_bytes?: number | null;
+    cache_copies?: Array<{
+      cache_path: string;
+      load_id?: string | null;
+      size_bytes: number;
+      active_cache: boolean;
+      partial: boolean;
+      last_modified?: number | null;
+    }>;
     load_cache_path?: string;
     partial?: boolean;
     partial_transport?: string | null;
@@ -179,7 +191,6 @@ export function buildCachedInventoryRow(
     inventory_id?: string | null;
     load_id?: string | null;
     model_format?: ModelInventoryFormat | null;
-    runtime?: string | null;
     format_variant?: string | null;
     capabilities?: BackendModelCapabilities | null;
     last_modified?: number | null;
@@ -207,21 +218,37 @@ export function buildCachedInventoryRow(
     id:
       !inferredFromEndpoint && row.inventory_id
         ? row.inventory_id
-        : `cache:${modelFormat}:${row.repo_id}`,
+        : cachedInventoryId(modelFormat, row.repo_id),
     loadId: row.load_id ?? row.repo_id,
     repoId: row.repo_id,
     owner: row.repo_id.includes("/") ? ownerOf(row.repo_id) : "Hub",
     repo: row.repo_id.includes("/") ? repoOf(row.repo_id) : row.repo_id,
     isGguf: modelFormat === "gguf",
     modelFormat,
-    runtime: normalizeRuntime(
-      inferredFromEndpoint ? null : row.runtime,
-      modelFormat,
-    ),
     formatVariant: row.format_variant ?? null,
     capabilities,
     bytes: row.size_bytes,
     cachePath: row.cache_path ?? null,
+    activeCache:
+      typeof row.active_cache === "boolean" ? row.active_cache : null,
+    copyCount:
+      typeof row.copy_count === "number" && row.copy_count >= 0
+        ? row.copy_count
+        : row.cache_path
+          ? 1
+          : 0,
+    totalBytes:
+      typeof row.total_size_bytes === "number" && row.total_size_bytes >= 0
+        ? row.total_size_bytes
+        : row.size_bytes,
+    cacheCopies: (row.cache_copies ?? []).map((copy) => ({
+      cachePath: copy.cache_path,
+      loadId: copy.load_id ?? null,
+      bytes: copy.size_bytes,
+      activeCache: copy.active_cache,
+      partial: copy.partial,
+      lastModified: normalizeTimestamp(copy.last_modified),
+    })),
     loadCachePath: row.load_cache_path ?? null,
     lastModified:
       typeof row.last_modified === "number" &&
@@ -302,7 +329,6 @@ export function buildLocalInventoryRows(
         path: model.path,
         isGguf: modelFormat === "gguf",
         modelFormat,
-        runtime: normalizeRuntime(model.runtime, modelFormat),
         formatVariant: model.format_variant ?? null,
         capabilities,
         baseModel,
@@ -324,7 +350,8 @@ export function buildLocalInventoryRows(
     })
     .sort((a, b) => {
       if (Boolean(a.partial) !== Boolean(b.partial)) return a.partial ? 1 : -1;
-      const sourceWeight = sourceSortWeight(a.source) - sourceSortWeight(b.source);
+      const sourceWeight =
+        sourceSortWeight(a.source) - sourceSortWeight(b.source);
       if (sourceWeight !== 0) return sourceWeight;
       if (a.updatedAt && b.updatedAt && a.updatedAt !== b.updatedAt) {
         return b.updatedAt - a.updatedAt;

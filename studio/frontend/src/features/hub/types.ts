@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { HfModelResult } from "@/features/hub/hooks/use-hub-model-search";
 import type {
   BaseModelSource,
+  CachedInventoryCopy,
   LocalSource,
-  ModelInventoryCapabilities,
   ModelInventoryFormat,
 } from "@/features/hub/inventory";
-import type { HfModelResult } from "@/features/hub/hooks/use-hub-model-search";
 import type { Capability, CapabilityKey } from "./lib/model-capabilities";
 
 export type {
@@ -39,27 +39,9 @@ export interface DiscoverRow {
   capabilities: Capability[];
 }
 
-export type SelectedResourceSource = "huggingface" | "hub_cache" | LocalSource;
-
-export type SelectedResourceCacheState =
-  | "remote"
-  | "cached"
-  | "local"
-  | "partial";
-
-export interface SelectedResourceRef {
-  repoId: string | null;
-  localPath: string | null;
-  source: SelectedResourceSource;
-  cacheState: SelectedResourceCacheState;
-  runId: string;
-  trainId: string;
-}
-
 export interface SelectedModelView {
   id: string;
   kind: "discover" | "cache" | "local";
-  resource: SelectedResourceRef;
   displayId: string;
   hubRepoId: string | null;
   owner: string;
@@ -67,6 +49,9 @@ export interface SelectedModelView {
   summary: string;
   sourceLabel: string;
   path: string | null;
+  /** Whether `path` belongs to the cache selected for new downloads. */
+  activeCache?: boolean | null;
+  cacheCopies?: CachedInventoryCopy[];
   localSource?: LocalSource;
   isLocal: boolean;
   isGguf: boolean;
@@ -82,7 +67,6 @@ export interface SelectedModelView {
   isPartial?: boolean;
   partialTransport?: string | null;
   partialResumable?: boolean;
-  runtimeCapabilities?: ModelInventoryCapabilities;
   capabilities: Capability[];
   license: string | null;
   pipelineTag?: string;

@@ -2,15 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Pinned models for the model selector's On Device list, persisted in
-// localStorage so pins survive reloads. GGUF quants pin individually
-// (repoId + quant); non-GGUF repos pin as a whole. Pinned entries surface
+// localStorage so pins survive reloads. Repositories pin as a whole, and
+// GGUF quants can also pin individually (repoId + quant). Pinned entries surface
 // in a "Pinned" section above the Unsloth/Downloaded group.
 
 import { create } from "zustand";
 
 const KEY = "unsloth_pinned_models";
 
-// Entries are stored as strings: "repoId" pins a whole (non-GGUF) repo,
+// Entries are stored as strings: "repoId" pins a whole repo,
 // "repoId::quant" pins one GGUF quant. Neither part contains "::".
 export function pinKey(repoId: string, quant?: string): string {
   return quant ? `${repoId}::${quant}` : repoId;
@@ -19,6 +19,51 @@ export function pinKey(repoId: string, quant?: string): string {
 export interface PinnedQuantEntry {
   repoId: string;
   quant: string;
+}
+
+export interface ParsedPinKey {
+  repoId: string;
+  quant: string | null;
+}
+
+export function parsePinKey(key: string): ParsedPinKey | null {
+  const separator = key.indexOf("::");
+  const repoId = (separator < 0 ? key : key.slice(0, separator)).trim();
+  const quant = separator < 0 ? null : key.slice(separator + 2).trim();
+  if (!repoId || (separator >= 0 && !quant)) {
+    return null;
+  }
+  return { repoId, quant };
+}
+
+export function pinKeyMatchesRepo(key: string, repoId: string): boolean {
+  return parsePinKey(key)?.repoId.toLowerCase() === repoId.trim().toLowerCase();
+}
+
+export function pinKeyMatchesArtifact(
+  key: string,
+  repoId: string,
+  quant?: string | null,
+): boolean {
+  const parsed = parsePinKey(key);
+  return (
+    parsed !== null &&
+    parsed.repoId.toLowerCase() === repoId.trim().toLowerCase() &&
+    (parsed.quant?.toLowerCase() ?? null) ===
+      (quant?.trim().toLowerCase() ?? null)
+  );
+}
+
+export function parsedPinsForRepo(
+  pinned: readonly string[],
+  repoId: string,
+): ParsedPinKey[] {
+  return pinned.flatMap((key) => {
+    const parsed = parsePinKey(key);
+    return parsed && parsed.repoId.toLowerCase() === repoId.trim().toLowerCase()
+      ? [parsed]
+      : [];
+  });
 }
 
 export function makePinRank(
@@ -32,11 +77,10 @@ export function makePinRank(
 export function pinnedQuantEntries(pinned: string[]): PinnedQuantEntry[] {
   const out: PinnedQuantEntry[] = [];
   for (const key of pinned) {
-    const sep = key.indexOf("::");
-    if (sep <= 0) continue;
-    const repoId = key.slice(0, sep);
-    const quant = key.slice(sep + 2);
-    if (repoId && quant) out.push({ repoId, quant });
+    const parsed = parsePinKey(key);
+    if (parsed?.quant) {
+      out.push({ repoId: parsed.repoId, quant: parsed.quant });
+    }
   }
   return out;
 }
@@ -154,6 +198,34 @@ export const usePinnedModelsStore = create<PinnedModelsState>((set) => ({
       return { pinned: base };
     }),
 }));
+
+export function hasPinnedArtifact(
+  repoId: string,
+  quant?: string | null,
+): boolean {
+  return usePinnedModelsStore
+    .getState()
+    .pinned.some((key) => pinKeyMatchesArtifact(key, repoId, quant));
+}
+
+export function removePinnedArtifactIfPresent(
+  repoId: string,
+  quant?: string | null,
+): boolean {
+  let removed = false;
+  usePinnedModelsStore.setState((state) => {
+    const next = state.pinned.filter(
+      (key) => !pinKeyMatchesArtifact(key, repoId, quant),
+    );
+    if (next.length === state.pinned.length) {
+      return state;
+    }
+    removed = true;
+    writePinned(next);
+    return { pinned: next };
+  });
+  return removed;
+}
 
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {

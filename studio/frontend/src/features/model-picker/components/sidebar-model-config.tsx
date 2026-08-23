@@ -45,7 +45,7 @@ export function SidebarModelConfig({
 }: SidebarModelConfigProps) {
   // A standalone .gguf has no quant to choose between, but the loader labels it from its filename
   // and /status echoes that back. Keying settings by it would write "<path>:Q4_K_M" while every
-  // other surface uses the bare path. Same rule as settingsGgufVariantForRow.
+  // other surface uses the bare path. Standalone files therefore have no variant key.
   const settingsGgufVariant = isStandaloneGgufPath(modelId)
     ? null
     : ggufVariant;

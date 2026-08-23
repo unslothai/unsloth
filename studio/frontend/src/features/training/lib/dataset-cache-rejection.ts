@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// eslint-disable-next-line no-restricted-imports -- Keep this state helper independent of the Hub barrel's browser modules.
-import { normalizeModelIdentity } from "@/features/hub/lib/model-identity";
+import { normalizeModelIdentity } from "@/lib/model-identity";
 
 export type DatasetCacheUsabilityIdentity = Readonly<{
   dataset: string;

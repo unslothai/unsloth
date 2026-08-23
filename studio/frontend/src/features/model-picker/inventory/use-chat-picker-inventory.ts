@@ -16,6 +16,7 @@ import {
 } from "@/features/hub";
 import { useMemo } from "react";
 import { allowedHiddenModelIdMatches } from "../components/model-selector/audio-picker-policy";
+import { toCachedRepoCopies } from "./cache-copy-path";
 
 const PICKER_LOCAL_SOURCES: ReadonlySet<LocalSource> = new Set([
   "lmstudio",
@@ -35,6 +36,10 @@ function toCachedGgufRepo(row: CachedInventoryRow): CachedGgufRepo {
     load_id: row.loadId,
     size_bytes: row.bytes,
     cache_path: row.cachePath ?? "",
+    active_cache: row.activeCache ?? undefined,
+    copy_count: row.copyCount,
+    total_size_bytes: row.totalBytes,
+    cache_copies: toCachedRepoCopies(row.cacheCopies),
     last_modified: row.lastModified ?? undefined,
     has_vision: row.capabilities.supportsVision,
     task: row.task ?? null,
@@ -49,6 +54,10 @@ function toCachedModelRepo(row: CachedInventoryRow): CachedModelRepo {
     // Delete targets the copy the row describes; without it the request hits the active cache.
     cache_path: row.cachePath,
     size_bytes: row.bytes,
+    active_cache: row.activeCache ?? undefined,
+    copy_count: row.copyCount,
+    total_size_bytes: row.totalBytes,
+    cache_copies: toCachedRepoCopies(row.cacheCopies),
     last_modified: row.lastModified ?? undefined,
     task: row.task ?? null,
     tags: row.tags,

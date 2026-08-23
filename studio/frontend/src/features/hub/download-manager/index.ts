@@ -56,3 +56,4 @@ export {
   useTransportMode,
 } from "./transport-preference";
 export type { TransportConflictInfo } from "./types";
+export type { DownloadStartOutcome } from "./transport-conflict";

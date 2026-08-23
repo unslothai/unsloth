@@ -35,6 +35,7 @@ import {
 import { useHfTokenValidation } from "@/hooks";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
+import { MODELS_FIT_ON_DEVICE_ONLY_KEY } from "@/lib/model-selection-preferences";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { Check, Eye, EyeOff } from "lucide-react";
@@ -117,7 +118,7 @@ const PREFS_KEYS: string[] = [
   // Model selector settings ("Select model settings" group)
   "unsloth_chat_expand_quantizations",
   "unsloth_chat_show_all_quantizations",
-  "unsloth_models_fit_on_device_only",
+  MODELS_FIT_ON_DEVICE_ONLY_KEY,
   // Chat presets
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",

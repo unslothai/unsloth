@@ -6,24 +6,18 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { ggufVariantsMatch } from "@/lib/model-identity";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import {
-  Alert02Icon,
-  CubeIcon,
-  PlayIcon,
-  RemoveCircleIcon,
-  Share05Icon,
-} from "@hugeicons/core-free-icons";
+import { Alert02Icon, CubeIcon, Share05Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useState } from "react";
-import { TrainIcon } from "../components/train-icon";
 import {
   downloadManager,
   jobKeyOf,
@@ -47,32 +41,22 @@ import {
   ggufVariantDisplayLabel,
   sortLocalGgufVariants,
 } from "../lib/gguf-variant-sort";
-import {
-  HUB_GGUF_RUN_ACTIONS_VISIBLE,
-  HUB_NON_GGUF_RUN_ACTIONS_VISIBLE,
-  HUB_POST_DOWNLOAD_ACTIONS_VISIBLE,
-} from "../lib/hub-feature-flags";
-import { ggufVariantsMatch } from "../lib/model-identity";
 import { confirmExternalLink } from "../stores/external-link-confirm";
 import { useHfTokenStore } from "../stores/hf-token-store";
+import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { DotTag } from "./dot-tag";
 import {
   CardDeleteButton,
-  CardSettingsButton,
   CardUpdateButton,
   DeleteConfirmDialog,
   UpdateConfirmDialog,
 } from "./download-card";
 import { PathInfoButton } from "./path-info-button";
+import { reconcilePinsAfterCacheCopyDelete } from "./pin-reconciliation";
 import { TransportConflictDialog } from "./transport-conflict-dialog";
-import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
+import { busyUpdateStartFeedback } from "./update-start-feedback";
 import { useCardDelete } from "./use-card-delete";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
-
-type LocalLoadOptions = {
-  ggufVariant?: string;
-  expectedBytes?: number;
-};
 
 interface LocalOnDeviceCardProps {
   modelId: string;
@@ -80,6 +64,7 @@ interface LocalOnDeviceCardProps {
   sourceLabel: string;
   source: LocalModelInfo["source"];
   path: string;
+  activeCache?: boolean | null;
   isGguf: boolean;
   requiresVariant?: boolean;
   modelFormat: ModelInventoryFormat | null;
@@ -89,29 +74,13 @@ interface LocalOnDeviceCardProps {
   baseModelSummary?: string | null;
   adapterType?: string | null;
   trainingMethod?: string | null;
-  canRun?: boolean;
-  isActive: boolean;
-  activeGgufVariant?: string | null;
-  isLoading: boolean;
-  loadingPhase?: "downloading" | "starting";
   preferredFile?: string | null;
   preferredFileIntent?: number;
 
   gpuGb?: number;
   systemRamGb?: number;
   unsupportedReason?: string | null;
-  onLoad: (opts?: LocalLoadOptions) => void;
-  /** Accepted for API parity; the run bar ejects instead of opening chat. */
-  onUseInChat: () => void;
-  onEject?: () => void;
-  onTrain?: () => void;
   onChange?: () => void;
-  /**
-   * Open settings for the quant this card is showing. ``quantIsUserPicked`` says whether
-   * it came from this card's selector or was derived from the resident model, which
-   * decides whether a fresher status read may override it.
-   */
-  onOpenSettings?: (ggufVariant: string | null, quantIsUserPicked: boolean) => void;
 }
 
 function formatAdapterLabel(
@@ -209,6 +178,7 @@ export function LocalOnDeviceCard({
   sourceLabel,
   source,
   path,
+  activeCache,
   isGguf,
   requiresVariant = false,
   modelFormat,
@@ -218,22 +188,13 @@ export function LocalOnDeviceCard({
   baseModelSummary,
   adapterType,
   trainingMethod,
-  canRun = true,
-  isActive,
-  activeGgufVariant = null,
-  isLoading,
-  loadingPhase,
   preferredFile = null,
   preferredFileIntent = 0,
 
   gpuGb,
   systemRamGb,
   unsupportedReason,
-  onLoad,
-  onEject,
-  onTrain,
   onChange,
-  onOpenSettings,
 }: LocalOnDeviceCardProps) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
@@ -264,7 +225,12 @@ export function LocalOnDeviceCard({
   // Update availability is derived from the GGUF variant metadata; offline rows
   // keep the button hidden because there is no remote revision to fetch.
   const online = useOnlineStatus();
-  const deleteImpact = useDeleteImpact(deleteOpen && Boolean(repoId), repoId ?? "");
+  const deleteImpactState = useDeleteImpact(
+    deleteOpen && Boolean(repoId),
+    repoId ?? "",
+    undefined,
+    path,
+  );
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
       if (!repoId) return;
@@ -272,6 +238,10 @@ export function LocalOnDeviceCard({
       // the cache snapshot path: pass it so the delete targets the cache this
       // card shows instead of falling back to the active cache.
       await deleteCachedModel(repoId, undefined, hfToken || undefined, path);
+      await reconcilePinsAfterCacheCopyDelete({
+        repoId,
+        hfToken: hfToken || undefined,
+      });
     },
     resourceName: "model",
     successMessage: () => `Deleted ${repoId}`,
@@ -309,8 +279,7 @@ export function LocalOnDeviceCard({
     quant: null,
   }));
 
-  const canDelete =
-    source === "hf_cache" && !!repoId && !isActive && !isLoading;
+  const canDelete = source === "hf_cache" && !!repoId;
   const variants = useMemo(() => {
     const localVariants = currentVariantState.variants;
     const remoteVariants = remoteVariantState.variants;
@@ -338,19 +307,11 @@ export function LocalOnDeviceCard({
       variants
         ? sortLocalGgufVariants(variants, {
             defaultVariant: currentVariantState.defaultVariant,
-            activeGgufVariant: isActive ? activeGgufVariant : null,
             gpuGb,
             systemRamGb,
           })
         : null,
-    [
-      variants,
-      currentVariantState.defaultVariant,
-      isActive,
-      activeGgufVariant,
-      gpuGb,
-      systemRamGb,
-    ],
+    [variants, currentVariantState.defaultVariant, gpuGb, systemRamGb],
   );
   const preferredQuant = preferredFile
     ? (variants?.find((variant) =>
@@ -373,22 +334,11 @@ export function LocalOnDeviceCard({
       ggufVariantsMatch(variant.quant, selectedVariantOverride),
     )
       ? selectedVariantOverride
-      : (sortedVariants?.find(
-          (variant) =>
-            isActive && ggufVariantsMatch(variant.quant, activeGgufVariant),
-        )?.quant ??
-        sortedVariants?.find((variant) =>
+      : (sortedVariants?.find((variant) =>
           ggufVariantsMatch(variant.quant, currentVariantState.defaultVariant),
         )?.quant ??
         sortedVariants?.[0]?.quant ??
         null);
-  // Only the first branch is a choice; the rest read the store, which can be stale.
-  const quantIsUserPicked = Boolean(
-    selectedVariantOverride &&
-      sortedVariants?.some((variant) =>
-        ggufVariantsMatch(variant.quant, selectedVariantOverride),
-      ),
-  );
   const selectedVariant =
     sortedVariants?.find((variant) =>
       ggufVariantsMatch(variant.quant, selectedQuant),
@@ -413,20 +363,20 @@ export function LocalOnDeviceCard({
     needsVariantSelection &&
     selectedVariant?.downloaded === true &&
     selectedVariant.update_available === true;
+  const downloadToCurrentCache =
+    activeCache === false && (!isGguf || selectedVariant !== null);
   const canUpdate =
     online &&
     source === "hf_cache" &&
     !!repoId &&
-    !isActive &&
-    !isLoading &&
     !updateJobActive &&
-    updateAvailable;
+    (downloadToCurrentCache || updateAvailable);
   // Update runs as a MANAGED download (same path as a normal download) so it
   // shows in the Downloads panel with manifest-based progress and a working
   // Cancel. The worker re-resolves `main` and pulls changed blobs while the old
-  // cached copy stays runnable until the new revision verifies.
+  // cached copy stays available until the new revision verifies.
   const handleConfirmUpdate = () => {
-    if (!repoId || !updateTargetVariant) return;
+    if (!repoId || (needsVariantSelection && !updateTargetVariant)) return;
     setUpdateOpen(false);
     void downloadManager
       .requestStart({
@@ -436,25 +386,35 @@ export function LocalOnDeviceCard({
         expectedBytes: updateExpectedBytes,
       })
       .then((outcome) => {
+        const busyFeedback = busyUpdateStartFeedback(outcome);
         if (outcome === "conflict") {
           setUpdateConflictKey(jobKeyOf("model", repoId, updateTargetVariant));
+        } else if (busyFeedback) {
+          toast.info(busyFeedback.title, {
+            description: busyFeedback.description,
+          });
+        } else if (outcome === "error") {
+          // A refused start finalizes the job with the server's reason -- most often that
+          // the quant is loaded for inference. This card shows no job state, so without a
+          // toast the refusal would only ever appear in the Downloads panel.
+          const failed =
+            useDownloadManagerStore.getState().jobs[
+              jobKeyOf("model", repoId, updateTargetVariant)
+            ];
+          toast.error(
+            downloadToCurrentCache
+              ? "Could not start the download"
+              : "Could not start the update",
+            {
+              description:
+                failed?.error || "Check the connection, then try again.",
+            },
+          );
         }
         void currentVariantState.refresh();
         void remoteVariantState.refresh();
       });
   };
-  const selectedVariantIsActive =
-    needsVariantSelection && selectedQuant
-      ? isActive && ggufVariantsMatch(activeGgufVariant, selectedQuant)
-      : isActive;
-  const variantUnavailable =
-    needsVariantSelection &&
-    (currentVariantState.loading ||
-      currentVariantState.error !== null ||
-      selectedVariant === null);
-  const variantActionPending =
-    needsVariantSelection && currentVariantState.loading;
-
   const formatLabel =
     modelFormat === "gguf"
       ? "GGUF"
@@ -468,10 +428,6 @@ export function LocalOnDeviceCard({
   const formatTone =
     modelFormat === "adapter" ? "adapter" : isGguf ? "gguf" : "checkpoint";
   const showOldCacheHint = source === "hf_cache" && !!unsupportedReason;
-  const runActionsVisible = isGguf
-    ? HUB_GGUF_RUN_ACTIONS_VISIBLE
-    : HUB_NON_GGUF_RUN_ACTIONS_VISIBLE;
-
   return (
     <div className="flex w-full flex-col gap-2">
       {showOldCacheHint && (
@@ -492,10 +448,7 @@ export function LocalOnDeviceCard({
         <div className="group/dl flex items-center">
           <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
             <span className="flex min-w-0 items-center gap-1.5 text-ui-12 text-muted-foreground">
-              <DotTag
-                tone="success"
-                label={selectedVariantIsActive ? "Loaded" : "On device"}
-              />
+              <DotTag tone="success" label="On device" />
               <DotTag tone={formatTone} label={formatLabel} />
               {needsVariantSelection && (
                 <Popover open={variantOpen} onOpenChange={setVariantOpen}>
@@ -539,9 +492,6 @@ export function LocalOnDeviceCard({
                           variant.quant,
                           selectedQuant,
                         );
-                        const isLoaded =
-                          ggufVariantsMatch(variant.quant, activeGgufVariant) &&
-                          isActive;
                         return (
                           <button
                             key={variant.filename}
@@ -567,9 +517,6 @@ export function LocalOnDeviceCard({
                               {label}
                             </span>
                             <span className="flex shrink-0 items-center gap-1.5">
-                              {isLoaded && (
-                                <DotTag tone="success" label="Loaded" />
-                              )}
                               <span className="text-ui-10 text-muted-foreground tabular-nums">
                                 {formatBytes(variant.size_bytes)}
                               </span>
@@ -600,19 +547,22 @@ export function LocalOnDeviceCard({
               )}
             </span>
             <div className="ml-auto flex items-center gap-0.5">
-              {onOpenSettings && (
-                <CardSettingsButton
-                  label={`Settings for ${repoId}`}
-                  // The quant this card resolved, so settings edits what is on screen.
-                  onClick={() =>
-                    onOpenSettings(selectedQuant ?? null, quantIsUserPicked)
-                  }
-                />
-              )}
               {canUpdate && (
                 <CardUpdateButton
-                  label={`Update ${repoId}`}
+                  label={
+                    downloadToCurrentCache
+                      ? `Download ${repoId} to the current cache location`
+                      : `Update ${repoId}`
+                  }
                   emphasized={true}
+                  actionLabel={
+                    downloadToCurrentCache ? "Download here" : "Update"
+                  }
+                  tooltip={
+                    downloadToCurrentCache
+                      ? "Download to the cache location selected in Settings"
+                      : "A newer version is available on Hugging Face"
+                  }
                   onClick={() => setUpdateOpen(true)}
                 />
               )}
@@ -624,85 +574,6 @@ export function LocalOnDeviceCard({
               )}
               <PathInfoButton path={path} />
             </div>
-          </div>
-          {onTrain && HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && (
-            <div
-              aria-hidden="true"
-              className="ml-1 mr-0 h-5 w-px shrink-0 bg-foreground/[0.06] opacity-100 transition-opacity duration-150 group-hover/dl:opacity-0 dark:bg-white/[0.04]"
-            />
-          )}
-          <div
-            className={cn(
-              "group/pair flex h-9 shrink-0 items-stretch gap-1.5",
-              !runActionsVisible && "hidden",
-            )}
-          >
-            {onTrain && HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && (
-              <button
-                type="button"
-                onClick={() => onTrain()}
-                className="hub-action-btn w-24"
-              >
-                <HugeiconsIcon icon={TrainIcon} strokeWidth={1.75} />
-                Train
-              </button>
-            )}
-            <button
-              type="button"
-              disabled={isLoading || variantUnavailable || !canRun}
-              onClick={() => {
-                if (!canRun) return;
-                if (selectedVariantIsActive) {
-                  onEject?.();
-                  return;
-                }
-                if (needsVariantSelection) {
-                  if (!selectedVariant) return;
-                  onLoad({
-                    ggufVariant: selectedVariant.quant,
-                    expectedBytes: selectedVariant.size_bytes,
-                  });
-                  return;
-                }
-                onLoad();
-              }}
-              className={cn(
-                isLoading ||
-                  selectedVariantIsActive ||
-                  variantUnavailable ||
-                  !canRun
-                  ? "hub-action-btn w-24"
-                  : "hub-run-action-btn w-24",
-                (isLoading || variantUnavailable || !canRun) && "opacity-70",
-              )}
-            >
-              {isLoading ? (
-                <>
-                  <Spinner />
-                  {loadingPhase === "downloading" ? "Preparing…" : "Loading…"}
-                </>
-              ) : selectedVariantIsActive ? (
-                <>
-                  <HugeiconsIcon icon={RemoveCircleIcon} strokeWidth={1.75} />
-                  Eject
-                </>
-              ) : variantActionPending ? (
-                <>
-                  <Spinner />
-                  Loading…
-                </>
-              ) : canRun ? (
-                <>
-                  <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} />
-                  Run
-                </>
-              ) : (
-                <>
-                  <HugeiconsIcon icon={Alert02Icon} strokeWidth={1.75} />
-                  No run
-                </>
-              )}
-            </button>
           </div>
         </div>
       </div>
@@ -721,16 +592,19 @@ export function LocalOnDeviceCard({
         }}
         title="Delete cached model?"
         deleting={deleting}
-        // Same gate the model row menu applies: when an installed image model still needs these
-        // assets the summary says so, and leaving Delete enabled only bought the user a 400.
-        blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
+        blocked={deleteImpactState.blocked}
         onConfirm={() => void runDelete()}
         description={
           <>
             This will remove{" "}
             <span className="font-medium text-foreground">{repoId}</span> and
-            its downloaded files from disk. You can re-download it later.
-            <DeleteImpactSummary impact={deleteImpact} />
+            its downloaded files from this cache location. You can re-download
+            it later.
+            <DeleteImpactSummary
+              impact={deleteImpactState.impact}
+              checking={deleteImpactState.checking}
+              unavailable={deleteImpactState.unavailable}
+            />
           </>
         }
       />
@@ -739,10 +613,18 @@ export function LocalOnDeviceCard({
         onOpenChange={(o) => {
           if (!o) setUpdateOpen(false);
         }}
-        title={`Update ${repoId}?`}
+        title={
+          downloadToCurrentCache
+            ? `Download ${repoId} to the current cache location?`
+            : `Update ${repoId}?`
+        }
         updating={false}
         onConfirm={handleConfirmUpdate}
-        description="Re-download the latest version of this model from Hugging Face. Progress shows in the Downloads panel."
+        description={
+          downloadToCurrentCache
+            ? "Download this model to the cache location selected in Settings. The copy in this older location will remain. Progress shows in the Downloads panel."
+            : "Re-download the latest version of this model from Hugging Face. Progress shows in the Downloads panel."
+        }
       />
       <TransportConflictDialog
         conflict={updateTransportConflict}

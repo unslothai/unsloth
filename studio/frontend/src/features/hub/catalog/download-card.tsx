@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ReactNode } from "react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -23,17 +22,17 @@ import {
   ArrowReloadHorizontalIcon,
   Delete02Icon,
   Download01Icon,
-  Settings02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import type { ReactNode } from "react";
 import {
-  DownloadProgressBar,
   type DownloadJob,
   type DownloadJobProgress,
+  DownloadProgressBar,
 } from "../download-manager";
 import {
-  type DownloadStopMode,
   DownloadStopIndicator,
+  type DownloadStopMode,
 } from "./download-cancel-indicator";
 import { TransportConflictDialog } from "./transport-conflict-dialog";
 import {
@@ -94,39 +93,6 @@ export function CardDivider() {
   );
 }
 
-export function CardSettingsButton({
-  label,
-  onClick,
-}: {
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          aria-label={label}
-          onClick={(e) => {
-            e.stopPropagation();
-            onClick();
-          }}
-          className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-[opacity,background-color,color] duration-150 hover:bg-foreground/[0.06] hover:text-foreground focus-visible:opacity-100 group-hover/dl:opacity-100 dark:hover:bg-white/[0.08]"
-        >
-          <HugeiconsIcon
-            icon={Settings02Icon}
-            strokeWidth={1.75}
-            className="size-4"
-          />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="top" className="tooltip-compact">
-        {label}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
 export function CardDeleteButton({
   label,
   onClick,
@@ -164,6 +130,8 @@ export function CardUpdateButton({
   label,
   onClick,
   emphasized = false,
+  actionLabel = "Update",
+  tooltip = "A newer version is available on Hugging Face",
 }: {
   label: string;
   onClick: () => void;
@@ -173,6 +141,8 @@ export function CardUpdateButton({
    *  (the older-cache hint banner), kept tinted (never solid) per the design
    *  system's feedback-color convention, so the one emerald accent stays scarce. */
   emphasized?: boolean;
+  actionLabel?: string;
+  tooltip?: string;
 }) {
   if (emphasized) {
     return (
@@ -192,11 +162,11 @@ export function CardUpdateButton({
               strokeWidth={2}
               className="size-3.5"
             />
-            Update
+            {actionLabel}
           </button>
         </TooltipTrigger>
         <TooltipContent side="top" sideOffset={4}>
-          A newer version is available on Hugging Face
+          {tooltip}
         </TooltipContent>
       </Tooltip>
     );
@@ -239,6 +209,8 @@ export function DownloadActionButton({
   disabled,
   onClick,
   className,
+  idleLabel,
+  idleAriaLabel,
 }: {
   downloading: boolean;
   cancelling: boolean;
@@ -252,13 +224,18 @@ export function DownloadActionButton({
   disabled: boolean;
   onClick: () => void;
   className?: string;
+  idleLabel?: string;
+  idleAriaLabel?: string;
 }) {
   return (
     <button
       type="button"
       disabled={disabled}
       onClick={onClick}
-      aria-label={downloadActionAriaLabel(downloading, cancelling, stopMode)}
+      aria-label={
+        downloadActionAriaLabel(downloading, cancelling, stopMode) ??
+        idleAriaLabel
+      }
       className={cn(
         "hub-action-btn w-28",
         (loading || cancelling) && "opacity-70",
@@ -286,7 +263,7 @@ export function DownloadActionButton({
       ) : (
         <>
           <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} />
-          {downloadActionLabel(isPartial, partialResumable)}
+          {idleLabel ?? downloadActionLabel(isPartial, partialResumable)}
         </>
       )}
     </button>
@@ -308,7 +285,7 @@ export function DeleteConfirmDialog({
   title: string;
   description: ReactNode;
   deleting: boolean;
-  /** Another installed model needs these files. Confirming would 400, so do not offer it. */
+  /** The delete preflight says confirmation is currently unavailable. */
   blocked?: boolean;
   onConfirm: () => void;
 }) {

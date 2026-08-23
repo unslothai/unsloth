@@ -52,22 +52,12 @@ import {
 import { confirmExternalLink } from "../stores/external-link-confirm";
 import type { SelectedModelView } from "../types";
 import { DatasetDownloadSection } from "./dataset-download-section";
-import { taskForMediaPick } from "@/features/model-picker/components/model-selector/audio-picker-policy";
-import { routableToMediaPage } from "../lib/local-path";
-import { studioPageForTask } from "../lib/unsloth-support";
 import { DownloadSection } from "./download-section";
 import { LocalDatasetCard } from "./local-dataset-card";
 import { LocalOnDeviceCard } from "./local-on-device-card";
 import { ModelReadme } from "./model-readme";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessChip, CapabilityPill } from "./shared";
-
-// HF pipeline_tag values authoritative for embedding-only repos; capability
-// labels (code/vision/audio) can leak onto them via name or tags.
-const EMBEDDING_PIPELINE_TAGS: ReadonlySet<string> = new Set([
-  "feature-extraction",
-  "sentence-similarity",
-]);
 
 function ViewRepositoryButton({
   repoId,
@@ -273,13 +263,13 @@ type VramInfo = { est: number; status: "fits" | "tight" | "exceeds" } | null;
 function ModelStatusChips({
   isDataset,
   isGguf,
-  chatOnly,
+  ggufOnlyDevice,
   unslothSupport,
   vramInfo,
 }: {
   isDataset: boolean;
   isGguf: boolean;
-  chatOnly: boolean;
+  ggufOnlyDevice: boolean;
   unslothSupport: UnslothSupport;
   vramInfo: VramInfo;
 }) {
@@ -288,11 +278,10 @@ function ModelStatusChips({
     !isDataset &&
     unslothSupport.status === "unsupported" &&
     !unslothSupport.supportedIn;
-  // The format-unsupported chip already explains itself; this one covers the
-  // supported-format model a chat-only host still can't run.
-  const showChatOnly = !isDataset && !isGguf && chatOnly && !showUnsupported;
+  const showGgufOnly =
+    !isDataset && !isGguf && ggufOnlyDevice && !showUnsupported;
   const showVram = !isDataset && vramInfo && !isGguf;
-  if (!showUnsupported && !showChatOnly && !showVram) return null;
+  if (!showUnsupported && !showGgufOnly && !showVram) return null;
 
   const vramTone = vramInfo
     ? vramInfo.status === "exceeds"
@@ -342,7 +331,7 @@ function ModelStatusChips({
           </TooltipContent>
         </Tooltip>
       )}
-      {showChatOnly && (
+      {showGgufOnly && (
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <span tabIndex={0} className="inline-flex outline-none">
@@ -385,12 +374,9 @@ function ModelStatusChips({
   );
 }
 
-export type ModelInspectorRuntime = {
-  isActive: boolean;
-  activeGgufVariant: string | null;
-  isLoadingThisModel: boolean;
-  loadingPhase?: "downloading" | "starting";
+export type ModelInspectorHardware = {
   minMemory: string | null;
+  ggufOnlyDevice: boolean;
   vramInfo: {
     est: number;
     status: "fits" | "tight" | "exceeds";
@@ -400,23 +386,13 @@ export type ModelInspectorRuntime = {
 };
 
 export type ModelInspectorActions = {
-  onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
-  onLoadLocal: (opts?: {
-    ggufVariant?: string;
-    expectedBytes?: number;
-  }) => void;
-  onUseInChat: () => void;
-  onEject?: () => void;
-  onTrain?: () => void;
   onInventoryChange?: () => void;
   onSearchHub?: (query: string) => void;
-  /** Open settings with the quant the card resolved. */
-  onOpenSettings?: (ggufVariant: string | null) => void;
 };
 
 export const ModelInspector = memo(function ModelInspector({
   model,
-  runtime,
+  hardware,
   actions,
   preferredGgufFile = null,
 
@@ -432,31 +408,12 @@ export const ModelInspector = memo(function ModelInspector({
   preferredGgufFile?: string | null;
 
   preferredGgufFileIntent?: number;
-  runtime: ModelInspectorRuntime;
+  hardware: ModelInspectorHardware;
   actions: ModelInspectorActions;
 }) {
-  const {
-    isActive,
-    activeGgufVariant,
-    isLoadingThisModel,
-    loadingPhase,
-    minMemory,
-    vramInfo,
-    gpuGb,
-    systemRamGb,
-  } = runtime;
-  const {
-    onLoad,
-    onLoadLocal,
-    onUseInChat,
-    onEject,
-    onTrain,
-    onInventoryChange,
-    onSearchHub,
-    onOpenSettings,
-  } = actions;
+  const { minMemory, vramInfo, ggufOnlyDevice, gpuGb, systemRamGb } = hardware;
+  const { onInventoryChange, onSearchHub } = actions;
   const deviceType = usePlatformStore((s) => s.deviceType);
-  const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const hfToken = useHfTokenStore((s) => s.token);
   const datasetRepoId = isDataset && model?.hubRepoId ? model.hubRepoId : null;
   const datasetSize = useDatasetSize(datasetRepoId, {
@@ -524,7 +481,7 @@ export const ModelInspector = memo(function ModelInspector({
           <p className="max-w-sm text-ui-12p5 leading-5 text-muted-foreground">
             {isDataset
               ? "Choose a dataset from the catalog to inspect its download state and details."
-              : "Choose an item from the catalog to inspect its runtime fit, download state, and model card."}
+              : "Choose an item from the catalog to inspect its hardware fit, download state, and model card."}
           </p>
         </div>
       </div>
@@ -557,47 +514,6 @@ export const ModelInspector = memo(function ModelInspector({
   const paramsLabel = model.totalParams
     ? formatCompact(model.totalParams)
     : "N/A";
-  const unslothSupported = unslothSupport.status !== "unsupported";
-  // Embedding-only non-GGUF repos have no generative head, so keep them out of
-  // the Run gate. Prefer the pipeline tag, else the capability heuristic.
-  const isEmbeddingOnly =
-    !model.isGguf &&
-    model.capabilities.some((c) => c.key === "embedding") &&
-    (EMBEDDING_PIPELINE_TAGS.has(model.pipelineTag?.toLowerCase() ?? "") ||
-      !model.capabilities.some(
-        (c) =>
-          c.key === "conversational" ||
-          c.key === "tools" ||
-          c.key === "reasoning" ||
-          c.key === "code" ||
-          c.key === "vision" ||
-          c.key === "audio",
-      ));
-  // An image / video model runs on its own page, which onLoad already routes to;
-  // the chat gates below would leave it greyed out as if it were unusable. Only when the
-  // row is one onLoad can actually route there: those pages resolve a routed `model` as a
-  // Hub id, so a filesystem row fails routableToMediaPage and the click falls through to
-  // the chat loader, which unloads the resident model for a load that can only fail.
-  const runsOnMediaPage =
-    studioPageForTask(
-      taskForMediaPick(model.pipelineTag, model.task) ?? undefined,
-    ) !== undefined &&
-    routableToMediaPage(model.kind, model.localSource);
-  // Chat-only hosts (no supported GPU / usable MLX) run inference only through
-  // llama.cpp, so only GGUF is loadable.
-  const canRunModel =
-    !isDataset &&
-    (runsOnMediaPage ||
-      ((model.runtimeCapabilities?.canChat ?? true) &&
-        !isEmbeddingOnly &&
-        (model.isGguf || (!chatOnly && unslothSupported))));
-  const canTrainModel =
-    !isDataset &&
-    (model.runtimeCapabilities?.canTrain ?? false) &&
-    model.modelFormat !== "gguf" &&
-    model.modelFormat !== "adapter" &&
-    unslothSupported;
-
   const languages = parseLanguageTags(model.tags);
   const datasetSizeBytes =
     datasetSize?.numBytesParquet ?? datasetSize?.numBytesOriginal ?? null;
@@ -681,7 +597,6 @@ export const ModelInspector = memo(function ModelInspector({
               partialResumable={model.partialResumable === true}
               cachePath={model.path}
               knownBytes={model.cachedBytes}
-              onTrain={onTrain}
               onChange={onInventoryChange}
             />
           </InspectorDownloadSlot>
@@ -692,7 +607,6 @@ export const ModelInspector = memo(function ModelInspector({
             sourceLabel={model.sourceLabel}
             source={model.localSource ?? "custom"}
             path={model.path}
-            onTrain={onTrain}
           />
         </InspectorDownloadSlot>
       )}
@@ -705,6 +619,7 @@ export const ModelInspector = memo(function ModelInspector({
               sourceLabel={model.sourceLabel}
               source={model.localSource ?? "custom"}
               path={model.path ?? model.displayId}
+              activeCache={model.activeCache}
               isGguf={model.isGguf}
               requiresVariant={model.requiresVariant}
               modelFormat={model.modelFormat}
@@ -714,29 +629,17 @@ export const ModelInspector = memo(function ModelInspector({
               baseModelSummary={model.baseModelSummary}
               adapterType={model.adapterType}
               trainingMethod={model.trainingMethod}
-              canRun={canRunModel}
-              isActive={isActive}
-              activeGgufVariant={activeGgufVariant}
-              isLoading={isLoadingThisModel}
-              loadingPhase={loadingPhase}
               gpuGb={gpuGb}
               systemRamGb={systemRamGb}
-
               preferredFile={preferredGgufFile}
               preferredFileIntent={preferredGgufFileIntent}
               unsupportedReason={
-                unslothSupport.status === "unsupported" && !unslothSupport.supportedIn
+                unslothSupport.status === "unsupported" &&
+                !unslothSupport.supportedIn
                   ? (unslothSupport.reason ?? "Unsupported format")
                   : null
               }
-              onLoad={onLoadLocal}
-              onUseInChat={onUseInChat}
-              onEject={onEject}
-              onTrain={
-                model.isDownloaded && canTrainModel ? onTrain : undefined
-              }
               onChange={onInventoryChange}
-              onOpenSettings={onOpenSettings}
             />
           ) : (
             <DownloadSection
@@ -747,23 +650,14 @@ export const ModelInspector = memo(function ModelInspector({
               partialTransport={model.partialTransport ?? null}
               partialResumable={model.partialResumable === true}
               modelFormat={model.modelFormat}
-              canRun={canRunModel}
-              isActive={isActive}
-              activeQuant={isActive ? (activeGgufVariant ?? null) : null}
               preferredGgufFile={preferredGgufFile}
-
               preferredGgufFileIntent={preferredGgufFileIntent}
-              isLoadingThisModel={isLoadingThisModel}
               gpuGb={gpuGb}
               systemRamGb={systemRamGb}
               cachePath={model.path}
+              activeCache={model.activeCache}
+              cacheCopies={model.cacheCopies}
               knownBytes={model.cachedBytes}
-              onLoad={model.isLocal ? onLoadLocal : onLoad}
-              onUseInChat={onUseInChat}
-              onEject={onEject}
-              onTrain={
-                model.isDownloaded && canTrainModel ? onTrain : undefined
-              }
               onChange={onInventoryChange}
             />
           )}
@@ -860,7 +754,7 @@ export const ModelInspector = memo(function ModelInspector({
         <ModelStatusChips
           isDataset={isDataset}
           isGguf={model.isGguf}
-          chatOnly={chatOnly}
+          ggufOnlyDevice={ggufOnlyDevice}
           unslothSupport={unslothSupport}
           vramInfo={vramInfo}
         />

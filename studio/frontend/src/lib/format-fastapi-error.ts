@@ -92,3 +92,8 @@ export async function readFastApiError(
   }
   return `${fallbackPrefix} (${response.status})`;
 }
+
+/** The message for a response body, falling back to the status when it says nothing. */
+export function apiErrorText(status: number, body: unknown): string {
+  return formatApiErrorBody(body) ?? `Request failed (${status})`;
+}

@@ -25,8 +25,8 @@ import {
   useTransformersUpgradeDialogStore,
 } from "@/features/transformers-upgrade";
 import { consumeNativePathToken } from "@/features/native-intents/api";
-// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
-import { modelDisplayName } from "@/features/hub/lib/model-identity";
+// eslint-disable-next-line no-restricted-imports -- Identity code is a non-React model-picker leaf; importing the barrel creates a Chat cycle.
+import { modelDisplayName } from "@/features/model-picker/model-config/model-identity";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { ModelLoadDescription } from "../components/model-load-status";
 import {

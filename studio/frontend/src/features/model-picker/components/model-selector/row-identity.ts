@@ -42,6 +42,19 @@ export function ggufVariantsMatchForPicker(
   );
 }
 
+export function ggufVariantMayOverlapResidentForPicker(
+  loadedModelId: string | null | undefined,
+  activeGgufVariant: string | null | undefined,
+  repoId: string,
+  quant: string,
+): boolean {
+  if (!modelIdsMatchForPicker(loadedModelId, repoId)) return false;
+  return (
+    normalizeGgufVariantForPicker(activeGgufVariant) === "" ||
+    ggufVariantsMatchForPicker(activeGgufVariant, quant)
+  );
+}
+
 /** Selected and loaded state for a row that names one quant, such as a pinned
  *  quant or an On Device repo holding a single quant.
  *

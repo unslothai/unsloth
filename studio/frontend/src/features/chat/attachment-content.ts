@@ -1,19 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  OPEN_DOCUMENT_SPREADSHEET_MIME,
+  OPEN_DOCUMENT_TEXT_MIME,
+  TEXT_ATTACHMENT_ACCEPT,
+} from "@/lib/attachment-accept";
 import { type Unzipped, strFromU8, unzipSync, zipSync } from "fflate";
-import { TEXT_ATTACHMENT_ACCEPT } from "./text-attachment-accept";
 
 import {
   MAX_OPEN_DOCUMENT_ARCHIVE_BYTES,
   MAX_OPEN_DOCUMENT_XML_BYTES,
   readOpenDocumentAttachmentContent,
 } from "./open-document";
-import {
-  OPEN_DOCUMENT_SPREADSHEET_MIME,
-  OPEN_DOCUMENT_TEXT_MIME,
-} from "./open-document-accept";
-
 export type AttachmentTextLabel = "PDF" | "DOCX" | "HTML" | "ODS" | "ODT";
 
 export { TEXT_ATTACHMENT_ACCEPT };

@@ -39,6 +39,7 @@ import {
 } from "../model-config/model-identity";
 import {
   type PerModelConfig,
+  adoptLegacyConfigKey,
   resolveInitialConfig,
 } from "../model-config/per-model-config";
 import { ModelConfigPage } from "./model-config-page";
@@ -510,6 +511,12 @@ function ModelSelectorContent({
   const openConfigPage = (id: string, meta: ModelSelectorChangeMeta) => {
     const leaf = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
     const isGguf = meta.isGguf ?? Boolean(meta.ggufVariant);
+    // A pinned-snapshot pick loads by the path in meta.loadId while its settings key on
+    // the repo id; move a record an older release keyed by that path over first, since
+    // the editor seeds from the repo-id key.
+    if (meta.loadId) {
+      adoptLegacyConfigKey(id, meta.loadId, meta.ggufVariant);
+    }
     setConfigTarget({
       id,
       displayName: meta.ggufVariant ? `${leaf} · ${meta.ggufVariant}` : leaf,
@@ -524,6 +531,10 @@ function ModelSelectorContent({
     if (meta.source === "external") {
       onSelect(id, meta);
       return;
+    }
+    // As in openConfigPage: the settings this pick applies seed from the repo-id key.
+    if (meta.loadId) {
+      adoptLegacyConfigKey(id, meta.loadId, meta.ggufVariant);
     }
     const resolved = resolveInitialConfig(id, meta.ggufVariant);
     onSelect(id, {

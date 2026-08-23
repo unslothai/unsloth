@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { DownloadJob } from "../download-manager";
+import type { DownloadJob, DownloadStartOutcome } from "../download-manager";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DownloadStopMode } from "./download-cancel-indicator";
 
@@ -111,25 +111,33 @@ export function useDownloadCardState({
       ? Math.round(Math.min(job.progress.fraction, 1) * 100)
       : null;
   const effectiveDisabled = disabled || starting;
+  const requestStart = useCallback(
+    async (
+      requestedVariant: string | null = variant,
+      requestedExpectedBytes: number = expectedBytes,
+    ): Promise<DownloadStartOutcome> => {
+      if (disabled || cancelling || starting) return "busy";
+      if (downloading) return "started";
+      setStarting(true);
+      try {
+        return await job.requestStartDownload(
+          requestedVariant,
+          requestedExpectedBytes,
+        );
+      } finally {
+        if (mountedRef.current) setStarting(false);
+      }
+    },
+    [cancelling, disabled, downloading, expectedBytes, job, starting, variant],
+  );
   const onClick = useCallback(() => {
     if (disabled || cancelling || starting) return;
     if (downloading) {
       void job.cancelDownload(variant);
       return;
     }
-    setStarting(true);
-    void job.requestStartDownload(variant, expectedBytes).finally(() => {
-      if (mountedRef.current) setStarting(false);
-    });
-  }, [
-    cancelling,
-    disabled,
-    downloading,
-    expectedBytes,
-    job,
-    starting,
-    variant,
-  ]);
+    void requestStart();
+  }, [cancelling, disabled, downloading, job, requestStart, starting, variant]);
   const stopMode = downloadStopMode(
     job.transport,
     partialTransport,
@@ -149,6 +157,7 @@ export function useDownloadCardState({
     ariaLabel: downloadActionAriaLabel(downloading, cancelling, stopMode),
     downloadLabel: downloadActionLabel(isPartial, partialResumable),
     partialHint: partialDownloadHint(partialResumable),
+    requestStart,
     onClick,
   };
 }

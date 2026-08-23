@@ -1,14 +1,43 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
+// eslint-disable-next-line no-restricted-imports -- Import only non-React identity helpers and avoid the model-picker barrel's Chat cycle.
 import {
-  ggufVariantsMatch,
   isHfCacheSnapshotPath,
   isStandaloneGgufPath,
+  looksLikeModelPath,
+  publicModelId,
+} from "@/features/model-picker/model-config/model-identity";
+import {
+  ggufVariantsMatch,
   modelIdsMatch,
-  residentModelIdMatches,
-} from "@/features/hub/lib/model-identity";
+} from "@/lib/model-identity";
+
+/**
+ * Whether the public model id reported by the inference status names one of the
+ * candidate picker identities. Only a namespaced public collapse is unambiguous.
+ */
+export function residentModelIdMatches(
+  activeModelId: string | null | undefined,
+  ...candidates: (string | null | undefined)[]
+): boolean {
+  if (candidates.some((candidate) => modelIdsMatch(activeModelId, candidate))) {
+    return true;
+  }
+  const active = activeModelId?.trim();
+  // A path-shaped active id is the raw identifier, which the literal pass covered.
+  if (!active || looksLikeModelPath(active)) {
+    return false;
+  }
+  return candidates.some((candidate) => {
+    const trimmed = candidate?.trim();
+    if (!trimmed) {
+      return false;
+    }
+    const publicId = publicModelId(trimmed);
+    return publicId.includes("/") && modelIdsMatch(active, publicId);
+  });
+}
 
 /** The two names one pick answers to: its picker row's catalog id, and the `model_path`
  * its load sends. They differ whenever a cached row pins a snapshot dir. */
@@ -41,7 +70,7 @@ export function residentModelMatchesPick(
     return false;
   }
   // A standalone file has no quant to choose between, and its row carries no label
-  // (settingsGgufVariantForRow) while the backend derives one from the filename.
+  // while the backend derives a variant from the filename.
   const picksItsOwnVariant = !(
     !pick.ggufVariant && isStandaloneGgufPath(pick.loadPath ?? pick.id)
   );

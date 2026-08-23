@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { FolderBrowser } from "@/components/resource-picker/folder-browser";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
@@ -12,10 +13,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { formatBytes } from "@/features/hub";
-import {
-  FolderBrowser,
-  invalidateLlamaFlagCatalog,
-} from "@/features/model-picker";
+// eslint-disable-next-line no-restricted-imports -- Avoid the Settings and Model Picker barrel cycle.
+import { invalidateLlamaFlagCatalog } from "@/features/model-picker/api/llama-flags";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { useEffect, useState } from "react";

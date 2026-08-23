@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { OPEN_DOCUMENT_ATTACHMENT_ACCEPT } from "@/lib/attachment-accept";
 import {
   AssistantRuntimeProvider,
   type Attachment,
@@ -63,7 +64,6 @@ import {
   readActiveOpenDocumentAttachmentContent,
   readOpenDocumentAttachmentContent,
 } from "./open-document";
-import { OPEN_DOCUMENT_ATTACHMENT_ACCEPT } from "./open-document-accept";
 import {
   awaitThreadScopedSettingsWrite,
   beginThreadScopedPairing,

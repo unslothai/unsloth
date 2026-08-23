@@ -2,11 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Spinner } from "@/components/ui/spinner";
+import type { HubFailure } from "@/features/hub/lib/network";
 import {
   makePinRank,
   pinKey,
   usePinnedModelsStore,
-} from "@/features/model-picker";
+} from "@/stores/pinned-models";
 import {
   CubeIcon,
   DownloadCircle02Icon,
@@ -15,7 +16,6 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { Ref } from "react";
-import type { HubFailure } from "@/features/hub/lib/network";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   inventoryRowMatches,
@@ -58,7 +58,7 @@ function inventoryItemTitle(item: InventoryItem): string {
 }
 
 function inventoryItemSize(item: InventoryItem): number {
-  return item.variant === "cached" ? item.row.bytes : 0;
+  return item.variant === "cached" ? item.row.totalBytes : 0;
 }
 
 export function InventoryWarningRow({
@@ -273,15 +273,12 @@ export function DownloadedList({
   onClearFilters,
   scrollElement,
   columns = 1,
-  activeCheckpoint,
-  activeGgufVariant,
   isDataset,
   inventoryTokens,
   deviceType,
   compact = false,
   sort,
   onInventoryChange,
-  onOpenModelSettings,
 }: {
   cachedRows: CachedInventoryRow[];
   localRows: LocalInventoryRow[];
@@ -294,8 +291,6 @@ export function DownloadedList({
   onClearFilters?: () => void;
   scrollElement: HTMLDivElement | null;
   columns?: number;
-  activeCheckpoint: string | null;
-  activeGgufVariant: string | null;
   isDataset: boolean;
   inventoryTokens: readonly string[];
   deviceType: string | null;
@@ -303,7 +298,6 @@ export function DownloadedList({
   compact?: boolean;
   sort: InventorySort;
   onInventoryChange?: () => void;
-  onOpenModelSettings?: (row: CachedInventoryRow | LocalInventoryRow) => void;
 }) {
   // Pinned repos surface first regardless of the active sort, which still orders within groups.
   const pinnedIds = usePinnedModelsStore((s) => s.pinned);
@@ -401,15 +395,12 @@ export function DownloadedList({
     <InventoryRow
       row={item.row}
       selected={selectedId === item.row.id}
-      activeCheckpoint={activeCheckpoint}
-      activeGgufVariant={activeGgufVariant}
       isDataset={isDataset}
       dimmed={!inventoryRowMatches(item.row, inventoryTokens)}
       deviceType={deviceType}
       compact={compact}
       onSelect={onSelect}
       onChange={onInventoryChange}
-      onOpenSettings={onOpenModelSettings}
     />
   );
 

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { OPEN_DOCUMENT_SPREADSHEET_MIME } from "@/lib/attachment-accept";
 import { strFromU8, unzipSync } from "fflate";
-import { OPEN_DOCUMENT_SPREADSHEET_MIME } from "./open-document-accept";
 const OFFICE_NAMESPACE = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
 const STYLE_NAMESPACE = "urn:oasis:names:tc:opendocument:xmlns:style:1.0";
 const TABLE_NAMESPACE = "urn:oasis:names:tc:opendocument:xmlns:table:1.0";

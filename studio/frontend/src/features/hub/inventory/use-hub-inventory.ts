@@ -34,6 +34,7 @@ import {
 import {
   buildCachedInventoryRow,
   buildLocalInventoryRows,
+  cachedInventoryId,
   defaultCapabilities,
   normalizeTimestamp,
 } from "./view-models";
@@ -205,15 +206,9 @@ function liveDownloadInventoryRows(
       ...buildCachedInventoryRow(
         {
           repo_id: job.repoId,
-          inventory_id: `cache:${modelFormat}:${job.repoId}`,
+          inventory_id: cachedInventoryId(modelFormat, job.repoId),
           load_id: job.repoId,
           model_format: modelFormat,
-          runtime:
-            modelFormat === "gguf"
-              ? "llama_cpp"
-              : modelFormat === "safetensors"
-                ? "transformers"
-                : "unknown",
           size_bytes: job.displayBytes,
           partial: true,
           partial_transport: null,
@@ -467,7 +462,6 @@ export function useHubInventory(
           isGguf: false,
           loadId: ds.id,
           modelFormat: "unknown" as const,
-          runtime: "unknown" as const,
           formatVariant: null,
           capabilities: defaultCapabilities("unknown"),
           updatedAt: normalizeTimestamp(ds.updated_at),
