@@ -504,3 +504,39 @@ def test_local_directory_load_is_not_leaked_into_the_monitor(monkeypatch):
     rows = api_monitor.snapshot(include_details = False)
     assert len(rows) == 1
     assert rows[0]["model"] == "my-flux"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"prompt": "p", "size": "300x300"},
+        {"prompt": "p", "size": "abc"},
+        {"prompt": "p", "stream": True},
+    ],
+)
+def test_a_refused_request_records_nothing(client, body):
+    """size and stream were validated inside the monitor, so a request refused before any
+    work still produced a red error row. /audio/speech and /audio/transcriptions reject
+    their bad parameters before opening a row, and this route now matches them."""
+    api_monitor.clear()
+    assert _post(client, body).status_code == 400
+    assert api_monitor.snapshot(include_details = False) == []
+
+
+def test_a_failed_generation_does_not_leak_a_local_path_label(monkeypatch):
+    """The relabel only runs after a successful generation, so a failure left whatever the
+    client sent in body.model on a row that goes out over the tunnel."""
+    backend = _FakeBackend(loaded = False)
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    cli, store, _save = _make_client(backend)
+    monkeypatch.setattr(gallery_module, "save", _save)
+    for sent, expected in (
+        ("/home/ana/models/my-flux", "my-flux"),
+        ("C:\\models\\my-flux", "my-flux"),
+        ("unsloth/Z-Image-Turbo-GGUF", "unsloth/Z-Image-Turbo-GGUF"),
+    ):
+        api_monitor.clear()
+        assert _post(cli, {"prompt": "a sloth", "model": sent}).status_code == 503
+        row = api_monitor.snapshot(include_details = False)[0]
+        assert row["status"] == "error"
+        assert row["model"] == expected

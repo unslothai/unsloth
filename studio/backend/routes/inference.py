@@ -4996,7 +4996,12 @@ async def _monitored_media_request(
         # The route's own message ("No model loaded."), not the llama-server mapping.
         detail = exc.detail
         if isinstance(detail, dict):
-            detail = (detail.get("error") or {}).get("message") or str(detail)
+            # openai_error_body nests the message, but plenty of raisers pass a flat dict.
+            # .get("message") on a non-dict "error" used to raise AttributeError out of this
+            # handler, which skipped finish() and stranded the row at "running".
+            error = detail.get("error")
+            message = error.get("message") if isinstance(error, dict) else None
+            detail = message or str(detail)
         api_monitor.fail(monitor_id, str(detail))
         raise
     except Exception as exc:
@@ -5020,7 +5025,7 @@ def _external_transcript_preview(response: Response) -> str:
     """
     try:
         body = bytes(response.body or b"")
-        if "json" in (response.media_type or ""):
+        if "json" in (response.media_type or "").lower():
             return str(json.loads(body.decode("utf-8", "replace")).get("text", ""))
         return body.decode("utf-8", "replace")
     except Exception:
@@ -12209,6 +12214,7 @@ async def _external_stt_transcription(
     response_format: str,
     encrypted_api_key: Optional[str],
     request: Request,
+    timestamp_granularities: Optional[list[str]] = None,
 ) -> Response:
     provider_id = provider_id.strip()
     if not provider_id:
@@ -12270,6 +12276,7 @@ async def _external_stt_transcription(
             model = external_model,
             language = language,
             response_format = response_format,
+            timestamp_granularities = timestamp_granularities,
         )
     )
     disconnect_watcher = asyncio.create_task(
@@ -12310,6 +12317,7 @@ async def openai_audio_transcriptions(
     response_format: str = Form("json"),
     provider_id: Optional[str] = Form(None),
     encrypted_api_key: Optional[str] = Form(None),
+    timestamp_granularities: Optional[list[str]] = Form(None, alias = "timestamp_granularities[]"),
     current_subject: str = Depends(get_current_subject),
 ):
     """OpenAI-compatible speech-to-text (POST /v1/audio/transcriptions).
@@ -12347,11 +12355,38 @@ async def openai_audio_transcriptions(
                 model = model,
                 language = language,
                 response_format = fmt,
+                timestamp_granularities = timestamp_granularities,
                 encrypted_api_key = encrypted_api_key,
                 request = request,
             )
             api_monitor.set_reply(monitor_id, _external_transcript_preview(response))
         return response
+    # Refused before any work, like the response_format check above: the sidecar reports
+    # back the language it was given and has no detection of its own, so an auto-detect
+    # request has nothing truthful to put in verbose_json's required language field.
+    # Naming a language the engine never detected would label a Japanese clip "en", which
+    # is wrong in a way the caller cannot see, so this refuses instead of guessing.
+    # isinstance, like the provider_id check above: these are also reached with the raw
+    # Form default when the handler is called directly rather than through the router.
+    if fmt == "verbose_json" and not (isinstance(language, str) and language.strip()):
+        raise HTTPException(
+            status_code = 501,
+            detail = (
+                "verbose_json reports the language of the audio and the local STT engine "
+                "does not detect one. Send the 'language' parameter, or use response_format "
+                "'json' or 'text'."
+            ),
+        )
+    if isinstance(timestamp_granularities, list) and timestamp_granularities:
+        # Accepting the parameter and returning neither words nor segments would look like
+        # the audio simply had none. The sidecar reports no per-token timing today.
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "timestamp_granularities is not supported by the local STT engine. "
+                "Use a saved STT connection with provider_id for word or segment timings."
+            ),
+        )
     # openai's whisper-1 placeholder means the default transcription model, not a sidecar id
     sidecar_model = None if model in (None, "", "whisper-1") else model
     async with _monitored_media_request(
@@ -12378,17 +12413,18 @@ async def openai_audio_transcriptions(
     if fmt == "text":
         return PlainTextResponse(content = text)
     if fmt == "verbose_json":
+        _duration = result.get("duration")
         return JSONResponse(
             content = {
                 "task": "transcribe",
-                # OpenAI types language as a required string and duration as a required
-                # number, so a null for either fails validation inside the official
-                # clients before the caller ever sees the transcript. The sidecar does
-                # not surface Whisper's own detection, so an auto-detect request has no
-                # language to echo and falls back to Whisper's default rather than null.
-                "language": str(result.get("language") or "en"),
-                # None for a clip that decoded to no samples; that clip is 0 seconds.
-                "duration": float(result.get("duration") or 0.0),
+                # OpenAI types both of these as required, so a null for either fails
+                # validation inside the official clients before the caller ever sees the
+                # transcript. The request is refused above when there is no language to
+                # report, so this always has one.
+                "language": str(result.get("language") or language).strip(),
+                # Unlike the language, this is not a guess: duration is None only for a
+                # clip that decoded to no samples, and that clip really is zero seconds.
+                "duration": float(_duration) if isinstance(_duration, (int, float)) else 0.0,
                 "text": text,
             }
         )
@@ -26583,26 +26619,9 @@ async def openai_image_generations(
 
     With media auto-switch on, ``model`` names the image model to serve on and is loaded
     when it is not the resident one; with it off ``model`` stays informational."""
-    async with _monitored_media_request(
-        request, model = body.model, prompt = body.prompt, subject = current_subject
-    ) as monitor_id:
-        return await _generate_openai_images(body, request, current_subject, hf_token, monitor_id)
-
-
-# Split out so the monitor row can wrap the whole handler without reindenting it.
-async def _generate_openai_images(
-    body: ImageGenerationRequest,
-    request: Request,
-    current_subject: str,
-    hf_token: Optional[str],
-    monitor_id: Optional[str],
-):
-    from core.inference import image_gallery
-    from core.inference.diffusion_engine_router import get_active_diffusion_engine
-    from core.inference.diffusion_families import default_generation_params
-    from core.inference.gpu_arbiter import DIFFUSION
-    from core.inference.media_auto_switch import maybe_auto_switch_media_model
-
+    # Refused before the row is opened, like the response_format check on /audio/speech and
+    # /audio/transcriptions: a request rejected before any work is not API traffic worth a
+    # red error row in the monitor.
     if body.stream:
         raise HTTPException(
             status_code = 400,
@@ -26616,6 +26635,35 @@ async def _generate_openai_images(
         raise HTTPException(
             status_code = 400, detail = openai_error_body(str(exc), status = 400, param = "size")
         )
+    # public_model_id at the relabel site only covers a successful generation; a load or
+    # generation failure would otherwise leave the raw client string, which may be a host
+    # path, on a row that goes out over the tunnel.
+    async with _monitored_media_request(
+        request,
+        model = public_model_id(body.model) or body.model,
+        prompt = body.prompt,
+        subject = current_subject,
+    ) as monitor_id:
+        return await _generate_openai_images(
+            body, request, current_subject, hf_token, monitor_id, width, height
+        )
+
+
+# Split out so the monitor row can wrap the whole handler without reindenting it.
+async def _generate_openai_images(
+    body: ImageGenerationRequest,
+    request: Request,
+    current_subject: str,
+    hf_token: Optional[str],
+    monitor_id: Optional[str],
+    width: int,
+    height: int,
+):
+    from core.inference import image_gallery
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+    from core.inference.diffusion_families import default_generation_params
+    from core.inference.gpu_arbiter import DIFFUSION
+    from core.inference.media_auto_switch import maybe_auto_switch_media_model
 
     # Before the loaded check: the requested model may be the one this brings up.
     await maybe_auto_switch_media_model(
