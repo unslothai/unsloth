@@ -12262,7 +12262,11 @@ def _text_token_cost(text: str, ctx: int) -> float:
     return estimate if counter is not None else estimate / _UNMEASURED_ROOM_MARGIN
 
 
-def _dense_char_limit(text: str, max_chars: int, reserve_tokens: float = 0.0) -> int:
+def _dense_char_limit(
+    text: str,
+    max_chars: int,
+    reserve_tokens: float = 0.0,
+) -> int:
     """`max_chars`, lowered when `text` tokenises denser than four characters per token.
 
     Without this the window-derived caps above reserve their share only for English. On
@@ -14267,7 +14271,6 @@ def _spill_records_dir() -> str:
     """
     try:
         from utils.paths.storage_roots import studio_root  # noqa: PLC0415
-
         return os.path.join(str(studio_root()), "tool-output-records")
     except Exception:
         return os.path.join(
@@ -14337,7 +14340,7 @@ def _spill_record(root: str) -> "tuple[str | None, set[str]]":
         return None, set()
     if not lines or not lines[0].startswith(_SPILL_RECORD_HEADER):
         return None, set()
-    identity = lines[0][len(_SPILL_RECORD_HEADER):].strip() or None
+    identity = lines[0][len(_SPILL_RECORD_HEADER) :].strip() or None
     return identity, {line.strip() for line in lines[1:] if line.strip()}
 
 
@@ -14346,7 +14349,11 @@ def _spill_manifest(root: str) -> "set[str]":
     return _spill_record(root)[1]
 
 
-def _write_spill_manifest(root: str, names, identity: "str | None" = None) -> None:
+def _write_spill_manifest(
+    root: str,
+    names,
+    identity: "str | None" = None,
+) -> None:
     """Rewrite the record with ``names``, atomically."""
     if identity is None:
         identity = _spill_record(root)[0]
