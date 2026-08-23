@@ -1437,3 +1437,257 @@ test("a claim whose run was never issued is left to lapse, not held", async () =
     "a deadline here is the arming timeout coming back, which lapses live continuations",
   );
 });
+
+test("a losing claim does not follow the row onto the next branch", () => {
+  // The bar's "another tab has this one" answer is state, because the claim resolves after
+  // the render that asked for it. A bare boolean is wrong state to keep it in: rows are
+  // mounted by INDEX, so selecting a different truncated branch at the same index
+  // re-renders this component rather than remounting it, and the flag set for the message
+  // that lost carried over onto a message nobody has claimed at all -- no automatic
+  // continuation for it, for as long as that row lives.
+  const rows = readFileSync(
+    new URL(
+      "../src/components/assistant-ui/progressive-messages.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    rows,
+    /<MessageByIndexProvider key=\{index\}/,
+    "rows are no longer keyed by index; this test needs rewriting",
+  );
+
+  const thread = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  const start = thread.indexOf("const ContinueMessageBarForLastMessage");
+  assert.notEqual(start, -1, "the bar moved; this test needs rewriting");
+  const component = thread.slice(
+    start,
+    thread.indexOf("const WebSearchToolUIConfirmable", start),
+  );
+  const state =
+    /const \[(\w+), (set\w+)\] = useState<string \| null>\(null\)/.exec(
+      component,
+    );
+  assert.ok(
+    state,
+    "the losing answer is still a bare flag, so it outlives the message it was decided for",
+  );
+  assert.match(
+    component,
+    new RegExp(`claimHeldElsewhere =\\s*${state[1]} === messageId`),
+    "the flag has to be re-answered against the message on screen now",
+  );
+  assert.match(
+    component,
+    new RegExp(`${state[2]}\\(messageId\\)`),
+    "the message that lost is what gets remembered",
+  );
+});
+
+test("a claim taken for a run that was never issued is given back", async () => {
+  // The `stillThere` guard leaves the run unstarted, and the claim it took stays in this
+  // tab's continued set: every later claim of that message answers "skipped", so the
+  // automatic continuation never runs again for a request nobody ever made.
+  const { storage } = storageFake();
+  const locks = lockManagerFake();
+  const tab = createAutoContinueTab({ storage, locks });
+  const otherTab = createAutoContinueTab({ storage, locks });
+  const start = 1_000;
+
+  assert.equal(
+    await tab.claim("m1", { now: start, holder: "thread-A" }),
+    "started",
+  );
+  // The branch changed inside the lock's window, so nothing was issued. Roll it back.
+  tab.forget("m1");
+  // The storage lease is deliberately kept: this tab may still be deciding, and handing
+  // the message over now is how two tabs pay for the same continuation.
+  assert.equal(
+    await otherTab.claim("m1", { now: start + 1 }),
+    "held-elsewhere",
+    "the rollback must not hand the message to a second tab",
+  );
+  // Once that lease lapses -- the same record a tab that closed mid-claim leaves behind --
+  // the message is continuable again.
+  assert.equal(
+    await tab.claim("m1", {
+      now: start + AUTO_CONTINUE_LEASE_TTL_MS + 1,
+      holder: "thread-A",
+    }),
+    "started",
+    "a claim that started nothing may not wedge the message for the life of the tab",
+  );
+});
+
+test("the bar rolls its claim back when it issues no run", () => {
+  // The behaviour above, pinned where it has to be called from: the early return that
+  // decided no run would be issued.
+  const thread = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  const claimed = thread.indexOf(
+    'claimAutoContinue(messageId, runThreadId ?? "")',
+  );
+  assert.notEqual(claimed, -1, "the claim moved; this test needs rewriting");
+  const branch = thread.slice(
+    claimed,
+    thread.indexOf("held-elsewhere", claimed),
+  );
+  const guard = branch.search(/messages\.some\(/);
+  const hold = branch.indexOf("holdAutoContinueRun(");
+  const between = branch.slice(guard, hold);
+  assert.match(
+    between,
+    /forgetAutoContinue\(messageId\)/,
+    "the claim survives a run that was never issued, and skips every later one",
+  );
+});
+
+test("a hold is settled when its run fails before it ever starts", async () => {
+  // A preflight failure -- this chat's settings pairing running out, a model that will not
+  // load, a connection the adapter refuses -- throws out of `adapter.run` before anything
+  // reaches `setThreadRunning(..., true)`, so no `runningByThreadId` transition can ever
+  // identify this run as terminal. Without a signal the hold renews its cross-tab lease
+  // every 30 seconds for the life of the tab, one leaked hold per failure.
+  const { storage } = storageFake();
+  const locks = lockManagerFake();
+  const tab = createAutoContinueTab({ storage, locks });
+  const otherTab = createAutoContinueTab({ storage, locks });
+  const running = new Set<string>();
+  const runs = runSignalFake(running);
+  const pending: Promise<unknown>[] = [];
+  const start = 1_000;
+  let clock = start;
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: () => {
+      assert.fail(
+        "a run that never started wrote nothing, so nothing may be marked continued",
+      );
+    },
+    now: () => clock,
+  });
+
+  assert.equal(
+    await tab.claim("m1", { now: start, holder: "thread-A" }),
+    "started",
+  );
+  keeper.hold("m1", "thread-A");
+  clock = start + AUTO_CONTINUE_LEASE_RENEW_MS;
+  keeper.tick();
+  assert.equal(keeper.held(), 1, "a slow preflight is still a live hold");
+
+  // The adapter threw. This is the run's own thread saying so.
+  keeper.failed("thread-A");
+  assert.equal(
+    keeper.held(),
+    0,
+    "nothing renews a run that failed on its way out",
+  );
+
+  const lapsed = clock + AUTO_CONTINUE_LEASE_TTL_MS + 1;
+  clock = lapsed;
+  keeper.tick();
+  await Promise.all(pending);
+  assert.equal(
+    await otherTab.claim("m1", { now: lapsed }),
+    "started",
+    "the lease lapses, so another tab can recover a message that was never continued",
+  );
+});
+
+test("a failure on a thread leaves a hold whose run is already streaming alone", async () => {
+  // The same event fires for a failure mid-stream, where the run DID reach
+  // `runningByThreadId` and the transition to idle is what settles the hold -- with the
+  // `done` marker that says the message has been continued, which a preflight failure has
+  // no right to write.
+  const { storage } = storageFake();
+  const locks = lockManagerFake();
+  const tab = createAutoContinueTab({ storage, locks });
+  const running = new Set<string>();
+  const runs = runSignalFake(running);
+  const released: string[] = [];
+  const pending: Promise<unknown>[] = [];
+  const start = 1_000;
+  let clock = start;
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: (messageId: string, holder: string, now: number) => {
+      released.push(messageId);
+      pending.push(tab.release(messageId, holder, { now }));
+    },
+    now: () => clock,
+  });
+
+  await tab.claim("m1", { now: start, holder: "thread-A" });
+  keeper.hold("m1", "thread-A");
+  running.add("thread-A");
+  runs.change();
+  clock = start + AUTO_CONTINUE_LEASE_RENEW_MS;
+  keeper.tick();
+
+  // The run failed after it had started streaming. Its hold is armed, and armed holds are
+  // settled by their own thread going idle, not here.
+  keeper.failed("thread-A");
+  assert.equal(keeper.held(), 1, "an armed hold is its run's to give back");
+  assert.deepEqual(released, []);
+  running.delete("thread-A");
+  runs.change();
+  await Promise.all(pending);
+  assert.deepEqual(
+    released,
+    ["m1"],
+    "and the thread going idle is what gives it back",
+  );
+  assert.equal(keeper.held(), 0);
+});
+
+test("the keeper is wired to the failure the adapter already reports", () => {
+  // There is exactly one signal for a run that failed on its way out, and it is not a
+  // deadline: the adapter wrapper catches everything `adapter.run` throws and announces it
+  // per thread. Pinned at both ends, since neither side is exercised by a unit test.
+  const adapter = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  const wrapper = adapter.slice(adapter.indexOf("yield* adapter.run(args)"));
+  assert.match(
+    wrapper,
+    /catch \(error\) \{[\s\S]*notifyPromptQueueRunFailed\(/,
+    "the adapter no longer reports a failed run per thread; this test needs rewriting",
+  );
+
+  const wiring = readFileSync(
+    new URL(
+      "../src/features/chat/utils/auto-continue-run-keeper.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    wiring,
+    /PROMPT_QUEUE_RUN_FAILED_EVENT/,
+    "nothing settles a hold whose run failed before it started",
+  );
+  assert.match(
+    wiring,
+    /keeper\.failed\(/,
+    "the failure has to reach the keeper",
+  );
+  assert.doesNotMatch(
+    wiring,
+    /setTimeout\(/,
+    "a deadline here is the arming timeout coming back, which lapses live continuations",
+  );
+});

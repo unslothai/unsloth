@@ -16,6 +16,10 @@ import {
   AUTO_CONTINUE_LEASE_RENEW_MS,
   createAutoContinueLeaseKeeper,
 } from "./continuation";
+import {
+  PROMPT_QUEUE_RUN_FAILED_EVENT,
+  type PromptQueueRunFailedEventDetail,
+} from "./prompt-queue-boundary";
 
 const keeper = createAutoContinueLeaseKeeper({
   signal: {
@@ -34,6 +38,30 @@ function tick(): void {
     timer = null;
   }
 }
+
+/**
+ * A run that failed before it ever reached `runningByThreadId`.
+ *
+ * The adapter wrapper catches everything `adapter.run` throws -- this chat's settings
+ * pairing running out, a model that will not load, a connection it refuses -- and announces
+ * it per thread, which is the only signal that separates a preflight that FAILED from one
+ * that is merely long. Nothing here reads a clock: a slow run emits no event and keeps its
+ * hold and its renewals, which is what the absence of an arming deadline is for.
+ */
+function onRunFailed(event: Event): void {
+  const threadId = (event as CustomEvent<PromptQueueRunFailedEventDetail>)
+    .detail?.threadId;
+  if (!threadId) {
+    return;
+  }
+  keeper.failed(threadId);
+  if (keeper.held() === 0 && timer !== null) {
+    clearInterval(timer);
+    timer = null;
+  }
+}
+
+let listening = false;
 
 /**
  * Hold `messageId`'s lease for as long as `threadId`'s own run is generating.
@@ -57,5 +85,11 @@ export function holdAutoContinueRun(
     return;
   }
   keeper.hold(messageId, threadId);
+  // Registered with the first hold rather than at import, so a module nobody continues in
+  // adds no listener. Once, and never removed: it is one handler for the tab.
+  if (!listening && typeof window !== "undefined") {
+    listening = true;
+    window.addEventListener(PROMPT_QUEUE_RUN_FAILED_EVENT, onRunFailed);
+  }
   timer ??= setInterval(tick, AUTO_CONTINUE_LEASE_RENEW_MS);
 }

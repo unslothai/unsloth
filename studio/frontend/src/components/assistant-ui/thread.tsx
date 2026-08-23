@@ -137,6 +137,7 @@ import {
   readIncompleteInfo,
   readTextThoughtSignature,
   claimAutoContinue,
+  forgetAutoContinue,
   recordAutoContinue,
   shouldAutoContinueMessage,
 } from "@/features/chat/utils/continuation";
@@ -6718,7 +6719,15 @@ const ContinueMessageBarForLastMessage: FC = () => {
   // rendered off `shouldAutoContinueMessage`, which cannot see a race the lock decides,
   // so the answer has to come back as state: without it this tab keeps a spinner for a
   // run it never started, with the manual Continue button hidden behind it.
-  const [claimHeldElsewhere, setClaimHeldElsewhere] = useState(false);
+  //
+  // Remembered as the message the answer was decided for, not as a bare flag: rows are
+  // mounted by INDEX (`<MessageByIndexProvider key={index}>` in progressive-messages.tsx),
+  // so selecting a different truncated branch at the same index re-renders THIS component
+  // instead of remounting it. A boolean survived that and suppressed the automatic
+  // continuation of a message no other tab had claimed, for as long as the row lived.
+  // Comparing ids re-answers per message while still refusing the one that really lost.
+  const [heldElsewhereFor, setHeldElsewhereFor] = useState<string | null>(null);
+  const claimHeldElsewhere = heldElsewhereFor === messageId;
   // The runtime this bar belongs to, so its keeper renews and releases this claim and no
   // other pane's.
   // The thread this run will file itself under, which is what the lease belongs to and
@@ -6774,6 +6783,13 @@ const ContinueMessageBarForLastMessage: FC = () => {
           // Nothing held and nothing recorded, so the lease this claim took runs out its
           // own TTL -- the same thing a tab that closed mid-claim leaves behind -- and the
           // turn keeps the round no request was ever made for.
+          //
+          // The claim itself is given back, and only inside this tab: it is what makes
+          // `claimAutoContinue` answer "skipped" for a message it has already continued,
+          // and a message nothing was issued for has not been continued at all. Left in,
+          // returning to this branch found the message skipped for the life of the tab.
+          // The lease stays, so no second tab may start while this one is still deciding.
+          forgetAutoContinue(messageId);
           return;
         }
         // Held for as long as THIS thread's run generates, wherever the user navigates
@@ -6793,7 +6809,7 @@ const ContinueMessageBarForLastMessage: FC = () => {
       // `skipped` is this tab's own duplicate call, where the run is coming from the
       // other one and nothing on screen should move.
       if (claim === "held-elsewhere" && mounted) {
-        setClaimHeldElsewhere(true);
+        setHeldElsewhereFor(messageId);
       }
     });
     return () => {

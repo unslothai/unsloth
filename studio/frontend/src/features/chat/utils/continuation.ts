@@ -560,6 +560,7 @@ export function createAutoContinueTab({
     holder: string,
     options?: { now?: number },
   ) => Promise<void>;
+  forget: (messageId: string | null | undefined) => void;
   reset: () => void;
 } {
   /**
@@ -822,6 +823,25 @@ export function createAutoContinueTab({
       // release lands -- keeps its own lease and its own renewals.
       ownTokens.delete(messageId);
     },
+    /**
+     * Take back a claim whose run was never issued.
+     *
+     * Only this tab's own record of having continued the message. The storage lease is left
+     * exactly where it is, to run out its own TTL: that is what a tab closed mid-claim
+     * already leaves behind, and dropping it here would hand the message to a second tab
+     * while this one may still be deciding what to do with it.
+     *
+     * Without this the message stays in `continued` for the life of the tab, and every
+     * later claim of it -- the branch picker back to the truncated sibling, or returning to
+     * the chat -- answers "skipped", so the automatic continuation never runs again for a
+     * request that was never made.
+     */
+    forget(messageId) {
+      if (!messageId) {
+        return;
+      }
+      continued.delete(messageId);
+    },
     reset() {
       continued.clear();
       claiming.clear();
@@ -876,6 +896,18 @@ export function claimAutoContinue(
  */
 export function wasAutoContinued(messageId: string | null | undefined): boolean {
   return tab.claimed(messageId);
+}
+
+/**
+ * Give a claim back when the run it was taken for turned out never to be issued.
+ *
+ * The claim is what stops this tab continuing the same message twice, so it is only ever
+ * dropped where nothing was started: the caller checked, in the same tick and off the same
+ * store it starts the run from, that the message it claimed is no longer there to resume.
+ * The cross-tab lease is deliberately untouched and lapses on its own.
+ */
+export function forgetAutoContinue(messageId: string | null | undefined): void {
+  tab.forget(messageId);
 }
 
 /**
@@ -968,6 +1000,7 @@ export function createAutoContinueLeaseKeeper({
 }): {
   hold: (messageId: string, threadId: string) => void;
   observe: () => void;
+  failed: (threadId: string) => void;
   tick: () => void;
   held: () => number;
   stop: () => void;
@@ -1032,6 +1065,35 @@ export function createAutoContinueLeaseKeeper({
       unsubscribe ??= signal.subscribe(observe);
     },
     observe,
+    /**
+     * `threadId`'s run failed on its way out, before it ever reached the run signal.
+     *
+     * The one thing that can end a hold which never armed, and it is a fact rather than a
+     * deadline: the adapter threw, so this run is not slow, it is over. Not a timeout by
+     * another name -- a preflight that is merely long emits nothing here and keeps its hold
+     * and its renewals, which is the whole reason arming has no deadline.
+     *
+     * Armed holds are left alone. Their run did reach the signal, so the thread going idle
+     * is what settles them, with the `done` marker that says the message HAS been continued
+     * -- which a run that never produced a token has no right to write. This one only
+     * discards: the lease it stops renewing lapses on its own TTL and the message comes
+     * back to whoever is still looking at it, rather than being renewed for the life of the
+     * tab and refused to every other one.
+     */
+    failed(threadId) {
+      if (!threadId) {
+        return;
+      }
+      for (const [id, hold] of [...holds]) {
+        if (hold.threadId === threadId && !hold.armed) {
+          holds.delete(id);
+        }
+      }
+      if (holds.size === 0 && unsubscribe) {
+        unsubscribe();
+        unsubscribe = null;
+      }
+    },
     tick() {
       observe();
       const at = now();
