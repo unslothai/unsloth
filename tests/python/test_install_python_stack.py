@@ -773,9 +773,13 @@ class TestBuildPipCmdUpgradeIntent:
 
 class TestDuplicateCoreMetadataRepair:
     def test_invalid_metadata_is_removed_before_pip_uninstall(self, tmp_path, monkeypatch):
-        malformed = tmp_path / "unsloth-2026.8.12.dist-info"
+        # Unversioned directory, so the rewrite still fails and the record is
+        # quarantined. A RECORD beside it because an unreadable record WITHOUT one
+        # now fails the repair closed: nothing can say which files that release owned.
+        malformed = tmp_path / "unsloth.dist-info"
         malformed.mkdir()
         (malformed / "METADATA").write_bytes(b"\xff\xfe")
+        (malformed / "RECORD").write_text("unsloth/__init__.py,,\n")
         probes = iter((["", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"]))
         commands = []
 
@@ -806,6 +810,39 @@ class TestDuplicateCoreMetadataRepair:
         assert [command for _label, command in commands] == [
             [sys.executable, "-m", "pip", "uninstall", "-y", "unsloth"]
         ]
+
+    def test_an_unrecorded_stale_record_fails_closed_even_beside_a_good_one(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """No RECORD means nothing knows which files that release owned, which is
+        why _rewrite_minimal_metadata fails closed. Waiting for record_count to
+        reach zero missed the case where another record survives: pip uninstalls
+        only that one, the quarantine is discarded on success, and whatever the
+        older release owned alone stays importable while the directory that was
+        the evidence is deleted for good.
+        """
+        unreadable = tmp_path / "unsloth-2026.8.12.dist-info"
+        unreadable.mkdir()
+        (unreadable / "METADATA").write_bytes(b"\xff\xfe")  # no RECORD beside it
+
+        monkeypatch.setattr(
+            ips.install_manifest, "installed_versions", lambda _n: ["", "2026.8.15"]
+        )
+        monkeypatch.setattr(
+            ips.install_manifest, "invalid_metadata_paths", lambda _n: [unreadable]
+        )
+        monkeypatch.setattr(ips.install_manifest, "pip_backup_metadata_paths", lambda _n: [])
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+
+        def fake_stage(*_args, **_kwargs):
+            raise AssertionError("nothing may be staged once a record is unusable")
+
+        monkeypatch.setattr(ips, "_stage_replacement", fake_stage)
+
+        assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
+        assert "has no RECORD" in capsys.readouterr().err
+        # The evidence stays on disk so a later run can still see the conflict.
+        assert unreadable.is_dir()
 
     def test_pips_tilde_backup_is_moved_aside_so_the_loop_can_converge(self, tmp_path, monkeypatch):
         """The commonest real conflict: pip renamed the outgoing distribution to a
@@ -1926,9 +1963,13 @@ class TestDuplicateCoreMetadataRepair:
         deleting it and then failing to fetch the replacement leaves files with
         no install, while the message claims nothing was touched.
         """
-        malformed = tmp_path / "unsloth-2026.8.12.dist-info"
+        # Unversioned directory, so the rewrite still fails and the record is
+        # quarantined. A RECORD beside it because an unreadable record WITHOUT one
+        # now fails the repair closed: nothing can say which files that release owned.
+        malformed = tmp_path / "unsloth.dist-info"
         malformed.mkdir()
         (malformed / "METADATA").write_bytes(b"\xff\xfe")
+        (malformed / "RECORD").write_text("unsloth/__init__.py,,\n")
         probes = iter(([""], []))
 
         monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))
@@ -1946,9 +1987,13 @@ class TestDuplicateCoreMetadataRepair:
         assert (malformed / "METADATA").read_bytes() == b"\xff\xfe"
 
     def test_invalid_metadata_is_dropped_once_the_repair_completes(self, monkeypatch, tmp_path):
-        malformed = tmp_path / "unsloth-2026.8.12.dist-info"
+        # Unversioned directory, so the rewrite still fails and the record is
+        # quarantined. A RECORD beside it because an unreadable record WITHOUT one
+        # now fails the repair closed: nothing can say which files that release owned.
+        malformed = tmp_path / "unsloth.dist-info"
         malformed.mkdir()
         (malformed / "METADATA").write_bytes(b"\xff\xfe")
+        (malformed / "RECORD").write_text("unsloth/__init__.py,,\n")
         # Unreadable BESIDE a readable record: a sole unreadable one is rewritten so
         # pip can uninstall its payload, which is a different path.
         probes = iter((["", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"]))
@@ -1969,9 +2014,13 @@ class TestDuplicateCoreMetadataRepair:
     def test_pip_is_never_asked_to_read_the_invalid_record(self, monkeypatch, tmp_path):
         """A non-UTF-8 METADATA makes pip raise for the whole environment, so the
         record must already be out of the tree when staging runs."""
-        malformed = tmp_path / "unsloth-2026.8.12.dist-info"
+        # Unversioned directory, so the rewrite still fails and the record is
+        # quarantined. A RECORD beside it because an unreadable record WITHOUT one
+        # now fails the repair closed: nothing can say which files that release owned.
+        malformed = tmp_path / "unsloth.dist-info"
         malformed.mkdir()
         (malformed / "METADATA").write_bytes(b"\xff\xfe")
+        (malformed / "RECORD").write_text("unsloth/__init__.py,,\n")
         probes = iter((["", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"]))
         seen = []
 

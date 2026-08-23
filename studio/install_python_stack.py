@@ -4278,6 +4278,28 @@ def _repair_duplicate_core_metadata(
                     and _rewrite_minimal_metadata(path, name)
                 )
             ]
+            # A record with no RECORD is the one case _rewrite_minimal_metadata fails
+            # closed on, and it has to fail closed here too rather than wait for the
+            # record_count check below. With another record surviving, the count stays
+            # nonzero, pip uninstalls only that one, and the quarantine is discarded on
+            # success: whatever the older release owned alone stays importable, and the
+            # directory that was the evidence is gone for good.
+            unrecorded = [
+                path
+                for path in unrewritable
+                if not os.path.isfile(os.path.join(path, "RECORD"))
+            ]
+            if unrecorded:
+                _safe_print(
+                    _red(
+                        f"   the metadata for {name} at "
+                        + ", ".join(os.path.basename(os.fspath(p)) for p in unrecorded)
+                        + " is unreadable and has no RECORD, so the files that release "
+                        "owned cannot be identified. Recreate the environment to repair it."
+                    ),
+                    file = sys.stderr,
+                )
+                return False
             # Whatever could not be made readable still has to leave the tree, because
             # pip cannot run at all while it is there. Move it aside rather than delete
             # it: staging can still fail.
