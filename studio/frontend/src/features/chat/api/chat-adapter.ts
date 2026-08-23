@@ -7,7 +7,7 @@ import {
   committedServerTuningState,
   serverTuningLoadPayload,
 } from "../lib/server-tuning-fields";
-import { getAuthToken } from "@/features/auth";
+import { authFetch, getAuthToken } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { DOWNLOAD_KIND } from "@/features/hub/download-manager/constants";
 import {
@@ -38,6 +38,18 @@ import {
   sandboxSessionIdFor,
 } from "@/components/assistant-ui/sandbox-files";
 import { apiUrl } from "@/lib/api-base";
+import {
+  answerTextFromParts,
+  extractSearchImages,
+  isSearchImageEntry,
+  isSearchImagesToolResult,
+  missingListSubjects,
+  SEARCH_IMAGE_TOOL,
+  searchResultText,
+  stripSearchImageTokens,
+  type SearchImageEntry,
+  type SearchImagesToolResult,
+} from "../search-images/search-images";
 import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
@@ -129,6 +141,7 @@ import {
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
   awaitThreadScopedPairing,
+  flushPendingChatSettings,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "../presets/preset-policy";
@@ -1041,7 +1054,11 @@ export function toolResultModelText(
   result: unknown,
   toolName?: string,
 ): unknown {
-  if (isMcpImageToolResult(result) || isSandboxWrapper(result, toolName)) {
+  if (
+    isMcpImageToolResult(result) ||
+    isSearchImagesToolResult(result) ||
+    isSandboxWrapper(result, toolName)
+  ) {
     return result.text;
   }
   return result;
@@ -1105,11 +1122,19 @@ function serializeToolResultPart(
     content = result.length > 0 ? result : JSON.stringify({ result: "" });
   } else if (
     isMcpImageToolResult(result) ||
+    isSearchImagesToolResult(result) ||
     isSandboxWrapper(result, tc.toolName ?? "")
   ) {
     // Replay the stdout the model saw, not the card's sessionId/images/files:
     // stringifying the wrapper feeds it internal metadata instead of the output.
-    content = result.text.length > 0 ? result.text : JSON.stringify({ result: "" });
+    // The image tokens go with them: a token resolves against the message whose
+    // search produced it, so a model copying one out of replayed history names
+    // an id the next message cannot resolve and the picture silently does not
+    // render. Without them it searches again, and that token does resolve.
+    const replayText = isSearchImagesToolResult(result)
+      ? stripSearchImageTokens(result.text)
+      : result.text;
+    content = replayText.length > 0 ? replayText : JSON.stringify({ result: "" });
   } else {
     try {
       content = JSON.stringify(result);
@@ -1135,7 +1160,9 @@ function canReplayToolCallWithoutRoleTool(part: ToolCallMessagePart): boolean {
 }
 
 function sanitizeAssistantReplayText(text: string): string {
-  return text.replace(
+  // Same reason as the tool result above: the tokens the model wrote last turn
+  // are renderer markup scoped to that message, not prose it should repeat.
+  return stripSearchImageTokens(text).replace(
     /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
     "[audio]",
   );
@@ -1574,6 +1601,43 @@ export function messagesContainImage(messages: RunMessages): boolean {
     }
   }
   return false;
+}
+
+// A recording or a clip the user supplied is their own content in exactly the sense the
+// text-attachment rule already covers: the model answers from what is inside it, so the
+// subjects of that answer must not reach the image engines either. Matched on the part
+// TYPE rather than through the base64 extractors above -- a clip whose payload does not
+// parse is still a clip, and a predicate that fails open on it is the wrong way round.
+// Video arrives as a file part carrying a video mime type, the shape
+// extractVideoPartBase64 reads.
+function isPrivateMediaPart(part: { type: string }): boolean {
+  if (part.type === "audio") return true;
+  return (
+    part.type === "file" &&
+    /^video\//i.test((part as { mimeType?: string }).mimeType ?? "")
+  );
+}
+
+export function messagesUsePrivateContent(messages: RunMessages): boolean {
+  if (messagesContainImage(messages)) return true;
+  return messages.some((message) => {
+    if (
+      (message.content ?? []).some(
+        (part) =>
+          (part.type === "tool-call" &&
+            (part as { toolName?: string }).toolName === "search_knowledge_base") ||
+          isPrivateMediaPart(part),
+      )
+    ) {
+      return true;
+    }
+    if (!("attachments" in message)) return false;
+    return (message.attachments ?? []).some((attachment) =>
+      (attachment.content ?? []).some(
+        (part) => part.type === "text" || isPrivateMediaPart(part),
+      ),
+    );
+  });
 }
 
 export function findLatestUserAudioBase64(
@@ -3815,6 +3879,16 @@ export function createOpenAIStreamAdapter(
       const composerProjectIdAtSend =
         useChatRuntimeStore.getState().activeProjectId ?? null;
       await useChatRuntimeStore.getState().hydratePersistedSettings();
+      // After the hydrate, not before: the backend reads some settings out of
+      // SQLite at call time rather than taking them from the request -- Search
+      // images picks the web_search schema that way -- and the mirror is a
+      // trailing-edge debounce, so sending inside that window would run on the
+      // value from before the toggle. Edits made while the initial GET was still
+      // out are held back and only reach the debounce when hydration replays
+      // them, so a flush ahead of it would find nothing queued and miss exactly
+      // the first message after a startup edit. No wait at all unless something
+      // is actually queued or in flight.
+      await flushPendingChatSettings();
       // Every run reaches here: the composer, Reload, Continue, and send from the edit
       // composer. Waiting for the open chat's own settings in this one place is what
       // keeps the message-level controls from starting a run on the installation
@@ -6117,6 +6191,11 @@ export function createOpenAIStreamAdapter(
                       SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName ?? "")
                         ? extractCreatedFiles(rawEvent)
                         : { text: rawEvent, files: [] as SandboxFile[] };
+                    // Same rule: only from the tool that emits it.
+                    const { text: searchText, images: webImages } =
+                      toolCallParts[idx].toolName === SEARCH_IMAGE_TOOL
+                        ? extractSearchImages(rawResult)
+                        : { text: rawResult, images: [] as SearchImageEntry[] };
                     const imgMarker = "\n__IMAGES__:";
                     const imgIdx = rawResult.lastIndexOf(imgMarker);
                     const mcpImgMarker = "\n__MCP_IMAGES__:";
@@ -6130,6 +6209,7 @@ export function createOpenAIStreamAdapter(
                           files?: SandboxFile[];
                         }
                       | McpImageToolResult
+                      | SearchImagesToolResult
                       | {
                           image_b64: string;
                           image_mime: string;
@@ -6212,6 +6292,8 @@ export function createOpenAIStreamAdapter(
                         sessionId: sandboxSessionId || "_default",
                         files: createdFiles,
                       };
+                    } else if (webImages.length > 0) {
+                      parsedResult = { text: searchText, webImages };
                     } else {
                       parsedResult = rawResult;
                     }
@@ -6780,9 +6862,8 @@ export function createOpenAIStreamAdapter(
           ) {
             return [];
           }
-          return parseSourcesFromResult(
-            typeof tc.result === "string" ? tc.result : "",
-          );
+          // An image-bearing result is an object; citations live on `.text`.
+          return parseSourcesFromResult(searchResultText(tc.result));
         });
 
         const meta = serverMetadata;
@@ -6850,7 +6931,107 @@ export function createOpenAIStreamAdapter(
           incompleteReason = "length";
         }
 
+        // Before the lookup below: its network time is not generation time.
         const finishedAt = Date.now();
+
+        // Small models list things and never ask for their pictures, so fetch the
+        // missing ones and record the web_search call they should have made.
+        // Local tool loop only (a hosted provider would be replayed a tool it never
+        // saw), never over the user's own documents, never behind an approval prompt.
+        // The THREAD, not this turn and not the current toggle state. A follow-up
+        // answers from a search_knowledge_base result replayed in context without
+        // retrieving again, and turning RAG off afterwards clears both flags while
+        // those names are still sitting in the conversation -- so "list those product
+        // names" could hand private-document subjects to the image engines. Once a
+        // chat has retrieved private documents it stays ineligible.
+        const answerUsedPrivateDocs =
+          ragEnabled ||
+          projectRagEnabled ||
+          messagesUsePrivateContent(messages) ||
+          toolCallParts.some((part) => part.toolName === "search_knowledge_base");
+        // This run's own values, destructured from the runtime it started with,
+        // not the store as it stands now. Both are per-chat, and a run finishing
+        // after the user moved to a chat on "auto" would read that chat's
+        // permission level and look images up for an answer whose own chat had
+        // asked to be consulted first. (searchImages stays a live read: it
+        // describes the installation, so navigating cannot change it, and a user
+        // who has just switched it off should not get one last lookup.)
+        const toolCallsNeedApproval = confirmToolCalls && permissionMode === "ask";
+        if (
+          incompleteReason === null &&
+          !isExternalRequest &&
+          supportsTools &&
+          toolsEnabled &&
+          !answerUsedPrivateDocs &&
+          !toolCallsNeedApproval &&
+          useChatRuntimeStore.getState().searchImages
+        ) {
+          // Rendered parts, not the raw stream: `cumulativeText` carries <think>.
+          const answerText = answerTextFromParts(
+            buildAssistantContent(mergeContinuation(cumulativeText)),
+          );
+          const subjects = missingListSubjects(answerText, toolCallParts);
+          if (subjects.length > 0) {
+            // Bounded so a slow engine cannot hold a finished answer open.
+            // Linked by hand: AbortSignal.any is newer than the Safari floor.
+            const lookupAbort = new AbortController();
+            const onRunAbort = () => lookupAbort.abort();
+            runAbort.signal.addEventListener("abort", onRunAbort, { once: true });
+            const lookupTimer = setTimeout(() => lookupAbort.abort(), 15_000);
+            try {
+              // authFetch, not a raw fetch: an access token that expired during a long
+              // generation is refreshed and the call retried, where a stale bearer just
+              // 401s into the catch below and the pictures never arrive. Unlike the
+              // cancel POST above, a login redirect here is right -- the answer is
+              // already finished, so nothing is interrupted by it.
+              const response = await authFetch(
+                "/api/inference/search-images/lookup",
+                {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ subjects }),
+                  signal: lookupAbort.signal,
+                },
+              );
+              if (response.ok) {
+                const data = (await response.json()) as {
+                  text?: unknown;
+                  images?: unknown;
+                };
+                const webImages = Array.isArray(data.images)
+                  ? data.images.filter(isSearchImageEntry)
+                  : [];
+                if (webImages.length > 0) {
+                  const args = { image_queries: subjects };
+                  toolCallParts.push({
+                    type: "tool-call" as const,
+                    // No colon: replayed ids must satisfy ^[a-zA-Z0-9_-]+$.
+                    // Guarded: randomUUID is undefined over plain HTTP on a LAN.
+                    toolCallId: `auto-images-${
+                      typeof crypto !== "undefined" && "randomUUID" in crypto
+                        ? crypto.randomUUID()
+                        : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+                    }`,
+                    toolName: "web_search",
+                    argsText: JSON.stringify(args),
+                    args,
+                    result: {
+                      text: typeof data.text === "string" ? data.text : "",
+                      webImages,
+                    },
+                    textCursor: cumulativeText.length,
+                  } as PositionedToolCallPart);
+                }
+              }
+            } catch {
+              // Pictures are a garnish: a failed lookup leaves the answer as written.
+            } finally {
+              clearTimeout(lookupTimer);
+              runAbort.signal.removeEventListener("abort", onRunAbort);
+            }
+          }
+        }
+
         const finalTiming = buildTiming(
           streamStartTime,
           totalChunks,

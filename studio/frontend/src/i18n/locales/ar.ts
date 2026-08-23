@@ -1109,6 +1109,12 @@ export const ar = {
         collapseByDefaultDescription:
           "إبقاء التفكير مطويًا أثناء تفكير النموذج بدلًا من فتحه تلقائيًا. وسّع أي كتلة لقراءتها.",
       },
+      webSearch: {
+        title: "البحث على الويب",
+        images: "عرض الصور من البحث على الويب",
+        imagesDescription:
+          "يتيح للبحث على الويب إرجاع صور، ويجلب صورة لكل عنصر تعدّده الإجابة. يجلب Studio الصور المصغّرة ويغيّر حجمها، لذا لا يتصل المتصفح بمضيفي الصور أبدًا.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "طي كتل HTML",

@@ -1105,6 +1105,12 @@ export const en = {
         collapseByDefaultDescription:
           "Keep reasoning collapsed while the model thinks instead of streaming it open. Expand any block to read it.",
       },
+      webSearch: {
+        title: "Web search",
+        images: "Show images from web search",
+        imagesDescription:
+          "Let web search return pictures, and fetch one for each thing an answer lists. Thumbnails are downloaded and resized by Studio, so the browser never contacts image hosts.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Collapse HTML blocks",
