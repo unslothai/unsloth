@@ -4092,7 +4092,10 @@ class _QuarantinedMetadata:
 
 
 def _restore_from_staged(
-    name: str, staged: str, removed_any: bool, quarantine: "_QuarantinedMetadata | None" = None
+    name: str,
+    staged: str,
+    removed_any: bool,
+    quarantine: "_QuarantinedMetadata | None" = None,
 ) -> None:
     """Put the payload back when the uninstall loop stops part way through.
 
