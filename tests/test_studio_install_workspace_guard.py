@@ -1441,7 +1441,10 @@ def _run_rollback_lifecycle(studio_home, shape):
         + "_restore_studio_venv_replacement\n"
     )
     return subprocess.run(
-        ["bash", "-c", script], env = {"PATH": "/usr/bin:/bin"}, text = True, capture_output = True,
+        ["bash", "-c", script],
+        env = {"PATH": "/usr/bin:/bin"},
+        text = True,
+        capture_output = True,
     )
 
 
@@ -1475,6 +1478,6 @@ def test_install_ps1_rollback_tests_the_path_not_the_link_target():
     ):
         start = src.index(f"function {fn} {{")
         end = src.index(f"function {nxt} {{", start) if nxt else start + 1200
-        assert "Test-StudioPathPresent" in src[start:end], (
-            f"{fn} must test the backup path itself, not the link target"
-        )
+        assert (
+            "Test-StudioPathPresent" in src[start:end]
+        ), f"{fn} must test the backup path itself, not the link target"
