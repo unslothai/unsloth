@@ -154,3 +154,35 @@ def _pid_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+# ── the rows these guards emit must actually be emittable ──────────────────
+
+
+def test_the_new_row_types_are_registered_in_the_schema(tmp_path):
+    """A guard that cannot write its own row is a guard that crashes the run it protects.
+
+    Both of these were added and neither was registered in ROW_TYPES, so the first clean run
+    aborted two seconds in with `row_type must be one of [...], got 'comparability'`. The emitter
+    and the schema have to move together.
+    """
+    rec = Recorder(tmp_path / "payload.jsonl", new_session_id())
+    try:
+        rec.emit(
+            {
+                "row_type": "cell_aborted",
+                "cell_id": "r1M.treatment.rep0",
+                "reason": "budget exhausted",
+            }
+        )
+        rec.emit(
+            {
+                "row_type": "comparability",
+                "key": "cmp:0123456789",
+                "fields": {"corpus_hash": "ac9d5d8e"},
+            }
+        )
+    finally:
+        rec.close()
+    written = (tmp_path / "payload.jsonl").read_text(encoding = "utf-8")
+    assert "cell_aborted" in written and "comparability" in written

@@ -34,6 +34,13 @@ ROW_TYPES = frozenset(
         # UNBALANCED, because whether linear drift cancelled is a property of the run that a reader
         # of the table has no other way to recover.
         "ab_plan",
+        # A cell that did not finish, announced the moment it fails so a reader scanning FORWARD
+        # can discard its window rows without joining backwards to a cell row it may never reach.
+        "cell_aborted",
+        # The comparability key: everything that must match for two payloads to be compared at
+        # all, hashed into one quotable token. Its own row rather than a field on `run_meta` so a
+        # reader can find it without parsing the whole meta block.
+        "comparability",
         # One UI surface swept by the optional `--surfaces` phase: a route, a settings tab, a menu.
         # A row type of its own rather than an `action` row with a different name, because a surface
         # has no slot, no budget and no timing to miss -- and reusing `action` would put forty rows
@@ -58,6 +65,8 @@ ROW_REQUIRED: dict[str, tuple[str, ...]] = {
     "cell": ("cell", "completed", "fidelity"),
     "window": ("name", "kind", "t_open_ms", "duration_ms"),
     "action": ("action", "ran", "expect_ok", "expect", "timings", "slot_missed"),
+    "cell_aborted": ("cell_id", "reason"),
+    "comparability": ("key", "fields"),
     "sample": ("t_ms",),
     "failure": ("kind", "detail"),
     # `reason` is REQUIRED, not optional. A surface row that lost its reason reads as a surface
