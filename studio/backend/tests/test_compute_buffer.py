@@ -56,7 +56,7 @@ except ImportError:
     )
     sys.modules["httpx"] = _httpx_stub
 
-from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_cpp import _FIT_MIN_CTX, LlamaCppBackend
 
 MIB = 1024 * 1024
 GIB = 1024 * MIB
@@ -847,10 +847,16 @@ class TestPerDeviceSplitReserve:
         min_gpus = 2,
         enforce = True,
     ):
-        """Mirror of the reduced-to-4096 loop the native loop falls through to. Same
-        pooled admission, so it needs the same per-device gate."""
+        """Mirror of the Auto offload loop the native loop falls through to. Same
+        pooled admission, so it needs the same per-device gate.
+
+        Driven at the fit search floor rather than at ``_AUTO_OFFLOAD_CTX``: what
+        this exercises is the per-device reserve gate, and the floor is the lowest
+        context the loop above can still be admitted at, so it is the value that
+        makes the gate decide anything.
+        """
         frac = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
-        ctx = 4096
+        ctx = _FIT_MIN_CTX
 
         def usable(g):
             return g[1] - (1.0 - frac) * totals[g[0]]
