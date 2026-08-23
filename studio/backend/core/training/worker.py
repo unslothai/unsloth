@@ -857,10 +857,7 @@ def _check_mlx_finetune_targets(config: dict) -> None:
 
 
 def _check_mlx_effective_targets(
-    config: dict,
-    *,
-    finetune_language: bool,
-    finetune_vision: bool,
+    config: dict, *, finetune_language: bool, finetune_vision: bool
 ) -> None:
     """The same refusal, re-asked with the values get_peft_model will actually receive.
 

@@ -557,23 +557,19 @@ def test_the_effective_check_refuses_a_text_run_whose_only_selection_was_vision(
     config = {"training_type": "LoRA/QLoRA", "target_modules": ["Wqkv"]}
 
     with pytest.raises(ValueError, match = "Nothing to train"):
-        _check_mlx_effective_targets(
-            config, finetune_language = False, finetune_vision = False
-        )
+        _check_mlx_effective_targets(config, finetune_language = False, finetune_vision = False)
 
 
-@pytest.mark.parametrize(
-    "language, vision", [(True, False), (False, True), (True, True)]
-)
+@pytest.mark.parametrize("language, vision", [(True, False), (False, True), (True, True)])
 def test_the_effective_check_passes_whenever_a_layer_family_survives(language, vision):
     config = {"training_type": "LoRA/QLoRA", "target_modules": ["Wqkv"]}
 
-    _check_mlx_effective_targets(
-        config, finetune_language = language, finetune_vision = vision
-    )
+    _check_mlx_effective_targets(config, finetune_language = language, finetune_vision = vision)
 
 
-@pytest.mark.parametrize("target_modules", [["lm_head"], ["embed_tokens"], ["all-linear", "lm_head"]])
+@pytest.mark.parametrize(
+    "target_modules", [["lm_head"], ["embed_tokens"], ["all-linear", "lm_head"]]
+)
 def test_the_effective_check_still_spares_a_cpt_target(target_modules):
     """embed_tokens and lm_head train on the CPT path with both layer families off."""
     config = {"training_type": "LoRA/QLoRA", "target_modules": target_modules}
@@ -592,7 +588,7 @@ def test_the_effective_check_runs_after_the_back_fill_at_the_mlx_call_site():
     call = source.index("_check_mlx_effective_targets(\n            config,")
     backfill = source.index("            finetune_language = True")
     forced = source.index('config.get("finetune_vision_layers", False) if is_vlm else False')
-    assert forced < backfill < call, (
-        "the effective check must follow both the is_vlm narrowing and the back-fill"
-    )
+    assert (
+        forced < backfill < call
+    ), "the effective check must follow both the is_vlm narrowing and the back-fill"
     assert call < source.index("FastMLXModel.get_peft_model("), "and precede the loader"
