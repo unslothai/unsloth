@@ -599,6 +599,16 @@ def run(args, ab_ref = None) -> int:
         from .runtime.ab import origin_scoped
 
         init_scripts = []
+        # ONE PROVIDER PER ORIGIN, because the provider lives in the BACKEND and localStorage is
+        # per-origin. An ATTACHED null control is `--attach U --attach-b U`, which `is_null_control`
+        # accepts on purpose: two sides, one Studio. Registering per SIDE there registers the pacer
+        # twice against the same backend, and `lifecycle.register_provider` is idempotent by DISPLAY
+        # NAME -- so the second registration DELETES the id the first side's seed script had already
+        # captured, and that script keeps selecting the dead id on every navigation it wins (the
+        # order init scripts run in is not defined, and `StudioAuth.rotate` re-adds them mid-run).
+        # A base cell that boots with a deleted provider selected renders "No longer offered" and
+        # throws `Connection not found` without ever asking for a completion.
+        registered: dict = {}
         for index, side in enumerate(sides):
             side_install = installs[index][0]
             side_auth = authenticate(
@@ -610,13 +620,19 @@ def run(args, ab_ref = None) -> int:
 
             # BOTH sides register the SAME pacer, so the bytes on the wire are identical by
             # construction rather than by two configurations that are meant to agree.
-            side_provider = pacer_provider(pacer.base_url, [model_id])
-            # Registered in the BACKEND, and the id it assigns is what the selection names. See
-            # lifecycle.register_provider: a provider that exists only in localStorage renders in
-            # the picker as "No longer offered" and send throws `Connection not found` without ever
-            # asking for a completion.
-            register_provider(side["base_url"], side_auth, side_provider)
-            side_checkpoint = external_checkpoint_id(side_provider, model_id)
+            side_origin = side["base_url"].rstrip("/")
+            shared = registered.get(side_origin)
+            if shared is None:
+                side_provider = pacer_provider(pacer.base_url, [model_id])
+                # Registered in the BACKEND, and the id it assigns is what the selection names. See
+                # lifecycle.register_provider: a provider that exists only in localStorage renders
+                # in the picker as "No longer offered" and send throws `Connection not found`
+                # without ever asking for a completion.
+                register_provider(side["base_url"], side_auth, side_provider)
+                side_checkpoint = external_checkpoint_id(side_provider, model_id)
+                registered[side_origin] = (side_provider, side_checkpoint)
+            else:
+                side_provider, side_checkpoint = shared
             _log(
                 f"  {side['label']}: provider {side_provider.provider_type} -> "
                 f"{side_provider.base_url}, checkpoint {side_checkpoint}"
