@@ -24,7 +24,11 @@ export type TransferStats = {
 
 export const MIN_SAMPLES = 3;
 export const MIN_WINDOW_SECONDS = 3;
-export const MAX_WINDOW_SECONDS = 30;
+/** Span the rate is averaged over once progress is dense enough to fill it. */
+export const MAX_WINDOW_SECONDS = 15;
+/** Buffer depth, so sparse progress bursts still leave two points to measure. */
+export const MAX_RETAIN_SECONDS = 60;
+/** No byte growth for this long clears the rate instead of carrying it. */
 export const STALL_WINDOW_SECONDS = 15;
 
 /**
@@ -36,7 +40,7 @@ export function appendSample(
   samples: TransferSample[],
   t: number,
   b: number,
-  maxWindowSeconds: number = MAX_WINDOW_SECONDS,
+  maxWindowSeconds: number = MAX_RETAIN_SECONDS,
 ): TransferSample[] {
   if (samples.length > 0 && b < samples[samples.length - 1].b) {
     samples.length = 0;
@@ -63,34 +67,38 @@ function hasRecentProgress(
 }
 
 /**
- * Fit one line through every sample in the rolling window instead of pricing the
- * transfer from only its two endpoints. Hub progress is observed from files on
- * disk, where sparse allocation and buffered writes can make a steady network
- * transfer appear as long plateaus followed by large byte jumps (#9378). A
- * least-squares slope makes those observation bursts contribute to the window
- * without letting a single jump become the displayed network speed.
+ * Pick the pair of samples to price the transfer from: the newest byte increase,
+ * and the tightest earlier increase at least {@link MAX_WINDOW_SECONDS} before
+ * it (or the oldest one held, if none is that far back).
+ *
+ * Hub progress is read from files on disk, where sparse allocation and buffered
+ * writes can make a steady transfer show up as plateaus and large jumps (#9378).
+ * Measuring increase-to-increase spans a whole number of those jumps, so the
+ * partial plateau at either end of the window stops distorting the rate. A dense
+ * per-second feed has an increase every sample, so it still averages over
+ * {@link MAX_WINDOW_SECONDS} exactly as before.
+ *
+ * Returns ``null`` when the buffer holds fewer than two increases: one jump on
+ * its own carries no timing information, so the caller reports no rate.
  */
-function regressionRate(samples: readonly TransferSample[]): number {
-  const first = samples[0];
-  const count = samples.length;
-  let sumT = 0;
-  let sumB = 0;
-  let sumTT = 0;
-  let sumTB = 0;
-
-  for (const sample of samples) {
-    const t = sample.t - first.t;
-    const b = sample.b - first.b;
-    sumT += t;
-    sumB += b;
-    sumTT += t * t;
-    sumTB += t * b;
+function measurableSpan(
+  samples: readonly TransferSample[],
+): [number, number] | null {
+  let to = -1;
+  for (let i = samples.length - 1; i > 0; i -= 1) {
+    if (samples[i].b > samples[i - 1].b) {
+      to = i;
+      break;
+    }
   }
-
-  const denominator = count * sumTT - sumT * sumT;
-  if (!(denominator > 0)) return 0;
-  const rate = (count * sumTB - sumT * sumB) / denominator;
-  return Number.isFinite(rate) && rate > 0 ? rate : 0;
+  if (to < 1) return null;
+  let from = -1;
+  for (let i = to - 1; i > 0; i -= 1) {
+    if (samples[i].b <= samples[i - 1].b) continue;
+    from = i;
+    if (samples[to].t - samples[i].t >= MAX_WINDOW_SECONDS) break;
+  }
+  return from < 1 ? null : [from, to];
 }
 
 /**
@@ -98,7 +106,7 @@ function regressionRate(samples: readonly TransferSample[]): number {
  * known total.
  *   * Needs ≥ {@link MIN_SAMPLES} samples spanning ≥ {@link MIN_WINDOW_SECONDS}
  *     seconds before reporting ``stable: true``.
- *   * Smooths bursty cumulative-byte observations across the whole window.
+ *   * Prices bursty cumulative-byte observations increase-to-increase.
  *   * Reports unstable after {@link STALL_WINDOW_SECONDS} without byte growth.
  *   * ETA clamps to 0 when there's no progress, no total, or total is hit.
  */
@@ -106,24 +114,20 @@ export function computeTransferStats(
   samples: readonly TransferSample[],
   total: number,
 ): TransferStats {
-  if (samples.length < MIN_SAMPLES) {
-    return { rateBytesPerSecond: 0, etaSeconds: 0, stable: false };
-  }
+  const unstable = { rateBytesPerSecond: 0, etaSeconds: 0, stable: false };
+  if (samples.length < MIN_SAMPLES) return unstable;
   const first = samples[0];
   const last = samples[samples.length - 1];
-  const dt = last.t - first.t;
-  const db = last.b - first.b;
-  if (
-    dt < MIN_WINDOW_SECONDS ||
-    db <= 0 ||
-    (dt >= STALL_WINDOW_SECONDS && !hasRecentProgress(samples, last))
-  ) {
-    return { rateBytesPerSecond: 0, etaSeconds: 0, stable: false };
+  if (last.t - first.t < MIN_WINDOW_SECONDS || last.b <= first.b) {
+    return unstable;
   }
-  const rate = regressionRate(samples);
-  if (!(rate > 0)) {
-    return { rateBytesPerSecond: 0, etaSeconds: 0, stable: false };
-  }
+  if (!hasRecentProgress(samples, last)) return unstable;
+  const span = measurableSpan(samples);
+  if (!span) return unstable;
+  const dt = samples[span[1]].t - samples[span[0]].t;
+  const db = samples[span[1]].b - samples[span[0]].b;
+  const rate = dt > 0 ? db / dt : 0;
+  if (!(Number.isFinite(rate) && rate > 0)) return unstable;
   const safeTotal = Number.isFinite(total) && total > 0 ? total : 0;
   const eta =
     safeTotal > 0 && last.b < safeTotal
