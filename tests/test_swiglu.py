@@ -53,8 +53,10 @@ def test_swiglu_backward_matches_autograd(dtype):
     h_ref = _reference_forward(e_ref, g_ref)
     h_ref.backward(dw)
 
-    h_out, df_out, dg_out = swiglu_DWf_DW_dfg_kernel(dw.clone(), e.clone(), g.clone())
+    # The kernel reuses the e/g buffers to return the *other* tensor's
+    # gradient: dL/dg lands where e was, dL/de lands where g was.
+    h_out, grad_g, grad_e = swiglu_DWf_DW_dfg_kernel(dw.clone(), e.clone(), g.clone())
 
     torch.testing.assert_close(h_out, h_ref.detach(), atol = 1e-2, rtol = 1e-2)
-    torch.testing.assert_close(df_out, e_ref.grad, atol = 2e-2, rtol = 2e-2)
-    torch.testing.assert_close(dg_out, g_ref.grad, atol = 2e-2, rtol = 2e-2)
+    torch.testing.assert_close(grad_e, e_ref.grad, atol = 2e-2, rtol = 2e-2)
+    torch.testing.assert_close(grad_g, g_ref.grad, atol = 2e-2, rtol = 2e-2)

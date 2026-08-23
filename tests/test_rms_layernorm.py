@@ -33,16 +33,19 @@ def test_fast_rms_layernorm_forward_and_backward_match_llama(dim, seqlen, bsz, d
     X_fast = X.clone().requires_grad_(True)
 
     Y_ref = layernorm(X_ref)
-    dY = torch.randn_like(Y_ref)
+    # HF's LlamaRMSNorm may return float32 regardless of input dtype; the
+    # fast kernel intentionally preserves the input dtype, so drive both
+    # backward passes with the same fp32 upstream gradient and compare in fp32.
+    dY = torch.randn(Y_ref.shape, dtype = torch.float32, device = "cuda")
     Y_ref.backward(dY)
 
     Y_fast = fast_rms_layernorm(layernorm, X_fast)
-    Y_fast.backward(dY)
+    Y_fast.backward(dY.to(Y_fast.dtype))
 
     assert Y_fast.shape == X.shape
     assert Y_fast.dtype == X.dtype
-    torch.testing.assert_close(Y_fast, Y_ref.detach(), atol = 5e-2, rtol = 5e-2)
-    torch.testing.assert_close(X_fast.grad, X_ref.grad, atol = 5e-2, rtol = 5e-2)
+    torch.testing.assert_close(Y_fast.float(), Y_ref.detach().float(), atol = 5e-2, rtol = 5e-2)
+    torch.testing.assert_close(X_fast.grad.float(), X_ref.grad.float(), atol = 5e-2, rtol = 5e-2)
 
 
 def test_fast_rms_layernorm_gemma_matches_reference(dtype):
