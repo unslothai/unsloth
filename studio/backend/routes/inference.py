@@ -2733,20 +2733,19 @@ def _generation_prompt_opens_think(
     """True when rendering the template's generation prompt ends INSIDE an unclosed ``<think>``.
 
     Separates templates that prefill an open ``<think>``, where the model emits only the closing
-    tag, from those that leave the prompt open and let the model emit its own block. A ``None``
-    kwarg is omitted exactly as ``apply_chat_template_for_generation`` omits it, which is what
-    lets a template state its own default. The sandbox omits transformers' ``{% generation %}``
-    extension, so a template using it joins the unrenderable ones in returning True, preserving
-    the historical always-on prefill.
+    tag, from those that leave the prompt open and let the model emit its own block.
 
-    The request's own messages are rendered when given, because a template may decide the shape
-    from them (Nemotron opens the block only once a message says ``/think``). A history the
-    template refuses falls back to the single-user probe rather than to True, so a message the
-    probe cannot render is never itself a reason to prefill.
+    Three things keep this reading what generation reads. A ``None`` kwarg is omitted exactly as
+    ``apply_chat_template_for_generation`` omits it, so a template states its own default. The
+    request's messages are rendered when given, since a template may take the shape from them
+    (Nemotron opens the block only once a message says ``/think``). And only the assistant
+    prefix is weighed, diffed against the render without a generation prompt, so a user who
+    merely types ``<think>`` cannot become the last opener.
 
-    Only the assistant prefix is weighed, obtained by diffing the render against the same one
-    without a generation prompt. Weighing the whole prompt would let a user who merely writes
-    ``<think>`` in a message become the last opener and prefill a template that opens nothing.
+    Both fallbacks stay conservative: a history the template refuses drops back to the
+    single-user probe rather than to True, and a template the sandbox cannot render at all
+    (``{% generation %}`` is not in its extension set) returns True, the historical always-on
+    prefill.
     """
     if not template:
         return False
@@ -2759,9 +2758,8 @@ def _generation_prompt_opens_think(
         rendered = _render_generation_prompt_probe(*args)
     if rendered is None:
         return True
-    # The generation prompt is what ``add_generation_prompt`` adds, so everything the two
-    # renders share is history. On a template that ignores the flag they match and nothing is
-    # prefilled, which is the right answer for one that opens no block.
+    # Everything the two renders share is history. A template that ignores the flag yields an
+    # empty prefix and prefills nothing, right for one that opens no block.
     body = _render_generation_prompt_probe(*args, messages, generation_prompt = False)
     prefix = (
         rendered[len(os.path.commonprefix((rendered, body))) :] if body is not None else rendered
@@ -15411,16 +15409,13 @@ async def openai_chat_completions(
     if not _sf_template_tools and _sf_server_tool_intent:
         _sf_template_tools = ({},)
 
-    # The prefill probe renders these: a template may read the shape off the conversation
-    # (Nemotron opens <think> only once a message says ``/think``), and a fixed stand-in would
-    # classify a request nobody made. Built from the NORMALIZED conversation, the same shape
-    # the backend renders (mlx_inference prepends system_prompt to chat_messages), so a
-    # content-part array the probe left unflattened cannot read differently from generation.
-    # Swept the way the renderer sweeps, since apply_chat_template_for_generation neutralizes
-    # control markup before it renders: a user turn's ``<think>`` reaches the template as
-    # ``< think>``, and a template branching on that marker would otherwise pick one branch
-    # here and the other in generation. The tokenizer's markup profile is not in scope, so
-    # this uses the same default rewrite the renderer falls back to.
+    # What the prefill probe renders, built to match what generation renders: a template may
+    # read the ``<think>`` shape off the conversation (Nemotron opens it only once a message
+    # says ``/think``), so any difference here is a wrong verdict. Hence the normalized
+    # messages rather than the payload (content parts flattened, system lifted, as
+    # mlx_inference sees them) and the same sweep the renderer applies, which turns a user's
+    # ``<think>`` into ``< think>``. Markup profile is not in scope, so this takes the
+    # renderer's own default rewrite.
     try:
         from core.inference.chat_template_helpers import (
             neutralize_control_markup_in_messages as _sf_sweep,

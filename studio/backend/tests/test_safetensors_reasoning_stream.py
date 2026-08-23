@@ -204,7 +204,7 @@ def test_prefill_mode_renders_the_request_messages():
 
 def test_messages_the_template_refuses_fall_back_to_the_single_user_probe():
     # A history the template raises on must not itself read as a prefill: fall back to the
-    # stand-in, which is what every caller got before the messages were threaded through.
+    # stand-in every caller got before the messages were threaded through.
     refused = [{"role": "user", "content": "hi"}, {"role": "tool", "content": "42"}]
     assert _sf_reasoning_prefill_mode(_ETHINK, None, _STRICT_HISTORY_TPL, None, refused) is False
     assert _sf_reasoning_prefill_mode(_ETHINK, None, _STRICT_HISTORY_TPL) is False
@@ -222,9 +222,8 @@ def test_a_think_tag_the_user_typed_does_not_prefill():
 
 
 def test_content_parts_must_reach_the_probe_flattened():
-    # Pins why the route probes the normalized conversation: the two shapes disagree, so
-    # probing the raw array would test ``'/think' in <list>``, silently miss the opt-in, and
-    # classify against a prompt generation never renders.
+    # Why the route probes the normalized conversation: the shapes disagree, so a raw array
+    # would test ``'/think' in <list>``, miss the opt-in, and classify a prompt never rendered.
     flattened = [{"role": "user", "content": "/think what is 2+2"}]
     raw_parts = [{"role": "user", "content": [{"type": "text", "text": "/think what is 2+2"}]}]
     assert _sf_reasoning_prefill_mode(_ETHINK, None, _MESSAGE_SHAPE_TPL, None, flattened) is True
@@ -233,8 +232,7 @@ def test_content_parts_must_reach_the_probe_flattened():
 
 def test_control_markup_must_reach_the_probe_swept():
     # The renderer neutralizes control markup first, so a user's ``<think>`` arrives as
-    # ``< think>``. Pins the divergence the route sweeps away: a template branching on the
-    # marker would otherwise pick one branch here and the other in generation.
+    # ``< think>``. A template branching on it would otherwise split from generation.
     from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
 
     raw = [{"role": "user", "content": "<think> tags"}]

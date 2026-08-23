@@ -27,13 +27,11 @@ huggingface-hub==0.36.2; python_version < "3.10"
 # below that the read is uninterruptible. The preflight abandons the reader either
 # way, so this is defence in depth, not the bound itself.
 urllib3>=2.3.0
-# The safetensors reasoning-prefill probe renders the chat template's generation prompt in a
-# Jinja sandbox to decide whether output begins inside an unclosed <think>. Transitive via
-# torch and transformers, declared here because the route imports it directly and this set is
+# The safetensors reasoning-prefill probe renders chat templates in a Jinja sandbox. Transitive
+# via torch and transformers, declared because the route imports it directly and this set is
 # installed in every mode: without it the probe cannot render, falls back to always-prefill,
-# and every reasoning model returns a blank content with the answer in reasoning_content.
-# 3.1.0 is the floor the render needs -- the |items filter arrives there, and templates that
-# use it (Hermes-3's tool_use branch) fail to compile below it.
+# and every reasoning model returns blank content. 3.1.0 is the floor -- the |items filter
+# arrives there, and Hermes-3's tool_use branch fails to compile below it.
 jinja2>=3.1.0
 structlog>=24.1.0
 diceware==1.0.1
