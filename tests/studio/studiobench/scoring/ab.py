@@ -359,9 +359,7 @@ def compare(
             lower_is_better = anchor.lower_is_better if anchor else True
             worse = delta_pct > 0 if lower_is_better else delta_pct < 0
             comparison.beyond_noise = abs(delta_pct) > noise_floor_pct
-            comparison.ci_spans_no_effect = (
-                lo is not None and hi is not None and lo <= 1.0 <= hi
-            )
+            comparison.ci_spans_no_effect = lo is not None and hi is not None and lo <= 1.0 <= hi
             if not comparison.beyond_noise:
                 comparison.verdict = "within noise"
             elif worse:
@@ -378,9 +376,7 @@ def compare(
                     f"(noise floor {noise_floor_pct:.1f}%{unresolved})"
                 )
             else:
-                comparison.verdict = (
-                    "inconclusive" if comparison.ci_spans_no_effect else "improved"
-                )
+                comparison.verdict = "inconclusive" if comparison.ci_spans_no_effect else "improved"
             weight = anchor.weight if anchor else 1.0
             weighted_logs.append((weight, math.log(geo)))
         result.metrics.append(comparison)
