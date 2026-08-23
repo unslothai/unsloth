@@ -164,6 +164,10 @@ class PacerState:
         with self.lock:
             return self.stats[-1] if self.stats else None
 
+    def snapshot(self) -> list[StreamStats]:
+        with self.lock:
+            return list(self.stats)
+
 
 def _sse(payload: dict) -> bytes:
     return b"data: " + json.dumps(payload, separators = (",", ":")).encode("utf-8") + b"\n\n"
@@ -550,6 +554,15 @@ class Pacer:
         last = self.state.last()
         return last.as_dict() if last else None
 
+    def all_stats(self) -> list[dict]:
+        """Every stream this pacer served since the last `reset`, in order.
+
+        `last_stats` alone cannot answer "did the cell stream what it planned": a cell streams an
+        opening reply and then one follow-up per `send_turn`, and the LAST of those is the only
+        one it describes. See `check_planned_streams`.
+        """
+        return [s.as_dict() for s in self.state.snapshot()]
+
     def expected_duration_ms(
         self,
         reasoning: str,
@@ -565,6 +578,76 @@ class Pacer:
         gap_ms = default_gap if gap_ms is None else gap_ms
         n = len(_split(reasoning, chunk_chars)) + len(_split(content, chunk_chars))
         return n * gap_ms
+
+
+def check_planned_streams(streams: list[dict], planned: list[dict]) -> dict:
+    """Did every turn the cell PLANNED actually stream, in full?
+
+    A cell is not one stream. It opens with a reply and then streams one follow-up per `send_turn`,
+    and until this existed the only record kept was `last_stats()` -- the LAST of them. An opening
+    reply that disconnected, or delivered 4,624 of the 10,000 characters its rung is named for, was
+    therefore erased by whichever turn happened to finish last, and the cell was scored COMPLETE
+    against a thread thousands of characters short of the one it claims. That is the one failure a
+    benchmark must never have: under-measuring and reporting success, because a reader acts on it.
+
+    Matching is by `tag`, first unmatched stream wins, because a tag is not unique. The
+    `stop_generation` action sends its OWN throwaway turn against whatever script is loaded, so it
+    produces a second, deliberately cancelled stream carrying the tag of the turn before it. Those
+    land in `extra` and are reported rather than validated: an aborted throwaway is the action
+    working, not the cell failing.
+
+    Returns a dict; `ok` is False when any planned turn is missing, unfinished, or short.
+    """
+    remaining = list(streams)
+    turns: list[dict] = []
+    ok = True
+    for want in planned:
+        tag = want.get("tag")
+        chars = int(want.get("chars") or 0)
+        got = next((s for s in remaining if s.get("tag") == tag), None)
+        if got is not None:
+            remaining.remove(got)
+        sent = int((got or {}).get("chars_sent") or 0)
+        complete = bool((got or {}).get("completed"))
+        entry = {
+            "tag": tag,
+            "turn": want.get("turn"),
+            "planned_chars": chars,
+            "chars_sent": sent if got is not None else None,
+            "completed": complete if got is not None else None,
+            "disconnected": bool((got or {}).get("disconnected")) if got is not None else None,
+            "found": got is not None,
+        }
+        if got is None:
+            entry["reason"] = (
+                f"no stream carried the tag {tag!r}, so this turn never reached the pacer"
+            )
+        elif not complete:
+            entry["reason"] = (
+                f"the stream tagged {tag!r} did not complete "
+                f"({sent} of {chars} characters sent, "
+                f"{'the client disconnected' if entry['disconnected'] else 'no terminal frame'})"
+            )
+        elif sent < chars:
+            entry["reason"] = (
+                f"the stream tagged {tag!r} delivered {sent} of the {chars} characters planned"
+            )
+        else:
+            entry["reason"] = None
+        entry["ok"] = entry["reason"] is None
+        ok = ok and entry["ok"]
+        turns.append(entry)
+    failures = [t for t in turns if not t["ok"]]
+    return {
+        "ok": ok,
+        "checked": bool(planned),
+        "planned_turns": len(planned),
+        "turns": turns,
+        # The throwaway turns and any retry, kept so a reader can see WHAT else the fixture served
+        # without them being mistaken for a planned turn that failed.
+        "extra": remaining,
+        "reason": None if ok else "; ".join(t["reason"] for t in failures),
+    }
 
 
 def _selftest() -> int:

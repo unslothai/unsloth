@@ -30,10 +30,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from ..fixture.corpus import Corpus, RungPlan, plan_rung
+from ..fixture.corpus import PROVISIONAL_CHARS_PER_TOKEN, Corpus, RungPlan, plan_rung
 from ..instruments import build as build_instruments
 from ..instruments import import_errors
-from ..pacer import Pacer
+from ..pacer import Pacer, check_planned_streams
 from ..scene import schedule as scene_schedule
 from ..scene.actions import paint_floor_ms
 from ..scene.schedule import SceneRunner
@@ -338,7 +338,18 @@ class CellRunner:
             drained = self._drain_stream(page, expected_ms)
             w.note("drained", drained)
         row["stream"] = drained
-        row["pacer"] = self.pacer.last_stats()
+        # EVERY STREAM THE CELL SERVED, not just the last one. `last_stats()` describes whichever
+        # turn finished last, so for a multi-turn cell it says nothing at all about the opening
+        # reply -- and the opening reply is the one the rung is named for. Everything stays under
+        # the `pacer` key because that subtree is exempt from the payload's bare-zero rule: a
+        # pacer counter of 0 is a true reading, not a missing one.
+        streams = self.pacer.all_stats()
+        planned = self._planned_streams(cell, plan, row)
+        row["pacer"] = {
+            "last": self.pacer.last_stats(),
+            "streams": streams,
+            "check": check_planned_streams(streams, planned),
+        }
         # A REPLY THAT NEVER FINISHED IS A FAILED CELL, not a completed one with a note.
         #
         # `_drain_stream` reports rather than raises, and the value it reports was recorded here
@@ -362,6 +373,48 @@ class CellRunner:
                 f"the reply never finished: {drained.get('reason') or 'the run was still going'} "
                 f"({drained.get('drain_ms')}ms waited, {drained.get('expected_ms')}ms expected)"
             )
+        # A CELL THAT DID NOT STREAM WHAT IT PLANNED IS A FAILED CELL, for the same reason.
+        #
+        # The drain check above only asks whether the UI stopped running, and a later turn that
+        # finishes satisfies it on behalf of an earlier one that did not. So an opening reply that
+        # disconnected part way through left a complete-looking cell whose thread was thousands of
+        # characters short of its rung, averaged into the A/B ratio against arms that streamed in
+        # full. Raised here, after the check is on the row, so the reason and the per-turn evidence
+        # ship with the failure and the cell is excluded by name rather than quietly included.
+        check = row["pacer"]["check"]
+        if check["checked"] and not check["ok"]:
+            self.log(f"  the cell did not stream what it planned: {check['reason']}")
+            raise RuntimeError(f"the cell did not stream what it planned: {check['reason']}")
+        # AND THE SAME RULE FOR THE TURN THAT STREAMED BUT NEVER LANDED.
+        #
+        # The stream check asks whether the bytes went out. `send_turn` asserts something the pacer
+        # cannot see: that the thread GREW. A send whose bytes were served in full but whose reply
+        # never joined the thread leaves every later action, the peak census and the equivalence
+        # mirror reading a thread one turn short, and the stream check alone would pass it.
+        #
+        # Scoped to `send_turn` DELIBERATELY, and this is the whole of the generalisation. An
+        # action whose own assertion fails already has its own timing voided by
+        # `scoring/from_payload._action_measure`, which returns `Measure.failed` for
+        # `expect_ok is False` and says so. What that does NOT cover is an action whose failure
+        # changed the workload the REST of the cell measured, and `send_turn` is the only one that
+        # can: it is the only action whose outcome decides how much content the thread carries for
+        # everything after it. A `select_text` that selected nothing or a `message_menu` that did
+        # not open leaves the workload intact, and failing the cell for those would throw away a
+        # whole cell's frame readings -- which really were taken, over the real thread -- for a
+        # gesture that missed.
+        missed_turns = [
+            a
+            for a in (row["actions"] or [])
+            if a.get("action") == "send_turn" and a.get("ran") and a.get("expect_ok") is False
+        ]
+        if missed_turns:
+            reason = "; ".join(
+                f"follow-up turn {(a.get('expect') or {}).get('turn_index')} was sent but "
+                f"{a.get('reason') or 'its own assertion failed'}"
+                for a in missed_turns
+            )
+            self.log(f"  the cell did not stream what it planned: {reason}")
+            raise RuntimeError(f"the cell did not stream what it planned: {reason}")
         row["census_after"] = dom_signature(page)
         row["cdp"] = cdp_counters(before_metrics, cdp_metrics(s.ctx.cdp))
 
@@ -438,6 +491,51 @@ class CellRunner:
                         )
         if self.equivalence_failed and plan.seeded_units:
             row["fidelity"] = "seeded_only"
+
+    @staticmethod
+    def _planned_streams(cell: Cell, plan: RungPlan, row: dict) -> list[dict]:
+        """The turns this cell MEANT to stream, each with its tag and its character count.
+
+        The opening reply, plus one entry per `send_turn` that was ATTEMPTED -- taken from the
+        recorded action rows and from the tag the action itself reports, so the naming rule lives
+        in one place rather than two.
+
+        THE TWO KINDS OF "DID NOT RUN" ARE NOT THE SAME, and treating them alike was a hole in the
+        first version of this check. `ran = False` means the turn was never attempted: an exhausted
+        queue at the small rungs, a slot missed on a slow machine. Nothing was loaded into the
+        pacer, the cell simply has fewer turns, and demanding one would fail every small rung.
+        `ran = True, expect_ok = False` is the opposite: the turn WAS attempted, `send_turn` loaded
+        the pacer with it and pressed Enter, and no reply started. That is a planned turn that did
+        not stream, and skipping it let a cell whose follow-up never arrived pass the check with
+        `planned_turns: 1`, complete, and score 91.6 against a thread one turn short of its rung.
+        """
+        planned: list[dict] = []
+        unit = plan.streamed_unit
+        if unit is not None:
+            planned.append(
+                {
+                    "tag": cell.cell_id,
+                    "turn": "opening",
+                    "chars": len(unit.reasoning) + len(unit.content),
+                }
+            )
+        for action in row.get("actions") or []:
+            if action.get("action") != "send_turn":
+                continue
+            if not action.get("ran"):
+                continue
+            expect = action.get("expect") or {}
+            tag = expect.get("pacer_tag")
+            if not tag:
+                continue
+            planned.append(
+                {
+                    "tag": tag,
+                    "turn": f"follow_up{expect.get('turn_index')}",
+                    "chars": int(expect.get("streamed_chars") or 0),
+                }
+            )
+        return planned
 
     @staticmethod
     def _streamed_follow_ups(plan: RungPlan, row: dict) -> list:
@@ -608,6 +706,75 @@ def make_context(
     return ctx, Session(ctx = ctx, instruments = instruments)
 
 
+#: The sources that may SIZE a rung. `measure_chars_per_token` also has a last-resort
+#: whitespace-and-punctuation estimate, which it labels itself as "off by tens of percent on dense
+#: code" -- and this corpus is mostly dense code, where that estimate reads 6.7 against tiktoken's
+#: 3.3. Sizing the ladder from it would not make the axis honest, it would move the error and, past
+#: `MANIFEST_CHARS_PER_TOKEN`, make `plan_rung` refuse the whole run on any machine with no
+#: tokeniser. A real tokeniser sizes the rungs; the estimate is still measured and still reported.
+LADDER_RATIO_SOURCES = ("tiktoken/cl100k", "studio /api/inference/chat/count_tokens")
+
+
+def _corpus_sample(corpus: Corpus, chars: int = 200_000) -> str:
+    """A prefix of the frozen corpus, in the order a thread receives it."""
+    out: list[str] = []
+    size = 0
+    for entry in corpus.manifest["units"]:
+        unit = corpus.unit(entry["index"])
+        out.append(unit.reasoning + unit.content)
+        size += unit.chars
+        if size >= chars:
+            break
+    return "".join(out)[:chars]
+
+
+def ladder_chars_per_token(
+    corpus: Corpus,
+    base_url: str = "",
+    auth: Optional[StudioAuth] = None,
+    model_id: str = "",
+    log: Callable[[str], None] = lambda _m: None,
+) -> dict:
+    """The ratio THE RUNGS ARE SIZED BY, measured on the corpus BEFORE anything is planned.
+
+    A rung is named in tokens and the corpus is built in characters, so the ratio is what makes the
+    two the same claim. `PROVISIONAL_CHARS_PER_TOKEN` is what a rung is planned with when nothing
+    has been tokenised yet, and it was previously what EVERY production rung was planned with: the
+    per-cell measurement runs after the thread is already seeded and its result is recorded and
+    nothing else, so a cell labelled 1M tokens carried 4,000,000 characters of a corpus that
+    tiktoken reads at 3.34 -- about 1.2M tokens, a fifth over its own label, on the axis the onset
+    headline is quoted against.
+
+    Measured once for the whole ladder rather than per rung: the per-cell number is taken from that
+    rung's streamed unit alone, which is 6,000 characters of either reasoning or code and swings
+    between 3.2 and 4.9 by which kind the rung happens to land on. The axis needs the corpus's
+    ratio, not one turn's.
+    """
+    got = measure_chars_per_token(_corpus_sample(corpus), base_url, auth, model_id)
+    measured = got.get("chars_per_token")
+    source = got.get("source")
+    if measured and measured > 0 and source in LADDER_RATIO_SOURCES:
+        used, reason = float(measured), None
+    else:
+        used = PROVISIONAL_CHARS_PER_TOKEN
+        reason = (
+            f"no tokeniser answered (source {source!r}), so the rungs keep the provisional "
+            f"{PROVISIONAL_CHARS_PER_TOKEN} rather than being sized from an estimate"
+        )
+    log(
+        f"  ladder sized at {used} chars per token "
+        f"(measured {measured} via {source}){'; ' + reason if reason else ''}"
+    )
+    return {
+        "chars_per_token": used,
+        "measured": measured,
+        "source": source,
+        "provisional": reason is not None,
+        "reason": reason,
+        "detail": got,
+    }
+
+
 def build_cells(
     rungs: list[str],
     corpus: Corpus,
@@ -615,11 +782,31 @@ def build_cells(
     session_id: str,
     instrument_level: int,
     reps: int = 1,
-    chars_per_token: float = 4.0,
+    chars_per_token: Optional[float] = None,
+    base_url: str = "",
+    auth: Optional[StudioAuth] = None,
+    model_id: str = "",
+    log: Callable[[str], None] = lambda _m: None,
 ) -> list[tuple[Cell, RungPlan]]:
+    """The ladder's cells, sized by the MEASURED ratio unless a caller names one.
+
+    `chars_per_token = None` means "measure the corpus first", which is what the production caller
+    does. The ratio that sized the ladder travels on every cell's `meta` so a reader of the payload
+    can see which one it was and whether a tokeniser answered.
+    """
+    if chars_per_token is None:
+        ratio = ladder_chars_per_token(corpus, base_url, auth, model_id, log)
+    else:
+        ratio = {
+            "chars_per_token": float(chars_per_token),
+            "measured": None,
+            "source": "caller",
+            "provisional": False,
+            "reason": None,
+        }
     out: list[tuple[Cell, RungPlan]] = []
     for rung in rungs:
-        plan = plan_rung(corpus, rung, chars_per_token)
+        plan = plan_rung(corpus, rung, ratio["chars_per_token"])
         for rep in range(reps):
             cell = Cell(
                 cell_id = make_cell_id(rung, "A0", rep),
@@ -633,6 +820,7 @@ def build_cells(
                 seed = corpus.seed,
                 corpus_hash = corpus.corpus_hash,
                 session_id = session_id,
+                meta = {"ladder_chars_per_token": ratio},
             )
             out.append((cell, plan))
     return out

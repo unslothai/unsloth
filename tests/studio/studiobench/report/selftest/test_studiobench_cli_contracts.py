@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from studiobench.__main__ import (  # noqa: E402
     completion_exit_code,
     engines_installed,
+    _ab_label,
     is_null_control,
     main,
     parse_args,
@@ -38,8 +39,17 @@ from studiobench.__main__ import (  # noqa: E402
 )
 
 
-def _side(label, ref, url, owns):
-    return {"label": label, "ref": ref, "base_url": url, "owns": owns}
+def _side(
+    label,
+    ref,
+    url,
+    owns,
+    commit = None,
+):
+    side = {"label": label, "ref": ref, "base_url": url, "owns": owns}
+    if commit is not None:
+        side["commit"] = commit
+    return side
 
 
 # ── the null control ────────────────────────────────────────────────────────────────────────
@@ -79,6 +89,103 @@ def test_one_attached_studio_driven_twice_is_a_null_control():
         _side("treatment", "main", "http://127.0.0.1:5401", False),
     ]
     assert is_null_control(sides) is True
+
+
+def test_one_attached_studio_driven_twice_under_two_labels_is_still_a_null_control():
+    """`--attach U --attach-b U --branch main --ab fix`: one server, two names it cannot check.
+
+    The URL rule was stated and then not applied -- the ref comparison ran first, so the unequal
+    labels returned False before the equal URL was reached. One Studio measured against itself was
+    rendered as an ordinary A/B, free to publish temporal noise as an improvement, with
+    `noise_floor_from_null_control` skipped so nothing downstream had a floor to refuse it with.
+    With `--attach` the refs are free-form strings; only the URL names the deployed build.
+    """
+
+    sides = [
+        _side("base", "main", "http://127.0.0.1:5401", False),
+        _side("treatment", "fix", "http://127.0.0.1:5401", False),
+    ]
+    assert is_null_control(sides) is True
+
+
+def test_an_attached_treatment_pointed_at_the_installed_base_is_a_null_control():
+    """The mixed form of the same thing: `--attach-b` naming the Studio this run just launched."""
+
+    sides = [
+        _side("base", "main", "http://127.0.0.1:5399", True, commit = "a" * 40),
+        _side("treatment", "fix", "http://127.0.0.1:5399", False),
+    ]
+    assert is_null_control(sides) is True
+
+
+def test_two_owned_installs_of_different_refs_are_still_an_ordinary_ab():
+    """The control for the reorder: owned sides get `port` and `port + 1`, so they never collide
+    on a URL and the ref and commit comparisons below still decide them."""
+
+    sides = [
+        _side("base", "main", "http://127.0.0.1:5399", True, commit = "a" * 40),
+        _side("treatment", "fix", "http://127.0.0.1:5400", True, commit = "b" * 40),
+    ]
+    assert is_null_control(sides) is False
+
+
+def test_a_ref_that_moved_between_the_two_installs_is_not_a_null_control():
+    """`--branch main --ab main` where `main` advanced during the base's install.
+
+    The two sides are cloned into separate repos and fetched one after the other, with a whole
+    clone, build and launch between them. The refs still match; the builds do not. Classified as a
+    null control, `compare` voids the run and empties `regressions`, and
+    `noise_floor_from_null_control` republishes the real delta as this machine's noise floor -- so
+    a 12% regression is erased AND becomes the floor every later A/B on that machine is judged
+    against.
+    """
+
+    sides = [
+        _side("base", "main", "http://127.0.0.1:5399", True, commit = "a" * 40),
+        _side("treatment", "main", "http://127.0.0.1:5400", True, commit = "b" * 40),
+    ]
+    assert is_null_control(sides) is False
+
+
+def test_two_installs_of_one_ref_that_resolved_to_one_commit_are_a_null_control():
+    """The control: the calibration run this tool exists to support still classifies."""
+
+    sides = [
+        _side("base", "main", "http://127.0.0.1:5399", True, commit = "a" * 40),
+        _side("treatment", "main", "http://127.0.0.1:5400", True, commit = "a" * 40),
+    ]
+    assert is_null_control(sides) is True
+
+
+def test_a_side_with_no_commit_to_declare_is_judged_as_before():
+    """An empty commit on either side is not a difference -- the rule `commit_problems` already
+    states. Nothing behind an attached URL declares a commit, and neither does a payload written
+    before commits were recorded, so the build check must not start refusing them."""
+
+    sides = [
+        _side("base", "main", "http://127.0.0.1:5399", True, commit = "a" * 40),
+        _side("treatment", "main", "http://127.0.0.1:5400", True, commit = ""),
+    ]
+    assert is_null_control(sides) is True
+
+
+def test_the_table_names_both_builds_when_one_ref_resolved_to_two():
+    """ "main -> main" over two different commits would read as a null control on a screenshot."""
+
+    sides = [
+        _side("base", "main", "http://127.0.0.1:5399", True, commit = "a" * 40),
+        _side("treatment", "main", "http://127.0.0.1:5400", True, commit = "b" * 40),
+    ]
+    label = _ab_label(sides, is_null_control(sides))
+    assert label == "main aaaaaaaaaaaa -> bbbbbbbbbbbb"
+
+
+def test_a_null_control_states_the_commit_it_compared_with_itself():
+    sides = [
+        _side("base", "main", "http://127.0.0.1:5399", True, commit = "a" * 40),
+        _side("treatment", "main", "http://127.0.0.1:5400", True, commit = "a" * 40),
+    ]
+    assert _ab_label(sides, True) == "null control: main @ aaaaaaaaaaaa vs itself"
 
 
 # ── one password per side ───────────────────────────────────────────────────────────────────

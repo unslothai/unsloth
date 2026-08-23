@@ -96,8 +96,24 @@ def skippable_cells(work: list[tuple[Any, Cell, RungPlan]], done: set) -> set:
     produce. The old attempt stays in the payload and `latest_attempt_rows` supersedes it, exactly
     as it already does for a cell that died.
 
+    AND A COMPARISON IS ALL OF ITS PAIRS, which is the same argument one step further out. The
+    session filter that drops a lone completed arm drops a WHOLE completed pair for exactly the
+    same reason, and `_render_ab` then prints a headline and a VERDICT over whatever is left
+    without saying which rungs are missing: an interrupted standard tier whose 10K pair had
+    recorded a 30% regression published `VERDICT: IMPROVED (20.0% faster)` off the 100K pair alone,
+    with nothing in `ab.md` mentioning 10K at all. `render.py` rules out fixing that with a note
+    above the table -- the table gets screenshotted and the warning does not -- and declining to
+    publish costs the same wall clock as re-running while yielding no table. So an A/B with ANY
+    work left re-runs EVERY pair in the new session, at most one tier budget, which is the budget
+    the interrupted run was already paying.
+
+    A FINISHED A/B still skips everything: nothing runs, and `_render_ab` keeps the table that run
+    already wrote. And a legitimate extension -- `--resume --rungs 1K,10K` over a finished 1K run
+    -- now produces a complete two-rung table instead of a 10K-only one.
+
     Single-target work is a degenerate case of the same rule: each pair holds one cell, so nothing
-    changes for a run without `--ab`.
+    changes for a run without `--ab`, whose ladder `report.build.score_payload` reads across
+    sessions anyway.
     """
     by_pair: dict[tuple[str, int], list[str]] = {}
     for _target, cell, _plan in work:
@@ -106,6 +122,12 @@ def skippable_cells(work: list[tuple[Any, Cell, RungPlan]], done: set) -> set:
     for cell_ids in by_pair.values():
         if all(cell_id in done for cell_id in cell_ids):
             out.update(cell_ids)
+    # A pair carrying more than one arm is a comparison, and a comparison is scoped to one session.
+    # Partial skipping is right for a single-target ladder and wrong for a ratio.
+    if any(len(cell_ids) > 1 for cell_ids in by_pair.values()):
+        planned = sum(len(cell_ids) for cell_ids in by_pair.values())
+        if len(out) != planned:
+            return set()
     return out
 
 

@@ -242,8 +242,19 @@ def render_ab_table(result: AbResult) -> str:
             if metric.ci_low is not None
             else "too few pairs"
         )
+        # A BOUND IS NOT A MEASUREMENT. An arm under its instrument floor contributes the floor,
+        # so the ratio understates the true magnitude and must not be quoted as a point estimate.
+        # Marked in the ratio cell rather than footnoted, for the reason the void path gives: the
+        # table gets screenshotted and the note does not.
+        ratio_cell = (
+            f">={metric.ratio_geomean:.3f}"
+            if metric.bounded and metric.ratio_geomean >= 1.0
+            else f"<={metric.ratio_geomean:.3f}"
+            if metric.bounded
+            else f"{metric.ratio_geomean:.3f}"
+        )
         lines.append(
-            f"{metric.metric_key:<20} {metric.n_pairs:>5}  {metric.ratio_geomean:>7.3f}  "
+            f"{metric.metric_key:<20} {metric.n_pairs:>5}  {ratio_cell:>7}  "
             f"{rng:>17}  {ci:>17}  {metric.verdict}"
         )
     lines.append("")

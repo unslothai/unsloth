@@ -76,8 +76,8 @@ directory in the repository root.
 so. Nothing is deleted, and nothing is mixed: a cell id is the rung, the arm and the repetition, so
 two runs sharing one file are two builds under two films in one ladder with no way to tell them
 apart. `--resume` is the one reuse that appends, and it refuses a payload recorded under a
-different tier, cadence, instrument level, corpus or ref rather than skipping cells that measured
-something else.
+different tier, cadence, browser engine, instrument level, corpus or ref rather than skipping cells
+that measured something else.
 
 **The fast tier is a screen, not a result.** One rung, a wider detection floor, direction only. It
 exists so that someone trying a fix does not wait 20 minutes to learn they were wrong. Nothing goes
