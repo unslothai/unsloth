@@ -434,8 +434,9 @@ def test_the_evidence_uses_the_same_confined_set_the_verdict_scored_with(tmp_pat
     for rep in ("rep0", "rep1"):
         for arm in ("base", "treatment"):
             null_rows.append(action(f"r100K.{arm}.{rep}", "settings", f"RACE_{arm}_{rep}", None))
-            null_rows.append({"row_type": "cell", "cell_id": f"r100K.{arm}.{rep}",
-                              "completed": True})
+            null_rows.append(
+                {"row_type": "cell", "cell_id": f"r100K.{arm}.{rep}", "completed": True}
+            )
     null = write(tmp_path, "null", null_rows)
 
     rows = [{"row_type": "run_meta", "tier": "fast"}]

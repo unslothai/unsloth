@@ -546,9 +546,7 @@ def in_arm_repeatability(paths: list[Path]) -> tuple[set, set]:
 
 
 def confine_to_runner(
-    unstable: frozenset,
-    local_unstable: set,
-    local_stable: set,
+    unstable: frozenset, local_unstable: set, local_stable: set
 ) -> tuple[frozenset, list]:
     """Drop an IMPORTED exemption the scored runner positively contradicts. Returns (set, dropped).
 
