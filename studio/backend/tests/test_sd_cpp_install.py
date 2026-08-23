@@ -383,10 +383,10 @@ def test_safe_extractall_restores_symlink_members(tmp_path):
     target.mkdir()
     archive = tmp_path / "libs.zip"
     # A symlink member carries the Unix symlink mode in external_attr and the
-    # link target as its data — the shape CPython's zipfile writes when zipping
+    # link target as its data: the shape CPython's zipfile writes when zipping
     # a symlink, and what upstream sd.cpp release zips ship for lib*.so.
     with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("libwebpmux.so.3.1.2", b"ELFpayload")
+        zf.writestr("libwebpmux.so.3.1.2", b"\x7fELFpayload")
         info = zipfile.ZipInfo("libwebpmux.so.3")
         info.create_system = 3
         info.external_attr = (0o120777 << 16) | 0o777
@@ -399,9 +399,12 @@ def test_safe_extractall_restores_symlink_members(tmp_path):
     real = target / "libwebpmux.so.3.1.2"
     assert link.is_symlink()
     assert link.readlink().name == "libwebpmux.so.3.1.2"
-    # The pre-fix behaviour: a 19-byte regular file holding the target text,
-    # which ldd reports as "file too short".
-    assert link.stat().st_size == real.stat().st_size
+    # Reads through to the real payload. The pre-fix behaviour was a 19-byte regular
+    # file holding the target text, which ldd reports as "file too short". Compare the
+    # bytes, not stat().st_size: stat() follows the link, so a size check cannot fail.
+    assert link.resolve(strict = True) == real.resolve()
+    assert link.read_bytes() == b"\x7fELFpayload"
+    assert not real.is_symlink()
 
 
 def _can_create_symlinks(tmp_path) -> bool:
@@ -414,23 +417,208 @@ def _can_create_symlinks(tmp_path) -> bool:
     return True
 
 
-def test_safe_extractall_rejects_escaping_symlink(tmp_path):
-    import stat as stat_mod
+def _link_member(zf, name: str, link_target: str, create_system: int = 3) -> None:
+    """Write ``name`` as the symlink member CPython's zipfile produces: the Unix symlink
+    mode in external_attr, the link target as the data."""
+    info = zipfile.ZipInfo(name)
+    info.create_system = create_system
+    info.external_attr = (0o120777 << 16) | 0o777
+    zf.writestr(info, link_target)
 
-    # The escape check runs before any link creation, so it must hold even
-    # where symlinks need privilege to create.
+
+def test_safe_extractall_rejects_escaping_symlink(tmp_path):
+    # Validation runs before any write, so this holds even where symlinks need
+    # privilege to create, and a rejected archive changes nothing on disk.
     target = tmp_path / "install"
     target.mkdir()
+    (target / "sd-cli").write_bytes(b"working binary from the previous install")
     archive = tmp_path / "evil.zip"
     with zipfile.ZipFile(archive, "w") as zf:
-        info = zipfile.ZipInfo("libescape.so")
-        info.create_system = 3
-        info.external_attr = (stat_mod.S_IFLNK | 0o777) << 16
-        zf.writestr(info, "../../outside.so")
+        zf.writestr("sd-cli", b"replacement from the rejected archive")
+        _link_member(zf, "libescape.so", "../../outside.so")
     with zipfile.ZipFile(archive) as zf:
         with pytest.raises(RuntimeError, match = "unsafe symlink"):
             _safe_extractall(zf, target)
     assert not (tmp_path / "outside.so").exists()
+    # A rejected archive must not have replaced the install it was rejected over.
+    assert (target / "sd-cli").read_bytes() == b"working binary from the previous install"
+    assert not (target / "libescape.so").exists()
+
+
+@pytest.mark.parametrize(
+    "link_target",
+    [
+        "/etc/passwd",          # absolute, outside
+        "C:outside.dll",        # Windows drive-relative: Win32 resolves it off that drive's cwd
+        "",                     # empty
+        "real\x00.so",          # NUL
+        "libself.so",           # self-referential, the shape the old resolve() bug produced
+    ],
+)
+def test_safe_extractall_rejects_malformed_symlink_targets(tmp_path, link_target):
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        _link_member(zf, "libself.so", link_target)
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "unsafe symlink"):
+            _safe_extractall(zf, target)
+    assert not any(target.iterdir())
+
+
+def test_safe_extractall_rejects_symlink_cycles(tmp_path):
+    # Chains are normal (libwebp.so -> libwebp.so.7 -> libwebp.so.7.2.0), a cycle is not:
+    # it installs a library nothing can read, and the loader failure sends the backend
+    # round the discard-and-reinstall loop on every load.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "cycle.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        _link_member(zf, "liba.so", "libb.so")
+        _link_member(zf, "libb.so", "liba.so")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "symlink cycle"):
+            _safe_extractall(zf, target)
+    assert not any(target.iterdir())
+
+
+def test_safe_extractall_keeps_valid_symlink_chains(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    # The cycle check must not reject the chained shape upstream actually ships.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "libs.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("libwebp.so.7.2.0", b"\x7fELFpayload")
+        _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0")
+        _link_member(zf, "libwebp.so", "libwebp.so.7")
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+    assert (target / "libwebp.so").read_bytes() == b"\x7fELFpayload"
+
+
+def test_safe_extractall_rejects_oversized_symlink_target(tmp_path):
+    # zf.read holds the payload in memory, so an unbounded read is a decompression bomb:
+    # a link target is a pathname and cannot legitimately exceed PATH_MAX.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "bomb.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+        _link_member(zf, "libbomb.so", "a" * (1 << 20))
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "oversized symlink target"):
+            _safe_extractall(zf, target)
+    assert not any(target.iterdir())
+
+
+def test_safe_extractall_ignores_symlink_mode_from_non_unix_hosts(tmp_path):
+    # external_attr's high bits are only a Unix mode when a Unix host wrote the entry;
+    # for any other creator they are host-specific attributes and must not be read as one.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "dos.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        _link_member(zf, "plain.txt", "not a link", create_system = 0)
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+    extracted = target / "plain.txt"
+    assert not extracted.is_symlink()
+    assert extracted.read_bytes() == b"not a link"
+
+
+def test_safe_extractall_is_idempotent_across_reinstalls(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "libs.zip"
+    # The chained shape upstream ships: libwebp.so -> libwebp.so.7 -> libwebp.so.7.2.0.
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("libwebp.so.7.2.0", b"ELFpayload")
+        _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0")
+        _link_member(zf, "libwebp.so", "libwebp.so.7")
+
+    # install() MERGES into the managed tree, so a retry, a version bump or an accelerator
+    # switch re-extracts over the links the previous install wrote. Resolving the member
+    # path would follow them, and extraction would write the link text through them into
+    # the real library, which the restore loop then replaced with a link to itself.
+    for _ in range(3):
+        with zipfile.ZipFile(archive) as zf:
+            _safe_extractall(zf, target)
+
+    real = target / "libwebp.so.7.2.0"
+    assert not real.is_symlink()
+    assert real.read_bytes() == b"ELFpayload"
+    for name in ("libwebp.so", "libwebp.so.7"):
+        assert (target / name).is_symlink()
+        assert (target / name).read_bytes() == b"ELFpayload"
+
+
+def test_safe_extractall_repairs_a_flattened_install(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = tmp_path / "install"
+    target.mkdir()
+    # What every pre-fix install left behind: the link flattened to its target text.
+    (target / "libwebp.so.7.2.0").write_bytes(b"ELFpayload")
+    (target / "libwebp.so.7").write_bytes(b"libwebp.so.7.2.0")
+    archive = tmp_path / "libs.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("libwebp.so.7.2.0", b"ELFpayload")
+        _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0")
+
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+
+    assert (target / "libwebp.so.7").is_symlink()
+    assert (target / "libwebp.so.7").read_bytes() == b"ELFpayload"
+
+
+def test_safe_extractall_survives_a_hand_repaired_install(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = tmp_path / "install"
+    target.mkdir()
+    # The workaround #9268 tells users to apply by hand, which the next install must not undo.
+    (target / "libwebp.so.7.2.0").write_bytes(b"ELFpayload")
+    (target / "libwebp.so.7").symlink_to("libwebp.so.7.2.0")
+    archive = tmp_path / "libs.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("libwebp.so.7.2.0", b"ELFpayload")
+        _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0")
+
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+
+    real = target / "libwebp.so.7.2.0"
+    assert not real.is_symlink()
+    assert real.read_bytes() == b"ELFpayload"
+    assert (target / "libwebp.so.7").read_bytes() == b"ELFpayload"
+
+
+def test_safe_extractall_falls_back_when_symlinks_are_unavailable(tmp_path, monkeypatch):
+    # A Windows host outside developer mode cannot create symlinks. The install must still
+    # finish with the flattened member, exactly as it did before symlinks were restored.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "libs.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("libwebp.so.7.2.0", b"ELFpayload")
+        _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0")
+
+    def _no_symlinks(self, *args, **kwargs):
+        raise OSError(1314, "A required privilege is not held by the client")
+
+    monkeypatch.setattr(Path, "symlink_to", _no_symlinks)
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+
+    flattened = target / "libwebp.so.7"
+    assert not flattened.is_symlink()
+    assert flattened.read_bytes() == b"libwebp.so.7.2.0"
+    assert (target / "libwebp.so.7.2.0").read_bytes() == b"ELFpayload"
 
 
 def test_safe_extractall_extracts_normal_members(tmp_path):

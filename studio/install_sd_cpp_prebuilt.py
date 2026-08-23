@@ -36,7 +36,7 @@ import sys
 import urllib.error
 import urllib.request
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional, Sequence
 
 # Default source: the Unsloth mirror's CPU/Apple prebuilts (override with UNSLOTH_SD_CPP_REPO). GPU hosts run diffusers, so only CPU/Apple assets are needed.
@@ -440,7 +440,9 @@ def _archive_binary_paths(zf: zipfile.ZipFile, target: Path) -> set[Path]:
     out: set[Path] = set()
     for member in zf.namelist():
         if member.rsplit("/", 1)[-1] in names:
-            out.add((target / member).resolve())
+            # Lexical, to match _discard_superseded_binaries: the tree can now hold restored
+            # symlinks, and resolving a link at a binary path yields a name no member has.
+            out.add(Path(os.path.abspath(target / member)))
     return out
 
 
@@ -470,7 +472,7 @@ def _discard_superseded_binaries(root: Path, supplied: set[Path]) -> None:
     names = _binary_names()
     for name in names:
         for found in sorted(root.rglob(name)):
-            if not found.is_file() or found.resolve() in supplied:
+            if not found.is_file() or Path(os.path.abspath(found)) in supplied:
                 continue
             try:
                 found.unlink()
@@ -509,34 +511,94 @@ def _download(
         shutil.copyfileobj(resp, f)
 
 
+# PATH_MAX. A symlink member's payload is a pathname; anything larger is malformed, and
+# ``zf.read`` holds it in memory, so an unbounded read is a decompression bomb.
+_MAX_LINK_TARGET_BYTES = 4096
+
+
+def _is_symlink_member(member: zipfile.ZipInfo) -> bool:
+    """The Unix mode in ``external_attr`` only means anything when a Unix host wrote the
+    entry; for any other creator those high bits are host-specific attributes."""
+    return member.create_system == 3 and stat.S_ISLNK(member.external_attr >> 16)
+
+
+def _checked_link_target(zf: zipfile.ZipFile, member: zipfile.ZipInfo, dest: Path, base: Path) -> str:
+    """A symlink member's payload, refused unless it is a relative path staying inside ``base``.
+
+    Same rules as ``prebuilt_core.safe_link_target``: absolute (including Windows
+    drive-relative, which Win32 resolves against that drive's cwd), empty, NUL-bearing,
+    self-referential and escaping targets are all rejected."""
+    if member.file_size > _MAX_LINK_TARGET_BYTES:
+        raise RuntimeError(f"oversized symlink target in archive: {member.filename!r}")
+    link_target = zf.read(member).decode("utf-8", "surrogateescape")
+    unsafe = (
+        # Shape first: resolve() stats the path, and a NUL in it raises ValueError.
+        not link_target
+        or "\x00" in link_target
+        or PurePosixPath(link_target).is_absolute()
+        or bool(PureWindowsPath(link_target).drive)
+    )
+    if not unsafe:
+        resolved = (dest.parent / link_target).resolve()
+        # Self-check lexically: dest may already BE a link to this target from the previous
+        # install, and resolving it would then make a correct link look self-referential.
+        unsafe = os.path.normpath(dest.parent / link_target) == os.path.normpath(dest) or (
+            resolved != base and base not in resolved.parents
+        )
+    if unsafe:
+        raise RuntimeError(f"unsafe symlink in archive: {member.filename!r} -> {link_target!r}")
+    return link_target
+
+
 def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     """``extractall`` with a per-member containment check, so an archive carrying an
     absolute path or a ``..`` entry can't write outside ``target`` (Zip-Slip).
 
-    Symlink members are recreated after extraction: CPython's ``zipfile`` writes
+    Symlink members are RECREATED rather than extracted: CPython's ``zipfile`` writes
     a symlink's payload (the link target text) as a regular file, which flattens
     the ``lib*.so`` links upstream sd.cpp releases ship and leaves ``sd-cli``
     with ``file too short`` libraries (#9268)."""
-    import stat
-
     base = target.resolve()
-    links: list[tuple[Path, str, str]] = []
+    links: list[tuple[Path, str, zipfile.ZipInfo]] = []
+    plain: list[zipfile.ZipInfo] = []
     for member in zf.infolist():
-        dest = (base / member.filename).resolve()
-        if dest != base and base not in dest.parents:
+        # Lexical, never resolve()d. Extraction MERGES into the tree, so resolving would
+        # follow the link the PREVIOUS install wrote and aim every write below at the real
+        # library behind it, ending with that library replaced by a link to itself.
+        dest = base / member.filename
+        checked = dest.resolve()
+        if checked != base and base not in checked.parents:
             raise RuntimeError(f"unsafe path in archive: {member.filename!r}")
-        if stat.S_ISLNK(member.external_attr >> 16):
-            links.append(
-                (dest, zf.read(member).decode("utf-8", "surrogateescape"), member.filename)
-            )
-    zf.extractall(target)
-    for dest, link_target, filename in links:
-        resolved = (dest.parent / link_target).resolve()
-        if resolved != base and base not in resolved.parents:
-            raise RuntimeError(f"unsafe symlink in archive: {filename!r} -> {link_target!r}")
+        if _is_symlink_member(member):
+            links.append((dest, _checked_link_target(zf, member, dest, base), member))
+        else:
+            plain.append(member)
+    # Chains are normal (libwebp.so -> libwebp.so.7 -> libwebp.so.7.2.0) but must terminate:
+    # a cycle installs a library nothing can read, so every load would reinstall it again.
+    by_dest = {os.path.normpath(d): t for d, t, _ in links}
+    for dest, _, member in links:
+        seen, cur = set(), os.path.normpath(dest)
+        while cur in by_dest:
+            if cur in seen:
+                raise RuntimeError(f"symlink cycle in archive: {member.filename!r}")
+            seen.add(cur)
+            cur = os.path.normpath(os.path.join(os.path.dirname(cur), by_dest[cur]))
+    # Every member path and link target is validated above, before the first write, so a
+    # rejected archive leaves an existing install exactly as it found it.
+    zf.extractall(target, members = plain)
+    for dest, link_target, member in links:
+        if dest.is_dir() and not dest.is_symlink():
+            raise RuntimeError(f"symlink member collides with a directory: {member.filename!r}")
+        dest.parent.mkdir(parents = True, exist_ok = True)
         if dest.is_symlink() or dest.exists():
             dest.unlink()
-        dest.symlink_to(link_target)
+        try:
+            dest.symlink_to(link_target)
+        except OSError:
+            # No privilege to create one (Windows outside developer mode). Fall back to the
+            # flattened member: worse than a link, but it is what every release before this
+            # one shipped, so an install that used to finish still finishes.
+            zf.extract(member, target)
 
 
 def _maybe_fetch_windows_cudart(release: dict, chosen: str, target: Path) -> None:
