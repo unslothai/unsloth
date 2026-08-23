@@ -836,15 +836,47 @@ def _check_mlx_finetune_targets(config: dict) -> None:
     if targets:
         if _names_a_cpt_target(targets):
             return
-        vision, language, attention, mlp = _finetune_selectors(config)
+        _, language, attention, mlp = _finetune_selectors(config)
+        # Vision read the way the MLX call site reads it, NOT the way _finetune_selectors
+        # does: that helper carries the CUDA consumer's defaults, where an omitted vision
+        # selector means True, while MLX defaults it False and forces it False outright for
+        # a text model. Taking True from an omitted key here would wave through every legacy
+        # config that never sent the selectors at all.
+        vision = bool(config.get("finetune_vision_layers", False))
         # Any one of them leaves something that can train, or leaves the loader to say so
-        # with a better message than this one.
+        # with a better message than this one. Vision counts because this runs BEFORE
+        # detection, so a VLM whose vision tower is the only thing selected must not be
+        # refused here; _check_mlx_effective_targets catches the text case once is_vlm is
+        # known, which is the earliest it can be told apart.
         if attention or mlp or language or vision:
             return
         raise ValueError(_NOTHING_TO_TRAIN)
     _, _, attention, mlp = _finetune_selectors(config)
     if not (attention or mlp):
         raise ValueError(_NOTHING_TO_TRAIN)
+
+
+def _check_mlx_effective_targets(
+    config: dict,
+    *,
+    finetune_language: bool,
+    finetune_vision: bool,
+) -> None:
+    """The same refusal, re-asked with the values get_peft_model will actually receive.
+
+    ``_check_mlx_finetune_targets`` runs before the model is loaded, so it cannot tell a VLM
+    from a text model and has to let a vision-only selection through. The call site can: it
+    has forced vision to False for a text model and applied the language back-fill, so if
+    both layer families are still off here, no adapter is coming and the run would train
+    nothing but its own warning. Raise instead, with the message that names the four fields.
+
+    Later than the preflight, and deliberately so -- this is the first point the answer is
+    knowable. It is still before the trainer is built and before a single step runs."""
+    if finetune_language or finetune_vision:
+        return
+    if _names_a_cpt_target(config.get("target_modules") or ()):
+        return
+    raise ValueError(_NOTHING_TO_TRAIN)
 
 
 def _reload_dataset_with_remote_model_tokenizer(
@@ -2915,6 +2947,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
         if (finetune_attention or finetune_mlp) and not finetune_language and not finetune_vision:
             finetune_language = True
+
+        # is_vlm is known now, and so is the back-fill's outcome, which is what the preflight
+        # could only guess at.
+        _check_mlx_effective_targets(
+            config,
+            finetune_language = finetune_language,
+            finetune_vision = finetune_vision,
+        )
 
         peft_kwargs["finetune_language_layers"] = finetune_language
         peft_kwargs["finetune_attention_modules"] = finetune_attention

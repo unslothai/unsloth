@@ -19,6 +19,7 @@ import pytest
 from core.training.worker import (
     _check_finetune_targets_after_detect,
     _check_mlx_finetune_targets,
+    _check_mlx_effective_targets,
     _names_a_cpt_target,
     _finetune_selectors,
     _pre_detect_training_model,
@@ -509,3 +510,89 @@ def test_the_error_names_every_field_the_caller_has_to_set():
     for field in TrainingStartRequest.model_fields:
         if field.startswith("finetune_"):
             assert field in message
+
+
+def test_mlx_reads_the_vision_selector_with_the_mlx_default_not_the_cuda_one():
+    """A config that never carried the selectors at all must not be waved through.
+
+    `_finetune_selectors` answers an omitted key with the CUDA consumer's default, and for
+    vision that is True. The MLX call site defaults it False and forces it False outright
+    for a text model, so taking True from a missing key would let every legacy config -- the
+    ones written before these fields existed -- past the guard with nothing to train.
+    """
+    config = {
+        "training_type": "LoRA/QLoRA",
+        "target_modules": ["Wqkv"],
+        "finetune_language_layers": False,
+        "finetune_attention_modules": False,
+        "finetune_mlp_modules": False,
+        # finetune_vision_layers deliberately absent.
+    }
+    assert _finetune_selectors(config)[0] is True, "the helper still reports the CUDA default"
+
+    with pytest.raises(ValueError, match = "Nothing to train"):
+        _check_mlx_finetune_targets(config)
+
+
+def test_the_preflight_still_lets_a_vision_only_selection_through():
+    """It runs before detection, so it cannot tell a VLM from a text model. A VLM whose
+    vision tower is the only thing selected does train, and refusing it here would turn a
+    working run away; `_check_mlx_effective_targets` settles it once is_vlm is known."""
+    config = {
+        "training_type": "LoRA/QLoRA",
+        "target_modules": ["Wqkv"],
+        "finetune_vision_layers": True,
+        "finetune_language_layers": False,
+        "finetune_attention_modules": False,
+        "finetune_mlp_modules": False,
+    }
+
+    _check_mlx_finetune_targets(config)
+
+
+def test_the_effective_check_refuses_a_text_run_whose_only_selection_was_vision():
+    """The call site has already forced vision False for a text model and run the language
+    back-fill, so both layer families are off and get_peft_model would apply no adapter at
+    all -- a warning, and a model with no trainable parameters."""
+    config = {"training_type": "LoRA/QLoRA", "target_modules": ["Wqkv"]}
+
+    with pytest.raises(ValueError, match = "Nothing to train"):
+        _check_mlx_effective_targets(
+            config, finetune_language = False, finetune_vision = False
+        )
+
+
+@pytest.mark.parametrize(
+    "language, vision", [(True, False), (False, True), (True, True)]
+)
+def test_the_effective_check_passes_whenever_a_layer_family_survives(language, vision):
+    config = {"training_type": "LoRA/QLoRA", "target_modules": ["Wqkv"]}
+
+    _check_mlx_effective_targets(
+        config, finetune_language = language, finetune_vision = vision
+    )
+
+
+@pytest.mark.parametrize("target_modules", [["lm_head"], ["embed_tokens"], ["all-linear", "lm_head"]])
+def test_the_effective_check_still_spares_a_cpt_target(target_modules):
+    """embed_tokens and lm_head train on the CPT path with both layer families off."""
+    config = {"training_type": "LoRA/QLoRA", "target_modules": target_modules}
+
+    _check_mlx_effective_targets(config, finetune_language = False, finetune_vision = False)
+
+
+def test_the_effective_check_runs_after_the_back_fill_at_the_mlx_call_site():
+    """Structural. Asked before the back-fill it would refuse runs that go on to train, and
+    asked before `finetune_vision` is narrowed by is_vlm it is just the preflight again."""
+    import inspect
+
+    from core.training import worker
+
+    source = inspect.getsource(worker)
+    call = source.index("_check_mlx_effective_targets(\n            config,")
+    backfill = source.index("            finetune_language = True")
+    forced = source.index('config.get("finetune_vision_layers", False) if is_vlm else False')
+    assert forced < backfill < call, (
+        "the effective check must follow both the is_vlm narrowing and the back-fill"
+    )
+    assert call < source.index("FastMLXModel.get_peft_model("), "and precede the loader"
