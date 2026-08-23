@@ -2481,12 +2481,12 @@ def test_a_nonce_does_not_adopt_the_chat_the_user_came_from():
         }));
         """,
     )
-    assert out["settledWhilePending"] is False, (
-        "the nonce's own switch has not landed yet, so nothing it sees is its own"
-    )
-    assert out["ownedWhilePending"] is None, (
-        "the outgoing saved chat must not be recorded as the nonce's own thread"
-    )
+    assert (
+        out["settledWhilePending"] is False
+    ), "the nonce's own switch has not landed yet, so nothing it sees is its own"
+    assert (
+        out["ownedWhilePending"] is None
+    ), "the outgoing saved chat must not be recorded as the nonce's own thread"
     assert out["mainThreadId"] != "thread-a", (
         "returning to the nonce must not reopen the chat the user left, or their next "
         "message appends to it"
@@ -2530,9 +2530,9 @@ def test_a_nonce_still_owns_the_thread_its_own_switch_opened():
         """,
     )
     assert out["settledAfterLanding"] is True
-    assert out["ownedAfterLanding"] == out["opened"], (
-        "the thread this nonce's own switch opened is the one it owns"
-    )
+    assert (
+        out["ownedAfterLanding"] == out["opened"]
+    ), "the thread this nonce's own switch opened is the one it owns"
     assert out["mainThreadId"] == out["opened"], "and coming back must reopen it"
     assert out["mintedOnReturn"] == 0, "without minting another blank thread to do it"
     assert out["unhandled"] == 0
@@ -2570,9 +2570,9 @@ def test_a_superseded_landing_does_not_hand_ownership_to_a_newer_attempt():
         }));
         """,
     )
-    assert out["settled"] is False, (
-        "an older switch landing says nothing about the attempt that replaced it"
-    )
+    assert (
+        out["settled"] is False
+    ), "an older switch landing says nothing about the attempt that replaced it"
     assert out["unhandled"] == 0
 
 
@@ -2613,10 +2613,8 @@ def test_a_remembered_thread_the_store_has_dropped_does_not_take_the_app_down():
         }));
         """,
     )
-    assert out["threw"] is None, (
-        f"the reopen threw out of the effect: {out['threw']}"
-    )
-    assert out["mainThreadId"] != "thread-a", (
-        "and it still has to leave the saved chat it came from"
-    )
+    assert out["threw"] is None, f"the reopen threw out of the effect: {out['threw']}"
+    assert (
+        out["mainThreadId"] != "thread-a"
+    ), "and it still has to leave the saved chat it came from"
     assert out["unhandled"] == 0

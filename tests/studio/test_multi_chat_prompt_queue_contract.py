@@ -932,12 +932,12 @@ def test_the_history_adapters_publish_stands_down_with_the_autosaves():
         "\n  // Always register the adapter so the mic stays clickable",
     )
 
-    assert "store.setActiveThreadId(remoteId);" in append, (
-        "this test is about the history adapter's publication; if it moved, follow it"
-    )
-    assert 'if (modelType === "base" && !pairId && !backgroundedRef?.current) {' in append, (
-        "the history adapter's publication needs the same visibility gate as the autosave's"
-    )
+    assert (
+        "store.setActiveThreadId(remoteId);" in append
+    ), "this test is about the history adapter's publication; if it moved, follow it"
+    assert (
+        'if (modelType === "base" && !pairId && !backgroundedRef?.current) {' in append
+    ), "the history adapter's publication needs the same visibility gate as the autosave's"
 
     # Read at publish time, through a ref, for the same reason the autosave does: the write
     # is queued when the message arrives and resolves after Compare may have hidden the pane.
