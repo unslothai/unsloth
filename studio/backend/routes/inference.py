@@ -7954,13 +7954,16 @@ def _charged_drafter_path(
     An extras ``--model-draft`` is taken first and without the size match: it is the
     drafter the launch opens whatever discovery found, and it need not be one of the
     sidecars below. A remote ``--spec-draft-hf`` is not a local file, so it stays
-    unsized either way.
+    unsized either way. The env is read through ``_child_spec_env``, which is empty
+    unless the extras own ``--spec-type`` and is ``os.environ`` when they do: the same
+    view the child gets, so an inherited ``LLAMA_ARG_SPEC_DRAFT_MODEL`` is seen exactly
+    when the launch would honour it.
     """
     if drafter_bytes <= 0:
         return None
-    from core.inference.llama_cpp import _extra_args_mtp_draft_path
+    from core.inference.llama_cpp import _child_spec_env, _extra_args_mtp_draft_path
 
-    named = _extra_args_mtp_draft_path(extras, env = {}) if extras else None
+    named = _extra_args_mtp_draft_path(extras, env = _child_spec_env(extras)) if extras else None
     if named and Path(named).is_file():
         return str(named), "extras"
     for attr, kind in (
@@ -7976,6 +7979,29 @@ def _charged_drafter_path(
     return None
 
 
+def _cached_inference_devices() -> Optional[list[tuple[int, int, int]]]:
+    """The inference inventory /api/system already probed, as _guard_device_count takes
+    it, or None when nothing has filled that snapshot yet.
+
+    Read, never refreshed: the Vulkan inventory costs a subprocess and this endpoint
+    runs on every settings change, while /api/system polls it anyway. Only the length
+    is consulted downstream, but the ordinals come along so the shape is the real one.
+
+    sys.modules rather than an import: this must observe the snapshot the running
+    server fills, and importing the app module from a route would execute it wherever
+    it is not already loaded.
+    """
+    try:
+        cached = getattr(sys.modules.get("main"), "_system_gpu_cache", None)
+        if not cached:
+            return None
+        _, (_, inference_gpu) = cached
+        devices = (inference_gpu or {}).get("devices") or []
+        return [(int(device.get("index", i)), 0, 0) for i, device in enumerate(devices)] or None
+    except Exception:
+        return None
+
+
 def _tensor_split_possible(requested_gpu_ids: Optional[list[int]]) -> bool:
     """Whether two devices could take a tensor split at all.
 
@@ -7984,15 +8010,16 @@ def _tensor_split_possible(requested_gpu_ids: Optional[list[int]]) -> bool:
     per-device compute buffers for a layer load that runs neither.
 
     A pin answers for itself. Without one the CUDA count answers, except on a Vulkan
-    build where it sees no devices at all: assume the split is possible there rather
-    than price a downgrade that will not happen, which is the same call the training
-    guard makes a few hundred lines up.
+    build, where it sees no devices at all: there the probed inventory answers, and
+    only if nothing has probed it yet is the split assumed possible, rather than
+    pricing a downgrade that may not happen.
     """
     if requested_gpu_ids:
         return len(requested_gpu_ids) >= 2
     try:
         if LlamaCppBackend._is_vulkan_backend():
-            return True
+            devices = _cached_inference_devices()
+            return len(devices) >= 2 if devices is not None else True
     except Exception:
         pass
     try:
@@ -8001,13 +8028,89 @@ def _tensor_split_possible(requested_gpu_ids: Optional[list[int]]) -> bool:
         return True
 
 
-def _build_default_spec_draft_n_max() -> int:
+def _charged_projector_bytes(
+    config: ModelConfig, extras: Optional[list[str]], disable_vision: bool
+) -> int:
+    """Size of the single projector this launch opens, or 0.
+
+    Same precedence ``_estimate_gguf_required_gb`` charges: Studio's own resolved
+    projector goes on argv and wins, since argv is applied after set_env; otherwise an
+    inherited ``LLAMA_ARG_MMPROJ`` loads straight through, including through
+    ``--no-mmproj``, which empties the command line without clearing ``mmproj.path``.
+    Under the vision switch only an audio-only projector survives, asked through the
+    loader's own helpers so the two cannot answer differently.
+    """
+    from core.inference.llama_cpp import _mmproj_env_is_audio_only, extra_args_disable_mmproj
+
+    studio_mmproj = getattr(config, "gguf_mmproj_file", None)
+    on_argv = bool(studio_mmproj) and not extra_args_disable_mmproj(extras)
+    if on_argv and disable_vision:
+        try:
+            from utils.models.gguf_metadata import mmproj_accepts_image
+            on_argv = not mmproj_accepts_image(str(studio_mmproj))
+        except Exception:
+            on_argv = False
+    if on_argv and Path(str(studio_mmproj)).is_file():
+        return LlamaCppBackend._get_gguf_size_bytes(str(studio_mmproj))
+    if on_argv:
+        return 0
+    inherited = (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
+    if (
+        inherited
+        and (not disable_vision or _mmproj_env_is_audio_only(inherited))
+        and Path(inherited).is_file()
+    ):
+        return LlamaCppBackend._get_gguf_size_bytes(inherited)
+    return 0
+
+
+def _inherited_drafter_bytes(extras: Optional[list[str]]) -> int:
+    """Size of a drafter that arrives only through the inherited environment.
+
+    ``_estimate_gguf_required_gb`` reads ``--model-draft`` with an empty env, so a
+    launch whose extras own ``--spec-type`` and whose drafter comes from
+    ``LLAMA_ARG_SPEC_DRAFT_MODEL`` has no drafter in the files term at all. 0 when the
+    extras name one themselves (already counted), when nothing is inherited, or when
+    the path is not a local file.
+    """
+    from core.inference.llama_cpp import _child_spec_env, _extra_args_mtp_draft_path
+
+    if _extra_args_mtp_draft_path(extras, env = {}):
+        return 0
+    inherited = _extra_args_mtp_draft_path(extras, env = _child_spec_env(extras))
+    if not inherited or not Path(str(inherited)).is_file():
+        return 0
+    try:
+        return LlamaCppBackend._get_gguf_size_bytes(str(inherited))
+    except Exception:
+        return 0
+
+
+def _build_default_spec_draft_n_max(extras: Optional[list[str]] = None) -> int:
     """The draft depth a build runs on its own, for extras that own the spec block.
 
-    Read from the capability cache the loader already fills, never by probing: this
-    runs on every settings change. Unprobed, assume the deepest llama.cpp has shipped,
-    which is the same assumption the loader's budget makes.
+    Same order as the loader's budget: the inherited depth env first, since the child
+    keeps LLAMA_ARG_SPEC_* once the extras own the spec block, then the build's own
+    default out of the capability cache. Never probed for: this runs on every settings
+    change. Unprobed, assume the deepest llama.cpp has shipped, which is the same
+    assumption the loader makes.
     """
+    from core.inference.llama_cpp import _child_spec_env, _is_positive_int
+
+    spec_env = _child_spec_env(extras)
+    inherited = next(
+        (
+            value
+            for value in (
+                spec_env.get("LLAMA_ARG_SPEC_DRAFT_N_MAX"),
+                spec_env.get("LLAMA_ARG_DRAFT_MAX"),
+            )
+            if _is_positive_int(value)
+        ),
+        None,
+    )
+    if inherited is not None:
+        return int(str(inherited).strip())
     try:
         binary = LlamaCppBackend._exec_path_for_launch(LlamaCppBackend._find_llama_server_binary())
         stat = os.stat(str(binary))
@@ -8032,11 +8135,15 @@ def _estimate_spec_mode_terms(drafter_kind: str, extras: list[str]) -> tuple[boo
     decide; otherwise Studio picked the sidecar, and DSpark and DFlash are separate
     drafters that pay rollback without duplicating the context.
     """
-    from core.inference.llama_cpp import _accumulated_spec_types, _TARGET_ROLLBACK_SPEC_TYPES
+    from core.inference.llama_cpp import (
+        _accumulated_spec_types,
+        _child_spec_env,
+        _TARGET_ROLLBACK_SPEC_TYPES,
+    )
 
-    # env {}: the launch is priced from the panel and its extras, not from whatever
-    # this server process happens to have inherited.
-    spec_types = _accumulated_spec_types(extras, env = {})
+    # The env the CHILD sees: scrubbed of LLAMA_ARG_SPEC_* unless the extras own the
+    # spec block, in which case an inherited type accumulates with theirs.
+    spec_types = _accumulated_spec_types(extras, env = _child_spec_env(extras))
     if spec_types or drafter_kind == "extras":
         return (
             bool(spec_types & {"mtp", "draft-mtp"}),
@@ -8068,7 +8175,7 @@ def _estimate_draft_n_max(
         # _build_speculative_flags returns without emitting a depth here, so neither
         # the field below nor the platform default reaches the child: it drafts at the
         # build's number, and the rollback state scales by it.
-        depth = _build_default_spec_draft_n_max()
+        depth = _build_default_spec_draft_n_max(extras)
     if depth is None:
         depth = requested
     if depth is not None:
@@ -8182,6 +8289,18 @@ def _gguf_memory_breakdown(
         no_drafter = _files_bytes_with(_DRAFT_FORCE_CPU_ARGS)
         if no_drafter is not None:
             gpu_drafter_bytes = max(0, gpu_files_bytes - no_drafter)
+    if not (host_drafter_bytes or gpu_drafter_bytes):
+        # A drafter the files term cannot see. It resolves --model-draft against an
+        # empty env, which is the admission guard's conservative rule, while the child
+        # does inherit LLAMA_ARG_SPEC_DRAFT_MODEL once the extras own --spec-type. That
+        # leaves the panel quoting a load with no drafter at all, file or cache.
+        inherited = _inherited_drafter_bytes(extras)
+        if inherited:
+            if _extra_args_draft_offloaded_to_cpu(extras):
+                host_drafter_bytes = inherited
+            else:
+                gpu_drafter_bytes = inherited
+                gpu_files_bytes += inherited
     weights_bytes = gpu_files_bytes + host_drafter_bytes
 
     # The drafter keeps its own KV cache and rollback state on top of its file, which
@@ -8271,16 +8390,11 @@ def _gguf_memory_breakdown(
     # projector is in the resident set, and it is in the total wherever it sits, so a
     # near-capacity multimodal load is not called a fit on the file size alone.
     projector_runtime_bytes = 0
-    mmproj = getattr(config, "gguf_mmproj_file", None)
-    mmproj_bytes = (
-        LlamaCppBackend._get_gguf_size_bytes(str(mmproj))
-        if mmproj and Path(mmproj).is_file()
-        else 0
-    )
+    mmproj_bytes = _charged_projector_bytes(config, extras, disable_vision)
     if mmproj_bytes and mmproj_bytes <= companion_bytes:
-        # <= companion_bytes is the test for "this launch opened it": the files term
-        # drops the projector on --no-mmproj / disabled vision, and nothing else can
-        # account for its bytes.
+        # <= companion_bytes is the second half of the test: the files term charges an
+        # inherited projector as readily as a configured one, so its bytes have to be
+        # in there for this launch to be the one opening it.
         projector_runtime_bytes = int(mmproj_bytes * (LlamaCppBackend._MMPROJ_VRAM_SAFETY - 1.0))
         if _resolved_mmproj_offload(llama_extra_args) is False:
             host_companion_bytes = min(companion_bytes, mmproj_bytes)
@@ -11904,7 +12018,11 @@ async def estimate_memory(
             # stays at one: _guard_device_count makes the same call.
             n_devices = _guard_device_count(
                 request.selected_gpu_ids or None,
-                None,
+                # Tensor mode replicates its buffers on every device in the pool, and
+                # on a Vulkan build _effective_gpu_count sees none of them. The probed
+                # inventory is the pool; None when nothing has probed it, which falls
+                # through to the CUDA count exactly as before.
+                _cached_inference_devices(),
                 # Same resolution the breakdown prices with: an extras --split-mode
                 # decides the mode, not the toggle alone, and one card cannot take a
                 # tensor split whatever either of them says.

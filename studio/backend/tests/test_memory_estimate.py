@@ -1713,3 +1713,125 @@ class TestLaunchShapedPricing:
 
     def test_a_model_with_no_projector_is_charged_nothing_for_one(self, spec_config, swa):
         assert ri._gguf_memory_breakdown(spec_config, swa, n_ctx = 8192).projector_runtime_bytes == 0
+
+
+class TestInheritedEnvironment:
+    """What the CHILD inherits, which is not always what the panel was told.
+
+    ``_child_spec_env`` is the rule: the launch scrubs LLAMA_ARG_SPEC_* whenever
+    Unsloth owns the spec block, and keeps it when the extras do. The projector has no
+    such scrub at all, so an inherited one loads even through --no-mmproj.
+    """
+
+    @pytest.fixture
+    def bare(self, gqa_gguf):
+        # No sidecars: anything charged here arrived through the environment.
+        return SimpleNamespace(
+            identifier = "local/bare",
+            gguf_file = gqa_gguf,
+            is_gguf = True,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+        )
+
+    @pytest.fixture
+    def fixed_files(self, monkeypatch):
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: 1.0)
+
+    def test_an_inherited_drafter_is_charged_when_the_extras_own_speculation(
+        self, bare, gqa_gguf, tmp_path, monkeypatch, fixed_files
+    ):
+        drafter = _write_gguf(tmp_path, "qwen3", _GQA_FIELDS, name = "inherited-draft.gguf")
+        monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_MODEL", drafter)
+        # The files term resolves --model-draft against an empty env, so this drafter
+        # is in neither its bytes nor, before this, the cache priced on top of them.
+        owned = ri._gguf_memory_breakdown(
+            bare, gqa_gguf, n_ctx = 32768, llama_extra_args = ["--spec-type", "draft-mtp"]
+        )
+        assert owned.drafter_runtime_bytes > 0
+        assert owned.weights_bytes == _GIB + os.path.getsize(drafter)
+        # Without an extras --spec-type the launch scrubs LLAMA_ARG_SPEC_*, so the
+        # child never sees it and neither does the estimate.
+        scrubbed = ri._gguf_memory_breakdown(bare, gqa_gguf, n_ctx = 32768)
+        assert scrubbed.drafter_runtime_bytes == 0
+        assert scrubbed.weights_bytes == _GIB
+
+    def test_an_inherited_draft_depth_is_honoured_only_when_the_child_keeps_it(
+        self, bare, gqa_gguf, monkeypatch
+    ):
+        monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_N_MAX", "7")
+        owned = ["--spec-type", "draft-mtp"]
+        # The loader reads the env twin before falling back to the build's default.
+        assert ri._estimate_draft_n_max(bare, gqa_gguf, requested = None, extras = owned) == 7
+        # Scrubbed when Unsloth owns the block, so the platform default stands.
+        assert ri._estimate_draft_n_max(bare, gqa_gguf, requested = None, extras = []) in (2, 3)
+        # A flag still beats the environment, as it does at launch.
+        assert (
+            ri._estimate_draft_n_max(
+                bare, gqa_gguf, requested = None, extras = [*owned, "--spec-draft-n-max", "5"]
+            )
+            == 5
+        )
+
+    def test_an_inherited_projector_is_charged_like_a_configured_one(
+        self, bare, gqa_gguf, tmp_path, monkeypatch
+    ):
+        projector = tmp_path / "inherited-mmproj.gguf"
+        projector.write_bytes(b"\0" * 4096)
+        monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(projector))
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: 4.0)
+        real_size = ri.LlamaCppBackend._get_gguf_size_bytes
+        monkeypatch.setattr(
+            ri.LlamaCppBackend,
+            "_get_gguf_size_bytes",
+            staticmethod(
+                lambda path: 3 * _GIB
+                if os.path.basename(str(path)) == "model.gguf"
+                else real_size(path)
+            ),
+        )
+        expected = int(4096 * (ri.LlamaCppBackend._MMPROJ_VRAM_SAFETY - 1.0))
+        resident = ri._gguf_memory_breakdown(bare, gqa_gguf, n_ctx = 8192)
+        assert resident.projector_runtime_bytes == expected
+        # Placement too: the flag and the inherited variable move file and buffers
+        # alike, since _resolved_mmproj_offload reads both.
+        by_flag = ri._gguf_memory_breakdown(
+            bare, gqa_gguf, n_ctx = 8192, llama_extra_args = ["--no-mmproj-offload"]
+        )
+        assert resident.gpu_bytes - by_flag.gpu_bytes == expected + 4096
+        monkeypatch.setenv("LLAMA_ARG_MMPROJ_OFFLOAD", "0")
+        assert ri._gguf_memory_breakdown(bare, gqa_gguf, n_ctx = 8192).gpu_bytes == by_flag.gpu_bytes
+
+    def test_the_vulkan_pool_comes_from_the_probed_snapshot(self, monkeypatch):
+        # _effective_gpu_count counts CUDA devices, so on a Vulkan build it sees none
+        # and a multi-GPU tensor launch was priced with one device's buffers. The
+        # inventory /api/system already probed answers instead, read and never
+        # refreshed: probing it costs a subprocess and this runs on every keystroke.
+        fake_main = _types.ModuleType("main")
+        monkeypatch.setitem(sys.modules, "main", fake_main)
+        monkeypatch.setattr(ri.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda *a: True))
+
+        def snapshot(count: int):
+            fake_main._system_gpu_cache = (
+                0.0,
+                ({}, {"devices": [{"index": i} for i in range(count)]}),
+            )
+
+        snapshot(3)
+        assert len(ri._cached_inference_devices()) == 3
+        assert (
+            ri._guard_device_count(None, ri._cached_inference_devices(), tensor_parallel = True) == 3
+        )
+        assert ri._tensor_split_possible(None) is True
+        snapshot(1)
+        assert (
+            ri._guard_device_count(None, ri._cached_inference_devices(), tensor_parallel = True) == 1
+        )
+        # One Vulkan device is a downgrade at launch, so it is one here too.
+        assert ri._tensor_split_possible(None) is False
+        # Nothing probed yet: unknown, and unknown must not become a downgrade.
+        fake_main._system_gpu_cache = None
+        assert ri._cached_inference_devices() is None
+        assert ri._tensor_split_possible(None) is True
