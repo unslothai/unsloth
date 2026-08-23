@@ -1031,6 +1031,8 @@ class TestDuplicateCoreMetadataRepair:
             "UV_ONLY_BINARY",
             "PIP_NO_BINARY",
             "PIP_ONLY_BINARY",
+            "UV_KEYRING_PROVIDER",
+            "PIP_KEYRING_PROVIDER",
         ):
             monkeypatch.delenv(var, raising = False)
 
@@ -1261,6 +1263,27 @@ class TestDuplicateCoreMetadataRepair:
         self._uv_plan(monkeypatch)
         _requirement, overrides, _options = ips._uv_staging_plan("unsloth-zoo")
         assert overrides.get("PIP_ONLY_BINARY") is None
+
+    def test_the_keyring_provider_is_translated(self, monkeypatch):
+        """uv reaches an authenticated index through the keyring CLI (uv 0.10.7:
+        `--keyring-provider subprocess` uses the `keyring` command). Carrying only
+        the URL leaves pip unable to fetch what uv just resolved, so every repair
+        on a private index aborts. pip accepts the same two values.
+        """
+        self._uv_only(monkeypatch)
+        monkeypatch.setenv("UV_KEYRING_PROVIDER", "subprocess")
+        monkeypatch.delenv("PIP_KEYRING_PROVIDER", raising = False)
+        self._uv_plan(monkeypatch)
+        _requirement, overrides, _options = ips._uv_staging_plan("unsloth-zoo")
+        assert overrides["PIP_KEYRING_PROVIDER"] == "subprocess"
+
+    def test_an_explicit_pip_keyring_provider_is_left_alone(self, monkeypatch):
+        self._uv_only(monkeypatch)
+        monkeypatch.setenv("UV_KEYRING_PROVIDER", "subprocess")
+        monkeypatch.setenv("PIP_KEYRING_PROVIDER", "import")
+        self._uv_plan(monkeypatch)
+        _requirement, overrides, _options = ips._uv_staging_plan("unsloth-zoo")
+        assert overrides.get("PIP_KEYRING_PROVIDER") is None
 
     def test_the_staging_command_carries_the_build_options(self, monkeypatch):
         self._uv_only(monkeypatch)

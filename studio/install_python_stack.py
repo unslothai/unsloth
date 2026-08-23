@@ -4647,9 +4647,15 @@ def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
     # Measured on uv 0.10.7: --emit-build-options surfaces the policy from uv.toml but
     # NOT the environment-variable spelling of it, so that half is translated by hand.
     # Only where pip has no setting of its own, which it reads natively.
+    # UV_KEYRING_PROVIDER is the same translation: uv reaches an authenticated index
+    # through the keyring CLI, and carrying only the URL leaves pip unable to fetch
+    # what uv just resolved. uv's two values (disabled, subprocess) are both valid pip
+    # values. Only the environment spelling is reachable here; a uv.toml
+    # keyring-provider is not emitted, so that half cannot be replayed.
     for uv_name, pip_name in (
         ("UV_NO_BINARY", "PIP_NO_BINARY"),
         ("UV_ONLY_BINARY", "PIP_ONLY_BINARY"),
+        ("UV_KEYRING_PROVIDER", "PIP_KEYRING_PROVIDER"),
     ):
         value = os.environ.get(uv_name, "").strip()
         if value and not os.environ.get(pip_name):
