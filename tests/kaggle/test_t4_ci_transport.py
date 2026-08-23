@@ -253,6 +253,11 @@ class _HubStub(types.ModuleType):
         self.hold = hold
         self.fail_for = set(fail_for)
         self.hf_home_at_call: list = []
+        # What the hub was asked to FILTER on, per call. Recorded because the
+        # patterns are computed a long way from here and reported in the
+        # summary, and a version that worked out the right glob and then never
+        # passed it would look identical in every artifact.
+        self.patterns_at_call: list = []
         self._lock = threading.Lock()
 
     def snapshot_download(
@@ -263,6 +268,7 @@ class _HubStub(types.ModuleType):
         with self._lock:
             self.calls.append(repo_id)
             self.hf_home_at_call.append(os.environ.get("HF_HOME"))
+            self.patterns_at_call.append(kw.get("allow_patterns"))
         time.sleep(self.hold)
         if repo_id in self.fail_for:
             raise RuntimeError(f"stub refuses {repo_id}")
@@ -351,6 +357,40 @@ def _drive_packed(
 # second-wave one, so every test driving it was exercising an order the kernel
 # no longer builds -- including the test that exists to assert the order.
 ALL_FOUR = list(KERNELS[0])
+
+
+def test_a_seeds_seat_is_taken_before_any_worker_can_look_at_the_card(tmp_path):
+    """The race that put 13.48 GB on a 13.0 GB card, on real hardware.
+
+    `test_no_card_is_ever_asked_to_hold_more_than_it_has` asserts the same
+    budget and passed throughout, because with default stub durations every
+    leg finishes before the 5s start stagger elapses and no overlap is ever
+    recorded. Run 32667451396 was not so lucky: gpu1's seed sat unreserved for
+    those 5s, a free worker saw an empty card and put gptoss on it, and when
+    the seed worker finally woke, `_admit` correctly refused and the caller
+    threw the answer away. control and gptoss then shared one card for 691s.
+
+    So the durations here are chosen to hold the window open rather than to be
+    fast: gptoss must outlive the stagger, or the second leg lands after it has
+    already finished and the test goes green on a schedule that never happened.
+    """
+    driven = _drive_packed(
+        tmp_path, ALL_FOUR, gpus = 2,
+        durations = {
+            "t4_canary.ipynb": 2.0, "t4_control.ipynb": 2.0,
+            "t4_frontier.ipynb": 0.2, "t4_gptoss.ipynb": 7.0,
+        },
+    )
+    stub = driven["stub"]
+    for card, peak in stub.peak_card_gb.items():
+        assert peak <= 13.0, (
+            f"card {card} peaked at {peak} GB. Overlaps: {stub.same_card_overlaps}"
+        )
+    # gptoss is 12.78 of a 13.0 budget, so it can only ever run alone. Asserted
+    # on the overlap record as well as the sum: a VRAM table that silently
+    # under-priced it would satisfy the sum check while the card burned.
+    for card, live in stub.same_card_overlaps:
+        assert "t4_gptoss.ipynb" not in live, (card, live)
 
 
 def test_no_card_is_ever_asked_to_hold_more_than_it_has(tmp_path):
@@ -2330,8 +2370,17 @@ def test_the_prefetch_list_matches_the_models_the_legs_actually_load():
     download for themselves, and the only symptom is a saving that never
     arrives. So the declared list is checked against the DEFAULT_MODEL the
     payload scripts really carry, read out of their source.
+
+    The DEFAULT_MODEL is where an earlier version of this test stopped, and
+    stopping there is what let the bug through. What a leg ASKS FOR and what it
+    LOADS are different for gpt-oss: `unsloth/gpt-oss-20b` is MXFP4, sm_75
+    cannot read MXFP4, and unsloth redirects to `-unsloth-bnb-4bit` at load
+    time. The old assertion compared the prefetch list against the declared
+    name, so it agreed with a prefetch of 55.1 GB that no leg ever opened. It
+    now applies LOAD_REDIRECTS first, and separately pins that the redirect it
+    is applying is the one the payload actually documents.
     """
-    from legs import PREFETCH_REPOS
+    from legs import LOAD_REDIRECTS, PREFETCH_REPOS
 
     defaults = set()
     for script in ("run_t4_smoke.py", "run_gptoss_t4.py"):
@@ -2340,12 +2389,29 @@ def test_the_prefetch_list_matches_the_models_the_legs_actually_load():
         assert len(found) == 1, f"{script} declares {found}"
         defaults.add(found[0])
 
-    assert (
-        set(PREFETCH_REPOS) == defaults
-    ), f"prefetching {sorted(set(PREFETCH_REPOS))} but the legs load {sorted(defaults)}"
-    # gpt-oss first: ~12 GB against ~1 GB, and it is the leg the whole start
-    # order is arranged around, so it is the one that needs the head start.
-    assert "gpt-oss" in PREFETCH_REPOS[0], PREFETCH_REPOS
+    loaded = {LOAD_REDIRECTS.get(name, name) for name in defaults}
+    assert set(PREFETCH_REPOS) == loaded, (
+        f"prefetching {sorted(set(PREFETCH_REPOS))} but the legs load {sorted(loaded)}"
+    )
+
+    # LOAD_REDIRECTS is only as good as its agreement with the payload. If the
+    # redirect ever stops being real, this list must stop claiming it -- or the
+    # prefetch goes back to warming a cache nobody reads, in the other
+    # direction and just as invisibly.
+    gptoss = (SMOKE_DIR / "run_gptoss_t4.py").read_text(encoding = "utf-8")
+    for declared, actual in LOAD_REDIRECTS.items():
+        assert actual in gptoss, (
+            f"LOAD_REDIRECTS says {declared} loads as {actual}, but no payload "
+            f"mentions {actual}, so the redirect is asserted and not observed"
+        )
+    # Qwen FIRST, and the reasoning inverted once the schedule was simulated
+    # end to end. gpt-oss is bigger, but it is wanted by ONE leg whose setup
+    # does not finish until ~160s anyway, whereas the small model gates THREE
+    # legs and costs ~20s. Fetching the big one first pushes the small one out
+    # past the moment the first leg is ready and delays three legs to give one
+    # a head start it did not need.
+    assert "Qwen" in PREFETCH_REPOS[0], PREFETCH_REPOS
+    assert "gpt-oss" in PREFETCH_REPOS[-1], PREFETCH_REPOS
 
 
 def test_the_generated_prefetch_cell_runs_not_merely_compiles():
@@ -2372,6 +2438,39 @@ def test_the_generated_prefetch_cell_runs_not_merely_compiles():
         else:
             sys.modules["huggingface_hub"] = saved
     assert hub.calls == ["a/b", "a/b"], hub.calls
+
+
+def test_a_repos_allow_patterns_reach_the_hub_and_a_bare_repo_stays_unfiltered():
+    """Computing the right glob and not passing it looks identical everywhere.
+
+    The patterns are worked out in the studio builder, carried through
+    `_normalise`, interpolated into generated source and echoed into the
+    summary. Every one of those steps can be right while the `snapshot_download`
+    call omits the keyword, and the only symptom is the 69.1 GB bill this was
+    written to stop -- the summary would still print the glob it meant to use.
+
+    The bare-string case is asserted alongside, because "filter everything"
+    breaks the opposite way: a small model whose every file is loaded must not
+    quietly acquire a filter and arrive incomplete.
+    """
+    prefetch = build_kernel._prefetch_builder()
+    hub = _HubStub(hold = 0.0)
+    saved = sys.modules.get("huggingface_hub")
+    sys.modules["huggingface_hub"] = hub
+    try:
+        source = prefetch.prefetch_cell(
+            [("big/gguf", ["*UD-Q4_K_XL*"]), "small/model"],
+            attempt_timeout = 2, total_timeout = 5,
+        )
+        exec(compile(source, "<prefetch>", "exec"), {"__name__": "prefetch"})
+    finally:
+        if saved is None:
+            sys.modules.pop("huggingface_hub", None)
+        else:
+            sys.modules["huggingface_hub"] = saved
+
+    assert hub.calls == ["big/gguf", "small/model"], hub.calls
+    assert hub.patterns_at_call == [["*UD-Q4_K_XL*"], None], hub.patterns_at_call
 
 
 def test_the_last_prefetch_attempt_falls_back_to_classic_http():
@@ -2451,16 +2550,42 @@ def test_the_studio_prefetch_follows_the_dispatched_models():
     A hardcoded pair here would prefetch the defaults while the payload loaded
     something else -- which downloads happily, warms a cache nobody reads, and
     reports success.
+
+    --chat-variant is read for the same reason and now matters as much. Studio
+    loads ONE quant from a GGUF repo that ships many, so an unfiltered snapshot
+    is not merely generous: run 32667451396 pulled 69.1 GB of Qwen3.5-2B-GGUF
+    to serve a single UD-Q4_K_XL file, and on a 4-core Kaggle box that CPU came
+    straight out of the payloads the prefetch exists to speed up.
     """
     studio = build_kernel._studio_builder()
-    assert studio._models_from("--chat-model a/b --train-model c/d") == ["a/b", "c/d"]
-    assert studio._models_from("--chat-model=e/f")[0] == "e/f"
+    chat, train = studio._models_from("--chat-model a/b --train-model c/d")
+    assert chat == ("a/b", ["*UD-Q4_K_XL*"]), chat
+    assert train == "c/d", train
+    assert studio._models_from("--chat-model=e/f")[0][0] == "e/f"
+
+    # The filter follows the dispatched variant rather than the default, or a
+    # run that overrode it would prefetch a quant it never loads.
+    picked, patterns = studio._models_from("--chat-variant Q8_0")[0]
+    assert patterns == ["*Q8_0*"], patterns
+
+    # Loose at BOTH ends on purpose. A split GGUF is named
+    # `...UD-Q4_K_XL-00001-of-00002.gguf`, so a suffix-anchored glob would
+    # match the single-file case and miss every shard of the split one --
+    # downloading nothing, reporting success, leaving Studio to fetch it.
+    assert patterns[0].startswith("*") and patterns[0].endswith("*"), patterns
+
     defaults = studio._models_from("--max-steps 8")
+    flat = [entry[0] if isinstance(entry, tuple) else entry for entry in defaults]
     payload = (SMOKE_DIR.parent / "studio_gpu" / "run_studio_gpu.py").read_text(encoding = "utf-8")
-    for flag in ("--chat-model", "--train-model"):
-        declared = re.search(rf'ap\.add_argument\("{flag}", default = "([^"]+)"\)', payload)
+    for flag in ("--chat-model", "--train-model", "--chat-variant"):
+        declared = re.search(
+            rf'ap\.add_argument\("{flag}", default = "([^"]+)"\)', payload
+        )
         assert declared, f"{flag} default not found in run_studio_gpu.py"
-        assert declared.group(1) in defaults, (declared.group(1), defaults)
+        if flag == "--chat-variant":
+            assert defaults[0][1] == [f"*{declared.group(1)}*"], defaults[0]
+        else:
+            assert declared.group(1) in flat, (declared.group(1), flat)
 
 
 def test_the_report_shows_what_the_prefetch_achieved(tmp_path):

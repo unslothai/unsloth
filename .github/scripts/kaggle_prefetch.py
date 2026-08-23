@@ -38,8 +38,29 @@ from __future__ import annotations
 PREFETCH_SENTINEL = "KAGGLE_CI_PREFETCH"
 
 
+def _normalise(repos):
+    """``["a", ("b", ["*.gguf"])]`` -> ``[("a", None), ("b", ["*.gguf"])]``.
+
+    A bare string means the WHOLE repo, which is right for a small model whose
+    every file gets loaded and wrong for anything with variants. Run
+    32667451396 fetched 69.1 GB of ``Qwen3.5-2B-GGUF`` -- every quant in the
+    repo -- so that Studio could load one UD-Q4_K_XL file, and 55.1 GB of a
+    checkpoint that was never opened at all. On a 4-core Kaggle box that is not
+    just wasted bandwidth: it is CPU stolen from the payloads the prefetch
+    exists to speed up, and it pushed the Studio install from 258s to 673.5s.
+    """
+    out = []
+    for entry in repos:
+        if isinstance(entry, str):
+            out.append((entry, None))
+            continue
+        repo, patterns = entry
+        out.append((repo, list(patterns) if patterns else None))
+    return out
+
+
 def prefetch_cell(
-    repos: list[str],
+    repos: list,
     *,
     hf_home: str | None = None,
     attempt_timeout: int = 900,
@@ -65,7 +86,7 @@ def prefetch_cell(
     return f'''
 import json, os, threading, time
 
-_REPOS = {repos!r}
+_REPOS = {_normalise(repos)!r}
 _HF_HOME = {hf_home!r}
 _ATTEMPT_TIMEOUT = {attempt_timeout}
 _TOTAL_TIMEOUT = {total_timeout}
@@ -102,7 +123,7 @@ def _repo_bytes(repo):
     return total
 
 
-def _attempt(repo, disable_xet):
+def _attempt(repo, patterns, disable_xet):
     """One `snapshot_download`, in a thread, under a wall-clock watchdog.
 
     The watchdog is the point, and it is not the same thing as a retry. Xet
@@ -128,7 +149,7 @@ def _attempt(repo, disable_xet):
     def _run():
         try:
             from huggingface_hub import snapshot_download
-            snapshot_download(repo_id=repo)
+            snapshot_download(repo_id=repo, allow_patterns=patterns)
             box["ok"] = True
         except BaseException as exc:  # noqa: BLE001
             box["error"] = f"{{type(exc).__name__}}: {{exc}}"
@@ -149,7 +170,7 @@ def _attempt(repo, disable_xet):
 
 
 def prefetch_all():
-    for repo in _REPOS:
+    for repo, patterns in _REPOS:
         started = time.time()
         before = _repo_bytes(repo)
         ok, error, transport, attempts = False, None, None, 0
@@ -172,7 +193,7 @@ def prefetch_all():
                 break
             attempts += 1
             _t0 = time.time()
-            ok, error = _attempt(repo, disable_xet)
+            ok, error = _attempt(repo, patterns, disable_xet)
             transport = "http" if disable_xet else "auto"
             if ok:
                 download_seconds = round(time.time() - _t0, 1)
@@ -198,6 +219,12 @@ def prefetch_all():
             "download_seconds": download_seconds, "bytes": moved,
             "mb_per_s": (round(moved / 1e6 / download_seconds, 1)
                          if download_seconds else None),
+            # Reported so an over-narrow filter is visible rather than silent.
+            # A pattern that matches nothing downloads nothing, reports ok and
+            # leaves the payload to fetch the model itself -- a prefetch that
+            # looks perfect and does nothing. `bytes` next to `patterns` is
+            # what makes that readable in the summary.
+            "patterns": patterns,
             "transport": transport, "attempts": attempts,
             "error": None if ok else str(error)[:300],
         }}), flush=True)

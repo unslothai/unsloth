@@ -146,6 +146,12 @@ def _models_from(payload_args: str) -> list[str]:
     for flag, default in (
         ("--chat-model", "unsloth/Qwen3.5-2B-GGUF"),
         ("--train-model", "unsloth/Qwen2.5-0.5B-Instruct"),
+        # Read for the same reason as the repos: Studio loads ONE quant out of
+        # a GGUF repo that ships many, and an unfiltered snapshot pulls all of
+        # them. Run 32667451396 fetched 69.1 GB of Qwen3.5-2B-GGUF to serve a
+        # single UD-Q4_K_XL file. Taken off argv rather than hardcoded so a
+        # dispatch that overrides the variant filters on the variant it chose.
+        ("--chat-variant", "UD-Q4_K_XL"),
     ):
         value = default
         for i, token in enumerate(tokens):
@@ -156,7 +162,15 @@ def _models_from(payload_args: str) -> list[str]:
         picked[flag] = value
     # Chat model first: it is the GGUF that llama.cpp has to serve, and it is
     # the larger of the two.
-    return [picked["--chat-model"], picked["--train-model"]]
+    #
+    # The variant glob is deliberately loose at both ends. Multi-part GGUFs are
+    # named `...UD-Q4_K_XL-00001-of-00002.gguf`, so anchoring the suffix would
+    # match the single-file case and silently miss every shard of the split
+    # one -- which downloads nothing, reports success, and leaves Studio to
+    # fetch it itself.
+    variant = picked["--chat-variant"]
+    chat = (picked["--chat-model"], [f"*{variant}*"]) if variant else picked["--chat-model"]
+    return [chat, picked["--train-model"]]
 
 
 def build_payload_notebook(
