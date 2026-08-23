@@ -351,6 +351,47 @@ def test_an_empty_cell_names_that_rather_than_scoring_it():
     assert all(v.value is None for v in m.values())
 
 
+def test_a_frameless_streaming_window_poisons_the_pooled_streaming_frame_metrics():
+    """A stream window the rAF loop never ran in must not be answered for by the one beside it.
+
+    `instruments/frames.js` emits `frames_attempted: true` with `frame_gaps_ms: []` and a null
+    `max_frame_ms` when it saw no callbacks, and rAF stops being scheduled when the renderer
+    stalls -- while SSE keeps arriving, so the window still qualifies as streaming. Skipped, it
+    contributed no deltas, no wall time and no worst frame, and the cell came back with the other
+    window's clean numbers. `_frame_measures` refuses the same shape for the cell-wide metrics.
+    """
+    smooth = _window("stream:gap1", frame_gaps = [16.7] * 540, max_frame_ms = 16.7)
+    frozen = _window(
+        "stream:gap2", duration_ms = 4_000.0, frame_gaps = [], max_frame_ms = None
+    )
+
+    m = _stream_measures([smooth, frozen])
+    for key in ("stream_max_frame_ms", "stream_time_in_jank_pct", "stream_jank_index"):
+        assert m[key].attempted is True
+        assert m[key].value is None
+        assert "no frames at all" in (m[key].note or "")
+
+    # The cost side is untouched: `stream_cost` measured that window perfectly well.
+    assert m["stream_cost_ms_per_kchar"].value is not None
+    assert m["stream_delta_cost_ms_per_kchar"].value is not None
+    assert m["stream_busy_pct"].value is not None
+
+    # The giveaway: without this the three above were byte-identical to the cell with no freeze.
+    alone = _stream_measures([smooth])
+    assert alone["stream_max_frame_ms"].value == pytest.approx(16.7)
+    assert alone["stream_time_in_jank_pct"].value == pytest.approx(0.0)
+
+
+def test_a_window_the_frame_recorder_was_never_installed_in_is_still_only_skipped():
+    """The control. Not-attempted is an absent instrument, not an unmeasured window."""
+    smooth = _window("stream:gap1", frame_gaps = [16.7] * 540, max_frame_ms = 16.7)
+    never = _window("stream:gap2", duration_ms = 4_000.0)
+    never["instruments"]["frames"] = {"frames_attempted": False}
+    m = _stream_measures([smooth, never])
+    assert m["stream_max_frame_ms"].value == pytest.approx(16.7)
+    assert m["stream_jank_index"].value is not None
+
+
 def test_every_declared_stream_metric_is_produced():
     m = _stream_measures([_window("stream:gap1")])
     assert set(m) == set(STREAM_METRICS)
