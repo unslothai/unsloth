@@ -14211,6 +14211,34 @@ _SPILL_NAME_RE = re.compile(r"[0-9a-f]{12}\.txt")
 # wrote it. Without the marker nothing here writes, prunes or discounts anything there.
 _SPILL_OWNER_MARKER = ".studio-owned"
 _SPILL_OWNER_HEADER = "Unsloth Studio truncated tool output. Safe to delete."
+# One lock per spill root. Appending a spill and rewriting the manifest after a prune are
+# a read-modify-write over one shared file, and a project's chats share a sandbox: two
+# calls spilling at once could otherwise have the pruner drop the entry the other just
+# appended, leaving a file nothing counts, prunes, or recognises as Studio's.
+_SPILL_LOCKS: "dict[str, threading.Lock]" = {}
+_SPILL_LOCKS_GUARD = threading.Lock()
+
+
+def _spill_lock(root: str) -> "threading.Lock":
+    key = os.path.realpath(root)
+    with _SPILL_LOCKS_GUARD:
+        return _SPILL_LOCKS.setdefault(key, threading.Lock())
+
+
+def _own_marker_path(root: str) -> str:
+    return os.path.join(root, _SPILL_OWNER_MARKER)
+
+
+def _marker_is_ours(root: str) -> bool:
+    """Whether the ownership marker is a real file this process can trust.
+
+    A LINK is not one, whatever it points at. Tool code runs in the sandbox and can
+    replace the marker after the directory is created: `os.path.isfile` follows the link,
+    so the directory would still read as owned and the next manifest write would truncate
+    whatever the link names, with the backend's own permissions.
+    """
+    marker = _own_marker_path(root)
+    return os.path.isfile(marker) and not os.path.islink(marker)
 
 
 def _own_spill_root(root: str) -> bool:
@@ -14220,19 +14248,26 @@ def _own_spill_root(root: str) -> bool:
     the user's: this returns False and the caller falls back to a notice with no spill,
     which is the same fallback as a read-only mount.
     """
-    marker = os.path.join(root, _SPILL_OWNER_MARKER)
     if os.path.islink(root):
         return False
     if not os.path.isdir(root):
         if os.path.exists(root):
             return False
         os.makedirs(root, exist_ok = True)
-    if not os.path.isfile(marker):
-        if os.listdir(root):
-            # Not ours and not empty, so it came with the sandbox.
-            return False
-        _write_spill_manifest(root, [])
-    return True
+    if os.path.islink(_own_marker_path(root)):
+        # Replaced since this directory was created, so nothing here is trustworthy any
+        # more. See `_marker_is_ours`.
+        return False
+    if not _marker_is_ours(root):
+        with _spill_lock(root):
+            # Re-checked under the lock: two calls can reach here at once, and the loser
+            # would otherwise rewrite an empty manifest over the winner's first spill.
+            if not _marker_is_ours(root):
+                if os.listdir(root):
+                    # Not ours and not empty, so it came with the sandbox.
+                    return False
+                _write_spill_manifest(root, [])
+    return _marker_is_ours(root)
 
 
 def _spill_manifest(root: str) -> "set[str]":
@@ -14246,8 +14281,10 @@ def _spill_manifest(root: str) -> "set[str]":
     An unreadable or half-written manifest reads as empty, which retains too much rather
     than deleting something that was never ours.
     """
+    if os.path.islink(_own_marker_path(root)):
+        return set()
     try:
-        with open(os.path.join(root, _SPILL_OWNER_MARKER), encoding = "utf-8") as handle:
+        with open(_own_marker_path(root), encoding = "utf-8") as handle:
             lines = handle.read().splitlines()
     except OSError:
         return set()
@@ -14255,11 +14292,27 @@ def _spill_manifest(root: str) -> "set[str]":
 
 
 def _write_spill_manifest(root: str, names) -> None:
-    """Rewrite the marker with ``names``. See `_spill_manifest`."""
-    with open(os.path.join(root, _SPILL_OWNER_MARKER), "w", encoding = "utf-8") as handle:
-        handle.write(_SPILL_OWNER_HEADER + "\n")
-        for name in sorted(names):
-            handle.write(f"{name}\n")
+    """Rewrite the marker with ``names``, atomically and without following a link.
+
+    Written to a fresh file and moved into place, for the same reason the spills are: an
+    open with O_TRUNC over a path tool code can replace is a write through whatever it
+    points at now.
+    """
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(dir = root, prefix = ".tmp-owner-")
+        with os.fdopen(fd, "w", encoding = "utf-8") as handle:
+            handle.write(_SPILL_OWNER_HEADER + "\n")
+            for name in sorted(names):
+                handle.write(f"{name}\n")
+        os.replace(tmp, _own_marker_path(root))
+        tmp = None
+    finally:
+        if tmp is not None and os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def _record_spill(root: str, relative: str) -> None:
@@ -14268,9 +14321,13 @@ def _record_spill(root: str, relative: str) -> None:
     Appended rather than rewritten so two calls spilling at once cannot lose each other's
     line, and a lost line only means a file this never prunes.
     """
+    flags = os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
     try:
-        with open(os.path.join(root, _SPILL_OWNER_MARKER), "a", encoding = "utf-8") as handle:
-            handle.write(f"{relative}\n")
+        with _spill_lock(root):
+            with os.fdopen(
+                os.open(_own_marker_path(root), flags), "a", encoding = "utf-8"
+            ) as handle:
+                handle.write(f"{relative}\n")
     except OSError:
         logger.debug("tool result spill manifest append failed", exc_info = True)
 
@@ -14428,9 +14485,19 @@ def _prune_spills(target_dir: str, root: "str | None" = None) -> None:
     really a per-chat limit and a project with many tool-using chats multiplies it by
     however many there are.
     """
+    root = root or target_dir
     try:
-        root = root or target_dir
-        if not os.path.isfile(os.path.join(root, _SPILL_OWNER_MARKER)):
+        # Held across the read and the rewrite below, so a spill recorded in between is
+        # not dropped from the manifest by a prune that read it before the append.
+        with _spill_lock(root):
+            _prune_spills_locked(target_dir, root)
+    except Exception:
+        logger.debug("tool result spill prune failed", exc_info = True)
+
+
+def _prune_spills_locked(target_dir: str, root: str) -> None:
+    try:
+        if not _marker_is_ours(root):
             # Unowned: whatever is in there came with the sandbox, whatever it is called.
             return
         owned = _spill_manifest(root)

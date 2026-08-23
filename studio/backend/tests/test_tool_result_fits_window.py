@@ -1104,3 +1104,83 @@ class TestTheNativePathIsBoundedWithoutATokenizer:
         limit = tools._dense_char_limit(text, tools._MAX_OUTPUT_CHARS)
         assert limit > 400 * 4 * tools._UNMEASURED_ROOM_MARGIN
         assert limit // _CHARS_PER_TOKEN <= 400
+
+
+class TestTheOwnershipMarkerIsNotAWritePrimitive:
+    """Tool code runs in the sandbox and can replace the marker after the directory is
+    made. `os.path.isfile` follows a link, so the directory would still read as owned and
+    the next manifest write would truncate whatever the link names, with the backend's own
+    permissions."""
+
+    def test_a_symlinked_marker_disowns_the_directory(self, tmp_path):
+        workdir = tmp_path / "sandbox"
+        workdir.mkdir()
+        victim = tmp_path / "victim.txt"
+        victim.write_text("do not overwrite me")
+        root = _own(workdir)
+        (root / tools._SPILL_OWNER_MARKER).unlink()
+        (root / tools._SPILL_OWNER_MARKER).symlink_to(victim)
+
+        out = tools._truncate(
+            "\n".join(str(i) for i in range(5_000)), 200, workdir = str(workdir)
+        )
+
+        assert victim.read_text() == "do not overwrite me"
+        assert "saved to" not in out
+
+    def test_a_symlinked_marker_survives_a_prune(self, tmp_path):
+        victim = tmp_path / "victim.txt"
+        victim.write_text("do not overwrite me")
+        root = _own(tmp_path)
+        (root / tools._SPILL_OWNER_MARKER).unlink()
+        (root / tools._SPILL_OWNER_MARKER).symlink_to(victim)
+        (root / "abcdef123456.txt").write_text("x")
+
+        tools._prune_spills(str(root))
+
+        assert victim.read_text() == "do not overwrite me"
+
+    def test_the_manifest_is_replaced_rather_than_truncated(self, tmp_path):
+        """So the write cannot follow a link swapped in between the check and the open."""
+        root = _own(tmp_path)
+        before = (root / tools._SPILL_OWNER_MARKER).stat().st_ino
+
+        tools._write_spill_manifest(str(root), ["abcdef123456.txt"])
+
+        assert (root / tools._SPILL_OWNER_MARKER).stat().st_ino != before
+        assert not [p for p in root.iterdir() if p.name.startswith(".tmp-")]
+
+
+class TestConcurrentSpillsKeepTheirRecords:
+    def test_a_spill_recorded_during_a_prune_is_not_dropped(self, tmp_path):
+        """A project's chats share one sandbox. Appending a spill and rewriting the
+        manifest after a prune are a read-modify-write over one file, and a pruner that
+        read it before another call appended would discard the newer entry, leaving a
+        file nothing counts, prunes, or recognises as Studio's."""
+        import threading
+
+        workdir = str(tmp_path)
+        started = threading.Barrier(8)
+        results = []
+
+        def _spill(n):
+            started.wait()
+            results.append(
+                tools._truncate(
+                    f"chat {n}\n" + _dense(3_000), 200, workdir = workdir, scope = f"{n:012x}"
+                )
+            )
+
+        threads = [threading.Thread(target = _spill, args = (n,)) for n in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        root = tmp_path / tools._SPILL_DIR
+        recorded = tools._spill_manifest(str(root))
+        on_disk = {
+            str(p.relative_to(root)) for p in root.rglob("*.txt") if p.name != "victim.txt"
+        }
+        assert on_disk, results[:1]
+        assert on_disk <= recorded, "a spill on disk that the manifest does not record"
