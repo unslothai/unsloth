@@ -93,9 +93,7 @@ def test_install_command_uses_pinned_spec_not_bare_name() -> None:
 
 def test_optout_env_gate_precedes_subprocess_install() -> None:
     helper = _get_function("_llm_compressor_autoinstall_disabled")
-    env_line = _first_lineno(
-        helper, lambda n: isinstance(n, ast.Constant) and n.value == _ENV_FLAG
-    )
+    env_line = _first_lineno(helper, lambda n: isinstance(n, ast.Constant) and n.value == _ENV_FLAG)
     assert env_line is not None, f"{_ENV_FLAG} opt-out must be checked before auto-install"
 
     fn = _get_function("install_llm_compressor")
