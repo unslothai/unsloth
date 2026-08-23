@@ -219,7 +219,7 @@ def test_shot_index_reads_the_payload_rather_than_globbing(tmp_path):
     # A file that looks like one of ours but was never recorded must not be picked up.
     png(shots / "settings_rep0_IMPOSTOR.png", 10, 10, (0, 0, 255))
     index = S.shot_index([result / "payload.jsonl"])
-    assert ("r100K.base.rep0", "settings", "base") in index
+    assert ("result", "r100K.base.rep0", "settings", "base") in index
     assert all("IMPOSTOR" not in v["file"] for v in index.values())
 
 
@@ -399,8 +399,8 @@ def test_a_superseded_attempts_screenshot_is_not_shown_for_the_retrys_verdict(tm
         rows.append(new)
     result = write(tmp_path, "result", rows)
     index = S.shot_index(S.shards_of(str(result)))
-    assert ("r100K.treatment.rep0", "settings", "treatment") not in index, index
-    assert ("r100K.base.rep0", "settings", "base") in index
+    assert ("result", "r100K.treatment.rep0", "settings", "treatment") not in index, index
+    assert ("result", "r100K.base.rep0", "settings", "base") in index
     null = quiet_null(tmp_path, "null", ["settings"])
     out = tmp_path / "out"
     assert S.build(result, null, shots, out, min_reps = 2) == 0
@@ -490,3 +490,49 @@ def test_a_direction_reversing_pair_is_not_illustrated_either(tmp_path):
     out = tmp_path / "out"
     assert S.build(result, null, shots, out, min_reps = 2) == 0
     assert not list(out.glob("*composite*"))
+
+
+def test_two_shards_do_not_share_one_screenshot_identity(tmp_path):
+    """A cell id is deterministic, so every shard restarts at `r100K.base.rep0`.
+
+    Keyed without the shard, the last payload read won and `build` could pair a mismatch found in
+    one film with a picture taken during another. The verdict has always carried the shard; only
+    the index and the output filename threw it away.
+    """
+    shots = tmp_path / "shots"
+    result = tmp_path / "result"
+    for shard in ("sh1", "sh2"):
+        rows = [{"row_type": "run_meta", "tier": "fast"}]
+        for rep in ("rep0", "rep1"):
+            for arm, digest in (("base", "A"), ("treatment", "B")):
+                f = f"{shard}_{arm}_{rep}.png"
+                png(shots / f, 200, 120, (10, 60, 10) if arm == "base" else (60, 10, 10))
+                rows.append(action(f"r100K.{arm}.{rep}", "settings", digest, f))
+        d = result / shard
+        d.mkdir(parents = True)
+        (d / "payload.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8"
+        )
+
+    # `shards_of` globs, so a directory OF shards is addressed with a trailing `*`.
+    paths = S.shards_of(str(result / "*"))
+    assert len(paths) == 2, paths
+    index = S.shot_index(paths)
+    # Both shards survive rather than one overwriting the other.
+    assert ("sh1", "r100K.base.rep0", "settings", "base") in index
+    assert ("sh2", "r100K.base.rep0", "settings", "base") in index
+    assert index[("sh1", "r100K.base.rep0", "settings", "base")]["file"] == "sh1_base_rep0.png"
+    assert index[("sh2", "r100K.base.rep0", "settings", "base")]["file"] == "sh2_base_rep0.png"
+
+    null = quiet_null(tmp_path, "null", ["settings"])
+    out = tmp_path / "out"
+    assert S.build(result / "*", null, shots, out, min_reps = 2) == 0
+    names = sorted(p.name for p in out.glob("*composite*"))
+    # One composite per shard per repetition, each naming its own shard, and none overwritten.
+    assert any(n.startswith("sh1__") for n in names), names
+    assert any(n.startswith("sh2__") for n in names), names
+    assert len(names) == 4, names
+    for shard in ("sh1", "sh2"):
+        for rep in ("rep0", "rep1"):
+            before = out / f"{shard}__settings__r100K_{rep}__BEFORE_base.png"
+            assert before.read_bytes() == (shots / f"{shard}_base_{rep}.png").read_bytes()

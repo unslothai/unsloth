@@ -712,9 +712,19 @@ def report(
                 # else, so filing it under coverage is how "the button no longer works" ships
                 # green. Held to the SAME corroboration bar as a differing digest below rather
                 # than failed on sight, because a contended runner can lose one arm's slot once.
-                (one_sided_unstable if is_unstable(unstable, action, cell) else one_sided).append(
-                    entry
-                )
+                #
+                # EXEMPTED BY `RACY_EXECUTION`, NOT BY THE DIGEST SET, and the distinction is the
+                # same one `expect_regressed` rests on. Every UNSTABLE_ACTIONS mechanism describes
+                # what makes the CAPTURE move; none of them says the action can fail to happen.
+                # Keyed on that list, nine of sixteen actions were permanently exempt from the one
+                # regression shape that leaves no digest to differ, so a broken composer taking
+                # `keystroke` down on the treatment arm in both repetitions exited 0. `scroll_after`
+                # was exempt without even having a `not_run` path to reach.
+                (
+                    one_sided_unstable
+                    if action in P.RACY_EXECUTION
+                    else one_sided
+                ).append(entry)
             else:
                 idle.append(entry)
             continue

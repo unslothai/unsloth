@@ -68,6 +68,36 @@ UNSTABLE_ACTIONS: dict[str, str] = {
 }
 
 
+# WHOSE ABILITY TO RUN IS A RACE, which is a different claim from whose DIGEST varies and needs
+# its own list. Every entry in UNSTABLE_ACTIONS above describes what makes the CAPTURE move --
+# how many characters had arrived, where the scroll came to rest, whether the send button had
+# re-enabled. Not one of them says the action sometimes cannot be performed at all. Using that
+# list to excuse one-arm-only EXECUTION exempted nine of the sixteen scheduled actions from the
+# one regression shape that leaves no digest to differ, on the strength of a measurement about
+# something else.
+#
+# `slot_missed` already covers the runner arriving late, so what is left here is the narrow case
+# of an action that legitimately cannot run because the stream it needs is not there. Read out of
+# each action's own `not_run` reasons in `scene/actions.py` rather than assumed:
+RACY_EXECUTION: dict[str, str] = {
+    "stop_generation": "needs a live stream to stop, and returns not_run when nothing was "
+    "generating and a new turn did not start within 8s (scene/actions.py:493). Whether a stream "
+    "was in flight on this arm at this moment is a race with the model, not a property of the "
+    "build",
+    "scroll_during_generation": "returns not_run with 'nothing was generating, so this is not a "
+    "scroll during generation' (scene/actions.py:334). Same race, same reason",
+    "send_turn": "returns not_run when 'a reply was still streaming, so this send would have "
+    "been queued' (scene/actions.py:993), which is the previous turn's stream overrunning rather "
+    "than this build being unable to send",
+}
+
+# The six that are NOT here, and why, since dropping an exemption needs as much justification as
+# granting one. `composer_fill`, `keystroke`, `copy_markdown`, `message_menu` and `select_text`
+# fail to run only when the control they need is absent or unresponsive -- "no composer on the
+# page", "no Copy button on the last assistant message" -- and that IS the build. `scroll_after`
+# has no `not_run` path at all, so a `ran: false` for it cannot be a race under any reading.
+
+
 def _messages(capture: dict) -> dict[int, dict]:
     return {m["i"]: m for m in (capture.get("messages") or []) if "i" in m}
 

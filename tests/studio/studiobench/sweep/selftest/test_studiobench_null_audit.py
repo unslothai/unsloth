@@ -1210,3 +1210,41 @@ def test_an_action_outside_the_scope_is_not_required_to_exist(tmp_path):
     rc, report_ = U.audit_null([null], frozenset(), U.actions_needing_an_excuse([result], 2))
     assert report_["missing"] == []
     assert rc == 0
+
+
+# ── digest instability does not exempt being unable to run ───────────
+
+
+def test_a_broken_control_is_not_excused_because_its_digest_varies(tmp_path, capsys):
+    """The exemption that covered nine of the sixteen scheduled actions.
+
+    `keystroke` is on the declared unstable list because "how many keystrokes had landed by the
+    capture deadline is a race" -- a statement about the CAPTURE. It was also being used to
+    excuse the treatment arm being unable to type at all, which is a different claim and the one
+    regression shape that leaves no digest to differ. A composer broken by the head build takes
+    `keystroke` down in both repetitions and the job exited 0.
+    """
+    path = one_sided_payload(tmp_path, "broken", "keystroke", ("rep0", "rep1"))
+    assert "keystroke" in U.UNSTABLE_ACTIONS
+    assert "keystroke" not in P.RACY_EXECUTION
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 1
+    assert "RAN ON ONE ARM ONLY" in capsys.readouterr().out
+
+
+def test_an_action_with_no_not_run_path_is_never_exempt_from_one_arm_only(tmp_path):
+    # `scroll_after` has no `not_run` in `scene/actions.py` at all, so a `ran: false` for it
+    # cannot be a race under any reading, yet the digest list exempted it.
+    path = one_sided_payload(tmp_path, "scroll", "scroll_after", ("rep0", "rep1"))
+    assert "scroll_after" in U.UNSTABLE_ACTIONS
+    assert "scroll_after" not in P.RACY_EXECUTION
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 1
+
+
+def test_every_racy_execution_entry_states_its_mechanism():
+    # The same bar the digest list is held to. An exemption without a stated mechanism is how the
+    # nine-action version of this list survived unexamined, and each of these has to name the
+    # `not_run` it is excusing.
+    for action, why in P.RACY_EXECUTION.items():
+        assert action in P.UNSTABLE_ACTIONS, action
+        assert "not_run" in why or "not run" in why, action
+        assert len(why) > 60, action

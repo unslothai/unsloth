@@ -68,7 +68,13 @@ def _pil():
 
 
 def shot_index(paths: list[Path]) -> dict:
-    """{(cell_id, action, arm): {"file": name, "scroll": int}} from the payload's own rows.
+    """{(shard, cell_id, action, arm): {"file": name, "scroll": int}} from the payload's own rows.
+
+    KEYED BY SHARD, because a cell id is deterministic and every shard restarts at
+    `r100K.base.rep0`. Without it the last shard read wins and `build` can pair a mismatch found
+    in one film with a picture taken during another -- the same class as reading a superseded
+    attempt's shot, one level up. `differing_actions` already carries the shard, so the lookup
+    has it; it was only the index that threw it away.
 
     Read from the payload rather than by globbing the directory, so a file whose name happens to
     look right but was written by another run cannot be picked up.
@@ -82,6 +88,7 @@ def shot_index(paths: list[Path]) -> dict:
     """
     out: dict = {}
     for path in paths:
+        shard = path.parent.name
         raw = []
         for line in path.read_text(encoding = "utf-8").splitlines():
             if not line.strip():
@@ -95,7 +102,7 @@ def shot_index(paths: list[Path]) -> dict:
                 continue
             cid = row.get("cell_id") or ""
             arm = "treatment" if ".treatment." in cid else "base"
-            out[(cid, row.get("action"), arm)] = {
+            out[(shard, cid, row.get("action"), arm)] = {
                 "file": parity["shot"],
                 "scroll": parity.get("shot_scroll_top", -1),
             }
@@ -151,7 +158,7 @@ def differing_actions(
         for action, shard, cell, r in results
         if r["verdict"] == P.NOT_EXERCISED
         and r.get("one_sided")
-        and not is_unstable(unstable, action, cell)
+        and action not in P.RACY_EXECUTION
     ]
     # The third way `report` returns 1: the action ran on both arms and its own assertion failed
     # on one. Not filtered by the unstable set, for the same reason the verdict does not filter
@@ -239,8 +246,8 @@ def build(
         # `cell` is "<rung> <rep>", and a cell id is "<rung>.<arm>.<rep>".
         rung, rep = d["cell"].split(" ", 1)
         base_id, treat_id = f"{rung}.base.{rep}", f"{rung}.treatment.{rep}"
-        b = index.get((base_id, d["action"], "base"))
-        t = index.get((treat_id, d["action"], "treatment"))
+        b = index.get((d["shard"], base_id, d["action"], "base"))
+        t = index.get((d["shard"], treat_id, d["action"], "treatment"))
         if not b or not t:
             missing += 1
             have = "base" if b else ("treatment" if t else "neither")
@@ -256,7 +263,10 @@ def build(
             missing += 1
             print(f"  {d['action']:<26} {d['cell']}: shot file absent on disk; not a pair")
             continue
-        stem = f"{d['action']}__{rung}_{rep}"
+        # The shard is in the FILENAME as well as the key. Two shards produce the same
+        # `<action>__<rung>_<rep>` stem, so without it the second composite silently overwrites
+        # the first and the artifact shows one picture for two findings.
+        stem = f"{d['shard']}__{d['action']}__{rung}_{rep}"
         ok = composite(
             bp,
             tp,
@@ -309,9 +319,11 @@ def prune(payload_dir: Path, shots_dir: Path) -> int:
     for action, _shard, cell, r in results:
         if r["verdict"] == P.MATCH:
             continue
+        # The prune reads one arm's own output dir, but key by the shard it came from anyway so
+        # the index has one shape everywhere.
         rung, rep = cell.split(" ", 1)
         for arm in ("base", "treatment"):
-            got = index.get((f"{rung}.{arm}.{rep}", action, arm))
+            got = index.get((_shard, f"{rung}.{arm}.{rep}", action, arm))
             if got:
                 keep.add(got["file"])
     removed = kept = 0
