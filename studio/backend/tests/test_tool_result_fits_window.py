@@ -1507,3 +1507,58 @@ class TestInstallingASpillNeverReplacesAnything:
             str(root), str(root / name), tools._spill_manifest(str(root))
         )
         assert not tools._holds_no_user_files(str(tmp_path))
+
+
+class TestPruningDeletesOnlyWhatItChecked:
+    """The manifest lock orders Studio's own threads; the thing racing here is the sandbox.
+    A background process can replace a recorded spill between the check and the unlink, and
+    a delete by name then takes the replacement."""
+
+    @staticmethod
+    def _swap_after_check(monkeypatch, victim, content):
+        """Replace the file after the prune has verified it and before it deletes it.
+
+        Hooked on the sort that runs between the two, since a swap during the verification
+        is caught by the verification itself and proves nothing about the window after it.
+        """
+        real = os.path.getmtime
+
+        def _getmtime(path):
+            result = real(path)
+            if os.fspath(path) == victim:
+                open(victim, "w").write(content)
+            return result
+
+        monkeypatch.setattr(os.path, "getmtime", _getmtime)
+
+    def test_a_file_swapped_after_the_check_is_not_deleted(self, tmp_path, monkeypatch):
+        # Enough that the oldest are on their way out: a prune with nothing to delete
+        # would prove nothing about what it deletes.
+        for n in range(tools._SPILL_KEEP + 5):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+        root = tmp_path / tools._SPILL_DIR
+        victim = sorted(_spills(root), key = lambda p: p.stat().st_mtime)[0]
+        # Lowered so this pass has files to delete: the prune after each spill has already
+        # brought the directory back to the limit.
+        monkeypatch.setattr(tools, "_SPILL_KEEP", 5)
+        self._swap_after_check(monkeypatch, str(victim), "the user's own data")
+
+        tools._prune_spills(str(root))
+
+        assert victim.exists(), "the prune deleted a file it had not verified"
+        assert victim.read_text() == "the user's own data"
+
+    def test_an_untouched_spill_is_still_pruned(self, tmp_path):
+        """The control: the budget still has to bite, or the fix above is just "never
+        delete anything"."""
+        for n in range(tools._SPILL_KEEP + 5):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+
+        assert len(_spills(tmp_path / tools._SPILL_DIR)) <= tools._SPILL_KEEP
+
+    def test_nothing_is_left_under_a_temporary_name(self, tmp_path):
+        for n in range(tools._SPILL_KEEP + 5):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+
+        names = [p.name for p in _spills(tmp_path / tools._SPILL_DIR)]
+        assert all(tools._SPILL_NAME_RE.fullmatch(n) for n in names), names

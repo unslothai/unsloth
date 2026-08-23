@@ -14728,6 +14728,47 @@ def _spill_files(root: str, directory: str, owned: "set[str]") -> "list[str]":
     ]
 
 
+def _unlink_verified_spill(root: str, path: str, owned: "dict[str, tuple[str, str]]") -> bool:
+    """Delete a spill, and only ever the file that was checked.
+
+    Moved to a private name first. A rename is atomic, so from that point the inode this
+    verifies is the inode this deletes: a sandbox writer that replaces the original name
+    afterwards replaces nothing that is on its way out. Verifying and then unlinking by
+    name cannot promise that, because the manifest lock orders Studio's own threads and
+    the thing racing here is the sandbox.
+
+    Checked again under the private name, and put back if it no longer matches, since at
+    that point it is not the file this recorded and is not this to delete. The rename
+    itself moves ctime, which is ours to move, so the second check compares the device,
+    inode, size and mtime, and the content.
+    """
+    directory, name = os.path.split(path)
+    recorded = owned.get(os.path.relpath(path, root).replace(os.sep, "/"))
+    if recorded is None:
+        return False
+    private = os.path.join(directory, f".tmp-prune-{uuid.uuid4().hex[:12]}.txt")
+    try:
+        os.rename(path, private)
+    except OSError:
+        return False
+    stamp = _spill_stamp(private)
+    if (
+        stamp is not None
+        and stamp.split(":")[:4] == recorded[0].split(":")[:4]
+        and recorded[1] == _file_digest(private)
+    ):
+        _quiet_unlink(private)
+        return True
+    try:
+        os.link(private, path)
+        _quiet_unlink(private)
+    except OSError:
+        # The name is taken again, so whatever is there now is not this to overwrite
+        # either. The file stays, under a name nothing will prune.
+        logger.warning("tool result spill prune: kept a swapped file as %s", private)
+    return False
+
+
 def _prune_spills(target_dir: str, root: "str | None" = None) -> None:
     """Bound this scope by count and the whole spill tree by bytes.
 
@@ -14761,11 +14802,8 @@ def _prune_spills_locked(target_dir: str, root: str) -> None:
         for extra in sorted(
             _spill_files(root, target_dir, owned), key = os.path.getmtime, reverse = True
         )[_SPILL_KEEP:]:
-            try:
-                os.remove(extra)
+            if _unlink_verified_spill(root, extra, owned):
                 removed.add(extra)
-            except OSError:
-                pass
 
         everything = [p for p in _spill_files(root, root, owned) if p not in removed]
         for name in sorted(os.listdir(root)):
@@ -14784,11 +14822,8 @@ def _prune_spills_locked(target_dir: str, root: str) -> None:
             if kept == 0 or total + size <= _SPILL_MAX_TOTAL_BYTES:
                 kept, total = kept + 1, total + size
                 continue
-            try:
-                os.remove(path)
+            if _unlink_verified_spill(root, path, owned):
                 removed.add(path)
-            except OSError:
-                pass
         # The manifest follows the files: a name left in it after its file is gone would
         # keep being counted as something this owns.
         _write_spill_manifest(
