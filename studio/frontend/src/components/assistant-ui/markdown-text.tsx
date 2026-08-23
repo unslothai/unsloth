@@ -498,9 +498,6 @@ function FenceBlock({
 }) {
   const host = useRef<HTMLDivElement | null>(null);
   const mode = fenceMode();
-  // A streaming fence is the one the reader is watching, so it never defers, and the hook latches
-  // it so that finishing the stream cannot hand it back the plain shell.
-  const reached = useFenceReached(host, mode !== "off", Boolean(isIncomplete));
 
   /*
    * WHICH FENCES THIS COVERS, and which it does not.
@@ -528,6 +525,38 @@ function FenceBlock({
   // tokenize an unknown language as plain text -- which is exactly the grammar work the arm
   // exists to put back.
   const languageToken = language?.trim().split(/\s+/)[0] || null;
+
+  /*
+   * DRIVE THE HIGHLIGHTER OVER THIS FENCE ON DEMAND. The latch owns WHEN; this owns WHAT, because
+   * the plugin instance lives here with the component that renders the block.
+   *
+   * `tokens: true` produces this fence's tokens. `code.highlight` returns them synchronously once
+   * the grammar is loaded and caches on the source string, so the result is the same object the
+   * block's own render is about to ask for -- which is what lets a jump or a print swap straight
+   * to a COLOURED block rather than to streamdown's plain fallback.
+   *
+   * `tokens: false` highlights the empty string, which loads the grammar and tokenizes nothing.
+   */
+  const warm = useCallback(
+    (tokens: boolean) => {
+      code.highlight({
+        code: tokens ? trimTrailingNewlines(source) : "",
+        language: (languageToken ?? "text") as never,
+        themes: STREAMDOWN_SHIKI_THEME,
+      }, () => {});
+    },
+    [source, languageToken],
+  );
+
+  // A streaming fence is the one the reader is watching, so it never defers, and the hook latches
+  // it so that finishing the stream cannot hand it back the plain shell.
+  const reached = useFenceReached(
+    host,
+    mode !== "off",
+    Boolean(isIncomplete),
+    languageToken,
+    warm,
+  );
 
   // MEASUREMENT ARM ONLY. See `FenceMode`: this puts the tokenizer work back while leaving the
   // document at the deferred size, so the two costs can be told apart. `code.highlight` caches

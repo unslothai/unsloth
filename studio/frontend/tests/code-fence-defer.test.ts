@@ -215,18 +215,22 @@ test("a nested scroller is gated by the outermost one as well", () => {
   assert.equal(band(ahead, onScreen), true, "so a fence one window below it still pre-warms");
 });
 
-test("the flag defaults off, and off means today's behaviour", () => {
+test("the mode is decided in one place, and `off` still means the pre-default behaviour", () => {
+  // The decision table itself is in `code-fence-mode.ts` and is RUN, row by row, by
+  // `tests/code-fence-mode.test.ts`. What this file has to pin is that this module does not grow
+  // a second opinion about the mode, and that `off` still switches the whole hook out.
   assert.ok(
-    SOURCE.includes('return raw === "1" || raw === "defer"'),
-    "the mode is decided from the flag value",
+    SOURCE.includes('export { type FenceMode, resolveFenceMode, SHIP_DEFAULT } from "./code-fence-mode";'),
+    "the mode module is the single source of the decision",
   );
   assert.ok(
-    /:\s*"off";/.test(SOURCE),
-    "any value that is not an understood mode must fall through to off",
+    !/raw === "defer"|SHIP_DEFAULT: FenceMode|const raw =/.test(SOURCE),
+    "no copy of the decision table may live here as well",
   );
   assert.ok(
-    MARKDOWN_TEXT.includes('useFenceReached(host, mode !== "off", Boolean(isIncomplete))'),
-    "with the flag off every fence must render immediately, exactly as it does today",
+    /useFenceReached\(\s*host,\s*mode !== "off",\s*Boolean\(isIncomplete\),/.test(MARKDOWN_TEXT),
+    "with the mode off every fence must render immediately, exactly as it did before the default " +
+      "moved",
   );
 });
 
@@ -302,9 +306,12 @@ test("the gate does not mount a wrapper element of its own", () => {
 });
 
 test("the tokenize arm is measurement only and is not reachable from a boolean flag", () => {
+  // The selection rule itself, and every shape that must NOT reach it, is exercised in
+  // `tests/code-fence-mode.test.ts`. What matters here is that the measurement arm cannot be
+  // entered from this module by any route other than that one resolved mode.
   assert.ok(
-    SOURCE.includes('raw === "tokenize"'),
-    "the tokenize arm is selected by an explicit string, never by a truthy flag",
+    !/"tokenize"/.test(SOURCE),
+    "this module must not name the measurement arm at all; it only consumes a resolved mode",
   );
   assert.ok(
     MARKDOWN_TEXT.includes('const pretokenize = mode === "tokenize" && !reached'),
@@ -312,32 +319,81 @@ test("the tokenize arm is measurement only and is not reachable from a boolean f
   );
 });
 
-test("there is no print machinery left to leak", () => {
-  // A `beforeprint` path that latched every mounted fence, warmed grammars at idle and flushed
-  // twice was removed after it was measured: synchronous dispatch and read in one task, 53 of 56
-  // blocks still printed on streamdown's raw fallback at every delay out to twenty seconds. The
-  // shipped build is fully highlighted after about three seconds. Neither a warm grammar nor a
-  // second flushSync makes an effect-driven, lazily imported highlighter produce tokens inside
-  // the synchronous print task.
-  //
-  // Three review rounds went on leaks inside that machinery. This test exists so it does not come
-  // back without a measurement showing it works.
-  for (const gone of ["flushSync", "printListeners", "claimChunkWarm", "beforeprint"]) {
+test("a print upgrades the whole document, and never puts it back", () => {
+  // An earlier `beforeprint` path latched every fence and was removed after it was measured: 53
+  // of 56 blocks still printed on streamdown's raw fallback out to twenty seconds. The reason was
+  // not the latch, it was what the latch renders -- streamdown's highlighted body asks the plugin
+  // for tokens from a PASSIVE effect and shows a plain fallback until the plugin answers, and the
+  // plugin answers `null` while a grammar is loading. `latchNow` closes both halves: it warms the
+  // tokens first, then flushes twice so the passive effect and the update it schedules land in
+  // the same task. Do not re-remove one half and keep the other.
+  for (const door of ["beforeprint", 'matchMedia?.("print")']) {
     assert.ok(
-      !new RegExp(`(addEventListener|const|let)[^\\n]*${gone}`).test(SOURCE),
-      `${gone} was removed because it did not work; re-adding it needs a measurement first`,
+      SOURCE.includes(door),
+      `${door} is one of the two ways a document reaches a printer, and both must be covered`,
     );
   }
   assert.ok(
-    !/warmedGrammars|pendingGrammars/.test(MARKDOWN_TEXT),
-    "the grammar warm-up was removed with the rest of the print path",
+    !/addEventListener\(\s*"afterprint"/.test(SOURCE),
+    "reverting on afterprint would be exactly the bidirectional edge this design removes",
+  );
+  const assignments = SOURCE.match(/printed = (?:true|false)/g) ?? [];
+  assert.deepEqual(
+    assignments,
+    ["printed = false", "printed = true"],
+    "`printed` is declared false and set true exactly once; nothing may clear it again",
   );
 });
 
-test("the print limitation is written down where it is decided", () => {
+test("an upgrade taken inside one task warms, flushes, and flushes again", () => {
+  // Each of the three is load-bearing on its own; dropping any one puts a plain frame back on
+  // screen (on a jump) or a colourless fence on the page (in a print).
+  const latchNow = SOURCE.slice(SOURCE.indexOf("const latchNow"));
+  const body = latchNow.slice(0, latchNow.indexOf("\n};"));
+  assert.ok(body.includes("gate.warm(true)"), "the tokens have to exist before the swap renders");
   assert.ok(
-    SOURCE.includes("PRINT: NOT HANDLED") && SOURCE.includes("53 of 56"),
-    "the measured limitation belongs next to the code that causes it, with its number",
+    body.indexOf("gate.warm(true)") < body.indexOf("flushSync"),
+    "warming after the flush is warming after the paint",
+  );
+  assert.equal(
+    body.split("flushSync").length - 1,
+    3,
+    "an outer flush holds the update priority discrete; one inner flush commits the swap and the "
+      + "second runs the passive effect that colours it",
+  );
+  assert.ok(
+    body.includes("gate.poke()"),
+    "react only runs pending passive effects when it has sync work, so the second flush needs some",
+  );
+});
+
+test("a jump is recognised from the lookahead, not from a tuned number", () => {
+  // `REACH_MARGIN` grows the observer band by one root height, so a scroll of at most one height
+  // can only reveal fences the observers had already reached. The pass therefore runs when, and
+  // only when, the movement exceeded the lookahead. A literal pixel threshold here would be a
+  // number nobody could derive and nobody would maintain.
+  assert.ok(
+    /Math\.abs\(top - before\) <= height/.test(SOURCE),
+    "the jump test compares the movement against the root height the margin is one of",
+  );
+  assert.ok(
+    !/[^a-zA-Z_]\d{2,}\s*(?:px)?\s*[;)]/.test(SOURCE.slice(SOURCE.indexOf("const onScroll"), SOURCE.indexOf("const watchScrolling"))),
+    "no pixel constant may appear in the jump test",
+  );
+});
+
+test("nothing is watched once there is nothing left to defer", () => {
+  // The claim this change rests on is that a fence the reader has already reached carries no
+  // residual per-scroll cost. One capturing listener is shared by every fence, so it has to be
+  // removed when the last one latches or the claim stops being true.
+  assert.ok(
+    /document\.addEventListener\("scroll", onScroll, \{ capture: true, passive: true \}\)/.test(SOURCE),
+    "one capturing, passive listener sees scrolling on nested panes as well as on the thread",
+  );
+  assert.ok(
+    /unreached\.size > 0/.test(SOURCE) &&
+      /document\.removeEventListener\("scroll", onScroll/.test(SOURCE),
+    "the listener is removed when the register empties",
   );
 });
 
