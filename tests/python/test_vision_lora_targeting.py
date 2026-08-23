@@ -228,7 +228,10 @@ def test_tying_leaves_the_output_module_for_peft_to_reconstruct():
     assert _drop_tied_output_module(untied, both, True) == both
     # Only a real pair is split: tying can be requested with no pair to tie, and dropping
     # the lone head would train nothing (or crash on None).
-    assert _drop_tied_output_module(tied, ["embed_tokens", "score"], True) == ["embed_tokens", "score"]
+    assert _drop_tied_output_module(tied, ["embed_tokens", "score"], True) == [
+        "embed_tokens",
+        "score",
+    ]
     assert _drop_tied_output_module(tied, ["lm_head"], True) == ["lm_head"]
     assert _drop_tied_output_module(tied, ["lm_head"], False) == ["lm_head"]
     assert _drop_tied_output_module(tied, None, True) is None
