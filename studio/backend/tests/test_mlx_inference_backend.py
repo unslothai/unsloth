@@ -4446,6 +4446,8 @@ def test_a_pinned_drafter_does_not_outrank_the_rules_that_rule_out_drafting(
 def test_the_load_detaches_only_the_null_bias_the_hot_head_would_index(
     monkeypatch, mode, embed, detached
 ):
+    # Matching consults the model classes the installed runtime exposes.
+    pytest.importorskip("mlx_vlm")
     import mlx_vlm.speculative.drafters as drafters
 
     from core.inference import mlx_speculative as spec
@@ -4512,6 +4514,8 @@ def test_every_drafting_depth_shares_the_one_head_split_for_the_target(monkeypat
 
 def test_the_built_in_head_is_split_for_the_target_the_load_names(monkeypatch, tmp_path):
     # The loader's own call, which no other test makes: drift here passes every split test.
+    # Matching consults the model classes the installed runtime exposes.
+    pytest.importorskip("mlx_vlm")
     import mlx_vlm.speculative.drafters as drafters
 
     from core.inference import mlx_speculative as spec
@@ -5075,6 +5079,8 @@ def test_an_unrunnable_speculative_method_is_refused_at_every_door(monkeypatch, 
 
 def test_the_options_endpoint_reports_the_drafters_the_sources_found(monkeypatch):
     # The wiring from sources and merge to the endpoint's answer; nothing else covers it.
+    # Matching consults the model classes the installed runtime exposes.
+    pytest.importorskip("mlx_vlm")
     from core.inference import mlx_speculative as spec
 
     draft = {"model_type": "gemma4_assistant", "backbone_hidden_size": 64, "vocab_size": 100}
@@ -5242,6 +5248,8 @@ def test_a_target_with_its_own_head_is_offered_before_any_download(
 ):
     # A target that can draft for itself needs no companion checkpoint, so the built-in
     # row is emitted first and carries no download size of its own.
+    # Matching consults the model classes the installed runtime exposes.
+    pytest.importorskip("mlx_vlm")
     from core.inference import mlx_speculative as spec
 
     monkeypatch.setattr(spec, "mlx_target_snapshot_path", lambda _t: Path("/nowhere"))
@@ -5313,6 +5321,8 @@ def _matches(spec, method, draft, target = None, target_id = "org/target",
     ],
 )
 def test_an_mtp_drafter_is_matched_on_every_binding_it_declares(monkeypatch, draft, expected):
+    # Matching consults the model classes the installed runtime exposes.
+    pytest.importorskip("mlx_vlm")
     from core.inference import mlx_speculative as spec
 
     monkeypatch.setattr(spec, "_token_id_map", lambda _t: _TOKENS)
@@ -5373,6 +5383,8 @@ def _eagle_normalized(**override):
 def test_an_eagle3_drafter_is_matched_on_every_structural_conjunct(
     monkeypatch, normalized, draft_captures, expected
 ):
+    # Matching consults the model classes the installed runtime exposes.
+    pytest.importorskip("mlx_vlm")
     from core.inference import mlx_speculative as spec
 
     monkeypatch.setattr(spec, "_verifier_matches_target", lambda *_a: True)
@@ -5385,6 +5397,8 @@ def test_an_eagle3_drafter_is_matched_on_every_structural_conjunct(
 def test_an_eagle3_drafter_must_name_the_target_as_its_verifier(monkeypatch):
     # Without this the endpoint would offer any structurally plausible EAGLE-3 drafter
     # for any target of the same shape.
+    # Matching consults the model classes the installed runtime exposes.
+    pytest.importorskip("mlx_vlm")
     from core.inference import mlx_speculative as spec
 
     monkeypatch.setattr(spec, "_normalized_drafter_config", lambda _c: _eagle_normalized())

@@ -2972,14 +2972,17 @@ class MLXInferenceBackend:
                             ),
                         )
                     if self._draft_model is not None and not completed:
+                        # Reached on generator teardown, where raising would mask the exit that
+                        # caused it -- including the import, which a closing generator can run
+                        # after the interpreter has begun tearing modules down.
                         try:
                             self._draft_model.reset(self._model)
+                            import mlx.core as mx
+
+                            _drain_generation_streams(mx)
+                            mx.clear_cache()
                         except Exception as exc:
                             logger.warning("MLX speculative request cleanup failed: %s", exc)
-                        import mlx.core as mx
-
-                        _drain_generation_streams(mx)
-                        mx.clear_cache()
 
         yield from normalize_reasoning_snapshots(
             _stream_vlm_snapshots(),
