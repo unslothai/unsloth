@@ -2821,6 +2821,27 @@ _APPLE_UNIFIED_MEMORY_FRACTION = 0.85
 _FIT_MIN_CTX = 4096
 _FIT_FLOOR_MIN_CTX = 256
 
+# Auto only reaches this path when no discrete-GPU subset can hold the model.
+# llama.cpp must offload layers to host RAM either way, so prefer a context that
+# remains useful for chat. Separate from _FIT_MIN_CTX: that value is also a search
+# and Apple unified-memory safety floor.
+_AUTO_OFFLOAD_CTX = 8192
+
+# Keep this at or above the fit search floor. Not a style rule, a correctness one:
+# the Auto offload branch re-checks whether a subset holds the model at the reduced
+# context, and that re-check can only award residency BELOW the floor, since a subset
+# winnable at or above it was already taken by the fit loop that runs first. Moving
+# this constant is therefore free of placement changes only while it stays on the dead
+# side of that floor. Below it the re-check hands over a device and flips --fit off,
+# which is a placement decision rather than a display one.
+#
+# The floor in question is the ``min_ctx = 4096`` DEFAULT on _fit_context_to_vram and
+# _cap_ctx_to_per_device_reserve, not _FIT_MIN_CTX: neither auto call site passes the
+# argument, and _FIT_MIN_CTX is only handed in explicitly on the Apple arm. The three
+# numbers agree today and nothing here makes them; test_auto_offload_ctx_invariants.py
+# pins both defaults to _FIT_MIN_CTX and this constant above it, so the agreement
+# cannot lapse silently.
+
 # How far amd-smi's total VRAM may sit from HIP's before the two are reporting
 # different memory scopes rather than one pool (an APU carve-out against the GTT
 # pool, a partition against the whole card). Same 10% margin
@@ -16814,7 +16835,12 @@ class LlamaCppBackend:
                         #
                         # AUTO gets the FLOOR, which makes this a residency question and
                         # not a context one. Auto shrinks the CONTEXT before it spills
-                        # layers, reaching `--fit on` only once even 4096 will not place.
+                        # layers, reaching `--fit on` only once even _FIT_MIN_CTX will
+                        # not place -- and then RAISES the context to _AUTO_OFFLOAD_CTX,
+                        # since offload is already unavoidable by that point. So this
+                        # floor is deliberately the residency floor and not the context
+                        # the load ends up running at; the projector's bytes are charged
+                        # again at the real context through _subset_model_size below.
                         # Pricing at the native length would answer "does not fit" for a
                         # load merely heading for a smaller context and pin a projector
                         # that was resident all along -- 8.8x on image encode for nothing.
@@ -17409,9 +17435,15 @@ class LlamaCppBackend:
                                 max_available_ctx = best_cap
                             else:
                                 # Weights exceed 90% of every GPU subset, so no
-                                # context fits. Anchor the UI "safe zone" at 4096
-                                # so the slider warns above the fallback.
-                                max_available_ctx = min(4096, native_ctx_for_cap)
+                                # context fits. Anchor the UI "safe zone" at the
+                                # Auto offload fallback so the slider warns ABOVE
+                                # what Auto itself selects: anchoring below it
+                                # makes every Auto load in this branch exceed its
+                                # own published ceiling, and the chat sheet reads
+                                # that as "context exceeds the estimated VRAM
+                                # capacity" while advising the user to leave it
+                                # on Auto.
+                                max_available_ctx = min(_AUTO_OFFLOAD_CTX, native_ctx_for_cap)
 
                         if explicit_ctx:
                             # Honor the requested context verbatim. If it fits,
@@ -17529,10 +17561,10 @@ class LlamaCppBackend:
                                 use_fit = False
                                 break
                             else:
-                                # Native ctx doesn't fit. Drop to 4096 and
-                                # re-check before --fit on: a model overflowing
-                                # at 131k may pin fine with a 4096 KV (#5106).
-                                effective_ctx = min(4096, effective_ctx)
+                                # No discrete-GPU subset holds the model at a fitted
+                                # context. Prefer a useful chat context before
+                                # handing placement to --fit on and host offload.
+                                effective_ctx = min(_AUTO_OFFLOAD_CTX, effective_ctx)
                                 if effective_ctx > 0:
                                     for n_gpus in range(_auto_min_gpus, len(ranked) + 1):
                                         subset = ranked[:n_gpus]
@@ -17578,9 +17610,13 @@ class LlamaCppBackend:
                             min_gpus = _layer_min_gpus,
                         )
                         if use_fit and not explicit_ctx:
-                            # Weights don't fit on any subset; default UI to 4096
-                            # so the slider isn't on an unusable native ctx.
-                            effective_ctx = min(4096, effective_ctx) if effective_ctx > 0 else 4096
+                            # Without KV metadata, llama.cpp owns the fit. Keep the
+                            # same useful Auto default as the measured offload path.
+                            effective_ctx = (
+                                min(_AUTO_OFFLOAD_CTX, effective_ctx)
+                                if effective_ctx > 0
+                                else _AUTO_OFFLOAD_CTX
+                            )
 
                     elif _apple_budget_mib > 0 and effective_ctx > 0:
                         # No GPU on Metal: the branches above are skipped and the context

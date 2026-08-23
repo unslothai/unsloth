@@ -19,9 +19,8 @@ import { registerStoreStubResolver } from "./helpers/kit.ts";
 
 registerStoreStubResolver();
 
-const { resolveStoredExtraArgs } = await import(
-  "../src/features/model-picker/api/model-overrides.ts"
-);
+const { fromApiOverride, resolveStoredExtraArgs, resolveStoredOverride } =
+  await import("../src/features/model-picker/api/model-overrides.ts");
 
 const ARGS = ["--numa", "distribute"];
 
@@ -208,4 +207,88 @@ test("a matched row with other fields but no arguments is not explicit", () => {
     ]),
     { tokens: [], explicit: false },
   );
+});
+
+test("the full resolved row uses the same identity rules as extra arguments", () => {
+  const row = {
+    custom_context_length: 32768,
+    kv_cache_dtype: "q8_0",
+  };
+  assert.equal(
+    resolveStoredOverride({ "unsloth/Model-GGUF:Q4_K_M": row }, [
+      "unsloth/model-gguf:q4_k_m",
+    ]),
+    row,
+  );
+});
+
+test("a server override converts into one normalized picker config", () => {
+  const config = fromApiOverride({
+    custom_context_length: 32768,
+    kv_cache_dtype: "q8_0",
+    n_parallel: 4,
+    gpu_memory_mode: "manual",
+    gpu_layers: 20,
+    gpu_ids: [1],
+    llama_extra_args: [],
+  });
+  assert.equal(config.customContextLength, 32768);
+  assert.equal(config.kvCacheDtype, "q8_0");
+  assert.equal(config.nParallel, 4);
+  assert.equal(config.gpuMemoryMode, "manual");
+  assert.equal(config.gpuLayers, 20);
+  assert.deepEqual(config.selectedGpuIds, [1]);
+  assert.equal(config.selectedGpuIndexKind, "physical");
+  assert.deepEqual(config.llamaExtraArgs, []);
+});
+
+test("server hydration preserves a local Vulkan ordinal pin", () => {
+  const local = fromApiOverride({});
+  local.selectedGpuIds = [1];
+  local.selectedGpuIndexKind = "vulkan";
+
+  const config = fromApiOverride({ kv_cache_dtype: "q8_0" }, local);
+  assert.equal(config.kvCacheDtype, "q8_0");
+  assert.deepEqual(config.selectedGpuIds, [1]);
+  assert.equal(config.selectedGpuIndexKind, "vulkan");
+});
+
+test("a server physical GPU pin replaces a local Vulkan pin", () => {
+  const local = fromApiOverride({});
+  local.selectedGpuIds = [1];
+  local.selectedGpuIndexKind = "vulkan";
+
+  const config = fromApiOverride({ gpu_ids: [0] }, local);
+  assert.deepEqual(config.selectedGpuIds, [0]);
+  assert.equal(config.selectedGpuIndexKind, "physical");
+});
+
+test("a row that carries less than the local config does not erase the rest", () => {
+  // The mirror is best-effort: a PUT that never landed, a legacy config migrated
+  // into this browser, a field the backend normalizer refused. Hydration adopting
+  // the row wholesale wrote those gaps back over the local copy and persisted it,
+  // so a remembered context disappeared on the next panel open.
+  const local = fromApiOverride({
+    custom_context_length: 4096,
+    kv_cache_dtype: "q8_0",
+  });
+  const config = fromApiOverride({ tensor_parallel: true }, local);
+  assert.equal(config.customContextLength, 4096);
+  assert.equal(config.kvCacheDtype, "q8_0");
+  assert.equal(config.tensorParallel, true);
+});
+
+test("the row still wins for every field it does carry", () => {
+  const local = fromApiOverride({ custom_context_length: 4096 });
+  const config = fromApiOverride({ custom_context_length: 32768 }, local);
+  assert.equal(config.customContextLength, 32768);
+});
+
+test("a cleared extra-arguments box survives a row that carries no arguments", () => {
+  // [] is a decision (the box was emptied) and stops the fallback to a broader row,
+  // so it must not come back as "never read" because the row said nothing.
+  const local = fromApiOverride({ llama_extra_args: [] });
+  assert.deepEqual(local.llamaExtraArgs, []);
+  const config = fromApiOverride({ kv_cache_dtype: "q8_0" }, local);
+  assert.deepEqual(config.llamaExtraArgs, []);
 });
