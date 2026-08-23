@@ -562,9 +562,8 @@ export function setExpectedBytesForJob(
   if (!job || job.state !== "running" || bytes <= job.expectedBytes) return;
   patchJob(job.key, {
     expectedBytes: bytes,
-    // The stored ETA was measured against the old, smaller total, so it is
-    // wrong the moment the total grows. Drop it and let the next poll measure
-    // one; the bar hides it meanwhile, which beats showing a stale number.
+    // Measured against the old, smaller total, so it is wrong the moment the
+    // total grows. The bar hides it until the next poll measures one.
     etaSeconds: 0,
     fraction:
       job.fraction > 0

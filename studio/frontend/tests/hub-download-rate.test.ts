@@ -137,10 +137,9 @@ test("a dense feed still tracks a rate change within the smoothing span", () => 
   assert.ok(Math.abs(rate - 50 * MB) < 1);
 });
 
-// The trim keeps a floor of increases, and a transfer that has stopped has
-// none, so nothing was eligible to drop: a tab left open on a wedged download
-// grew the buffer by one sample per poll forever. 16 is what the age-only trim
-// this replaced held, so the bound is no worse than before the floor existed.
+// The trim protects a floor of increases and a stopped transfer has none, so
+// nothing was eligible to drop and a wedged download grew the buffer forever.
+// 16 is what the age-only trim this replaced held.
 test("a transfer that stops does not grow the sample buffer without bound", () => {
   const samples: TransferSample[] = [];
   for (let t = 0; t <= 6 * 60 * 60; t += 1) publishedRate(samples, t, 1_000);
@@ -159,10 +158,9 @@ test("a long plateau keeps the span it is measured over", () => {
   assert.equal(samples[samples.length - 1].b, 500 * MB);
 });
 
-// One outlier gap (a suspend, or a backgrounded tab whose timer the browser
-// clamped to 1/min) used to be the only gap left in the buffer, so it became
-// the median cadence and the stall window stretched to hours. A dead transfer
-// then kept showing its last speed indefinitely.
+// One outlier gap (a suspend, or a browser-clamped background timer) used to be
+// the only gap left in the buffer, so it became the median cadence, the stall
+// window stretched to hours, and a dead transfer kept showing its last speed.
 test("one outlier gap does not disable stall detection", () => {
   const samples: TransferSample[] = [];
   let bytes = 0;
@@ -180,11 +178,9 @@ test("one outlier gap does not disable stall detection", () => {
   assert.equal(rate, 0, "a dead transfer should stop reporting a rate");
 });
 
-// A transfer that stalls past the stall window and then resumes keeps its byte
-// counter, so nothing resets. Reaching back past the break for the older
-// increase averaged the dead time into the rate: a 20 MB/s transfer resuming
-// after a 30 minute drop published 0.64 MB/s, a 31x understatement, for a full
-// burst period. Silence is the honest answer until the resumed run has a span.
+// A resume keeps its byte counter, so nothing resets. Reaching back past the
+// break averaged the dead time in: 20 MB/s resuming after a 30 minute drop
+// published 0.64 MB/s for a full burst period. Silence is the honest answer.
 test("a resume after a long stall is not priced across the stall", () => {
   const samples: TransferSample[] = [];
   let bytes = 0;

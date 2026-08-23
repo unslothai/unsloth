@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The model-load toast polls on a 2s interval, which browsers clamp to about
-// once a minute while the tab is hidden. Those gaps time the poller, not the
-// transfer, and the estimator reads gaps as the burst cadence, so they stretch
-// the stall window: progress stopping around the time the user came back left a
-// stale rate and ETA on screen for a minute. The hub poll loop and the voice
-// poller already drop hidden-tab samples; this pins that the chat one does too.
+// The model-load toast polls on a 2s interval, clamped to about once a minute
+// while hidden. Those gaps time the poller, not the transfer, and the estimator
+// reads gaps as the burst cadence, so progress stopping near the moment the user
+// returns left a stale rate on screen for a minute. The hub and voice pollers
+// already drop hidden samples; this pins that the chat one does too.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

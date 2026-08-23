@@ -79,9 +79,8 @@ export function updateExternalJob(
   const downloadedBytes = Math.max(0, progress.downloadedBytes);
   const expectedBytes = Math.max(0, progress.expectedBytes);
   // External trackers own their own timers, and a hidden tab's are clamped to
-  // about once a minute. Those gaps time the tracker, not the transfer, and the
-  // estimator reads gaps between increases as the burst cadence. Guarding here
-  // rather than in each tracker covers every one of them.
+  // about once a minute, which the estimator would read as the burst cadence.
+  // Guarding here rather than per tracker covers every one of them.
   let stats: TransferStats | null = null;
   if (typeof document !== "undefined" && document.hidden) {
     job.samples.length = 0;

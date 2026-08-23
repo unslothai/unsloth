@@ -575,18 +575,17 @@ export function VoiceTab() {
             trackSttDownload(download.model);
           }
           const bytes = download.bytes_done ?? 0;
-          // Compare before adopting the model: assigning first made this test
-          // itself, so switching straight from one download to another priced
-          // the new run over the old one's samples.
+          // Compare before adopting: assigning first made this test itself, so
+          // a straight switch priced the new run over the old one's samples.
           if (download.model !== watchedDownloadRef.current) {
             // A different model's counter is a different run.
             downloadSamplesRef.current.length = 0;
           }
           watchedDownloadRef.current = download.model;
           if (typeof document !== "undefined" && document.hidden) {
-            // Browsers clamp a hidden tab's timers to about once a minute, so
-            // these gaps time the poller, not the transfer, and would be read
-            // as the burst cadence. The hub poll loop drops them the same way.
+            // A hidden tab's timers are clamped to about once a minute, so
+            // these gaps time the poller and would read as the burst cadence.
+            // The hub poll loop drops them the same way.
             downloadSamplesRef.current.length = 0;
             setDownloadBytesPerSec(0);
             setDownloadEtaSeconds(0);

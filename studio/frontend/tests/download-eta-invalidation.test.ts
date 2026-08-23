@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The bar renders the stored etaSeconds instead of deriving one from the total
-// it happens to be showing, so a total that grows underneath it leaves an ETA
-// measured against the old, smaller one. GGUF metadata arriving after a job was
-// adopted does exactly that. Drop the stored ETA when the total moves: hiding it
-// for one poll beats showing a number for a size that is no longer the target.
+// The bar renders the stored etaSeconds rather than deriving one, so a total
+// that grows underneath it leaves an ETA measured against the old, smaller one.
+// GGUF metadata arriving after a job was adopted does exactly that. Hiding the
+// ETA for one poll beats showing one for a size that is no longer the target.
 //
 // Also pins that the voice poller ignores a hidden tab's throttled callbacks,
-// the way the hub poll loop already does, so a browser's once-a-minute clamp
-// cannot be mistaken for the transfer's burst cadence.
+// the way the hub poll loop already does.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

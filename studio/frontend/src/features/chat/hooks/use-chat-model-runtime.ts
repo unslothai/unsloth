@@ -2091,10 +2091,9 @@ export function useChatModelRuntime() {
         const expectedBytes =
           typeof selection !== "string" ? selection.expectedBytes ?? 0 : 0;
 
-        // One buffer per phase, so a phase flip cannot price the new phase's
-        // bytes against the old one's clock. Was a private copy of the shared
-        // estimator, so fixes to it never reached this toast. The shared helper
-        // takes SECONDS; this file clocks in ms.
+        // One buffer per phase, so a flip cannot price the new phase against
+        // the old one's clock. Was a private copy of the shared estimator, so
+        // fixes never reached this toast. The helper takes SECONDS, not ms.
         const dlSamples: TransferSample[] = [];
         const mmapSamples: TransferSample[] = [];
 
@@ -2104,10 +2103,9 @@ export function useChatModelRuntime() {
           total: number,
         ): { rate: number; eta: number; stable: boolean } {
           if (typeof document !== "undefined" && document.hidden) {
-            // This poller is a 2s interval, which browsers clamp to about once
-            // a minute while the tab is hidden. Those gaps time the poller, not
-            // the transfer, and the estimator reads gaps as the burst cadence.
-            // The hub poll loop and the voice poller drop them the same way.
+            // This 2s interval is clamped to about once a minute while hidden,
+            // and the estimator reads gaps as the burst cadence. The hub poll
+            // loop and the voice poller drop them the same way.
             samples.length = 0;
             return { rate: 0, eta: 0, stable: false };
           }

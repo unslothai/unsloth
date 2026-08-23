@@ -2,11 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Switching straight from one dictation download to another must restart the
-// rate estimator. The guard for it once sat AFTER the ref it compares against
-// was assigned, so it could never fire, and the new run was priced over the old
-// one's samples: a 5 MB/s download read as 200 MB/s with 20s left for the first
-// dozen polls. appendSample cannot save this either, since it only resets on a
-// counter going backwards and a resumed model can start above the last one.
+// estimator. The guard once sat AFTER the ref it compares against was assigned,
+// so it never fired and the new run was priced over the old one's samples: a
+// 5 MB/s download read as 200 MB/s with 20s left. appendSample cannot save it
+// either, since a resumed model can start above where the last one stopped.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

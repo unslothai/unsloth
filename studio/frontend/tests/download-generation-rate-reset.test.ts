@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A server generation change means another backend owns the transfer, so the
-// previous one's rate samples describe a different run. The byte counter cannot
-// signal it: a restart resumes from the same cache, so it does not go backwards
-// for appendSample to reset on, and the runtime (with its buffer) is not
-// recreated. The poll gap across a restart then lands inside the measured span
-// and reads as slow: a steady 100 MB/s download published 13 MB/s for a dozen
-// polls, which is the "very slow, hours left" half of #9378.
+// A generation change means another backend owns the transfer, so the previous
+// one's samples describe a different run. Nothing else catches it: a restart
+// resumes from the same cache so the counter never goes backwards, and the
+// runtime holding the buffer is not recreated. The poll gap across the restart
+// then lands inside the measured span: 100 MB/s published 13 MB/s.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

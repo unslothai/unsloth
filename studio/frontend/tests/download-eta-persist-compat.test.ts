@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// `etaSeconds` is a new required field on ManagedDownload. An install that
-// upgrades into it has records without one, and an install that downgrades
-// away from it must still read what this version wrote. Both directions are
-// pinned here: the field is injected on the way in and omitted on the way out,
-// so the persisted shape is unchanged in either direction.
+// `etaSeconds` is a new required field on ManagedDownload, so an install that
+// upgrades into it has records without one, and one that downgrades away must
+// still read what this version wrote. It is injected on the way in and omitted
+// on the way out, leaving the persisted shape unchanged in both directions.
 
 import assert from "node:assert/strict";
 import test from "node:test";

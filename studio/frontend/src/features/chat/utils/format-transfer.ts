@@ -17,8 +17,8 @@ export function formatRate(bytesPerSecond: number): string {
 
 /**
  * Beyond a day the number is noise. The hub formatter has clamped since #7679;
- * this one did not, so the same estimate rendered "> 24h left" on a hub row and
- * an unbounded hour count on the model-load toast.
+ * this one did not, so one estimate read "> 24h left" on a hub row and an
+ * unbounded hour count on the model-load toast.
  */
 const MAX_DISPLAYABLE_ETA_SECONDS = 24 * 60 * 60;
 

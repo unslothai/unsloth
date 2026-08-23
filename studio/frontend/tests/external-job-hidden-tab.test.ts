@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// External trackers own their own timers. The STT mirror runs a 750ms interval
-// of its own, and browsers clamp a hidden tab's timers to about once a minute,
-// so its samples time the tracker rather than the transfer. The estimator reads
-// gaps between increases as the burst cadence, so those minute-scale gaps
-// stretch the stall window and leave a stale rate and ETA on the Downloads row.
-// The guard lives in updateExternalJob, so every external tracker inherits it.
+// External trackers own their own timers: the STT mirror runs a 750ms interval,
+// and a hidden tab's are clamped to about once a minute. The estimator reads
+// gaps between increases as the burst cadence, so those gaps stretch the stall
+// window and leave a stale rate on the Downloads row. The guard lives in
+// updateExternalJob so every external tracker inherits it.
 
 import assert from "node:assert/strict";
 import test from "node:test";

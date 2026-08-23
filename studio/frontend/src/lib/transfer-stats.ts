@@ -29,9 +29,8 @@ export const MAX_WINDOW_SECONDS = 15;
 /** Buffer depth by age; {@link MIN_RETAINED_INCREASES} overrides it when sparse. */
 export const MAX_RETAIN_SECONDS = 60;
 /**
- * Increases kept regardless of age, so a slow cadence still leaves a span.
- * Deep enough that one outlier gap (a sleep, or a backgrounded tab whose timer
- * the browser clamped) cannot become the median cadence on its own.
+ * Increases kept regardless of age, so a slow cadence still leaves a span. Deep
+ * enough that one outlier gap cannot become the median cadence on its own.
  */
 export const MIN_RETAINED_INCREASES = 8;
 /** Floor on the no-progress timeout, before any cadence has been observed. */
@@ -54,10 +53,9 @@ export function appendSample(
     samples.length = 0;
   }
   const n = samples.length;
-  // Collapse a plateau to its first and latest reading. The ones between carry
-  // no increase, so nothing here reads them, and retaining them grows the
-  // buffer without bound on a transfer that has stopped: the trim below cannot
-  // run while there are too few increases left to protect.
+  // Collapse a plateau to its first and latest reading. Nothing here reads the
+  // ones between, and the trim below cannot drop them (too few increases left
+  // to protect), so a stopped transfer would grow the buffer without bound.
   if (n >= 2 && !(b > samples[n - 1].b) && !(samples[n - 1].b > samples[n - 2].b)) {
     samples[n - 1] = { t, b };
   } else {
@@ -87,9 +85,9 @@ function countIncreases(samples: readonly TransferSample[], from: number): numbe
 
 /**
  * How long a silence runs before it is a stall rather than a gap between jumps.
- * A fixed 15s reads a transfer whose blobs finalize every 60s as stalled every
- * time, blanking the rate on 95% of ticks at 3 MB/s, so track the observed
- * cadence. Uncapped: any cap is a cliff for a repo slower than it.
+ * A fixed 15s calls a 60s blob cadence stalled every time, blanking 95% of
+ * ticks at 3 MB/s, so track the observed cadence. Uncapped: any cap is a cliff
+ * for a repo slower than it.
  */
 function stallWindowSeconds(samples: readonly TransferSample[]): number {
   const gaps: number[] = [];
@@ -146,9 +144,9 @@ function measurableSpan(
   let resumed = false;
   for (let i = to - 1; i > 0; i -= 1) {
     if (samples[i].b <= samples[i - 1].b) continue;
-    // A silence longer than the stall window is a break in the transfer, not a
-    // slow burst. Reaching across it averages the dead time into the rate: a
-    // 20 MB/s transfer resuming after a 30 minute drop published 0.64 MB/s.
+    // A silence past the stall window is a break, not a slow burst. Reaching
+    // across it averages the dead time in: 20 MB/s resuming after a 30 minute
+    // drop published 0.64 MB/s.
     if (samples[newer].t - samples[i].t > stall) {
       resumed = true;
       break;
@@ -162,8 +160,8 @@ function measurableSpan(
   // by the rate. Price the whole buffer instead, and stay silent while even that is
   // too short to divide by, so no single clump is ever published as the speed.
   if (samples[to].t - samples[from].t < MAX_WINDOW_SECONDS) {
-    // Unless the buffer reaches back over a break: stay silent until the
-    // resumed transfer has produced a span of its own.
+    // Unless that would reach back over a break: stay silent until the resumed
+    // transfer has a span of its own.
     if (resumed) return null;
     from = 0;
   }

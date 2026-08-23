@@ -352,9 +352,9 @@ function reconcileProgressAndSpeed(
     resetMonotonic: generationChanged,
   });
   if (generationChanged) {
-    // Another server owns this transfer now, so the old one's samples describe
-    // a different run. The counter alone cannot say so: a restart resumes from
-    // the same cache, so it does not go backwards for appendSample to catch.
+    // Another server owns this transfer now, so the old samples describe a
+    // different run. The counter cannot say so: a restart resumes from the
+    // same cache and never goes backwards for appendSample to catch.
     rt.speedSamples.length = 0;
   }
   const speed = applySpeedSample(rt, downloadedBytes, expected, Date.now());

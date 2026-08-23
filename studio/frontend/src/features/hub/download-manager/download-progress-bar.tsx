@@ -18,8 +18,8 @@ export function DownloadProgressBar({
   bytesPerSec: number;
   /**
    * Seconds remaining, from the estimator that produced ``bytesPerSec``.
-   * Deriving it here instead gave every caller its own ETA semantics and left
-   * the shared estimator's own ``etaSeconds`` unused on this path.
+   * Deriving it here gave every caller its own ETA semantics and left the
+   * shared estimator's ``etaSeconds`` unused on this path.
    */
   etaSeconds?: number;
 }) {
