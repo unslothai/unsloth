@@ -1337,6 +1337,71 @@ def test_a_late_failure_cannot_release_a_nonce_a_newer_attempt_owns():
     assert out["unhandled"] == 0
 
 
+def test_a_late_deferred_clear_cannot_wipe_an_attachment_a_newer_attempt_staged():
+    """The success arm has the same two-in-flight problem the rejection arm has. The deferred
+    clear is armed only when the nonce was already released, so the route is: a first switch,
+    a saved-thread detour that releases the nonce, then a New Chat whose switch is held open
+    with the deferred clear armed. A second detour and a return start a newer attempt for the
+    same nonce, which opens its thread. When the older switch finally resolves, a success arm
+    keyed on the nonce alone reads its own nonce back and clears the composer the newer
+    attempt is using, taking an attachment staged in it.
+
+    The complement is asserted on the same shared state: a detour nulls the nonce without
+    bumping the attempt, and that must still cancel a pending deferred clear, so the nonce
+    check cannot simply be replaced by the attempt check."""
+    out = _run(
+        "renderProvider, renderSettled, switchState, world",
+        """
+        // A first switch, so hasSwitched is set.
+        await renderSettled({ newThreadNonce: "n0" });
+        // Detour releases the nonce, which is what arms the DEFERRED clear next time.
+        await renderSettled({ initialThreadId: "thread-a" });
+
+        // Attempt 2 for n1, held open, deferred clear armed.
+        let release;
+        world.newThreadGate = new Promise((resolve) => { release = resolve; });
+        renderProvider({ newThreadNonce: "n1" });
+        await tick();
+        const armed = { state: switchState(), cleared: world.clearedAttachments };
+
+        // Second detour, then back to the same New Chat: attempt 3 opens its thread.
+        world.newThreadGate = null;
+        renderProvider({ initialThreadId: "thread-a" });
+        await tick();
+        renderProvider({ newThreadNonce: "n1" });
+        await tick();
+        const beforeLate = {
+          state: switchState(),
+          cleared: world.clearedAttachments,
+          switched: world.switchedToNewThread,
+        };
+
+        // Only now does the older switch resolve, with the user settled in attempt 3's thread.
+        release();
+        await tick();
+        await tick();
+        const afterLate = { state: switchState(), cleared: world.clearedAttachments };
+        console.log(JSON.stringify({
+          armed, beforeLate, afterLate, unhandled: unhandled.length,
+        }));
+        """,
+    )
+    assert out["armed"]["state"] == {
+        "activeNonce": "n1",
+        "hasSwitched": True,
+        "attempt": 2,
+    }, "the detour must leave the nonce released so this switch arms the deferred clear"
+    assert (
+        out["beforeLate"]["state"]["attempt"] == 3
+    ), "the second detour plus the return must start a newer attempt for the same nonce"
+    assert out["afterLate"]["cleared"] == out["beforeLate"]["cleared"], (
+        "the older switch's deferred clear must not wipe the composer the newer "
+        "attempt opened"
+    )
+    assert out["afterLate"]["state"]["activeNonce"] == "n1"
+    assert out["unhandled"] == 0
+
+
 def test_every_switch_the_effect_starts_bumps_the_attempt_exactly_once():
     """``attempt`` is what tells two in-flight switches apart, so it has to advance once
     per switch actually started and never on a render that returned at a guard. Driven

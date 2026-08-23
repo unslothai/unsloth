@@ -1727,7 +1727,15 @@ function ThreadNewChatSwitch({
     void Promise.resolve(aui.threads().switchToNewThread()).then(
       () => {
         if (!clearAfterSwitch) return;
-        if (newThreadSwitchStateRef.current.activeNonce !== nonce) return;
+        const switchStateNow = newThreadSwitchStateRef.current;
+        // By attempt as well as nonce, matching the rejection arm. A saved-thread
+        // detour releases the nonce, so returning to the same New Chat starts a
+        // newer attempt; without the attempt check this older completion still
+        // matches on nonce and wipes an attachment staged in the thread that
+        // newer attempt already opened. The nonce check stays: the detour nulls
+        // it without bumping the attempt, and that must still cancel the clear.
+        if (switchStateNow.attempt !== attempt) return;
+        if (switchStateNow.activeNonce !== nonce) return;
         clearAttachments();
       },
       () => {
