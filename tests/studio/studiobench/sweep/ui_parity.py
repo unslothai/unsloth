@@ -209,7 +209,12 @@ def incomplete_cells(paths: list[Path]) -> dict[str, str]:
             # pair on it would withhold a verdict from a whole run over the harness not being
             # loaded. The `unmeasured` coverage verdict is a different value and stays fatal; see
             # `runtime/ab.py::failed_invalidating_gates`, which draws the same line.
-            if detail.get("follow_attempted") is False or detail.get("probe_attempted") is False:
+            # Narrowed to the instrument for the reason given there: `no thread viewport` is the
+            # arm missing the surface under test, not a harness that failed to load.
+            unmeasured = (
+                detail.get("follow_attempted") is False or detail.get("probe_attempted") is False
+            )
+            if unmeasured and "viewport" not in str(detail.get("reason") or "").lower():
                 continue
             # FIRST FAILURE WINS, so a cell that failed both is not relabelled by whichever row
             # happens to come second in the file.

@@ -66,14 +66,30 @@ def page(browser):
 
 
 def _feed(page, text: str) -> None:
-    """Push bytes through the real `TextDecoder.prototype.decode` hook."""
+    """Push bytes through the real `TextDecoder.prototype.decode` hook, AS ONE RESPONSE.
+
+    The decoder is reused across calls because that is what the app does: `chat-api.ts` builds one
+    `TextDecoder` per streaming request and calls `decode(value, {stream: true})` on it for every
+    chunk of that response. A split frame is therefore always two chunks through the SAME decoder,
+    which is what the reassembly tests below mean by a split. Building a fresh decoder per chunk
+    would model a socket rather than a response, and reassembly state is scoped per decoder.
+    """
     page.evaluate(
         """(text) => {
              const bytes = new TextEncoder().encode(text);
-             new TextDecoder().decode(bytes);
+             if (!window.__testDecoder) window.__testDecoder = new TextDecoder();
+             window.__testDecoder.decode(bytes);
            }""",
         text,
     )
+
+
+def _end_response(page) -> None:
+    """Abandon this response's decoder, as the app does when a stream ends or is aborted.
+
+    The next `_feed` builds a new one, exactly as the next `send_turn` does.
+    """
+    page.evaluate("() => { window.__testDecoder = null; }")
 
 
 def _frame(content: str) -> str:
@@ -316,3 +332,43 @@ def test_a_window_that_opens_on_an_empty_buffer_is_still_scoreable(page):
     assert out["wire_pending_chars_at_open"] == 0, out
     assert out["reply_chars_scoreable"] is True, out
     assert out["reply_chars_delta"] == len("during"), out
+
+
+# ── an aborted response must not poison the next one ──────────────────────────
+
+
+def test_an_aborted_frame_does_not_follow_the_stream_that_replaces_it(page):
+    """REGRESSION. `stop_generation` cuts a socket mid-frame, which is what it is for.
+
+    The reassembly buffer used to be one page-wide variable, so the abandoned JSON tail waited
+    there for the next response. `send_turn` follows `stop_generation` in all three shipped
+    schedules, and its first chunk was glued behind that tail: the merged part no longer began
+    `data:`, so it was skipped by `continue` WITHOUT counting a parse failure, and the denominator
+    went quietly short -- the one outcome this file exists to prevent. The residue never cleared
+    either, so `pending_chars` stayed above zero and every later window was refused as well.
+    """
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    # A response aborted in the middle of a frame.
+    _feed(page, 'data: {"choices":[{"delta":{"content":"half a re')
+    assert page.evaluate("() => window.__sb.streamcost.wireIntegrity()")["pending_chars"] > 0
+    _end_response(page)
+
+    # The next turn is a new response, and it is intact.
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    _feed(page, _frame("hello"))
+    assert page.evaluate("() => window.__sb.streamcost.replyChars()") == len("hello")
+    got = page.evaluate("() => window.__sb.streamcost.wireIntegrity()")
+    assert got == {"failures": 0, "pending_chars": 0}, got
+
+
+def test_a_split_inside_one_response_still_reassembles_after_an_abort(page):
+    """The scoping must not cost a genuine split its repair: same decoder, still one frame."""
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    _feed(page, 'data: {"choices":[{"delta":{"content":"abandoned')
+    _end_response(page)
+
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    _feed(page, 'data: {"choices":[{"delta":{"con')
+    _feed(page, 'tent":"rejoined"}}]}\n\n')
+    assert page.evaluate("() => window.__sb.streamcost.replyChars()") == len("rejoined")
+    assert page.evaluate("() => window.__sb.streamcost.wireIntegrity()")["pending_chars"] == 0

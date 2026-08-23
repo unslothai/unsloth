@@ -408,3 +408,29 @@ def test_an_ordinary_ratio_is_still_printed_bare():
 
     assert "1.200" in rendered
     assert ">=" not in rendered and "<=" not in rendered
+
+
+def test_a_missing_viewport_is_not_waived_as_an_absent_instrument():
+    """REGRESSION. `probe_attempted: False` has two producers and only one is an absent instrument.
+
+    `window.__sb.dom is not installed` is the harness not being loaded. `no thread viewport` is the
+    ARM missing the surface the film measures, and waiving it let a real defect ride the instrument
+    allowance -- a cell with no scroller was admitted, scrolled nothing, and was scored.
+    """
+    from studiobench.report.build import _completion_by_rung
+
+    rows = _gated_cell_rows("thread_complete", False)
+    rows[1]["detail"] = {"probe_attempted": False, "reason": "no thread viewport"}
+    assert _completion_by_rung(rows)[100_000][0] is False, rows
+
+
+def test_an_uninstalled_dom_helper_is_still_waived():
+    """The positive control: the harness itself not being loaded is not a finding about the build."""
+    from studiobench.report.build import _completion_by_rung
+
+    rows = _gated_cell_rows("thread_complete", False)
+    rows[1]["detail"] = {
+        "probe_attempted": False,
+        "reason": "window.__sb.dom is not installed",
+    }
+    assert _completion_by_rung(rows)[100_000] == (True, None), rows

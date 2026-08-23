@@ -129,7 +129,35 @@
   // The incremental SSE buffer. A decode() call is a slice of the socket, not an SSE frame: one
   // call can carry three frames and half of a fourth. Whatever is left after the last blank line
   // stays here until the rest of it arrives.
-  let pending = "";
+  //
+  // PER DECODER, NOT PER PAGE. A `TextDecoder` belongs to ONE response: the app builds a new one
+  // beside its own `buffer` for every streaming request, so no legitimate frame ever spans two of
+  // them. A single page-wide buffer therefore did not model reassembly, it modelled the socket,
+  // and `stop_generation` exists to cut a socket mid-frame. The abandoned JSON tail then had no
+  // `\n\n` to close it, so the next response's first chunk was glued behind it, the merged part
+  // failed `startsWith("data:")` and was skipped by `continue` WITHOUT counting a parse failure --
+  // the silently short denominator this file's own comments call the unacceptable outcome. Worse,
+  // the residue never cleared, so `pending_chars` stayed above zero and `reply_chars_scoreable`
+  // refused EVERY window from the abort onwards, and once non-empty it pulled unrelated decoder
+  // traffic in through the `pending.length > 0` branch below.
+  //
+  // Keyed weakly, so a finished response's buffer is collected with its decoder rather than
+  // retained. Within one response the same decoder is reused for every `decode(chunk, {stream:
+  // true})` call, so a genuine split still reassembles exactly as before.
+  const DECODER_STATE = new WeakMap();
+  const stateFor = (decoder) => {
+    let st = DECODER_STATE.get(decoder);
+    if (!st) {
+      st = { pending: "", markerTail: "" };
+      DECODER_STATE.set(decoder, st);
+    }
+    return st;
+  };
+  //: The decoder that most recently delivered a chunk, which is the stream a window is measuring.
+  //: `wireIntegrity` reports THIS buffer: half a frame of the response being measured is a short
+  //: denominator and must refuse the window, while half a frame of a response that was aborted
+  //: three slots ago says nothing about it.
+  let active = { pending: "", markerTail: "" };
   // A frame is a few hundred bytes. If this ever grows past a sane bound the stream is not what
   // we think it is, and dropping the buffer is better than growing it without limit inside a hook
   // that runs fourteen times a second.
@@ -149,7 +177,7 @@
   // "da", "dat", "data"), so this cannot become the memory hazard MAX_PENDING_CHARS guards
   // `pending` against: buffering whole unrelated TextDecoder chunks on the chance that one of them
   // is an SSE frame would be a worse bug than the one being fixed.
-  let markerTail = "";
+  // Lives in the per-decoder state above, for the same reason `pending` does.
 
   //: The longest tail of `s` that is a PROPER PREFIX of the marker, or "".
   const partialMarkerTail = (s) => {
@@ -232,16 +260,16 @@
   // unmeasurable ("it is a different message"). Characters delivered in the window is the
   // quantity the cost per character actually wants, and it does not care how many messages they
   // were spread over.
-  const countDeltaChars = (text) => {
-    pending += text;
-    if (pending.length > MAX_PENDING_CHARS) {
+  const countDeltaChars = (st, text) => {
+    st.pending += text;
+    if (st.pending.length > MAX_PENDING_CHARS) {
       S.wireParseFailures += 1;
-      pending = "";
+      st.pending = "";
       return;
     }
     // Frames are separated by a blank line. Anything after the last one is incomplete.
-    const parts = pending.split("\n\n");
-    pending = parts.pop();
+    const parts = st.pending.split("\n\n");
+    st.pending = parts.pop();
     for (const part of parts) {
       const line = part.trim();
       if (!line.startsWith("data:")) continue;
@@ -291,13 +319,18 @@
     const t = now();
     S.decodeCalls += 1;
     if (typeof out === "string" && out.length > 0) {
+      // Reassembly state belongs to THIS decoder, and this decoder is now the stream being
+      // measured. A response that was aborted mid-frame keeps its half frame to itself.
+      const st = stateFor(this);
+      active = st;
       // The fragment the previous chunk ended on, but only if THIS chunk continues it. A split
       // inside the marker is repaired here rather than in the buffer, so a fragment that turns out
       // to be ordinary text ending in "d" is dropped instead of corrupting the frame behind it.
       // `markerTail` is only ever set when `pending` is empty, so the two can never both hold a
       // half of the same frame.
-      const chunk = markerTail && continuesMarker(markerTail, out) ? markerTail + out : out;
-      markerTail = "";
+      const chunk =
+        st.markerTail && continuesMarker(st.markerTail, out) ? st.markerTail + out : out;
+      st.markerTail = "";
       // THE BOUND IS ON THE SCAN, NOT ON THE PAYLOAD. A chunk at or under the cap is its own head,
       // so nothing is allocated on the ordinary path and the ordinary path is unchanged. Over the
       // cap, v8 slices a string by reference rather than by copy, so the head costs no walk of the
@@ -331,8 +364,8 @@
       // The whole chunk is fed to the counter and only the SCAN was bounded above: the denominator
       // is characters delivered, so counting a batched read's head would understate it by exactly
       // the amount a stall made it large.
-      if (looksSse || pending.length > 0) countDeltaChars(chunk);
-      else markerTail = partialMarkerTail(chunk);
+      if (looksSse || st.pending.length > 0) countDeltaChars(st, chunk);
+      else st.markerTail = partialMarkerTail(chunk);
     }
     S.overheadMs += now() - t;
     return out;
@@ -456,7 +489,10 @@
       // cost of being honest here is that a stray one to four characters of unrelated traffic can
       // mark a window unscoreable, which is the direction to err in -- an unscoreable window is
       // "we could not tell", and a silently short denominator is "it was fine".
-      return { failures: S.wireParseFailures, pending_chars: pending.length + markerTail.length };
+      return {
+        failures: S.wireParseFailures,
+        pending_chars: active.pending.length + active.markerTail.length,
+      };
     },
     replyChars() {
       return S.wireChars;
@@ -482,7 +518,7 @@
         wire_chars: S.wireChars,
         wire_frames: S.wireFrames,
         wire_parse_failures: S.wireParseFailures,
-        wire_pending_chars: pending.length + markerTail.length,
+        wire_pending_chars: active.pending.length + active.markerTail.length,
       };
     },
 
