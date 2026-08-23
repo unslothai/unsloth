@@ -25,8 +25,10 @@ import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import {
   type ComponentProps,
+  createContext,
   memo,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -38,6 +40,12 @@ import {
   Streamdown,
   type StreamdownProps,
 } from "streamdown";
+import {
+  DeferredFenceShell,
+  fenceMode,
+  trimTrailingNewlines,
+  useFenceReached,
+} from "./code-fence-defer";
 import { createCodePlugin } from "./code-plugin";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
@@ -293,6 +301,21 @@ function useAnimationFreeBlockProps(props: BlockProps): BlockProps {
   } satisfies BlockProps;
 }
 
+/**
+ * Whether this message carries a renderable render_html tool part, asked once per message part
+ * instead of once per markdown block.
+ *
+ * The value belongs to the MESSAGE, but the block component is mounted per block, so subscribing
+ * there minted a subscription per block (800 of 10,193 on the 300K-character heavy thread), each
+ * re-scanning `message.parts` on every store update -- and every keystroke is a store update.
+ * One subscription in MarkdownTextImpl plus a context read gives the same blocks the same answer.
+ *
+ * `false` is the right default for a block rendered outside a message part (nothing does today):
+ * no render_html part is visible, which is what the artifact collapse below assumes absent
+ * evidence.
+ */
+const RenderHtmlToolPresenceContext = createContext(false);
+
 // Collapse a full-HTML answer in place into an artifact card. Diffusion keeps the
 // raw code visible instead (the trailing MessageHtmlArtifacts appends its card).
 function StreamdownBlockContent(props: BlockProps) {
@@ -302,8 +325,8 @@ function StreamdownBlockContent(props: BlockProps) {
       (state.artifactsEnabled || state.collapseHtmlArtifacts) &&
       !state.loadedIsDiffusion,
   );
-  const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
-    message.parts.some(isRenderableRenderHtmlToolPart),
+  const messageHasRenderableRenderHtmlTool = useContext(
+    RenderHtmlToolPresenceContext,
   );
   const hasMermaidFence = props.content.includes("```mermaid");
   const mermaidSource = getMermaidSource(props.content);
@@ -377,20 +400,101 @@ function StreamdownBlockContent(props: BlockProps) {
 
     return (
       <>
-        <div className="relative isolate">
-          <Block {...blockProps} />
-          <CodeBlockActions
-            disabled={props.isIncomplete}
-            language={codeFence.language}
-            source={codeFence.source}
-          />
-        </div>
+        <FenceBlock
+          blockProps={blockProps}
+          isIncomplete={props.isIncomplete}
+          language={codeFence.language}
+          source={codeFence.source}
+        />
         {svgSource && <SvgPreview source={svgSource} />}
       </>
     );
   }
 
   return <Block {...blockProps} />;
+}
+
+/*
+ * The fence branch, extracted so the reach latch can be a hook.
+ *
+ * With the flag off this renders exactly what the branch rendered before: the
+ * same `relative isolate` wrapper, the same `<Block>`, the same action bar. The
+ * wrapper is reused as the intersection target rather than a new one being
+ * introduced, so the DOM the off arm produces is byte-for-byte what main
+ * produces and the on arm differs only in what is INSIDE the wrapper.
+ */
+function FenceBlock({
+  blockProps,
+  isIncomplete,
+  language,
+  source,
+}: {
+  blockProps: BlockProps;
+  isIncomplete: boolean | undefined;
+  language: string | null;
+  source: string;
+}) {
+  const host = useRef<HTMLDivElement | null>(null);
+  const mode = fenceMode();
+  // A streaming fence is the one the reader is watching, so it never defers, and the hook latches
+  // it so that finishing the stream cannot hand it back the plain shell.
+  const reached = useFenceReached(host, mode !== "off", Boolean(isIncomplete));
+
+  /*
+   * WHICH FENCES THIS COVERS, and which it does not.
+   *
+   * `CODE_FENCE_RE` accepts exactly three backticks, unindented. CommonMark also allows tildes,
+   * four or more backticks (which is how a model writes a fence whose body contains one), and up
+   * to three spaces of indent. Those forms never reach here, so they render exactly as they do
+   * today and get no deferral: unrealised benefit, not a wrong result.
+   *
+   * Left alone deliberately rather than overlooked. `getCodeFence` is also what decides whether a
+   * block is an SVG or a full HTML document to be shown as an artifact, and a fence that does not
+   * match it renders a bare `<Block>` with no `relative isolate` wrapper and no copy button.
+   * Widening the regex would therefore add an artifact path and a copy overlay to blocks that do
+   * not have them today, which is a rendering change, and a performance PR is the wrong place to
+   * smuggle one in.
+   *
+   * It also does not move any number here: over the frozen corpus, 2,467,069 characters, all
+   * 1,456 fence delimiters are unindented triple backticks. Not one tilde, not one four-backtick
+   * fence, not one indented one.
+   */
+  // `getCodeFence` hands back the WHOLE info string, so a fence opened with metadata such as
+  // ```python startLine=10 arrives here as "python startLine=10". Markdown treats everything
+  // after the first word as metadata and Streamdown highlights it as `python`, so passing the
+  // raw string on would label the shell with the metadata attached and, in the measurement arm,
+  // tokenize an unknown language as plain text -- which is exactly the grammar work the arm
+  // exists to put back.
+  const languageToken = language?.trim().split(/\s+/)[0] || null;
+
+  // MEASUREMENT ARM ONLY. See `FenceMode`: this puts the tokenizer work back while leaving the
+  // document at the deferred size, so the two costs can be told apart. `code.highlight` caches
+  // on the source string, so the work happens exactly once and the discarded result is the same
+  // object the real path would have used.
+  const pretokenize = mode === "tokenize" && !reached;
+  useEffect(() => {
+    if (!pretokenize) return;
+    code.highlight({
+      code: trimTrailingNewlines(source),
+      language: (languageToken ?? "text") as never,
+      themes: STREAMDOWN_SHIKI_THEME,
+    }, () => {});
+  }, [pretokenize, source, languageToken]);
+
+  return (
+    <div className="relative isolate" ref={host}>
+      {reached ? (
+        <Block {...blockProps} />
+      ) : (
+        <DeferredFenceShell language={languageToken} source={source} />
+      )}
+      <CodeBlockActions
+        disabled={Boolean(isIncomplete)}
+        language={language}
+        source={source}
+      />
+    </div>
+  );
 }
 const StreamdownBlock = memo(StreamdownBlockContent);
 const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
@@ -449,7 +553,9 @@ function useCoalescedStreamingText(
     isStreaming &&
     displayed.messageId === messageId &&
     text.length >= displayed.text.length &&
-    text.startsWith(displayed.text)
+    // Not startsWith, which scans a growing reply. See hasPrefix in
+    // streaming-render-schedule.ts for the measurement.
+    text.slice(0, displayed.text.length) === displayed.text
   ) {
     return displayed.text;
   }
@@ -463,6 +569,10 @@ const MarkdownTextImpl = () => {
   // message. The cache generation joins the key for the case the Markdown string
   // cannot express, an edit that drops retained blocks without changing the tail.
   const messageId = useAuiState(({ message }) => message.id);
+  // Read once here for every block below: see RenderHtmlToolPresenceContext.
+  const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
+    message.parts.some(isRenderableRenderHtmlToolPart),
+  );
   const isStreaming = status.type === "running";
   const displayText = useCoalescedStreamingText(text, isStreaming, messageId);
   const processedText = useMemo(
@@ -490,24 +600,28 @@ const MarkdownTextImpl = () => {
   }
 
   return (
-    <div data-status={status.type} className="min-w-0 max-w-full">
-      <Streamdown
-        key={`${messageId}:${incrementalCache.renderGeneration}`}
-        mode="streaming"
-        parseIncompleteMarkdown={!incrementalRender}
-        parseMarkdownIntoBlocksFn={incrementalRender?.parseMarkdownIntoBlocks}
-        isAnimating={isStreaming}
-        animated={STREAMDOWN_IMMEDIATE_UPDATES}
-        plugins={STREAMDOWN_PLUGINS}
-        components={STREAMDOWN_COMPONENTS}
-        urlTransform={safeMarkdownUrl}
-        controls={STREAMDOWN_CONTROLS}
-        shikiTheme={STREAMDOWN_SHIKI_THEME}
-        BlockComponent={StreamdownBlock}
-      >
-        {incrementalRender?.markdown ?? processedText}
-      </Streamdown>
-    </div>
+    <RenderHtmlToolPresenceContext.Provider
+      value={messageHasRenderableRenderHtmlTool}
+    >
+      <div data-status={status.type} className="min-w-0 max-w-full">
+        <Streamdown
+          key={`${messageId}:${incrementalCache.renderGeneration}`}
+          mode="streaming"
+          parseIncompleteMarkdown={!incrementalRender}
+          parseMarkdownIntoBlocksFn={incrementalRender?.parseMarkdownIntoBlocks}
+          isAnimating={isStreaming}
+          animated={STREAMDOWN_IMMEDIATE_UPDATES}
+          plugins={STREAMDOWN_PLUGINS}
+          components={STREAMDOWN_COMPONENTS}
+          urlTransform={safeMarkdownUrl}
+          controls={STREAMDOWN_CONTROLS}
+          shikiTheme={STREAMDOWN_SHIKI_THEME}
+          BlockComponent={StreamdownBlock}
+        >
+          {incrementalRender?.markdown ?? processedText}
+        </Streamdown>
+      </div>
+    </RenderHtmlToolPresenceContext.Provider>
   );
 };
 

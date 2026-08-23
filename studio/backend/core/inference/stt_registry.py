@@ -4,10 +4,10 @@
 """One place that knows which dictation models are resident, and loads them.
 
 The sidecars still own their processes: whisper.cpp serves GGML through
-whisper-server, llama.cpp serves mtmd models, and Transformers loads in
-process. What lives here is the lifecycle above them, so the orchestrator has a
-single view of dictation the way it has one of chat, and Voice settings and
-Model Hub cannot report different things about the same model.
+whisper-server, llama.cpp serves mtmd models, and Transformers loads in a spawn
+child of its own. What lives here is the lifecycle above them, so the
+orchestrator has a single view of dictation the way it has one of chat, and
+Voice settings and Model Hub cannot report different things about the same model.
 """
 
 from __future__ import annotations

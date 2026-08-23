@@ -55,13 +55,24 @@ export function applyPerModelConfigToRuntime(
       normalizeSpeculativeType(config.speculativeType) ??
       readPersistedSpeculativeType(),
     specDraftNMax: config.specDraftNMax ?? null,
+    specDraftCacheDtype: config.specDraftCacheDtype ?? null,
     nParallel: config.nParallel ?? null,
     // the diffusion runner ignores the llama-server batch flags
     nBatch: options.isDiffusion ? null : (config.nBatch ?? null),
     nUbatch: options.isDiffusion ? null : (config.nUbatch ?? null),
+    // Same reason as the batch flags: these are llama-server's own, and the
+    // diffusion runner never launches one.
+    loadMode: options.isDiffusion ? null : (config.loadMode ?? null),
+    ctxCheckpoints: options.isDiffusion ? null : (config.ctxCheckpoints ?? null),
+    cacheRam: options.isDiffusion ? null : (config.cacheRam ?? null),
     tensorParallel: options.isDiffusion
       ? false
       : (config.tensorParallel ?? false),
+    // The diffusion runner has no projector to skip, so the toggle is inert
+    // there for the same reason tensorParallel is.
+    disableVision: options.isDiffusion
+      ? false
+      : (config.disableVision ?? false),
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),
     // GPU Memory knobs are per-model (GGUF-only). Absent = defaults; the mode is
     // a standing preference so an absent mode falls back to the persisted one.
@@ -107,10 +118,15 @@ export function currentRuntimePerModelConfig(
     mlxKvBits: s.mlxKvBits ?? null,
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
+    specDraftCacheDtype: s.specDraftCacheDtype ?? null,
     nParallel: s.nParallel ?? null,
     nBatch: s.nBatch ?? null,
     nUbatch: s.nUbatch ?? null,
+    loadMode: s.loadMode ?? null,
+    ctxCheckpoints: s.ctxCheckpoints ?? null,
+    cacheRam: s.cacheRam ?? null,
     tensorParallel: s.tensorParallel ?? false,
+    disableVision: s.disableVision ?? false,
     chatTemplateOverride: cleanTemplate(s.chatTemplateOverride),
     // Snapshot the live GPU knobs too so a failed switch rolls the previous
     // model's GPU Memory settings back (see applyPerModelConfigToRuntime). The
@@ -136,14 +152,29 @@ export function perModelConfigsEqual(
     normalizeSpeculativeType(a.speculativeType) ===
       normalizeSpeculativeType(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
+    (a.specDraftCacheDtype ?? null) === (b.specDraftCacheDtype ?? null) &&
     (a.nParallel ?? null) === (b.nParallel ?? null) &&
     (a.nBatch ?? null) === (b.nBatch ?? null) &&
     (a.nUbatch ?? null) === (b.nUbatch ?? null) &&
+    (a.loadMode ?? null) === (b.loadMode ?? null) &&
+    (a.ctxCheckpoints ?? null) === (b.ctxCheckpoints ?? null) &&
+    (a.cacheRam ?? null) === (b.cacheRam ?? null) &&
     Boolean(a.tensorParallel) === Boolean(b.tensorParallel) &&
+    Boolean(a.disableVision) === Boolean(b.disableVision) &&
     cleanTemplate(a.chatTemplateOverride) ===
       cleanTemplate(b.chatTemplateOverride) &&
+    extraArgsSignature(a.llamaExtraArgs) === extraArgsSignature(b.llamaExtraArgs) &&
     gpuFieldsEqual(a, b)
   );
+}
+
+/**
+ * Compare on the launched command, so "not loaded" and "cleared" are equal here.
+ * They differ only in what a SAVE does, and treating them as different would make
+ * the row read as an unsaved change the moment it finished reading the server.
+ */
+function extraArgsSignature(value: string[] | null | undefined): string {
+  return (value ?? []).join("\u0000");
 }
 
 function gpuFieldsEqual(a: PerModelConfig, b: PerModelConfig): boolean {

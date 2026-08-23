@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { chatModelLoaded } from "./lib/chat-model-loaded";
 import {
   AssistantRuntimeProvider,
   type Attachment,
@@ -41,61 +40,56 @@ import {
   ThreadAutosaveHandle,
   createOpenAIStreamAdapter,
 } from "./api/chat-adapter";
+import { CHAT_HISTORY_UPDATED_EVENT } from "./api/chat-api";
 import { getResearchThreadState } from "./api/research-api";
 import {
-  ingestResearchUpdate,
-  useResearchRunStore,
-} from "./stores/research-run-store";
+  TEXT_ATTACHMENT_ACCEPT,
+  extractDocxAttachmentText,
+  extractHtmlAttachmentText,
+  extractPdfAttachmentText,
+  getDocumentAttachmentSizeError,
+  getDocxAttachmentError,
+} from "./attachment-content";
+import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import {
   loadConnectionsEnabled,
   loadExternalProviders,
   parseExternalModelId,
   providerModelSupportsVision,
 } from "./external-providers";
+import { chatModelLoaded } from "./lib/chat-model-loaded";
 import {
-  OPEN_DOCUMENT_SPREADSHEET_MIME,
-  OPEN_DOCUMENT_TEXT_MIME,
   type OpenDocumentAttachmentContent,
   readActiveOpenDocumentAttachmentContent,
   readOpenDocumentAttachmentContent,
 } from "./open-document";
-import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
-import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import { OPEN_DOCUMENT_ATTACHMENT_ACCEPT } from "./open-document-accept";
+import {
+  awaitThreadScopedSettingsWrite,
+  beginThreadScopedPairing,
+  commitHeldThreadScopedEditsToTheirThread,
+  releaseHeldThreadScopedEdits,
+  useChatRuntimeStore,
+} from "./stores/chat-runtime-store";
+import {
+  ingestResearchUpdate,
+  useResearchRunStore,
+} from "./stores/research-run-store";
 import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
-import {
-  notifyPromptQueueRunFailed,
-  requestPromptQueueStop,
-  requestTemporaryPromptQueueStop,
-} from "./utils/prompt-queue-boundary";
-import {
-  adoptPreStreamRunReservation,
-  claimPreStreamRunReservation,
-  findPreStreamRunReservation,
-  isPreStreamRunReservationCancelled,
-  preStreamRunThreadIdsForRuntime,
-  releasePreStreamRunReservation,
-} from "./utils/pre-stream-run-reservation";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import {
   chatContentPartAttachmentIdFromSignature,
   chatContentPartAttachmentSignature,
   onChatAttachmentDeleted,
 } from "./utils/chat-attachment-events";
-import {
-  attachmentContentText,
-  attachmentsSample,
-  isPastedTextFile,
-} from "./utils/pasted-text";
-import {
-  refreshContextUsage,
-  setActiveBranchReader,
-} from "./utils/refresh-context-usage";
+import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
 import {
   awaitStoredChatThreadWrites,
   deleteStoredChatThreads,
   ensureStoredChatThread,
   getStoredChatMessage,
   getStoredChatThread,
+  getStoredChatThreadReadResult,
   isExpectedBackgroundChatStorageError,
   listStoredChatMessages,
   listStoredChatThreads,
@@ -109,11 +103,34 @@ import {
   isChatThreadDeleted,
   markChatThreadDeleted,
 } from "./utils/chat-thread-tombstones";
-import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
 import { fallbackTitleFromUserText } from "./utils/chat-title";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import {
+  attachmentContentText,
+  attachmentsSample,
+  isPastedTextFile,
+} from "./utils/pasted-text";
+import {
+  adoptPreStreamRunReservation,
+  claimPreStreamRunReservation,
+  findPreStreamRunReservation,
+  isPreStreamRunReservationCancelled,
+  preStreamRunThreadIdsForRuntime,
+  releasePreStreamRunReservation,
+} from "./utils/pre-stream-run-reservation";
+import {
+  notifyPromptQueueRunFailed,
+  requestPromptQueueStop,
+  requestTemporaryPromptQueueStop,
+} from "./utils/prompt-queue-boundary";
+import {
+  refreshContextUsage,
+  setActiveBranchReader,
+} from "./utils/refresh-context-usage";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
+import { sanitizeThreadScopedSettings } from "./utils/thread-scoped-settings";
+import { VideoAttachmentAdapter } from "./video-attachment-adapter";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
 // Resolves to the thread id assigned when this message's chat was first persisted.
@@ -209,6 +226,8 @@ class VisionImageAdapter implements AttachmentAdapter {
       loadedIsMultimodal: state.loadedIsMultimodal,
       modelLoaded,
       loadError: state.lastModelLoadError,
+      visionDisabledByUser: state.loadedVisionDisabledByUser,
+      mmprojFallbackReason: state.mmprojFallbackReason,
     });
     if (unavailableReason) {
       toast.error(unavailableReason);
@@ -263,7 +282,17 @@ class VisionImageAdapter implements AttachmentAdapter {
 class PDFAttachmentAdapter implements AttachmentAdapter {
   accept = "application/pdf";
 
+  // Refused here, not at send: the composer empties itself before it awaits
+  // send(), so a ceiling that only fires there discards the typed message too.
+  // The throw itself is invisible, as with audio: nothing subscribes to
+  // attachmentAddError and the picker never awaits addAttachment, so the toast
+  // is the only thing that tells the user why no file appeared.
   add({ file }: { file: File }): Promise<PendingAttachment> {
+    const sizeError = getDocumentAttachmentSizeError(file, "PDF");
+    if (sizeError) {
+      toast.error(sizeError);
+      throw new Error(sizeError);
+    }
     return Promise.resolve({
       id: crypto.randomUUID(),
       type: "document",
@@ -275,12 +304,7 @@ class PDFAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const [{ extractText, getDocumentProxy }, buffer] = await Promise.all([
-      import("unpdf"),
-      attachment.file.arrayBuffer().then((bytes) => new Uint8Array(bytes)),
-    ]);
-    const pdf = await getDocumentProxy(buffer);
-    const { text } = await extractText(pdf, { mergePages: true });
+    const text = await extractPdfAttachmentText(attachment.file);
     return {
       id: attachment.id,
       type: "document",
@@ -300,17 +324,7 @@ class TextAttachmentAdapter implements AttachmentAdapter {
   // MIME is unreliable for source files, so also match by extension
   // (assistant-ui's fileMatchesAccept supports ".ext" entries). Covers svg, code,
   // config and other plain-text formats; html keeps its own adapter below.
-  accept = [
-    "text/plain,text/markdown,text/csv,text/xml,text/json,text/css",
-    "application/json,application/xml,image/svg+xml",
-    ".txt,.text,.log,.md,.markdown,.mdx,.rst,.csv,.tsv",
-    ".json,.jsonl,.ndjson,.xml,.yaml,.yml,.toml,.ini,.cfg,.conf,.env,.properties",
-    ".css,.scss,.sass,.less,.svg",
-    ".js,.jsx,.mjs,.cjs,.ts,.tsx,.py,.pyi,.ipynb,.rb,.php,.go,.rs,.java,.kt,.kts,.scala,.swift",
-    ".c,.h,.cc,.cpp,.hpp,.cxx,.cs,.m,.mm",
-    ".sh,.bash,.zsh,.fish,.ps1,.bat,.lua,.pl,.pm,.r,.jl,.dart,.vue,.svelte,.astro",
-    ".sql,.graphql,.gql,.proto,.tf,.tfvars,.gradle,.dockerfile,.makefile,.cmake,.diff,.patch",
-  ].join(",");
+  accept = TEXT_ATTACHMENT_ACCEPT;
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
     return {
@@ -367,10 +381,7 @@ class HtmlAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const html = await attachment.file.text();
-    const doc = new DOMParser().parseFromString(html, "text/html");
-    for (const el of doc.querySelectorAll("script, style")) el.remove();
-    const text = (doc.body.textContent ?? "").replace(/\s+/g, " ").trim();
+    const text = extractHtmlAttachmentText(await attachment.file.text());
     return {
       id: attachment.id,
       type: "document",
@@ -390,29 +401,33 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
   accept =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
-  add({ file }: { file: File }): Promise<PendingAttachment> {
-    return Promise.resolve({
+  // The archive's own parts are checked here too, not just the upload ceiling:
+  // a small .docx can still declare a part that only mammoth's inflate would
+  // grow past the cap, and refusing that at send() would empty the composer.
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    const error = await getDocxAttachmentError(file);
+    if (error) {
+      toast.error(error);
+      throw new Error(error);
+    }
+    return {
       id: crypto.randomUUID(),
       type: "document",
       name: file.name,
       contentType: file.type,
       file,
       status: { type: "requires-action", reason: "composer-send" },
-    });
+    };
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const [{ default: mammoth }, arrayBuffer] = await Promise.all([
-      import("mammoth"),
-      attachment.file.arrayBuffer(),
-    ]);
-    const { value } = await mammoth.extractRawText({ arrayBuffer });
+    const text = await extractDocxAttachmentText(attachment.file);
     return {
       id: attachment.id,
       type: "document",
       name: attachment.name,
       contentType: attachment.contentType,
-      content: [{ type: "text", text: `[DOCX: ${attachment.name}]\n${value}` }],
+      content: [{ type: "text", text: `[DOCX: ${attachment.name}]\n${text}` }],
       status: { type: "complete" },
     };
   }
@@ -430,12 +445,7 @@ class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
     Promise<OpenDocumentAttachmentContent | null>
   >();
 
-  accept = [
-    ".ods",
-    ".odt",
-    OPEN_DOCUMENT_SPREADSHEET_MIME,
-    OPEN_DOCUMENT_TEXT_MIME,
-  ].join(",");
+  accept = OPEN_DOCUMENT_ATTACHMENT_ACCEPT;
 
   async *add({
     file,
@@ -855,7 +865,9 @@ function createStudioDbAdapter(
       // while the creator is still queued. Use the same retry choke point as other mutations so a
       // temporarily missing row does not permanently skip first-turn title generation. A title is
       // cosmetic, so a row that never landed falls back to the default rather than rejecting here.
-      const thread = await ensureStoredChatThread(remoteId).catch(() => undefined);
+      const thread = await ensureStoredChatThread(remoteId).catch(
+        () => undefined,
+      );
       const defaultTitle = "New Chat";
 
       function streamTitle(title: string) {
@@ -918,10 +930,11 @@ function createStudioDbAdapter(
           const running = useChatRuntimeStore.getState().runningByThreadId;
           if (running[paired.id]) {
             setTimeout(() => {
-              void createStudioDbAdapter(modelType, pairId, projectId).generateTitle(
-                remoteId,
-                messages,
-              );
+              void createStudioDbAdapter(
+                modelType,
+                pairId,
+                projectId,
+              ).generateTitle(remoteId, messages);
             }, 600);
             return streamTitle(thread.title || defaultTitle);
           }
@@ -1018,7 +1031,9 @@ async function waitForRunStartHistoryAppend(
     return;
   }
   const runStartReady = pendingRunStartReadyByMessageId.get(userMessage.id);
-  const historyAppendReady = pendingHistoryAppendByMessageId.get(userMessage.id);
+  const historyAppendReady = pendingHistoryAppendByMessageId.get(
+    userMessage.id,
+  );
   if (runStartReady === undefined && historyAppendReady === undefined) {
     return undefined;
   }
@@ -1043,7 +1058,9 @@ async function waitForRunStartHistoryAppend(
   return adoptedThreadId;
 }
 
-function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter {
+function createPersistedRunAdapter(
+  adapter: ChatModelAdapter,
+): ChatModelAdapter {
   return {
     ...adapter,
     async *run(options) {
@@ -1070,10 +1087,7 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
       };
       throwIfReservationCancelled();
       const persistedRunThreadIds = preStreamRunThreadIdsForRuntime(
-        [
-          ...reservationThreadIds,
-          ...trackedRunStartThreadIds,
-        ],
+        [...reservationThreadIds, ...trackedRunStartThreadIds],
         undefined,
       );
       let adoptedThreadId: string | undefined;
@@ -1211,8 +1225,7 @@ function useStudioRuntimeAdapters(
                     ...(Array.isArray(attachments)
                       ? {
                           attachments: attachments.filter(
-                            (attachment) =>
-                              attachment.id !== attachmentId,
+                            (attachment) => attachment.id !== attachmentId,
                           ),
                         }
                       : {}),
@@ -1235,9 +1248,7 @@ function useStudioRuntimeAdapters(
             ).attachments;
             if (
               Array.isArray(attachments) &&
-              attachments.some(
-                (attachment) => attachment.id === attachmentId,
-              )
+              attachments.some((attachment) => attachment.id === attachmentId)
             ) {
               changed = true;
               return {
@@ -1418,9 +1429,7 @@ function useStudioRuntimeAdapters(
         const localThreadId = aui.threadListItem().getState().id;
         const historyClearGeneration = chatHistoryClearBoundary.capture();
         const throwIfHistoryWasCleared = async (remoteId: string) => {
-          if (
-            chatHistoryClearBoundary.capture() === historyClearGeneration
-          ) {
+          if (chatHistoryClearBoundary.capture() === historyClearGeneration) {
             return;
           }
           markChatThreadDeleted(remoteId);
@@ -1469,17 +1478,22 @@ function useStudioRuntimeAdapters(
           await throwIfHistoryWasCleared(remoteId);
           const content = cloneContent(message.content);
           const attachments =
-            message.role === "user" ? cloneAttachments(message.attachments) : [];
+            message.role === "user"
+              ? cloneAttachments(message.attachments)
+              : [];
           const custom = message.metadata?.custom;
           const createdAt =
             existingMessage?.createdAt ??
             message.createdAt?.getTime?.() ??
-              Date.now();
+            Date.now();
           const existingMetadata = existingMessage?.metadata;
           const incomingRevision = Number(
-            (custom as Record<string, unknown> | undefined)?.serverRevision ?? -1,
+            (custom as Record<string, unknown> | undefined)?.serverRevision ??
+              -1,
           );
-          const existingRevision = Number(existingMetadata?.serverRevision ?? -1);
+          const existingRevision = Number(
+            existingMetadata?.serverRevision ?? -1,
+          );
           const incomingMetadata = custom as
             | Record<string, unknown>
             | undefined;
@@ -1533,6 +1547,9 @@ function useStudioRuntimeAdapters(
         new CompositeAttachmentAdapter([
           new VisionImageAdapter(),
           new AudioAttachmentAdapter(),
+          // Before the document adapters: a composite takes the first match,
+          // and .mkv/.mov must not fall through to them.
+          new VideoAttachmentAdapter(),
           new TextAttachmentAdapter(),
           new HtmlAttachmentAdapter(),
           new PDFAttachmentAdapter(),
@@ -1573,7 +1590,9 @@ function useRuntimeHook(
 }
 
 function createRuntimeHook(modelType: ModelType, pairId?: string) {
-  return function useConfiguredRuntimeHook(): ReturnType<typeof useLocalRuntime> {
+  return function useConfiguredRuntimeHook(): ReturnType<
+    typeof useLocalRuntime
+  > {
     return useRuntimeHook(modelType, pairId);
   };
 }
@@ -1665,7 +1684,14 @@ function ThreadNewChatSwitch({
     // runActive is a DEPENDENCY, not just a guard: refreshContextUsage declines while anything
     // generates, and nothing else re-fires this when the run ends. ThreadContextUsageRecount
     // cannot cover for it -- an unpersisted New Chat has no activeThreadId.
-  }, [checkpoint, ggufContextLength, isLoading, modelLoading, nonce, runActive]);
+  }, [
+    checkpoint,
+    ggufContextLength,
+    isLoading,
+    modelLoading,
+    nonce,
+    runActive,
+  ]);
 
   return null;
 }
@@ -1684,6 +1710,210 @@ function ActiveThreadSync({
     }
     setActiveThreadId(mainThreadId ?? null);
   }, [enabled, mainThreadId, setActiveThreadId]);
+
+  return null;
+}
+
+// A thread read that fails leaves the chat unpaired, so it is worth a couple of goes.
+const THREAD_READ_RETRY_MS = 1_500;
+const THREAD_READ_RETRIES = 2;
+// And one that never answers at all has to become a failure, or it holds sends forever.
+const THREAD_READ_TIMEOUT_MS = 8_000;
+
+// gated on hydration, or the initial /api/chat/settings response lands after a thread's own values.
+function ThreadScopedSettingsSync({
+  enabled,
+}: { enabled: boolean }): ReactElement | null {
+  const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const settingsHydrated = useChatRuntimeStore(
+    (state) => state.settingsHydrated,
+  );
+
+  useEffect(() => {
+    const { applyThreadScopedSettings } = useChatRuntimeStore.getState();
+    // An unsaved chat carries a runtime-made id that no row can exist for, so its read
+    // can only 404. Opening a pairing window for it holds every edit behind a round
+    // trip that is certain to say "no snapshot", which is how an edit made on a fresh
+    // /chat stopped reaching the installation defaults straight away.
+    if (isAssistantLocalThreadId(activeThreadId)) {
+      applyThreadScopedSettings(null, null);
+      return;
+    }
+    if (!enabled) {
+      // Compare panes share one composer between two threads, so there is no single
+      // chat whose snapshot could apply: compare runs on the installation defaults and
+      // its edits move them, as every chat did before this change. Say so here rather
+      // than leaving the module still pointing at the last single chat, whose stored
+      // pills a model load would otherwise read back through threadScopedOverride.
+      applyThreadScopedSettings(null, null);
+      return;
+    }
+    if (activeThreadId === null) {
+      if (settingsHydrated) applyThreadScopedSettings(null, null);
+      return;
+    }
+    // The composer is interactive while /api/chat/settings is still out, so start holding
+    // this chat's edits as soon as its id is known. Waiting for hydration to begin the
+    // pairing left that window writing edits into the installation defaults instead.
+    beginThreadScopedPairing(activeThreadId);
+    if (!settingsHydrated) {
+      return () => {
+        // Hydration finishing re-runs this effect for the same chat, and the held edits are
+        // still waiting for that chat's read, so keep holding them. Any other reason to
+        // leave means the chat is going away and they belong to it.
+        const now = useChatRuntimeStore.getState();
+        if (!now.settingsHydrated || now.activeThreadId !== activeThreadId) {
+          commitHeldThreadScopedEditsToTheirThread();
+        }
+      };
+    }
+    let cancelled = false;
+    let paired = false;
+    let unpaired = false;
+    let defaulted = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retriesLeft = THREAD_READ_RETRIES;
+    // One per attempt, aborted when the attempt's deadline passes and when the chat is
+    // left. Without it the losing side of the race below stayed open on the server for
+    // the full write timeout while the next try opened another.
+    const reads = new Set<AbortController>();
+    const abortReads = () => {
+      for (const read of reads) read.abort();
+      reads.clear();
+    };
+
+    const sync = () => {
+      if (cancelled || paired) return;
+      // the composer is live while this read is out, so hold any edit made in the meantime
+      // rather than writing it to the installation defaults and then discarding it.
+      // Drop to the installation defaults for the duration of the read. Until it lands the
+      // store still holds the OUTGOING chat's values, and the composer is usable: a send in
+      // that window is captured by snapshotQueuedChatRunSettings and carries the previous
+      // chat's permission level and pills, so a chat stored as "ask" could run tools
+      // without asking. The defaults are the only honest thing to show for a chat whose
+      // own settings are not known yet, and a read that never resolves now leaves those
+      // rather than another chat's.
+      //
+      // The pairing opened above survives this: a drop to the defaults for the chat that is
+      // still open and still waiting on its read keeps holding rather than releasing.
+      if (!defaulted) {
+        defaulted = true;
+        applyThreadScopedSettings(null, null);
+      }
+      beginThreadScopedPairing(activeThreadId);
+      // Settle this chat's own PATCH first. Edit a chat, leave, come straight back and the
+      // read can overtake the write and return the pre-edit snapshot, which then goes back
+      // over the values the user set and is written out again by the next edit.
+      const read = new AbortController();
+      reads.add(read);
+      void awaitThreadScopedSettingsWrite(activeThreadId)
+        .then(() =>
+          // Bounded, because this read is what holds sends back: an unbounded GET that
+          // never settles would park every send in the chat behind "Loading this chat's
+          // settings" with nothing to release it, and leave the request open besides.
+          // The fetch carries THIS attempt's deadline and its controller, so a stall ends
+          // the request rather than leaving it running while the retry opens the next one;
+          // the race is the backstop for the rest of the read.
+          Promise.race([
+            getStoredChatThreadReadResult(activeThreadId, {
+              timeoutMs: THREAD_READ_TIMEOUT_MS,
+              signal: read.signal,
+            }),
+            new Promise<never>((_, reject) =>
+              setTimeout(
+                () => reject(new Error("thread settings read timed out")),
+                THREAD_READ_TIMEOUT_MS,
+              ),
+            ),
+          ]),
+        )
+        .finally(() => {
+          reads.delete(read);
+        })
+        .then(({ thread, cacheable }) => {
+          if (cancelled || paired) return;
+          // A legacy fallback row means the backend GET FAILED and Dexie answered instead.
+          // That is the failure case, not a confirmed missing row: the thread may well
+          // have a snapshot on the server, so keep holding and retry rather than
+          // releasing this chat's edits into the installation defaults.
+          if (thread && !cacheable) {
+            retryThreadRead();
+            return;
+          }
+          // a legacy fallback row carries no snapshot, and pinning would overwrite the real one.
+          if (!thread) {
+            // a new chat's runtime-made id has no row yet, so it stays on the global
+            // settings. The answer is in: there is no snapshot to wait for, so an edit
+            // held for it is a plain default change and goes out now. Deferring that to a
+            // second missing read meant an unsaved chat's click was written to a row that
+            // does not exist, or attached to the chat once it was saved.
+            releaseHeldThreadScopedEdits();
+            if (unpaired) return;
+            unpaired = true;
+            applyThreadScopedSettings(null, null);
+            return;
+          }
+          paired = true;
+          // the response spells every omitted field as null, which is not a value to apply.
+          applyThreadScopedSettings(
+            activeThreadId,
+            thread.settings
+              ? sanitizeThreadScopedSettings(thread.settings)
+              : null,
+          );
+        })
+        // A failed read leaves the installation defaults up (dropped to above), not the
+        // outgoing chat's settings, which would otherwise stay live indefinitely. The held
+        // edit goes to the chat it was made in.
+        .catch(() => retryThreadRead());
+    };
+
+    // The read did not answer for this chat. Send what is held to the chat it was made
+    // in, then keep the chat paired, or every later edit in it would fall through to the
+    // installation defaults for as long as it stays open. A fresh browser with no legacy
+    // cache has nothing else to fall back on, so retry a bounded few times.
+    const retryThreadRead = () => {
+      if (cancelled) return;
+      commitHeldThreadScopedEditsToTheirThread();
+      if (retryTimer !== null) return;
+      if (retriesLeft <= 0) {
+        // Out of tries. Staying paired would hold every send behind "Loading this
+        // chat's settings" with nothing left to resolve it, so give up openly: the
+        // chat runs on the installation defaults, which is what it is already
+        // showing, and say so once rather than failing silently.
+        applyThreadScopedSettings(null, null);
+        releaseHeldThreadScopedEdits();
+        toast.error("Could not load this chat's settings", {
+          description:
+            "It is using the default settings. Reopen the chat to try again.",
+        });
+        return;
+      }
+      // Keep the chat paired between tries, or an edit in it would fall through to
+      // the installation defaults. A fresh browser with no legacy cache has nothing
+      // else to fall back on, so it is worth a few goes.
+      beginThreadScopedPairing(activeThreadId);
+      retriesLeft -= 1;
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        sync();
+      }, THREAD_READ_RETRY_MS);
+    };
+
+    sync();
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, sync);
+    return () => {
+      cancelled = true;
+      if (retryTimer !== null) clearTimeout(retryTimer);
+      // Nothing is waiting on these once the chat is gone, and leaving them running is
+      // how an outage turned every chat opened during it into three open requests.
+      abortReads();
+      // switched away mid-read: the edit belongs to the chat it was made in, not to the
+      // installation defaults that every other snapshot-less chat follows.
+      commitHeldThreadScopedEditsToTheirThread();
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, sync);
+    };
+  }, [activeThreadId, enabled, settingsHydrated]);
 
   return null;
 }
@@ -1770,7 +2000,11 @@ function CancelRegistrar(): ReactElement | null {
     if (!mainThreadId) return;
     const runtime = aui.threads().__internal_getAssistantRuntime?.();
     const threadIds = Array.from(
-      new Set([mainThreadId, remoteThreadId].filter((id): id is string => Boolean(id))),
+      new Set(
+        [mainThreadId, remoteThreadId].filter((id): id is string =>
+          Boolean(id),
+        ),
+      ),
     );
     const cancel = () => {
       for (const threadId of threadIds) {
@@ -1811,9 +2045,7 @@ function CancelRegistrar(): ReactElement | null {
           return;
         }
         for (const threadId of threadIds) {
-          useChatRuntimeStore
-            .getState()
-            .clearThreadCancel(threadId, cancel);
+          useChatRuntimeStore.getState().clearThreadCancel(threadId, cancel);
         }
         unsubscribe();
       });
@@ -1977,6 +2209,7 @@ export function ChatRuntimeProvider({
             !initialThreadId
           }
         />
+        <ThreadScopedSettingsSync enabled={modelType === "base" && !pairId} />
         <ActiveBranchRegistrar enabled={modelType === "base" && !pairId} />
         <ThreadContextUsageRecount enabled={modelType === "base" && !pairId} />
         <ThreadBackendAutosave modelType={modelType} pairId={pairId} />

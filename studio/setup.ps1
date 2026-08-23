@@ -1615,6 +1615,11 @@ $Rule = [string]::new([char]0x2500, 52)
 
 function Enable-StudioVirtualTerminal {
     if ($env:NO_COLOR) { return $false }
+    # A redirected stdout is not a console and GetConsoleMode fails on a non-console handle, so the
+    # block below could only return $false anyway. Answer without Add-Type, which runs csc.exe and
+    # drops source in %TEMP%. The CLI and the desktop app both pipe us, so this is the path the
+    # compile was on.
+    if ($script:StudioStdoutRedirected) { return $false }
     try {
         Add-Type -Namespace StudioVT -Name Native -MemberDefinition @'
 [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int nStdHandle);
@@ -4791,6 +4796,30 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
             substep "studio install incomplete -- forcing dependency pass to repair..." "Cyan"
             $SkipPythonDeps = $false
         }
+        # If the desktop app specifies a minimum required backend version and the installed
+        # package is older than that requirement, force the dependency pass to upgrade it.
+        if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) {
+            $_desktopVerBad = $false
+            try {
+                & python -c "
+import re, sys
+try:
+    from packaging.version import parse as parse_v
+except ImportError:
+    def parse_v(v):
+        match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)', (v or '').strip())
+        return (int(match.group(1)), int(match.group(2)), int(match.group(3))) if match else None
+installed = parse_v(sys.argv[1])
+required = parse_v(sys.argv[2])
+sys.exit(0 if installed is not None and required is not None and installed >= required else 1)
+" "$InstalledVer" "$env:UNSLOTH_DESKTOP_BACKEND_VERSION" 2>$null
+                if ($LASTEXITCODE -ne 0) { $_desktopVerBad = $true }
+            } catch {}
+            if ($_desktopVerBad) {
+                substep "$_PkgName $InstalledVer < $env:UNSLOTH_DESKTOP_BACKEND_VERSION (required by desktop app) -- forcing dependency pass to update..." "Cyan"
+                $SkipPythonDeps = $false
+            }
+        }
         # ...but not if an AMD GPU is present and installed PyTorch is CPU-only
         # (host predates ROCm-wheel support, or GPU added later): the fast "up to
         # date" path would leave the user on CPU torch with Train/Export disabled.
@@ -5533,11 +5562,11 @@ foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.8.0", "hf_xet==1.4
     }
 }
 if ($script:UnslothVerbose) {
-    Fast-Install --target $VenvT5_530Dir tiktoken
+    Fast-Install --target $VenvT5_530Dir --no-deps tiktoken
     $tiktokenInstallExit = $LASTEXITCODE
     $output = ""
 } else {
-    $output = Fast-Install --target $VenvT5_530Dir tiktoken | Out-String
+    $output = Fast-Install --target $VenvT5_530Dir --no-deps tiktoken | Out-String
     $tiktokenInstallExit = $LASTEXITCODE
 }
 if ($tiktokenInstallExit -ne 0) {
@@ -5568,11 +5597,11 @@ foreach ($pkg in @("transformers==5.5.0", "huggingface_hub==1.8.0", "hf_xet==1.4
     }
 }
 if ($script:UnslothVerbose) {
-    Fast-Install --target $VenvT5_550Dir tiktoken
+    Fast-Install --target $VenvT5_550Dir --no-deps tiktoken
     $tiktokenInstallExit = $LASTEXITCODE
     $output = ""
 } else {
-    $output = Fast-Install --target $VenvT5_550Dir tiktoken | Out-String
+    $output = Fast-Install --target $VenvT5_550Dir --no-deps tiktoken | Out-String
     $tiktokenInstallExit = $LASTEXITCODE
 }
 if ($tiktokenInstallExit -ne 0) {
@@ -5603,11 +5632,11 @@ foreach ($pkg in @("transformers==5.10.2", "huggingface_hub==1.8.0", "hf_xet==1.
     }
 }
 if ($script:UnslothVerbose) {
-    Fast-Install --target $VenvT5_510Dir tiktoken
+    Fast-Install --target $VenvT5_510Dir --no-deps tiktoken
     $tiktokenInstallExit = $LASTEXITCODE
     $output = ""
 } else {
-    $output = Fast-Install --target $VenvT5_510Dir tiktoken | Out-String
+    $output = Fast-Install --target $VenvT5_510Dir --no-deps tiktoken | Out-String
     $tiktokenInstallExit = $LASTEXITCODE
 }
 if ($tiktokenInstallExit -ne 0) {

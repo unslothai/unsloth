@@ -29,6 +29,7 @@ function config(nBatch: number | null, nUbatch: number | null = null) {
     nBatch,
     nUbatch,
     tensorParallel: false,
+    disableVision: false,
     chatTemplateOverride: null,
   };
 }

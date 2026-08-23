@@ -260,6 +260,75 @@ assert.deepEqual(curatedRowLabelFor("unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG)
   name: "Z-Image-Turbo-GGUF",
   tags: [],
 });
+
+// ── host-aware rows ────────────────────────────────────────────────────────────
+// On a host that can place a diffusion pipeline, the two H3 rows say which is which. The gap is
+// roughly 10x, and the names alone gave the user nothing to choose on.
+assert.deepEqual(curatedRowLabelFor("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG, "accelerated"), {
+  name: "MiniMax H3 (Fast FP8)",
+  tags: ["BF16"],
+});
+assert.deepEqual(
+  curatedRowLabelFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG, "accelerated"),
+  { name: "MiniMax-H3-GGUF (Slow)", tags: [] },
+);
+// A host that can only run the native engine has nothing to compare against, so the GGUF row
+// keeps its plain name.
+assert.deepEqual(
+  curatedRowLabelFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG, "gguf-only"),
+  { name: "MiniMax-H3-GGUF", tags: [] },
+);
+// The trigger and the row must agree, or the model renames itself as the popover opens.
+assert.equal(
+  curatedDisplayNameFor("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG, "accelerated"),
+  "MiniMax H3 (Fast FP8)",
+);
+assert.equal(
+  curatedDisplayNameFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG, "accelerated"),
+  "MiniMax-H3-GGUF (Slow)",
+);
+// No other model claims a speed nobody measured.
+assert.deepEqual(
+  curatedRowLabelFor("Lightricks/LTX-2", VIDEO_CATALOG, "accelerated"),
+  curatedRowLabelFor("Lightricks/LTX-2", VIDEO_CATALOG),
+);
+
+// A gguf-only host loses exactly the artifacts the backend refuses there, and keeps the rest.
+// Non-GGUF is NOT the test: the diffusion pipelines are device-neutral and run on MPS, and the
+// audio STT rows run through the whisper.cpp sidecar whatever format the catalog labels them.
+for (const [label, catalog, refused] of [
+  ["video", VIDEO_CATALOG, ["MiniMaxAI/MiniMax-H3"]],
+  ["image", IMAGE_CATALOG, []],
+  ["audio", AUDIO_CATALOG, []],
+] as const) {
+  const all = catalogToModelOptions(catalog).map((o) => o.id);
+  const offered = catalogToModelOptions(catalog, "gguf-only").map((o) => o.id);
+  assert.deepEqual(
+    all.filter((id) => !offered.includes(id)),
+    [...refused],
+    `${label}: a gguf-only host lost a row it can load`,
+  );
+}
+// Every group keeps at least one row on a gguf-only host: a Mac must never open a picker with a
+// whole model family missing (H3 keeps its GGUF sibling).
+for (const [label, catalog] of [
+  ["video", VIDEO_CATALOG],
+  ["image", IMAGE_CATALOG],
+  ["audio", AUDIO_CATALOG],
+] as const) {
+  const offered = new Set(catalogToModelOptions(catalog, "gguf-only").map((o) => o.id));
+  for (const group of catalog) {
+    assert.ok(
+      group.artifacts.some((artifact) => offered.has(artifact.repoId)),
+      `${label}: "${group.displayName}" vanished on a gguf-only host`,
+    );
+  }
+}
+// An undiscovered host keeps today's rows, so the picker does not blink on first open.
+assert.deepEqual(
+  catalogToModelOptions(VIDEO_CATALOG, "unknown").map((o) => o.id),
+  catalogToModelOptions(VIDEO_CATALOG).map((o) => o.id),
+);
 // Every GGUF row ends in the suffix, whoever published it.
 for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
   for (const group of catalog) {
@@ -545,17 +614,19 @@ const hyimage = groupForRepoId(
   IMAGE_CATALOG,
 );
 assert.ok(hyimage);
+// bf16 at both ends now: the QuantStack GGUF that used to be the 24 GB route was unpublished
+// from the Hub, so the group has no quant ladder left. 50 GB still fits a 24 GB card's 61.6 GB
+// budget, so this asserts the group did not silently vanish along with its GGUF.
 assert.equal(
   pickDefaultArtifact(hyimage, { gpuGb: 24, systemRamGb: 64, isDownloaded: notDownloaded })
     .repoId,
-  "QuantStack/HunyuanImage-2.1-GGUF",
+  "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
 );
 assert.equal(
   pickDefaultArtifact(hyimage, { gpuGb: 141, systemRamGb: 128, isDownloaded: notDownloaded })
     .format,
   "bf16",
 );
-assert.equal(groupForRepoId("QuantStack/HunyuanImage-2.1-GGUF", IMAGE_CATALOG), hyimage);
 // HiDream I1: all three variants group together, a datacenter GPU auto-routes to the Full bf16 (catalog order wins among equal sizes), and 24 GB hides the group.
 const hidream = groupForRepoId("HiDream-ai/HiDream-I1-Full", IMAGE_CATALOG);
 assert.ok(hidream);
