@@ -1199,10 +1199,9 @@ TABLE_ROWS = (
     ("messages rendered", lambda r: r["counts"]["messages"]),
     ("dom nodes", lambda r: r["counts"]["domNodes"]),
     ("code blocks", lambda r: r["counts"]["codeBlocks"]),
-    # Printed side by side deliberately. `code chars` is what the fixture built and does not move
-    # when a fence defers; `highlighted tokens` and `deferred fences` are how much of it the
-    # reader's viewport had reached. A reader comparing two runs needs to see all three, because
-    # only the first is a statement about the fixture.
+    # Side by side deliberately: `code chars` is what the fixture built and does not move when a
+    # fence defers, while `highlighted tokens` and `deferred fences` are how much of it the
+    # viewport reached. Only the first is a statement about the fixture.
     ("code chars", lambda r: r["counts"].get("codeChars", 0)),
     ("highlighted tokens", lambda r: r["counts"]["highlightedTokens"]),
     ("fence blocks", lambda r: r["counts"].get("fenceBlocks", 0)),
@@ -1770,16 +1769,12 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                 failures.append(f"{where} highlighted nothing; Shiki never ran")
             # DEFERRAL IS EXPECTED. AN UNHIGHLIGHTED MOUNTED FENCE IS NOT.
             #
-            # Off-screen code fences render as a plain shell by default, so a floor under the
-            # total token count no longer separates "this thread has settled" from "the reader is
-            # not looking at most of the code". This asks the question per block instead: every
-            # fence is either a deferred shell, which is a state with a name and an attribute, or
-            # it is highlighted. The third state -- mounted, not deferred, and still showing
-            # streamdown's own unhighlighted fallback -- exists for a frame while the highlighter's
-            # passive effect runs, and a settled thread must hold none of them.
-            #
-            # This is STRICTER than the total it replaces: one block stuck on the fallback used to
-            # pass as long as the other blocks made the count up.
+            # A floor on total tokens no longer separates "settled" from "the reader is not looking
+            # at most of the code", so ask per block: a fence is either a deferred shell, which is
+            # a named state with an attribute, or highlighted. The third state -- mounted, not
+            # deferred, still on streamdown's fallback -- lasts a frame while the highlighter's
+            # passive effect runs, and a settled thread must hold none. Stricter than the total it
+            # replaces, which one stuck block passed as long as the others made the count up.
             stuck = counts.get("unhighlightedMountedFences", 0)
             if stuck:
                 failures.append(

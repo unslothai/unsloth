@@ -530,12 +530,10 @@ function FenceBlock({
    * DRIVE THE HIGHLIGHTER OVER THIS FENCE ON DEMAND. The latch owns WHEN; this owns WHAT, because
    * the plugin instance lives here with the component that renders the block.
    *
-   * `tokens: true` produces this fence's tokens. `code.highlight` returns them synchronously once
-   * the grammar is loaded and caches on the source string, so the result is the same object the
-   * block's own render is about to ask for -- which is what lets a jump or a print swap straight
-   * to a COLOURED block rather than to streamdown's plain fallback.
-   *
-   * `tokens: false` highlights the empty string, which loads the grammar and tokenizes nothing.
+   * `tokens: true`: `code.highlight` returns synchronously once the grammar is loaded and caches
+   * on the source string, so this is the same object the block's own render is about to ask for,
+   * which is what lets a jump or a print swap straight to a COLOURED block rather than to
+   * streamdown's plain fallback. `tokens: false` highlights "", loading the grammar only.
    */
   const warm = useCallback(
     (tokens: boolean) => {

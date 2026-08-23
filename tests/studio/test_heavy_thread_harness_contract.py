@@ -127,11 +127,10 @@ def test_the_verdict_asserts_the_fixture_and_not_just_its_size() -> None:
 
 
 def test_the_fixture_assertion_survives_deferred_fence_highlighting() -> None:
-    # Off-screen fences render as a plain shell by default, so a floor under the TOKEN count is
-    # partly a measurement of where the viewport is: the same unchanged fixture dropped from 3,216
-    # tokens per cycle to 1,322. Lowering that floor to fit would leave the check unable to tell a
-    # deferred thread from one that had quietly stopped rendering code, which is the only thing it
-    # is for. The size assertion is therefore made on characters, which the shell carries too.
+    # A floor on the TOKEN count partly measures where the viewport is: the same unchanged fixture
+    # dropped from 3,216 tokens per cycle to 1,322. Lowering it to fit would leave the check unable
+    # to tell a deferred thread from one that stopped rendering code, which is all it is for. So
+    # the size assertion is on characters, which the deferred shell carries too.
     page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
     head = page.index("const EXPECTED_PER_CYCLE")
     expected = page[head : page.index("};", head)]
@@ -140,9 +139,8 @@ def test_the_fixture_assertion_survives_deferred_fence_highlighting() -> None:
 
 
 def test_a_fence_may_be_deferred_or_highlighted_but_not_neither() -> None:
-    # The half of the old token floor that was about SETTLEMENT rather than about the fixture,
-    # asked per block instead of in total. One block stuck on streamdown's unhighlighted fallback
-    # used to pass as long as the other blocks made the count up.
+    # The SETTLEMENT half of the old token floor, asked per block. One block stuck on streamdown's
+    # unhighlighted fallback used to pass as long as the others made the count up.
     page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
     assert "unhighlightedMountedFences" in page
     assert 'counts.get("unhighlightedMountedFences", 0)' in verdict()

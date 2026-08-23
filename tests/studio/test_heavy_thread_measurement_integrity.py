@@ -624,10 +624,9 @@ def test_a_clean_cell_produces_no_harness_failure() -> None:
 
 
 def test_deferred_fences_are_not_a_harness_failure() -> None:
-    # THE POINT OF MEASURING CHARACTERS. Off-screen fences render as a plain shell by default, so
-    # a real, complete, correctly built thread now holds far fewer highlighted tokens than the
-    # same thread did before the default moved -- 1,322 against 3,216 for one cycle, measured. The
-    # fixture is untouched, and the harness must not call that broken.
+    # THE POINT OF MEASURING CHARACTERS. A real, complete thread now holds far fewer highlighted
+    # tokens than before the default moved: 1,322 against 3,216 for one cycle, measured, with the
+    # fixture untouched. The harness must not call that broken.
     cell = copy.deepcopy(clean_cell())
     cell["counts"]["deferredFences"] = 4
     cell["counts"]["highlightedTokens"] = 300
@@ -635,10 +634,9 @@ def test_deferred_fences_are_not_a_harness_failure() -> None:
 
 
 def test_a_fixture_that_lost_its_code_is_still_a_harness_failure() -> None:
-    # The check this replaces was there to catch a fixture that is not the heavy thread it claims
-    # to be, and it still does. Highlighted tokens are left HIGH here, so the only thing that can
-    # fail is the character floor: a thread whose code blocks quietly emptied still renders, still
-    # scrolls and still produces a rising curve, of something else.
+    # The replaced check caught a fixture that is not the heavy thread it claims to be, and this
+    # still does. Tokens are left HIGH so only the character floor can fail: a thread whose code
+    # blocks quietly emptied still renders, still scrolls and still curves, of something else.
     cell = copy.deepcopy(clean_cell())
     cell["counts"]["codeChars"] = 6000
     cell["counts"]["highlightedTokens"] = 99999
@@ -647,8 +645,8 @@ def test_a_fixture_that_lost_its_code_is_still_a_harness_failure() -> None:
 
 
 def test_a_fence_that_is_neither_deferred_nor_highlighted_is_a_harness_failure() -> None:
-    # The other half of what the token floor used to do, asked per block. A single block stuck on
-    # streamdown's unhighlighted fallback passed the old total as long as the rest made it up.
+    # The other half of the old token floor, per block: one block stuck on streamdown's
+    # unhighlighted fallback passed the total as long as the rest made it up.
     cell = copy.deepcopy(clean_cell())
     cell["counts"]["unhighlightedMountedFences"] = 1
     failures = HARNESS.harness_failures(results_with(cell), discriminating_report())

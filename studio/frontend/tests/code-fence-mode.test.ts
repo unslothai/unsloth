@@ -13,11 +13,10 @@ import {
 /**
  * The fence mode decision table, RUN rather than described.
  *
- * Every other test around this change is a regex over a source file, because the thing being
- * protected is a React hook over IntersectionObserver and a behavioural test would need a DOM.
- * This one is not: the mode is a pure function of two values, and the whole point of the default
- * moving from "off" to "defer" is that every existing way of overriding it keeps working in BOTH
- * directions. A truth table nobody executes is not evidence that it does.
+ * The other tests around this change are regexes over source, because what they protect is a React
+ * hook over IntersectionObserver and would need a DOM. This is a pure function of two values, and
+ * the point of the default moving from "off" to "defer" is that every existing override keeps
+ * working in BOTH directions. A truth table nobody executes is not evidence of that.
  */
 
 test("an install that has never set the flag gets the ship default", () => {
@@ -35,11 +34,10 @@ test("the build flag overrides the default in both directions", () => {
 });
 
 test("the runtime global overrides the default in both directions", () => {
-  // The string forms.
   assert.equal(resolveFenceMode("off", ""), "off");
   assert.equal(resolveFenceMode("defer", ""), "defer");
-  // And the boolean forms a devtools console types. `false` must turn it OFF against a default
-  // that is now ON, which is the direction that did not previously have to work.
+  // The boolean forms a devtools console types. `false` must turn it OFF against a now-ON default,
+  // the direction that did not previously have to work.
   assert.equal(resolveFenceMode(false, ""), "off");
   assert.equal(resolveFenceMode(true, ""), "defer");
 });
@@ -60,10 +58,8 @@ test("the runtime global beats the build flag, both ways round", () => {
 });
 
 test("a typo degrades to the old behaviour, never to the new default", () => {
-  // Someone tried to configure this and misspelled it. Falling through to the DEFAULT would
-  // silently ignore the attempt; falling through to `off` gives them the mode where every fence is
-  // highlighted at mount, which is never wrong-looking, and is what this flag did before the
-  // default moved.
+  // Falling through to the DEFAULT would silently ignore the attempt. `off` highlights every fence
+  // at mount, which is never wrong-looking, and is what this flag did before the default moved.
   for (const typo of [
     "defr",
     "DEFER",
@@ -90,8 +86,8 @@ test("tokenize is measurement only and no default or boolean can reach it", () =
     "explicit string only",
   );
   assert.equal(resolveFenceMode("tokenize", ""), "tokenize");
-  // Nothing else may land there. In particular the two shapes that carry no opinion about which
-  // mode is wanted -- an absent global and an unset build flag -- must not.
+  // Nothing else may land there, least of all the shapes carrying no opinion: absent global, unset
+  // build flag.
   assert.notEqual(resolveFenceMode(undefined, ""), "tokenize");
   assert.notEqual(resolveFenceMode(true, ""), "tokenize");
   assert.notEqual(resolveFenceMode(false, ""), "tokenize");
@@ -100,19 +96,15 @@ test("tokenize is measurement only and no default or boolean can reach it", () =
 });
 
 test("a non-string non-boolean global is ignored rather than coerced", () => {
-  // `globalThis.__UNSLOTH_DEFER_FENCE_HIGHLIGHT__ = 1` is a plausible console typo. Coercing it
-  // would make a truthy number mean "defer" and a falsy one mean "off", which are two more
-  // undocumented spellings. It falls through to the build flag instead.
+  // `__UNSLOTH_DEFER_FENCE_HIGHLIGHT__ = 1` is a plausible console typo. Coercing it would add two
+  // more undocumented spellings, so it falls through to the build flag instead.
   assert.equal(resolveFenceMode(1 as unknown, "off"), "off");
   assert.equal(resolveFenceMode(0 as unknown, "defer"), "defer");
   assert.equal(resolveFenceMode(null, ""), SHIP_DEFAULT);
   assert.equal(resolveFenceMode({} as unknown, ""), SHIP_DEFAULT);
 });
 
-/**
- * The mode module must stay free of JSX, or this file stops being loadable and every assertion
- * above silently turns back into a comment.
- */
+/** JSX in the mode module makes this file unloadable and every assertion above a comment. */
 test("the mode module is plain TypeScript", () => {
   const source = readFileSync(
     new URL(

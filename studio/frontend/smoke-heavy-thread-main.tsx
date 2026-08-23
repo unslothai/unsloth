@@ -586,27 +586,17 @@ const EXPECTED_PER_CYCLE: Record<string, number> = {
   // python, typescript, json, svg, the html document, and the two tool result panes.
   codeBlocks: 7,
   /*
-   * THE CODE ITSELF, in characters, which is the deferral-invariant way to ask this.
+   * THE CODE ITSELF, in characters: the one size measure deferral cannot move.
    *
-   * This row used to be a floor of 2,500 highlighted tokens, and that number was doing two jobs
-   * at once. Off-screen fences now render as a plain shell by default, so a token count is partly a
-   * measurement of where the viewport happens to be: measured on Chromium the same fixture
-   * renders 1,322 tokens for one cycle where it used to render 3,216, with no fixture change at
-   * all. Lowering the floor to fit would have left the check unable to tell a deferred thread
-   * from one that had quietly stopped rendering code, which is the only thing it is for.
+   * This was a floor of 2,500 highlighted tokens, doing two jobs at once. Off-screen fences now
+   * render as a plain shell, so tokens partly measure where the viewport is: the same fixture
+   * renders 1,322 per cycle where it rendered 3,216. Characters do not move, because the shell
+   * carries the same text node: 12,660 for one cycle and 51,081 for four (2 of 5 and 15 of 20
+   * fences deferred), and Chromium, Firefox and WebKit each report 12,660 to the character.
    *
-   * Characters inside `pre code` do not move: the deferred shell carries the same text node the
-   * highlighted block carries. Measured at 12,660 for one cycle and 51,081 for four, with 2 of 5
-   * and 15 of 20 fences deferred respectively, so the number is flat across a fourfold change in
-   * how much of the thread the reader had reached. It is also flat across engines: Chromium,
-   * Firefox and WebKit each report 12,660 for one cycle, to the character.
-   *
-   * The floor is 12,000 against that 12,660. One cycle is seven code blocks averaging about 1,800
-   * characters, so the 660 of slack is well under half of the smallest thing that could go
-   * missing: losing any one block still fails.
-   *
-   * The OTHER job that number was doing, telling a finished thread from one still building
-   * itself, is now `unhighlightedMountedFences` in the census, asked per block.
+   * Floor 12,000 against 12,660; a cycle is seven blocks averaging ~1,800 chars, so losing any one
+   * block still fails. The other job, telling a settled thread from one still building itself, is
+   * now `unhighlightedMountedFences`, asked per block.
    */
   codeChars: 12000,
 };
@@ -801,15 +791,11 @@ function HeavyThreadApi({
           codeBlocks: document.querySelectorAll("pre").length,
           highlightedTokens: document.querySelectorAll("pre code span").length,
           /*
-           * HOW MUCH CODE IS ON THE PAGE, which is what "is this the heavy thread" needs to ask.
-           *
-           * `highlightedTokens` used to answer it, and cannot any more: off-screen fences render
-           * as a plain shell by default, so the token count now measures where the reader is
-           * looking as much as what the fixture built. Characters do not move: the shell holds
-           * the same text node the highlighted block holds, which is what makes selection,
-           * clipboard and find-in-page identical across the two states. So this reads the same
-           * number whether a fence is deferred or not, and still goes down the moment the
-           * fixture stops rendering code.
+           * HOW MUCH CODE IS ON THE PAGE. `highlightedTokens` cannot answer that any more: a
+           * deferred fence renders as a plain shell, so tokens measure where the reader is
+           * looking. The shell holds the same text node the highlighted block holds (which is
+           * also why selection, clipboard and find-in-page are identical across the two states),
+           * so characters read the same either way and still drop if the fixture loses code.
            */
           codeChars: Array.from(document.querySelectorAll("pre code")).reduce(
             (total, node) => total + (node.textContent?.length ?? 0),
@@ -818,14 +804,11 @@ function HeavyThreadApi({
           fenceBlocks: document.querySelectorAll('[data-streamdown="code-block"]').length,
           deferredFences: document.querySelectorAll("[data-unsloth-fence-deferred]").length,
           /*
-           * A fence that is NEITHER deferred NOR highlighted, at rest.
-           *
-           * This is the half of the old token floor that was about settlement rather than about
-           * the fixture, and it asks it per block instead of in total. Streamdown mounts a code
-           * block showing its own unhighlighted fallback and colours it from a passive effect, so
-           * this state exists for a frame on any build; a thread that has settled must hold none
-           * of them. Stronger than a floor on the total, which a thread with one block stuck on
-           * the fallback passes as long as the others make up the count.
+           * A fence that is NEITHER deferred NOR highlighted, at rest: the settlement half of the
+           * old token floor, asked per block. Streamdown mounts a code block on its own
+           * unhighlighted fallback and colours it from a passive effect, so this state exists for
+           * a frame on any build and a settled thread must hold none. Stronger than a floor on
+           * the total, which one stuck block passes as long as the others make up the count.
            */
           unhighlightedMountedFences: Array.from(
             document.querySelectorAll('[data-streamdown="code-block"]'),

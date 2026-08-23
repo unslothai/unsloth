@@ -216,9 +216,8 @@ test("a nested scroller is gated by the outermost one as well", () => {
 });
 
 test("the mode is decided in one place, and `off` still means the pre-default behaviour", () => {
-  // The decision table itself is in `code-fence-mode.ts` and is RUN, row by row, by
-  // `tests/code-fence-mode.test.ts`. What this file has to pin is that this module does not grow
-  // a second opinion about the mode, and that `off` still switches the whole hook out.
+  // The table itself is RUN row by row in `tests/code-fence-mode.test.ts`. What this file pins is
+  // that this module grows no second opinion, and that `off` still switches the whole hook out.
   assert.ok(
     SOURCE.includes('export { type FenceMode, resolveFenceMode, SHIP_DEFAULT } from "./code-fence-mode";'),
     "the mode module is the single source of the decision",
@@ -306,9 +305,8 @@ test("the gate does not mount a wrapper element of its own", () => {
 });
 
 test("the tokenize arm is measurement only and is not reachable from a boolean flag", () => {
-  // The selection rule itself, and every shape that must NOT reach it, is exercised in
-  // `tests/code-fence-mode.test.ts`. What matters here is that the measurement arm cannot be
-  // entered from this module by any route other than that one resolved mode.
+  // The selection rule, and every shape that must NOT reach it, is exercised in
+  // `tests/code-fence-mode.test.ts`. Here: no route into the arm except that resolved mode.
   assert.ok(
     !/"tokenize"/.test(SOURCE),
     "this module must not name the measurement arm at all; it only consumes a resolved mode",
@@ -320,13 +318,10 @@ test("the tokenize arm is measurement only and is not reachable from a boolean f
 });
 
 test("a print upgrades the whole document, and never puts it back", () => {
-  // An earlier `beforeprint` path latched every fence and was removed after it was measured: 53
-  // of 56 blocks still printed on streamdown's raw fallback out to twenty seconds. The reason was
-  // not the latch, it was what the latch renders -- streamdown's highlighted body asks the plugin
-  // for tokens from a PASSIVE effect and shows a plain fallback until the plugin answers, and the
-  // plugin answers `null` while a grammar is loading. `latchNow` closes both halves: it warms the
-  // tokens first, then flushes twice so the passive effect and the update it schedules land in
-  // the same task. Do not re-remove one half and keep the other.
+  // An earlier `beforeprint` path was removed after 53 of 56 blocks still printed on streamdown's
+  // raw fallback out to twenty seconds. The latch was not the problem: what it renders is, since
+  // the highlighted body asks for tokens from a PASSIVE effect and the plugin answers `null` while
+  // a grammar loads. `latchNow` closes both halves, warming then flushing twice. Keep both.
   for (const door of ["beforeprint", 'matchMedia?.("print")']) {
     assert.ok(
       SOURCE.includes(door),
@@ -337,11 +332,10 @@ test("a print upgrades the whole document, and never puts it back", () => {
     !/addEventListener\(\s*"afterprint"/.test(SOURCE),
     "reverting on afterprint would be exactly the bidirectional edge this design removes",
   );
-  // A PRINT IS NOT A SESSION-WIDE SWITCH. This was a module-global `printed` folded into every
-  // future fence's `reached`, which measured, at the 100K rung, as: print once, navigate away
-  // inside the app and back, and the thread remounts with 0 of 56 fences deferred, 41,410 spans
-  // and 61,747 elements instead of 53, 2,458 and 22,794. One Ctrl+P turned the default off for
-  // the rest of the tab.
+  // A PRINT IS NOT A SESSION-WIDE SWITCH. As a module-global `printed` folded into every future
+  // fence's `reached` it measured, at the 100K rung: print once, navigate away in-app and back,
+  // and the thread remounts with 0 of 56 fences deferred, 41,410 spans and 61,747 elements instead
+  // of 53, 2,458 and 22,794. One Ctrl+P turned the default off for the rest of the tab.
   assert.ok(
     /const reached = !enabled \|\| !CAN_OBSERVE \|\| streaming \|\| latched;/.test(SOURCE),
     "no print state may be folded into a fence's reached: a fence mounted after a print was not " +
@@ -355,8 +349,8 @@ test("a print upgrades the whole document, and never puts it back", () => {
 });
 
 test("an upgrade taken inside one task warms, flushes, and flushes again", () => {
-  // Each of the three is load-bearing on its own; dropping any one puts a plain frame back on
-  // screen (on a jump) or a colourless fence on the page (in a print).
+  // Dropping any one of the three puts a plain frame back on a jump, or a colourless fence on a
+  // printed page.
   const latchNow = SOURCE.slice(SOURCE.indexOf("const latchNow"));
   const body = latchNow.slice(0, latchNow.indexOf("\n};"));
   assert.ok(body.includes("gate.warm(true)"), "the tokens have to exist before the swap renders");
@@ -377,10 +371,9 @@ test("an upgrade taken inside one task warms, flushes, and flushes again", () =>
 });
 
 test("a jump is recognised from the lookahead, not from a tuned number", () => {
-  // `REACH_MARGIN` grows the observer band by one root height, so a scroll of at most one height
-  // can only reveal fences the observers had already reached. The pass therefore runs when, and
-  // only when, the movement exceeded the lookahead. A literal pixel threshold here would be a
-  // number nobody could derive and nobody would maintain.
+  // `REACH_MARGIN` grows the band by one root height, so a scroll of at most one height can only
+  // reveal fences already reached: the pass runs exactly when the movement beat the lookahead. A
+  // literal pixel threshold would be a number nobody could derive or maintain.
   assert.ok(
     /Math\.abs\(top - before\) <= height/.test(SOURCE),
     "the jump test compares the movement against the root height the margin is one of",
@@ -392,9 +385,8 @@ test("a jump is recognised from the lookahead, not from a tuned number", () => {
 });
 
 test("nothing is watched once there is nothing left to defer", () => {
-  // The claim this change rests on is that a fence the reader has already reached carries no
-  // residual per-scroll cost. One capturing listener is shared by every fence, so it has to be
-  // removed when the last one latches or the claim stops being true.
+  // This change claims a reached fence carries no residual per-scroll cost. The one shared
+  // capturing listener must therefore be removed when the last fence latches.
   assert.ok(
     /document\.addEventListener\("scroll", onScroll, \{ capture: true, passive: true \}\)/.test(SOURCE),
     "one capturing, passive listener sees scrolling on nested panes as well as on the thread",
