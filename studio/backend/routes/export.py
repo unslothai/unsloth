@@ -411,6 +411,7 @@ async def export_gguf(
             repo_id = request.repo_id,
             hf_token = request.hf_token,
             imatrix_file = imatrix_file,
+            private = request.private,
         )
 
         if not success:
