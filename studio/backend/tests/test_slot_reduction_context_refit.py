@@ -297,9 +297,7 @@ class TestTheReductionIsPricedAtTheFitFloor:
         self, tmp_path, monkeypatch, weights_mib, metadata, offload_ctx
     ):
         monkeypatch.setattr(llama_cpp, "_AUTO_OFFLOAD_CTX", offload_ctx)
-        got = _plan(
-            tmp_path, weights_mib = weights_mib, n_parallel = 4, spec = "off", metadata = metadata
-        )
+        got = _plan(tmp_path, weights_mib = weights_mib, n_parallel = 4, spec = "off", metadata = metadata)
         assert got["fit"] == "off", "a placeable load was handed to --fit offload"
         # It was rescued BY the reduction rather than fitting outright, or the row
         # would prove nothing about this block.
