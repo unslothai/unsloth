@@ -314,6 +314,9 @@
   // NOTHING in this section may call a geometry method on a candidate element.
   const VIS = {
     obs: null, mut: null, ever: new Set(), seen: new WeakSet(), watching: false,
+    // Nodes already counted in `unplaced`. Separate from `seen` because an unplaced row stays
+    // eligible to be placed by a later batch; see `observeOne`.
+    unplacedSeen: new WeakSet(),
     // Rows that were observed and could NOT be placed in the thread at all: no `aria-posinset`
     // and not among the messages the DOM currently holds. Such a row is stamped with no ordinal,
     // so it is silently absent from `ever_visible`, and a silence that cannot be counted is the
@@ -387,19 +390,38 @@
   //: undefined, the position is resolved from the index, and only when no ordinal was published.
   const observeOne = (el, position) => {
     if (!VIS.obs || VIS.seen.has(el)) return;
-    VIS.seen.add(el);
     let ord = ordinalOf(el, typeof position === "number" ? position : null);
     if (ord === null) ord = positionIndex().get(el) || 0;
     // The ordinal is stamped on the node, because by the time an entry is delivered the node may
     // have been unmounted and `closest()` would return nothing.
     if (ord > 0) {
+      VIS.seen.add(el);
       el.__sbOrdinal = ord;
     } else {
       // NO ORDINAL RATHER THAN A MADE-UP ONE. A row that publishes nothing and is not in the
       // thread's message list has no position this instrument can honestly claim, and a guessed
       // one lands in `ever_visible` as a message the other arm never showed.
-      VIS.unplaced += 1;
+      //
+      // NOT MARKED `seen`, WHICH IS THE WHOLE POINT. Marking it here is what made an unplaced row
+      // able to hide a VISIBLE one. A row is unplaceable when it is observed while detached --
+      // added and removed inside one task, so no paint could have shown it -- and a virtualizer
+      // that RECYCLES DOM nodes hands that same node back on a later batch, mounted and about to
+      // be shown. With the node already in `seen` the early return fired, it was never stamped,
+      // and every intersection it went on to report was dropped for want of an ordinal: visible
+      // on this arm, absent from `ever_visible`, and `compare_visible` free to call MATCH on the
+      // strength of the rows that did place. Left out of `seen` it is simply placed on the batch
+      // that mounts it, which is the batch that can place it.
+      //
+      // Counted once per node all the same. `unplacedSeen` is a separate WeakSet so a node that
+      // is offered and refused several times before it mounts does not inflate the diagnostic
+      // into a number nobody can interpret.
+      if (!VIS.unplacedSeen.has(el)) {
+        VIS.unplacedSeen.add(el);
+        VIS.unplaced += 1;
+      }
     }
+    // Idempotent by specification: `observe()` on a target already being observed returns without
+    // adding a second registration, so re-offering an unplaced row costs nothing.
     VIS.obs.observe(el);
   };
 
@@ -461,6 +483,7 @@
         if (VIS.watching) return { visible_attempted: true, already: true };
         VIS.ever = new Set();
         VIS.seen = new WeakSet();
+        VIS.unplacedSeen = new WeakSet();
         VIS.unplaced = 0;
         VIS.index = null;
         VIS.obs = new IntersectionObserver((entries) => {

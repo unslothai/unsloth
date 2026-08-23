@@ -180,6 +180,41 @@ def order_is_balanced(plan: list[tuple[Target, Cell, RungPlan]]) -> bool:
     return len(labels) > 1 and len(set(first_counts.values())) == 1
 
 
+def _failed_cell_gates(records: list[dict]) -> dict[str, set[str]]:
+    """`{cell_id: {gate name}}` for every cell carrying a FAILED per-cell gate row.
+
+    RUN-LEVEL GATES ARE NOT IN HERE. `production_build` and `reportable_tier` are emitted without a
+    `cell_id`, and they are properties of the whole run: reading them as per-cell would empty both
+    arms and turn a fast-tier A/B into an empty table rather than the table it asked for. Only a
+    gate that named a cell can disqualify that cell.
+
+    ATTEMPTS ARE SCOPED BY HAND because `latest_attempt_rows` cannot do it: `ATTEMPT_ROW_TYPES` is
+    `{cell, action, window}`, so a gate row survives the filter that drops the rest of a superseded
+    attempt. `--resume` reuses the cell id, so without this a cell that failed its gate, was re-run
+    and PASSED would stay disqualified by the dead attempt's row -- the retry silently unable to
+    count, which is the mirror of the defect this function is fixing. The winning attempt is the
+    session the surviving cell row carries; a row without a session id predates the stamp and is
+    kept, as `latest_attempt_rows` keeps it.
+    """
+    winning: dict[str, Any] = {}
+    for row in records:
+        if row.get("row_type") == "cell" and row.get("cell_id") is not None:
+            winning[str(row.get("cell_id"))] = row.get("session_id")
+
+    failed: dict[str, set[str]] = {}
+    for row in records:
+        if row.get("row_type") != "gate" or row.get("passed") is not False:
+            continue
+        if row.get("cell_id") is None:
+            continue
+        cell_id = str(row.get("cell_id"))
+        keep = winning.get(cell_id)
+        if keep is not None and row.get("session_id") not in (None, keep):
+            continue
+        failed.setdefault(cell_id, set()).add(str(row.get("name")))
+    return failed
+
+
 def readings_by_arm(
     records: list[dict], session_id: Optional[str] = None
 ) -> dict[str, dict[int, dict]]:
@@ -192,6 +227,22 @@ def readings_by_arm(
     into a win: a treatment cell holding nothing but a 50 ms keystroke, measured against a
     completed 100 ms base cell, reports IMPROVED. The crash is still in the payload, in the
     summary and in `excluded_cells`; it is only kept out of the ratios.
+
+    A CELL THAT FAILED A PER-CELL GATE IS NOT ONE EITHER, for the same reason and by a shorter
+    route. `thread_complete` and `follows_the_stream` are advisory at the point they are emitted:
+    `record_completeness_gate`'s verdict is discarded by its caller and the film runs on, so the
+    cell reaches this function with `completed=True` and a full set of timings. Those timings are
+    CHEAPER THAN A CORRECT CELL'S, and cheaper in the direction that flatters the arm -- a thread
+    that lost its middle renders fewer rows, and a streamed reply that left the viewport and was
+    unmounted stops costing anything to paint. Pairing one against a complete cell on the other
+    side reports the defect as an improvement, which is the crash-into-a-win failure again with a
+    gate row instead of a missing one.
+
+    `excluded_from_rows` does not cover this path. It reads the same failed gate rows into
+    `excluded_cells`, but that block is derived, rendered and schema-checked and nothing filters
+    on it: stripping the failing gate rows out of a payload and re-scoring produces byte-identical
+    metric lines. `ab.md` is scored here, from `readings_by_arm` and `measures_by_cell`, and
+    neither consulted a gate row before this.
 
     `session_id`, when given, keeps the comparison inside ONE session. `--resume` appends to the
     payload a previous run wrote, so an interrupted A/B resumed into the same directory otherwise
@@ -208,12 +259,15 @@ def readings_by_arm(
     # by `cell_id` alone, and a resumed retry reuses the cell id of the attempt that died. Without
     # this the completed-cell filter admitted the dead attempt's windows into the retry's reading.
     records = list(latest_attempt_rows(records))
+    failed_gates = _failed_cell_gates(records)
 
     arms: dict[str, list[dict]] = {}
     cell_ids: dict[str, set[str]] = {}
     for row in records:
         if row.get("row_type") == "cell":
             if row.get("completed") is not True:
+                continue
+            if str(row.get("cell_id")) in failed_gates:
                 continue
             if session_id is not None and row.get("session_id") not in (None, session_id):
                 continue

@@ -604,3 +604,71 @@ def test_the_structural_digest_still_sees_the_ordinals(browser):
     plain = _thread_digests(browser, "nowhere")
     assert set(numbered) == set(plain)
     assert all(numbered[i] != plain[i] for i in numbered), (numbered, plain)
+
+
+# ── a recycled node, and the ordinal it used to be denied ──────────────────
+
+
+#: An EMPTY viewport, so a row appended to it is on screen immediately. `__churn` mounts a row and
+#: unmounts it inside ONE task, which is how a row comes to be observed while detached: the
+#: MutationObserver batch runs after both operations, the node is in `addedNodes` and is no longer
+#: among the document's messages, so it has no position the instrument can honestly claim.
+#: `__remount` then hands THE SAME NODE back, which is what a virtualizer that recycles its rows
+#: does on the next scroll step.
+RECYCLE_FIXTURE = """
+<!doctype html><meta charset="utf-8">
+<style>
+  body { margin: 0; }
+  .aui-thread-viewport { height: 400px; overflow-y: auto; }
+  [data-role] { height: 100px; }
+</style>
+<div class="aui-thread-root">
+  <div class="aui-thread-viewport" id="vp"></div>
+</div>
+<script>
+  window.__row = null;
+  window.__churn = () => {
+    const vp = document.getElementById("vp");
+    const msg = document.createElement("div");
+    msg.setAttribute("data-role", "assistant");
+    msg.textContent = "recycled row";
+    window.__row = msg;
+    vp.appendChild(msg);
+    vp.removeChild(msg);
+  };
+  window.__remount = () => {
+    document.getElementById("vp").appendChild(window.__row);
+  };
+</script>
+"""
+
+
+def test_a_recycled_row_is_placed_when_it_finally_mounts(browser):
+    """REGRESSION. An unplaceable row must not be blacklisted from ever being placed.
+
+    `observeOne` marked every node it looked at as `seen` BEFORE trying to place it, so a row
+    observed while detached -- unplaceable, and correctly so -- could never be stamped afterwards.
+    A virtualizer that recycles DOM nodes hands that same node back mounted and about to be shown;
+    the early return fired, no ordinal was stamped, and every intersection it reported was dropped
+    for want of one. The row was on screen and absent from `ever_visible`, which is exactly the
+    silence `compare_visible` cannot see: with the other rows placed and matching, it returns
+    MATCH while a visible row went uncompared.
+    """
+
+    pg = browser.new_page(viewport = {"width": 800, "height": 600})
+    try:
+        pg.set_content(RECYCLE_FIXTURE)
+        pg.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
+        pg.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+        _watch(pg)
+        pg.evaluate("() => window.__churn()")
+        pg.wait_for_timeout(150)
+        # It was refused a position, and that refusal is counted rather than silent.
+        assert pg.evaluate("async () => (await window.__sb.parityVisible.capture()).unplaced_rows")
+        pg.evaluate("() => window.__remount()")
+        got = _capture(pg)
+    finally:
+        pg.close()
+
+    # Mounted into an empty viewport, so it is message 1 and it is on screen.
+    assert got["ever_visible"] == [1], got
