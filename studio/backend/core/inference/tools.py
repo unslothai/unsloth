@@ -14005,11 +14005,15 @@ def _truncate(
         return (stub if len(stub) < len(text) else text) + hint
     head, on_boundary = _head_whole_lines(text, limit)
     if spill is None:
-        return head + (
-            f"\n\n... (truncated to {limit} chars for the model; {len(text)} chars "
-            "total. The full output is not retained here; any files the code wrote "
-            "persist in the working directory.)"
-        ) + hint
+        return (
+            head
+            + (
+                f"\n\n... (truncated to {limit} chars for the model; {len(text)} chars "
+                "total. The full output is not retained here; any files the code wrote "
+                "persist in the working directory.)"
+            )
+            + hint
+        )
     # The rest is not advice, it is reachable: the sandbox persists between calls and the
     # model already has the terminal, so naming the exact next command turns a dead end
     # into paging. Truncating without one is what makes a model re-run the same command
@@ -14193,7 +14197,9 @@ def _zero_room_stub(size: int, spill: "str | None", complete: bool) -> str:
 
 
 def _spill_full_output(
-    text: str, workdir: str | None, scope: "str | None" = ""
+    text: str,
+    workdir: str | None,
+    scope: "str | None" = "",
 ) -> "tuple[str | None, bool]":
     """Write the result into the sandbox; return its relative path and whether it is whole.
 

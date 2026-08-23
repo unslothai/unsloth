@@ -742,23 +742,31 @@ class TestOneChatsOutputStaysItsOwn:
     originating response."""
 
     @staticmethod
-    def _spill_args(monkeypatch, tmp_path, session_id, thread_id = None):
+    def _spill_args(
+        monkeypatch,
+        tmp_path,
+        session_id,
+        thread_id = None,
+    ):
         seen = {}
         # A real directory: the command runs with it as cwd, and a path that is not there
         # fails the call long before anything is truncated.
         monkeypatch.setattr(tools, "_get_workdir", lambda _sid: str(tmp_path))
         real = tools._truncate
 
-        def _recording(text, limit = None, workdir = None, **kwargs):
+        def _recording(
+            text,
+            limit = None,
+            workdir = None,
+            **kwargs,
+        ):
             seen.update(kwargs, workdir = workdir)
             return real(text, limit if limit is not None else 200)
 
         monkeypatch.setattr(tools, "_truncate", _recording)
         # Builtin printf over a brace expansion: no command substitution, because the
         # sandbox caps processes and a fork fails the call before it ever truncates.
-        tools._bash_exec(
-            "printf 'x%.0s' {1..5000}", None, 30, session_id, thread_id = thread_id
-        )
+        tools._bash_exec("printf 'x%.0s' {1..5000}", None, 30, session_id, thread_id = thread_id)
         return seen
 
     def test_a_call_without_a_session_does_not_spill(self, monkeypatch, tmp_path):
