@@ -8,8 +8,10 @@ A transcript is JSONL where each line is one event. The conversation lives in
 a stable ``uuid``, and an ISO ``timestamp``; everything else -- ``system``
 notices, ``file-history-snapshot``, ``progress``, ``summary`` -- is bookkeeping
 and is skipped. Records walk a ``parentUuid`` chain, and sidechain (subagent)
-records share the file, so the main conversation is reconstructed by following
-the chain rather than by trusting file order.
+records share the file, so the main conversation is the non-sidechain
+user/assistant lines in file order, with ``parentUuid`` restored as
+``parentId`` -- a rewind stays a branch instead of being flattened onto
+the path that happened to be walked first.
 
 The mapping differs from Cursor's in two ways that come from Claude Code
 keeping more. Every record is timestamped, so messages keep their real times
@@ -206,15 +208,15 @@ def _title_from(text: str) -> str:
 
 
 def _conversation_records(records: list[dict]) -> list[dict]:
-    """The main conversation's user/assistant records, in order.
+    """The main conversation's user/assistant records, in file order.
 
-    Records are stored newest-appended, but sidechains and the occasional
-    compaction boundary break a pure read-down-the-file order. When the records
-    carry a ``parentUuid`` chain, following it from the main root yields the
-    conversation the user actually had and leaves sidechain branches out; when
-    they do not, file order is the honest fallback.
+    File order is append-only, which the import ledger counts on: a later
+    turn is a new line, not a node inserted in the middle of a tree walk.
+    A rewind's abandoned branch and its retry therefore stay where Claude
+    wrote them, and their ``parentUuid`` links are what reconstruct the
+    tree. Sidechains and ``isMeta`` records are the harness, not the user.
     """
-    main = [
+    return [
         record
         for record in records
         # isMeta records are injected context (the caveat preamble of a resumed
@@ -223,24 +225,28 @@ def _conversation_records(records: list[dict]) -> list[dict]:
         and not record.get("isMeta")
         and record.get("type") in ("user", "assistant")
     ]
-    if not any(record.get("parentUuid") for record in main):
-        return main
-    children: dict[Optional[str], list[dict]] = {}
-    for record in main:
-        children.setdefault(record.get("parentUuid"), []).append(record)
-    ordered: list[dict] = []
 
-    def walk(uuid: Optional[str]) -> None:
-        for child in children.get(uuid, []):
-            ordered.append(child)
-            walk(child.get("uuid"))
 
-    walk(None)
-    # Anything the walk missed -- a break in the chain, an orphan whose parent
-    # was compacted away -- is kept in its file place rather than dropped.
-    seen = {id(record) for record in ordered}
-    ordered.extend(record for record in main if id(record) not in seen)
-    return ordered
+def _imported_parent_id(
+    record: dict, imported_ids: dict[str, str], by_uuid: dict[str, dict]
+) -> Optional[str]:
+    """The Studio parent of a record, walking past turns that were not imported.
+
+    A ``tool_result``-only user record, a thinking-only assistant, or a
+    slash-command invocation never becomes a message, but later turns still
+    name them as ``parentUuid``. Walking up lands on the nearest ancestor
+    that did become a row, so the tree does not hang off a missing id.
+    """
+    parent = record.get("parentUuid")
+    seen: set[str] = set()
+    while parent and parent not in seen:
+        seen.add(parent)
+        message_id = imported_ids.get(parent)
+        if message_id is not None:
+            return message_id
+        ancestor = by_uuid.get(parent)
+        parent = ancestor.get("parentUuid") if ancestor else None
+    return None
 
 
 def read_transcript(
@@ -280,8 +286,10 @@ def read_transcript(
     # Calls wait for their result, which arrives in a later user record, so the
     # parts that hold them stay reachable by tool id until the result shows.
     open_calls: dict[str, dict] = {}
-    previous_id: Optional[str] = None
-    for index, record in enumerate(_conversation_records(records)):
+    conversation = _conversation_records(records)
+    by_uuid = {str(record["uuid"]): record for record in conversation if record.get("uuid")}
+    imported_ids: dict[str, str] = {}
+    for index, record in enumerate(conversation):
         role = record.get("type")
         message_id = _message_id(resolved_session, str(record.get("uuid") or ""), index)
         if role == "user":
@@ -309,7 +317,7 @@ def read_transcript(
             {
                 "id": message_id,
                 "threadId": thread_id,
-                "parentId": previous_id,
+                "parentId": _imported_parent_id(record, imported_ids, by_uuid),
                 "role": role,
                 "content": parts,
                 "createdAt": timestamp_ms
@@ -321,7 +329,8 @@ def read_transcript(
                 },
             }
         )
-        previous_id = message_id
+        if record.get("uuid"):
+            imported_ids[str(record["uuid"])] = message_id
 
     first_user = next(
         (

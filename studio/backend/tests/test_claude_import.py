@@ -21,6 +21,9 @@ T0 = "2026-08-01T10:00:00.000Z"
 T1 = "2026-08-01T10:00:01.000Z"
 T2 = "2026-08-01T10:00:02.000Z"
 T3 = "2026-08-01T10:00:03.000Z"
+T4 = "2026-08-01T10:00:04.000Z"
+T5 = "2026-08-01T10:00:05.000Z"
+T6 = "2026-08-01T10:00:06.000Z"
 
 
 def user_record(
@@ -276,6 +279,51 @@ def test_titles_a_conversation_from_its_first_prompt(tmp_path):
     assert read_transcript(path, "thread-1").title == "Fix the header"
 
 
+def test_a_rewind_keeps_both_branches_on_the_same_parent(tmp_path):
+    path = write_session(
+        tmp_path,
+        "-slug",
+        "s1",
+        [
+            user_record("u1", "try this", T0),
+            assistant_record("a1", [text_block("first")], T1, parent = "u1"),
+            user_record("u2", "no, other way", T2, parent = "a1"),
+            assistant_record("a2", [text_block("abandoned")], T3, parent = "u2"),
+            user_record("u3", "retry", T4, parent = "a1"),
+            assistant_record("a3", [text_block("kept")], T5, parent = "u3"),
+        ],
+    )
+    transcript = read_transcript(path, "thread-1")
+    assert [m["content"][0]["text"] for m in transcript.messages] == [
+        "try this",
+        "first",
+        "no, other way",
+        "abandoned",
+        "retry",
+        "kept",
+    ]
+    ids = [m["id"] for m in transcript.messages]
+    parents = [m["parentId"] for m in transcript.messages]
+    assert parents[0] is None
+    assert parents[2] == ids[1]
+    assert parents[4] == ids[1]
+
+
+def test_a_long_parent_chain_does_not_overflow(tmp_path):
+    records = [user_record("u0", "start", T0)]
+    parent = "u0"
+    for index in range(1, 1200):
+        uuid = f"n{index}"
+        if index % 2:
+            records.append(assistant_record(uuid, [text_block(f"a{index}")], T1, parent = parent))
+        else:
+            records.append(user_record(uuid, f"u{index}", T1, parent = parent))
+        parent = uuid
+    path = write_session(tmp_path, "-slug", "s1", records)
+    transcript = read_transcript(path, "thread-1")
+    assert len(transcript.messages) == 1200
+
+
 # Importing
 
 
@@ -370,11 +418,13 @@ def test_a_chat_deleted_here_is_not_resurrected(claude_home):
 
 
 def test_clearing_history_lets_claude_be_imported_again(claude_home):
+    write_session(claude_home, "-Users-me-app", "session-two", [user_record("u9", "Keep me", T0)])
     import_claude_chats()
     studio_db.clear_chat_history()
     summary = import_claude_chats()
-    assert summary.new_chats == 1
+    assert summary.new_chats == 2
     assert studio_db.get_chat_thread(thread_id_for("session-one")) is not None
+    assert studio_db.get_chat_thread(thread_id_for("session-two")) is not None
 
 
 def test_a_late_tool_result_reaches_an_already_imported_call(claude_home):
@@ -414,6 +464,37 @@ def test_a_late_tool_result_reaches_an_already_imported_call(claude_home):
     call = next(part for part in messages[1]["content"] if part.get("type") == "tool-call")
     assert call["result"] == "file body"
     assert messages[-1]["content"][0]["text"] == "Done."
+
+
+def test_an_append_on_an_earlier_branch_still_arrives(claude_home):
+    # A DFS flatten would insert the new turn in the middle of the list, so
+    # the ledger slice would miss it and resync an old tail instead.
+    branched = [
+        user_record("u1", "try this", T0),
+        assistant_record("a1", [text_block("first")], T1, parent = "u1"),
+        user_record("u2", "no", T2, parent = "a1"),
+        assistant_record("a2", [text_block("abandoned")], T3, parent = "u2"),
+        user_record("u3", "retry", T4, parent = "a1"),
+        assistant_record("a3", [text_block("kept")], T5, parent = "u3"),
+    ]
+    write_session(claude_home, "-Users-me-app", "session-one", branched)
+    import_claude_chats()
+    write_session(
+        claude_home,
+        "-Users-me-app",
+        "session-one",
+        [*branched, user_record("u4", "continue first branch", T6, parent = "a2")],
+    )
+
+    summary = import_claude_chats()
+
+    messages = studio_db.list_chat_messages(thread_id_for("session-one"))
+    assert summary.messages == 1
+    assert messages[-1]["content"][0]["text"] == "continue first branch"
+    abandoned = next(
+        message for message in messages if message["content"][0].get("text") == "abandoned"
+    )
+    assert messages[-1]["parentId"] == abandoned["id"]
 
 
 def test_a_no_op_import_does_not_promote_the_project_in_the_sidebar(claude_home):
