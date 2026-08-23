@@ -441,7 +441,7 @@ def _archive_binary_paths(zf: zipfile.ZipFile, target: Path) -> set[Path]:
     for member in zf.namelist():
         if member.rsplit("/", 1)[-1] in names:
             # Lexical, to match _discard_superseded_binaries: the tree can now hold restored
-            # symlinks, and resolving a link at a binary path yields a name no member has.
+            # symlinks, and resolving one at a binary path yields a name no member has.
             out.add(Path(os.path.abspath(target / member)))
     return out
 
@@ -511,21 +511,20 @@ def _download(
         shutil.copyfileobj(resp, f)
 
 
-# PATH_MAX. A symlink member's payload is a pathname; anything larger is malformed, and
-# ``zf.read`` holds it in memory, so an unbounded read is a decompression bomb.
+# PATH_MAX: a link payload is a pathname, and ``zf.read`` holds it in memory, so anything
+# larger is a decompression bomb rather than a library name.
 _MAX_LINK_TARGET_BYTES = 4096
 
 
 def _is_symlink_member(member: zipfile.ZipInfo) -> bool:
-    """The Unix mode in ``external_attr`` only means anything when a Unix host wrote the
-    entry; for any other creator those high bits are host-specific attributes."""
+    """``external_attr``'s high bits are a Unix mode only when a Unix host wrote the entry."""
     return member.create_system == 3 and stat.S_ISLNK(member.external_attr >> 16)
 
 
 def _checked_link_target(
     zf: zipfile.ZipFile, member: zipfile.ZipInfo, dest: Path, base: Path
 ) -> str:
-    """A symlink member's payload, refused unless it is a relative path staying inside ``base``.
+    """A symlink member's payload, refused unless it is relative and stays inside ``base``.
 
     Same rules as ``prebuilt_core.safe_link_target``: absolute (including Windows
     drive-relative, which Win32 resolves against that drive's cwd), empty, NUL-bearing,
@@ -542,8 +541,7 @@ def _checked_link_target(
     )
     if not unsafe:
         resolved = (dest.parent / link_target).resolve()
-        # Self-check lexically: dest may already BE a link to this target from the previous
-        # install, and resolving it would then make a correct link look self-referential.
+        # Self-check lexically: dest may already be a correct link to this very target.
         unsafe = os.path.normpath(dest.parent / link_target) == os.path.normpath(dest) or (
             resolved != base and base not in resolved.parents
         )
@@ -564,9 +562,8 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     links: list[tuple[Path, str, zipfile.ZipInfo]] = []
     plain: list[zipfile.ZipInfo] = []
     for member in zf.infolist():
-        # Lexical, never resolve()d. Extraction MERGES into the tree, so resolving would
-        # follow the link the PREVIOUS install wrote and aim every write below at the real
-        # library behind it, ending with that library replaced by a link to itself.
+        # Lexical, never resolve()d. Extraction MERGES, so resolving would follow the link the
+        # PREVIOUS install wrote and end with the real library replaced by a link to itself.
         dest = base / member.filename
         checked = dest.resolve()
         if checked != base and base not in checked.parents:
@@ -585,8 +582,7 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
                 raise RuntimeError(f"symlink cycle in archive: {member.filename!r}")
             seen.add(cur)
             cur = os.path.normpath(os.path.join(os.path.dirname(cur), by_dest[cur]))
-    # Every member path and link target is validated above, before the first write, so a
-    # rejected archive leaves an existing install exactly as it found it.
+    # Validated before the first write, so a rejected archive leaves the install untouched.
     zf.extractall(target, members = plain)
     for dest, link_target, member in links:
         if dest.is_dir() and not dest.is_symlink():
@@ -597,9 +593,8 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
         try:
             dest.symlink_to(link_target)
         except OSError:
-            # No privilege to create one (Windows outside developer mode). Fall back to the
-            # flattened member: worse than a link, but it is what every release before this
-            # one shipped, so an install that used to finish still finishes.
+            # No privilege (Windows outside developer mode). Fall back to the flattened
+            # member, which is what shipped before this, so the install still finishes.
             zf.extract(member, target)
 
 

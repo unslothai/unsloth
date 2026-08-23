@@ -399,9 +399,8 @@ def test_safe_extractall_restores_symlink_members(tmp_path):
     real = target / "libwebpmux.so.3.1.2"
     assert link.is_symlink()
     assert link.readlink().name == "libwebpmux.so.3.1.2"
-    # Reads through to the real payload. The pre-fix behaviour was a 19-byte regular
-    # file holding the target text, which ldd reports as "file too short". Compare the
-    # bytes, not stat().st_size: stat() follows the link, so a size check cannot fail.
+    # Compare bytes, not stat().st_size: stat() follows the link, so a size check cannot
+    # fail. Pre-fix this was a 19-byte text file, which ldd calls "file too short".
     assert link.resolve(strict = True) == real.resolve()
     assert link.read_bytes() == b"\x7fELFpayload"
     assert not real.is_symlink()
@@ -423,8 +422,7 @@ def _link_member(
     link_target: str,
     create_system: int = 3,
 ) -> None:
-    """Write ``name`` as the symlink member CPython's zipfile produces: the Unix symlink
-    mode in external_attr, the link target as the data."""
+    """The symlink member CPython's zipfile produces: Unix link mode, target as the data."""
     info = zipfile.ZipInfo(name)
     info.create_system = create_system
     info.external_attr = (0o120777 << 16) | 0o777
@@ -432,8 +430,7 @@ def _link_member(
 
 
 def test_safe_extractall_rejects_escaping_symlink(tmp_path):
-    # Validation runs before any write, so this holds even where symlinks need
-    # privilege to create, and a rejected archive changes nothing on disk.
+    # Validation precedes every write, so this holds even where symlinks need privilege.
     target = tmp_path / "install"
     target.mkdir()
     (target / "sd-cli").write_bytes(b"working binary from the previous install")
@@ -473,9 +470,8 @@ def test_safe_extractall_rejects_malformed_symlink_targets(tmp_path, link_target
 
 
 def test_safe_extractall_rejects_symlink_cycles(tmp_path):
-    # Chains are normal (libwebp.so -> libwebp.so.7 -> libwebp.so.7.2.0), a cycle is not:
-    # it installs a library nothing can read, and the loader failure sends the backend
-    # round the discard-and-reinstall loop on every load.
+    # Chains are normal, a cycle is not: it installs a library nothing can read, so the
+    # loader failure would send the backend round the reinstall loop on every load.
     target = tmp_path / "install"
     target.mkdir()
     archive = tmp_path / "cycle.zip"
@@ -505,8 +501,7 @@ def test_safe_extractall_keeps_valid_symlink_chains(tmp_path):
 
 
 def test_safe_extractall_rejects_oversized_symlink_target(tmp_path):
-    # zf.read holds the payload in memory, so an unbounded read is a decompression bomb:
-    # a link target is a pathname and cannot legitimately exceed PATH_MAX.
+    # zf.read holds the payload in memory, and a pathname cannot exceed PATH_MAX.
     target = tmp_path / "install"
     target.mkdir()
     archive = tmp_path / "bomb.zip"
@@ -519,8 +514,7 @@ def test_safe_extractall_rejects_oversized_symlink_target(tmp_path):
 
 
 def test_safe_extractall_ignores_symlink_mode_from_non_unix_hosts(tmp_path):
-    # external_attr's high bits are only a Unix mode when a Unix host wrote the entry;
-    # for any other creator they are host-specific attributes and must not be read as one.
+    # Those high bits are a Unix mode only when a Unix host wrote the entry.
     target = tmp_path / "install"
     target.mkdir()
     archive = tmp_path / "dos.zip"
@@ -545,10 +539,8 @@ def test_safe_extractall_is_idempotent_across_reinstalls(tmp_path):
         _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0")
         _link_member(zf, "libwebp.so", "libwebp.so.7")
 
-    # install() MERGES into the managed tree, so a retry, a version bump or an accelerator
-    # switch re-extracts over the links the previous install wrote. Resolving the member
-    # path would follow them, and extraction would write the link text through them into
-    # the real library, which the restore loop then replaced with a link to itself.
+    # install() MERGES, so a retry or version bump re-extracts over the previous install's
+    # links. Resolving through them destroyed the real library they pointed at.
     for _ in range(3):
         with zipfile.ZipFile(archive) as zf:
             _safe_extractall(zf, target)
@@ -604,8 +596,8 @@ def test_safe_extractall_survives_a_hand_repaired_install(tmp_path):
 
 
 def test_safe_extractall_falls_back_when_symlinks_are_unavailable(tmp_path, monkeypatch):
-    # A Windows host outside developer mode cannot create symlinks. The install must still
-    # finish with the flattened member, exactly as it did before symlinks were restored.
+    # Windows outside developer mode cannot create symlinks. The install must still finish
+    # with the flattened member, exactly as it did before symlinks were restored.
     target = tmp_path / "install"
     target.mkdir()
     archive = tmp_path / "libs.zip"
