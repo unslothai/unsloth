@@ -87,12 +87,19 @@ export function isPlainPasteChord(
   // on macOS too: web apps bind it, so a host that maps it should reach the
   // field rather than the attachment path.
   if (event.altKey && !mac) return false;
-  // `code` first, then `keyCode`, and `key` only last: Option rewrites `key`
-  // on macOS, ⌥V being "√" and ⌥⇧V "◊", so reading it would miss the very
-  // chord this platform pastes with. Both of the others carry the physical key.
+  // The layout decides where paste lives, not the board: Dvorak puts V on the
+  // QWERTY period key and moves the chord with it. So a key that types a
+  // letter answers for itself, and a letter that is not v is not this chord
+  // however it is wired. Option is the exception -- it rewrites `key` on macOS,
+  // ⌥V being "√" and ⌥⇧V "◊" -- and so is a layout that types no Latin letter
+  // at all, where the OS routes the chord by position anyway. Both fall through
+  // to the physical key, which `code` carries, and `keyCode` after it.
+  const typed = (event.key ?? "").toLowerCase();
+  if (!event.altKey && typed.length === 1 && typed >= "a" && typed <= "z") {
+    return typed === "v";
+  }
   if (event.code) return event.code === "KeyV";
-  if (event.keyCode) return event.keyCode === V_KEY_CODE;
-  return (event.key ?? "").toLowerCase() === "v";
+  return event.keyCode === V_KEY_CODE;
 }
 
 /**

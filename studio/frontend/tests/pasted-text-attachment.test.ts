@@ -607,6 +607,43 @@ test("a keyboard reporting no code reads the physical key", () => {
   );
 });
 
+test("the chord follows the layout, not the board", () => {
+  // Dvorak puts V on the QWERTY period key and moves paste there with it, so
+  // the chord arrives as code "Period" typing "V".
+  const dvorak = {
+    code: "Period",
+    key: "V",
+    keyCode: 86,
+    metaKey: true,
+    ctrlKey: false,
+    shiftKey: true,
+    altKey: false,
+  };
+  assert.ok(isPlainPasteChord(dvorak, true));
+  // And the QWERTY V position types K there, which is not this chord.
+  assert.equal(
+    isPlainPasteChord({ ...dvorak, code: "KeyV", key: "K" }, true),
+    false,
+  );
+  // A layout that types no Latin letter leaves the OS to route by position,
+  // so the physical key answers again.
+  assert.ok(
+    isPlainPasteChord({ ...dvorak, code: "KeyV", key: "\u041c" }, true),
+  );
+  assert.equal(
+    isPlainPasteChord({ ...dvorak, code: "Period", key: "\u0411" }, true),
+    false,
+  );
+  // Option still overrides the letter: it rewrites `key` on macOS, so the
+  // glyph it produces must not be read as a letter that is not v.
+  assert.ok(
+    isPlainPasteChord(
+      { ...dvorak, code: "KeyV", key: "\u221a", altKey: true },
+      true,
+    ),
+  );
+});
+
 test("a keyboard reporting no code falls back to the key", () => {
   // Shift rewrites `key` on punctuation but not on a letter, so V stays V.
   assert.ok(
