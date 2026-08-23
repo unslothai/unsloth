@@ -1384,8 +1384,28 @@ def _probe_init_scripts(path: str, source: str) -> list[str]:
     (`playwright-core/src/server/page.ts`, `class InitScript`), which keeps the file's own prologue
     working as a FunctionBody prologue -- until something is prepended to it.
 
-    Appending is safe against ASI, because the appended line opens with an identifier: no
-    expression can continue across the newline into `window`.
+    THE EMPTY STATEMENT BETWEEN THEM IS THE ATTESTATION. This used to append the stamp on a bare
+    newline, on the reasoning that ASI made that safe because the appended line opens with an
+    identifier. That reasoning only covers a source whose last line is COMPLETE. ASI does not
+    terminate a source that ends mid-expression, so a probe truncated after an assignment operator
+    -- `var result =` -- is a SyntaxError on its own and STOPS BEING ONE once the stamp is
+    concatenated onto it: the stamp becomes that variable's initializer, `window.__sbExtraInitScript`
+    is set by the very assignment that was supposed to prove the probe finished, and the deferred
+    check below returns early. The probe reported nothing and the harness called that a clean run,
+    which is the one conclusion this pair of scripts exists to prevent. Measured on webkit and
+    chromium alike: stamp set, no `pageerror`, console silent, byte-identical to a healthy probe.
+
+    A bare `;` closes any pending operand slot, so that class stays a parse error. It goes AFTER the
+    source and never in front of it, because a leading empty statement is not a StringLiteral
+    ExpressionStatement and would end the directive prologue before the probe's own `"use strict"`
+    was reached.
+
+    WHAT THIS STILL DOES NOT CLOSE, stated so nobody reads the `;` as more than it is: a source
+    truncated after a STATEMENT HEAD rather than inside an expression -- `if (x)`, `while (a)`,
+    `for (;;)` -- takes the empty statement as its body and parses either way, so the stamp still
+    lands. Closing that needs the probe to be PARSED, which this harness deliberately does not do
+    (that is the whole point of the no-`eval` note above). The `;` narrows the hole; it does not
+    seal it, and the attestation is a smoke alarm rather than a proof.
 
     The second script is the report. The last line of the probe script stamps
     `window.__sbExtraInitScript`, so a probe that failed to PARSE, or that THREW on the way down,
@@ -1396,7 +1416,7 @@ def _probe_init_scripts(path: str, source: str) -> list[str]:
     """
     where = json.dumps(path)
     return [
-        f"{source}\nwindow.__sbExtraInitScript = {where};\n",
+        f"{source}\n;\nwindow.__sbExtraInitScript = {where};\n",
         (
             "(function () {\n"
             "  setTimeout(function () {\n"
