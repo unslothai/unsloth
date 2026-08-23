@@ -127,6 +127,15 @@ def test_a_repeat_call_with_the_same_targets_still_passes_through():
             model.peft_config["default"], "modules_to_tie", None
         ), "tied model did not redirect lm_head; this guard would check nothing"
         model = FastLanguageModel.get_peft_model(model, **kwargs)
+        # Same configuration, written the other way round: the embeddings named directly
+        # in modules_to_save rather than reached through the redirect.
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r = 8,
+            lora_alpha = 16,
+            target_modules = [m for m in TARGET_MODULES if m not in ("embed_tokens", "lm_head")],
+            modules_to_save = ["embed_tokens", "lm_head"],
+        )
     finally:
         del model
         torch.cuda.empty_cache()

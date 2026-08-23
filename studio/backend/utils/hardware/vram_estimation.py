@@ -907,6 +907,9 @@ def _lora_mlp_elements(
     return total
 
 
+EMBEDDING_TARGET_MODULES = frozenset(("embed_tokens", "lm_head"))
+
+
 def _full_weight_embedding_elements(arch: ModelArchConfig, target_modules) -> int:
     """embed_tokens/lm_head cost a full matrix each, not a low-rank pair.
 
@@ -915,7 +918,7 @@ def _full_weight_embedding_elements(arch: ModelArchConfig, target_modules) -> in
     """
     if isinstance(target_modules, str):
         return 0
-    selected = len(set(target_modules or []) & {"embed_tokens", "lm_head"})
+    selected = len(set(target_modules or []) & EMBEDDING_TARGET_MODULES)
     if arch.tie_word_embeddings:
         selected = min(selected, 1)
     return arch.vocab_size * arch.hidden_size * selected
@@ -924,6 +927,15 @@ def _full_weight_embedding_elements(arch: ModelArchConfig, target_modules) -> in
 def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: list) -> int:
     all_linear = _targets_all_linear(target_modules)
     selected_modules = list(DEFAULT_TARGET_MODULES) if all_linear else target_modules
+    # An embedding-only request trains no projection at all, so Studio's CPT path swaps in
+    # the default projections (worker.py). Estimate those adapters too, or the request
+    # under-counts and can pick a GPU that then OOMs.
+    if (
+        not all_linear
+        and _full_weight_embedding_elements(arch, target_modules)
+        and not set(selected_modules) - EMBEDDING_TARGET_MODULES
+    ):
+        selected_modules = list(selected_modules) + list(DEFAULT_TARGET_MODULES)
     hd = arch.hidden_size
     r = lora_rank
     n_layers = arch.num_hidden_layers

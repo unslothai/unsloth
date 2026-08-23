@@ -2355,3 +2355,14 @@ def test_embedding_targets_feed_optimizer_and_gradient_bytes():
     base = compute_lora_params(untied, 16, DEFAULT_TARGET_MODULES)
     with_embed = compute_lora_params(untied, 16, DEFAULT_TARGET_MODULES + ["embed_tokens"])
     assert with_embed - base == untied.vocab_size * untied.hidden_size
+
+
+def test_an_embedding_only_request_still_counts_the_default_projections():
+    """Studio's CPT path swaps an embedding-only list for the default projections, so an
+    estimate that counted only the embeddings would under-report and could pick a GPU
+    that then OOMs."""
+    tied = replace(LLAMA_8B, tie_word_embeddings = True)
+    projections = compute_lora_params(tied, 128, list(DEFAULT_TARGET_MODULES))
+    one_matrix = tied.vocab_size * tied.hidden_size
+    for targets in (["embed_tokens"], ["embed_tokens", "lm_head"], ["lm_head"]):
+        assert compute_lora_params(tied, 128, targets) == projections + one_matrix, targets

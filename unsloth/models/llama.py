@@ -3180,18 +3180,21 @@ class FastLlamaModel:
             modules_to_save = list(modules_to_save)
             old_target_modules += modules_to_save
             # ensure_weight_tying moves the tied counterpart (lm_head) out of
-            # modules_to_save into modules_to_tie, so the stored config no longer names it
-            # while the caller's target list still does. Count it, or a repeat call with
-            # identical arguments reports "parameters are different". Read it off the
-            # config object: to_dict() drops modules_to_tie.
-            old_target_modules += list(
+            # modules_to_save into modules_to_tie, so the stored config names it on
+            # neither list. Add it to both sides, or a repeat call with identical
+            # arguments reports "parameters are different" -- whether the caller passed
+            # it in target_modules or in modules_to_save, since the latter was just
+            # overwritten by the stored list. Read it off the config object:
+            # to_dict() drops modules_to_tie.
+            modules_to_tie = list(
                 getattr(model.peft_config["default"], "modules_to_tie", None) or []
             )
+            old_target_modules += modules_to_tie
 
             # Combine all
             new_target_modules = list(target_modules) + list(
                 modules_to_save if modules_to_save is not None else []
-            )
+            ) + modules_to_tie
             # Per-expert Linear MoE experts (e.g. gpt-oss bnb-4bit) were auto-added to the
             # saved target_modules when the adapter was first created. Recompute them so a
             # repeat get_peft_model call with the same args stays idempotent instead of
