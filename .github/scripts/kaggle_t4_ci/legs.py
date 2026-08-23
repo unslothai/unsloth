@@ -520,11 +520,13 @@ KERNELS: tuple[tuple[str, ...], ...] = (("canary", "control", "gptoss", "frontie
 # cache. See kaggle_prefetch.py for the mechanism and KERNELS above for why
 # gptoss is third.
 #
-# gpt-oss FIRST even though it is wanted last. It is ~12 GB against ~1 GB and
-# it is the leg whose start time the whole order is arranged around, so it is
-# the one that needs the head start. The small model follows, and by the time
-# it is reached the first Qwen leg has usually fetched it already -- which
-# costs nothing, because a second fetch of a warm repo is a no-op.
+# The SMALL model first, which inverts what looks obvious. gpt-oss is bigger,
+# but it is wanted by ONE leg whose own setup does not finish until ~160s, so a
+# fetch that lands by then is early enough. Qwen2.5-0.5B gates THREE legs and
+# the first of them starts at t=0, so it is the only fetch with no lead time in
+# front of it at all. Fetching the big one first pushes the small one out past
+# the moment the first leg is ready, delaying three legs to give one a head
+# start it did not need.
 #
 # These must match what the legs LOAD, which is not the same thing as what
 # they ASK FOR, and the difference cost a whole prefetch once already. The
