@@ -8773,9 +8773,7 @@ def _is_spill_artifact(sandbox: str, parent: str, name: str) -> bool:
     root = os.path.join(sandbox, _SPILL_DIR)
     if parent != root and os.path.dirname(parent) != root:
         return False
-    return bool(_SPILL_NAME_RE.fullmatch(name)) and not os.path.islink(
-        os.path.join(parent, name)
-    )
+    return bool(_SPILL_NAME_RE.fullmatch(name)) and not os.path.islink(os.path.join(parent, name))
 
 
 def _holds_no_user_files(target: str, owner: "str | None" = None) -> bool:

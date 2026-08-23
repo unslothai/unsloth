@@ -955,7 +955,10 @@ class TestDeletingAChatIsNotBlockedByItsSpills:
         """The directory is writable and the tools can create anything in it. Skipping the
         whole tree means deleting a chat deletes a file the user's own code wrote."""
         tools._truncate(
-            "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path), scope = "abc123abc123"
+            "\n".join(str(i) for i in range(5_000)),
+            200,
+            workdir = str(tmp_path),
+            scope = "abc123abc123",
         )
         (tmp_path / tools._SPILL_DIR / "notes.txt").write_text("mine")
 
