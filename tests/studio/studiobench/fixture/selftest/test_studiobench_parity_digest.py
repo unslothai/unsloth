@@ -52,16 +52,32 @@ const document = { body: { tagName: "BODY", attributes: [], childNodes: [],
 window.getComputedStyle = () => ({ getPropertyValue: () => "" });
 (new Function("window", "document", src))(window, document);
 
+// `elide: true` on a node collects the BUILT element into a set, which is then handed to
+// `signature` as its third argument. That argument is what the streamed-message elision uses, and
+// it takes ELEMENTS rather than names, so a fixture cannot address it without building first.
+// Collected per call, so `signatures` (no set) and `elided` (the set) are the same trees digested
+// two ways and can be compared directly.
+let collected = null;
 const build = (spec) => {
   if (typeof spec === "string") return { nodeType: 3, nodeValue: spec };
   const attrs = spec.attrs || {};
-  return {
+  const el = {
     nodeType: 1,
     tagName: (spec.tag || "div").toUpperCase(),
     attributes: Object.keys(attrs).map((name) => ({ name })),
     getAttribute: (name) => (name in attrs ? attrs[name] : null),
     childNodes: (spec.children || []).map(build),
   };
+  if (spec.elide && collected) collected.add(el);
+  return el;
+};
+
+const withElision = (spec) => {
+  collected = new Set();
+  const root = build(spec);
+  const set = collected;
+  collected = null;
+  return parity.signature(root, undefined, set.size ? set : undefined);
 };
 
 const spec = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
@@ -70,6 +86,7 @@ console.log(JSON.stringify({
   texts: (spec.texts || []).map((t) => parity.normText(t)),
   urls: (spec.urls || []).map((u) => parity.normUrl(u)),
   signatures: (spec.trees || []).map((t) => parity.signature(build(t))),
+  elided: (spec.elided || []).map(withElision),
   hashes: (spec.hashes || []).map((s) => parity.hash(s)),
 }));
 """

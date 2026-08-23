@@ -176,7 +176,15 @@
   // neither presence nor value, unlike VOLATILE_ATTRS which keeps the presence. Optional and off
   // by default: every existing caller (the whole-thread digest, the per-message rows, the overlays
   // and the node-driven unit tests) passes nothing and gets exactly what it got before.
-  const signature = (root, dropAttrs) => {
+  //
+  // `elide`, when given, is a Set of ELEMENTS whose subtree this digest does not serialise. It is
+  // not a way of ignoring them: a marker carrying the tag and the element's `data-role` is written
+  // in their place, so the element's PRESENCE, its position among its siblings and its role are
+  // still compared and a message that vanished still moves the digest. Only the content inside it
+  // is withheld. The one caller is the streamed-message elision in `capture()`; the whole argument
+  // for it is stated there. Optional and off by default, so every existing caller passes nothing
+  // and gets byte-for-byte what it got before.
+  const signature = (root, dropAttrs, elide) => {
     if (!root) return "";
     const parts = [];
     const walk = (el, depth) => {
@@ -184,6 +192,15 @@
       // exactly the silent false negative this instrument exists to rule out. The marker is left
       // in the signature so anything deeper is visible as "not walked" rather than as "absent".
       if (depth > 40) { parts.push("<!depth-cap>"); return; }
+      if (elide && elide.has(el)) {
+        // Named, not silent. A reader of the raw signature sees exactly which element was held
+        // back and why, rather than a hole they have to infer from a length.
+        parts.push(
+          "<!in-flight " + el.tagName.toLowerCase() +
+          " role=" + ((el.getAttribute && el.getAttribute("data-role")) || "?") + ">"
+        );
+        return;
+      }
       parts.push("<" + el.tagName.toLowerCase());
       const names = [];
       for (const attr of el.attributes) {
@@ -639,6 +656,10 @@
             role: el.getAttribute("data-role") || "?",
             digest: hash(sig),
             chars: sig.length,
+            // Still being written at capture time, so its digest names a point in a stream rather
+            // than a rendering. Carried here for the same reason as in the structural capture and
+            // handled the same way by `compare_visible`: residue, never a difference.
+            in_flight: el.querySelector('[data-status="running"], [aria-busy="true"]') !== null,
           };
         }
         const ever = [...VIS.ever].sort((a, b) => a - b);
@@ -701,9 +722,63 @@
         const isThread = Boolean(found && found !== document.body &&
                                  found.classList && found.classList.contains("aui-thread-root"));
         const root = found || document.body;
-        const whole = signature(root);
-        const messages = [];
         const nodes = (dom.messages && dom.messages()) || [];
+        // ── THE STREAMED MESSAGE, AND WHY IT GETS ITS OWN DIGEST ────────────────────────────────
+        //
+        // A message that is still being written has no defined moment. The two arms of an A/B are
+        // two cells run back to back against ONE pacer: the bytes on the wire are identical by
+        // construction, but each arm has its own send click, its own `t0` and its own paint clock,
+        // and the digest is taken at a wall-clock offset in the film rather than at a character
+        // count in the stream. So the two arms are compared at two different points in the same
+        // reply, and the difference that comes back is wall clock wearing the shape of a UI change.
+        //
+        // That is the failure this whole file's neighbours were written against: measuring at a
+        // moment whose meaning is not stable across the things being compared. It is the same
+        // mistake as a census taken on a `data-state` flip, and it is worse here because the
+        // renderer amplifies it. Mid-stream, Studio does not show a PREFIX of the finished reply:
+        // `parseIncompleteMarkdown` runs remend over the tail and closes whatever construct is
+        // half-arrived, KaTeX renders the repaired formula (and, while it will not parse, writes
+        // the parse error and its character offset into a `title`), Shiki re-tokenises the repaired
+        // fence, and the trailing code block carries `data-incomplete`. None of that is monotonic
+        // in how much text has arrived, which is why the difference cannot be recognised by its
+        // size and why a same-length mismatch here is not evidence of a missed volatile.
+        //
+        // MEASURED, on the shipped corpus (unit 9, 4,238 characters) driven through remend, KaTeX
+        // and Shiki into the shipped `signature()`. Stepping the arrived text by the pacer's own
+        // 24-character chunk, 175 of the 175 adjacent pairs produce a different digest -- one chunk
+        // of skew is enough to fail a stable action outright. At one-character resolution the
+        // serialised length moves DOWNWARDS at 52 of 4,237 steps and 34 pairs of distinct stream
+        // positions serialise to exactly the same length with different digests, which is the
+        // same-length drift that reads as a normaliser gap. It also cuts the other way: 398 of the
+        // 4,237 one-character advances move nothing at all.
+        //
+        // WHAT IS DONE ABOUT IT. The in-flight message is named, and a SECOND whole-thread digest
+        // is taken with its subtree elided -- a marker in its place, so its presence, its position
+        // and its role are still compared and a message that vanished still moves the digest. The
+        // comparison layer scores the settled document on the settled digest and refuses a verdict
+        // on the in-flight message rather than calling it a difference. It is NOT normalised away
+        // and it is not folded into a pass: see `analysis/parity.compare`.
+        //
+        // THE SCAFFOLD DIGEST ELIDES EVERY MESSAGE, NOT ONLY THE STREAMING ONES, and that is not
+        // over-reach -- it is the only version of this that is comparable across arms. Whether a
+        // given message is in flight is a property of ONE arm at the moment ITS digest was taken,
+        // and the ordinary case is precisely that the arms disagree about it: one has finished the
+        // reply and the other has not. A thread digest that elided each arm's own in-flight set
+        // would then be two different walks, and the two would differ because of the elision
+        // itself. Eliding all of them makes the walk identical on both sides by construction.
+        //
+        // Nothing is given up by decomposing it this way. The whole-thread digest is the scaffold
+        // plus every message subtree in place; the scaffold keeps a marker carrying each message's
+        // tag, role and position, and every message subtree is digested on its own row below. So a
+        // message that moved, vanished, changed role or changed content still moves something, and
+        // the comparison layer can withhold ONE of those rows without losing the rest.
+        const inFlightNodes = (dom.streamingMessages && dom.streamingMessages()) || [];
+        const inFlight = new Set(inFlightNodes);
+        const running = Boolean(dom.isRunning && dom.isRunning());
+        const whole = signature(root);
+        const scaffold = signature(root, undefined, new Set(nodes));
+        const messages = [];
+        const in_flight = [];
         for (let i = 0; i < nodes.length; i++) {
           const sig = signature(nodes[i]);
           const row = {
@@ -712,6 +787,10 @@
             digest: hash(sig),
             chars: sig.length,
           };
+          if (inFlight.has(nodes[i])) {
+            row.in_flight = true;
+            in_flight.push(i);
+          }
           if (want_raw) row.raw = sig;
           messages.push(row);
         }
@@ -735,6 +814,24 @@
           root_kind: isThread ? "thread" : "body",
           digest: hash(whole),
           chars: whole.length,
+          // The thread with every message replaced by a marker: the viewport, the composer, the
+          // empty state, and each message's tag, role and position. `digest` = this plus the
+          // per-message rows below, which is what lets a single message be withheld from the
+          // comparison without the other two thirds of the reading going with it.
+          digest_scaffold: hash(scaffold),
+          chars_scaffold: scaffold.length,
+          // Mounted indices of the messages that were still being written. An EMPTY list on a
+          // page where nothing is running is the ordinary case and means what it says.
+          in_flight,
+          streaming: running,
+          // THE POSITIVE CONTROL, and it is not decoration. `streamingMessages()` walks selectors
+          // written against Studio's markup: rename `data-status` and it goes quiet, matches
+          // nothing, and every reading silently becomes "nothing was streaming" -- which is the
+          // strongest claim this capture can make about the stream and would be supported by no
+          // observation at all. The app says a reply is running through a different control (the
+          // Stop button), so when the two disagree the disagreement is carried out rather than
+          // resolved here, and `analysis/parity.comparability` refuses the pair.
+          in_flight_unplaced: Boolean(running && inFlightNodes.length === 0),
           messages,
           overlays,
           styles,

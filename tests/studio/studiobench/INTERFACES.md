@@ -491,6 +491,59 @@ id, so `r1K.base.rep0` and `r100K.base.rep0` collided: a payload carrying more t
 silently overwrote one rung's rows with the other's and could pair a 1K base against a 100K
 treatment.
 
+### A message that is still being written is refused, not scored
+
+The digest is taken at the CLOSE of an action window, which is a wall-clock offset in the film. The
+two arms are two cells run back to back against one pacer: the bytes on the wire are identical by
+construction, but each has its own send click, its own `t0` and its own paint clock. So a slot that
+lands inside a live reply digests two different points in the same stream, and the difference that
+comes back is wall clock wearing the shape of a UI change. Same family as every entry in
+`outputs/rp/INSTRUMENT-DEFECTS.md`: **measuring at a moment whose meaning is not stable across the
+things being compared.**
+
+You cannot recognise it by its size. Mid-stream Studio does not show a prefix of the finished
+reply: `parseIncompleteMarkdown` runs remend over the tail and closes the half-arrived construct,
+KaTeX renders the repaired formula and writes its parse error and character offset into a `title`,
+Shiki re-tokenises the repaired fence, and the trailing code block carries `data-incomplete`.
+Measured on the frozen corpus's streamed unit through the real remend, KaTeX and Shiki into the
+shipped `signature()`: stepping by the pacer's own 24-character chunk, **175 of 175 adjacent pairs
+differ**; at one-character resolution the signature gets SHORTER at 52 of 4,237 steps, 34 pairs of
+distinct stream positions serialise to exactly the same length with different digests, and 398
+steps move the digest not at all.
+
+So `scene/parity.js` names the in-flight messages from the app's own published state --
+assistant-ui's `data-status` on the text part, `aria-busy` on the reasoning content -- and the
+capture carries `in_flight`, `streaming`, `in_flight_unplaced`, and `digest_scaffold`: the thread
+with EVERY message replaced by a marker carrying its tag, role and position. `digest` is the
+scaffold plus the per-message rows, so comparing them separately is the same reading taken apart,
+and taken apart it can withhold one message.
+
+`analysis/parity.compare` then has three outcomes rather than two:
+
+| the settled document | the in-flight message | verdict |
+| --- | --- | --- |
+| differs | anything | `DIFFER`, localised to the settled things only. This is the case that used to be lost: the action was silenced wholesale by `UNSTABLE_ACTIONS` and a real regression elsewhere in the thread printed under "expected to vary" |
+| agrees | agrees | `MATCH`, unchanged. Two arms that landed on the same point serialised identically, which is the claim |
+| agrees | differs | `NOT COMPARABLE`. Not a pass. The claim quantifies over the whole thread and one message did not serialise identically, for a reason with no defined moment |
+
+Every message is elided from the scaffold, not only the streaming ones, because whether a message
+is in flight is a property of ONE arm at the moment ITS digest was taken and the ordinary case is
+that the arms disagree about it. Eliding all of them makes the walk identical on both sides by
+construction.
+
+`in_flight_unplaced` is the positive control and it is checked AFTER `mount_count_mismatch`: a
+reply that is running while no message publishes a streaming state means the selector hooks have
+gone quiet, and a scan that can return zero must not report "nothing was streaming" on the strength
+of never having looked. A build that drops a message while a reply runs is still a finding, because
+that reading does not depend on the stream split.
+
+**What this gives up, measured on a live-DOM battery of 11 injected rendering differences at one
+stream point:** 10 still report `DIFFER`; a reorder that moves the streamed message past another
+message of the same role is demoted to `NOT COMPARABLE`, because the per-message rows are keyed by
+mounted index and both indices are then in flight on one side or the other. Nothing is demoted to
+`MATCH`. On the same fixtures the null -- one build, one document, six points in one stream, 15
+pairs -- goes from **15 of 15 reported as a UI change to 0**, all refused.
+
 ### The two boundary decisions in visible-region parity
 
 Written down because this is where a visible-region check goes wrong quietly.

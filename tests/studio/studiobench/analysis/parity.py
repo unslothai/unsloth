@@ -107,6 +107,44 @@ def _messages(capture: dict) -> dict[int, dict]:
     return {m["i"]: m for m in (capture.get("messages") or []) if "i" in m}
 
 
+def in_flight(base: Optional[dict], treat: Optional[dict]) -> set[int]:
+    """Mounted indices of the messages that were still being WRITTEN on either arm.
+
+    THE UNION, not the intersection, and that is the whole point. The ordinary case is precisely
+    that one arm has finished the reply and the other has not: the two arms are two cells run back
+    to back against one pacer, each with its own send click and its own paint clock, so the digest
+    lands at two different points in the same stream. A message that is in flight on EITHER side
+    has no defined moment on that side, and differencing it measures wall clock.
+
+    Read from the capture rather than inferred. `scene/parity.js` takes it from the app's own
+    published state -- assistant-ui's `data-status` on the text part, `aria-busy` on the reasoning
+    content -- so this is the page's statement about itself and not the benchmark's guess.
+
+    A capture recorded before the field existed reports nothing, and is treated as nothing in
+    flight, which is what every such payload was scored as when it was written.
+    """
+    out: set[int] = set()
+    for side in (base, treat):
+        if isinstance(side, dict):
+            for i in side.get("in_flight") or []:
+                if isinstance(i, int):
+                    out.add(i)
+    return out
+
+
+def _scaffold(capture: dict) -> tuple[Optional[str], Optional[int]]:
+    """The thread with every message elided, falling back to the whole-thread digest.
+
+    `digest` is this plus the per-message rows, so comparing the scaffold and the rows separately
+    is the same reading taken apart -- and taken apart it can withhold one message. The fallback is
+    what keeps an old payload comparable: a capture recorded before the scaffold existed carries
+    `digest` alone, and it also carries no `in_flight`, so for those two this IS the old comparison.
+    """
+    if "digest_scaffold" in capture:
+        return capture.get("digest_scaffold"), capture.get("chars_scaffold")
+    return capture.get("digest"), capture.get("chars")
+
+
 def _overlays(capture: dict) -> list[dict]:
     return list(capture.get("overlays") or [])
 
@@ -214,16 +252,61 @@ def comparability(base: Optional[dict], treat: Optional[dict]) -> Optional[str]:
     return None
 
 
-def localise(base: dict, treat: dict) -> list[str]:
+def streaming_probe(base: dict, treat: dict) -> Optional[str]:
+    """Why the STREAMING PROBE could not be believed on this pair, or None.
+
+    THE POSITIVE CONTROL ON A SCAN THAT CAN RETURN ZERO. The elision below is only as good as its
+    ability to find the streamed message, and `streamingMessages()` walks selectors written against
+    Studio's markup: rename `data-status` and it goes quiet, matches nothing, and every capture then
+    reports the strongest thing it can say about the stream -- that there was none -- on the
+    strength of never having looked successfully. That is exactly the shape `compare_styles`
+    already refuses for the style probe and `compare_visible` for the visibility scan.
+
+    The app publishes the fact twice, through the Stop button and through `data-status`, and
+    `capture()` carries the disagreement out of the page rather than resolving it there.
+
+    NOT part of `comparability`, and the ordering is deliberate. This refusal is about the stream
+    split only; a pair whose arms mounted different NUMBERS of messages is a lost conversation and
+    is reported as a difference whether or not the stream could be placed, because that reading
+    does not depend on the split at all. Put here, after `mount_count_mismatch`, a build that drops
+    a message while a reply is running is still a finding rather than a shrug.
+    """
+    for label, side in (("base", base), ("treatment", treat)):
+        if isinstance(side, dict) and side.get("in_flight_unplaced"):
+            return (
+                f"a reply was running on the {label} arm and no message published a streaming "
+                "state, so the streamed message could not be identified and its digest cannot be "
+                "held apart from the settled thread. This is a probe that needs fixing (the "
+                "`data-status` / `aria-busy` hooks in scene/dom.js), not a settled thread"
+            )
+    return None
+
+
+def localise(
+    base: dict,
+    treat: dict,
+    skip: Optional[set[int]] = None,
+) -> list[str]:
     """WHERE the two captures differ, as short human-readable claims.
 
     A whole-thread digest that differs is a fact nobody can act on. The per-message and per-overlay
     rows are what turn it into a bug report, and an unlocalised difference is reported as exactly
     that rather than left to look like a localised one.
+
+    `skip` names the messages that were still being written on one arm or the other. They are left
+    out of the list rather than quoted in it, because a mid-stream digest names a point in a stream
+    and not a rendering, and a reader handed `msg22(assistant):17334->17358c` has no way to tell the
+    two apart. What they were is reported separately, by the caller, as a residue.
     """
+    skip = skip or set()
     moved: list[str] = []
     bm, tm = _messages(base), _messages(treat)
     for i in sorted(set(bm) | set(tm)):
+        if i in skip and i in bm and i in tm:
+            # In flight on BOTH sides of the comparison. A message present on one arm only is a
+            # different statement -- one arm is not rendering a message the other is -- and is
+            # reported below whatever its status.
+            continue
         if i not in bm:
             moved.append(f"msg{i}({tm[i].get('role', '?')}):only treatment")
         elif i not in tm:
@@ -245,10 +328,8 @@ def localise(base: dict, treat: dict) -> list[str]:
         # The whole-thread digest moved but no message and no overlay did. That is the thread
         # scaffolding itself -- the viewport, the composer, the empty-state -- and saying so is
         # more useful than an empty list, which reads as "nothing differs".
-        moved.append(
-            f"thread scaffolding outside any message "
-            f"({base.get('chars')}->{treat.get('chars')}c)"
-        )
+        bc, tc = _scaffold(base)[1], _scaffold(treat)[1]
+        moved.append(f"thread scaffolding outside any message ({bc}->{tc}c)")
     return moved
 
 
@@ -290,7 +371,11 @@ def compare_styles(base: dict, treat: dict) -> tuple[str, str]:
     return DIFFER, f"display/visibility/pointer-events differ over {bs.get('elements')} elements"
 
 
-def _any_moved(base: dict, treat: dict) -> bool:
+def _any_moved(
+    base: dict,
+    treat: dict,
+    skip: Optional[set[int]] = None,
+) -> bool:
     """Did ANY digest in the capture move, not just the whole-thread one?
 
     THE HOLE THIS CLOSES, found by the spike control and not by reading the code. An overlay --
@@ -302,7 +387,15 @@ def _any_moved(base: dict, treat: dict) -> bool:
     never fire. Injecting a `role="menu"` element and watching the digest report a clean pass is
     what surfaced it.
     """
-    if base.get("digest") != treat.get("digest"):
+    skip = skip or set()
+    # THE SCAFFOLD, not the whole-thread digest. The whole-thread digest serialises the streamed
+    # message too, so with a reply in flight it differs on essentially every pair -- measured at
+    # 175 of 175 adjacent 24-character steps of the shipped corpus -- and every check below it
+    # would be unreachable behind it, exactly as the whole-thread digest once made the overlay walk
+    # unreachable. The scaffold plus the per-message rows is the same reading taken apart, so
+    # nothing is lost by decomposing it. On a payload with no scaffold this IS the whole-thread
+    # digest and the behaviour is the old one.
+    if _scaffold(base)[0] != _scaffold(treat)[0]:
         return True
     bo, to = _overlays(base), _overlays(treat)
     if [(o.get("sel"), o.get("digest")) for o in bo] != [
@@ -310,9 +403,11 @@ def _any_moved(base: dict, treat: dict) -> bool:
     ]:
         return True
     bm, tm = _messages(base), _messages(treat)
+    # A message PRESENT ON ONE ARM ONLY is a difference whether or not it was streaming. Being
+    # mid-reply excuses a digest, never an absence.
     if set(bm) != set(tm):
         return True
-    return any(bm[i].get("digest") != tm[i].get("digest") for i in bm)
+    return any(bm[i].get("digest") != tm[i].get("digest") for i in bm if i not in skip)
 
 
 def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
@@ -350,18 +445,104 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
             "style_reason": style_reason,
         }
     style_verdict, style_reason = compare_styles(base, treat)
-    if not _any_moved(base, treat):
+    blind = streaming_probe(base, treat)
+    if blind is not None:
+        return {
+            "verdict": NOT_COMPARABLE,
+            "reason": blind,
+            "moved": [],
+            "style_verdict": style_verdict,
+            "style_reason": style_reason,
+        }
+    # ── THE STREAMED MESSAGE ────────────────────────────────────────────────────────────────────
+    #
+    # `streaming` holds the messages that were still being written on one arm or the other. They
+    # are scored on NOTHING, and that is a refusal rather than a normalisation: the digest of a
+    # half-written message names a point in a stream, the two arms are at two different points in
+    # the same stream by construction, and no amount of text normalisation can turn one into the
+    # other. See `in_flight`.
+    #
+    # THREE OUTCOMES, and the ordering between them is the load-bearing part.
+    #
+    #   the settled document differs      DIFFER. This is the case that used to be lost. An action
+    #                                     landing inside a stream was silenced wholesale by
+    #                                     UNSTABLE_ACTIONS, so a real regression anywhere else in
+    #                                     the thread -- another message, an overlay, the composer --
+    #                                     printed under "expected to vary" and the run exited 0.
+    #                                     Now the streamed message is elided and the rest is scored.
+    #   the settled document agrees and
+    #   the in-flight message agrees      MATCH, unchanged. Two arms that landed on the same point
+    #                                     in the stream serialised identically, which is the claim
+    #                                     this mode makes, and demoting it would cost coverage for
+    #                                     nothing.
+    #   the settled document agrees and
+    #   the in-flight message differs     NOT COMPARABLE. Not a pass. `CLAIM_STRUCTURAL` quantifies
+    #                                     over the whole thread, one message did not serialise
+    #                                     identically, and the reason it did not is a reading with
+    #                                     no defined moment. Calling that MATCH would be the
+    #                                     instrument certifying a surface it could not look at,
+    #                                     which is the failure `compare_styles` and
+    #                                     `compare_visible` each already refuse in their own way.
+    #
+    # WHAT THIS GIVES UP, plainly, and both of these are measured rather than reasoned about.
+    #
+    # 1. A genuine rendering regression INSIDE the message that happened to be streaming is no
+    #    longer distinguishable here and lands as NOT COMPARABLE. It was not distinguishable before
+    #    either -- every action that lands in a stream is on the declared unstable list -- so
+    #    nothing that used to be caught stops being caught, and the outcome moves from "expected to
+    #    vary, exit 0" to "not measured, not a pass".
+    # 2. A REORDER that moves the streamed message past another message of the same role is
+    #    demoted from DIFFER to NOT COMPARABLE. The per-message rows are keyed by mounted index, so
+    #    swapping two messages puts a streaming row at one index on one arm and at the other index
+    #    on the other; both indices are then in flight on one side or the other, both are withheld,
+    #    and the scaffold markers that survive carry the same role in both orders. Measured on the
+    #    live-DOM battery: 11 injected rendering differences, 10 still reported DIFFER and this one
+    #    demoted. It is a demotion and not a hole -- NOT COMPARABLE is not a pass and the run does
+    #    not go green on it -- and the only shape that reaches it needs the streamed message not to
+    #    be the last one, which the app does not do today.
+    streaming = in_flight(base, treat)
+    if not _any_moved(base, treat, streaming):
+        bm, tm = _messages(base), _messages(treat)
+        unsettled = sorted(
+            i
+            for i in streaming
+            if i in bm and i in tm and bm[i].get("digest") != tm[i].get("digest")
+        )
+        if unsettled:
+            names = ", ".join(
+                f"msg{i}({bm[i].get('role', '?')}):{bm[i].get('chars')}->{tm[i].get('chars')}c"
+                for i in unsettled[:4]
+            )
+            return {
+                "verdict": NOT_COMPARABLE,
+                "reason": (
+                    f"the settled thread is identical on both arms and the only difference is in "
+                    f"{len(unsettled)} message(s) that were STILL BEING WRITTEN when the digest "
+                    f"was taken ({names}). The two arms are two cells against one pacer with their "
+                    "own send clicks and their own paint clocks, so that digest names a point in a "
+                    "stream rather than a rendering, and its size carries no information either: "
+                    "the renderer repairs the half-arrived construct, so the serialisation is not "
+                    "monotonic in how much text has landed. Nothing here is a pass"
+                ),
+                "moved": [],
+                "in_flight": sorted(streaming),
+                "not_digested": unsettled,
+                "style_verdict": style_verdict,
+                "style_reason": style_reason,
+            }
         return {
             "verdict": MATCH,
             "reason": "",
             "moved": [],
+            "in_flight": sorted(streaming),
             "style_verdict": style_verdict,
             "style_reason": style_reason,
         }
     return {
         "verdict": DIFFER,
         "reason": "",
-        "moved": localise(base, treat),
+        "moved": localise(base, treat, streaming),
+        "in_flight": sorted(streaming),
         "style_verdict": style_verdict,
         "style_reason": style_reason,
     }
@@ -667,7 +848,19 @@ def compare_visible(base: Optional[dict], treat: Optional[dict]) -> dict:
         if b is None or t is None:
             continue
         if b.get("digest") != t.get("digest"):
+            if b.get("in_flight") or t.get("in_flight"):
+                # STILL BEING WRITTEN ON ONE ARM OR THE OTHER, so its digest names a point in a
+                # stream. Residue, exactly like an ordinal that was unmounted before the capture:
+                # it cannot be a difference, and it cannot be an agreement either, so it joins the
+                # list that refuses the verdict below rather than the list that fails it. Same
+                # rule as `compare` applies to the structural digest; the two modes must not
+                # disagree about which readings have a defined moment.
+                uncomparable.append(ordinal)
+                continue
             moved.append(f"ordinal {ordinal}({b.get('role')}):{b.get('chars')}->{t.get('chars')}c")
+    # Ordinals that were unmounted before the capture and ordinals that were still streaming are
+    # the same kind of residue and are counted once each.
+    uncomparable = sorted(set(uncomparable))
     # ONE VIEWPORT ENDED EMPTY AND THE OTHER DID NOT, which is as visible a difference as there is
     # and used to be reported as NOT COMPARABLE -- a refusal, not a finding.
     #

@@ -73,6 +73,25 @@
     isRunning() {
       return Boolean(D.stopButton() || D.queueButton());
     },
+    // WHICH MESSAGES ARE STILL BEING WRITTEN, read from the app's own published state rather than
+    // guessed at from `isRunning()` plus "it is probably the last one".
+    //
+    // assistant-ui gives every text part a status and Studio serialises it: markdown-text.tsx
+    // renders `<div data-status={status.type}>` around the Streamdown tree, so a part that is
+    // still arriving reads `data-status="running"` and a finished one reads `"complete"`. The
+    // reasoning pane publishes the same fact as `aria-busy` on `[data-slot="reasoning-content"]`
+    // (reasoning.tsx), which is a separate part of the same message and can be running while the
+    // answer is not, or the other way round. Either one means this message's DOM is mid-flight.
+    //
+    // Both are the APP's statements about its own state. Nothing here reads a timer, a character
+    // count or "the last assistant message", all of which are the benchmark inventing a fact the
+    // page already publishes -- and inventing it is how you end up attributing a stream to the
+    // wrong message on the arm that renders faster.
+    streamingMessages() {
+      return qa("[data-role]").filter(
+        (m) => m.querySelector('[data-status="running"], [aria-busy="true"]') !== null,
+      );
+    },
     messages() {
       return qa("[data-role]");
     },
