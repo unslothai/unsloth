@@ -419,10 +419,9 @@ def _run_state_disagrees(base: dict, treat: dict) -> bool:
     which is the conservative direction here, since it makes the pair a reported difference rather
     than a silent refusal.
     """
-    return (
-        bool(base.get("streaming")) != bool(treat.get("streaming"))
-        or bool(base.get("queued_idle")) != bool(treat.get("queued_idle"))
-    )
+    return bool(base.get("streaming")) != bool(treat.get("streaming")) or bool(
+        base.get("queued_idle")
+    ) != bool(treat.get("queued_idle"))
 
 
 def _messages_moved(

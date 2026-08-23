@@ -715,9 +715,7 @@ def test_the_streamed_row_itself_is_still_withheld_when_the_probe_is_blind():
                 [
                     message(0, role = "user", body = "the prompt"),
                     message(1, body = "a different settled text"),
-                    message(
-                        2, streaming = True, body = "reply so far", extra = streamed_body(24)
-                    ),
+                    message(2, streaming = True, body = "reply so far", extra = streamed_body(24)),
                 ]
             )
         ),

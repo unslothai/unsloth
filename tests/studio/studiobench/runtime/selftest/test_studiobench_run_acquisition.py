@@ -540,9 +540,9 @@ def test_a_duplicate_run_is_refused_before_it_archives_or_installs_anything(stud
         holder.release()
 
     assert "still running" in str(excinfo.value)
-    assert paths.payload_jsonl.read_text(encoding = "utf-8") == recorded, (
-        "the refused duplicate archived the live payload of the run it was refused in favour of"
-    )
+    assert (
+        paths.payload_jsonl.read_text(encoding = "utf-8") == recorded
+    ), "the refused duplicate archived the live payload of the run it was refused in favour of"
     assert sorted(p.name for p in paths.out.glob("payload-*.jsonl")) == []
     assert studio["installed"] == [], (
         "the duplicate installed a Studio on a machine that was already measuring, which is the "
