@@ -12117,7 +12117,9 @@ def _loaded_token_counter(ctx: int):
 _EXACT_FIT_PASSES = 5
 
 
-def _exact_prefix_chars(text: str, chars: int, token_budget: float, ctx: int) -> int:
+def _exact_prefix_chars(
+    text: str, chars: int, token_budget: float, ctx: int, floor: int | None = None
+) -> int:
     """`chars`, shrunk until the prefix really costs `token_budget`. Never grown.
 
     The estimate below charges every ASCII character a flat 0.25 tokens, which is an
@@ -12132,14 +12134,20 @@ def _exact_prefix_chars(text: str, chars: int, token_budget: float, ctx: int) ->
     costs and shrinks every page that was already fine. So when a tokenizer is serving the
     request, ask it; when none is, keep the estimate exactly as it was.
     """
-    # An estimate already at or below the readable floor cannot be improved on, so nothing
-    # measured here could change the caller's answer. Every value below is at most `chars`
-    # or is exactly `_MIN_PAGE_CHARS`, and `_dense_char_limit` clamps with
-    # `max(_MIN_PAGE_CHARS, ...)`, so with `chars <= _MIN_PAGE_CHARS` the caller lands on
-    # the floor whichever branch is taken. Checked before the counter is even looked up:
-    # this is the small-window case, and it used to spend a full set of round trips
-    # rediscovering a number the caller already had.
-    if chars <= _MIN_PAGE_CHARS:
+    # `floor` is the caller's, not this function's: when a thread has 100 tokens left, the
+    # 2,000-character comfort floor is 666 tokens of dense output and the overflow this
+    # whole path exists to prevent. Defaulted, so the page callers are unchanged.
+    if floor is None:
+        floor = _MIN_PAGE_CHARS
+    # An estimate already at or below the floor the caller guarantees cannot be improved
+    # on, so nothing measured here could change its answer. Every value below is at most
+    # `chars` or is exactly `floor`, so with `chars <= floor` the caller lands on the same
+    # number whichever branch is taken. Checked before the counter is even looked up: this
+    # is the small-window case, and it used to spend a full set of round trips
+    # rediscovering a number the caller already had. Against the caller's floor rather
+    # than `_MIN_PAGE_CHARS` itself, since a room-aware caller passes a lower one and
+    # returning early on the legacy constant would skip the measurement it asked for.
+    if chars <= floor:
         return chars
     counter = _loaded_token_counter(ctx)
     if counter is None:
@@ -12174,12 +12182,12 @@ def _exact_prefix_chars(text: str, chars: int, token_budget: float, ctx: int) ->
         previous = (chars, spent)
         # The floor still applies, and stopping here saves a round trip that cannot
         # change the answer.
-        if fitted <= _MIN_PAGE_CHARS:
-            return _MIN_PAGE_CHARS
+        if fitted <= floor:
+            return floor
         chars = min(fitted, chars - 1)  # always progress, so the loop cannot stall
     # Out of passes with the last shrink still unmeasured. Returning it would be the
     # unchecked prefix above, so fall back to the floor the caller guarantees anyway.
-    return _MIN_PAGE_CHARS
+    return floor
 
 
 def _dense_char_limit(text: str, max_chars: int) -> int:
@@ -12203,12 +12211,7 @@ def _dense_char_limit(text: str, max_chars: int) -> int:
         # on its own it lets the last result before an overflow claim as much as the
         # first. Whichever of the two is smaller is the one that has to hold.
         share = min(share, float(room))
-    fitted = _dense_prefix_chars(text, share)
-    # And measured rather than estimated when the serving model can measure it: the rule
-    # above is honest about non-ASCII and still optimistic about dense ASCII.
-    fitted = _exact_prefix_chars(text, min(fitted, max_chars), share, ctx)
-    # Never above what the caller allowed, and never below the floor that keeps a result
-    # worth reading. An explicit cap smaller than the floor still wins.
+    # Never below the floor that keeps a result worth reading...
     floor = _MIN_PAGE_CHARS
     if room is not None:
         # ...but the floor is a comfort, not a right. Holding 2,000 characters of a dense
@@ -12217,7 +12220,21 @@ def _dense_char_limit(text: str, max_chars: int) -> int:
         # the newest turn. Lowered to what the room really holds, which in the extreme
         # leaves the stub alone -- small enough that the next fit can evict older turns
         # and carry on.
-        floor = min(floor, _dense_prefix_chars(text, float(room)))
+        #
+        # MEASURED, not estimated, for the same reason the body below is: the character
+        # rule charges ASCII a flat four per token, so on the dense output these tools
+        # print it hands back a third more than the room holds. Bottomed at one character
+        # rather than the legacy floor, since the whole point here is to go below it.
+        room_chars = _dense_prefix_chars(text, float(room))
+        floor = min(floor, _exact_prefix_chars(text, room_chars, float(room), ctx, 1))
+    fitted = _dense_prefix_chars(text, share)
+    # And measured rather than estimated when the serving model can measure it: the rule
+    # above is honest about non-ASCII and still optimistic about dense ASCII. The floor
+    # goes WITH it: the exact fit bottoms out on that value, so leaving it at the legacy
+    # 2,000 would hand back 2,000 characters on a thread with room for a few hundred --
+    # the same overflow, reached through the leg that is supposed to be the accurate one.
+    fitted = _exact_prefix_chars(text, min(fitted, max_chars), share, ctx, floor)
+    # An explicit cap smaller than the floor still wins.
     return min(max_chars, max(floor, fitted))
 
 
@@ -13943,7 +13960,7 @@ def _truncate(
         # evict older turns and recover, which is the whole reason a stub beats a refusal.
         located = f", saved to {spill}" if spill else ""
         return f"(output omitted: {len(text)} chars, no context room left{located})"
-    head = _head_whole_lines(text, limit)
+    head, on_boundary = _head_whole_lines(text, limit)
     if spill is None:
         return head + (
             f"\n\n... (truncated to {limit} chars for the model; {len(text)} chars "
@@ -13954,31 +13971,45 @@ def _truncate(
     # model already has the terminal, so naming the exact next command turns a dead end
     # into paging. Truncating without one is what makes a model re-run the same command
     # and truncate identically.
-    shown = head.count("\n") + 1 if head else 0
-    total = text.count("\n") + 1
+    if on_boundary:
+        shown = head.count("\n") + 1 if head else 0
+        total = text.count("\n") + 1
+        resume = f"sed -n '{shown + 1},{shown + max(1, shown)}p' {spill}"
+        where = f"showing lines 1-{shown} of {total}"
+    else:
+        # Cut inside a line, so a line number would name the NEXT one and skip the rest of
+        # the line still unread -- on single-line output, everything. Bytes resume exactly
+        # where this stopped. Measured in bytes, not characters, because that is what
+        # `tail -c` counts and the two differ on any non-ASCII text.
+        offset = len(head.encode("utf-8", "surrogatepass"))
+        resume = f"tail -c +{offset + 1} {spill} | head -c {max(1, offset)}"
+        where = f"showing the first {len(head)} chars of {len(text)}"
     return head + (
-        f"\n\n... (truncated to {limit} chars for the model; showing lines 1-{shown} of "
-        f"{total}, {len(text)} chars total. Full output saved to {spill} -- continue with:"
-        f"\n  sed -n '{shown + 1},{shown + max(1, shown)}p' {spill})"
+        f"\n\n... (truncated to {limit} chars for the model; {where}, {len(text)} chars "
+        f"total. Full output saved to {spill} -- continue with:\n  {resume})"
     )
 
 
-def _head_whole_lines(text: str, limit: int) -> str:
-    """``text`` cut to at most ``limit`` characters, on a line boundary where one is near.
+def _head_whole_lines(text: str, limit: int) -> "tuple[str, bool]":
+    """``text`` cut to at most ``limit`` characters, and whether it ended on a line break.
 
-    Whole lines so the continuation hint can name a line number that resumes exactly where
-    this stopped. A cut mid-line would either repeat that line or lose it, and on the
-    output these tools produce most -- a file printed verbatim -- losing one is losing a
-    line of the user's own code.
+    Whole lines where possible so the continuation hint can name a line number that
+    resumes exactly where this stopped. A cut mid-line would either repeat that line or
+    lose it, and on the output these tools produce most -- a file printed verbatim --
+    losing one is losing a line of the user's own code.
+
+    The flag is not decoration: one enormous line (minified JS, a base64 blob) has no
+    boundary to cut on, and a line number would then name the line AFTER the one the
+    reader is standing in the middle of, skipping everything still unread in it. On
+    single-line output that resumes past the end and returns nothing at all.
     """
     head = text[:limit]
     cut = head.rfind("\n")
-    # Only when a boundary is actually near the end: one enormous line (minified JS, a
-    # base64 blob) has no newline at all, and rewinding to the previous one would throw
-    # away the whole result to keep the hint tidy.
+    # Only when a boundary is actually near the end: rewinding further would throw away
+    # the whole result to keep the hint tidy.
     if cut > 0 and cut >= limit // 2:
-        return head[:cut]
-    return head
+        return head[:cut], True
+    return head, head.endswith("\n")
 
 
 # Dot-directory on purpose: `_snapshot_workdir_files` skips those, so the spill never

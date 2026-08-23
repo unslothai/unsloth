@@ -108,6 +108,23 @@ class TestTheCharacterCapHonoursIt:
 
         assert limit < tools._MIN_PAGE_CHARS
 
+    def test_the_floor_yields_on_the_measured_leg_too(self, monkeypatch):
+        """The leg the test above misses, and the one that matters most.
+
+        `_exact_prefix_chars` bottoms out on the floor, so with a tokenizer serving the
+        request it returned the legacy 2,000 characters however little room was left:
+        100 tokens of room bought 2,000 characters, 666 tokens of dense output, 6.6x the
+        budget. The accurate leg was the leaky one.
+        """
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        _room(100)
+
+        limit = tools._dense_char_limit(_dense(40_000), tools._MAX_OUTPUT_CHARS)
+
+        assert limit // _CHARS_PER_TOKEN <= 100, "the measured leg overshot the room"
+        assert limit < tools._MIN_PAGE_CHARS
+
     def test_an_unpriced_call_behaves_exactly_as_before(self, monkeypatch):
         """The blast radius. External providers and the hosted path never set a room, and
         must see the window-share cap they saw before this existed."""
@@ -161,6 +178,41 @@ class TestPagingTheRest:
 
         head = out.split("\n\n... (truncated")[0]
         assert len(head) == 500
+
+    def test_a_mid_line_cut_resumes_by_bytes_rather_than_by_line(self, tmp_path):
+        """A line number cannot describe a cut that landed inside a line.
+
+        `shown` counts the partial line as complete, so a line-based resume starts at the
+        line AFTER the one the reader is standing in the middle of and skips everything
+        still unread in it. On single-line output -- minified JS, base64, one long JSON --
+        that is the entire remainder, and `sed` returns nothing at all.
+        """
+        out = tools._truncate("A" * 40_000, 500, workdir = str(tmp_path))
+
+        assert "sed -n" not in out, "a line number cannot resume a mid-line cut"
+        assert "tail -c +501" in out
+        # And it really does resume at the first unseen byte.
+        spill = out.split("saved to ")[1].split(" ")[0]
+        assert (tmp_path / spill).read_text()[500:501] == "A"
+
+    def test_a_boundary_cut_still_resumes_by_line(self, tmp_path):
+        """The byte fallback must not swallow the readable case."""
+        out = tools._truncate(
+            "\n".join(f"line {i}" for i in range(1, 501)), 200, workdir = str(tmp_path)
+        )
+
+        assert "sed -n" in out
+        assert "tail -c" not in out
+
+    def test_a_multibyte_mid_line_cut_counts_bytes_not_characters(self, tmp_path):
+        """`tail -c` counts bytes. Handing it a character count resumes in the middle of a
+        codepoint on any non-ASCII output, which is most of a CJK result."""
+        out = tools._truncate("你好" * 10_000, 300, workdir = str(tmp_path))
+
+        head = out.split("\n\n... (truncated")[0]
+        offset = int(out.split("tail -c +")[1].split(" ")[0]) - 1
+        assert offset == len(head.encode("utf-8"))
+        assert offset > len(head), "bytes, not characters, for multibyte text"
 
     def test_the_full_output_is_recoverable_from_the_spill(self, tmp_path):
         text = "\n".join(f"line {i}" for i in range(1, 2_001))
