@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import math
 import statistics
 import sys
 from pathlib import Path
@@ -51,6 +52,30 @@ from tests.studio.studiobench.scoring.from_payload import (  # noqa: E402
 )
 
 METRICS = tuple(ACTION_SOURCES) + FRAME_METRICS + STREAM_METRICS
+
+# The metrics compared by DIFFERENCE rather than by ratio, because zero is their CLEAN reading.
+#
+# Everything else here is a duration, and a duration is zero only when nothing happened. Jank is
+# the opposite: a stream that never dropped a frame reports exactly 0.0, and that is the reading a
+# good build is supposed to produce. Measured on this repository's recorded payloads,
+# `stream_time_in_jank_pct` is exactly 0.0 on 765 of 1,438 scored cells, and 349 of 668 base-vs-
+# treatment pairs across 117 payload files have a zero base arm.
+#
+# Paired as a ratio those pairs cannot survive: `t / 0.0` is undefined, so `paired` dropped them,
+# and dropping them is not a conservative choice. It removes exactly the comparisons where the base
+# was CLEAN -- the ones a treatment that introduces jank shows up in -- so a regression from 0.0%
+# to 12.0% left no row at all, and a run where only some repetitions had a zero base kept the rest
+# under the same `n`, pooling a metric over a set whose membership depends on the base arm's value.
+#
+# A difference is defined from zero, so these are pooled as `treatment - base` in the metric's own
+# unit, for EVERY pair rather than only the zero ones: mixing the two within one mean would be a
+# second unstable pool. The null control's floor is computed the same way, so the gates compare
+# like with like, and the table marks these rows so the column is not read as a percentage change.
+#
+# Scoped to the two streaming metrics this file has just started harvesting. `time_in_jank_pct`
+# has the same shape and loses 3% of its pairs, but it is already published against ratio-based
+# floors, and re-basing it would silently re-score every table taken so far.
+DIFFERENCE_METRICS: frozenset[str] = frozenset({"stream_time_in_jank_pct", "stream_jank_index"})
 
 
 def _action_timings(records: list[dict], cid: str) -> dict[str, float]:
@@ -194,7 +219,13 @@ def paired(records: list[dict], shard: str = "") -> dict[str, list[tuple[float, 
             continue
         for metric in set(sides["base"]) & set(sides["treatment"]):
             b, t = sides["base"][metric], sides["treatment"][metric]
-            if b:
+            # `if b` is a ratio's precondition, not a validity test: a zero base is a real reading
+            # for the jank metrics and only an undefined DENOMINATOR. Those are compared by
+            # difference (see DIFFERENCE_METRICS), so they are kept whenever both sides are finite.
+            if metric in DIFFERENCE_METRICS:
+                if math.isfinite(b) and math.isfinite(t):
+                    out[metric].append((b, t))
+            elif b:
                 out[metric].append((b, t))
     return out
 
@@ -297,6 +328,21 @@ def summarise(paths: list[Path]) -> dict[str, dict[str, float]]:
     out: dict[str, dict[str, float]] = {}
     pooled, _tiers = load(paths)
     for metric, rows in pooled.items():
+        if metric in DIFFERENCE_METRICS:
+            # Same three quantities, same three gates, measured in the metric's own unit because a
+            # ratio from a clean zero base does not exist. `delta_pct` and `spread_pct` are then
+            # percentage POINTS (or ms), which is why `render` marks the row.
+            diffs = [t - b for b, t in rows]
+            out[metric] = {
+                "n": len(rows),
+                "base": statistics.fmean(b for b, _ in rows),
+                "treat": statistics.fmean(t for _, t in rows),
+                "delta_pct": statistics.fmean(diffs),
+                "consistent": all(d > 0.0 for d in diffs) or all(d < 0.0 for d in diffs),
+                "spread_pct": max(diffs) - min(diffs),
+                "difference": True,
+            }
+            continue
         ratios = [t / b for b, t in rows]
         out[metric] = {
             "n": len(rows),
@@ -310,6 +356,7 @@ def summarise(paths: list[Path]) -> dict[str, dict[str, float]]:
             # The spread of the paired ratios. From a null control it is the detection floor; from
             # a real comparison it is the effect's own scatter, which is GATE 3.
             "spread_pct": (max(ratios) - min(ratios)) * 100.0,
+            "difference": False,
         }
     return out
 
@@ -385,10 +432,16 @@ def render(
     print(head + ("      floor %  verdict" if floors else ""))
     print("  " + "-" * (len(head) + (26 if floors else 0)))
     survivors = 0
+    marked = False
     for metric in sorted(stats, key = lambda m: (m in METRICS, m)):
         s = stats[metric]
+        # A difference row is named as one. Its delta is in the metric's own unit, and printing it
+        # under a "delta %" heading would be the same class of mistake this file exists to stop.
+        label = metric
+        if s.get("difference"):
+            label, marked = metric + " (abs)", True
         line = (
-            f"  {metric:<28}{s['n']:>3}{s['base']:>11.1f}{s['treat']:>11.1f}"
+            f"  {label:<28}{s['n']:>3}{s['base']:>11.1f}{s['treat']:>11.1f}"
             f"{s['delta_pct']:>+10.1f}{s['spread_pct']:>10.1f}"
         )
         if floors is not None:
@@ -397,6 +450,12 @@ def render(
             if verdict in ("faster", "SLOWER", "LOST (invariant fell)", "gained"):
                 survivors += 1
         print(line)
+    if marked:
+        print(
+            "\n  (abs) = compared by DIFFERENCE, in the metric's own unit rather than as a "
+            "percentage\n        change: zero is these metrics' clean reading, and a ratio from "
+            "zero does not exist."
+        )
     if floors is not None:
         print(f"\n  {survivors} metric(s) cleared all three gates.")
     return survivors
