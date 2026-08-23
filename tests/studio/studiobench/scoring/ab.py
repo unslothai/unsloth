@@ -20,6 +20,16 @@ A REGRESSION BEYOND THE NOISE FLOOR IS A FAIL REGARDLESS OF THE HEADLINE. A chan
 the aggregate by 12% while tripling the worst frame is not a win, and a single headline number is
 exactly the instrument that would let it ship. Every metric is checked individually.
 
+A POINT ESTIMATE PAST THE NOISE FLOOR IS NOT YET AN EFFECT. The noise floor answers "could this
+machine resolve a difference of this size at all", which is a question about the harness; it says
+nothing about whether these repetitions agree. Ratios of 0.7, 0.7, 1.2, 1.2 have a geometric mean
+of 0.917, clear of a 5% floor, and a bootstrap CI of 0.700-1.200 that contains 1.0: the pairs do
+not agree on the sign, and the honest reading is that nothing was resolved. So a direction is only
+claimed when the CI clears 1.0. On the worse side the metric still counts as a regression -- an
+unresolved regression is not a cleared one -- but it is labelled unresolved rather than quoted as
+a measured loss. `sweep/floor_table.py` applies the same rule to its own pooled ratios under
+"VOID (pairs disagree on sign)".
+
 FOUR REFUSALS. Rendering is refused outright when `bench_version`, `corpus_hash`, `rung_ladder_id`
 or `weights_id` differ between the two sides. Each of those changes what the numbers mean, and a
 table that prints them side by side is not a comparison, it is a category error with column
@@ -172,6 +182,10 @@ class MetricComparison:
     ci_high: float | None
     verdict: str = "no_reading"
     beyond_noise: bool = False
+    #: The 95% CI of the paired geometric mean contains 1.0, so the data cannot rule out "no
+    #: effect" however far the point estimate landed from the noise floor. Carried so the table
+    #: can say the size is unresolved rather than print a direction as a finding.
+    ci_spans_no_effect: bool = False
     #: At least one contributing pair had a sub-floor arm, so the ratio is a BOUND: the true
     #: magnitude is larger. Carried so the table can say so rather than let a number derived from
     #: an instrument floor be quoted as a measurement.
@@ -186,6 +200,7 @@ class MetricComparison:
             "ci95": [self.ci_low, self.ci_high],
             "verdict": self.verdict,
             "beyond_noise": bool(self.beyond_noise),
+            "ci_spans_no_effect": bool(self.ci_spans_no_effect),
             "bounded": bool(self.bounded),
         }
 
@@ -255,6 +270,17 @@ class AbResult:
             return "NO READING"
         if abs(self.headline_ratio - 1.0) * 100.0 <= self.noise_floor_pct:
             return "NO DIFFERENCE"
+        # A DIRECTION NOBODY'S CI COULD RESOLVE IS NOT A HEADLINE. The headline is a weighted
+        # geometric mean of per-metric point estimates and has no interval of its own, so with
+        # heterogeneous repetitions it can sit well past the noise floor while every metric that
+        # moved carries a CI containing 1.0. Ratios 0.7, 0.7, 1.2, 1.2 give 0.917 and a CI of
+        # 0.700-1.200, and this line used to print "IMPROVED" over it -- the one word from this
+        # table that gets quoted. Claim the direction only when a metric actually resolved it.
+        claimed = "improved" if self.headline_ratio < 1.0 else "regressed"
+        if not any(m.verdict == claimed for m in self.metrics) and any(
+            m.beyond_noise and m.ci_spans_no_effect for m in self.metrics
+        ):
+            return "INCONCLUSIVE"
         return "IMPROVED" if self.headline_ratio < 1.0 else "REGRESSED"
 
     def to_json(self) -> dict[str, Any]:
@@ -333,16 +359,28 @@ def compare(
             lower_is_better = anchor.lower_is_better if anchor else True
             worse = delta_pct > 0 if lower_is_better else delta_pct < 0
             comparison.beyond_noise = abs(delta_pct) > noise_floor_pct
+            comparison.ci_spans_no_effect = (
+                lo is not None and hi is not None and lo <= 1.0 <= hi
+            )
             if not comparison.beyond_noise:
                 comparison.verdict = "within noise"
             elif worse:
-                comparison.verdict = "regressed"
+                comparison.verdict = (
+                    "regressed (unresolved)" if comparison.ci_spans_no_effect else "regressed"
+                )
+                unresolved = (
+                    f"; 95% CI {lo:.3f}-{hi:.3f} spans no effect, so the size is unresolved"
+                    if comparison.ci_spans_no_effect
+                    else ""
+                )
                 result.regressions.append(
                     f"{metric_key}: {abs(delta_pct):.1f}% worse "
-                    f"(noise floor {noise_floor_pct:.1f}%)"
+                    f"(noise floor {noise_floor_pct:.1f}%{unresolved})"
                 )
             else:
-                comparison.verdict = "improved"
+                comparison.verdict = (
+                    "inconclusive" if comparison.ci_spans_no_effect else "improved"
+                )
             weight = anchor.weight if anchor else 1.0
             weighted_logs.append((weight, math.log(geo)))
         result.metrics.append(comparison)

@@ -275,6 +275,18 @@ def render_ab_table(result: AbResult) -> str:
             f"({abs(1.0 - result.headline_ratio) * 100:.1f}% {direction}, weighted)"
         )
     lines.append(f"VERDICT: {result.verdict}")
+    unresolved = [m for m in result.metrics if m.beyond_noise and m.ci_spans_no_effect]
+    if unresolved:
+        lines.append("")
+        lines.append(
+            "The 95% CI of these metrics contains 1.0, so their repetitions do not agree on the "
+            "sign and no direction is claimed for them:"
+        )
+        for metric in unresolved:
+            lines.append(
+                f"  {metric.metric_key}: ratio {metric.ratio_geomean:.3f}, "
+                f"ci95 {metric.ci_low:.3f}-{metric.ci_high:.3f}"
+            )
     if result.regressions:
         lines.append("")
         lines.append(

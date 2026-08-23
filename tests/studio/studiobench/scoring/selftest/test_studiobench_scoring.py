@@ -538,6 +538,103 @@ def test_bootstrap_ci_brackets_the_geometric_mean():
 
 
 # ---------------------------------------------------------------------------------------
+# A CI that contains 1.0 is not a result: the pairs have to agree on the sign
+# ---------------------------------------------------------------------------------------
+#
+# The noise floor is a fact about the HARNESS -- whether a difference of this size is resolvable
+# here at all -- and it was the only gate a direction had to pass. Repetitions that disagree
+# produce a geometric mean well clear of the floor anyway: 0.7, 0.7, 1.2, 1.2 averages to 0.917
+# with a CI of 0.700-1.200, and the table said "improved" over it, in the one column anybody
+# quotes. The CI was computed, printed, and never consulted.
+
+
+def _split_pairs(metric: str, ratios: list[float]) -> list[Pair]:
+    """One metric, one ratio per rung, so the pairs can be made to disagree on the sign."""
+    out = []
+    for index, ratio in enumerate(ratios):
+        base = 100.0 + index
+        out.append(
+            Pair(
+                rung_tokens = 1_000 * (index + 1),
+                metric_key = metric,
+                base = Measure.read(base, "ms"),
+                treatment = Measure.read(base * ratio, "ms"),
+            )
+        )
+    return out
+
+
+def test_a_ci_that_spans_no_effect_is_not_an_improvement():
+    result = compare(
+        "treatment",
+        _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2]),
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+    )
+    metric = result.metrics[0]
+    assert metric.beyond_noise is True  # 8.3% clear of a 5% floor
+    assert metric.ci_low <= 1.0 <= metric.ci_high
+    assert metric.ci_spans_no_effect is True
+    assert metric.verdict == "inconclusive"
+    # The headline has no interval of its own, so it is the line most likely to be quoted.
+    assert result.verdict == "INCONCLUSIVE"
+    assert result.regressions == []
+
+
+def test_a_ci_that_spans_no_effect_does_not_clear_a_regression():
+    """An unresolved regression is still a regression: the fail-safe direction is FAIL.
+
+    The mirror of the case above must NOT be symmetric. Refusing to claim a win costs a
+    contributor a headline; refusing to raise a fail lets the regression ship. So the metric is
+    labelled unresolved and still counted.
+    """
+    result = compare(
+        "treatment",
+        _split_pairs("keystroke_p95_ms", [1.4, 1.4, 0.9, 0.9]),
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+    )
+    metric = result.metrics[0]
+    assert metric.ci_spans_no_effect is True
+    assert metric.verdict == "regressed (unresolved)"
+    assert result.verdict == "FAIL"
+    assert any("unresolved" in r for r in result.regressions)
+
+
+def test_agreeing_pairs_still_carry_their_direction():
+    """The gate must not swallow a real effect: four ratios that agree keep their verdict."""
+    result = compare(
+        "treatment",
+        _split_pairs("keystroke_p95_ms", [0.70, 0.72, 0.68, 0.74]),
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+    )
+    metric = result.metrics[0]
+    assert metric.ci_spans_no_effect is False
+    assert metric.verdict == "improved"
+    assert result.verdict == "IMPROVED"
+
+
+def test_the_table_does_not_print_a_direction_it_could_not_resolve():
+    from studiobench.report.render import render_ab_table
+
+    result = compare(
+        "treatment",
+        _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2]),
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+    )
+    text = render_ab_table(result)
+    assert "VERDICT: INCONCLUSIVE" in text
+    assert "improved" not in text
+    assert "do not agree on the sign" in text
+
+
+# ---------------------------------------------------------------------------------------
 # A measured zero is a reading: sub-floor arms bound the ratio rather than voiding the pair
 # ---------------------------------------------------------------------------------------
 #
