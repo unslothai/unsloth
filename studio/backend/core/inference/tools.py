@@ -8763,6 +8763,21 @@ def session_sandbox_has_files(session_id: str) -> bool:
         return False
 
 
+def _is_spill_artifact(sandbox: str, parent: str, name: str) -> bool:
+    """Whether ``parent/name`` is a spill this process wrote, rather than anything else.
+
+    Both halves are checked: the name has to be one `_spill_full_output` generates, and it
+    has to sit at the spill root or one scope below it. A link is never one, whatever it
+    is called.
+    """
+    root = os.path.join(sandbox, _SPILL_DIR)
+    if parent != root and os.path.dirname(parent) != root:
+        return False
+    return bool(_SPILL_NAME_RE.fullmatch(name)) and not os.path.islink(
+        os.path.join(parent, name)
+    )
+
+
 def _holds_no_user_files(target: str, owner: "str | None" = None) -> bool:
     """Whether a sandbox holds nothing but (possibly empty) directories.
 
@@ -8773,12 +8788,6 @@ def _holds_no_user_files(target: str, owner: "str | None" = None) -> bool:
     """
     budget = _MAX_SNAPSHOT_DIRS
     for parent, dirs, files in os.walk(target):
-        # Studio's own, like the marker below: spills are truncated tool output this
-        # process wrote and deliberately hid from the file cards, so counting them as the
-        # user's content is what would leave an unreachable sandbox behind, reported as
-        # holding files the user never created.
-        if parent == target and _SPILL_DIR in dirs:
-            dirs.remove(_SPILL_DIR)
         # A link to a directory is listed here, not in files, and a tool made
         # it: a sandbox holding one is not empty.
         if any(os.path.islink(os.path.join(parent, name)) for name in dirs):
@@ -8790,6 +8799,14 @@ def _holds_no_user_files(target: str, owner: "str | None" = None) -> bool:
                 marker = _marker_owner(target)
                 if marker is not None and owner in (None, marker):
                     continue
+            # Studio's own, like the marker above: a spill is truncated tool output this
+            # process wrote and deliberately kept off the file cards, so counting one as
+            # the user's content leaves an unreachable sandbox behind, reported as holding
+            # files the user never created. Only the artifacts themselves, by the name
+            # `_spill_full_output` generates: the directory is writable, tool code can
+            # create anything in it, and a real file there is the user's like any other.
+            if _is_spill_artifact(target, parent, name):
+                continue
             return False
         budget -= 1
         if budget <= 0:
@@ -10915,6 +10932,11 @@ _MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
 # to answer, so a third is already generous.
 _PAGE_CONTEXT_SHARE = 0.35
 # Below this a page is too clipped to answer from, so the fetch is not worth making small.
+# Half, when the room has to be converted to characters with no way to check the answer.
+# See `_dense_char_limit`: the conversion charges ASCII an English four characters per
+# token and the dense ASCII these tools print runs nearer two.
+_UNMEASURED_ROOM_MARGIN = 0.5
+
 _MIN_PAGE_CHARS = 2000
 # A percent-escape is one non-ASCII byte written in ASCII, and tokenises like one.
 _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
@@ -12230,6 +12252,16 @@ def _dense_char_limit(text: str, max_chars: int) -> int:
     room = _request_result_room()
     if not ctx or (len(text) <= _MIN_PAGE_CHARS and room is None):
         return max_chars
+    if room is not None and _loaded_token_counter(ctx) is None:
+        # Nothing here can measure this model's tokens: `_loaded_token_counter` answers
+        # only for a resident GGUF, and a native safetensors model is served through a
+        # loop with no rolling fit to recover if the estimate is wrong. The estimate below
+        # charges plain ASCII four characters per token, which is an English rate; base64,
+        # minified JSON and hashes run nearer two, so the room could be spent twice over.
+        # Halved so the optimistic rate becomes a pessimistic one. It costs a shorter
+        # result on a path that cannot check its own arithmetic, which is the side to be
+        # wrong on when being wrong the other way is an unrecoverable turn.
+        room = int(room * _UNMEASURED_ROOM_MARGIN)
     # Kept a float, so English text lands on exactly the character budget rather than
     # one character short of it.
     share = ctx * _PAGE_CONTEXT_SHARE

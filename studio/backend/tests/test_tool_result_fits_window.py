@@ -388,21 +388,21 @@ class TestTheReportedScenario:
 
         assert spent > target
 
-    def test_without_a_tokenizer_the_estimate_alone_is_optimistic(self, monkeypatch):
-        """A limitation worth stating rather than discovering later.
+    def test_without_a_tokenizer_the_margin_still_keeps_it_inside(self, monkeypatch):
+        """The native path, where nothing can price a string exactly.
 
-        With no model able to price a string, the room is still converted to characters at
-        the four-per-token ENGLISH rate, so output that really costs three per token
-        overspends by about a third. Every local GGUF path has a tokenizer (llama_cpp
-        hands it to `_loaded_token_counter`); this is the shape of the residual risk on a
-        path that does not, and the reason the conversion is measured when it can be.
+        `_loaded_token_counter` answers only for a resident GGUF, so a safetensors model
+        converts its room with the four-characters-per-token English estimate, and the
+        dense ASCII these tools print runs nearer three. Left alone that overspends by
+        about a third, on the one loop with no rolling fit to recover with, so the
+        conversion is halved instead (`_UNMEASURED_ROOM_MARGIN`).
         """
         _window(monkeypatch, 4096)  # deliberately NO _tokenizer()
         target = prompt_budget(4096, None)
 
         spent = _cat_game_html(monkeypatch, _dense(40_000), price_the_room = True)
 
-        assert spent > target
+        assert spent < target
 
 
 def _within_room(out: str, room: int) -> None:
@@ -950,3 +950,48 @@ class TestDeletingAChatIsNotBlockedByItsSpills:
             open(os.path.join(workdir, "game.html"), "w").close()
 
             assert not tools._holds_no_user_files(workdir)
+
+    def test_a_user_file_inside_the_spill_directory_still_counts(self, tmp_path):
+        """The directory is writable and the tools can create anything in it. Skipping the
+        whole tree means deleting a chat deletes a file the user's own code wrote."""
+        tools._truncate(
+            "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path), scope = "abc123abc123"
+        )
+        (tmp_path / tools._SPILL_DIR / "notes.txt").write_text("mine")
+
+        assert not tools._holds_no_user_files(str(tmp_path))
+
+    def test_a_file_named_like_a_spill_but_placed_elsewhere_counts(self, tmp_path):
+        """The name alone is not the test: twelve hex characters is a plausible name for
+        anything, and outside the spill root nothing here wrote it."""
+        (tmp_path / "abcdef123456.txt").write_text("mine")
+
+        assert not tools._holds_no_user_files(str(tmp_path))
+
+
+class TestTheNativePathIsBoundedWithoutATokenizer:
+    """`_loaded_token_counter` answers only for a resident GGUF, so on a safetensors model
+    the room is converted with the four-characters-per-token English estimate and never
+    corrected. Dense ASCII runs nearer two, and that loop has no rolling fit to recover."""
+
+    def test_an_unmeasurable_room_is_halved(self, monkeypatch):
+        _window(monkeypatch, 4096)
+        monkeypatch.setattr(tools, "_loaded_token_counter", lambda ctx: None)
+        _room(400)
+        text = _dense(40_000)
+
+        assert tools._dense_char_limit(text, tools._MAX_OUTPUT_CHARS) == pytest.approx(
+            400 * 4 * tools._UNMEASURED_ROOM_MARGIN, rel = 0.02
+        )
+
+    def test_a_measurable_room_is_not(self, monkeypatch):
+        """The control: where the serving model can price the string, the exact fit does
+        the work and no blanket margin is applied on top of it."""
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        _room(400)
+        text = _dense(40_000)
+
+        limit = tools._dense_char_limit(text, tools._MAX_OUTPUT_CHARS)
+        assert limit > 400 * 4 * tools._UNMEASURED_ROOM_MARGIN
+        assert limit // _CHARS_PER_TOKEN <= 400
