@@ -333,3 +333,73 @@ def test_a_run_killed_during_a_later_cell_does_not_pass_on_its_earlier_ones(tmp_
         ],
     )
     assert main(["--assert-liveness", str(path)]) == 1
+
+
+def test_an_allowed_action_that_ran_and_failed_its_assertion_still_fails(tmp_path):
+    """`--allow-not-run` excuses NOT RUNNING, not everything the gate checks.
+
+    The allow-list skip used to sit above all three branches, so a listed name was exempt from
+    the gate entirely. `image_upload` is listed in studiobench-ci.yml only because the fixture
+    cannot mount an upload; the day it does mount, an upload that produces no attachment has to
+    be a failure rather than an excuse inherited from a different reason.
+    """
+
+    path = write_payload(
+        tmp_path,
+        [cell([ran("image_upload", expect_ok = False, reason = "no attachment appeared")])],
+    )
+    assert main(["--assert-liveness", str(path), "--allow-not-run", "image_upload"]) == 1
+
+
+def test_an_allowed_action_that_did_not_run_is_still_excused(tmp_path):
+    """The pair: scoping the allowance must not break what it is actually for."""
+
+    path = write_payload(
+        tmp_path,
+        [
+            cell(
+                [
+                    {
+                        "action": "image_upload",
+                        "ran": False,
+                        "reason": "fixture cannot mount an upload",
+                    }
+                ]
+            )
+        ],
+    )
+    assert main(["--assert-liveness", str(path), "--allow-not-run", "image_upload"]) == 0
+
+
+def test_an_allowed_action_that_ran_and_missed_its_slot_still_fails(tmp_path):
+    """A listed name that ran is still held to its slot, for the same reason."""
+
+    path = write_payload(tmp_path, [cell([ran("image_upload", slot_missed = True)])])
+    assert main(["--assert-liveness", str(path), "--allow-not-run", "image_upload"]) == 1
+
+
+def test_a_missed_slot_that_never_ran_is_still_excused_by_name(tmp_path):
+    """The guard against tightening the org's CI by accident.
+
+    `scene/schedule.py` records a real missed slot as `ran = False, slot_missed = True`, so a slow
+    runner that cannot reach a fixed-duration film's slot lands in the NOT RUN branch and stays
+    excusable by name. That is the runner failing to keep up, not a defect in the code under test,
+    and narrowing the allowance must not turn it red.
+    """
+
+    path = write_payload(
+        tmp_path,
+        [
+            cell(
+                [
+                    {
+                        "action": "image_upload",
+                        "ran": False,
+                        "slot_missed": True,
+                        "reason": "the slot opened at 1000ms and this machine reached it at 2000ms",
+                    }
+                ]
+            )
+        ],
+    )
+    assert main(["--assert-liveness", str(path), "--allow-not-run", "image_upload"]) == 0

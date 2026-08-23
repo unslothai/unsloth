@@ -1768,9 +1768,16 @@ def assert_liveness(args) -> int:
             problems.append(f"{where}: the cell did not complete")
         for action in row.get("actions") or []:
             name = action.get("action") or action.get("name") or "?"
-            if name in allowed:
-                continue
             if not action.get("ran"):
+                # THE ALLOWANCE IS EXACTLY WHAT ITS NAME SAYS. `--allow-not-run` excuses an action
+                # the fixture cannot mount at all; it is not a blanket exemption from the gate.
+                # Applied before the branches it would also excuse a listed action that DID run
+                # and then missed its slot or failed its own assertion, which is the failure this
+                # gate exists to catch. `image_upload` is listed in studiobench-ci.yml only
+                # because the fixture cannot mount it, so if it ever does mount, an upload that
+                # produces no attachment must be a failure rather than an inherited excuse.
+                if name in allowed:
+                    continue
                 problems.append(f"{where}: {name} NOT RUN ({action.get('reason') or 'no reason'})")
             elif action.get("slot_missed"):
                 problems.append(f"{where}: {name} missed its slot")
@@ -1860,9 +1867,10 @@ def parse_args(argv: list):
         "--allow-not-run",
         metavar = "ACTIONS",
         dest = "allow_not_run",
-        help = "comma-separated action names --assert-liveness may excuse. Use only "
-        "for an action a platform genuinely cannot perform, and say which in "
-        "the pull request: every name here is a hole in the gate",
+        help = "comma-separated action names --assert-liveness may excuse for NOT RUNNING "
+        "only. A listed action that does run is still held to its slot and its own "
+        "assertion. Use only for an action a platform genuinely cannot perform, and say "
+        "which in the pull request: every name here is a hole in the gate",
     )
     ap.add_argument("--rungs", help = "comma-separated rung override, e.g. 1K,10K")
     ap.add_argument("--reps", type = int, default = 1)
