@@ -6545,7 +6545,7 @@ const ContinueMessageBarForLastMessage: FC = () => {
     const custom = (message.metadata as { custom?: Record<string, unknown> } | undefined)
       ?.custom;
     return (custom?.contextTruncation ?? null) as
-      | { fits?: boolean; prompt_target?: number }
+      | { fits?: boolean; prompt_target?: number; dropped_messages?: number }
       | null;
   });
 
@@ -6560,6 +6560,9 @@ const ContinueMessageBarForLastMessage: FC = () => {
     resumable &&
     shouldAutoContinueMessage(messageId, reason, parentId, {
       fits: truncation?.fits,
+      // `fits` alone no longer separates the two refusals: a shortened prompt that was
+      // sent also reports false. Pass what tells them apart.
+      promptWasShortened: (truncation?.dropped_messages ?? 0) > 0,
       // The same cheap estimator the backend fit uses, which is all that is needed to
       // spot a partial that has already eaten the whole budget.
       partialTokens: Math.ceil(partial.length / 4),

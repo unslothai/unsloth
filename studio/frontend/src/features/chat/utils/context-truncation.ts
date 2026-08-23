@@ -37,9 +37,16 @@ export function compactionBoundary(
   // boundary_messages is where the boundary sits in the saved transcript.
   // dropped_messages accumulates what each fit removed, so a tool-heavy turn reports far
   // more than the boundary moved and a later real advance looks like none. Fallback only,
-  // for turns saved before the boundary was recorded, and for a shortened refusal, which
-  // records no boundary because it is not one to replay.
-  return truncation.boundary_messages ?? truncation.dropped_messages ?? 0;
+  // for turns saved before the boundary was recorded -- hence gated on the fit having
+  // SUCCEEDED, which is the only shape those saved turns have.
+  //
+  // A shortened refusal is deliberately given no boundary, and its summed drops are not
+  // one either. Reading them as a position sets a high-water mark that `showsNotice`
+  // never sees exceeded again, silencing every later real compaction in the thread.
+  return (
+    truncation.boundary_messages ??
+    (truncation.fits ? (truncation.dropped_messages ?? 0) : 0)
+  );
 }
 
 export function mergeContextTruncation(

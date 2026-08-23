@@ -53,9 +53,61 @@ test("a shortened prompt still counts as a compaction, whatever fits says", () =
   // eviction with fits:false. The turns are gone from the model's view, so the notice
   // and the toast must fire; only a fit that returned the ORIGINAL messages stays quiet.
   assert.equal(promptWasShortened({ dropped_messages: 2, fits: false }), true);
-  assert.equal(compactionBoundary({ dropped_messages: 2, fits: false }), 2);
   assert.equal(promptWasShortened({ dropped_messages: 0, fits: false }), false);
   assert.equal(promptWasShortened(undefined), false);
+});
+
+test("a shortened refusal announces itself but never sets the boundary", () => {
+  // It records no boundary_messages on purpose, and its dropped count is a per-refit
+  // SUM, not a position. Reading the sum as a position would set a high-water mark that
+  // `showsNotice` cannot see exceeded again.
+  const oneRefit = { dropped_messages: 2, fits: false };
+  let toolLoop = { fits: false, dropped_messages: 4 };
+  for (const chunk of [
+    { fits: false, dropped_messages: 6 },
+    { fits: false, dropped_messages: 6 },
+  ]) {
+    toolLoop = mergeContextTruncation(toolLoop, chunk);
+  }
+
+  assert.equal(toolLoop.dropped_messages, 16);
+  assert.equal(compactionBoundary(oneRefit), 0);
+  assert.equal(compactionBoundary(toolLoop), 0);
+  // The notice still fires: that reads promptWasShortened, not the boundary.
+  assert.equal(promptWasShortened(toolLoop), true);
+  // And a fit that SUCCEEDED still gets the legacy fallback, for turns saved before
+  // boundary_messages existed.
+  assert.equal(compactionBoundary({ dropped_messages: 3, fits: true }), 3);
+  assert.equal(
+    compactionBoundary({ dropped_messages: 16, fits: false, boundary_messages: 4 }),
+    4,
+  );
+});
+
+test("a rescued turn cannot silence the compactions that follow it", () => {
+  // The `showsNotice` scan in thread.tsx, which only announces a boundary that ROSE.
+  const boundariesShown = (records: any[]) => {
+    let high = 0;
+    const shown: number[] = [];
+    records.forEach((rec, index) => {
+      const b = compactionBoundary(rec);
+      if (b > high) {
+        shown.push(index);
+        high = b;
+      }
+    });
+    return shown;
+  };
+
+  assert.deepEqual(
+    boundariesShown([
+      { fits: true, dropped_messages: 4, boundary_messages: 4 },
+      { fits: false, dropped_messages: 16 }, // rescued, three refits
+      { fits: true, dropped_messages: 2, boundary_messages: 6 },
+      { fits: true, dropped_messages: 2, boundary_messages: 8 },
+    ]),
+    [0, 2, 3],
+  );
 });
 
 test("the notice and the toast read the same predicate as the boundary", () => {

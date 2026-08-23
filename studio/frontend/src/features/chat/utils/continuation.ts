@@ -328,12 +328,15 @@ export function shouldAutoContinue(
   {
     limit = AUTO_CONTINUE_LIMIT,
     fits,
+    promptWasShortened,
     partialTokens,
     promptTarget,
   }: {
     limit?: number;
     /** `contextTruncation.fits` of the turn being resumed. */
     fits?: boolean;
+    /** Whether that fit actually removed turns, i.e. `dropped_messages > 0`. */
+    promptWasShortened?: boolean;
     /** Estimated size of the partial that would be replayed. */
     partialTokens?: number;
     /** `contextTruncation.prompt_target`: what the window leaves for the prompt. */
@@ -343,9 +346,16 @@ export function shouldAutoContinue(
   if (reason !== "length" || !key) {
     return false;
   }
-  if (fits === false) {
-    // This turn's own fit was already refused. Resuming re-sends a partial that is only
-    // ever longer, so the next round cannot fit either.
+  if (fits === false && !promptWasShortened) {
+    // This turn's own fit was already refused AND returned the original messages, so the
+    // request never fitted at all. Resuming re-sends a partial that is only ever longer,
+    // so the next round cannot fit either.
+    //
+    // A fit that missed only the reply reserve is a different animal: it evicted turns,
+    // the shortened prompt WAS sent, and it answered. That is precisely the turn that
+    // runs out of reply room and stops on `length`, and the fitter can still evict
+    // further to make room for the replayed partial. The genuinely hopeless case is
+    // caught on its own merits by the partialTokens check below.
     return false;
   }
   if (

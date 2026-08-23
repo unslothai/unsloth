@@ -215,6 +215,39 @@ def prompt_budget(context_length: int, max_tokens: Optional[int]) -> int:
     return context_length - min(requested, max(1, context_length // 4))
 
 
+# Cap a tool-loop retrieval without reducing the allowance of smaller results.
+_RETRIEVAL_BUDGET_SHARE = 0.5
+
+# The least reply room a rescued prompt must leave, as a fraction of the window. Small
+# on purpose: the point of the rescue is that missing the RESERVE is survivable, so this
+# only rules out the degenerate end of the band, where what comes back is a stub.
+_RESCUE_REPLY_FLOOR_DIVISOR = 16
+
+
+def retrieval_budget(
+    context_length: int,
+    max_tokens: Optional[int],
+    prompt_tokens: int,
+    *,
+    reply_returns: bool = False,
+) -> int:
+    """Return the prompt room available to one retrieval.
+
+    In a tool loop, the retrieved exchange and the reply are protected on the next fit,
+    so one retrieval may use at most half the prompt budget. Single-shot requests use the
+    full remainder.
+
+    Lives beside ``prompt_budget`` and for the same reason: every local tool loop sizes
+    the same ``search_conversation`` against the same window, and a policy kept privately
+    by one backend is a policy the others quietly disagree with.
+    """
+    target = prompt_budget(context_length, max_tokens)
+    room = max(0, target - int(prompt_tokens or 0))
+    if reply_returns:
+        room = min(room, int(target * _RETRIEVAL_BUDGET_SHARE))
+    return room
+
+
 def _latest_turn_tokens(messages: list[dict], count_tokens: Callable[[list[dict]], int]) -> int:
     """Tokens in the newest message, estimated if the template refuses to render it.
 
@@ -316,13 +349,22 @@ def fit_rolling_context(
 
     if current_tokens > prompt_target:
         # Missing the prompt target only loses reserved reply room. Keep the original if
-        # it fits the physical window, else an eviction that does. Strictly under it on
-        # both sides: llama-server refuses at `n_ctx` exactly, since the first generated
+        # it fits the physical window, else an eviction that does. Under it on both
+        # sides: llama-server refuses at `n_ctx` exactly, since the first generated
         # token needs a KV cell. `fits` stays false because the target was not reached.
+        # ...but not by one token. Serving a prompt of `n_ctx - 1` evicts the history
+        # AND returns a one-token answer stopped on `length`, which is strictly worse
+        # than the refusal it replaces: that at least kept the turns and said which one
+        # was too big. Ask for a floor of reply room, capped by the reserve the fit
+        # wanted, so a caller that asked for 16 tokens is not held to more.
+        reply_floor = min(
+            max(1, context_length // _RESCUE_REPLY_FLOOR_DIVISOR),
+            context_length - prompt_target,
+        )
         rescued = (
             dropped_total > 0
             and initial_tokens >= context_length
-            and current_tokens < context_length
+            and current_tokens + reply_floor <= context_length
         )
         return (fitted if rescued else messages), {
             "fits": False,

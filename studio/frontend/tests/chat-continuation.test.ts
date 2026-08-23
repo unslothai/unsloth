@@ -390,6 +390,35 @@ test("a turn whose own fit was refused is never resumed automatically", () => {
   );
 });
 
+test("a turn whose fit only missed the reply reserve IS resumed", () => {
+  resetAutoContinue();
+  // A shortened prompt that was sent and answered also reports `fits: false`, but it is
+  // not a refusal: turns were evicted, the request completed, and running out of reply
+  // room is exactly why it stopped on `length`. The fitter can evict further to make
+  // room for the replayed partial, so this is the case auto-continue exists for.
+  assert.equal(
+    shouldAutoContinue("length", "parent-1", {
+      fits: false,
+      promptWasShortened: true,
+    }),
+    true,
+  );
+});
+
+test("a shortened turn is still refused once the partial fills the budget", () => {
+  resetAutoContinue();
+  // The genuinely hopeless case is caught on its own merits, not via `fits`.
+  assert.equal(
+    shouldAutoContinue("length", "parent-1", {
+      fits: false,
+      promptWasShortened: true,
+      partialTokens: 3648,
+      promptTarget: 3648,
+    }),
+    false,
+  );
+});
+
 test("a partial that already fills the budget is not resumed", () => {
   resetAutoContinue();
   // 3,217 tokens of partial against a 3,648-token target left no room for the system turn

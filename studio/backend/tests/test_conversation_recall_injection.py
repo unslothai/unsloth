@@ -841,6 +841,29 @@ def test_a_retrieval_budget_is_only_capped_where_it_would_take_most_of_the_turn(
     assert llama_cpp._retrieval_budget(3000, 3000, 9000, reply_returns = True) == 0
 
 
+def test_both_local_tool_loops_size_retrieval_with_the_same_policy():
+    """One implementation, not a copy per backend.
+
+    `search_conversation` is sized against the same window by the GGUF loop and by the
+    safetensors loop, and the safetensors one says so in its own comment ("as the GGUF
+    loop does"). A private copy in either file is a policy the other quietly disagrees
+    with, which is how the two drifted in the first place.
+    """
+    import inspect
+
+    from core.inference import context_window, llama_cpp, safetensors_agentic
+
+    # The GGUF loop's name is an alias, not a second implementation.
+    assert llama_cpp._retrieval_budget is context_window.retrieval_budget
+
+    # And the safetensors loop calls the shared helper rather than rebuilding the
+    # expression from prompt_budget.
+    source = inspect.getsource(safetensors_agentic)
+    assert "retrieval_budget(" in source
+    budget_call = source[source.index('kwargs["conversation_budget_tokens"] = retrieval_budget('):]
+    assert "reply_returns = True" in budget_call[:400]
+
+
 def test_the_sticky_boundary_is_applied_once_per_request():
     """The tool loop refits on the conversation the previous fit returned.
 

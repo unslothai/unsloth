@@ -56,6 +56,7 @@ from core.inference.context_window import (
     evicted_messages,
     fit_rolling_context,
     messages_have_media,
+    retrieval_budget,
 )
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.llama_server_args import (
@@ -300,7 +301,17 @@ def _fit_with_instruction_pins(
     fitted, truncation = _fit_context(
         messages, protected_message_ids = (anchors | pins) or None, **kwargs
     )
-    if pins and truncation and not truncation.get("fits"):
+    # Only a refusal that returned the ORIGINAL messages was "already failing". A fit that
+    # missed the reply reserve but landed under the physical window reports `fits` false
+    # too, and dropping the pins there would trade a servable prompt that HAS the standing
+    # instruction for one that does not, which is the single thing this seam exists to
+    # prevent. `dropped_messages` is what separates them.
+    if (
+        pins
+        and truncation
+        and not truncation.get("fits")
+        and not int(truncation.get("dropped_messages") or 0)
+    ):
         return _fit_context(messages, protected_message_ids = anchors or None, **kwargs)
     return fitted, truncation
 
@@ -1013,28 +1024,10 @@ def _prefix_user_text(message: dict, prefix: str) -> dict:
     return message
 
 
-# Cap a tool-loop retrieval without reducing the allowance of smaller results.
-_RETRIEVAL_BUDGET_SHARE = 0.5
-
-
-def _retrieval_budget(
-    context_length: int,
-    max_tokens: Optional[int],
-    prompt_tokens: int,
-    *,
-    reply_returns: bool = False,
-) -> int:
-    """Return the prompt room available to one retrieval.
-
-    In a tool loop, the retrieved exchange and the reply are protected on the next fit,
-    so one retrieval may use at most half the prompt budget. Single-shot requests use the
-    full remainder.
-    """
-    target = prompt_budget(context_length, max_tokens)
-    room = max(0, target - int(prompt_tokens or 0))
-    if reply_returns:
-        room = min(room, int(target * _RETRIEVAL_BUDGET_SHARE))
-    return room
+# Local alias for the shared policy in `context_window`, which the safetensors loop sizes
+# the same tool against. Kept as a name here because this module's call sites read better
+# with it, but there is only one implementation.
+_retrieval_budget = retrieval_budget
 
 
 def _recall_top_k(budget_tokens: int) -> int:
