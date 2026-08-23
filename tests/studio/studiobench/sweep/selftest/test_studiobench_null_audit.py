@@ -1135,3 +1135,78 @@ def test_one_arm_only_that_swaps_arms_between_repetitions_is_not_corroborated(tm
 
     assert U.report([path], "t", frozenset(), min_reps = 2, min_compared = 16) == 0
     assert "UNCORROBORATED one-arm-only" in capsys.readouterr().out
+
+
+# ── an action the null never measured at all ─────────────────────────
+
+
+def _scope_payload(tmp_path: Path, name: str, actions: tuple[str, ...]) -> Path:
+    """Every listed action differs between the arms in both repetitions. Others are absent."""
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            cid = f"r100K.{arm}.{rep}"
+            for i in range(16):
+                rows.append(action_row(cid, f"filler{i}", "SAME"))
+            for act in actions:
+                rows.append(action_row(cid, act, "HEAD" if arm == "treatment" else "SAME"))
+            rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+    out = tmp_path / name
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    return path
+
+
+def test_a_scoped_action_with_no_rows_in_the_null_is_undecided_not_absent(tmp_path):
+    """The audit's own question, answered by default.
+
+    `audit_null` classified only what `derive_unstable` produced, so a scoped (rung, action) with
+    NO rows in the null payload landed in neither `decided` nor `undecided`. One other scoped
+    action being decided was then enough to return 0 -- and `unstable_set` unions the DECLARED
+    names back in, so `send_turn` was still excused by name and a corroborated result difference
+    on it passed the verdict with zero null-control observation.
+
+    Rows vanish more easily than it looks: the null is collected with `require_complete = True`,
+    so a cell that never finished takes all of its action rows with it and the action stops
+    existing rather than becoming undetermined.
+    """
+    null = _scope_payload(tmp_path, "null", ("settings",))
+    result = _scope_payload(tmp_path, "result", ("settings", "send_turn"))
+    scope = U.actions_needing_an_excuse([result], 2)
+    assert scope == {("r100K", "settings"), ("r100K", "send_turn")}, scope
+
+    rc, report_ = U.audit_null([null], frozenset(), scope)
+    assert ("r100K", "send_turn") in report_["missing"], report_
+    assert ("r100K", "send_turn") in report_["undecided"], report_
+    assert report_["decided"] == [("r100K", "settings")]
+    assert rc == 1, "an action the null never measured cannot license an excuse"
+
+    # The reason it matters: send_turn carries no measured entry and is excused by name anyway.
+    unstable, _derived, _checks = U.unstable_set([null])
+    assert ("r100K", "send_turn") not in unstable
+    assert U.is_unstable(unstable, "send_turn", "r100K rep0")
+
+
+def test_a_missing_scoped_action_on_the_waived_list_is_still_waived(tmp_path):
+    # `image_upload` has no attachments button on this fixture, and the workflow waives it by
+    # name. Whether it produced rows or none at all, the waiver is the same statement.
+    null = _scope_payload(tmp_path, "null", ("settings",))
+    result = _scope_payload(tmp_path, "result", ("settings", "image_upload"))
+    rc, report_ = U.audit_null(
+        [null], frozenset({"image_upload"}), U.actions_needing_an_excuse([result], 2)
+    )
+    assert ("r100K", "image_upload") in report_["missing"]
+    assert ("r100K", "image_upload") in report_["excused"]
+    assert ("r100K", "image_upload") not in report_["undecided"]
+    assert rc == 0
+
+
+def test_an_action_outside_the_scope_is_not_required_to_exist(tmp_path):
+    # The reconciliation is against the SCOPE, not against the schedule. An action the result
+    # matched on needs no excuse, so the null owing it nothing is not a hole.
+    null = _scope_payload(tmp_path, "null", ("settings",))
+    result = _scope_payload(tmp_path, "result", ("settings",))
+    rc, report_ = U.audit_null([null], frozenset(), U.actions_needing_an_excuse([result], 2))
+    assert report_["missing"] == []
+    assert rc == 0

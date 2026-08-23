@@ -371,12 +371,39 @@ def audit_null(
             if row["unstable"]:
                 differed.append(entry)
 
+    # AN ACTION THE NULL NEVER MEASURED AT ALL IS UNDECIDED, not absent. The loop above can only
+    # classify what `derive_unstable` produced, so a scoped (rung, action) with NO rows in the
+    # null payload fell into neither list and the audit never asked about it. One other scoped
+    # action being decided was then enough to return 0.
+    #
+    # That is the whole question this audit exists to put, answered by default. `unstable_set`
+    # unions the DECLARED names back in, so an action like `send_turn` that the null never
+    # observed is still excused by name, and a corroborated result difference on it passes.
+    # Reproduced end to end: scope {send_turn, settings}, null carrying no send_turn rows,
+    # audit 0, verdict 0, the regression printed under "expected to vary".
+    #
+    # Rows vanish entirely more easily than they look like they should: the null is collected with
+    # `require_complete = True`, so a cell that never finished takes every one of its action rows
+    # with it, and the action stops existing rather than becoming undetermined.
+    #
+    # Counted as MISSING as well as undecided, because the two are not the same reading. Measured
+    # and inconclusive means the null tried; never measured means it did not, and a reader chasing
+    # a failed audit needs to know which. `allow_undecided` still applies -- `image_upload` has no
+    # attachments button on this fixture and is waived by name whether it produced rows or not.
+    missing = []
+    if scope is not None:
+        seen = set(decided) | set(undecided) | set(excused)
+        for entry in sorted(scope - seen):
+            missing.append(entry)
+            (excused if entry[1] in allow_undecided else undecided).append(entry)
+
     report_ = {
         "decided": decided,
         "undecided": undecided,
         "excused": excused,
         "out_of_scope": out_of_scope,
         "differed": differed,
+        "missing": missing,
     }
     # NOTHING TO DECIDE IS A PASS, and only when a scope said so. A result whose every action
     # matched asks the null for no excuses at all, and there is no way to fail a question that
@@ -392,7 +419,11 @@ def audit_null(
         report_["reason"] = "no (rung, action) reached min_observations"
         return 1, report_
     if undecided:
-        report_["reason"] = "undecided actions outside the excused list"
+        report_["reason"] = (
+            "scoped actions the null never measured at all"
+            if missing and set(missing) >= set(undecided)
+            else "undecided actions outside the excused list"
+        )
         return 1, report_
     return 0, report_
 
@@ -439,8 +470,13 @@ def print_null_audit(rc: int, report_: dict, allow_undecided: frozenset) -> None
             print("\n  NOT ONE (rung, action) reached min_observations.")
         else:
             print("\n  These (rung, action) pairs never reached min_observations:")
+            _missing = set(report_.get("missing") or ())
             for rung, action in report_["undecided"][:12]:
-                print(f"    {action}@{rung}")
+                # Said apart from the rest: measured and inconclusive means the null tried and
+                # could not decide; NO ROWS means it never measured the action at all, which is a
+                # different thing to go and fix and used to be invisible here.
+                tail = "  -- NO ROWS in the null at all" if (rung, action) in _missing else ""
+                print(f"    {action}@{rung}{tail}")
         print(
             "\n  `analysis.parity.derive_unstable` needs two comparable observations of a"
             "\n  (rung, action) before it will decide anything about it, so the first thing to"
