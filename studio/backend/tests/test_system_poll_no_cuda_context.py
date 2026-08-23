@@ -485,6 +485,33 @@ def test_context_free_free_never_goes_negative(monkeypatch):
     assert hw._context_free_cuda_memory_info(0, round(99.5 * gib)) == 0
 
 
+def test_context_free_declines_when_cuda_order_is_not_pci_bus_id(monkeypatch):
+    # CUDA enumerates FASTEST_FIRST while nvidia-smi reports PCI order, so torch
+    # ordinal 0 need not be row 0. Two equal-sized cards (a 3090 beside a 4090)
+    # slip past the total-scope check, so only the order gate catches it.
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+    _nvidia_smi_reading(monkeypatch, used_gb = 2.0, driver_total_gb = 24.0)
+    monkeypatch.setattr(hw, "get_physical_gpu_count", lambda: 2)
+    monkeypatch.setattr(
+        hw,
+        "_smi_query",
+        lambda *a, **k: pytest.fail("an unshared index space must decline SMI telemetry"),
+    )
+
+    assert hw._context_free_cuda_memory_info(0, 24 << 30) is None
+
+
+def test_context_free_keeps_smi_on_a_single_gpu_under_fastest_first(monkeypatch):
+    # One card makes every ordering the identity, so the gate must not cost this
+    # host a permanent primary context.
+    gib = 1 << 30
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+    _nvidia_smi_reading(monkeypatch, used_gb = 2.0, driver_total_gb = 24.0)
+    monkeypatch.setattr(hw, "get_physical_gpu_count", lambda: 1)
+
+    assert hw._context_free_cuda_memory_info(0, 24 * gib) == 22 * gib
+
+
 def test_context_free_rocm_windows_declines_gpu_device_ordinal(monkeypatch):
     # GPU_DEVICE_ORDINAL=1 makes physical GPU 1 torch ordinal 0, but it is a
     # ROCclr-layer variable that _get_parent_visible_gpu_spec never reads, so the

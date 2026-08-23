@@ -873,6 +873,24 @@ def _rocm_device_ordinal_active() -> bool:
     return bool(os.environ.get("GPU_DEVICE_ORDINAL", "").strip())
 
 
+def _cuda_order_matches_smi() -> bool:
+    """Whether torch ordinals and nvidia-smi rows share one index space.
+
+    CUDA enumerates FASTEST_FIRST by default while nvidia-smi always reports PCI
+    order, and this module only sets PCI_BUS_ID as a *default* (line 52), so an
+    explicit override survives and the two disagree. Equal-sized cards defeat the
+    total-scope check, so the mismatch has to be caught here. Same gate the
+    llama.cpp SM probe applies. A single-GPU host is exempt: every ordering is
+    the identity there. ROCm does not use this variable.
+    """
+    if IS_ROCM or os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID":
+        return True
+    if (get_physical_gpu_count() or 0) <= 1:
+        return True
+    logger.debug("Skipping SMI VRAM query: CUDA_DEVICE_ORDER is not PCI_BUS_ID")
+    return False
+
+
 def _amd_smi_ids_for_hip_ids(hip_ids: Optional[list[int]]) -> Optional[list[int]]:
     """Translate visible HIP ordinals to amd-smi physical GPU IDs."""
     if hip_ids is None or not hip_ids:
@@ -934,7 +952,7 @@ def _context_free_cuda_memory_info(idx: int, total_bytes: int) -> Optional[int]:
     if IS_ROCM:
         visible_ids = _amd_smi_ids_for_hip_ids(visible_ids)
     result = None
-    if visible_ids is not None or not IS_ROCM:
+    if (visible_ids is not None or not IS_ROCM) and _cuda_order_matches_smi():
         result = _smi_query(
             "get_visible_gpu_utilization",
             visible_ids,
