@@ -520,6 +520,49 @@ def test_the_sweep_keeps_a_binary_supplied_under_a_symlinked_directory(tmp_path)
     assert (target / "real" / "sd-cli").read_bytes() == b"\x7fELF new binary"
 
 
+def test_the_sweep_keeps_a_binary_whose_parent_link_the_archive_replaces(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    # An explicit directory member replaces the previous bundle's directory symlink, so a key
+    # resolved before extraction points into a layout that no longer exists by sweep time.
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / "real").mkdir()
+    (target / "build").mkdir()
+    (target / "build" / "bin").symlink_to(target / "real")
+    archive = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("build/bin/", b"")
+        zf.writestr("build/bin/sd-cli", b"\x7fELF new binary")
+
+    with zipfile.ZipFile(archive) as zf:
+        supplied = sdmod._archive_binary_paths(zf, target)
+        _safe_extractall(zf, target)
+    sdmod._discard_superseded_binaries(target, supplied)
+
+    assert sdmod._locate_sd_cli(target) is not None
+
+
+def test_safe_extractall_rejects_an_existing_cycle_before_writing_anything(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    # The cycle is closed by a link the previous bundle left, so it is only visible against the
+    # tree. Deciding it up front is what keeps a refused archive from replacing the binary.
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / "b").symlink_to("a")
+    (target / "sd-cli").write_bytes(b"\x7fELF working binary")
+    archive = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("sd-cli", b"replacement from the rejected archive")
+        _link_member(zf, "a", "b")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "symlink cycle"):
+            _safe_extractall(zf, target)
+    assert (target / "sd-cli").read_bytes() == b"\x7fELF working binary"
+    assert not (target / "a").exists() and not (target / "a").is_symlink()
+
+
 def test_the_sweep_keeps_a_binary_the_bundle_ships_as_a_symlink(tmp_path):
     if not _can_create_symlinks(tmp_path):
         pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
@@ -761,6 +804,7 @@ def test_safe_extractall_falls_back_when_symlinks_are_unavailable(tmp_path, monk
         raise OSError(1314, "A required privilege is not held by the client")
 
     monkeypatch.setattr(Path, "symlink_to", _no_symlinks)
+    monkeypatch.setattr(sdmod.sys, "platform", "win32")
     with zipfile.ZipFile(archive) as zf:
         _safe_extractall(zf, target)
 
@@ -768,6 +812,30 @@ def test_safe_extractall_falls_back_when_symlinks_are_unavailable(tmp_path, monk
     assert not flattened.is_symlink()
     assert flattened.read_bytes() == b"libwebp.so.7.2.0"
     assert (target / "libwebp.so.7.2.0").read_bytes() == b"ELFpayload"
+
+
+def test_safe_extractall_refuses_to_flatten_when_a_unix_host_rejects_symlinks(
+    tmp_path, monkeypatch
+):
+    # Off Windows a refusal means this filesystem cannot hold the layout sd-cli needs. Writing
+    # the link text back as a file would rebuild the "file too short" install #9268 reports,
+    # which the runtime probe then discards and reinstalls on every load.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "libs.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("libwebp.so.7.2.0", b"ELFpayload")
+        _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0")
+
+    def _no_symlinks(self, *args, **kwargs):
+        raise OSError(1, "Operation not permitted")
+
+    monkeypatch.setattr(Path, "symlink_to", _no_symlinks)
+    monkeypatch.setattr(sdmod.sys, "platform", "linux")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "could not restore the symlink"):
+            _safe_extractall(zf, target)
+    assert not (target / "libwebp.so.7").exists()
 
 
 def test_safe_extractall_extracts_normal_members(tmp_path):

@@ -25,7 +25,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import errno
 import hashlib
 import json
 import os
@@ -447,15 +446,20 @@ def _binary_key(path: Path) -> Path:
 
 
 def _archive_binary_paths(zf: zipfile.ZipFile, target: Path) -> set[Path]:
-    """Where this archive puts its executables, resolved to absolute paths under ``target``.
+    """Where this archive puts its executables, as absolute LEXICAL paths under ``target``.
 
     Read from the MEMBER LIST, never from the extracted tree: a leftover binary from an earlier
-    install looks identical on disk once extraction has run, which is the whole confusion here."""
+    install looks identical on disk once extraction has run, which is the whole confusion here.
+
+    Left unresolved on purpose. Extraction can change what the parents mean -- an explicit
+    directory member replaces a directory symlink the previous bundle left -- so resolving here
+    would key the binary off a layout that no longer exists by the time the sweep runs.
+    ``_discard_superseded_binaries`` resolves both sides once the tree is final."""
     names = _binary_names()
     out: set[Path] = set()
     for member in zf.namelist():
         if member.rsplit("/", 1)[-1] in names:
-            out.add(_binary_key(target / member))
+            out.add(Path(os.path.abspath(target / member)))
     return out
 
 
@@ -483,9 +487,12 @@ def _discard_superseded_binaries(root: Path, supplied: set[Path]) -> None:
 
     Raises when a copy cannot go, which withholds the record and makes the next load retry."""
     names = _binary_names()
+    # Resolved HERE, not when ``supplied`` was built: the tree is final only now, and extraction
+    # may have replaced a directory symlink a member path was spelled through.
+    keys = {_binary_key(p) for p in supplied}
     for name in names:
         for found in sorted(root.rglob(name)):
-            if not found.is_file() or _binary_key(found) in supplied:
+            if not found.is_file() or _binary_key(found) in keys:
                 continue
             try:
                 found.unlink()
@@ -605,16 +612,28 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
                 raise RuntimeError(
                     f"unsafe path in archive: {filename!r} is under a symlink member"
                 )
-    # Chains are normal (libwebp.so -> libwebp.so.7 -> libwebp.so.7.2.0) but must terminate:
-    # a cycle installs a library nothing can read, so every load would reinstall it again.
+    # Chains are normal (libwebp.so -> libwebp.so.7 -> libwebp.so.7.2.0) but must terminate: a
+    # cycle installs a library nothing can read, so every load would reinstall it again. Walk the
+    # graph the tree will HAVE, archive edges first and then links a previous bundle left, since
+    # an archive edge can close a loop with one this archive never ships. Done here rather than
+    # after creating the links, so a refused archive has still written nothing.
     by_dest = {str(d): t for d, t, _ in links}
+    # Every destination this archive writes stops being whatever it is now, so a stale link at
+    # one of them must not be followed: it is about to become this archive's own member.
+    replaced = {str(d) for d, _ in written}
     for dest, _, member in links:
         seen, cur = set(), str(dest)
-        while cur in by_dest:
-            if cur in seen:
-                raise RuntimeError(f"symlink cycle in archive: {member.filename!r}")
+        while cur not in seen:
             seen.add(cur)
-            cur = os.path.normpath(os.path.join(os.path.dirname(cur), by_dest[cur]))
+            if cur in by_dest:
+                nxt = by_dest[cur]
+            elif cur not in replaced and os.path.islink(cur):
+                nxt = os.readlink(cur)
+            else:
+                break
+            cur = os.path.normpath(os.path.join(os.path.dirname(cur), nxt))
+        else:
+            raise RuntimeError(f"symlink cycle in archive: {member.filename!r}")
     # Validated before the first write, so a rejected archive leaves the install untouched.
     #
     # extractall opens each destination "wb", which FOLLOWS a link a previous bundle left there
@@ -644,25 +663,18 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
             dest.unlink()
         try:
             dest.symlink_to(link_target)
-        except OSError:
-            # No privilege (Windows outside developer mode). Fall back to the flattened
-            # member, which is what shipped before this, so the install still finishes.
-            zf.extract(member, target)
-            continue
-        # The graph on disk also holds links a previous bundle left, so an archive edge can
-        # close a cycle with one this archive never saw. Undo ours rather than leave a pair
-        # nothing can read, which the retry would hit again. os.stat, not
-        # Path.resolve(strict = True): that raises RuntimeError on a loop before 3.13 and
-        # OSError from 3.13 on, so the raw errno is the only portable signal.
-        try:
-            os.stat(dest)
-        except FileNotFoundError:
-            pass  # a target this bundle does not ship is still fine
         except OSError as exc:
-            if exc.errno != errno.ELOOP:
-                raise
-            dest.unlink(missing_ok = True)
-            raise RuntimeError(f"symlink cycle in archive: {member.filename!r}") from exc
+            # Windows outside developer mode cannot create a link at all, and every Windows
+            # asset ships plain files, so flattening there costs nothing and keeps an install
+            # that used to finish finishing. Anywhere else a refusal means this filesystem
+            # cannot hold the layout sd-cli needs, and writing the link text back as a file is
+            # exactly the "file too short" install #9268 is about, which the runtime probe
+            # would then discard and reinstall on every load.
+            if sys.platform != "win32":
+                raise RuntimeError(
+                    f"could not restore the symlink {member.filename!r}: {exc}"
+                ) from exc
+            zf.extract(member, target)
 
 
 def _maybe_fetch_windows_cudart(release: dict, chosen: str, target: Path) -> None:
