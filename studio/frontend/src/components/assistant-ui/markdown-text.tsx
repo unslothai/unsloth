@@ -47,6 +47,11 @@ import {
   useFenceReached,
 } from "./code-fence-defer";
 import { createCodePlugin } from "./code-plugin";
+import {
+  MarkdownBlockBoundary,
+  MarkdownBlockFallbackView,
+  MarkdownRendererBoundary,
+} from "./markdown-block-boundary";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
@@ -373,7 +378,18 @@ function StreamdownBlockContent(props: BlockProps) {
   if (mermaidSource) {
     return (
       <div className="relative isolate">
-        <Block {...blockProps} />
+        {/*
+         * The Mermaid renderer is the app's other lazy chunk, so the diagram is
+         * the second thing that can fail at render time. Degraded, it is its own
+         * source as readable code, and the copy button beside it still works.
+         */}
+        <MarkdownRendererBoundary
+          fallback={
+            <DeferredFenceShell language="mermaid" source={mermaidSource} />
+          }
+        >
+          <Block {...blockProps} />
+        </MarkdownRendererBoundary>
         <MermaidCopyButton source={mermaidSource} />
       </div>
     );
@@ -411,7 +427,29 @@ function StreamdownBlockContent(props: BlockProps) {
     );
   }
 
-  return <Block {...blockProps} />;
+  /*
+   * THE STREAMING ROUTE, and the one that actually fires.
+   *
+   * `getCodeFence` needs the CLOSING fence, so a fence that is still arriving
+   * has no `codeFence` and falls all the way through to here rather than to
+   * `FenceBlock`. This bare `Block` is therefore what first asks for the
+   * highlighter chunk on a streamed reply, which is exactly when it fails.
+   *
+   * Left unguarded, the whole-block boundary catches that and latches with no
+   * reset, so the block never re-enters `FenceBlock` when its closing fence
+   * finally lands and the copy and download bar never mounts at all. Measured:
+   * with this unguarded, a streamed abort produced an identical document to the
+   * commit before the inner boundary existed, 0 copy and 0 download buttons on
+   * both. Guarding it keeps the failure inside the renderer boundary, so the
+   * completed block mounts `FenceBlock` normally and keeps its controls.
+   */
+  return (
+    <MarkdownRendererBoundary
+      fallback={<MarkdownBlockFallbackView content={props.content} />}
+    >
+      <Block {...blockProps} />
+    </MarkdownRendererBoundary>
+  );
 }
 
 /*
@@ -474,20 +512,38 @@ function FenceBlock({
   const pretokenize = mode === "tokenize" && !reached;
   useEffect(() => {
     if (!pretokenize) return;
-    code.highlight({
-      code: trimTrailingNewlines(source),
-      language: (languageToken ?? "text") as never,
-      themes: STREAMDOWN_SHIKI_THEME,
-    }, () => {});
+    code.highlight(
+      {
+        code: trimTrailingNewlines(source),
+        language: (languageToken ?? "text") as never,
+        themes: STREAMDOWN_SHIKI_THEME,
+      },
+      () => {},
+    );
   }, [pretokenize, source, languageToken]);
 
   return (
     <div className="relative isolate" ref={host}>
-      {reached ? (
-        <Block {...blockProps} />
-      ) : (
-        <DeferredFenceShell language={languageToken} source={source} />
-      )}
+      {/*
+       * Only `Block` can fail here, because only `Block` loads the highlighter
+       * at render time. Boundary it on its own so that a fence whose chunk will
+       * not load keeps the copy and download bar below, which is the control a
+       * reader reaches for precisely when a block did not render. The degraded
+       * form is the SAME plain shell an unreached fence already shows, so the
+       * failure looks like a fence that has not been highlighted rather than
+       * like a broken block.
+       */}
+      <MarkdownRendererBoundary
+        fallback={
+          <DeferredFenceShell language={languageToken} source={source} />
+        }
+      >
+        {reached ? (
+          <Block {...blockProps} />
+        ) : (
+          <DeferredFenceShell language={languageToken} source={source} />
+        )}
+      </MarkdownRendererBoundary>
       <CodeBlockActions
         disabled={Boolean(isIncomplete)}
         language={language}
@@ -496,7 +552,20 @@ function FenceBlock({
     </div>
   );
 }
-const StreamdownBlock = memo(StreamdownBlockContent);
+/**
+ * Every block is rendered inside a boundary. Streamdown fetches the code
+ * highlighter and the Mermaid renderer with `React.lazy` the first time a reply
+ * needs them, and a rejected import rethrows during render; without this the
+ * nearest catcher is the ROUTER's, which replaces all of Studio and takes the
+ * reply and its runtime with it. Per block, so one fence losing its colours
+ * costs only that fence.
+ */
+const StreamdownBlock = memo((props: BlockProps) => (
+  <MarkdownBlockBoundary content={props.content}>
+    <StreamdownBlockContent {...props} />
+  </MarkdownBlockBoundary>
+));
+StreamdownBlock.displayName = "StreamdownBlock";
 const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
 
 // Coalesce only token events that arrive before the browser's next paint, as
