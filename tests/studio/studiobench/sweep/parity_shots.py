@@ -43,6 +43,7 @@ if __package__ in (None, ""):  # pragma: no cover
 from tests.studio.studiobench.analysis import parity as P  # noqa: E402
 from tests.studio.studiobench.sweep.ui_parity import (  # noqa: E402
     compare_all,
+    corroborated,
     is_unstable,
     shards_of,
     unstable_set,
@@ -89,20 +90,35 @@ def shot_index(paths: list[Path]) -> dict:
     return out
 
 
-def differing_actions(result_paths: list[Path], null_paths: list[Path]) -> list[dict]:
+def differing_actions(
+    result_paths: list[Path],
+    null_paths: list[Path],
+    min_reps: int = 1,
+) -> list[dict]:
     """The STABLE differences, i.e. exactly what turned the verdict red. Not every mismatch.
 
     An excused difference is noise the null control already accounted for, and shooting it would
     bury the one picture that matters under a dozen that do not.
+
+    THE SAME THRESHOLD THE VERDICT USED, for the same reason. When the verdict runs at
+    `--min-reps 2`, a stable difference seen in one repetition of two is explicitly UNCORROBORATED
+    and does not turn the gate red. Illustrating it anyway would put pictures of one-off flakes in
+    the same artifact as the change that actually failed the job, and the reader has no way to
+    tell which is which -- so the artifact would bury the finding it exists to show, which is the
+    same failure as not producing it.
     """
     unstable, _derived, _checks = unstable_set(null_paths or None)
     out = []
     # `compare_all` returns (results, capture tally); only the results are wanted here.
     results, _tally = compare_all(result_paths)
-    for action, shard, cell, r in results:
-        if r["verdict"] != P.DIFFER or is_unstable(unstable, action, cell):
-            continue
-        out.append({"action": action, "shard": shard, "cell": cell, "moved": r.get("moved", [])})
+    stable = [
+        (action, shard, cell, r.get("moved", []))
+        for action, shard, cell, r in results
+        if r["verdict"] == P.DIFFER and not is_unstable(unstable, action, cell)
+    ]
+    firm, _weak = corroborated(stable, min_reps)
+    for action, shard, cell, moved in firm:
+        out.append({"action": action, "shard": shard, "cell": cell, "moved": moved})
     return out
 
 
@@ -147,13 +163,19 @@ def composite(before: Path, after: Path, out: Path, meta: dict) -> bool:
     return True
 
 
-def build(result_dir: Path, null_dir: Path, shots_dir: Path, out_dir: Path) -> int:
+def build(
+    result_dir: Path,
+    null_dir: Path,
+    shots_dir: Path,
+    out_dir: Path,
+    min_reps: int = 1,
+) -> int:
     result_paths = shards_of(str(result_dir))
     null_paths = shards_of(str(null_dir)) if null_dir else []
     if not result_paths:
         print(f"no result payload under {result_dir}")
         return 2
-    diffs = differing_actions(result_paths, null_paths)
+    diffs = differing_actions(result_paths, null_paths, min_reps)
     index = shot_index(result_paths)
     out_dir.mkdir(parents = True, exist_ok = True)
 
@@ -267,6 +289,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--null", help = "the null control's output dir, to excuse known noise")
     ap.add_argument("--shots", required = True, help = "where the arm wrote its PNGs")
     ap.add_argument("--out", help = "where to write the labelled pairs")
+    ap.add_argument(
+        "--min-reps",
+        type = int,
+        default = 1,
+        dest = "min_reps",
+        help = "illustrate only differences seen in at least this many repetitions. Must match "
+        "the value the verdict was scored with, or the artifact shows differences the gate did "
+        "not fail on",
+    )
     args = ap.parse_args(argv)
     if args.prune:
         if not args.payload:

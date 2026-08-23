@@ -647,10 +647,15 @@ jobs:
         run: |
           set -uo pipefail
           pip install --quiet 'pillow<12'
+          # --min-reps MUST match the verdict above. At a lower value the artifact would
+          # carry composites of one-repetition flakes beside the change that actually failed
+          # the job, and nothing in the images says which is which -- so the evidence would
+          # bury the finding it exists to show.
           python -m tests.studio.studiobench.sweep.parity_shots \
             --result outputs/parity-result \
             --null outputs/parity-null-control \
             --shots outputs/shots-result \
+            --min-reps 2 \
             --out outputs/parity-evidence
           echo
           echo "Composites are BEFORE (merge base) | AFTER (head), padded rather than scaled,"

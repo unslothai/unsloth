@@ -581,6 +581,47 @@ def one_tier(paths: list[Path], label: str) -> set[str]:
     return tiers
 
 
+def corpus_of(paths: list[Path]) -> set[str]:
+    """The corpus hash(es) a payload was recorded against, from its own run_meta row."""
+    out: set[str] = set()
+    for path in paths:
+        for r in rows(path):
+            if r.get("row_type") == "run_meta" and r.get("corpus_hash"):
+                out.add(r["corpus_hash"])
+    return out
+
+
+def one_corpus(paths: list[Path], label: str) -> set[str]:
+    """The ONE corpus `paths` were recorded against, refusing a set that holds more than one.
+
+    `one_tier` refuses two FILMS pooled into one reading; this refuses two CORPORA, and the harm
+    is the same shape one level down. `derive_unstable` needs two observations of a (rung, action)
+    before it will decide anything, and it counts observations without asking which thread they
+    came from. So two runs that are each a single repetition -- neither of which can decide
+    anything on its own -- pool into two observations and report DECIDED, on the strength of two
+    different films of two different threads. An action that is stable on one corpus and races on
+    the other is then classified from whichever pairing happened to land, and the result is scored
+    against a set that was never measured on the corpus it is being applied to.
+
+    A glob is the usual way in: `outputs/null-*` matching shards from two corpus revisions, or one
+    append-only payload holding both. `sweep/floor_table.load` already refuses exactly this on the
+    timing side, and the audit must not be the softer of the two.
+
+    A payload recorded before corpus hashes existed declares none and is not refused, since there
+    is nothing to disagree about.
+    """
+    corpora = corpus_of(paths)
+    if len(corpora) > 1:
+        raise SystemExit(
+            f"refusing to score a {label} recorded against more than one corpus: "
+            f"{sorted(corpora)}. Which actions are unstable is a property of the thread the film "
+            f"drove, and `derive_unstable` pools observations without asking which corpus they "
+            f"came from, so two one-repetition runs would satisfy min_observations together and "
+            f"report DECIDED from two different films. Record each corpus into its own --out."
+        )
+    return corpora
+
+
 def shards_of(pattern: str) -> list[Path]:
     root = Path(pattern).parent if "/" in pattern else Path(".")
     stem = Path(pattern).name
@@ -638,6 +679,7 @@ def main(argv: list[str] | None = None) -> int:
                 worst = max(worst, 2)
                 continue
             one_tier(paths, "null control")
+            one_corpus(paths, "null control")
             rc, report_ = audit_null(paths, allow)
             print(f"\nauditing {pattern} as a null control")
             print_null_audit(rc, report_, allow)
@@ -648,6 +690,7 @@ def main(argv: list[str] | None = None) -> int:
     for pattern in args.null:
         null_paths.extend(shards_of(pattern))
     null_tiers = one_tier(null_paths, "null control")
+    one_corpus(null_paths, "null control")
     unstable, derived, checks = unstable_set(null_paths or None)
     if derived:
         print(f"UNSTABLE SET DERIVED from {len(null_paths)} null-control shard(s)")
@@ -673,6 +716,7 @@ def main(argv: list[str] | None = None) -> int:
             worst = max(worst, 2)
             continue
         tiers = one_tier(paths, "payload")
+        one_corpus(paths, "payload")
         if null_tiers and tiers and null_tiers != tiers:
             print(
                 f"\n  WARNING: the null control was recorded at tier {sorted(null_tiers)} and "

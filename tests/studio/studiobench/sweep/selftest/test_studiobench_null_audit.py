@@ -21,6 +21,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 from tests.studio.studiobench.sweep import ui_parity as U  # noqa: E402
@@ -358,3 +360,45 @@ def test_a_payload_with_no_cell_rows_says_it_could_not_check(tmp_path, capsys):
     old = null_run(tmp_path, "nocells", two_reps("settings", "A", "B"))
     U.report([old], "t", frozenset())
     assert "NOT GUARDED" in capsys.readouterr().out
+
+
+# ── two corpora must not pool into one decision ──────────────────────
+
+
+def corpus_run(tmp_path: Path, name: str, corpus: str, rep: str) -> Path:
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast", "corpus_hash": corpus}]
+    for arm in ("base", "treatment"):
+        cid = f"r100K.{arm}.{rep}"
+        rows.append(action_row(cid, "settings", "A" if arm == "base" else "B"))
+        rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+    out = tmp_path / name
+    out.mkdir(parents = True, exist_ok = True)
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    return path
+
+
+def test_two_corpora_are_refused_before_their_observations_pool(tmp_path):
+    # Each film is one repetition and can decide nothing alone. Pooled they satisfy
+    # min_observations and report DECIDED from two different threads, and the result is then
+    # scored against a set never measured on the corpus it is applied to.
+    a = corpus_run(tmp_path, "c1", "corpusAAAA", "rep0")
+    b = corpus_run(tmp_path, "c2", "corpusBBBB", "rep1")
+    with pytest.raises(SystemExit) as got:
+        U.one_corpus([a, b], "null control")
+    assert "more than one corpus" in str(got.value)
+
+    # And the refusal is load-bearing: without it the two DO pool into a decision.
+    rc, report = U.audit_null([a, b])
+    assert rc == 0 and report["differed"] == [("r100K", "settings")]
+
+
+def test_one_corpus_across_several_shards_is_fine(tmp_path):
+    a = corpus_run(tmp_path, "s1", "corpusAAAA", "rep0")
+    b = corpus_run(tmp_path, "s2", "corpusAAAA", "rep1")
+    assert U.one_corpus([a, b], "null control") == {"corpusAAAA"}
+
+
+def test_a_payload_predating_corpus_hashes_is_not_refused(tmp_path):
+    old = null_run(tmp_path, "nohash", two_reps("settings", "A", "B"))
+    assert U.one_corpus([old], "null control") == set()

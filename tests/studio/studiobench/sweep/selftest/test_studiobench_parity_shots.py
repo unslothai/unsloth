@@ -221,3 +221,41 @@ def test_shot_index_reads_the_payload_rather_than_globbing(tmp_path):
     index = S.shot_index([result / "payload.jsonl"])
     assert ("r100K.base.rep0", "settings", "base") in index
     assert all("IMPOSTOR" not in v["file"] for v in index.values())
+
+
+# ── the artifact shows what turned it red, and nothing else ──────────
+
+
+def test_a_one_repetition_flake_is_not_illustrated_at_the_verdicts_threshold(tmp_path, capsys):
+    # `settings` differs on both passes and is what fails the job; `thread_reopen` differs on one
+    # and is explicitly uncorroborated. Shipping both leaves the reader unable to tell which is
+    # which, which buries the finding the artifact exists to show.
+    shots = tmp_path / "shots"
+    rows = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for act, td in (("settings", "B"), ("thread_reopen", "B" if rep == "rep0" else "A")):
+            bf, tf = f"{act}_{rep}_b.png", f"{act}_{rep}_t.png"
+            png(shots / bf, 200, 120, (10, 60, 10))
+            png(shots / tf, 200, 120, (60, 10, 10))
+            rows.append(action(f"r100K.base.{rep}", act, "A", bf))
+            rows.append(action(f"r100K.treatment.{rep}", act, td, tf))
+    result = write(tmp_path, "result", rows)
+    null = quiet_null(tmp_path, "null", ["settings", "thread_reopen"])
+    out = tmp_path / "out"
+    assert S.build(result, null, shots, out, min_reps = 2) == 0
+    names = sorted(p.name for p in out.glob("*composite*"))
+    assert any("settings" in n for n in names)
+    assert not any("thread_reopen" in n for n in names), names
+
+
+def test_the_workflow_illustrates_at_the_same_threshold_it_scores_at():
+    # Two numbers in two steps of one job that must agree, and nothing at runtime would notice
+    # if they drifted: the verdict would fail on one set of actions and the artifact would show
+    # another.
+    text = (
+        Path(__file__).resolve().parents[5] / ".github/workflows/studiobench-ui-parity.yml"
+    ).read_text()
+    verdict = text.split("- name: The verdict", 1)[1]
+    evidence = text.split("- name: Draw the before/after pairs", 1)[1]
+    assert "--min-reps 2" in verdict.split("- name:", 1)[0]
+    assert "--min-reps 2" in evidence.split("- name:", 1)[0]
