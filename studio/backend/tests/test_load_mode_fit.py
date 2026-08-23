@@ -27,10 +27,14 @@ class _Stub:
         return self._avail_mib
 
 
-def _fits(footprint, gpus, *, avail_mib = 64 * 1024, **kwargs):
-    return LlamaCppBackend._fits_without_paging(
-        _Stub(avail_mib), footprint, gpus, **kwargs
-    )
+def _fits(
+    footprint,
+    gpus,
+    *,
+    avail_mib = 64 * 1024,
+    **kwargs,
+):
+    return LlamaCppBackend._fits_without_paging(_Stub(avail_mib), footprint, gpus, **kwargs)
 
 
 def test_fits_in_vram_alone():
