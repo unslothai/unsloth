@@ -9,6 +9,7 @@ import inspect
 import io
 import os
 import re
+import shutil
 import sys
 import types
 from pathlib import Path
@@ -1962,6 +1963,55 @@ class TestDuplicateCoreMetadataRepair:
         assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
         assert installs == []
         assert "could not uninstall" in capsys.readouterr().err
+
+    def test_a_rollback_reinstall_keeps_its_own_metadata(self, monkeypatch, tmp_path, capsys):
+        """The rewritten record is uninstalled, a later uninstall fails, and
+        _restore_from_staged puts the package back from the staged wheel. The
+        finally block then ran quarantine.restore() over the top, either deleting
+        the wheel's valid METADATA (original absent) or overwriting it with the
+        original corrupt bytes, leaving the core package malformed after a
+        recovery that existed to make it whole.
+        """
+        record = tmp_path / "unsloth-2026.8.15.dist-info"
+        record.mkdir()
+        (record / "METADATA").write_bytes(b"\xff\xfe")
+        (record / "RECORD").write_text("unsloth/__init__.py,,\n")
+
+        probes = iter((["2026.8.15", "2026.8.15"], ["2026.8.15", "2026.8.15"], ["2026.8.15"]))
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _n: next(probes))
+        monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _n: [record])
+        monkeypatch.setattr(ips.install_manifest, "pip_backup_metadata_paths", lambda _n: [])
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _n: str(tmp_path / "staged"))
+
+        runs = {"n": 0}
+
+        def uninstall(_label, _cmd):
+            runs["n"] += 1
+            if runs["n"] == 1:
+                # pip removed the rewritten record's whole directory.
+                shutil.rmtree(record)
+                return True
+            return False  # the next one fails, triggering the rollback
+
+        monkeypatch.setattr(ips, "_run_ok", uninstall)
+
+        def reinstall(*_a, **_k):
+            # The staged wheel recreates the same path with its own valid metadata.
+            record.mkdir(exist_ok = True)
+            (record / "METADATA").write_text(
+                "Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.8.15\n", encoding = "utf-8"
+            )
+            return True
+
+        monkeypatch.setattr(ips, "pip_install_try", reinstall)
+
+        assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
+        # Whatever the rollback put back must survive the quarantine unwinding.
+        assert record.is_dir()
+        assert (record / "METADATA").read_text().startswith("Metadata-Version")
+        assert "Name: unsloth" in (record / "METADATA").read_text()
 
     def test_a_quarantined_backup_is_restored_when_staging_fails(self, monkeypatch, tmp_path):
         """Quarantine's remaining user is pip's ~ leftover, moved aside so the

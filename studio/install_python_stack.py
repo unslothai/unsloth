@@ -4054,6 +4054,17 @@ class _QuarantinedMetadata:
             self._moved.append((os.fspath(path), target))
         return True
 
+    def forget_copies(self) -> None:
+        """Drop the backed-up METADATA copies, keeping the moved directories.
+
+        Called once a staged reinstall has put the package back: the wheel's own
+        metadata is valid and authoritative, so copying the original over it would
+        re-break the package the rollback just repaired, and deleting it (where the
+        original was absent) would strip a record pip just wrote. The moved entries
+        stay, because a record pip cannot consume still has to go back as found.
+        """
+        self._copied.clear()
+
     def restore(self) -> None:
         while self._moved:
             original, target = self._moved.pop()
@@ -4080,7 +4091,9 @@ class _QuarantinedMetadata:
         self._copied.clear()
 
 
-def _restore_from_staged(name: str, staged: str, removed_any: bool) -> None:
+def _restore_from_staged(
+    name: str, staged: str, removed_any: bool, quarantine: "_QuarantinedMetadata | None" = None
+) -> None:
     """Put the payload back when the uninstall loop stops part way through.
 
     An earlier successful uninstall has already deleted the package tree, so
@@ -4103,6 +4116,11 @@ def _restore_from_staged(name: str, staged: str, removed_any: bool) -> None:
         # already gone. Routing through pip also earns the PIP_REQUIRE_HASHES relaxation.
         force_pip = True,
     ):
+        # The wheel just wrote its own valid metadata at the same path the rewritten
+        # record occupied, so the unwinding below must not put the original back over
+        # it. See _QuarantinedMetadata.forget_copies.
+        if quarantine is not None:
+            quarantine.forget_copies()
         _safe_print(_red(f"   restored {name} from the staged replacement"), file = sys.stderr)
     else:
         _safe_print(
@@ -4359,7 +4377,7 @@ def _repair_duplicate_core_metadata(
                         _red(f"   could not uninstall a metadata record for {name}"),
                         file = sys.stderr,
                     )
-                    _restore_from_staged(name, staged, removed_any)
+                    _restore_from_staged(name, staged, removed_any, quarantine)
                     return False
                 importlib.invalidate_caches()
                 remaining = len(install_manifest.installed_versions(name))
@@ -4368,7 +4386,7 @@ def _repair_duplicate_core_metadata(
                         _red(f"   could not remove every metadata record for {name}"),
                         file = sys.stderr,
                     )
-                    _restore_from_staged(name, staged, removed_any)
+                    _restore_from_staged(name, staged, removed_any, quarantine)
                     return False
                 removed_any = True
                 record_count = remaining
