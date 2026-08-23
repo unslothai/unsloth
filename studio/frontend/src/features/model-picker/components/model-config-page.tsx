@@ -2254,7 +2254,25 @@ export function ModelConfigPage({
           // quick select to reload without ever opening this panel. Writing when
           // no record exists is already a no-op.
           const rememberedConfig = fromApiOverride(resolvedRow, storedAtStart);
-          savePerModelConfig(configId, target.ggufVariant, rememberedConfig);
+          // Same budget as any other write, so the same clean-up: eviction is silent
+          // and still reports success, and a dropped model would keep applying its
+          // server row to API loads while the picker showed defaults, with nothing
+          // able to forget it. Not a Forget, only the mirrored fields go.
+          const hydrationEvicted: {
+            modelId: string;
+            ggufVariant: string | null;
+          }[] = [];
+          savePerModelConfig(
+            configId,
+            target.ggufVariant,
+            rememberedConfig,
+            hydrationEvicted,
+          );
+          for (const dropped of hydrationEvicted) {
+            syncModelOverride(dropped.modelId, dropped.ggufVariant, null, {
+              keepLaunchFlags: true,
+            });
+          }
           return;
         }
         if (stored.length === 0) {

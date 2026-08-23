@@ -90,3 +90,29 @@ test("the hydration write is not gated on the merge being non-default", () => {
     "a default merge is exactly the clear that has to be written",
   );
 });
+
+test("hydration propagates what its own write evicted", () => {
+  // Storage is capped at 500 entries and 1 MiB, and savePerModelConfig evicts to stay
+  // inside it, silently, still reporting success. The save handler collects those and
+  // clears their mirrored fields; hydration writes through the same budget, so a model
+  // dropped here would keep applying its server row to API loads while quick select
+  // read defaults for it, with nothing in the UI able to forget it.
+  const src = readFileSync(
+    new URL(
+      "../src/features/model-picker/components/model-config-page.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  ).replace(/\s+/g, " ");
+
+  // The write hands savePerModelConfig somewhere to report evictions.
+  assert.match(
+    src,
+    /savePerModelConfig\( configId, target\.ggufVariant, rememberedConfig, hydrationEvicted, \)/,
+  );
+  // And they are cleared the way the save path clears them: mirrored fields only.
+  assert.match(
+    src,
+    /for \(const dropped of hydrationEvicted\) \{ syncModelOverride\(dropped\.modelId, dropped\.ggufVariant, null, \{ keepLaunchFlags: true, \}\); \}/,
+  );
+});

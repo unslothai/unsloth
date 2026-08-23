@@ -189,9 +189,10 @@ test("the panel adopts a shared server config without overwriting a live edit", 
     PANEL,
     /const rememberedConfig = fromApiOverride\(resolvedRow, storedAtStart\);/,
   );
+  // Whitespace-tolerant: the call carries an eviction list now, so it spans lines.
   assert.match(
     PANEL,
-    /savePerModelConfig\(configId, target\.ggufVariant, rememberedConfig\)/,
+    /savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*rememberedConfig,/,
   );
   assert.match(PANEL, /configRef\.current === configAtStart/);
   assert.match(PANEL, /rememberRef\.current === rememberAtStart/);

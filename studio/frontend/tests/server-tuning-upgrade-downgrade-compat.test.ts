@@ -619,11 +619,13 @@ test("opening the panel ticks Remember for any model with a resolvable row", () 
   // opening the panel, even though this browser still holds it: that takes a save.
   // Unconditional, because savePerModelConfig expresses "no settings" by deleting
   // the entry, so a merge that comes out default is a clear that has to travel.
-  const adoptWrite = [
-    "savePerModelConfig\\(configId, target\\.ggufVariant, rememberedConfig\\);",
-    "return;",
-  ].join("\\s*\\n\\s*");
-  assert.match(PANEL, new RegExp(adoptWrite));
+  assert.match(
+    PANEL,
+    /savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*rememberedConfig,/,
+  );
+  // Whatever that write evicted is cleared before the block returns, or a dropped
+  // model keeps applying its server row with nothing able to forget it.
+  assert.match(PANEL, /for \(const dropped of hydrationEvicted\)[\s\S]*?return;/);
 });
 
 // ---------------------------------------------------------------------------
