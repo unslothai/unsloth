@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The hub download manager derives its rate from the shared rolling-window
-// estimator instead of an EMA seeded by the first sample (#7667). These pin the
-// gating the progress bar relies on and the smoothing needed when backend byte
-// observations arrive in disk-allocation bursts (#9378).
+// The hub download manager rates its progress bar through the shared estimator,
+// not an EMA seeded by the first sample (#7667). These pin the gating it relies
+// on, and the smoothing for byte counts arriving in disk bursts (#9378).
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -57,9 +56,8 @@ function burstyRates(burst: number, rate: number, until = 300): number[] {
   return published;
 }
 
-// Sparse-file allocation and buffered writes make a steady transfer show up as
-// plateaus and large jumps, so pricing the window endpoints turned observation
-// timing into swings between "very slow, hours left" and several hundred MB/s.
+// Sparse allocation turns a steady transfer into plateaus and jumps, so pricing
+// the window endpoints swung between "very slow, hours left" and hundreds of MB/s.
 test("bursty byte observations report the underlying transfer rate", () => {
   for (const burst of [2, 5, 10, 15, 20, 30, 45]) {
     const rates = burstyRates(burst, 100 * MB);
@@ -73,8 +71,8 @@ test("bursty byte observations report the underlying transfer rate", () => {
   }
 });
 
-// Two jumps are the minimum that carries any timing; below that the honest
-// answer is no rate, not a number derived from where the window happens to cut.
+// Two jumps are the minimum that carries timing; below that the honest answer is
+// no rate, not a number set by where the window happened to cut.
 test("bursts too far apart to measure publish no rate at all", () => {
   assert.equal(burstyRates(90, 100 * MB, 600).length, 0);
 });
@@ -87,8 +85,8 @@ test("a stall reports no rate instead of carrying an old window forward", () => 
   assert.equal(rate, 0);
 });
 
-// The chat toast, model-load UI and training-start overlay share this estimator
-// on dense feeds, so the burst handling must not slow their reaction down.
+// The chat toast, model-load UI and training overlay share this on dense feeds,
+// so the burst handling must not slow their reaction down.
 test("a dense feed still tracks a rate change within the smoothing span", () => {
   const samples: TransferSample[] = [];
   let bytes = 0;

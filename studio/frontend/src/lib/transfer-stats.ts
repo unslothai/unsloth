@@ -67,19 +67,15 @@ function hasRecentProgress(
 }
 
 /**
- * Pick the pair of samples to price the transfer from: the newest byte increase,
- * and the tightest earlier increase at least {@link MAX_WINDOW_SECONDS} before
- * it (or the oldest one held, if none is that far back).
+ * The pair to price the transfer from: newest byte increase, and the tightest
+ * earlier increase ≥ {@link MAX_WINDOW_SECONDS} back (else the oldest held).
  *
- * Hub progress is read from files on disk, where sparse allocation and buffered
- * writes can make a steady transfer show up as plateaus and large jumps (#9378).
- * Measuring increase-to-increase spans a whole number of those jumps, so the
- * partial plateau at either end of the window stops distorting the rate. A dense
- * per-second feed has an increase every sample, so it still averages over
- * {@link MAX_WINDOW_SECONDS} exactly as before.
+ * Hub progress is read off disk, where sparse allocation makes a steady transfer
+ * look like plateaus and jumps (#9378). Increase-to-increase spans a whole number
+ * of jumps, so the partial plateau at each end stops tilting the rate; a dense
+ * feed increases every sample and so still averages over the full span.
  *
- * Returns ``null`` when the buffer holds fewer than two increases: one jump on
- * its own carries no timing information, so the caller reports no rate.
+ * ``null`` below two increases: one jump alone carries no timing to measure.
  */
 function measurableSpan(
   samples: readonly TransferSample[],
