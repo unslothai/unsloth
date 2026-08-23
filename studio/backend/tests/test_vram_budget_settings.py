@@ -472,9 +472,13 @@ class TestPendingOwnership:
         scope = ast.parse(
             textwrap.dedent(inspect.getsource(lc.LlamaCppBackend._serial_load_scope))
         ).body[0]
-        held = next(node for node in scope.body if isinstance(node, ast.With))
+        # Defaulted rather than bare next(): a rewritten scope should fail here with
+        # what it lost, not with a StopIteration from the search.
+        held = next((n for n in scope.body if isinstance(n, (ast.With, ast.AsyncWith))), None)
+        assert held is not None, "the scope no longer takes the load lock in a with"
         assert ast.unparse(held.items[0].context_expr) == "self._serial_load_lock"
-        guarded = next(node for node in held.body if isinstance(node, ast.Try))
+        guarded = next((n for n in held.body if isinstance(n, ast.Try)), None)
+        assert guarded is not None, "the yield is no longer wrapped in try/finally"
         assert any(
             isinstance(node, ast.Expr) and isinstance(node.value, ast.Yield)
             for node in guarded.body

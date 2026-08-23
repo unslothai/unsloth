@@ -348,7 +348,9 @@ class TestBinaryRevisionPathSpace:
         backend = LlamaCppBackend.__new__(LlamaCppBackend)
         backend._launch_binary_revision = ()
 
-        def _unexpected_discovery():  # pragma: no cover - must never run
+        # *args/**kwargs, or a caller passing include_denied fails on the signature
+        # instead of on the thing this asserts.
+        def _unexpected_discovery(*args, **kwargs):  # pragma: no cover - must never run
             raise AssertionError("binary discovery ran without a revision to compare")
 
         monkeypatch.setattr(backend, "_find_llama_server_binary", _unexpected_discovery)
