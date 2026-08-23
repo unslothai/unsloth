@@ -1942,7 +1942,13 @@ def rollback_session_rows(
     return dropped
 
 
-def invalidate_stale_reports(out, *, archived, extra_init, log = _log) -> list:
+def invalidate_stale_reports(
+    out,
+    *,
+    archived,
+    extra_init,
+    log = _log,
+) -> list:
     """Replace `summary.md` and `ab.md` when the payload they describe is no longer the one there.
 
     `archive_payload` moves `payload.jsonl` and nothing else, so a `summary.md` written by an
