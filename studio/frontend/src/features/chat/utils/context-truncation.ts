@@ -34,15 +34,13 @@ export function compactionBoundary(
   truncation: ContextTruncation | undefined,
 ): number {
   if (!promptWasShortened(truncation)) return 0;
-  // boundary_messages is where the boundary sits in the saved transcript.
-  // dropped_messages accumulates what each fit removed, so a tool-heavy turn reports far
-  // more than the boundary moved and a later real advance looks like none. Fallback only,
-  // for turns saved before the boundary was recorded -- hence gated on the fit having
-  // SUCCEEDED, which is the only shape those saved turns have.
+  // boundary_messages is where the boundary sits in the saved transcript. Every fit that
+  // evicts records one, rescues included, so the fallback below is only for turns saved
+  // before it existed -- hence gated on `fits`, the one shape those turns have.
   //
-  // A shortened refusal is deliberately given no boundary, and its summed drops are not
-  // one either. Reading them as a position sets a high-water mark that `showsNotice`
-  // never sees exceeded again, silencing every later real compaction in the thread.
+  // dropped_messages accumulates per refit, so it is a total and not a position. Reading
+  // it as one sets a high-water mark `showsNotice` never sees exceeded again, silencing
+  // every later real compaction in the thread.
   return (
     truncation.boundary_messages ??
     (truncation.fits ? (truncation.dropped_messages ?? 0) : 0)

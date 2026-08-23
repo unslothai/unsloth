@@ -812,11 +812,10 @@ def _records_boundary(truncation: dict) -> bool:
     """Whether a fit removed turns from the prompt it sent, so its depth is worth saving.
 
     Not ``fits``: a rescue reports false yet really did evict, and the client reads this
-    depth to place the compaction notice, so recording nothing compacts silently.
-
-    Saving is not replaying. `_sticky_compaction_boundary` declines any `fits` false record
-    before reading the depth, which is the right home for the distinction: a missed reserve
-    makes the replay unsafe, not the reporting.
+    depth to place the compaction notice, so recording nothing compacts silently. Saving is
+    not replaying -- `_sticky_compaction_boundary` declines any `fits` false record before
+    reading the depth, which is where that belongs: a missed reserve makes the replay
+    unsafe, not the reporting.
     """
     return bool(truncation.get("fits")) or bool(truncation.get("dropped_messages"))
 
