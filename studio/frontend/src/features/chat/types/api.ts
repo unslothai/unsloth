@@ -753,8 +753,9 @@ export interface OpenAIChatChunk {
     irreducible_tokens?: number;
     latest_turn_tokens?: number;
     // Whether `latest_turn_tokens` is a real token count or the four-characters-a-token
-    // estimate the fit falls back to when the template renders the newest turn as
-    // nothing on its own. Only the counted one may be quoted as the turn's size.
+    // estimate the fit falls back to when nothing could price the turn at all. A turn the
+    // template renders as nothing on its own is priced by difference and stays exact.
+    // Only the counted one may be quoted as the turn's size.
     latest_turn_exact?: boolean;
     // Where the compaction boundary sits in the messages THIS request was sent with.
     // Absolute, unlike dropped_messages, so re-sending it after a turn that refit several

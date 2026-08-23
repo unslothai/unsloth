@@ -6851,12 +6851,13 @@ export function createOpenAIStreamAdapter(
             // send the user to a new chat that fails identically.
             const budget =
               irreducible?.prompt_target ?? irreducible?.context_length ?? 0;
-            // `latest_turn_exact: false` means the template dropped the newest turn on
-            // its own (every Gemma tool result), so the count is the message's JSON at
-            // four characters a token. Whitespace runs and escaped JSON tokenise several
-            // times denser than that, so printing it as "N tokens on its own" states a
-            // number the turn never cost. Absent means a server that predates the flag,
-            // which only ever sent a count.
+            // `latest_turn_exact: false` means nothing could price the turn at all, so
+            // the count is the message's own JSON at four characters a token. Whitespace
+            // runs and escaped JSON tokenise several times denser than that, so printing
+            // it as "N tokens on its own" states a number the turn never cost. A turn the
+            // template renders as NOTHING on its own is not this case: the server prices
+            // that by difference against the prompt it measured and reports it exact.
+            // Absent means a server that predates the flag, which only ever sent a count.
             const oneTurnIsTheProblem =
               irreducible != null &&
               (irreducible.latest_turn_tokens ?? 0) > budget &&

@@ -15686,6 +15686,14 @@ async def openai_chat_completions(
                 try:
                     yield _chat_role_chunk(completion_id, created, model_name)
 
+                    # In this generator's own context, before the per-event task and
+                    # thread below each get a COPY of it. The forwarded events record
+                    # into the parent already, but only when there are any: a prompt
+                    # that fit leaves no slot, and then the respawn refit -- which runs
+                    # inside the worker, not out here -- records into a copy that dies
+                    # with it, so the except-clause below builds its message from
+                    # nothing. See `context_refusal`, and the two non-streaming drains.
+                    context_refusal.open_slot()
                     # Iterate the sync generator in a thread so the event loop
                     # stays free for disconnect detection.
                     gen = gguf_generate_with_tools()
@@ -22275,6 +22283,10 @@ async def _anthropic_tool_stream(
             # stall window still gets one though its events are dropped.
             _last_drop_keepalive = time.monotonic()
 
+            # See the GGUF tool stream: this loop drives the same tool generator, and its
+            # respawn refit records the refusal from inside the worker thread, so the slot
+            # has to exist out here before the per-event copies are taken.
+            context_refusal.open_slot()
             gen = run_gen()
             _next_task = None
             # Watcher to cancel on disconnect: the in-loop poll fires only between events,

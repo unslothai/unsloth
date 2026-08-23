@@ -882,6 +882,84 @@ def test_both_non_streaming_gguf_drains_open_a_slot_first():
         assert any("context_refusal.open_slot()" in line for line in preceding)
 
 
+# ---------------------------------------------------------- streaming tool loops
+
+
+def _respawn_refit_then_refused():
+    """A tool generator that fits, respawns, refits into a refusal, then is refused.
+
+    The refit runs inside the generator, i.e. inside the worker thread the stream loop
+    drives it from, and the prompt that FIT emitted no `context_truncated` event, so
+    nothing recorded out in the stream's own context first.
+    """
+    yield "the first tokens, before llama-server died"
+    context_refusal.record_fit(_refusal(irreducible = 5600, latest_turn = 5400, role = "tool"))
+    raise ValueError(_SERVER_ERROR)
+
+
+async def _stream_like_the_tool_route(*, with_slot: bool):
+    """The shape both streaming tool loops use: a task around a thread, per event.
+
+    The message is built in this generator's own `except`, which is where the slot has
+    to be visible; anything less than this shape does not test the thing that broke.
+    """
+    sentinel = object()
+    if with_slot:
+        context_refusal.open_slot()
+    gen = _respawn_refit_then_refused()
+    try:
+        while True:
+            next_task = asyncio.create_task(asyncio.to_thread(next, gen, sentinel))
+            event = await asyncio.shield(next_task)
+            if event is sentinel:
+                break
+            yield event
+    except ValueError as exc:
+        yield _friendly_error(exc)
+
+
+def _drive(*, with_slot: bool) -> str:
+    async def _run():
+        async def _consume():
+            return [chunk async for chunk in _stream_like_the_tool_route(with_slot = with_slot)]
+
+        # Iterated from a task of its own, as a streaming response body is.
+        return await asyncio.create_task(_consume())
+
+    return asyncio.run(_run())[-1]
+
+
+def test_a_streaming_tool_loop_without_a_slot_loses_the_respawn_refusal():
+    # The regression: two context copies between the refit and the message, and no slot
+    # in the stream's own context because the prompt that fit recorded nothing there.
+    message = _drive(with_slot = False)
+    assert "shorten the conversation" in message, message
+    assert "tool" not in message, message
+
+
+def test_a_streaming_tool_loop_with_a_slot_keeps_the_respawn_refusal():
+    message = _drive(with_slot = True)
+    assert "A tool returned more than this context window can hold" in message, message
+    assert "ask for a smaller slice of the file or page" in message, message
+
+
+def test_both_streaming_tool_loops_open_a_slot_first():
+    """Only the loops that drive the tool generator: it owns the respawn refit.
+
+    The no-tool streams reach `generate_chat_completion`, which has no refit callback,
+    and their own fit is recorded out in the stream where the message is built.
+    """
+    source = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
+    loops = (
+        ("async def gguf_tool_stream():", "gen = gguf_generate_with_tools()"),
+        ("async def _anthropic_tool_stream(", "gen = run_gen()"),
+    )
+    for header, spawn in loops:
+        body = source.split(header, 1)[1]
+        assert spawn in body, header
+        assert "context_refusal.open_slot()" in body.split(spawn, 1)[0], header
+
+
 def test_other_friendly_errors_are_untouched():
     assert _friendly_error(RuntimeError("unrelated")) == "An internal error occurred"
     assert "Lost connection" in _friendly_error(RuntimeError("Lost connection to llama-server"))
