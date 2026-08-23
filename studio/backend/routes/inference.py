@@ -2700,6 +2700,7 @@ def _render_generation_prompt_probe(
     enable_thinking: Optional[bool],
     reasoning_effort: Optional[str],
     messages: Optional[Collection] = None,
+    generation_prompt: bool = True,
 ) -> Optional[str]:
     """Render the probe generation prompt, or None when it cannot be rendered."""
     reasoning_kwargs: dict = {}
@@ -2714,7 +2715,7 @@ def _render_generation_prompt_probe(
             return None
         return compiled.render(
             messages = list(messages if messages is not None else _PROBE_MESSAGES),
-            add_generation_prompt = True,
+            add_generation_prompt = generation_prompt,
             bos_token = "",
             eos_token = "",
             **reasoning_kwargs,
@@ -2742,20 +2743,29 @@ def _generation_prompt_opens_think(
     from them (Nemotron opens the block only once a message says ``/think``). A history the
     template refuses falls back to the single-user probe rather than to True, so a message the
     probe cannot render is never itself a reason to prefill.
+
+    Only the assistant prefix is weighed, obtained by diffing the render against the same one
+    without a generation prompt. Weighing the whole prompt would let a user who merely writes
+    ``<think>`` in a message become the last opener and prefill a template that opens nothing.
     """
     if not template:
         return False
     if not isinstance(template, str):
         return True
-    rendered = _render_generation_prompt_probe(
-        template, enable_thinking, reasoning_effort, messages
-    )
+    args = (template, enable_thinking, reasoning_effort)
+    rendered = _render_generation_prompt_probe(*args, messages)
     if rendered is None and messages is not None:
-        rendered = _render_generation_prompt_probe(template, enable_thinking, reasoning_effort)
+        messages = None
+        rendered = _render_generation_prompt_probe(*args)
     if rendered is None:
         return True
+    # The generation prompt is what ``add_generation_prompt`` adds, so everything the two
+    # renders share is history. On a template that ignores the flag they match and nothing is
+    # prefilled, which is the right answer for one that opens no block.
+    body = _render_generation_prompt_probe(*args, messages, generation_prompt = False)
+    prefix = rendered[len(os.path.commonprefix((rendered, body))):] if body is not None else rendered
     # ``<think>`` is not a substring of ``</think>``, so a later open tag means it stays open.
-    return rendered.rfind("<think>") > rendered.rfind("</think>")
+    return prefix.rfind("<think>") > prefix.rfind("</think>")
 
 
 def _sf_reasoning_prefill_mode(
@@ -15400,10 +15410,15 @@ async def openai_chat_completions(
         _sf_template_tools = ({},)
 
     # The prefill probe renders these: a template may read the shape off the conversation
-    # (Nemotron opens <think> only once a message says ``/think``), and a fixed stand-in
-    # would classify a request nobody made. Encoded once, not per protocol call.
+    # (Nemotron opens <think> only once a message says ``/think``), and a fixed stand-in would
+    # classify a request nobody made. Built from the NORMALIZED conversation, the same shape
+    # the backend renders (mlx_inference prepends system_prompt to chat_messages), so a
+    # content-part array the probe left unflattened cannot read differently from generation.
     try:
-        _sf_probe_messages = jsonable_encoder(getattr(payload, "messages", None)) or None
+        _sf_probe_messages = jsonable_encoder(
+            ([{"role": "system", "content": system_prompt}] if system_prompt else [])
+            + chat_messages
+        ) or None
     except Exception:
         _sf_probe_messages = None
 

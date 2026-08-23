@@ -134,6 +134,12 @@ _MESSAGE_SHAPE_TPL = (
     "{% if add_generation_prompt %}<|im_start|>assistant\n"
     "{% if ns.think %}<think>\n{% else %}<think></think>{% endif %}{% endif %}"
 )
+# Kimi shape: renders history into the prompt but opens no block of its own.
+_HISTORY_ONLY_TPL = (
+    "{% for m in messages %}<|im_user|>{{ m['role'] }}<|im_middle|>{{ m['content'] }}<|im_end|>"
+    "{% if m['role'] == 'assistant' %}<think></think>{% endif %}{% endfor %}"
+    "{% if add_generation_prompt %}<|im_assistant|>assistant<|im_middle|>{% endif %}"
+)
 # Closes its block, and raises on a tool turn the way a strict template does.
 _STRICT_HISTORY_TPL = (
     "{% for m in messages %}{% if m['role'] == 'tool' %}{{ raise_exception('no tool turns') }}"
@@ -202,6 +208,27 @@ def test_messages_the_template_refuses_fall_back_to_the_single_user_probe():
     refused = [{"role": "user", "content": "hi"}, {"role": "tool", "content": "42"}]
     assert _sf_reasoning_prefill_mode(_ETHINK, None, _STRICT_HISTORY_TPL, None, refused) is False
     assert _sf_reasoning_prefill_mode(_ETHINK, None, _STRICT_HISTORY_TPL) is False
+
+
+def test_a_think_tag_the_user_typed_does_not_prefill():
+    # Only the assistant prefix counts. Weighing the whole prompt would let anyone asking
+    # about a <think> tag become the last opener and blank their own answer.
+    for text in ("how do I emit a <think> tag?", "use <think>x</think> tags", "plain"):
+        msgs = [{"role": "user", "content": text}]
+        assert _sf_reasoning_prefill_mode(_ETHINK, None, _HISTORY_ONLY_TPL, None, msgs) is False
+    # A template that really does open one is still read as prefilled.
+    typed = [{"role": "user", "content": "a <think> b"}]
+    assert _sf_reasoning_prefill_mode(_ETHINK, None, _THINK_TPL, None, typed) is True
+
+
+def test_content_parts_must_reach_the_probe_flattened():
+    # Pins why the route probes the normalized conversation: the two shapes disagree, so
+    # probing the raw array would test ``'/think' in <list>``, silently miss the opt-in, and
+    # classify against a prompt generation never renders.
+    flattened = [{"role": "user", "content": "/think what is 2+2"}]
+    raw_parts = [{"role": "user", "content": [{"type": "text", "text": "/think what is 2+2"}]}]
+    assert _sf_reasoning_prefill_mode(_ETHINK, None, _MESSAGE_SHAPE_TPL, None, flattened) is True
+    assert _sf_reasoning_prefill_mode(_ETHINK, None, _MESSAGE_SHAPE_TPL, None, raw_parts) is False
 
 
 def test_prefill_mode_without_messages_matches_the_single_user_probe():
