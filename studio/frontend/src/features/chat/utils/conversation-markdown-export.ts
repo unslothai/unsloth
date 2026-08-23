@@ -7,6 +7,7 @@ import {
   type ConversationMarkdownMessage,
   buildConversationMarkdown,
 } from "./conversation-markdown.ts";
+import { stripSearchImageTokens } from "../search-images/search-images.ts";
 
 type StoredConversationMessage = {
   readonly role: unknown;
@@ -47,7 +48,8 @@ export function createConversationMarkdownExporter<
     const normalizedMessages: ConversationMarkdownMessage[] = messages.map(
       (message) => ({
         role: String(message.role ?? ""),
-        content: renderMessage(message),
+        // Renderer markup, never prose: an exported answer must not carry raw tokens.
+        content: stripSearchImageTokens(renderMessage(message)),
       }),
     );
     const markdown = buildConversationMarkdown(normalizedMessages);

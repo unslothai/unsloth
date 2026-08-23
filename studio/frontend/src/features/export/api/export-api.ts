@@ -168,6 +168,7 @@ export async function exportGGUF(params: {
   hf_token?: string | null;
   imatrix?: boolean;
   imatrix_path?: string | null;
+  private?: boolean;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/gguf", {
     method: "POST",

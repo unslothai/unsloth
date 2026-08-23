@@ -11,6 +11,18 @@ import {
   isRenderableRenderHtmlToolPart,
   isSvgFence,
 } from "@/features/chat/artifacts/html-fences";
+// Leaf module, not the feature barrel: SEARCH_IMAGE_TAG is read at module scope
+// below, and the barrel sits in an import cycle with this file (TDZ at load).
+// eslint-disable-next-line no-restricted-imports
+import {
+  holdBackPartialSearchImageToken,
+  parseSearchImagesSignature,
+  placeSubjectImages,
+  precedingTextForMessagePart,
+  rewriteSearchImageTokens,
+  SEARCH_IMAGE_TAG,
+  searchImagesSignature,
+} from "@/features/chat/search-images/search-images";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { preprocessLaTeX } from "@/lib/latex";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
@@ -18,7 +30,12 @@ import { openLink } from "@/lib/open-link";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
-import { INTERNAL, useAuiState, useMessagePartText } from "@assistant-ui/react";
+import {
+  INTERNAL,
+  useAui,
+  useAuiState,
+  useMessagePartText,
+} from "@assistant-ui/react";
 import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
@@ -54,6 +71,7 @@ import {
 } from "./markdown-block-boundary";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
+import { SearchImageElement, SearchImagesContext } from "./search-image";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown";
 import {
@@ -108,7 +126,13 @@ const STREAMDOWN_COMPONENTS = {
       {children}
     </a>
   ),
+  // Module-scoped: Streamdown's memo comparator ignores `components`.
+  [SEARCH_IMAGE_TAG]: SearchImageElement,
 };
+// Through the sanitizer; the component drops tokens it cannot resolve.
+const STREAMDOWN_ALLOWED_TAGS = {
+  [SEARCH_IMAGE_TAG]: ["token"],
+} satisfies NonNullable<StreamdownProps["allowedTags"]>;
 const COPY_RESET_MS = 2000;
 const MERMAID_SOURCE_RE = /```mermaid\s*([\s\S]*?)```/i;
 const ACTION_PANEL_CLASS =
@@ -474,9 +498,6 @@ function FenceBlock({
 }) {
   const host = useRef<HTMLDivElement | null>(null);
   const mode = fenceMode();
-  // A streaming fence is the one the reader is watching, so it never defers, and the hook latches
-  // it so that finishing the stream cannot hand it back the plain shell.
-  const reached = useFenceReached(host, mode !== "off", Boolean(isIncomplete));
 
   /*
    * WHICH FENCES THIS COVERS, and which it does not.
@@ -504,6 +525,36 @@ function FenceBlock({
   // tokenize an unknown language as plain text -- which is exactly the grammar work the arm
   // exists to put back.
   const languageToken = language?.trim().split(/\s+/)[0] || null;
+
+  /*
+   * DRIVE THE HIGHLIGHTER OVER THIS FENCE ON DEMAND. The latch owns WHEN; this owns WHAT, because
+   * the plugin instance lives here with the component that renders the block.
+   *
+   * `tokens: true`: `code.highlight` returns synchronously once the grammar is loaded and caches
+   * on the source string, so this is the same object the block's own render is about to ask for,
+   * which is what lets a jump or a print swap straight to a COLOURED block rather than to
+   * streamdown's plain fallback. `tokens: false` highlights "", loading the grammar only.
+   */
+  const warm = useCallback(
+    (tokens: boolean) => {
+      code.highlight({
+        code: tokens ? trimTrailingNewlines(source) : "",
+        language: (languageToken ?? "text") as never,
+        themes: STREAMDOWN_SHIKI_THEME,
+      }, () => {});
+    },
+    [source, languageToken],
+  );
+
+  // A streaming fence is the one the reader is watching, so it never defers, and the hook latches
+  // it so that finishing the stream cannot hand it back the plain shell.
+  const reached = useFenceReached(
+    host,
+    mode !== "off",
+    Boolean(isIncomplete),
+    languageToken,
+    warm,
+  );
 
   // MEASUREMENT ARM ONLY. See `FenceMode`: this puts the tokenizer work back while leaving the
   // document at the deferred size, so the two costs can be told apart. `code.highlight` caches
@@ -631,8 +682,17 @@ function useCoalescedStreamingText(
   return text;
 }
 
+/** False inside the reasoning block, which renders through this same component. */
+export const SearchImagesEnabledContext = createContext(true);
+
 const MarkdownTextImpl = () => {
+  const allowSearchImages = useContext(SearchImagesEnabledContext);
+  const aui = useAui();
   const { text, status } = useMessagePartText();
+  const partIndex =
+    aui.part.source === "message" && aui.part.query.type === "index"
+      ? aui.part.query.index
+      : 0;
   // Parts are keyed by index, so switching conversations hands this instance a
   // different message, and Streamdown only extends its parsed blocks: key it per
   // message. The cache generation joins the key for the case the Markdown string
@@ -642,11 +702,57 @@ const MarkdownTextImpl = () => {
   const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
     message.parts.some(isRenderableRenderHtmlToolPart),
   );
+  // A string, not the Map: selector results are compared by identity.
+  const searchImagesKey = useAuiState(({ message }) =>
+    allowSearchImages ? searchImagesSignature(message.parts) : "",
+  );
+  const searchImages = useMemo(
+    () => parseSearchImagesSignature(searchImagesKey),
+    [searchImagesKey],
+  );
+  // What earlier text parts said, so a subject named in two of them gets one card.
+  const precedingText = useAuiState(({ message }) =>
+    allowSearchImages
+      ? precedingTextForMessagePart(message.parts, partIndex)
+      : "",
+  );
+  const messageTextKey = useAuiState(({ message }) =>
+    allowSearchImages
+      ? JSON.stringify(
+          message.parts
+            .filter((part) => part.type === "text")
+            .map((part) => part.text),
+        )
+      : "[]",
+  );
+  const messageTexts = useMemo(
+    () => JSON.parse(messageTextKey) as string[],
+    [messageTextKey],
+  );
   const isStreaming = status.type === "running";
   const displayText = useCoalescedStreamingText(text, isStreaming, messageId);
   const processedText = useMemo(
-    () => stabilizeStreamingMarkdown(preprocessLaTeX(displayText), isStreaming),
-    [displayText, isStreaming],
+    () =>
+      stabilizeStreamingMarkdown(
+        preprocessLaTeX(
+          rewriteSearchImageTokens(
+            placeSubjectImages(
+              // No images means nothing to hold back, not even a trailing `[`.
+              holdBackPartialSearchImageToken(
+                displayText,
+                isStreaming && searchImages.size > 0,
+              ),
+              searchImages,
+              isStreaming,
+              precedingText,
+              messageTexts,
+            ),
+            searchImages,
+          ),
+        ),
+        isStreaming,
+      ),
+    [displayText, isStreaming, messageTexts, precedingText, searchImages],
   );
   const incrementalCacheRef = useRef({
     messageId,
@@ -672,24 +778,27 @@ const MarkdownTextImpl = () => {
     <RenderHtmlToolPresenceContext.Provider
       value={messageHasRenderableRenderHtmlTool}
     >
-      <div data-status={status.type} className="min-w-0 max-w-full">
-        <Streamdown
-          key={`${messageId}:${incrementalCache.renderGeneration}`}
-          mode="streaming"
-          parseIncompleteMarkdown={!incrementalRender}
-          parseMarkdownIntoBlocksFn={incrementalRender?.parseMarkdownIntoBlocks}
-          isAnimating={isStreaming}
-          animated={STREAMDOWN_IMMEDIATE_UPDATES}
-          plugins={STREAMDOWN_PLUGINS}
-          components={STREAMDOWN_COMPONENTS}
-          urlTransform={safeMarkdownUrl}
-          controls={STREAMDOWN_CONTROLS}
-          shikiTheme={STREAMDOWN_SHIKI_THEME}
-          BlockComponent={StreamdownBlock}
-        >
-          {incrementalRender?.markdown ?? processedText}
-        </Streamdown>
-      </div>
+      <SearchImagesContext.Provider value={searchImages}>
+        <div data-status={status.type} className="min-w-0 max-w-full">
+          <Streamdown
+            key={`${messageId}:${incrementalCache.renderGeneration}`}
+            mode="streaming"
+            parseIncompleteMarkdown={!incrementalRender}
+            parseMarkdownIntoBlocksFn={incrementalRender?.parseMarkdownIntoBlocks}
+            isAnimating={isStreaming}
+            animated={STREAMDOWN_IMMEDIATE_UPDATES}
+            plugins={STREAMDOWN_PLUGINS}
+            components={STREAMDOWN_COMPONENTS}
+            allowedTags={STREAMDOWN_ALLOWED_TAGS}
+            urlTransform={safeMarkdownUrl}
+            controls={STREAMDOWN_CONTROLS}
+            shikiTheme={STREAMDOWN_SHIKI_THEME}
+            BlockComponent={StreamdownBlock}
+          >
+            {incrementalRender?.markdown ?? processedText}
+          </Streamdown>
+        </div>
+      </SearchImagesContext.Provider>
     </RenderHtmlToolPresenceContext.Provider>
   );
 };
