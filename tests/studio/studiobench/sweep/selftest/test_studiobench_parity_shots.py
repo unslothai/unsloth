@@ -536,3 +536,66 @@ def test_two_shards_do_not_share_one_screenshot_identity(tmp_path):
         for rep in ("rep0", "rep1"):
             before = out / f"{shard}__settings__r100K_{rep}__BEFORE_base.png"
             assert before.read_bytes() == (shots / f"{shard}_base_{rep}.png").read_bytes()
+
+
+# Direct first-party imports of a measured route that are deliberately NOT gated on, each with
+# the reason. This is the other half of the filter: a module is either in the workflow or it is
+# here, and adding an import to a measured route fails the test below until someone decides which.
+#
+# The drip this ends: routes/chat_history.py was listed, then its storage/studio_db.py arrived a
+# round later, then models/providers.py and core/inference/providers.py, then external_provider.py
+# and sse_control_frames.py, then provider_credentials.py. Every one was correct and every one was
+# found by reading the imports by hand. The boundary is a judgement, but it should be a RECORDED
+# judgement rather than one rediscovered each round.
+NOT_GATED: dict[str, str] = {
+    "studio/backend/auth/authentication.py": "session plumbing shared by every route in the app; "
+    "routes/auth.py already gates the endpoints studiobench actually calls",
+    "studio/backend/core/inference/key_exchange.py": "encrypts stored credentials. studiobench "
+    "posts its provider without one, so this code is not on the measured path",
+    "studio/backend/core/inference/pricing.py": "cost figures, which the scene never renders",
+    "studio/backend/utils/utils.py": "generic helpers imported by most of the backend; gating on "
+    "it would run this workflow on nearly every PR and defeat the filter",
+}
+
+
+def test_every_import_of_a_measured_route_is_gated_or_explicitly_waived():
+    """A route is not one file, and the filter should say where it stops.
+
+    Enumerates the DIRECT first-party imports of the routes studiobench drives and requires each
+    to be either in the workflow's path filter or in `NOT_GATED` with a reason. Direct only: the
+    transitive closure of `routes/inference.py` is most of the backend, and a filter that matches
+    everything is the same as no filter.
+    """
+    import re
+
+    repo = Path(__file__).resolve().parents[5]
+    backend = repo / "studio/backend"
+    workflow = (repo / ".github/workflows/studiobench-ui-parity.yml").read_text(encoding = "utf-8")
+
+    measured = ("routes/providers.py", "routes/provider_credentials.py")
+    missing = []
+    for rel in measured:
+        text = (backend / rel).read_text(encoding = "utf-8")
+        mods = set(re.findall(r"^from ([a-z_][\w.]*) import", text, re.M))
+        mods |= set(re.findall(r"^import ([a-z_][\w.]*)", text, re.M))
+        for mod in sorted(mods):
+            target = backend / (mod.replace(".", "/") + ".py")
+            if not target.exists():
+                continue
+            path = f"studio/backend/{target.relative_to(backend)}"
+            if path in workflow or path in NOT_GATED:
+                continue
+            missing.append((rel, path))
+    assert not missing, (
+        "these imports of a measured route are neither in the parity path filter nor waived in "
+        f"NOT_GATED with a reason: {missing}"
+    )
+
+
+def test_every_waiver_names_a_file_that_exists_and_gives_a_reason():
+    # A waiver for a file that has been moved or deleted is a stale exemption that reads as a
+    # decision. Same bar the RACY_EXECUTION entries are held to.
+    repo = Path(__file__).resolve().parents[5]
+    for path, why in NOT_GATED.items():
+        assert (repo / path).exists(), path
+        assert len(why) > 40, path
