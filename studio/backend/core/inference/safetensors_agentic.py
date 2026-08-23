@@ -1371,6 +1371,15 @@ def run_safetensors_tool_loop(
                         results = [
                             message for message in conversation if message.get("role") == "tool"
                         ]
+                        # Removed from the thread below rather than added on top of it:
+                        # the conservative estimate already prices every message it is
+                        # given, so leaving the results in and adding them again charges
+                        # them twice, and a CJK result twice over at a token per character
+                        # each time. A thread with one sizable earlier result would then
+                        # report no room while it still had plenty.
+                        rest = [
+                            message for message in conversation if message.get("role") != "tool"
+                        ]
                         # Split across the calls still to run in this batch, and after
                         # their arguments, exactly as the GGUF loop does: one turn can
                         # call several tools and each call is appended only as it runs,
@@ -1390,9 +1399,12 @@ def run_safetensors_tool_loop(
                             # English rate it reports a third of what it costs. Nothing
                             # here can measure exactly, and the room this produces is what
                             # the next result is admitted against.
-                            _spent_tokens(conversation)
+                            _spent_tokens(rest)
                             + _spent_tokens(tools or [])
-                            + _dense_tokens(results)
+                            # Every ASCII character of a result at two per token, not only
+                            # its unbroken runs: a result is `hexdump`, `ls -l` or a stack
+                            # trace as often as it is a blob, and those carry spaces.
+                            + _spent_tokens(results, dense_ascii = True)
                             # Doubled for the same reason the results above are: a pending
                             # call can carry base64, minified JSON or a block of code, and
                             # nothing on this path can price a string exactly.

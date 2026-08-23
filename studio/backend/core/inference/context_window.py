@@ -82,7 +82,11 @@ _DENSE_RUN_CHARS_PER_TOKEN = 2
 _DENSE_RUN_RE = re.compile(r"\S{%d,}" % _DENSE_RUN_CHARS)
 
 
-def estimate_messages_tokens_conservative(messages: list[dict]) -> int:
+def estimate_messages_tokens_conservative(
+    messages: list[dict],
+    *,
+    dense_ascii: bool = False,
+) -> int:
     """`estimate_messages_tokens_dense`, with unbroken ASCII runs charged as the blobs
     they are.
 
@@ -91,6 +95,11 @@ def estimate_messages_tokens_conservative(messages: list[dict]) -> int:
     is what pushes the next prompt past the window, with nothing downstream to recover.
     Non-ASCII keeps its token per character, ordinary ASCII keeps the English four, and
     only the long unbroken runs are charged at `_DENSE_RUN_CHARS_PER_TOKEN`.
+
+    ``dense_ascii`` charges ALL of a message's ASCII at that rate, for the messages that
+    are dense whether or not they hold an unbroken run: a tool result is `hexdump`, `ls
+    -l` or a stack trace as often as it is a blob, and those are space-separated. It
+    applies to the ASCII only, so a CJK result is not charged twice for being a result.
     """
     total = 0
     for message in messages:
@@ -100,6 +109,9 @@ def estimate_messages_tokens_conservative(messages: list[dict]) -> int:
             total += 1
             continue
         wide = sum(1 for char in text if ord(char) > 127)
+        if dense_ascii:
+            total += max(1, wide + (len(text) - wide) // _DENSE_RUN_CHARS_PER_TOKEN)
+            continue
         # ASCII only: a run of CJK is already charged a token a character above, and
         # charging it here as well would price it twice.
         runs = sum(

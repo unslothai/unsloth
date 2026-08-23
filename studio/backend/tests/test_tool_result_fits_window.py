@@ -378,8 +378,12 @@ _CHARS_PER_TOKEN = 3
 
 
 def _tokenizer(monkeypatch):
+    # `token_budget` is the counter's own early-out and defaults to "no budget", exactly
+    # as the real one does.
     monkeypatch.setattr(
-        tools, "_loaded_token_counter", lambda ctx: (lambda chunk: len(chunk) // _CHARS_PER_TOKEN)
+        tools,
+        "_loaded_token_counter",
+        lambda ctx: (lambda chunk, token_budget = 0.0: len(chunk) // _CHARS_PER_TOKEN),
     )
 
 
@@ -936,7 +940,11 @@ class TestTheRetryHintIsInsideTheCap:
         monkeypatch.setattr(
             tools,
             "_loaded_token_counter",
-            lambda ctx: (lambda chunk: sum(1.0 if c == "/" else 0.25 for c in chunk)),
+            lambda ctx: (
+                lambda chunk, token_budget = 0.0: sum(
+                    1.0 if c == "/" else 0.25 for c in chunk
+                )
+            ),
         )
         _room(400)
         text = _dense(40_000)
@@ -1025,9 +1033,13 @@ class TestTheSafetensorsLoopPricesItToo:
 
         Differential, so it cannot pass on the arithmetic alone: the same characters in a
         user turn are ordinary prose and stay at the estimator's rate, while in a tool
-        result they are charged twice.
+        result every ASCII character is charged at the dense one.
+
+        Spaced deliberately. An unbroken run of 4,000 characters is priced as a blob
+        wherever it appears, so a body without spaces would compare the two rates against
+        each other and find them equal.
         """
-        body = "x" * 4_000
+        body = "abcd " * 800
         as_result = self._run(
             4096,
             messages = [
@@ -1817,7 +1829,9 @@ class TestACounterThatCannotAnswerIsNotACounter:
     @staticmethod
     def _mute(monkeypatch):
         """A backend that exposes a counter and can never price anything with it."""
-        monkeypatch.setattr(tools, "_loaded_token_counter", lambda ctx: (lambda chunk: None))
+        monkeypatch.setattr(
+            tools, "_loaded_token_counter", lambda ctx: (lambda chunk, token_budget = 0.0: None)
+        )
 
     def test_a_counter_that_measures_nothing_gets_the_conservative_margin(self, monkeypatch):
         _window(monkeypatch, 4096)
@@ -1969,3 +1983,37 @@ class TestSpillingDoesNotCopyTheResultAgain:
         written = (tmp_path / _spill_path(f"saved to {spilled} ")).read_bytes()
         assert len(written) <= 4_096
         assert written == text.encode("utf-8")[: len(written)]
+
+
+class TestAToolResultIsPricedOnceOnTheNativePath:
+    """The conservative estimate prices every message it is handed, results included, so
+    adding a separately priced result total on top charges those messages twice. On text
+    it already charges a token a character, that is two tokens per character, and a thread
+    holding one sizable earlier result reports no room while it still has plenty."""
+
+    @staticmethod
+    def _budget(message: dict) -> int:
+        return TestTheSafetensorsLoopPricesItToo._run(
+            8192, messages = [{"role": "user", "content": "print it"}, message]
+        )["result_budget_tokens"]
+
+    def test_a_wide_result_costs_what_the_same_text_costs_anywhere(self):
+        """CJK is already a token a character in the estimate. Charging a result for being
+        a result on top of that prices it at two, which is not a rate any tokenizer has."""
+        text = "文字" * 700
+
+        as_result = self._budget({"role": "tool", "content": text})
+        as_prose = self._budget({"role": "user", "content": text})
+
+        assert as_result > 0 and as_prose > 0
+        assert as_prose - as_result < as_prose * 0.05, (as_result, as_prose)
+
+    def test_a_spaced_ascii_result_is_still_priced_densely(self):
+        """The control: pricing it once must not mean pricing it as prose. `hexdump`,
+        `ls -l` and stack traces carry spaces and still tokenise near two."""
+        text = "abcd " * 1_200
+
+        as_result = self._budget({"role": "tool", "content": text})
+        as_prose = self._budget({"role": "user", "content": text})
+
+        assert as_result < as_prose
