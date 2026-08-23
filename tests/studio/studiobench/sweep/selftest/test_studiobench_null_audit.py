@@ -25,6 +25,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
+from tests.studio.studiobench.analysis import parity as P  # noqa: E402
 from tests.studio.studiobench.sweep import ui_parity as U  # noqa: E402
 
 # parents[4] is `tests/`, which is what the sibling selftests put on sys.path; the repo root is
@@ -540,7 +541,13 @@ def test_the_refusal_exits_two_not_one_through_the_cli(tmp_path, monkeypatch, ca
 # ── an action that ran on one arm and not the other ──────────────────
 
 
-def one_sided_payload(tmp_path: Path, name: str, action: str, reps: tuple[str, ...]) -> Path:
+def one_sided_payload(
+    tmp_path: Path,
+    name: str,
+    action: str,
+    reps: tuple[str, ...],
+    reason: str = "the control never became visible",
+) -> Path:
     """A film where `action` runs on base and cannot be performed on treatment, in `reps`.
 
     Everything else matches on both arms in both repetitions, so the ONLY thing wrong with this
@@ -557,7 +564,7 @@ def one_sided_payload(tmp_path: Path, name: str, action: str, reps: tuple[str, .
             if arm == "treatment" and rep in reps:
                 row = action_row(cid, action, "SAME")
                 row["ran"] = False
-                row["reason"] = "the control never became visible"
+                row["reason"] = reason
                 row["slot_missed"] = False
                 rows.append(row)
             else:
@@ -597,7 +604,13 @@ def test_an_action_expected_to_vary_is_not_failed_for_reaching_one_arm_only(tmp_
     # `stop_generation` runs only while a stream is live, so which arm reached it before the
     # stream ended is the same race its UNSTABLE_ACTIONS entry already describes. Scoring that as
     # a build difference would red the job on stream timing.
-    path = one_sided_payload(tmp_path, "racy", "stop_generation", ("rep0", "rep1"))
+    path = one_sided_payload(
+        tmp_path,
+        "racy",
+        "stop_generation",
+        ("rep0", "rep1"),
+        reason = "nothing was generating and a new turn did not start within 8s",
+    )
     assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 0
     assert "expected to vary between runs" in capsys.readouterr().out
 
@@ -815,3 +828,534 @@ def test_an_interrupted_retry_does_not_inherit_the_completion_it_superseded(tmp_
 
     unstable, _derived, _checks = U.unstable_set([path])
     assert ("r100K", "settings") not in unstable, unstable
+
+
+# ── an exemption measured on another machine is not an exemption here ──
+
+
+def _arm_payload(tmp_path: Path, name: str, regress: str | None, self_race: str | None) -> Path:
+    """One arm's payload. `regress` differs base-vs-head in BOTH reps; `self_race` differs base
+    against ITSELF in both reps, which is what makes an action look unstable."""
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            cid = f"r100K.{arm}.{rep}"
+            for i in range(16):
+                rows.append(action_row(cid, f"filler{i}", "SAME"))
+            for act in ("reasoning_toggle", "settings"):
+                digest = "SAME"
+                if act == regress and arm == "treatment":
+                    digest = "HEAD_IS_DIFFERENT"
+                if act == self_race:
+                    # Racing against itself: side A does not even reproduce between repetitions.
+                    digest = f"RACE_{arm}_{rep}"
+                rows.append(action_row(cid, act, digest))
+            rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+    out = tmp_path / name
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    return path
+
+
+def test_the_other_runners_race_does_not_excuse_a_regression_on_this_one(tmp_path, capsys):
+    """The hole the two-runner matrix leaves open, in miniature, and it is not hypothetical.
+
+    On run 32648192384 of this workflow the two arms drew runner ids 1000628315 and 1000628341
+    and started 2m18s apart. The null derived three exemptions; the runner the result was measured
+    on reproduced exactly ONE of them. `reasoning_toggle@r100K` was not on the declared list, so
+    it was excused solely by a race on a machine the result never touched -- and a corroborated
+    head regression there would have shipped green.
+    """
+    # The null raced on reasoning_toggle. The result's own runner did not: side A renders the
+    # same DOM in both repetitions, and head renders a different one in both.
+    null = _arm_payload(tmp_path, "null", regress = None, self_race = "reasoning_toggle")
+    result = _arm_payload(tmp_path, "result", regress = "reasoning_toggle", self_race = None)
+
+    imported, derived, _ = U.unstable_set([null])
+    assert ("r100K", "reasoning_toggle") in imported, imported
+    assert derived
+
+    # Scored against the imported set as it stands, the regression is excused and the job is GREEN.
+    assert U.report([result], "imported", imported, min_reps = 2, min_compared = 16) == 0
+
+    # Confined to the runner being scored, the exemption does not survive and the job is RED.
+    local_unstable, local_stable = U.in_arm_repeatability([result])
+    assert ("r100K", "reasoning_toggle") in local_stable
+    assert ("r100K", "reasoning_toggle") not in local_unstable
+    effective, dropped = U.confine_to_runner(imported, local_unstable, local_stable)
+    assert dropped == [("r100K", "reasoning_toggle")], dropped
+    assert U.report([result], "confined", effective, min_reps = 2, min_compared = 16) == 1
+    assert "reasoning_toggle" in capsys.readouterr().out
+
+
+def test_an_exemption_this_runner_reproduces_is_kept(tmp_path):
+    # The other direction, and the one that keeps the gate usable. When the scored runner races on
+    # the same action, the exemption is doing real work and removing it would red a sound run.
+    null = _arm_payload(tmp_path, "null", regress = None, self_race = "reasoning_toggle")
+    result = _arm_payload(tmp_path, "result", regress = None, self_race = "reasoning_toggle")
+    imported, _derived, _ = U.unstable_set([null])
+    effective, dropped = U.confine_to_runner(imported, *U.in_arm_repeatability([result]))
+    assert dropped == []
+    assert ("r100K", "reasoning_toggle") in effective
+
+
+def test_an_action_this_runner_could_not_decide_keeps_its_exemption(tmp_path):
+    # UNDECIDED IS NOT STABLE. One repetition of side A is one observation, and reading it as
+    # "this runner says the action is repeatable" would turn a lost slot into a red job -- the
+    # exact direction the false-alarm data says actually happens.
+    null = _arm_payload(tmp_path, "null", regress = None, self_race = "reasoning_toggle")
+    rows = [
+        json.loads(line)
+        for line in _arm_payload(tmp_path, "result", regress = None, self_race = None)
+        .read_text(encoding = "utf-8")
+        .splitlines()
+    ]
+    # Drop side A's reasoning_toggle in rep1, leaving a single observation of it on this runner.
+    rows = [
+        r
+        for r in rows
+        if not (
+            r.get("row_type") == "action"
+            and r.get("action") == "reasoning_toggle"
+            and r.get("cell_id") == "r100K.base.rep1"
+        )
+    ]
+    out = tmp_path / "thin"
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+
+    local_unstable, local_stable = U.in_arm_repeatability([path])
+    assert ("r100K", "reasoning_toggle") not in local_stable
+    assert ("r100K", "reasoning_toggle") not in local_unstable
+    imported, _derived, _ = U.unstable_set([null])
+    effective, dropped = U.confine_to_runner(imported, local_unstable, local_stable)
+    assert dropped == []
+    assert ("r100K", "reasoning_toggle") in effective
+
+
+def test_a_declared_exemption_is_never_dropped_by_a_runner_measurement(tmp_path):
+    # The declared list is a standing claim about the app, not a measurement of a machine, so a
+    # machine cannot contradict it. Only the `(rung, action)` entries are runner-derived.
+    null = _arm_payload(tmp_path, "null", regress = None, self_race = "reasoning_toggle")
+    result = _arm_payload(tmp_path, "result", regress = None, self_race = None)
+    imported, _derived, _ = U.unstable_set([null])
+    effective, _dropped = U.confine_to_runner(imported, *U.in_arm_repeatability([result]))
+    assert U.UNSTABLE_ACTIONS <= effective
+
+
+def test_the_verdict_confines_the_imported_set_when_driven_through_main(tmp_path, capsys):
+    # Driven through main() rather than report(), because the failure this guards against is not
+    # a wrong confinement, it is a correct one that never reaches the verdict. That exact shape --
+    # a value computed or parsed and then not forwarded -- has already shipped once in this file's
+    # neighbour, where --min-reps was parsed and never passed to build().
+    null = _arm_payload(tmp_path, "null", regress = None, self_race = "reasoning_toggle")
+    result = _arm_payload(tmp_path, "result", regress = "reasoning_toggle", self_race = None)
+    rc = U.main(
+        [
+            "--min-reps",
+            "2",
+            "--min-compared",
+            "16",
+            "--null",
+            str(null.parent),
+            str(result.parent),
+        ]
+    )
+    out = capsys.readouterr().out
+    assert "imported exemption(s) DROPPED" in out, out
+    assert "reasoning_toggle" in out
+    assert rc == 1, "the regression the other runner's race was excusing must red the job"
+
+
+# ── an action that ran and failed its own assertion ──────────────────
+
+
+def _expect_payload(
+    tmp_path: Path,
+    name: str,
+    action: str,
+    failed_on: str | None,
+    reps: tuple[str, ...] = ("rep0", "rep1"),
+    both: bool = False,
+    expect_ok_value: object = True,
+) -> Path:
+    """`action` runs on BOTH arms with the SAME digest; its assertion fails on `failed_on`."""
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            cid = f"r100K.{arm}.{rep}"
+            for i in range(16):
+                r = action_row(cid, f"filler{i}", "SAME")
+                r["expect_ok"] = True
+                rows.append(r)
+            r = action_row(cid, action, "SAME")
+            r["expect_ok"] = expect_ok_value
+            if rep in reps and (both or arm == failed_on):
+                r["expect_ok"] = False
+                r["reason"] = "clicking Stop did not end the stream"
+            rows.append(r)
+            rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+    out = tmp_path / name
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    return path
+
+
+def test_a_control_that_stopped_working_is_not_excused_by_its_digest_exemption(tmp_path, capsys):
+    """The double exemption, and it is the one the declared list makes worst.
+
+    `stop_generation` returns `ran = True, expect_ok = stopped_ms is not None`, so a head on which
+    Stop no longer ends the stream records a row whose `ran` is true and whose digest then differs
+    for the ordinary reason. It is also ON the declared unstable list, so that difference is
+    excused. `compare_rows` read only `ran`, and the result was a user-visible regression --
+    generation cannot be stopped -- passing the gate in both repetitions.
+
+    The assertion is not a digest, so the digest exemption does not reach it.
+    """
+    path = _expect_payload(tmp_path, "regressed", "stop_generation", failed_on = "treatment")
+    # Scored with stop_generation declared unstable, exactly as the gate scores it.
+    assert "stop_generation" in U.UNSTABLE_ACTIONS
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 1
+    printed = capsys.readouterr().out
+    assert "ASSERTION FAILED ON ONE ARM" in printed.upper()
+    assert "stop_generation" in printed
+
+
+def test_both_arms_failing_the_assertion_is_lost_coverage_not_a_difference(tmp_path):
+    # The fixture cannot reach the state on either build. That is worth knowing and it is not a
+    # statement about the change under review, so it must not red the job.
+    path = _expect_payload(tmp_path, "both", "stop_generation", failed_on = None, both = True)
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 0
+
+
+def test_an_action_that_asserts_nothing_is_not_an_assertion_failure(tmp_path):
+    # `expect_ok is None` is "this action makes no claim", which every payload recorded before the
+    # field existed also carries. Reading None as False would red every one of them.
+    path = _expect_payload(
+        tmp_path, "none", "stop_generation", failed_on = None, expect_ok_value = None
+    )
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 0
+    # Asserted on the signal as well as the exit code: read through the exit code alone this case
+    # is indistinguishable from the both-arms one, so a mutation that turns None into a failure
+    # would still pass here. `expect_regressed` is where the distinction actually lives.
+    row = {
+        "ran": True,
+        "expect_ok": None,
+        "parity": {
+            "parity_attempted": True,
+            "digest": "A",
+            "root_kind": "thread",
+            "chars": 1,
+            "messages": [],
+            "overlays": [],
+            "style": {"style_attempted": True, "capped": False, "nodes": []},
+        },
+    }
+    other = dict(row, expect_ok = True)
+    assert P.compare_rows(row, other)["expect_regressed"] == ""
+    assert P.compare_rows(other, row)["expect_regressed"] == ""
+
+
+def test_an_assertion_that_failed_in_one_repetition_of_two_is_not_counted(tmp_path, capsys):
+    # Held to the same corroboration bar as everything else: a build that cannot stop generation
+    # cannot stop it on either pass.
+    path = _expect_payload(
+        tmp_path, "flake", "stop_generation", failed_on = "treatment", reps = ("rep0",)
+    )
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 0
+    assert "UNCORROBORATED assertion failure" in capsys.readouterr().out
+
+
+# ── two repetitions that blame OPPOSITE arms are not one finding ─────
+
+
+def _reversing_expect_payload(tmp_path: Path, name: str, action: str) -> Path:
+    """`action` fails its assertion on TREATMENT in rep0 and on BASE in rep1."""
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            cid = f"r100K.{arm}.{rep}"
+            for i in range(16):
+                r = action_row(cid, f"filler{i}", "SAME")
+                r["expect_ok"] = True
+                rows.append(r)
+            r = action_row(cid, action, "SAME")
+            bad = (arm == "treatment" and rep == "rep0") or (arm == "base" and rep == "rep1")
+            r["expect_ok"] = not bad
+            if bad:
+                r["reason"] = "clicking Stop did not end the stream"
+            rows.append(r)
+            rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+    out = tmp_path / name
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    return path
+
+
+def test_an_assertion_that_blames_a_different_arm_each_time_is_not_corroborated(tmp_path, capsys):
+    """A race that landed on either side is not a build that consistently failed.
+
+    Grouped by action and rung alone, a treatment failure in rep0 and a base failure in rep1 are
+    two distinct repetition labels, so the pair reached `firm` and the job exited 1 reporting
+    "the two builds did not behave the same way" -- directly above its own two lines naming
+    OPPOSITE arms. Neither build failed twice.
+
+    Keyed on the direction they separate, so each side is a single repetition and both print as
+    UNCORROBORATED. The safe direction: this can only ever under-count, and an under-count is
+    visible in the output rather than silent.
+    """
+    path = _reversing_expect_payload(tmp_path, "reversing", "stop_generation")
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 0
+    printed = capsys.readouterr().out
+    assert "UNCORROBORATED assertion failure" in printed
+    assert "ASSERTION failed on one arm:  0" in printed
+
+
+def test_an_assertion_that_blames_the_same_arm_twice_still_fails_the_job(tmp_path):
+    # The other side of the same key, and the reason the fix is not just "require more". A build
+    # that consistently fails the assertion is exactly what this category exists to catch, and it
+    # must survive the direction keying.
+    path = _expect_payload(tmp_path, "consistent", "stop_generation", failed_on = "treatment")
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 1
+
+
+def test_one_arm_only_that_swaps_arms_between_repetitions_is_not_corroborated(tmp_path, capsys):
+    # The same defect on the one-arm-only category, which is the one the item was filed against.
+    # A precondition race that stops the treatment arm performing the action in rep0 and the base
+    # arm in rep1 says nothing about either build.
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            cid = f"r100K.{arm}.{rep}"
+            for i in range(16):
+                rows.append(action_row(cid, f"filler{i}", "SAME"))
+            row = action_row(cid, "settings", "SAME")
+            if (arm == "treatment" and rep == "rep0") or (arm == "base" and rep == "rep1"):
+                row["ran"] = False
+                row["reason"] = "the control never became visible"
+                row["slot_missed"] = False
+            rows.append(row)
+            rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+    out = tmp_path / "swap"
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+
+    assert U.report([path], "t", frozenset(), min_reps = 2, min_compared = 16) == 0
+    assert "UNCORROBORATED one-arm-only" in capsys.readouterr().out
+
+
+# ── an action the null never measured at all ─────────────────────────
+
+
+def _scope_payload(tmp_path: Path, name: str, actions: tuple[str, ...]) -> Path:
+    """Every listed action differs between the arms in both repetitions. Others are absent."""
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            cid = f"r100K.{arm}.{rep}"
+            for i in range(16):
+                rows.append(action_row(cid, f"filler{i}", "SAME"))
+            for act in actions:
+                rows.append(action_row(cid, act, "HEAD" if arm == "treatment" else "SAME"))
+            rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+    out = tmp_path / name
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    return path
+
+
+def test_a_scoped_action_with_no_rows_in_the_null_is_undecided_not_absent(tmp_path):
+    """The audit's own question, answered by default.
+
+    `audit_null` classified only what `derive_unstable` produced, so a scoped (rung, action) with
+    NO rows in the null payload landed in neither `decided` nor `undecided`. One other scoped
+    action being decided was then enough to return 0 -- and `unstable_set` unions the DECLARED
+    names back in, so `send_turn` was still excused by name and a corroborated result difference
+    on it passed the verdict with zero null-control observation.
+
+    Rows vanish more easily than it looks: the null is collected with `require_complete = True`,
+    so a cell that never finished takes all of its action rows with it and the action stops
+    existing rather than becoming undetermined.
+    """
+    null = _scope_payload(tmp_path, "null", ("settings",))
+    result = _scope_payload(tmp_path, "result", ("settings", "send_turn"))
+    scope = U.actions_needing_an_excuse([result], 2)
+    assert scope == {("r100K", "settings"), ("r100K", "send_turn")}, scope
+
+    rc, report_ = U.audit_null([null], frozenset(), scope)
+    assert ("r100K", "send_turn") in report_["missing"], report_
+    assert ("r100K", "send_turn") in report_["undecided"], report_
+    assert report_["decided"] == [("r100K", "settings")]
+    assert rc == 1, "an action the null never measured cannot license an excuse"
+
+    # The reason it matters: send_turn carries no measured entry and is excused by name anyway.
+    unstable, _derived, _checks = U.unstable_set([null])
+    assert ("r100K", "send_turn") not in unstable
+    assert U.is_unstable(unstable, "send_turn", "r100K rep0")
+
+
+def test_a_missing_scoped_action_on_the_waived_list_is_still_waived(tmp_path):
+    # `image_upload` has no attachments button on this fixture, and the workflow waives it by
+    # name. Whether it produced rows or none at all, the waiver is the same statement.
+    null = _scope_payload(tmp_path, "null", ("settings",))
+    result = _scope_payload(tmp_path, "result", ("settings", "image_upload"))
+    rc, report_ = U.audit_null(
+        [null], frozenset({"image_upload"}), U.actions_needing_an_excuse([result], 2)
+    )
+    assert ("r100K", "image_upload") in report_["missing"]
+    assert ("r100K", "image_upload") in report_["excused"]
+    assert ("r100K", "image_upload") not in report_["undecided"]
+    assert rc == 0
+
+
+def test_an_action_outside_the_scope_is_not_required_to_exist(tmp_path):
+    # The reconciliation is against the SCOPE, not against the schedule. An action the result
+    # matched on needs no excuse, so the null owing it nothing is not a hole.
+    null = _scope_payload(tmp_path, "null", ("settings",))
+    result = _scope_payload(tmp_path, "result", ("settings",))
+    rc, report_ = U.audit_null([null], frozenset(), U.actions_needing_an_excuse([result], 2))
+    assert report_["missing"] == []
+    assert rc == 0
+
+
+# ── digest instability does not exempt being unable to run ───────────
+
+
+def test_a_broken_control_is_not_excused_because_its_digest_varies(tmp_path, capsys):
+    """The exemption that covered nine of the sixteen scheduled actions.
+
+    `keystroke` is on the declared unstable list because "how many keystrokes had landed by the
+    capture deadline is a race" -- a statement about the CAPTURE. It was also being used to
+    excuse the treatment arm being unable to type at all, which is a different claim and the one
+    regression shape that leaves no digest to differ. A composer broken by the head build takes
+    `keystroke` down in both repetitions and the job exited 0.
+    """
+    path = one_sided_payload(tmp_path, "broken", "keystroke", ("rep0", "rep1"))
+    assert "keystroke" in U.UNSTABLE_ACTIONS
+    assert "keystroke" not in P.RACY_EXECUTION
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 1
+    assert "RAN ON ONE ARM ONLY" in capsys.readouterr().out
+
+
+def test_an_action_with_no_not_run_path_is_never_exempt_from_one_arm_only(tmp_path):
+    # `scroll_after` has no `not_run` in `scene/actions.py` at all, so a `ran: false` for it
+    # cannot be a race under any reading, yet the digest list exempted it.
+    path = one_sided_payload(tmp_path, "scroll", "scroll_after", ("rep0", "rep1"))
+    assert "scroll_after" in U.UNSTABLE_ACTIONS
+    assert "scroll_after" not in P.RACY_EXECUTION
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 1
+
+
+def test_every_racy_execution_entry_states_its_mechanism():
+    # The same bar the digest list is held to. An exemption without a stated mechanism is how the
+    # nine-action version of this list survived unexamined, and each of these has to name the
+    # `not_run` it is excusing.
+    for action, (why, markers) in P.RACY_EXECUTION.items():
+        assert action in P.UNSTABLE_ACTIONS, action
+        assert "not_run" in why or "not run" in why, action
+        assert len(why) > 60, action
+        # And the markers are the operative half: an entry that documents a mechanism but matches
+        # nothing, or matches everything, is the failure this keying exists to prevent.
+        assert markers and all(len(m) > 10 for m in markers), action
+
+
+# ── the scope is what the VERDICT turns on, not what merely happened ──
+
+
+def test_a_racy_execution_action_is_not_put_in_the_audit_scope(tmp_path):
+    """`report` does not count it, so no excuse can move it and the null owes it nothing.
+
+    Scoped anyway, the null observing the same legitimate stream-timing race made the audit
+    return 1 and failed the workflow on stream timing -- a verdict of 0 with a red job.
+    """
+    path = one_sided_payload(
+        tmp_path,
+        "racy",
+        "stop_generation",
+        ("rep0", "rep1"),
+        reason = "nothing was generating and a new turn did not start within 8s",
+    )
+    assert "stop_generation" in P.RACY_EXECUTION
+    # The verdict does not count it.
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 0
+    # So it must not be in the scope either.
+    assert ("r100K", "stop_generation") not in U.actions_needing_an_excuse([path], 2)
+
+
+def test_a_direction_reversing_one_sided_pair_is_not_put_in_the_audit_scope(tmp_path):
+    # Same rule, the other axis. `report` keys corroboration on the live arm, so a pair blaming
+    # opposite arms is UNCORROBORATED and cannot move the verdict; built here without the
+    # direction it corroborated, entered the scope, and an undecided null failed a passing job.
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            cid = f"r100K.{arm}.{rep}"
+            for i in range(16):
+                rows.append(action_row(cid, f"filler{i}", "SAME"))
+            row = action_row(cid, "settings", "SAME")
+            if (arm == "treatment" and rep == "rep0") or (arm == "base" and rep == "rep1"):
+                row["ran"] = False
+                row["reason"] = "the control never became visible"
+                row["slot_missed"] = False
+            rows.append(row)
+            rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+    out = tmp_path / "swap2"
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+
+    assert U.report([path], "t", frozenset(), min_reps = 2, min_compared = 16) == 0
+    assert ("r100K", "settings") not in U.actions_needing_an_excuse([path], 2)
+
+
+def test_a_control_the_head_cannot_open_is_still_in_the_audit_scope(tmp_path):
+    # The other side, so the two fixes above cannot quietly empty the scope: an action the
+    # verdict DOES fail on is exactly what the null has to have decided.
+    path = one_sided_payload(tmp_path, "real", "settings", ("rep0", "rep1"))
+    assert U.report([path], "t", frozenset(), min_reps = 2, min_compared = 16) == 1
+    assert ("r100K", "settings") in U.actions_needing_an_excuse([path], 2)
+
+
+def test_a_removed_stop_button_is_not_exempt_just_because_stop_generation_can_race(tmp_path):
+    """The exemption has to match the not-run it names, not the action it is filed under.
+
+    `stop_generation` has two not_run paths: nothing was generating (a race with the model) and
+    the stop button being absent (`scene/actions.py:501`, which is the build). Keyed by action
+    name alone, a treatment build that REMOVES the Stop control recorded exactly the one-arm-only
+    regression this category exists to catch and was filed under "expected to vary".
+    """
+    path = one_sided_payload(
+        tmp_path,
+        "removed",
+        "stop_generation",
+        ("rep0", "rep1"),
+        reason = "the stop button is not present",
+    )
+    assert not P.racy_execution("stop_generation", "the stop button is not present")
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 1
+    # And the null is asked about it, because the verdict now turns on it.
+    assert ("r100K", "stop_generation") in U.actions_needing_an_excuse([path], 2)
+
+
+def test_a_missing_composer_is_not_exempt_just_because_send_turn_can_be_queued(tmp_path):
+    # The same for send_turn: "a reply was still streaming" is the previous turn overrunning,
+    # "no composer on the page" is the build having removed the composer.
+    racy = one_sided_payload(
+        tmp_path,
+        "queued",
+        "send_turn",
+        ("rep0", "rep1"),
+        reason = "a reply was still streaming, so this send would have been queued",
+    )
+    assert U.report([racy], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 0
+
+    gone = one_sided_payload(
+        tmp_path, "gone", "send_turn", ("rep0", "rep1"), reason = "no composer on the page"
+    )
+    assert U.report([gone], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 1

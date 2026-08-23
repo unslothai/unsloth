@@ -188,6 +188,9 @@ import {
   getImageInputUnavailableReason,
 } from "../utils/image-input-support";
 import {
+  historyCannotHelp,
+  latestTurnIsTheProblem,
+  latestTurnOwnTokens,
   mergeContextTruncation,
   promptWasShortened,
 } from "../utils/context-truncation";
@@ -7112,24 +7115,21 @@ export function createOpenAIStreamAdapter(
             // send the user to a new chat that fails identically.
             const budget =
               irreducible?.prompt_target ?? irreducible?.context_length ?? 0;
-            // `latest_turn_exact: false` means nothing could price the turn at all, so
-            // the count is the message's own JSON at four characters a token. Whitespace
-            // runs and escaped JSON tokenise several times denser than that, so printing
-            // it as "N tokens on its own" states a number the turn never cost. A turn the
-            // template renders as NOTHING on its own is not this case: the server prices
-            // that by difference against the prompt it measured and reports it exact.
-            // Absent means a server that predates the flag, which only ever sent a count.
-            const oneTurnIsTheProblem =
-              irreducible != null &&
-              (irreducible.latest_turn_tokens ?? 0) > budget &&
-              (irreducible.latest_turn_exact ?? true);
+            // Both the gate and the number below take the shared prompt floor off the turn
+            // first: `latest_turn_tokens` prices a whole rendered prompt, so on a
+            // tool-enabled request it carries the entire tool catalogue, and quoting it
+            // told the user a 6-token message was thousands of tokens "on its own".
+            const oneTurnIsTheProblem = latestTurnIsTheProblem(
+              irreducible,
+              budget,
+            );
             // Whose turn it is decides the advice: in a tool loop the offending turn is
             // often output the user never wrote and cannot edit, so "shorten this
             // message" names the wrong thing and offers no remedy.
             const userCanShortenIt =
               (irreducible?.latest_turn_role ?? "user") === "user";
             const tooLong =
-              `${irreducible?.latest_turn_tokens?.toLocaleString()} tokens on its own, ` +
+              `${latestTurnOwnTokens(irreducible).toLocaleString()} tokens on its own, ` +
               `against the ${budget.toLocaleString()} tokens this ` +
               `${irreducible?.context_length?.toLocaleString()}-token window leaves for the prompt. ` +
               "The earlier turns were already removed and it still does not fit, so " +
@@ -7143,12 +7143,23 @@ export function createOpenAIStreamAdapter(
                   : `The last tool result is ${tooLong}` +
                     'Raise "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
                     "or ask for less output from that tool."
-                : // llama-server runs with --no-context-shift, returning a hard
-                  // error instead of silently dropping old KV-cache turns. Point
-                  // the user at the control that raises the ceiling.
-                  "The conversation has filled the model's context window. " +
-                  'Increase "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
-                  "or start a new chat.",
+                : historyCannotHelp(irreducible)
+                  ? // No one turn to name, and the bulk is in the parts eviction never
+                    // touches, so "start a new chat" opens a chat that fails identically.
+                    // Both levers are named, neither claimed as the cause: the floor
+                    // bundles the template wrapper with the catalogue, so a large one does
+                    // not prove there are tools.
+                    "Even with every earlier turn dropped, this prompt would still be " +
+                    "too long, so shortening the conversation will not help. " +
+                    'Raise "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
+                    "or reduce what every request carries: the system prompt and any " +
+                    "tools that are enabled."
+                  : // llama-server runs with --no-context-shift, returning a hard
+                    // error instead of silently dropping old KV-cache turns. Point
+                    // the user at the control that raises the ceiling.
+                    "The conversation has filled the model's context window. " +
+                    'Increase "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
+                    "or start a new chat.",
               duration: 8000,
             });
           } else {
