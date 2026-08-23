@@ -1304,11 +1304,7 @@ def test_a_rescued_boundary_is_recorded_but_never_replayed(monkeypatch):
         {
             "role": "assistant",
             "content": "a",
-            "metadata": {
-                "custom": {
-                    "contextTruncation": {"fits": True, "boundary_messages": 6}
-                }
-            },
+            "metadata": {"custom": {"contextTruncation": {"fits": True, "boundary_messages": 6}}},
         },
     ]
     _stub_studio_db(monkeypatch, stored)
