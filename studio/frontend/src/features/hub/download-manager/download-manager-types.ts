@@ -101,6 +101,12 @@ export interface JobRuntime {
   watchdog: number | null;
   /** Rolling byte samples behind the stability-gated rate/ETA. */
   speedSamples: TransferSample[];
+  /**
+   * A generation change seen on a status-only tick, held until a progress poll
+   * consumes it. Status polls twice as often as progress, so the change is
+   * usually observed on a tick that returns before reaching the progress path.
+   */
+  pendingGenerationChange?: boolean;
   idleSinceMs: number | null;
   lastProgressPollAt: number | null;
   pollFailureStartedAt: number | null;
