@@ -800,6 +800,43 @@ class TestTheProbeIsNotPaidForTwice:
         held = sum(len(entry) for entry in tools._PROBE_COUNT_CACHE.values())
         assert held <= tools._PROBE_COUNT_CACHE_ENTRIES
 
+    def test_the_cache_is_bounded_by_characters_and_not_only_by_entries(self, monkeypatch):
+        """The entry count says nothing about size. Only a fetched page is capped at
+        `_MAX_PAGE_CHARS`; a tool result's prefix is bounded by the configured cap and the
+        window, and `_env_int` takes any positive integer, so one prefix can be enormous.
+        Measured on this path: a 1,000,000-character cap on a 262k window cached 733,971
+        characters from a single result, which 64 entries would multiply.
+        """
+        monkeypatch.setattr(tools, "_MAX_OUTPUT_CHARS", 1_000_000)
+        _window(monkeypatch, 262_144)
+        calls, _ = self._serving(monkeypatch, 262_144, rate = 4.0)
+        budget = tools._tool_result_char_budget()
+
+        assert budget > tools._MAX_PAGE_CHARS, "the premise: prefixes far exceed the page cap"
+
+        for index in range(8):
+            tools._dense_char_limit(f"{index:04d}" + "A" * 6_000_000, budget)
+
+        held = sum(len(key) for entry in tools._PROBE_COUNT_CACHE.values() for key in entry)
+        assert held <= tools._PROBE_COUNT_CACHE_CHARS
+        # And the baseline, which is 0 characters, is still in there earning its keep.
+        assert any("" in entry for entry in tools._PROBE_COUNT_CACHE.values())
+
+    def test_a_prefix_too_large_to_hold_is_skipped_not_stored(self, monkeypatch):
+        monkeypatch.setattr(tools, "_PROBE_COUNT_CACHE_CHARS", 5000)
+        _window(monkeypatch, 5120)
+        calls, _ = self._serving(monkeypatch, 5120)
+        text = "0123456789abcdef" * 2000
+        budget = tools._tool_result_char_budget()
+
+        first = tools._dense_char_limit(text, budget)
+        held = sum(len(key) for entry in tools._PROBE_COUNT_CACHE.values() for key in entry)
+        calls.clear()
+        second = tools._dense_char_limit(text, budget)
+
+        assert second == first, "the answer never depends on what was cached"
+        assert held <= 5000
+
     def test_the_guard_still_rejects_a_template_that_renders_no_content(self, monkeypatch):
         """The baseline is deferred, not dropped. A count that does not move off it is
         still not a measurement, and the caller still keeps its estimate."""

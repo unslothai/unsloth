@@ -11798,38 +11798,37 @@ _PROBE_ROLE = "user"
 # hundreds, or at infinity as the chunk grows, because its count does not move at all.
 _MAX_PROBE_CHARS_PER_TOKEN = 256
 
-# A measured count is a pure function of (model, chat template, window, chunk): the same
-# text rendered through the same template tokenizes to the same number every time. Two
-# things follow, and both are round trips this process does not have to spend twice.
-#
-# The framing baseline is the same number for EVERY result the process truncates, and each
+# A measured count is a pure function of (model, chat template, window, chunk), and each
 # `count_chat_tokens` is two llama-server calls (/apply-template then /tokenize) over a
-# fresh connection. Pricing it once per tool result rather than once per model was the
-# single largest avoidable cost on this path.
+# fresh connection. So the framing baseline -- one number for EVERY result the process
+# truncates -- is worth remembering, and so is any prefix already priced.
 #
-# Keyed on the resident llama-server process, so counts are never read back across a
-# reload. The count depends on the EFFECTIVE chat template, and that is not something this
-# module can reconstruct from the managed fields alone: user pass-through args are appended
-# verbatim after Studio's own flags (`llama_cpp.py`, "User pass-through args go last"), and
-# llama.cpp is last-wins, so an install running `--chat-template` or `--chat-template-file`
-# in its extra args renders through a template `_chat_template_override` never sees. Reload
-# the same GGUF into the same window with only those args changed and every managed field
-# matches while the rendering does not, which would hand a prefix a price from a template
-# that is no longer serving it -- accepting an oversized tool result, or over-truncating a
-# fine one.
-#
-# The process settles it without having to enumerate which flags matter. `is_loaded` is
-# `self._process is not None and self._healthy`, and args reach llama-server only on its
-# command line, so a change to any of them is a new process by construction. The content
-# fields below ride along so that a recycled pid still has to agree on the model, the GGUF
-# inode, the window, the managed override AND the extra args before anything is reused.
+# Keyed on the resident llama-server process, because the count depends on the EFFECTIVE
+# chat template and the managed fields cannot reconstruct it: user pass-through args are
+# appended verbatim after Studio's own flags (`llama_cpp.py`, "User pass-through args go
+# last") and llama.cpp is last-wins, so `--chat-template` in extra args renders through a
+# template `_chat_template_override` never sees. Reload the same GGUF into the same window
+# with only those args changed and every managed field matches while the rendering does
+# not, which would price a prefix by a template no longer serving it. `is_loaded` is
+# `self._process is not None and self._healthy` and args reach llama-server only on its
+# command line, so any change to them is a new process by construction -- which settles it
+# without enumerating the flags that matter. The content fields ride along so a recycled
+# pid still has to agree on everything before a count is reused.
 _PROBE_COUNT_CACHE: dict = {}
 
-# One model's counts at a time (a new identity clears the map), so this only bounds a
-# single model's prefixes. Ten times the worst case for one result: `_EXACT_FIT_PASSES`
-# prefixes plus the baseline. The keys are the measured prefixes themselves and no prefix
-# exceeds `_MAX_PAGE_CHARS`, so the cache holds at most about a megabyte.
+# One model's counts at a time (a new identity clears the map). Ten times the worst case
+# for one result: `_EXACT_FIT_PASSES` prefixes plus the baseline.
 _PROBE_COUNT_CACHE_ENTRIES = 64
+
+# And a bound on what is HELD, since the entry count alone does not give one. Only a
+# fetched page is capped at `_MAX_PAGE_CHARS`; a tool result's prefix is bounded by
+# `min(UNSLOTH_TOOL_RESULT_MAX_CHARS, ctx * 4 * _PAGE_CONTEXT_SHARE)` and `_env_int`
+# accepts any positive integer, so a large configured cap on a large window makes one
+# prefix enormous. Measured: a cap of 1,000,000 on a 262k window cached 733,971 characters
+# from a SINGLE result, which 64 entries would then multiply. This also drops an oversized
+# prefix rather than storing it. The baseline is 0 characters, so the entry that earns the
+# most is never the one squeezed out.
+_PROBE_COUNT_CACHE_CHARS = 1_000_000
 
 
 def _probe_identity(llama, ctx: int):
@@ -11914,22 +11913,21 @@ def _loaded_token_counter(ctx: int):
         value = int(spent) if isinstance(spent, (int, float)) and spent > 0 else None
         # Only a real count is remembered. A failure is a property of the moment, not of
         # the text, so caching one would turn a busy server into a permanent estimate.
-        if value is not None and len(cache) < _PROBE_COUNT_CACHE_ENTRIES:
+        # Bounded by entries and by characters held; the keys ARE the measured prefixes.
+        if (
+            value is not None
+            and len(cache) < _PROBE_COUNT_CACHE_ENTRIES
+            and sum(map(len, cache)) + len(chunk) <= _PROBE_COUNT_CACHE_CHARS
+        ):
             cache[chunk] = value
         return value
 
-    # What the turn costs with nothing in it. Two jobs: it is the baseline the guard
-    # measures growth against, so a template that renders no content is caught by its count
-    # not moving rather than by a guess about density; and it is the only part of the count
-    # that is not the chunk. Left IN the total rather than subtracted -- 8 tokens on Qwen3
-    # and 11 on the Gemma-4 templates, under 1% of a 1,792-token share, and the real tool
-    # turn pays its own framing anyway, so counting it errs toward a smaller result.
-    #
-    # Priced on demand rather than up front. It is only ever needed to decide whether a
-    # count that came in OVER budget is a real measurement, and a result that fits on its
-    # first pass -- which is every English one -- never reaches that question. Combined
-    # with the cache above, the baseline costs the process one round trip per model rather
-    # than one per tool result.
+    # What the turn costs with nothing in it: the baseline the guard measures growth
+    # against, so a template that renders no content is caught by its count not moving
+    # rather than by a guess about density. Left IN the total rather than subtracted -- 8
+    # tokens on Qwen3 and 11 on the Gemma-4 templates, under 1% of a 1,792-token share, and
+    # the real tool turn pays its own framing anyway, so counting it errs toward a smaller
+    # result. Priced on demand: see `_count`.
     baseline: list[int] = []
 
     def _framing() -> int:
@@ -11940,12 +11938,11 @@ def _loaded_token_counter(ctx: int):
     def _count(chunk: str, token_budget: float = 0.0):
         """Tokens for `chunk`, or None when the count did not measure it.
 
-        `token_budget` is what the caller would accept. It is an optimisation and nothing
-        more: when `spent` is already within budget the caller returns its own estimate
-        unchanged, and it returns exactly that estimate when the guard below rejects the
-        count too, so the two paths are the same answer and the baseline that separates
-        them need not be priced. The default of 0 means "no budget", under which no
-        positive count fits and the guard always runs.
+        `token_budget` is an optimisation and nothing more. A count within budget and a
+        count the guard rejects both make the caller return its own estimate unchanged, so
+        when `spent` fits, the baseline that separates those two paths cannot change the
+        answer and is not priced -- which is why an English result costs one round trip
+        rather than two. The default of 0 means "no budget", so the guard always runs.
         """
         spent = _rendered(chunk)
         if spent is None:
