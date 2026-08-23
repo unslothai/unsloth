@@ -996,9 +996,7 @@ def test_a_chat_created_in_the_gap_after_the_clear_keeps_its_images(monkeypatch,
             }
         return result
 
-    monkeypatch.setattr(
-        starlette.concurrency, "run_in_threadpool", interleaving_run_in_threadpool
-    )
+    monkeypatch.setattr(starlette.concurrency, "run_in_threadpool", interleaving_run_in_threadpool)
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
 
     studio_db.upsert_chat_thread(_clear_thread_row("before-clear"))
@@ -1023,8 +1021,8 @@ def test_the_clear_and_its_image_snapshot_share_one_threadpool_hop():
     """The structural half of the race above, which no test scheduling can hide."""
     source = inspect.getsource(chat_history.clear_history)
     assert source.count("run_in_threadpool(_clear_rows)") == 1
-    assert "run_in_threadpool(registered_image_ids)" not in source, (
-        "a second hop for the snapshot reopens the gap the first one closed"
-    )
+    assert (
+        "run_in_threadpool(registered_image_ids)" not in source
+    ), "a second hop for the snapshot reopens the gap the first one closed"
     body = source.split("def _clear_rows(", 1)[1].split("\n    # The clear reports", 1)[0]
     assert "registered_image_ids()" in body, "the snapshot belongs inside the clear's hop"
