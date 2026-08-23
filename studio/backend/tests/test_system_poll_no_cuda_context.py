@@ -435,6 +435,54 @@ def test_nvidia_uuid_mask_keeps_public_indices_relative(monkeypatch):
         0: 0,
         1: 1,
     }
+    # The mask asks for the b-card first, so ordinal 0 must carry the b-card's
+    # 2048 MiB, not the a-card's 15360. List position has to agree with it too:
+    # nvidia-smi emitted these rows the other way round.
+    assert [device["vram_used_gb"] for device in result["devices"]] == [2.0, 15.0]
+    assert [device["visible_ordinal"] for device in result["devices"]] == [0, 1]
+
+
+def _nvidia_smi_reading(monkeypatch, used_gb, driver_total_gb):
+    monkeypatch.setattr(hw, "IS_ROCM", False)
+    monkeypatch.setattr(
+        hw,
+        "_get_parent_visible_gpu_spec",
+        lambda: {"raw": None, "numeric_ids": [0], "supports_explicit_gpu_ids": True},
+    )
+    monkeypatch.setattr(
+        hw,
+        "_smi_query",
+        lambda *a, **k: {
+            "available": True,
+            "devices": [
+                {"visible_ordinal": 0, "vram_used_gb": used_gb, "vram_total_gb": driver_total_gb}
+            ],
+        },
+    )
+
+
+def test_context_free_free_excludes_the_reserved_framebuffer(monkeypatch):
+    # nvidia-smi reports reserved separately from used, and torch's total already
+    # excludes it. Subtracting used from the DRIVER total would hand back that
+    # reservation as free: 100 - 2 = 98 where only 97.5 is allocatable.
+    gib = 1 << 30
+    _nvidia_smi_reading(monkeypatch, used_gb = 2.0, driver_total_gb = 100.0)
+    assert hw._context_free_cuda_memory_info(0, round(99.5 * gib)) == round(97.5 * gib)
+
+
+def test_context_free_free_is_zero_on_a_full_card(monkeypatch):
+    # The reservation is the whole margin here: a card with every allocatable byte
+    # taken must not be advertised as having the reserved 0.5 GiB free.
+    gib = 1 << 30
+    _nvidia_smi_reading(monkeypatch, used_gb = 99.5, driver_total_gb = 100.0)
+    assert hw._context_free_cuda_memory_info(0, round(99.5 * gib)) == 0
+
+
+def test_context_free_free_never_goes_negative(monkeypatch):
+    # A stale or over-subscribed reading can exceed torch's total.
+    gib = 1 << 30
+    _nvidia_smi_reading(monkeypatch, used_gb = 120.0, driver_total_gb = 100.0)
+    assert hw._context_free_cuda_memory_info(0, round(99.5 * gib)) == 0
 
 
 def test_context_free_nvidia_smi_declines_whole_gpu_metrics_for_mig(monkeypatch):

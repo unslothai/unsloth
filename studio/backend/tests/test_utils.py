@@ -8,6 +8,8 @@ is imported at top level; tests needing torch/mlx internals skip when unavailabl
 """
 
 import platform
+import sys
+import types
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -319,6 +321,47 @@ class TestGetGpuMemoryInfo:
 
         assert abs(result["total_gb"] - 100.0) < 0.01
         assert abs(result["free_gb"] - 98.0) < 0.01
+
+    # --- XPU (Intel GPU) ---
+
+    def _xpu_torch(self, mem_get_info):
+        """A torch stub exposing only what the XPU branch touches."""
+        props = types.SimpleNamespace(total_memory = 16 * (1024**3), name = "Intel Arc A770")
+        xpu = types.SimpleNamespace(
+            current_device = lambda: 0,
+            get_device_properties = lambda _o: props,
+            memory_allocated = lambda _o: 2 * (1024**3),
+            memory_reserved = lambda _o: 3 * (1024**3),
+        )
+        if mem_get_info is not None:
+            xpu.mem_get_info = mem_get_info
+        return types.SimpleNamespace(xpu = xpu)
+
+    def _xpu_result(self, monkeypatch, mem_get_info):
+        monkeypatch.setitem(sys.modules, "torch", self._xpu_torch(mem_get_info))
+        monkeypatch.setattr(_hw_module, "get_device", lambda: DeviceType.XPU)
+        monkeypatch.setattr(_hw_module, "rocm_windows_free_is_untrusted", lambda: False)
+        return get_gpu_memory_info()
+
+    def test_xpu_free_comes_from_the_driver(self, monkeypatch):
+        # 12 of 16 GiB free system-wide, against 2 GiB allocated by this process:
+        # the old total - allocated would have claimed 14.
+        result = self._xpu_result(monkeypatch, lambda _o: (12 * (1024**3), 16 * (1024**3)))
+        assert abs(result["free_gb"] - 12.0) < 0.01
+        assert abs(result["total_gb"] - 16.0) < 0.01
+
+    def test_xpu_falls_back_to_reserved_when_the_probe_fails(self, monkeypatch):
+        def _boom(_o):
+            raise RuntimeError("level zero unavailable")
+
+        result = self._xpu_result(monkeypatch, _boom)
+        assert abs(result["free_gb"] - 13.0) < 0.01
+
+    def test_xpu_falls_back_on_a_torch_without_mem_get_info(self, monkeypatch):
+        # torch.xpu.mem_get_info is newer than the floor this backend supports,
+        # so its absence must degrade, not raise.
+        result = self._xpu_result(monkeypatch, None)
+        assert abs(result["free_gb"] - 13.0) < 0.01
 
     # --- MLX-specific mocked test ---
 

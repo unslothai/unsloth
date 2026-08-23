@@ -903,6 +903,17 @@ def _amd_smi_ids_for_hip_ids(hip_ids: Optional[list[int]]) -> Optional[list[int]
     return [hip_to_smi[hip_id] for hip_id in hip_ids]
 
 
+def _free_in_torch_scope(total_bytes: int, used_gb: float) -> int:
+    """Driver used-memory turned into free bytes, in torch's allocatable scope.
+
+    Subtract from torch's total, never the driver's. NVIDIA's total also spans a
+    reserved framebuffer that is not counted in ``used`` and that torch can never
+    hand out (726 MiB on a B200), so ``driver_total - used`` overstates free by
+    exactly that reservation -- enough to report a full card as having room.
+    """
+    return max(0, total_bytes - round(used_gb * (1024**3)))
+
+
 def _context_free_cuda_memory_info(idx: int, total_bytes: int) -> Optional[int]:
     """System-wide free bytes without attaching a CUDA/HIP primary context."""
     parent_visible_spec = _get_parent_visible_gpu_spec()
@@ -932,8 +943,7 @@ def _context_free_cuda_memory_info(idx: int, total_bytes: int) -> Optional[int]:
             if abs(driver_total_bytes - total_bytes) > total_tolerance:
                 logger.debug("Skipping whole-GPU VRAM telemetry for a partitioned GPU device")
                 break
-            free_bytes = round(max(0.0, driver_total_gb - used_gb) * (1024**3))
-            return min(total_bytes, free_bytes)
+            return _free_in_torch_scope(total_bytes, used_gb)
 
     if not IS_ROCM:
         return None
@@ -962,9 +972,8 @@ def _context_free_cuda_memory_info(idx: int, total_bytes: int) -> Optional[int]:
             resolved = _rocm_system_wide_vram_by_index(probe)
             entry = resolved.get(numeric_ids[idx])
             if entry is not None:
-                used_gb, driver_total_gb = entry
-                free_bytes = round(max(0.0, driver_total_gb - used_gb) * (1024**3))
-                return min(total_bytes, free_bytes)
+                used_gb, _sysfs_total_gb = entry
+                return _free_in_torch_scope(total_bytes, used_gb)
 
     # Native Windows ROCm exposes per-adapter dedicated usage without entering
     # HIP. Reuse the same conservative mapping as the System telemetry route.
@@ -981,8 +990,7 @@ def _context_free_cuda_memory_info(idx: int, total_bytes: int) -> Optional[int]:
             driver_total_gb = device.get("total_gb")
             if used_gb is None or driver_total_gb is None:
                 break
-            free_bytes = round(max(0.0, driver_total_gb - used_gb) * (1024**3))
-            return min(total_bytes, free_bytes)
+            return _free_in_torch_scope(total_bytes, used_gb)
 
     return None
 
@@ -1021,7 +1029,9 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             try:
                 if free is None:
                     free, driver_total = trusted_mem_get_info(idx)
-                    if driver_total_needed:
+                    # Only adopt a driver total that is usable: utilization_pct
+                    # divides by it, so a zero would lose the whole report.
+                    if driver_total_needed and driver_total:
                         total = driver_total
             except Exception as e:
                 logger.debug("mem_get_info probe failed; free VRAM from reserved: %s", e)
