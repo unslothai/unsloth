@@ -457,6 +457,7 @@ class TestDenseAsciiIsMeasuredNotEstimated:
         """
         _window(monkeypatch, 5120)
         dense_chars = 2500
+
         # The measured Qwen3-4B rates, priced per character so the count is exact at
         # every prefix length rather than only at the two the test happens to check.
         def _price(chunk):
@@ -473,9 +474,10 @@ class TestDenseAsciiIsMeasuredNotEstimated:
                 ),
             ),
         )
-        text = "ABCDefgh0123+/9z" * 157 + (
-            "The build finished and the archive was uploaded to the release bucket. "
-        ) * 400
+        text = (
+            "ABCDefgh0123+/9z" * 157
+            + ("The build finished and the archive was uploaded to the release bucket. ") * 400
+        )
         share = 5120 * tools._PAGE_CONTEXT_SHARE
 
         kept = tools._dense_char_limit(text, tools._tool_result_char_budget())
