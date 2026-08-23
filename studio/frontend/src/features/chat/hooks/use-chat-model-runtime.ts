@@ -2092,9 +2092,9 @@ export function useChatModelRuntime() {
           typeof selection !== "string" ? selection.expectedBytes ?? 0 : 0;
 
         // One buffer per phase, so a phase flip cannot price the new phase's
-        // bytes against the old one's clock. This was a private copy of the
-        // shared estimator, which meant fixes to it never reached this toast.
-        // Note the shared helper takes SECONDS; this file clocks in ms.
+        // bytes against the old one's clock. Was a private copy of the shared
+        // estimator, so fixes to it never reached this toast. The shared helper
+        // takes SECONDS; this file clocks in ms.
         const dlSamples: TransferSample[] = [];
         const mmapSamples: TransferSample[] = [];
 

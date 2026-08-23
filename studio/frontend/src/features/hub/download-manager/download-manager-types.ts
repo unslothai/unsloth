@@ -30,11 +30,7 @@ export interface ManagedDownload {
   expectedBytes: number;
   fraction: number;
   bytesPerSec: number;
-  /**
-   * Seconds remaining, from the same estimator as {@link bytesPerSec}; 0 hides
-   * it. Carried here so every surface shares one ETA semantics, rather than
-   * each deriving its own from whatever rate it was handed.
-   */
+  /** Seconds remaining, from the same estimator as {@link bytesPerSec}; 0 hides it. */
   etaSeconds: number;
   error: string | null;
   startedAt: number;

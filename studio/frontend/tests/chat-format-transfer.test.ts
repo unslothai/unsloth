@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The chat/model-load/training-overlay formatters. The ETA clamp here mirrors
-// the hub formatter's (see hub-format.test.ts): beyond a day the estimate is
-// noise, and rendering "37h 12m" lends it a precision it does not have. This
-// copy went unclamped until #9378, so the same estimate rendered "> 24h left"
-// on a hub row and an unbounded hour count on the model-load toast.
+// The chat/model-load/training-overlay formatters. The 24h ETA clamp mirrors
+// the hub formatter's, which has had one since #7679 (see hub-format.test.ts).
 
 import assert from "node:assert/strict";
 import test from "node:test";

@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A persisted rate or ETA must never come back. The wall-clock gap while the
-// app was closed is not transfer time, so a restored "5m 40s left" describes a
-// transfer that has not been running for however long the app was shut. The
-// estimator restarts cold and republishes within a few seconds instead.
+// A persisted rate or ETA must never come back: the wall-clock gap while the
+// app was closed is not transfer time. The estimator restarts cold instead.
 
 import assert from "node:assert/strict";
 import test from "node:test";
