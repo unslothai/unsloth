@@ -1401,7 +1401,6 @@ async def clear_history(
     # the client hangs up, so the attempt this retry replaces still runs to here.
     if not replayed:
         from core.inference.search_images import clear_cache
-
         await run_in_threadpool(clear_cache)
     return {
         "status": "deleted",
