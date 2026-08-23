@@ -5307,6 +5307,41 @@ def test_a_folder_trimmed_exactly_back_to_the_cap_never_answers_speech(tmp_path)
         assert models_route._gguf_folder_task(folder, ("someone/trimmed-GGUF",)) is None, total
 
 
+def test_a_sibling_whose_header_will_not_read_keeps_speech_off_the_folder(tmp_path):
+    """A candidate that never got classified might have been the runnable one.
+
+    ``_gguf_architecture`` answers None on a truncated or unreadable header and ``_arch_to_task``
+    answers None rather than guessing, while a read that raises is skipped outright. Neither used
+    to clear ``complete``, so a folder holding a readable csm quant beside a sibling it could not
+    classify answered text-to-speech with full confidence, and the arch-task gate then hid the row
+    the unread sibling was on. The scan saw the file; it just never learned what it was, which is
+    the same standing as a file the walk never reached."""
+    for label, write_sibling in (
+        ("truncated", lambda p: p.write_bytes(b"GGUF\x03\x00\x00\x00")),
+        ("empty", lambda p: p.write_bytes(b"")),
+        ("not-a-gguf", lambda p: p.write_bytes(b"just some bytes, no magic at all")),
+    ):
+        folder = tmp_path / f"unreadable-{label}"
+        _arch_gguf(folder / "aaa-csm.gguf", "llama-csm")
+        sibling = folder / "zzz-qwen3-Q4_K_M.gguf"
+        sibling.parent.mkdir(parents = True, exist_ok = True)
+        write_sibling(sibling)
+        assert models_route._gguf_folder_task(folder, ("someone/mixed-GGUF",)) is None, label
+
+    # The control: with the sibling readable and runnable, the folder still files as chat, so the
+    # fix withholds speech on an unread sibling rather than withholding it always.
+    readable = tmp_path / "readable"
+    _arch_gguf(readable / "aaa-csm.gguf", "llama-csm")
+    _arch_gguf(readable / "zzz-qwen3-Q4_K_M.gguf", "llama")
+    assert models_route._gguf_folder_task(readable, ("someone/mixed-GGUF",)) == "text-generation"
+
+    # And a speech-ONLY folder, every file of it read, still tags speech.
+    speech_only = tmp_path / "speech-only"
+    _arch_gguf(speech_only / "aaa-csm.gguf", "llama-csm")
+    _arch_gguf(speech_only / "bbb-csm.gguf", "llama-csm")
+    assert models_route._gguf_folder_task(speech_only, ("someone/csm-GGUF",)) == "text-to-speech"
+
+
 def test_only_a_read_architecture_ever_answers_speech():
     """The frontend gate is fail-CLOSED on a text-to-speech tag while every backend probe fails
     open, and that is only safe because the tag can come from nothing but ``general.architecture``.

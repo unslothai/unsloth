@@ -4369,6 +4369,14 @@ def _gguf_folder_task(
         try:
             task = _arch_to_task(_gguf_architecture(str(path)), name_hints = id_hints + (path.name,))
         except Exception:
+            # Unread, so unranked: this file might have been the runnable sibling. Speech is the
+            # one verdict that hides the row, so it cannot rest on a folder we only partly read.
+            complete = False
+            continue
+        if task is None:
+            # Same as the read that raised. A truncated or unreadable header gives no
+            # architecture, and `_arch_to_task` answers None rather than guessing.
+            complete = False
             continue
         if task in _LOADABLE_MEDIA_GGUF_TASKS:
             return task
