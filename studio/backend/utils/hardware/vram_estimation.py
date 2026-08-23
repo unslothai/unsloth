@@ -910,13 +910,15 @@ def _lora_mlp_elements(
 def _full_weight_embedding_elements(arch: ModelArchConfig, target_modules) -> int:
     """embed_tokens/lm_head cost a full matrix each, not a low-rank pair.
 
-    Unsloth redirects them into modules_to_save, which keeps one trainable copy per
-    module, so an untied pair pays twice.
+    Unsloth redirects them into modules_to_save. A tied pair also gets
+    ensure_weight_tying, which collapses them to one trainable matrix.
     """
     if isinstance(target_modules, str):
         return 0
-    targets = set(target_modules or [])
-    return arch.vocab_size * arch.hidden_size * len(targets & {"embed_tokens", "lm_head"})
+    selected = len(set(target_modules or []) & {"embed_tokens", "lm_head"})
+    if arch.tie_word_embeddings:
+        selected = min(selected, 1)
+    return arch.vocab_size * arch.hidden_size * selected
 
 
 def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: list) -> int:

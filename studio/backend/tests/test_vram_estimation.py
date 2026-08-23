@@ -2319,3 +2319,35 @@ class TestErnieVlSharedExpertWidth(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_embedding_targets_cost_full_matrices_not_lora_pairs():
+    """embed_tokens/lm_head are redirected to modules_to_save, so they cost vocab*hidden."""
+    from utils.hardware.vram_estimation import _full_weight_embedding_elements
+
+    untied = replace(LLAMA_8B, tie_word_embeddings = False)
+    one = untied.vocab_size * untied.hidden_size
+
+    assert _full_weight_embedding_elements(untied, DEFAULT_TARGET_MODULES) == 0
+    assert _full_weight_embedding_elements(untied, DEFAULT_TARGET_MODULES + ["embed_tokens"]) == one
+    assert _full_weight_embedding_elements(
+        untied, DEFAULT_TARGET_MODULES + ["embed_tokens", "lm_head"]
+    ) == 2 * one
+
+    # A tied pair gets ensure_weight_tying, which leaves ONE trainable matrix.
+    tied = replace(LLAMA_8B, tie_word_embeddings = True)
+    assert _full_weight_embedding_elements(
+        tied, DEFAULT_TARGET_MODULES + ["embed_tokens", "lm_head"]
+    ) == tied.vocab_size * tied.hidden_size
+
+    # Regex / all-linear / None never carry these names.
+    assert _full_weight_embedding_elements(untied, "all-linear") == 0
+    assert _full_weight_embedding_elements(untied, None) == 0
+
+
+def test_embedding_targets_feed_optimizer_and_gradient_bytes():
+    """The count drives trainable_params, so it must reach compute_lora_params."""
+    untied = replace(LLAMA_8B, tie_word_embeddings = False)
+    base = compute_lora_params(untied, 16, DEFAULT_TARGET_MODULES)
+    with_embed = compute_lora_params(untied, 16, DEFAULT_TARGET_MODULES + ["embed_tokens"])
+    assert with_embed - base == untied.vocab_size * untied.hidden_size
