@@ -965,6 +965,33 @@ export type AutoContinueRunSignal = {
 };
 
 /**
+ * Whether the run a hold was taken for is still outstanding, preflight included.
+ *
+ * `AutoContinueRunSignal` answers off the stream: it turns true when the first token is on
+ * its way and is what a lease's lifetime is read from. It says nothing at all about the
+ * minutes before that, which is deliberate -- preflight has no upper bound -- and it is also
+ * silent when the user ENDS that preflight. Stop aborts the run's signal, the adapter wrapper
+ * skips its per-thread failure notice precisely because the abort was asked for, and the
+ * stream flag never moved in either direction, so the hold has nothing to arm on and nothing
+ * to settle on and renews its lease for the life of the tab.
+ *
+ * The runtime that issued the run is the one thing that knows, and it announces the run
+ * starting and ending around the whole of it. "This side watched a run start here and then
+ * watched it end, and the stream never began" is the fact that separates an abandoned
+ * preflight from a slow one. No clock is consulted.
+ *
+ * `pending` returns `undefined` for "cannot tell", which is a real answer and not a no: the
+ * runtime is not always reachable, and a hold dropped on an unreadable answer is a lease
+ * lapsing under a continuation that is still streaming. `watch` returns `null` for the same
+ * reason -- nothing to listen to yet -- and is retried rather than given up on.
+ */
+export type AutoContinueIssuedRun = {
+  pending(): boolean | undefined;
+  /** Announce that `pending` may have changed. `null` when there was nothing to watch. */
+  watch?(onChange: () => void): (() => void) | null;
+};
+
+/**
  * Holds the lease of each continuation this tab is running, for as long as its own run runs.
  *
  * A hold is (message, thread) and its lifetime is the run's: it arms when THAT thread starts
@@ -986,6 +1013,14 @@ export type AutoContinueRunSignal = {
  * streaming, so another tab could claim the message and pay for the same continuation twice.
  * Renewing instead costs only this: a claim whose run genuinely never starts holds its lease
  * until the tab is closed, and the manual Continue button is never gated on any of it.
+ *
+ * What ends such a hold is a FACT reported by something that knows, never an elapsed time.
+ * There are two, and they are the two ways a preflight can end without a stream: `failed`,
+ * which the adapter wrapper announces when `adapter.run` throws, and the issued run itself
+ * going from outstanding to gone, which is what Stop during preflight looks like and which the
+ * wrapper deliberately says nothing about. Neither is a deadline in disguise: a preflight that
+ * is merely long reports nothing and is still outstanding, so it keeps its hold and its
+ * renewals for as long as it takes.
  */
 export function createAutoContinueLeaseKeeper({
   signal,
@@ -998,7 +1033,11 @@ export function createAutoContinueLeaseKeeper({
   release?: (messageId: string, holder: string, now: number) => void;
   now?: () => number;
 }): {
-  hold: (messageId: string, threadId: string) => void;
+  hold: (
+    messageId: string,
+    threadId: string,
+    issued?: AutoContinueIssuedRun,
+  ) => void;
   observe: () => void;
   failed: (threadId: string) => void;
   tick: () => void;
@@ -1012,9 +1051,58 @@ export function createAutoContinueLeaseKeeper({
     idle: boolean;
     /** That run has started. Only an armed hold is ever released. */
     armed: boolean;
+    /** The runtime's own view of the run, which covers preflight. Absent means no view. */
+    issued?: AutoContinueIssuedRun;
+    /**
+     * The runtime has answered "yes, a run is outstanding here" at least once.
+     *
+     * The hold is taken a line BEFORE the run is started, so the first answer is legitimately
+     * no. Only the fall from yes back to no says the run is over, which is how
+     * `waitForRunEnd` reads a run ending in `shared-composer.tsx`; a bare no is the run not
+     * having begun.
+     */
+    issuedSeen: boolean;
+    /**
+     * Torn down with the hold, so a settled continuation leaves no runtime listener.
+     *
+     * `null` also means the watch has not been established -- the runtime was unreachable when
+     * the hold was taken -- which `tick` retries. Without the retry a hold that missed its one
+     * chance was driven by the renewal interval alone, and a run issued and stopped inside a
+     * single interval was sampled only as "no run yet", so the very case this is for was
+     * silently missed.
+     */
+    unwatch: (() => void) | null;
   };
   const holds = new Map<string, Hold>();
   let unsubscribe: (() => void) | null = null;
+
+  /** Forget a hold and whatever it was listening to. Writes nothing. */
+  function drop(id: string, hold: Hold): void {
+    holds.delete(id);
+    hold.unwatch?.();
+    hold.unwatch = null;
+  }
+
+  /**
+   * Listen to the runtime for one hold, if there is anything to listen to yet.
+   *
+   * Attached only while this exact hold is still the one filed under `id`: a listener whose
+   * hold has already been replaced or dropped would have nothing left to unsubscribe it.
+   */
+  function watch(id: string, hold: Hold): void {
+    if (hold.unwatch || !hold.issued?.watch) {
+      return;
+    }
+    const unwatch = hold.issued.watch(observe);
+    if (!unwatch) {
+      return;
+    }
+    if (holds.get(id) === hold) {
+      hold.unwatch = unwatch;
+      return;
+    }
+    unwatch();
+  }
 
   const key = (messageId: string, threadId: string) =>
     `${threadId}\u0000${messageId}`;
@@ -1031,14 +1119,31 @@ export function createAutoContinueLeaseKeeper({
       hold.idle = true;
       if (hold.armed) {
         // This hold's own run has ended: finished, cancelled or failed.
-        holds.delete(id);
+        drop(id, hold);
         release(hold.messageId, hold.threadId, at);
         continue;
       }
-      // Not armed yet, so its run is still in preflight, which has no upper bound (see the
-      // note above this function). Kept and renewed rather than timed out: dropping it here
-      // stopped the renewals while the run was still on its way, and the lease then lapsed
-      // under a live continuation.
+      // Not armed yet, so its run either is still in preflight -- which has no upper bound,
+      // see the note above this function -- or was ended during it. The runtime that issued
+      // it is asked which, because nothing else can tell them apart and no clock ever could.
+      const pending = hold.issued?.pending();
+      if (pending === true) {
+        hold.issuedSeen = true;
+        continue;
+      }
+      if (pending === false && hold.issuedSeen) {
+        // The runtime had this run and no longer does, and the stream never began: Stop
+        // during preflight, which the adapter wrapper reports to nobody because the abort is
+        // what was asked for. Discarded exactly as a failed preflight is -- forgotten, never
+        // released -- so the lease lapses on its own TTL instead of being renewed forever,
+        // and no `done` marker claims a message that produced not one token.
+        drop(id, hold);
+      }
+      // Anything else leaves the hold kept and renewed: `undefined` is the runtime being
+      // unreadable, and `false` before the first yes is the run not having started. That is
+      // what the absence of an arming deadline is for. Dropping on either stopped the
+      // renewals while a run was still on its way, and the lease then lapsed under a live
+      // continuation.
     }
     if (holds.size === 0 && unsubscribe) {
       unsubscribe();
@@ -1047,21 +1152,34 @@ export function createAutoContinueLeaseKeeper({
   }
 
   return {
-    hold(messageId, threadId) {
+    hold(messageId, threadId, issued) {
       if (!messageId) {
         return;
       }
       if (!threadId) {
         return;
       }
-      holds.set(key(messageId, threadId), {
+      const id = key(messageId, threadId);
+      const existing = holds.get(id);
+      if (existing) {
+        drop(id, existing);
+      }
+      const entry: Hold = {
         messageId,
         threadId,
         // Claimed while the thread is between runs, which is the ordinary case: the bar
         // only fires on a reply that has finished.
         idle: !signal.isRunning(threadId),
         armed: false,
-      });
+        issued,
+        issuedSeen: false,
+        unwatch: null,
+      };
+      holds.set(id, entry);
+      // The runtime announces its own run starting and ending, and the stream signal below
+      // announces neither, so a preflight that is started and then abandoned moves nothing
+      // else this keeper is listening to.
+      watch(id, entry);
       unsubscribe ??= signal.subscribe(observe);
     },
     observe,
@@ -1086,7 +1204,7 @@ export function createAutoContinueLeaseKeeper({
       }
       for (const [id, hold] of [...holds]) {
         if (hold.threadId === threadId && !hold.armed) {
-          holds.delete(id);
+          drop(id, hold);
         }
       }
       if (holds.size === 0 && unsubscribe) {
@@ -1095,6 +1213,12 @@ export function createAutoContinueLeaseKeeper({
       }
     },
     tick() {
+      // Retried here rather than on every notification: the runtime a hold could not reach
+      // when it was taken is usually reachable a moment later, and this is the one place that
+      // runs on its own without the answer having changed.
+      for (const [id, hold] of [...holds]) {
+        watch(id, hold);
+      }
       observe();
       const at = now();
       for (const hold of holds.values()) {
@@ -1107,6 +1231,9 @@ export function createAutoContinueLeaseKeeper({
       return holds.size;
     },
     stop() {
+      for (const [id, hold] of [...holds]) {
+        drop(id, hold);
+      }
       holds.clear();
       unsubscribe?.();
       unsubscribe = null;

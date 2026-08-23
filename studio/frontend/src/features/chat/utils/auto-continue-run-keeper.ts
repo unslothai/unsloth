@@ -14,6 +14,7 @@
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
   AUTO_CONTINUE_LEASE_RENEW_MS,
+  type AutoContinueIssuedRun,
   createAutoContinueLeaseKeeper,
 } from "./continuation";
 import { isImageGateRunOnly } from "./image-input-support";
@@ -99,15 +100,23 @@ let listening = false;
  * remote id yet (the first turn of a New Chat) files its run under a shared placeholder
  * that is not safe to watch, so nothing is held for it and its lease simply runs out its
  * TTL. That is the same outcome as a tab closing mid-run, and it is never an early release.
+ *
+ * `issued` is the runtime's own view of that run, built by `issuedRunFor` from the ids the
+ * caller has in hand. It is what ends a hold whose preflight the user STOPPED, which nothing
+ * else reports: the abort is what was asked for, so the adapter wrapper raises no failure and
+ * the stream flag this file watches never moved in either direction. Optional, and its absence
+ * only restores the earlier behaviour, where such a hold is kept and renewed like any other
+ * that has not armed.
  */
 export function holdAutoContinueRun(
   messageId: string,
   threadId: string | undefined,
+  issued?: AutoContinueIssuedRun,
 ): void {
   if (!threadId) {
     return;
   }
-  keeper.hold(messageId, threadId);
+  keeper.hold(messageId, threadId, issued);
   // Registered with the first hold rather than at import, so a module nobody continues in
   // adds no listener. Once, and never removed: it is one handler for the tab.
   if (!listening && typeof window !== "undefined") {

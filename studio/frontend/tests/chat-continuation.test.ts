@@ -42,6 +42,10 @@ const { createImageGateRunOwner, isImageGateRunOnly } = await import(
   "../src/features/chat/utils/image-input-support.ts"
 );
 
+const { issuedRunFor } = await import(
+  "../src/features/chat/utils/auto-continue-issued-run.ts"
+);
+
 const PARTIAL =
   "There are three steps to proofing dough properly. First, warm the bowl and";
 
@@ -1694,6 +1698,545 @@ test("the keeper is wired to the failure the adapter already reports", () => {
     /setTimeout\(/,
     "a deadline here is the arming timeout coming back, which lapses live continuations",
   );
+});
+
+/**
+ * The runtime's own count of the runs it has outstanding on a thread.
+ *
+ * `runSignalFake` above is the STREAM: it turns true when tokens are on their way. This one
+ * follows the RUN, from the moment assistant-ui starts it to the moment it settles however it
+ * settles, which is the pair that tells a preflight somebody stopped from one that is merely
+ * slow. `undefined` is "cannot tell" -- no run has been seen start, or there was nothing to
+ * watch -- and it is not a no.
+ */
+function issuedRunFake(state: { pending: boolean | undefined }) {
+  const listeners = new Set<() => void>();
+  return {
+    issued: {
+      pending: () => state.pending,
+      watch: (onChange: () => void) => {
+        listeners.add(onChange);
+        return () => {
+          listeners.delete(onChange);
+        };
+      },
+    },
+    /** The runtime told everyone its run state moved. */
+    change: () => {
+      for (const listener of [...listeners]) {
+        listener();
+      }
+    },
+    /** Listeners still attached, so a settled hold can be shown to leave none behind. */
+    watchers: () => listeners.size,
+  };
+}
+
+test("a preflight the user stopped gives up its hold instead of keeping it for the tab", async () => {
+  // Stop during preflight. The run is aborted, so the adapter wrapper skips its per-thread
+  // failure notice ON PURPOSE -- the abort is what was asked for, not a fault to report -- and
+  // `runningByThreadId` never moved in either direction, because no token was ever on its way.
+  // The hold therefore had nothing to arm on and nothing to settle on, and renewed its lease
+  // for the life of the tab while every other tab read that lease as live and refused the
+  // message. The runtime is the one thing that saw the run start and saw it end.
+  const { storage } = storageFake();
+  const tab = createAutoContinueTab({ storage, locks: null });
+  const otherTab = createAutoContinueTab({ storage, locks: null });
+  const start = 1_000;
+  let clock = start;
+  const pending: Promise<void>[] = [];
+  const running = new Set<string>();
+  const runs = runSignalFake(running);
+  const issuedState: { pending: boolean | undefined } = { pending: undefined };
+  const issued = issuedRunFake(issuedState);
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: () => {
+      assert.fail(
+        "a run that streamed nothing has continued nothing to record",
+      );
+    },
+    now: () => clock,
+  });
+
+  await tab.claim("m1", { now: start, holder: "thread-A" });
+  // Taken a line BEFORE the run is started, so the runtime has nothing to report yet.
+  keeper.hold("m1", "thread-A", issued.issued);
+
+  // The bar starts the run. It is the runtime's now, and it is still in preflight.
+  issuedState.pending = true;
+  issued.change();
+  clock = start + AUTO_CONTINUE_LEASE_RENEW_MS;
+  keeper.tick();
+  assert.equal(keeper.held(), 1, "a preflight in progress keeps its hold");
+
+  // The user hits Stop.
+  issuedState.pending = false;
+  issued.change();
+  assert.equal(
+    keeper.held(),
+    0,
+    "an aborted preflight strands its hold, which then renews the lease forever",
+  );
+  assert.equal(issued.watchers(), 0, "and the runtime listener goes with it");
+  await Promise.all(pending);
+
+  const lapsed = clock + AUTO_CONTINUE_LEASE_TTL_MS + 1;
+  clock = lapsed;
+  keeper.tick();
+  await Promise.all(pending);
+  assert.equal(
+    await otherTab.claim("m1", { now: lapsed }),
+    "started",
+    "nothing renews it, so the lease lapses and the message comes back",
+  );
+});
+
+test("a hold is not dropped before its own run has reached the runtime", async () => {
+  // The hold is taken on the line above `startContinuation`, so an answer of "no run" before
+  // the run has been issued says nothing at all. Only a run this side watched start and then
+  // watched end is over; acting on the bare no would drop every hold the instant it was taken.
+  const { storage } = storageFake();
+  const tab = createAutoContinueTab({ storage, locks: null });
+  const otherTab = createAutoContinueTab({ storage, locks: null });
+  const start = 1_000;
+  let clock = start;
+  const pending: Promise<void>[] = [];
+  const running = new Set<string>();
+  const runs = runSignalFake(running);
+  const issuedState: { pending: boolean | undefined } = { pending: false };
+  const issued = issuedRunFake(issuedState);
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.release(messageId, holder, { now }));
+    },
+    now: () => clock,
+  });
+
+  await tab.claim("m1", { now: start, holder: "thread-A" });
+  keeper.hold("m1", "thread-A", issued.issued);
+  for (let tick = 1; tick <= 3; tick += 1) {
+    clock = start + tick * AUTO_CONTINUE_LEASE_RENEW_MS;
+    keeper.tick();
+  }
+  await Promise.all(pending);
+  assert.equal(keeper.held(), 1, "the run has not been issued yet, not ended");
+  assert.equal(
+    await otherTab.claim("m1", { now: clock }),
+    "held-elsewhere",
+    "and nobody else may take a message this tab is still about to continue",
+  );
+
+  // It is issued, streams, and finishes the ordinary way.
+  issuedState.pending = true;
+  issued.change();
+  running.add("thread-A");
+  runs.change();
+  running.delete("thread-A");
+  runs.change();
+  await Promise.all(pending);
+  assert.equal(keeper.held(), 0, "its own run ending is what gives it back");
+});
+
+test("a hold whose runtime cannot answer keeps its lease", async () => {
+  // `getById` THROWS for any id the thread list cannot resolve to a mounted runtime -- an
+  // alias hydration retired, or just a background thread the user has navigated away from --
+  // so `issuedRunFor` reports `undefined`. That is "cannot tell", and reading it as "no run"
+  // would drop a hold whose continuation is still streaming, which is the exact lapse the
+  // whole keeper exists to prevent.
+  const { storage } = storageFake();
+  const tab = createAutoContinueTab({ storage, locks: null });
+  const otherTab = createAutoContinueTab({ storage, locks: null });
+  const start = 1_000;
+  let clock = start;
+  const pending: Promise<void>[] = [];
+  const running = new Set<string>();
+  const runs = runSignalFake(running);
+  const issuedState: { pending: boolean | undefined } = { pending: true };
+  const issued = issuedRunFake(issuedState);
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: () => {
+      assert.fail("a hold that never armed has nothing to give back");
+    },
+    now: () => clock,
+  });
+
+  await tab.claim("m1", { now: start, holder: "thread-A" });
+  keeper.hold("m1", "thread-A", issued.issued);
+  issued.change();
+
+  // The runtime becomes unreadable mid-preflight and every answer is unknown from here on.
+  issuedState.pending = undefined;
+  issued.change();
+  for (let tick = 1; tick <= 8; tick += 1) {
+    clock = start + tick * AUTO_CONTINUE_LEASE_RENEW_MS;
+    keeper.tick();
+  }
+  await Promise.all(pending);
+  assert.equal(keeper.held(), 1, "an unreadable runtime ends nothing");
+  assert.equal(
+    await otherTab.claim("m1", { now: clock }),
+    "held-elsewhere",
+    "the lease is still renewed, because the run may well be streaming",
+  );
+});
+
+test("a watch that could not be established when the hold was taken is retried", async () => {
+  // The runtime is not always reachable at the instant the bar hands it over, and a hold that
+  // missed its one chance would be driven by the renewal interval alone -- so a run issued and
+  // stopped inside a single interval would be sampled only as "no run yet" and the hold would
+  // strand exactly as it did before. `tick` retries.
+  const { storage } = storageFake();
+  const tab = createAutoContinueTab({ storage, locks: null });
+  const start = 1_000;
+  let clock = start;
+  const pending: Promise<void>[] = [];
+  const runs = runSignalFake(new Set<string>());
+  const listeners = new Set<() => void>();
+  let reachable = false;
+  let attempts = 0;
+  const state: { pending: boolean | undefined } = { pending: undefined };
+  const issued = {
+    pending: () => state.pending,
+    watch: (onChange: () => void) => {
+      attempts += 1;
+      if (!reachable) {
+        return null;
+      }
+      listeners.add(onChange);
+      return () => {
+        listeners.delete(onChange);
+      };
+    },
+  };
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: () => {
+      assert.fail("nothing here ever streamed");
+    },
+    now: () => clock,
+  });
+
+  await tab.claim("m1", { now: start, holder: "thread-A" });
+  keeper.hold("m1", "thread-A", issued);
+  assert.equal(attempts, 1, "tried once when the hold was taken");
+  assert.equal(listeners.size, 0, "and there was nothing there to watch");
+
+  reachable = true;
+  clock = start + AUTO_CONTINUE_LEASE_RENEW_MS;
+  keeper.tick();
+  assert.equal(listeners.size, 1, "the next tick picks the runtime up");
+
+  clock = start + 2 * AUTO_CONTINUE_LEASE_RENEW_MS;
+  keeper.tick();
+  assert.equal(listeners.size, 1, "and does not stack a second watch on it");
+
+  // The run it can now see is issued and then stopped, all inside one interval.
+  state.pending = true;
+  for (const listener of [...listeners]) {
+    listener();
+  }
+  state.pending = false;
+  for (const listener of [...listeners]) {
+    listener();
+  }
+  await Promise.all(pending);
+  assert.equal(keeper.held(), 0, "which is enough to settle the hold");
+  assert.equal(listeners.size, 0, "and the watch is given back with it");
+});
+
+test("a run that begins and ends before the watch is handed back leaves nothing behind", async () => {
+  // The watch is registered against a hold already filed, and the runtime is free to answer
+  // before `watch` has returned -- assistant-ui replays nothing today, but a hold settled
+  // inside its own registration would have its unsubscribe attached to an entry that is no
+  // longer there, and the listener would then outlive the tab's interest in it.
+  const { storage } = storageFake();
+  const tab = createAutoContinueTab({ storage, locks: null });
+  const start = 1_000;
+  const pending: Promise<void>[] = [];
+  const runs = runSignalFake(new Set<string>());
+  const listeners = new Set<() => void>();
+  let phase = 0;
+  const issued = {
+    pending: () =>
+      phase === 1
+        ? true
+        : phase === 2
+          ? false
+          : (undefined as boolean | undefined),
+    watch: (onChange: () => void) => {
+      listeners.add(onChange);
+      // Issued, and then stopped, while `watch` is still on the stack.
+      phase = 1;
+      onChange();
+      phase = 2;
+      onChange();
+      return () => {
+        listeners.delete(onChange);
+      };
+    },
+  };
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: () => {
+      assert.fail("nothing streamed, so nothing is recorded as continued");
+    },
+    now: () => start,
+  });
+
+  await tab.claim("m1", { now: start, holder: "thread-A" });
+  keeper.hold("m1", "thread-A", issued);
+  await Promise.all(pending);
+  assert.equal(keeper.held(), 0, "the hold is settled by the answer it got");
+  assert.equal(
+    listeners.size,
+    0,
+    "and the watch taken for it is given back rather than stranded",
+  );
+});
+
+test("the runtime view follows the run, not the branch on screen", () => {
+  // `getState().isRunning` looks like the answer and is a trap: it is derived from the status
+  // of the message at the HEAD of the current branch, so clicking the branch picker back to
+  // the truncated partial mid-preflight reads as the run having ended, and the hold is dropped
+  // under a continuation that goes on to stream. assistant-ui's own run events are emitted
+  // around `startRun` itself and do not move when the selected branch does.
+  const handlers = new Map<string, Set<() => void>>();
+  const thread = {
+    getState: () => {
+      assert.fail(
+        "the branch head is not what says whether a run is outstanding",
+      );
+    },
+    unstable_on: (event: string, callback: () => void) => {
+      const set = handlers.get(event) ?? new Set<() => void>();
+      set.add(callback);
+      handlers.set(event, set);
+      return () => {
+        set.delete(callback);
+      };
+    },
+  };
+  const issued = issuedRunFor({ threads: { getById: () => thread } }, ["t1"]);
+  const seen: (boolean | undefined)[] = [];
+  const stop = issued?.watch?.(() => {
+    seen.push(issued?.pending());
+  });
+  assert.equal(typeof stop, "function");
+  const fire = (event: string) => {
+    for (const callback of [...(handlers.get(event) ?? [])]) {
+      callback();
+    }
+  };
+
+  assert.equal(
+    issued?.pending(),
+    undefined,
+    "nothing has been seen start, so nothing is known",
+  );
+  fire("runStart");
+  assert.equal(issued?.pending(), true, "the run is outstanding");
+  // Any number of branch switches and re-renders: the runtime raises no run event for them.
+  assert.equal(
+    issued?.pending(),
+    true,
+    "and stays outstanding across the thread's state",
+  );
+  fire("runEnd");
+  assert.equal(issued?.pending(), false, "only its own end ends it");
+  assert.deepEqual(seen, [true, false], "each transition is announced once");
+
+  stop?.();
+  assert.equal(
+    issued?.pending(),
+    undefined,
+    "a watch given up knows nothing again",
+  );
+  assert.equal(handlers.get("runStart")?.size, 0);
+  assert.equal(handlers.get("runEnd")?.size, 0);
+});
+
+test("the runtime view falls back past an id the thread list cannot resolve", () => {
+  // `getById` raises "Thread not found" both for a retired alias and for a thread with no
+  // mounted runtime, and the bar hands over both spellings of its thread precisely so the
+  // resolvable one can be found. An unhandled throw here lands in an effect the continuation
+  // bar has already unmounted from.
+  const asked: string[] = [];
+  const live = {
+    unstable_on: () => () => {},
+  };
+  const issued = issuedRunFor(
+    {
+      threads: {
+        getById: (threadId: string) => {
+          asked.push(threadId);
+          if (threadId === "retired") {
+            throw new Error("Thread not found");
+          }
+          return live;
+        },
+      },
+    },
+    ["retired", "live", null, "live"],
+  );
+  assert.equal(
+    typeof issued?.watch?.(() => {}),
+    "function",
+    "the resolvable id answers",
+  );
+  assert.deepEqual(
+    asked,
+    ["retired", "live"],
+    "each id is tried once, in the order given",
+  );
+
+  const allRetired = issuedRunFor(
+    {
+      threads: {
+        getById: () => {
+          throw new Error("Thread not found");
+        },
+      },
+    },
+    ["gone"],
+  );
+  assert.equal(
+    allRetired?.watch?.(() => {}),
+    null,
+    "nothing to watch is reported as such, so the caller can retry",
+  );
+  assert.equal(
+    allRetired?.pending(),
+    undefined,
+    "and a thread nothing can resolve is unknown, not idle",
+  );
+
+  assert.equal(issuedRunFor(null, ["live"]), undefined, "no runtime, no view");
+  assert.equal(
+    issuedRunFor({ threads: { getById: () => live } }, [null, undefined, ""]),
+    undefined,
+    "and no ids to ask about is the same",
+  );
+});
+
+test("a run this side never saw start cannot end anything", () => {
+  // The watch is attached when the hold is taken, but a retry can attach it later, and a
+  // thread runs more than one round. An unmatched `runEnd` counted as an ending would take the
+  // total to zero and settle a hold whose own run is still in preflight.
+  const handlers = new Map<string, Set<() => void>>();
+  const issued = issuedRunFor(
+    {
+      threads: {
+        getById: () => ({
+          unstable_on: (event: string, callback: () => void) => {
+            const set = handlers.get(event) ?? new Set<() => void>();
+            set.add(callback);
+            handlers.set(event, set);
+            return () => {
+              set.delete(callback);
+            };
+          },
+        }),
+      },
+    },
+    ["t1"],
+  );
+  issued?.watch?.(() => {});
+  const fire = (event: string) => {
+    for (const callback of [...(handlers.get(event) ?? [])]) {
+      callback();
+    }
+  };
+
+  fire("runEnd");
+  assert.equal(
+    issued?.pending(),
+    undefined,
+    "an unmatched end leaves the answer unknown rather than faking an idle thread",
+  );
+  fire("runStart");
+  fire("runStart");
+  assert.equal(issued?.pending(), true, "two rounds outstanding");
+  fire("runEnd");
+  assert.equal(issued?.pending(), true, "one of them ending is not both");
+  fire("runEnd");
+  assert.equal(issued?.pending(), false);
+  fire("runEnd");
+  assert.equal(issued?.pending(), false, "and the count never goes negative");
+});
+
+test("the abort case is wired to the runtime, not to a clock", () => {
+  // The bar is the last place that can reach the assistant-ui runtime -- the keeper runs in
+  // module scope and the only handle is a hook -- so the view has to be handed over at the
+  // moment the hold is taken. Pinned at both ends, since neither side is exercised by a unit
+  // test, and re-pinned against a deadline because a deadline here is the arming timeout
+  // coming back.
+  const bar = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    bar,
+    /holdAutoContinueRun\(\s*messageId,\s*runThreadId,\s*issuedRunFor\(/,
+    "the continuation bar no longer hands the runtime's view of the run to the keeper",
+  );
+
+  const probe = readFileSync(
+    new URL(
+      "../src/features/chat/utils/auto-continue-issued-run.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    probe,
+    /try \{[\s\S]*getById\([\s\S]*\} catch \{/,
+    "an id the thread list cannot resolve throws out of getById; it has to be caught",
+  );
+  assert.match(
+    probe,
+    /unstable_on\("runStart"/,
+    "the run has to be followed by its own events",
+  );
+  assert.doesNotMatch(
+    probe,
+    /\.isRunning/,
+    "isRunning is the branch head's status, which a branch switch moves under a live run",
+  );
+  const wiredKeeper = readFileSync(
+    new URL(
+      "../src/features/chat/utils/auto-continue-run-keeper.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  for (const [name, source] of [
+    ["auto-continue-issued-run.ts", probe],
+    ["auto-continue-run-keeper.ts", wiredKeeper],
+  ] as const) {
+    assert.doesNotMatch(
+      source,
+      /setTimeout\(/,
+      `${name} decides on facts, not on elapsed time`,
+    );
+  }
 });
 
 /**
