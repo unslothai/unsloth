@@ -14070,7 +14070,7 @@ def _split_frontend_suffix(text: str, name: "str | None") -> "tuple[str, str]":
     # (including whatever whitespace the strip rstripped away).
     if not isinstance(body, str) or not text.startswith(body):
         return text, ""
-    return body, text[len(body):]
+    return body, text[len(body) :]
 
 
 def _head_whole_lines(text: str, limit: int) -> "tuple[str, bool]":
