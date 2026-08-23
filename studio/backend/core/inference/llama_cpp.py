@@ -355,6 +355,7 @@ from state.tool_approvals import (
     wait_tool_decision,
 )
 from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
+
 # The leaf module, NOT utils.models.gguf_metadata, which re-exports these: importing anything
 # from that package runs its __init__, which pulls in model_config and therefore PyYAML. This
 # is the chat backend, imported wherever Studio's Python is, so it must not make the whole
