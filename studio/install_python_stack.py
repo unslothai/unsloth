@@ -2873,9 +2873,7 @@ def _amd_torch_needs_dependency_pass() -> bool:
         # ROCr filters beneath HIP, so a hidden layer either side leaves no target to
         # classify. CUDA_VISIBLE_DEVICES is the HIP alias, read only when HIP is unset.
         _hip_mask = (
-            "HIP_VISIBLE_DEVICES"
-            if "HIP_VISIBLE_DEVICES" in os.environ
-            else "CUDA_VISIBLE_DEVICES"
+            "HIP_VISIBLE_DEVICES" if "HIP_VISIBLE_DEVICES" in os.environ else "CUDA_VISIBLE_DEVICES"
         )
         if any(
             (os.environ.get(_mask) or "").strip() in ("", "-1")
