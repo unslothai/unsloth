@@ -620,27 +620,65 @@ test("the chord follows the layout, not the board", () => {
     altKey: false,
   };
   assert.ok(isPlainPasteChord(dvorak, true));
-  // And the QWERTY V position types K there, which is not this chord.
+  // And the QWERTY V position types K there, which is not this chord, however
+  // much the board says otherwise.
   assert.equal(
-    isPlainPasteChord({ ...dvorak, code: "KeyV", key: "K" }, true),
+    isPlainPasteChord({ ...dvorak, code: "KeyV", key: "K", keyCode: 75 }, true),
     false,
   );
-  // A layout that types no Latin letter leaves the OS to route by position,
-  // so the physical key answers again.
-  assert.ok(
-    isPlainPasteChord({ ...dvorak, code: "KeyV", key: "\u041c" }, true),
-  );
-  assert.equal(
-    isPlainPasteChord({ ...dvorak, code: "Period", key: "\u0411" }, true),
-    false,
-  );
-  // Option still overrides the letter: it rewrites `key` on macOS, so the
-  // glyph it produces must not be read as a letter that is not v.
+  // A layout that types no Latin letter leaves nothing to read, so the two
+  // remaining signals answer. Either pointing at V is enough, because on a
+  // remapped board only one of them can be.
   assert.ok(
     isPlainPasteChord(
-      { ...dvorak, code: "KeyV", key: "\u221a", altKey: true },
+      { ...dvorak, code: "KeyV", key: "\u041c", keyCode: 86 },
       true,
     ),
+  );
+  assert.ok(
+    isPlainPasteChord(
+      { ...dvorak, code: "Period", key: "\u041c", keyCode: 86 },
+      true,
+    ),
+  );
+  assert.equal(
+    isPlainPasteChord(
+      { ...dvorak, code: "Period", key: "\u0411", keyCode: 190 },
+      true,
+    ),
+    false,
+  );
+});
+
+test("the Option chord follows the layout too", () => {
+  // \u2325\u21e7\u2318V is what the macOS Edit menu carries, and macOS routes it by the
+  // letter, so on Dvorak it lands on the QWERTY period key. Option then
+  // rewrites `key` into a glyph, leaving `code` at the position it sits at and
+  // `keyCode` at the letter it stands for. Only one of those is the chord.
+  const optionOnDvorak = {
+    code: "Period",
+    key: "\u25ca",
+    keyCode: 86,
+    metaKey: true,
+    ctrlKey: false,
+    shiftKey: true,
+    altKey: true,
+  };
+  assert.ok(isPlainPasteChord(optionOnDvorak, true));
+  // QWERTY, where both agree.
+  assert.ok(isPlainPasteChord({ ...optionOnDvorak, code: "KeyV" }, true));
+  // Taking either signal accepts a little more than the chord: \u2325\u21e7\u2318K on Dvorak
+  // sits on the QWERTY V key, so the position says V while the letter says K.
+  // That is the deliberate half of the trade, and it costs nothing, because
+  // the flag is read only by a paste arriving before the keys come up and no
+  // paste follows this.
+  assert.ok(
+    isPlainPasteChord({ ...optionOnDvorak, code: "KeyV", keyCode: 75 }, true),
+  );
+  // Neither signal pointing at V is still a refusal.
+  assert.equal(
+    isPlainPasteChord({ ...optionOnDvorak, code: "Period", keyCode: 75 }, true),
+    false,
   );
 });
 
