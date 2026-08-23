@@ -1385,8 +1385,11 @@ async def clear_history(
             # A replay takes no snapshot of its own -- the chats created since the original
             # clear are not its to reap. It may still have to FINISH that clear's reap,
             # though, if the process died between the commit and the cleanup.
-            return cleared, cleared_runs, True, unreaped_clear_operation_image_ids(
-                payload.operationId
+            return (
+                cleared,
+                cleared_runs,
+                True,
+                unreaped_clear_operation_image_ids(payload.operationId),
             )
         snapshot = registered_image_ids()
         # Recorded before the reap runs, so a crash in the seconds of cleanup that follow
@@ -1440,9 +1443,7 @@ async def clear_history(
         from core.inference.search_images import clear_cache
         await run_in_threadpool(clear_cache, reapable_image_ids)
         if payload is not None:
-            await run_in_threadpool(
-                mark_clear_operation_caches_cleared, payload.operationId
-            )
+            await run_in_threadpool(mark_clear_operation_caches_cleared, payload.operationId)
     return {
         "status": "deleted",
         "deletedThreadIds": cleared,

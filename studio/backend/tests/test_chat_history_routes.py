@@ -1111,9 +1111,9 @@ def test_a_replay_finishes_a_reap_the_original_clear_died_before_running(monkeyp
     clear()
     assert len(reaps) == 2, "the replay has to finish the reap the crash interrupted"
     finished = reaps[1]
-    assert finished == {doomed_image_id}, (
-        "bounded to the original clear's own snapshot, so a chat created since keeps its images"
-    )
+    assert finished == {
+        doomed_image_id
+    }, "bounded to the original clear's own snapshot, so a chat created since keeps its images"
     assert later_image_id not in finished
 
     # And a further retry has nothing left to do.

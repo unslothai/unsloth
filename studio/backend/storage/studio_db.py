@@ -450,9 +450,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # answer is unknown (a row written by an older build), which is treated as done, since a
     # replay must never reap on a guess.
     if "reapable_image_ids_json" not in chat_clear_operation_cols:
-        conn.execute(
-            "ALTER TABLE chat_clear_operations ADD COLUMN reapable_image_ids_json TEXT"
-        )
+        conn.execute("ALTER TABLE chat_clear_operations ADD COLUMN reapable_image_ids_json TEXT")
     if "caches_cleared_at" not in chat_clear_operation_cols:
         conn.execute("ALTER TABLE chat_clear_operations ADD COLUMN caches_cleared_at INTEGER")
     conn.execute(
