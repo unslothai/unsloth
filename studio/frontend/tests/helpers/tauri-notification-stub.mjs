@@ -2,14 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Stands in for @tauri-apps/plugin-notification, which only resolves inside a
-// Tauri webview. State lives on globalThis, not in module scope, so it survives
-// the re-evaluation notification-resolver.mjs forces with its "?bust=N" key.
+// Tauri webview. State lives on globalThis so it survives the re-evaluation
+// notification-resolver.mjs forces with its "?bust=N" key.
 //
-//   mode "ok"             -> isPermissionGranted reports `granted`, notifications send
+//   mode "ok"             -> permission follows `granted`, notifications send
 //   mode "send-fails"     -> sendNotification throws (IPC error)
-//   mode "module-missing" -> the module throws on evaluation, which is what
-//                            `await import(...)` does when the notification
-//                            capability is absent from src-tauri/capabilities
+//   mode "module-missing" -> the module throws on evaluation, as `await import()`
+//                            does when the capability is absent from src-tauri
 
 const control = (globalThis.__TAURI_NOTIFICATION_STUB__ ??= {
   sent: [],

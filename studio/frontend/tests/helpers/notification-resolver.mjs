@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The same two rules clipboard-resolver.mjs applies, for the notification plugin:
+// clipboard-resolver.mjs's two rules, for the notification plugin:
 //
-//   1. "@tauri-apps/plugin-notification" -> a local stub, because the real package
-//      only resolves inside a Tauri webview.
+//   1. "@tauri-apps/plugin-notification" -> a local stub; the real package only
+//      resolves inside a Tauri webview.
 //   2. A "?bust=N" query on the importer is copied onto every src module it pulls
-//      in. lib/api-base computes `isTauri` once, at module evaluation, and
-//      lib/native-notifications caches the permission grant and its sent-key set in
-//      module scope, so the only way to exercise more than one environment in a
-//      single process is to evaluate the whole subgraph again under a fresh key.
+//      in. api-base computes `isTauri` once at module evaluation, and
+//      native-notifications caches the grant and its sent-key set in module scope,
+//      so exercising a second environment means re-evaluating the whole subgraph.
 import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
