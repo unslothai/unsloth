@@ -260,6 +260,73 @@ def test_a_fresh_start_request_id_recovers(monkeypatch):
     assert "inference request is in progress" not in str(second.value.detail)
 
 
+def test_a_resolved_start_request_id_still_replays_under_the_guard(monkeypatch):
+    """The transient guard must not swallow the idempotent replay.
+
+    An agent that retries an ACCEPTED start (its first response was lost) while an
+    unrelated inference request is in flight has to hear "your job is queued", not a
+    fresh 409 telling it the start never happened."""
+    route = _load_training_route("training_route_guard_replay_test")
+    backend = _arm(monkeypatch, route, inflight = 1)
+
+    backend.reserve_start_request("agent-accepted", "job-accepted")
+    backend.resolve_start_request(
+        "agent-accepted",
+        state = "accepted",
+        message = "Training started",
+    )
+
+    response = asyncio.run(_call(route, _config(start_request_id = "agent-accepted")))
+
+    assert response.status == "queued"
+    assert response.job_id == "job-accepted"
+    assert "inference request is in progress" not in str(response.message)
+
+
+def test_a_cancelled_start_request_id_replays_and_keeps_its_tombstone(monkeypatch):
+    """A retry blocked by the guard must still refresh the cancellation tombstone.
+
+    Otherwise the tombstone expires mid-inference and the next retry reserves the id
+    afresh and spawns the very run the user cancelled."""
+    import time
+
+    from core.training import training as training_module
+
+    route = _load_training_route("training_route_guard_tombstone_test")
+    backend = _arm(monkeypatch, route, inflight = 1)
+
+    outcome, cancelled = backend.cancel_start_request("agent-cancelled")
+    assert outcome == "cancelled"
+
+    # Wind the tombstone to the brink of its TTL: without a refresh the next retry
+    # would find nothing and start the job.
+    backend._start_cancel_tombstones["agent-cancelled"] = (time.monotonic() + 0.5, cancelled)
+
+    response = asyncio.run(_call(route, _config(start_request_id = "agent-cancelled")))
+
+    assert response.status == "error"
+    assert response.error_code == training_module._START_CANCELLED_ERROR_CODE
+    assert "inference request is in progress" not in str(response.message)
+
+    expires_at, _ = backend._start_cancel_tombstones["agent-cancelled"]
+    assert expires_at > time.monotonic() + (
+        training_module._START_CANCEL_TOMBSTONE_TTL_S / 2
+    )
+
+
+def test_an_unknown_start_request_id_is_still_refused_without_a_record(monkeypatch):
+    """The replay lookup must not resurrect the poisoning bug this PR exists to fix."""
+    route = _load_training_route("training_route_guard_replay_fresh_test")
+    backend = _arm(monkeypatch, route, inflight = 1)
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(_call(route, _config(start_request_id = "agent-never-seen")))
+
+    assert excinfo.value.status_code == 409
+    assert backend.get_start_request("agent-never-seen") is None
+    assert backend.peek_start_request("agent-never-seen") is None
+
+
 # --------------------------------------------------------------------------------------
 # FINDING 2: what the MCP client sees on the 409
 # --------------------------------------------------------------------------------------
