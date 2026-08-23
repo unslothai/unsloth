@@ -337,11 +337,20 @@ test("a print upgrades the whole document, and never puts it back", () => {
     !/addEventListener\(\s*"afterprint"/.test(SOURCE),
     "reverting on afterprint would be exactly the bidirectional edge this design removes",
   );
-  const assignments = SOURCE.match(/printed = (?:true|false)/g) ?? [];
-  assert.deepEqual(
-    assignments,
-    ["printed = false", "printed = true"],
-    "`printed` is declared false and set true exactly once; nothing may clear it again",
+  // A PRINT IS NOT A SESSION-WIDE SWITCH. This was a module-global `printed` folded into every
+  // future fence's `reached`, which measured, at the 100K rung, as: print once, navigate away
+  // inside the app and back, and the thread remounts with 0 of 56 fences deferred, 41,410 spans
+  // and 61,747 elements instead of 53, 2,458 and 22,794. One Ctrl+P turned the default off for
+  // the rest of the tab.
+  assert.ok(
+    /const reached = !enabled \|\| !CAN_OBSERVE \|\| streaming \|\| latched;/.test(SOURCE),
+    "no print state may be folded into a fence's reached: a fence mounted after a print was not " +
+      "on the printed page and has nothing to latch for",
+  );
+  assert.ok(
+    /const upgradeEverythingForPrint = \(\): void => \{\s*latchNow\(\[\.\.\.unreached\]\);\s*\};/
+      .test(SOURCE),
+    "a print latches exactly what is unreached when it happens, and every print does it again",
   );
 });
 

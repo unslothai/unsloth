@@ -323,15 +323,26 @@ const unwatchScrolling = (): void => {
  * DevTools' print emulation change the media query without ever firing it, and a PDF export is
  * exactly the path a reader uses to keep a copy.
  *
- * Still one way only: `printed` never goes back to false, so a print permanently upgrades the
- * thread rather than putting it back afterwards. Reverting on `afterprint` would be the
- * bidirectional edge this whole design exists to avoid.
+ * WHAT A PRINT UPGRADES IS THE DOCUMENT THAT WAS PRINTED, and nothing else.
+ *
+ * This was a module-global `printed` flag folded into every future fence's `reached`, and that is
+ * a session-wide latch rather than a monotonic one: measured at the 100K rung, a thread holding 53
+ * of 56 fences deferred, 2,458 spans and 22,794 elements printed once and then, after navigating
+ * away inside the app and back, remounted with 0 deferred, 41,410 spans and 61,747 elements. One
+ * Ctrl+P turned the whole default off for the rest of the tab's life, including threads that were
+ * never on the printed page.
+ *
+ * So the print latches the fences that are on the page WHEN IT HAPPENS, which is exactly the set
+ * that is about to be printed, and a fence mounted afterwards defers again as usual. Still one way
+ * only, and for the same reason as everywhere else here: `latchNow` can only latch. Reverting on
+ * `afterprint` would be the bidirectional edge this whole design exists to avoid, and nothing
+ * below does it.
+ *
+ * Every print upgrades whatever is unreached at that moment, rather than the first print winning
+ * and later ones doing nothing: print, scroll somewhere new, print again, and the second page is
+ * as complete as the first.
  */
-let printed = false;
-
 const upgradeEverythingForPrint = (): void => {
-  if (printed) return;
-  printed = true;
   latchNow([...unreached]);
 };
 
@@ -502,7 +513,7 @@ export function useFenceReached(
   // Bumped when the resolved scrolling ancestor stops being one, which rebuilds the gates below
   // against the element that clips this fence now. Never read for anything else.
   const [generation, setGeneration] = useState(0);
-  const reached = !enabled || !CAN_OBSERVE || streaming || latched || printed;
+  const reached = !enabled || !CAN_OBSERVE || streaming || latched;
   const warmRef = useRef(warm);
   useEffect(() => {
     warmRef.current = warm;
