@@ -4996,9 +4996,9 @@ async def _monitored_media_request(
         # The route's own message ("No model loaded."), not the llama-server mapping.
         detail = exc.detail
         if isinstance(detail, dict):
-            # openai_error_body nests the message, but plenty of raisers pass a flat dict.
-            # .get("message") on a non-dict "error" used to raise AttributeError out of this
-            # handler, which skipped finish() and stranded the row at "running".
+            # openai_error_body nests the message, but plenty of raisers pass a flat dict:
+            # .get("message") on a non-dict "error" used to raise out of this handler,
+            # skipping finish() and stranding the row at "running".
             error = detail.get("error")
             message = error.get("message") if isinstance(error, dict) else None
             detail = message or str(detail)
@@ -5008,10 +5008,8 @@ async def _monitored_media_request(
         api_monitor.fail(monitor_id, _friendly_error(exc))
         raise
     except BaseException as exc:
-        # KeyboardInterrupt and SystemExit are not Exception, so without this arm the
-        # row never leaves "running" and the monitor keeps a dead request forever.
-        # fail_open only touches a row that is still open, so it cannot stamp an error
-        # onto one a handler above already settled.
+        # KeyboardInterrupt and SystemExit are not Exception, so without this arm the row
+        # never leaves "running". fail_open only touches a row a handler above left open.
         api_monitor.fail_open(monitor_id, _friendly_error(exc))
         raise
     api_monitor.finish(monitor_id)
@@ -12190,11 +12188,9 @@ async def openai_audio_speech(
         messages = [{"role": "user", "content": body.input}],
         max_tokens = AUDIO_GENERATION_MAX_TOKENS,
     )
-    # Same reason the image route sanitizes its opening label: model is informational here
-    # and is echoed verbatim into the row, so a failure before the relabel below (no audio
-    # model loaded, a busy backend) leaves the raw client string on a terminal row that
-    # goes out over the tunnel. An absolute path is ordinary input for a local
-    # OpenAI-compatible server, so redact it up front rather than only on success.
+    # model is informational and is echoed verbatim into the row, so a failure before the
+    # relabel below would strand the raw client string, possibly a host path, on a terminal
+    # row that goes out over the tunnel. Redact up front, not only on success.
     async with _monitored_media_request(
         request,
         model = public_model_id(body.model) or body.model,
@@ -12347,11 +12343,9 @@ async def openai_audio_transcriptions(
     # memory before the shared size check. One byte past the limit is enough to reject it.
     raw = await file.read(_MAX_AUDIO_RAW_BYTES + 1)
     if isinstance(provider_id, str):
-        # The proxied path is traffic through this server too, so it opens the same row the
-        # sidecar path does; without this a saved STT connection is still invisible.
-        # Path-free like the sidecar relabel below: this path never relabels at all, so
-        # the client's raw string is what the row keeps for its whole life. Provider ids
-        # ("whisper-1", "openai/whisper-large-v3") are returned unchanged.
+        # The proxied path is traffic through this server too, so it opens the same row;
+        # without this a saved STT connection is invisible. It never relabels, so the
+        # opening label is what the row keeps for life, hence the path-free treatment.
         _requested = (model or "").strip()
         async with _monitored_media_request(
             request,
@@ -12373,13 +12367,10 @@ async def openai_audio_transcriptions(
             )
             api_monitor.set_reply(monitor_id, _external_transcript_preview(response))
         return response
-    # Refused before any work, like the response_format check above: the sidecar reports
-    # back the language it was given and has no detection of its own, so an auto-detect
-    # request has nothing truthful to put in verbose_json's required language field.
-    # Naming a language the engine never detected would label a Japanese clip "en", which
-    # is wrong in a way the caller cannot see, so this refuses instead of guessing.
-    # isinstance, like the provider_id check above: these are also reached with the raw
-    # Form default when the handler is called directly rather than through the router.
+    # Refused before any work, like the response_format check above: the sidecar echoes the
+    # language it was given and detects none, so an auto-detect request has nothing truthful
+    # for verbose_json's required language field, and guessing would silently label a
+    # Japanese clip "en". isinstance because a direct call passes the raw Form default.
     if fmt == "verbose_json" and not (isinstance(language, str) and language.strip()):
         raise HTTPException(
             status_code = 501,
@@ -12432,10 +12423,8 @@ async def openai_audio_transcriptions(
         return JSONResponse(
             content = {
                 "task": "transcribe",
-                # OpenAI types both of these as required, so a null for either fails
-                # validation inside the official clients before the caller ever sees the
-                # transcript. The request is refused above when there is no language to
-                # report, so this always has one.
+                # Both are required by OpenAI's schema, so a null fails validation inside
+                # the official clients. The request is refused above with no language.
                 "language": str(result.get("language") or language).strip(),
                 # Unlike the language, this is not a guess: duration is None only for a
                 # clip that decoded to no samples, and that clip really is zero seconds.
@@ -26634,9 +26623,8 @@ async def openai_image_generations(
 
     With media auto-switch on, ``model`` names the image model to serve on and is loaded
     when it is not the resident one; with it off ``model`` stays informational."""
-    # Refused before the row is opened, like the response_format check on /audio/speech and
-    # /audio/transcriptions: a request rejected before any work is not API traffic worth a
-    # red error row in the monitor.
+    # Refused before the row is opened, as on /audio/speech: a request rejected before any
+    # work is not traffic worth a red error row.
     if body.stream:
         raise HTTPException(
             status_code = 400,
@@ -26650,9 +26638,8 @@ async def openai_image_generations(
         raise HTTPException(
             status_code = 400, detail = openai_error_body(str(exc), status = 400, param = "size")
         )
-    # public_model_id at the relabel site only covers a successful generation; a load or
-    # generation failure would otherwise leave the raw client string, which may be a host
-    # path, on a row that goes out over the tunnel.
+    # The relabel below only covers a successful generation, so a load or generation failure
+    # would strand the raw client string, possibly a host path, on a tunnelled row.
     async with _monitored_media_request(
         request,
         model = public_model_id(body.model) or body.model,
