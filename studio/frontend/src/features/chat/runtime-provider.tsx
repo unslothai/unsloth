@@ -1826,9 +1826,14 @@ function NonceThreadResumeRestore({
     if (useChatRuntimeStore.getState().activeThreadId != null) {
       return;
     }
-    // A runtime-made id has no row, so publishing it just makes ThreadScopedSettingsSync
-    // discard it again; the remote id is the one that pairs.
-    if (!mainThreadId || isAssistantLocalThreadId(mainThreadId)) {
+    // Published raw, exactly as ActiveThreadSync publishes it on the paths this stands in
+    // for. A `__LOCALID_` id is NOT a reason to skip: createStudioDbAdapter.initialize()
+    // writes the row under whatever id assistant-ui minted and hands that same id back, so
+    // a materialized new chat keeps it, and refusing it here would make this restore a
+    // no-op for the ordinary case. Consumers that need a persisted id filter for
+    // themselves (chat-page's persistedActiveThreadId, ThreadScopedSettingsSync), which is
+    // the convention every other publisher already relies on.
+    if (!mainThreadId) {
       return;
     }
     useChatRuntimeStore.getState().setActiveThreadId(mainThreadId);

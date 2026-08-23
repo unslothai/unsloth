@@ -159,15 +159,37 @@ def test_a_fresh_new_chat_is_not_attached_on_its_first_render() -> None:
     assert out["activeThreadId"] is None
 
 
-def test_an_unpersisted_runtime_id_is_not_published() -> None:
-    """A local id has no row, so ThreadScopedSettingsSync discards it again -- and the
-    round trip it would open can only 404."""
+def test_a_materialized_chat_keeping_its_runtime_id_is_still_restored() -> None:
+    """The ordinary case, and the one an id-prefix guard would have skipped.
+
+    ``createStudioDbAdapter.initialize()`` writes the row under whatever id assistant-ui
+    minted and returns that same id, so a ``?new=`` chat that has been sent to keeps its
+    ``__LOCALID_`` id. Refusing to restore that is refusing to restore almost every chat
+    this component exists for. It is published raw, exactly as ActiveThreadSync publishes
+    it elsewhere; the consumers that need a persisted id filter for themselves."""
     out = _run(
         """
         const render = mount(true);
         render(false, "__LOCALID_7");
+        state.activeThreadId = null;
         sets.length = 0;
         render(true, "__LOCALID_7");
+        report({});
+        """
+    )
+    assert out["sets"] == ["__LOCALID_7"]
+    assert out["activeThreadId"] == "__LOCALID_7"
+
+
+def test_a_view_with_no_thread_at_all_publishes_nothing() -> None:
+    """Nothing to attach to. `null` is already the state, and writing it again would
+    clear the contextUsage the store keys off it."""
+    out = _run(
+        """
+        const render = mount(true);
+        render(false, null);
+        sets.length = 0;
+        render(true, null);
         report({});
         """
     )
