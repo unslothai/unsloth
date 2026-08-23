@@ -8,10 +8,10 @@ are shorter than clientHeight -- a compact tail in a tall viewport -- the first 
 cannot fill the screen, and this measures how big the empty band is and how long it lasts.
 
 Measured on a 144-message thread whose last 24 messages are one-word replies: at 900, 1080, 1440,
-1800, 1840 and 1860px of clientHeight there is no band the settled thread does not also have,
-because 16 one-word rows are 1639px and the viewport's own inset and spacer carry that to 1890px.
-Above 1890px there is one -- 10px at 1900, 110px at 2000, 270px at 2160 -- for 287 to 499ms until
-the first widening chunk closes it. See INITIAL_MESSAGES.
+1800, 1840 and 1860px of clientHeight there is no band the settled thread does not also have (16
+one-word rows are 1639px, which the viewport's inset and spacer carry to 1890px). Above 1890px
+there is one -- 10px at 1900, 110px at 2000, 270px at 2160 -- for 287 to 499ms until the first
+widening chunk closes it. See INITIAL_MESSAGES.
 
 Prints and exits 0 on any measurement. Not a gate.
 
@@ -52,8 +52,8 @@ window.__nextPaint = () => new Promise((resolve) =>
   requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 """
 
-# Re-open and sample the viewport every frame from the first painted row until the thread stops
-# growing, so the gap is a timeline rather than a single reading.
+# Sample the viewport every frame from the first painted row until the thread stops growing, so the
+# gap is a timeline rather than a single reading.
 RUN_JS = """
 async ([total, settleFrames]) => {
   const api = window.__heavyThread;
@@ -122,16 +122,16 @@ def run_engine(pw, engine: str) -> dict:
             result = page.evaluate(RUN_JS, [plan["messages"], 6])
             samples = result["samples"]
             first = samples[0]
-            # Empty band below the last mounted row, measured against the SETTLED value of the same
-            # quantity, not zero: the bottom spacer and sticky footer leave a band either way.
+            # Measured against the SETTLED value of the same quantity, not zero: the bottom spacer
+            # and sticky footer leave a band either way.
             baseline = samples[-1]["gapBottom"]
 
             def netgap(s):
                 return max(0, s["gapBottom"] - baseline)
 
             gap0 = netgap(first)
-            # Time on screen, measured to the frame that CLOSES the gap rather than the last one
-            # showing it, so a single-frame gap reads as that frame's duration and not 0ms.
+            # Measured to the frame that CLOSES the gap, not the last one showing it, so a
+            # single-frame gap reads as that frame's duration and not 0ms.
             lingering = [s for s in samples if netgap(s) > 8]
             if lingering:
                 closed = next(
@@ -176,8 +176,8 @@ def run_engine(pw, engine: str) -> dict:
         )
         page.screenshot(path = str(OUT / f"{LABEL}-{engine}-{height}-firstcommit.png"))
         out[height] = rounds
-        # After every height, not once at the end: a browser dying on the tallest viewport used to
-        # take every earlier measurement with it.
+        # After every height: a browser dying on the tallest viewport used to take every earlier
+        # measurement with it.
         (OUT / f"{LABEL}-{engine}-rounds.json").write_text(
             json.dumps(out, indent = 1), encoding = "utf-8"
         )

@@ -1308,38 +1308,31 @@ def print_table(results: dict) -> None:
         info(name.ljust(label_width) + "".join(cell.rjust(cell_width) for cell in cells))
 
 
-# The double-rAF waits inside `reopen ms` that are OBSERVATION rather than latency.
+# The double-rAF waits inside `reopen ms` that are OBSERVATION rather than latency: exactly one.
+# Reopening is driven by a React state update, so the count check right after openThread() always
+# still sees the unmounted tree and the loop always pays one __nextPaint(). That wait is the
+# instrument, not the application. Every FURTHER wait is not overhead: the poll runs in the same rAF
+# queue as the application's own commits, so those waits ARE it mounting rows.
 #
-# Exactly one. Reopening is driven by a React state update, so the count check immediately after
-# openThread() always still sees the unmounted tree, and the loop always pays one __nextPaint()
-# before a completed reopen can be seen at all. That wait is the instrument, not the application,
-# and it comes out of the number.
-#
-# Every FURTHER wait the loop pays is not overhead. The poll runs in the same rAF queue as the
-# application's own commits, so on a build that brings a long thread back over several animation
-# frames those waits ARE the application mounting rows, and the time inside them is real
-# convergence latency that a reader waits through.
-#
-# This is why the count is a constant and not `_floor_from("reopen", "paintWaits")`. The measured
-# count is 1 on a build that rebuilds in one commit and rises with thread size on one that mounts
-# progressively (1 at 25K, 8 at 100K, 24 at 300K on a 220-message fixture), so subtracting all of
-# them removed ~33ms from one arm's 300K cell and ~800ms from the other's. That is asymmetric
-# between the two arms of a comparison AND grows with the axis being varied: it reported a reopen
-# curve that rises faster than the single-commit build's (7.60x against 7.08x from 25K to 300K) as
-# one that rises slower (5.07x), which is the opposite sign. A floor exists to remove a CONSTANT
-# the instrument adds, and the moment it tracks the thing being measured it is no longer a floor.
+# Hence a constant rather than `_floor_from("reopen", "paintWaits")`. The measured count is 1 on a
+# build that rebuilds in one commit and rises with thread size on one that mounts progressively (1 at
+# 25K, 8 at 100K, 24 at 300K on a 220-message fixture), so subtracting all of them removed ~33ms from
+# one arm's 300K cell and ~800ms from the other's: asymmetric between arms AND growing with the axis
+# being varied, turning a reopen curve rising faster than the single-commit build's (7.60x against
+# 7.08x from 25K to 300K) into one rising slower (5.07x). A floor removes a CONSTANT the instrument
+# adds; the moment it tracks the thing being measured it is no longer a floor.
 REOPEN_OBSERVATION_FLOOR = 1
 # `<action> wall ms` spans the whole recorder window and normally takes the window's measured
-# `paint_waits`, because for every other action those waits are harness-imposed idle time between
-# driven steps. Reopen is the exception for the reason above: its window holds the close loop and
-# the reopen loop, and on a progressive-mount build the reopen loop's waits are the application's
-# commit frames. The observation floors in that window are the two terminal waits, one per loop.
+# `paint_waits`, since for every other action those waits are harness-imposed idle time between
+# driven steps. Reopen is the exception for the reason above: its window holds the close loop and the
+# reopen loop, and on a progressive-mount build the reopen loop's waits are the application's commit
+# frames. The observation floors in that window are the two terminal waits, one per loop.
 WALL_FLOOR_OVERRIDES = {"reopen": 1 + REOPEN_OBSERVATION_FLOOR}
 
 
 def _wall_floor(action: str):
-    """The floor for `<action> wall ms`: the measured window count, unless the action overrides it
-    because part of that count is application work rather than instrument idle."""
+    """The measured window count, unless the action overrides it because part of that count is
+    application work rather than instrument idle."""
     override = WALL_FLOOR_OVERRIDES.get(action)
     return _floor_from(action, "paint_waits") if override is None else override
 
@@ -1390,11 +1383,9 @@ GROWTH_AXES = tuple(
         # close. The window count is zero here and would remove a floor that is really there.
         ("menu open+close ms", _action("menu", "open_close_ms"), 2),
         ("delete ms", _action("delete", "ms"), 1),
-        # The OBSERVATION floor only, and deliberately a constant rather than the measured
-        # `paintWaits`: see REOPEN_OBSERVATION_FLOOR above. Leaving it at 0 is still wrong, that
-        # left a full ~33ms vsync floor of constant baseline in both ends; subtracting all the
-        # waits was worse, because the count tracks the progressive mount and so removes the
-        # thing the axis exists to measure.
+        # The OBSERVATION floor only, a constant rather than the measured `paintWaits`: see
+        # REOPEN_OBSERVATION_FLOOR. 0 leaves a full ~33ms vsync floor in both ends; subtracting all
+        # the waits is worse, since the count tracks the thing the axis exists to measure.
         ("reopen ms", _action("reopen", "ms"), REOPEN_OBSERVATION_FLOOR),
     ]
 )
@@ -1604,14 +1595,12 @@ def print_growth(results: dict, report: dict) -> None:
 
 
 # The declared double-rAF count for each axis whose action reports how many it actually paid.
-# GROWTH_AXES holds the declaration; the action holds the observation; a harness that subtracts a
-# floor the metric never waited out invents time it never spent. Only reopen reports its waits
-# today, so only reopen is checkable here; the entry exists so adding a counter to another action
-# wires it in by name.
+# GROWTH_AXES holds the declaration, the action holds the observation, and a harness that subtracts a
+# floor the metric never waited out invents time it never spent. Only reopen reports its waits today;
+# the entry exists so adding a counter to another action wires it in by name.
 #
-# The check is a LOWER BOUND, not equality. Paying more waits than are subtracted is the normal
-# state of a progressive mount and is not a fault: those extra waits are the application
-# committing rows, and REOPEN_OBSERVATION_FLOOR keeps them in the number on purpose.
+# A LOWER BOUND, not equality: paying more waits than are subtracted is the normal state of a
+# progressive mount, and REOPEN_OBSERVATION_FLOOR keeps those extra waits in the number on purpose.
 # axis name in GROWTH_AXES -> (action, the field on that action reporting its own wait count)
 FLOOR_COUNTERS = {"reopen ms": ("reopen", "paintWaits")}
 
@@ -1652,10 +1641,9 @@ def floor_declaration_problems(results: dict) -> list[str]:
                     )
                     continue
                 # Resolved against THIS row, so an axis whose floor is read from the row (see
-                # `_floor_from`) is verified as what it will actually subtract rather than
-                # compared as a callable and reported wrong every time. A hand-declared literal
-                # resolves to itself, so it is still caught the moment it exceeds the waits the
-                # action paid, which is the whole point of this check.
+                # `_floor_from`) is verified as what it will actually subtract rather than compared as
+                # a callable and reported wrong every time. A hand-declared literal resolves to
+                # itself, so it is still caught the moment it exceeds the waits the action paid.
                 declared = resolve_floor(declared_floor(axis_name), row)
                 if observed >= declared:
                     continue

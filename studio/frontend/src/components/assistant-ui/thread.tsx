@@ -1539,7 +1539,7 @@ export const Thread: FC<{
   // viewport on thread switches and the scroll listener must re-attach.
   const [viewportEl, setViewportEl] = useState<HTMLElement | null>(null);
   // Same element in an identity-stable ref, so ProgressiveMessages can read the viewport without a
-  // prop that would rebuild its row array on thread switch. A ref rather than a document-wide query
+  // prop that would rebuild its row array on thread switch. A ref rather than a document query
   // because the Compare panes each mount their own Thread.
   const viewportElRef = useRef<HTMLElement | null>(null);
   const composedViewportRef = useCallback(
@@ -1768,12 +1768,11 @@ export const Thread: FC<{
               </AuiIf>
             )}
 
-            {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to
-            the tail and mounts the rest over the following frames. Nothing unmounts and the
-            document converges to the tree this rendered before; consumers that cannot wait call
-            completeProgressiveMounts. It takes the propless slot #9042 introduced, for the same
-            reason: React's bail-out needs one shared element per row. See
-            progressive-mount-controller.ts. */}
+            {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to the
+            tail and mounts the rest over the following frames. Nothing unmounts, so the document
+            converges to the tree this rendered before; consumers that cannot wait call
+            completeProgressiveMounts. Takes the propless slot #9042 introduced, for the same reason:
+            React's bail-out needs one shared element per row. See progressive-mount-controller.ts. */}
             <ProgressiveMessages
               renderMessage={renderThreadMessage}
               resetKey={runtimeThreadId}

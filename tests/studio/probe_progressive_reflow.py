@@ -7,11 +7,11 @@ While the mount window is open the viewport has native scroll anchoring disabled
 the browser absorbs a `<pre>` swapping in Shiki output, a KaTeX resize or an image landing. This
 injects one such reflow of a known size and measures whether the reader moves.
 
-Measured with it: 600px injected above a detached reader mid-build-in moved them the full 600px
-before the between-widenings compensation existed, and 0px after, against 0px on the merge base.
-Its own first two versions measured nothing, once by sampling before the probe's own smooth-scroll
-had finished (4332px of "drift" on both arms) and once by anchoring on the topmost row rather than
-a visible one, so read the guards as load-bearing.
+Measured: 600px injected above a detached reader mid-build-in moved them the full 600px before the
+between-widenings compensation existed, and 0px after, against 0px on the merge base. Its own first
+two versions measured nothing, once by sampling before the probe's own smooth-scroll had finished
+(4332px of "drift" on both arms) and once by anchoring on the topmost row rather than a visible
+one, so read the guards as load-bearing.
 
 Not a gate. Prints and exits 0 on any measurement.
 
@@ -56,8 +56,8 @@ def info(m: str) -> None:
     print(f"[pm-reflow] {m}", flush = True)
 
 
-# Re-open, scroll the reader up, grow one row ABOVE them by a known amount while the window is
-# still open, and watch the row they are looking at.
+# Re-open, scroll the reader up, grow one row ABOVE them by a known amount while the window is still
+# open, and watch the row they are looking at.
 RUN_JS = """
 async ([growPx, settleMs]) => {
   const api = window.__heavyThread;

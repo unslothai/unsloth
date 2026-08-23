@@ -10,16 +10,13 @@ messages ABOVE them. If the correction there is wrong, or missing, what they are
 down the page every widening frame: the regression Open WebUI shipped and reverted
 (open-webui#23990).
 
-The probe re-opens the thread, scrolls up hard on the frame the first row appears, then samples the
-document-space top of a chosen visible message every frame until the thread has converged. A
-correct build holds it still; a broken one shows it walking.
+The probe re-opens the thread, scrolls up hard on the frame the first row appears, then samples a
+chosen visible message's position every frame until the thread has converged. A correct build holds
+it still; a broken one shows it walking.
 
 Not a gate. Prints and exits 0 on any measurement; exits non-zero only when the fixture did not
-land, which would mean the numbers describe nothing.
-
-It needs #9016's heavy-thread harness, which is not merged, so on this branch it exits with a
-message naming the three files it is missing rather than running. That is the same dependency
-every measurement in this PR has.
+land, which would mean the numbers describe nothing. It needs #9016's heavy-thread harness, so
+without that it exits naming the three files it is missing.
 
     SMOKE_PORT=5480 python tests/studio/probe_progressive_anchor.py
 """
@@ -37,9 +34,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     from playwright_heavy_thread import RECORDER_INIT  # noqa: E402
 except ModuleNotFoundError as exc:  # pragma: no cover - the message IS the behaviour
-    # #9016 is not merged, so its fixture files are absent and this import is where that becomes
-    # visible. Say so instead of raising a bare ModuleNotFoundError, and do not vendor a copy: these
-    # numbers are only comparable to #9016's while there is exactly one harness.
+    # Say so instead of raising a bare ModuleNotFoundError, and do not vendor a copy: these numbers
+    # are only comparable to #9016's while there is exactly one harness.
     raise SystemExit(
         "probe_progressive_anchor needs #9016's heavy-thread harness, which is not on this "
         "branch yet: tests/studio/playwright_heavy_thread.py plus "
@@ -62,8 +58,8 @@ LABEL = os.environ.get("SMOKE_LABEL", "tree")
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/progressive-anchor"))
 OUT.mkdir(parents = True, exist_ok = True)
 
-# How far up to scroll on the frame the thread comes back. Two viewports puts the reader clear of
-# the bottom, so the hook's follow window is disarmed rather than merely expired.
+# Two viewports puts the reader clear of the bottom, so the hook's follow window is disarmed rather
+# than merely expired.
 SCROLL_UP_PX = int(os.environ.get("SMOKE_ANCHOR_SCROLL_PX", "4000"))
 SETTLE_MS = int(os.environ.get("SMOKE_ANCHOR_SETTLE_MS", "8000"))
 
@@ -72,8 +68,8 @@ def info(message: str) -> None:
     print(f"[anchor] {message}", flush = True)
 
 
-# Stage 1, in the page: unmount and re-open, returning as soon as the first row paints so the caller
-# can scroll up while the widening is still in flight.
+# Stage 1: unmount and re-open, returning as soon as the first row paints so the caller can scroll up
+# while the widening is still in flight.
 REOPEN_JS = """
 async () => {
   const api = window.__heavyThread;
@@ -107,9 +103,9 @@ async () => {
 }
 """
 
-# Stage 3, in the page: pick an on-screen message and sample its position every frame until the
-# thread converges. Document space (viewport offset plus scrollTop) is recorded alongside viewport
-# space to isolate movement caused by rows inserted above.
+# Stage 3: pick an on-screen message and sample its position every frame until the thread converges.
+# Document space (viewport offset plus scrollTop) is recorded alongside viewport space to isolate
+# movement caused by rows inserted above.
 SAMPLE_JS = """
 async ([before, settleMs]) => {
   const api = window.__heavyThread;
@@ -182,8 +178,8 @@ def main() -> int:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless = True, args = chromium_launch_args())
             context = browser.new_context(viewport = {"width": 1280, "height": 900})
-            # Reuse #9016's instrumentation: __nextPaint is the double-rAF this samples on, and it
-            # must be the SAME clock the re-open column uses or the numbers are not comparable.
+            # Reuse #9016's instrumentation: __nextPaint is the double-rAF this samples on, and must
+            # be the SAME clock the re-open column uses or the numbers are not comparable.
             context.add_init_script(RECORDER_INIT)
             page = context.new_page()
             page.goto(PAGE, wait_until = "domcontentloaded")
@@ -202,16 +198,15 @@ def main() -> int:
                     info("fixture did not land")
                     return 1
                 # A REAL wheel from the input pipeline, over a message rather than the scroll
-                # container. A synthetic dispatchEvent on the viewport does not detach: the hook
-                # asks innerScrollWillConsumeUpward(e.target) whether something nested will consume
-                # the gesture, and an event dispatched ON the viewport answers about the viewport
-                # itself. The first version did that and its own guard caught it.
+                # container: a synthetic dispatchEvent on the viewport does not detach, since the
+                # hook asks innerScrollWillConsumeUpward(e.target) and an event dispatched ON the
+                # viewport answers about the viewport itself.
                 if not opened["widenedBeforeScroll"]:
                     info("no widening landed before the scroll; the fixture is not long enough")
                     return 1
                 page.mouse.move(640, 450)
                 page.mouse.wheel(0, -SCROLL_UP_PX)
-                # The viewport is scroll-smooth, so the wheel animates. Let it finish or the first
+                # The viewport is scroll-smooth, so let the wheel animation finish or the first
                 # samples record the probe's own gesture as drift.
                 page.wait_for_function(
                     """() => {

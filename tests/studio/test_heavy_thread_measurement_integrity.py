@@ -812,15 +812,12 @@ def floor_row(
 
 
 def test_reopen_subtracts_only_the_observation_floor() -> None:
-    """A CONSTANT, and one. Reopen is driven by a React state update, so the count check straight
-    after openThread() always still sees the unmounted tree and the loop always waits out one
-    paint before a finished reopen can be observed at all. That wait is the instrument.
-
-    Every further wait is not. The poll shares the rAF queue with the application's own commits,
-    so on a progressive-mount build those waits are the application mounting rows and the time in
-    them is real convergence latency. Reading the measured `paintWaits` here subtracted all of
-    them, which is a subtraction that grows with thread size and differs between the two arms of
-    a comparison -- it removed ~800ms from one arm's 300K cell and ~33ms from the other's."""
+    """A CONSTANT, and one: reopen is driven by a React state update, so the count check straight
+    after openThread() always still sees the unmounted tree and the loop always waits out one paint.
+    That wait is the instrument; every further one is not, since the poll shares the rAF queue with
+    the application's own commits. Reading the measured `paintWaits` subtracted all of them, a
+    subtraction that grows with thread size and differs between the two arms of a comparison: ~800ms
+    off one arm's 300K cell against ~33ms off the other's."""
     floored = HARNESS.declared_floor("reopen ms")
     assert not callable(floored), "reopen ms reads its floor from the row again"
     assert floored == 1 == HARNESS.REOPEN_OBSERVATION_FLOOR, floored
@@ -832,28 +829,24 @@ def test_a_matching_floor_declaration_is_accepted() -> None:
 
 
 def test_a_multi_commit_reopen_is_not_a_mis_declared_floor() -> None:
-    """The progressive mount window mounts a long thread over several frames, so `ms` -- which
-    runs until messageCount() reaches `before` -- spans one paint wait per widening commit. Ten is
-    an ordinary reading at 100K, not a harness fault, and reporting it as one stops the run after
-    every measurement has already been taken."""
+    """The mount window mounts a long thread over several frames, so `ms` -- which runs until
+    messageCount() reaches `before` -- spans one paint wait per widening commit. Ten is an ordinary
+    reading at 100K, not a harness fault."""
     assert HARNESS.floor_declaration_problems(floor_row(10)) == []
 
 
 def test_subtracting_a_floor_the_reopen_never_paid_is_a_failure() -> None:
-    """The other side of the lower bound. Equality is no longer required, so the check has to
-    still catch the direction that invents time: a cell whose reopen resolved without waiting a
-    paint at all, while the axis removes one."""
+    """Equality is no longer required, so the check must still catch the direction that invents
+    time: a cell whose reopen resolved without waiting a paint, while the axis removes one."""
     problems = HARNESS.floor_declaration_problems(floor_row(0))
     assert len(problems) == 1 and "never waited out" in problems[0], problems
 
 
 def test_the_progressive_mount_frames_stay_in_the_reopen_number() -> None:
-    """End to end, and the regression this file exists to hold.
-
-    Two arms of one comparison at the same size: a single-commit build that pays one wait and a
-    progressive-mount build that pays twenty-four for the same 220 messages. Subtracting the
-    measured count made the slower arm read as the faster one. Only the shared observation floor
-    comes out, so the arms stay ordered the way the clock ordered them."""
+    """Two arms of one comparison at the same size: a single-commit build paying one wait and a
+    progressive-mount build paying twenty-four for the same 220 messages. Subtracting the measured
+    count made the slower arm read as the faster one. Only the shared observation floor comes out,
+    so the arms stay ordered the way the clock ordered them."""
     pick = next(p for name, p, _f in HARNESS.GROWTH_AXES if name == "reopen ms")
     floored = HARNESS.declared_floor("reopen ms")
 
@@ -1324,13 +1317,10 @@ def test_whole_window_axes_use_the_measured_floor(name) -> None:
 
 
 def test_reopen_is_a_partial_window_axis_with_a_constant_floor() -> None:
-    """Reopen is the third kind, and it is neither of the two below.
-
-    `ms` is measured from `reopenStarted`, so it does not span the recorder window and cannot take
-    the window's `paint_waits`. It cannot take its own `paintWaits` either, because that count is
-    a property of how many frames the APPLICATION took to mount, which is the thing the axis is
-    measuring. What it carries is one observation wait, always, on every build.
-    """
+    """Reopen is a third kind, neither of the two below. `ms` is measured from `reopenStarted`, so
+    it does not span the recorder window and cannot take the window's `paint_waits`; nor its own
+    `paintWaits`, which counts how many frames the APPLICATION took to mount, the thing the axis
+    measures. What it carries is one observation wait, always, on every build."""
     floored = axis_floor("reopen ms")
     assert not callable(floored), "reopen ms reads a per-row wait count again"
     assert floored == HARNESS.REOPEN_OBSERVATION_FLOOR == 1, floored
@@ -1338,9 +1328,9 @@ def test_reopen_is_a_partial_window_axis_with_a_constant_floor() -> None:
 
 def test_the_reopen_wall_axis_does_not_take_the_window_count_either() -> None:
     """`reopen wall ms` spans the close loop and the reopen loop, so the window's `paint_waits`
-    carries the progressive mount's commit frames for the same reason `reopen ms` does. Its
-    honest floor is the two terminal observation waits, one per loop. Every other action keeps
-    the measured window count, where those waits really are harness idle between driven steps."""
+    carries the mount's commit frames for the same reason `reopen ms` does. Its honest floor is the
+    two terminal observation waits, one per loop. Every other action keeps the measured window
+    count, where those waits really are harness idle between driven steps."""
     floored = axis_floor("reopen wall ms")
     assert not callable(floored), "reopen wall ms reads the window count again"
     assert floored == 2, floored
