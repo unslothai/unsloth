@@ -1062,6 +1062,7 @@ class ExportBackend:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         imatrix_file = None,
+        private: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Export model in GGUF format.
@@ -1074,6 +1075,8 @@ class ExportBackend:
             push_to_hub: Whether to push to Hugging Face Hub
             repo_id: Hub repository ID
             hf_token: Hugging Face token
+            imatrix_file: Optional importance matrix file path or boolean
+            private: Whether to make the Hub repository private
 
         Returns:
             Tuple of (success: bool, message: str, output_path: Optional[str])
@@ -1265,6 +1268,7 @@ class ExportBackend:
                     self.current_tokenizer,
                     quantization_method = quant_method,
                     token = hf_token,
+                    private = private,
                     **imatrix_kw,
                 )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")

@@ -68,6 +68,11 @@ RESULT_PREFIX = "T4_SMOKE_REPORT "
 # payload empty a file the other is importing.
 KERNEL_ROOT = "/kaggle/working/t4_smoke_src"
 
+# A Kaggle GPU session is 2xT4. This is the width the packing is built for and
+# what the kernel stands down against when the allocation is short; it is not
+# a count of legs, which is now larger than it on purpose.
+SESSION_GPUS = 2
+
 
 def _kernel_root(leg: Leg) -> str:
     return f"{KERNEL_ROOT}_{leg.name}"
@@ -488,16 +493,29 @@ def build_driver(
     payloads: dict[str, dict],
     per_run_timeout: int,
     isolation: dict[str, bool] | None = None,
+    expected_gpus: int = SESSION_GPUS,
 ) -> dict:
-    """Kernel notebook that fans the payloads out one per GPU.
+    """Kernel notebook that runs the payloads across the session's GPUs.
 
     ``isolation`` maps a payload to whether its virtualenv may see the Kaggle
     image's site-packages. Per payload, not per kernel, because legs sharing a
     kernel do not share an answer: see ``Leg.system_site_packages``.
+
+    ``payloads`` may hold MORE entries than there are cards. They queue: one
+    worker per card takes the next leg only when its current one has exited, so
+    a card carries exactly one payload at a time. ``payloads`` is ordered, and
+    that order is the start order -- longest leg first, since the longest leg
+    is what sets the makespan and a greedy scheduler cannot balance around one
+    it picks up last.
+
+    ``expected_gpus`` is how many cards the packing was built for. It is what
+    the kernel stands down against, and it is deliberately NOT ``len(payloads)``
+    any more: see the guard in the generated cell.
     """
     encoded = {name: _encode_bytes(json.dumps(nb).encode("utf-8")) for name, nb in payloads.items()}
     isolation = isolation or {}
     system_site = {name: bool(isolation.get(name, True)) for name in payloads}
+    order = list(payloads)
 
     setup = f"""import base64, gzip, json, os, pathlib, subprocess, sys, threading, time
 print("{DRIVER_SENTINEL} start", flush=True)
@@ -526,19 +544,35 @@ except Exception:
     GPUS = []
 print("{DRIVER_SENTINEL}_GPUS " + json.dumps(GPUS), flush=True)
 N_GPU = len(GPUS)
+# The order payloads are STARTED in, longest expected leg first. Not
+# `sorted(PAYLOADS)`: alphabetical puts the longest leg (gptoss) last, and a
+# greedy scheduler that picks up the longest leg last cannot balance around
+# it -- it is the leg that sets the makespan. Declaration order comes from
+# legs.KERNELS, so the packing decision lives beside the legs it packs.
+ORDER = {order!r}
+
 # A shortfall is INFRASTRUCTURE, and it has to be called that HERE, before a
 # thread starts. `max(1, ...)` used to make one card look like enough: both
 # payloads were pinned to device 0, each child still saw exactly one GPU and
 # passed its own visibility assertion, and the contention came back as an OOM
 # that read like a code failure. Standing the kernel down instead produces no
 # report, which the launcher already classifies as infra rather than red.
-if N_GPU < len(PAYLOADS):
+#
+# Compared against EXPECTED_GPUS, not against the payload count. There are now
+# more payloads than cards ON PURPOSE -- they queue, one card at a time -- so
+# `N_GPU < len(PAYLOADS)` would stand down every healthy run. What still has to
+# be caught is the allocation that hands us fewer CARDS than the packing was
+# built for, which silently serialises the whole kernel onto device 0 and
+# doubles its wall clock while looking like a slow but healthy run.
+EXPECTED_GPUS = {expected_gpus}
+if N_GPU < EXPECTED_GPUS:
     print("{DRIVER_SENTINEL}_INFRA " + json.dumps(
-        {{"reason": "gpu_shortfall", "gpus": N_GPU, "payloads": len(PAYLOADS)}}),
+        {{"reason": "gpu_shortfall", "gpus": N_GPU, "payloads": len(PAYLOADS),
+          "expected_gpus": EXPECTED_GPUS}}),
         flush=True)
     raise SystemExit(
-        f"{{len(PAYLOADS)}} payload(s) need one T4 each; the allocation "
-        f"exposed {{N_GPU}}")
+        f"this kernel packs {{len(PAYLOADS)}} payload(s) across "
+        f"{{EXPECTED_GPUS}} T4(s); the allocation exposed {{N_GPU}}")
 
 for name, blob in PAYLOADS.items():
     (WORK / name).write_bytes(gzip.decompress(base64.b64decode(blob)))
@@ -636,16 +670,73 @@ def run_one(name, gpu_index, idx):
                           "seconds": round(time.time() - started, 1),
                           "error": err, "kernel": kernel,
                           "output_exists": out.exists()}}
+    # Drop this leg's venv NOW, not in the tail cell. The tail prunes venv_*
+    # only after every payload has finished, which was fine when a kernel held
+    # one payload per card and they all ran at once. Packed, that would leave
+    # every leg's tree on /kaggle/working simultaneously -- each one carries
+    # its own torch and its own NVIDIA runtime -- and the disk is not sized for
+    # that. Freeing here bounds the live count to one per card, which is what
+    # it was before the packing. The papermill output notebook and the child
+    # log are the evidence and they are NOT touched.
+    try:
+        import shutil as _sh
+        _sh.rmtree(WORK / f"venv_{{idx}}", ignore_errors=True)
+    except Exception:
+        pass
     print(f"{DRIVER_SENTINEL}_DONE " + json.dumps({{name: results[name]}}),
           flush=True)
 
-names = sorted(PAYLOADS)
+# One worker per CARD, each pulling the next leg off a shared queue, rather
+# than one thread per PAYLOAD. With more payloads than cards the old
+# `gpu_index = i % N_GPU` handed the same card to two payloads and started
+# them both at once: each child still passed its own single-visible-GPU
+# assertion, and the two of them then fought over 15GB of VRAM. A queue makes
+# a card take its next leg only once the previous one has exited, so a card
+# holds exactly one payload at any instant no matter how many are packed.
+#
+# The index passed as `idx` is the payload's position in ORDER, not the
+# worker's: it names the venv (venv_{{idx}}) and the ipykernel spec
+# (t4ci{{idx}}), which must stay distinct per PAYLOAD or two legs would share
+# an interpreter and the differing library sets this whole file exists to keep
+# apart would land in one tree.
+_queue = list(enumerate(ORDER))
+# Each card's FIRST leg is assigned here, by position, and not raced for. A
+# plain shared queue looked equivalent and was not: with payloads that finish
+# quickly -- stubs, or an install that dies in seconds -- card 0 could claim,
+# run and finish a leg before card 1 had cleared its start stagger, and a
+# two-leg kernel then ran BOTH legs on device 0. That is the silent
+# serialisation the shortfall guard exists to catch, arriving by a route the
+# guard cannot see. Seeding makes "one leg per card while there are legs to go
+# round" a property of the assignment rather than of how fast the legs happen
+# to run.
+SEEDS = _queue[:N_GPU]
+pending = _queue[N_GPU:]
+pending_lock = threading.Lock()
+
+def worker(gpu_index, seed):
+    if seed is not None:
+        # The 5s stagger the per-payload threads used to get from the start
+        # loop, kept for the same reason: two `uv venv` creations in the same
+        # instant contend on the same package cache. Only the first leg on a
+        # card needs it; later ones are already separated by however long the
+        # previous leg ran.
+        if gpu_index:
+            time.sleep(5 * gpu_index)
+        idx, name = seed
+        run_one(name, gpu_index, idx)
+    while True:
+        with pending_lock:
+            if not pending:
+                return
+            idx, name = pending.pop(0)
+        run_one(name, gpu_index, idx)
+
 threads = []
-for i, name in enumerate(names):
-    t = threading.Thread(target=run_one, args=(name, i % N_GPU, i), daemon=False)
+for gpu_index in range(N_GPU):
+    seed = SEEDS[gpu_index] if gpu_index < len(SEEDS) else None
+    t = threading.Thread(target=worker, args=(gpu_index, seed), daemon=False)
     t.start()
     threads.append(t)
-    time.sleep(5)
 for t in threads:
     t.join()
 
@@ -725,7 +816,15 @@ def build_kernel(
             reference = "" if skip_reference else None,
         )
         isolation[name] = leg.system_site_packages
-    return build_driver(payloads, per_run_timeout, isolation)
+    # min(), so a one-leg kernel (a --legs dispatch, or a debugging run) still
+    # stands down only on a genuinely empty allocation rather than demanding a
+    # second card it will never use.
+    return build_driver(
+        payloads,
+        per_run_timeout,
+        isolation,
+        expected_gpus = min(len(payloads), SESSION_GPUS),
+    )
 
 
 def main() -> int:

@@ -74,6 +74,7 @@ from core.inference.tool_stream_exec import (
     TOOL_HEARTBEAT_INTERVAL_S,
     accepts_kwarg,
     accepts_output_callback,
+    search_images_kwargs,
     stream_tool_execution,
 )
 from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
@@ -1277,6 +1278,7 @@ async def stream_with_studio_tools(
                         pass
                 if accepts_output_callback(execute_tool):
                     kwargs["output_callback"] = output_callback
+                kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
                 return execute_tool(call.tool_name, call.arguments, **kwargs)
 
             # The same wrapper the local loops run tools through: live stdout for
