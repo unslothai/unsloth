@@ -1102,7 +1102,7 @@ export const ru = {
         exportChat: "Экспортировать чат",
       },
       pastedTextThreshold: "Сворачивать длинные вставки",
-      pastedTextThresholdDescription: "Вставленный текст длиннее этого значения станет вложением .txt вместо заполнения поля сообщения.",
+      pastedTextThresholdDescription: "Вставленный текст длиннее этого значения станет вложением .txt вместо заполнения поля сообщения. Нажмите {shortcut}, чтобы всё равно вставить в поле сообщения.",
       pastedTextThresholdOff: "Выкл.",
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
