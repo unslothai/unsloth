@@ -56,21 +56,15 @@ _UNRESOLVED_PYTHON_MARKER = "No virtual environment or system Python installatio
 _MLX_MIN_VERSIONS = {"mlx": "0.22.0", "mlx-lm": "0.31.2", "mlx-vlm": "0.4.4"}
 _MLX_PACKAGE_NAMES = tuple(_MLX_MIN_VERSIONS)
 _MLX_RUNTIME_IMPORTS = ("mlx.core", "mlx_lm", "mlx_lm.sample_utils", "mlx_vlm")
-# What the self-heal INSTALLS, as opposed to the floors above, which say whether
-# an already-installed stack is usable.
+# What the self-heal INSTALLS, as opposed to the floors above, which judge a
+# stack that is already there. Pinned rather than floored because this install is
+# unattended and default-on, and mlx ships breaking changes in patch releases:
+# 0.32.1 broke model loading here (unslothai/unsloth#9466). A floor would fetch
+# whatever shipped since the user last opened Unsloth, unasked.
 #
-# This install is unattended and default-on: it runs on the normal startup path
-# without confirmation. Resolving it against a floor means any mlx release
-# published since the user last opened Unsloth gets pulled in silently, and mlx
-# ships breaking changes in patch releases. 0.32.1 replaced mx.random.state with
-# a sentinel refusing item assignment and broke model loading here
-# (unslothai/unsloth#9466, fixed in #9478); the reporter had not asked for that
-# upgrade, this code fetched it. So pin what we install, and keep the floors
-# above for judging what is already there.
-#
-# Keep in sync with unsloth-zoo's pyproject darwin deps. mlx-vlm stays a range
-# because the resolver must be free to pick 0.6.15 here, where the installer
-# overrides mlx-vlm's transformers requirement, and 0.6.4 under the plain cap.
+# Keep in sync with unsloth-zoo's pyproject darwin deps. mlx-vlm stays a range so
+# the resolver can pick 0.6.15 here, where the installer overrides mlx-vlm's
+# transformers requirement, and 0.6.4 under the plain cap.
 _MLX_INSTALL_SPECS = {
     "mlx": "==0.32.1",
     "mlx-lm": "==0.31.3",
@@ -523,7 +517,10 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
         logger.warning(
             "MLX self-heal produced an incomplete or too-old MLX stack "
             "(need %s); staying chat-only.",
-            ", ".join(MLX_PACKAGES),
+            # The floors, not MLX_PACKAGES: the gate above tests the floors, so
+            # quoting the install pins would tell someone on a usable mlx 0.33
+            # that they need exactly 0.32.1.
+            ", ".join(f"{name}>={ver}" for name, ver in _MLX_MIN_VERSIONS.items()),
         )
         return False
     return True

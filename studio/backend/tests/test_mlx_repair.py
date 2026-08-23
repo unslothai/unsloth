@@ -51,10 +51,7 @@ def test_uv_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
     # imports but breaks VLM Train/Export, and a ceiling so this unattended
     # install cannot cross a major line on its own.
     assert "mlx-vlm>=0.4.4,<0.7.0" in cmd
-    # mlx and mlx-lm are pinned, not floored. This install runs on the normal
-    # startup path without confirmation, and mlx ships breaking changes in patch
-    # releases: 0.32.1 broke model loading here (#9466). A floor would let any
-    # release published since the user last opened Unsloth in silently.
+    # Pinned, not floored: see _MLX_INSTALL_SPECS.
     assert "mlx==0.32.1" in cmd
     assert "mlx-lm==0.31.3" in cmd
     assert not [
@@ -216,6 +213,27 @@ def test_repair_rejects_inadequate_stack(monkeypatch):
     monkeypatch.setattr(mr.subprocess, "run", lambda *a, **k: _Result())
     monkeypatch.setattr(mr, "mlx_stack_available", lambda: False)
     assert mr.attempt_mlx_repair() is False
+
+
+def test_inadequate_stack_warning_names_the_floors_not_the_install_pins(monkeypatch):
+    # The gate this message reports on is mlx_stack_available(), which tests the
+    # floors. Quoting the install pins instead would tell an operator running a
+    # perfectly usable mlx 0.33 that they need exactly 0.32.1.
+    class _Result:
+        returncode = 0
+        stdout = ""
+
+    warnings = []
+    monkeypatch.setattr(mr.subprocess, "run", lambda *a, **k: _Result())
+    monkeypatch.setattr(mr, "mlx_stack_available", lambda: False)
+    monkeypatch.setattr(
+        mr.logger, "warning", lambda msg, *args, **kw: warnings.append(msg % args)
+    )
+    assert mr.attempt_mlx_repair() is False
+    (message,) = [w for w in warnings if "incomplete or too-old" in w]
+    for name, floor in mr._MLX_MIN_VERSIONS.items():
+        assert f"{name}>={floor}" in message
+    assert "==" not in message
 
 
 def test_repair_invalidates_import_caches_before_stack_check(monkeypatch):
