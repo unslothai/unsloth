@@ -420,6 +420,41 @@ def _stream_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]
             for k, u in unit_by_key.items()
         }
 
+    # A CELL WHOSE RECORDER DIED IS A TRUNCATED CELL, not a short one. `rejected` above is read
+    # only when NOTHING qualified, so once one window has qualified every later rejection is
+    # discarded -- including the one that says the page went away. The streaming metrics are
+    # integrals divided by the characters that were streamed, and both halves are then missing the
+    # same unmeasured stretch, so the result is not a wide error bar, it is a number computed over
+    # whatever ran before the crash and reported as if it described the cell.
+    #
+    # Measured on the payload corpus: 138 unaided windows record `unavailable` while a qualifying
+    # window precedes them, carrying `TargetClosedError: Page.evaluate: Target page, context or
+    # browser has been closed` and `Error: Page.evaluate: Target crashed`. They are all AFTER the
+    # last qualifying window, which is not evidence that they are ordinary end-of-stream windows:
+    # a crash is trailing by construction, because nothing can qualify once the page is gone. They
+    # are also long, a median of 11.0 s and up to 36.0 s, so what went unmeasured is a real
+    # fraction of the reply and not a rounding edge.
+    #
+    # `unavailable` was consumed nowhere in this module before this, so the crash signal the
+    # instrument already emits was being dropped in full. Poisoning here costs 12 cells of 1,461
+    # that currently publish, and every one of the 12 is a genuine page crash.
+    crashed = sorted(
+        {
+            str(sc.get("unavailable"))
+            for w in _unaided(windows)
+            if isinstance((sc := (w.get("instruments") or {}).get("stream_cost")), Mapping)
+            and not sc.get("stream_cost_attempted")
+            and sc.get("unavailable")
+        }
+    )
+    if crashed:
+        reason = (
+            "the stream_cost recorder stopped partway through this cell "
+            f"({'; '.join(crashed)}), so the streaming metrics would describe only the part of "
+            "the reply that streamed before it went away"
+        )
+        return {k: Measure.failed(u, reason) for k, u in unit_by_key.items()}
+
     # Every streaming quantity comes from the UNAIDED windows. See _unaided for why the targeted
     # numerator is not exempt from that, which is the one thing here that measurement overturned.
     unaided = _unaided(picked)
