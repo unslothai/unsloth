@@ -943,8 +943,19 @@ class TestEstimateMemoryRoute:
             n_ctx = 8192,
             tensor_parallel = False,
             llama_extra_args = ["--split-mode", "tensor"],
+            selected_gpu_ids = [0, 1],
         )
         assert asked == [True]
+        # And one card cannot take a tensor split, whatever the extras ask for, so
+        # the count is asked the question load_model will answer.
+        _estimate(
+            model_path = gqa_gguf,
+            n_ctx = 8192,
+            tensor_parallel = True,
+            llama_extra_args = ["--split-mode", "tensor"],
+            selected_gpu_ids = [0],
+        )
+        assert asked == [True, False]
 
     def test_unresolvable_config_is_unsizable(self, monkeypatch):
         monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: None)
@@ -1572,3 +1583,133 @@ class TestSpeculativeModeTerms:
             False,
             True,
         )
+
+
+class TestLaunchShapedPricing:
+    """Three places the panel priced a launch the loader would not perform.
+
+    Each is the same shape: a setting resolved one way in ``load_model`` and another
+    way here, where the difference is large enough to flip the verdict.
+    """
+
+    @pytest.fixture
+    def swa(self, tmp_path) -> str:
+        # Sliding-window attention, so --swa-full has something to change: without it
+        # the cache holds the window, with it the whole context.
+        return _write_gguf(
+            tmp_path,
+            "gemma3",
+            {**_GQA_FIELDS, "attention.sliding_window": 4096, "context_length": 262144},
+            name = "swa.gguf",
+        )
+
+    @pytest.fixture
+    def spec_config(self, swa, tmp_path, monkeypatch):
+        drafter = tmp_path / "mtp-swa.gguf"
+        drafter.write_bytes(Path(swa).read_bytes())
+        drafter_bytes = drafter.stat().st_size
+
+        def _files(
+            cfg,
+            *,
+            llama_extra_args = None,
+            **kw,
+        ):
+            pinned = _draft_on_cpu(list(llama_extra_args or ()))
+            return 1.0 + (0.0 if pinned else drafter_bytes / 1024**3)
+
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", _files)
+        return SimpleNamespace(
+            identifier = "local/swa",
+            gguf_file = swa,
+            is_gguf = True,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = str(drafter),
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+        )
+
+    def test_the_drafter_cache_is_priced_at_the_targets_layout(self, spec_config, swa):
+        # --swa-full reached the target cache and stopped there, so a drafter with the
+        # same geometry was priced holding a window while the launch gives it the whole
+        # context. The loader passes all four layout settings; so does this now.
+        windowed = ri._gguf_memory_breakdown(spec_config, swa, n_ctx = 131072)
+        full = ri._gguf_memory_breakdown(
+            spec_config, swa, n_ctx = 131072, llama_extra_args = ["--swa-full"]
+        )
+        assert full.kv_bytes > windowed.kv_bytes
+        # Same header on both sides, so the drafter's cache moves exactly as the
+        # target's does rather than staying at the windowed figure.
+        assert full.drafter_runtime_bytes == full.kv_bytes
+        assert windowed.drafter_runtime_bytes == windowed.kv_bytes
+
+    def test_one_card_is_priced_as_the_layer_load_it_launches(self, spec_config, swa):
+        # Tensor mode needs two usable GPUs. Below that load_model drops it and puts
+        # back the quantized KV the tensor attempt stripped, so pricing tensor charged
+        # an f16 cache and per-device compute buffers for neither.
+        priced = dict(n_ctx = 32768, cache_type_kv = "q4_0", tensor_parallel = True, n_devices = 1)
+        downgraded = ri._gguf_memory_breakdown(
+            spec_config, swa, tensor_split_possible = False, **priced
+        )
+        as_tensor = ri._gguf_memory_breakdown(
+            spec_config, swa, tensor_split_possible = True, **priced
+        )
+        assert downgraded.cache_type_kv == "q4_0"
+        assert as_tensor.cache_type_kv == "f16"
+        assert downgraded.kv_bytes < as_tensor.kv_bytes
+        assert downgraded.compute_bytes < as_tensor.compute_bytes
+        assert downgraded.total_bytes < as_tensor.total_bytes
+
+    def test_a_one_card_pin_cannot_tensor_split(self):
+        # A pin answers for itself and needs no probe, which is the deterministic half
+        # of the rule. Without a pin the host answers, and that must not raise here
+        # whatever this machine has.
+        assert ri._tensor_split_possible([0]) is False
+        assert ri._tensor_split_possible([0, 1]) is True
+        assert ri._tensor_split_possible([2, 3, 5]) is True
+        assert isinstance(ri._tensor_split_possible(None), bool)
+
+    def test_the_vision_encoder_costs_more_than_its_projector_file(
+        self, swa, tmp_path, monkeypatch
+    ):
+        # The encoder's buffers run about 1.3x the file, which the placement path
+        # budgets as _MMPROJ_VRAM_SAFETY - 1. Counting only the file called a
+        # near-capacity multimodal load a fit.
+        projector = tmp_path / "mmproj-swa.gguf"
+        projector.write_bytes(b"\0" * 1024)
+        config = SimpleNamespace(
+            identifier = "local/vision",
+            gguf_file = swa,
+            is_gguf = True,
+            gguf_mmproj_file = str(projector),
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+        )
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: 4.0)
+        real_size = ri.LlamaCppBackend._get_gguf_size_bytes
+        monkeypatch.setattr(
+            ri.LlamaCppBackend,
+            "_get_gguf_size_bytes",
+            staticmethod(
+                lambda path: 3 * _GIB
+                if os.path.basename(str(path)) == "swa.gguf"
+                else real_size(path)
+            ),
+        )
+        expected = int(1024 * (ri.LlamaCppBackend._MMPROJ_VRAM_SAFETY - 1.0))
+        resident = ri._gguf_memory_breakdown(config, swa, n_ctx = 8192)
+        assert resident.projector_runtime_bytes == expected
+        assert resident.total_bytes == (
+            resident.weights_bytes + resident.kv_bytes + resident.compute_bytes + expected
+        )
+        # The buffers sit with the projector, so pinning it takes them off the GPU
+        # while leaving them in the total.
+        pinned = ri._gguf_memory_breakdown(
+            config, swa, n_ctx = 8192, llama_extra_args = ["--no-mmproj-offload"]
+        )
+        assert pinned.total_bytes == resident.total_bytes
+        assert resident.gpu_bytes - pinned.gpu_bytes == expected + 1024
+
+    def test_a_model_with_no_projector_is_charged_nothing_for_one(self, spec_config, swa):
+        assert ri._gguf_memory_breakdown(spec_config, swa, n_ctx = 8192).projector_runtime_bytes == 0

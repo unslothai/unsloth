@@ -804,6 +804,12 @@ class EstimateMemoryResponse(BaseModel):
         "its file in weights_bytes. Included in total_bytes, and in gpu_bytes unless the "
         "drafter is CPU-pinned. Reported separately so the itemization accounts for it.",
     )
+    projector_runtime_bytes: int = Field(
+        0,
+        description = "The vision encoder's buffers, about 0.4x the projector file on top "
+        "of it. Included in total_bytes, and in gpu_bytes unless --no-mmproj-offload "
+        "keeps the projector in host RAM.",
+    )
     total_bytes: int = Field(0, description = "Weights + KV + compute, wherever they land")
     gpu_bytes: int = Field(
         0, description = "The share of total_bytes that lands on the GPU under this offload"

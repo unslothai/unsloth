@@ -1110,6 +1110,14 @@ function MemoryEstimateRow({
             label="Compute buffers"
             value={formatMemoryGb(estimate.computeBytes)}
           />
+          {/* The encoder's buffers, which run about 1.3x the projector file. Only on a
+              vision load, and named separately since the file is already in Weights. */}
+          {estimate.projectorRuntimeBytes > 0 && (
+            <MemoryBreakdownLine
+              label="Vision encoder"
+              value={formatMemoryGb(estimate.projectorRuntimeBytes)}
+            />
+          )}
           {/* Only when speculation loads a separate drafter, and it is the term most
               likely to surprise: its cache grows with context like the target's. */}
           {estimate.drafterRuntimeBytes > 0 && (

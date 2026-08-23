@@ -7016,6 +7016,12 @@ class _GgufRuntimeBytes(NamedTuple):
     n_parallel: int
     # GGUF block_count, carried out of the header walk this already paid for.
     layer_count: Optional[int] = None
+    # The cache layout this was priced with, for a caller sizing a second cache that
+    # the same launch allocates (a separate drafter's). Resolving them twice is how
+    # the two drift apart.
+    swa_full: bool = False
+    kv_unified: bool = True
+    n_ubatch: Optional[int] = None
 
 
 _GGUF_RUNTIME_UNKNOWN = _GgufRuntimeBytes(0, 0, False, 0, None, 1)
@@ -7139,15 +7145,17 @@ def _gguf_runtime_bytes(
             slots > 1
             and LlamaCppBackend.probe_server_capabilities().get("supports_kv_unified", False)
         )
+        swa_full = _swa_full_from_args_or_env(llama_extra_args)
+        kv_unified = _kv_unified_from_args(
+            llama_extra_args,
+            default = managed_kv_unified,
+        )
         kv = probe._estimate_kv_cache_bytes(
             ctx,
             cache_type_for_budget,
             n_parallel = slots,
-            swa_full = _swa_full_from_args_or_env(llama_extra_args),
-            kv_unified = _kv_unified_from_args(
-                llama_extra_args,
-                default = managed_kv_unified,
-            ),
+            swa_full = swa_full,
+            kv_unified = kv_unified,
             n_ubatch = effective_ubatch,
             # Extras beat the field, as at launch: the control emits its flag
             # before them. Per-slot SWA snapshots scale with the slot's context, so
@@ -7162,6 +7170,9 @@ def _gguf_runtime_bytes(
             cache_type_kv = cache_type_for_budget,
             n_parallel = slots,
             layer_count = getattr(probe, "_n_layers", None) or None,
+            swa_full = swa_full,
+            kv_unified = kv_unified,
+            n_ubatch = effective_ubatch,
         )
         # the load reserves ubatch-scaled compute buffers, so they count against training too
         if is_diffusion:
@@ -7731,6 +7742,8 @@ class _GgufMemoryBreakdown(NamedTuple):
     # A separate drafter's KV and rollback state, kept out of compute_bytes so each
     # line names one thing.
     drafter_runtime_bytes: int
+    # The vision encoder's buffers, about 0.4x the projector file on top of it.
+    projector_runtime_bytes: int
     # Weights + KV + compute, wherever they sit: GPU, host RAM, or a unified pool.
     total_bytes: int
     # The part that lands on the GPU under the requested offload.
@@ -7963,6 +7976,31 @@ def _charged_drafter_path(
     return None
 
 
+def _tensor_split_possible(requested_gpu_ids: Optional[list[int]]) -> bool:
+    """Whether two devices could take a tensor split at all.
+
+    load_model drops tensor mode below two usable GPUs and restores the quantized KV
+    the tensor attempt stripped, so pricing tensor on one card charges f16 and
+    per-device compute buffers for a layer load that runs neither.
+
+    A pin answers for itself. Without one the CUDA count answers, except on a Vulkan
+    build where it sees no devices at all: assume the split is possible there rather
+    than price a downgrade that will not happen, which is the same call the training
+    guard makes a few hundred lines up.
+    """
+    if requested_gpu_ids:
+        return len(requested_gpu_ids) >= 2
+    try:
+        if LlamaCppBackend._is_vulkan_backend():
+            return True
+    except Exception:
+        pass
+    try:
+        return LlamaCppBackend._effective_gpu_count(None) >= 2
+    except Exception:
+        return True
+
+
 def _build_default_spec_draft_n_max() -> int:
     """The draft depth a build runs on its own, for extras that own the spec block.
 
@@ -8066,6 +8104,7 @@ def _gguf_memory_breakdown(
     gpu_layers: Optional[int] = None,
     spec_draft_n_max: Optional[int] = None,
     spec_draft_cache_type: Optional[str] = None,
+    tensor_split_possible: bool = True,
 ) -> Optional[_GgufMemoryBreakdown]:
     """Itemize what loading this GGUF at ``n_ctx`` would cost. None if nothing sizes.
 
@@ -8077,8 +8116,11 @@ def _gguf_memory_breakdown(
 
     # A --split-mode in the extras last-wins over the toggle, and an inherited tensor
     # LLAMA_ARG_SPLIT_MODE turns it on: the same helper load_model budgets with, so a
-    # launch that runs tensor is not priced as a layer split.
-    tensor_parallel = _effective_tensor_parallel(llama_extra_args, tensor_parallel)
+    # launch that runs tensor is not priced as a layer split. Then the downgrade the
+    # loader applies on the way in, so a single card is not priced as one either.
+    tensor_parallel = _effective_tensor_parallel(llama_extra_args, tensor_parallel) and (
+        tensor_split_possible
+    )
     runtime = _gguf_runtime_bytes(
         gguf_path,
         n_ctx,
@@ -8166,6 +8208,18 @@ def _gguf_memory_breakdown(
             config, drafter_path, requested = spec_draft_n_max, extras = extras
         )
         keeps_target_ctx, target_rollback = _estimate_spec_mode_terms(drafter_kind, extras)
+        # The cache layout the target was priced with, not the helper's defaults: a
+        # drafter with sliding-window attention under --swa-full allocates the full
+        # window, and the same slot layout and micro-batch decide its cell count. The
+        # loader passes all four; defaulting them here priced a smaller cache than the
+        # launch allocates. flash_attn matches the target's own conservative False,
+        # which pads variable-width V to the model maximum.
+        layout = dict(
+            swa_full = runtime.swa_full,
+            kv_unified = runtime.kv_unified,
+            n_ubatch = runtime.n_ubatch,
+            flash_attn = False,
+        )
         drafter_runtime_bytes = (
             probe._estimate_mtp_overhead_bytes(
                 runtime.n_ctx,
@@ -8175,9 +8229,10 @@ def _gguf_memory_breakdown(
                 drafter_path = drafter_path,
                 # The file is already in weights_bytes; this term is runtime only.
                 draft_weights_bytes = 0,
-                n_parallel = n_parallel,
+                n_parallel = runtime.n_parallel,
                 mtp_keeps_target_ctx = keeps_target_ctx,
                 target_rollback = target_rollback,
+                **layout,
             )
             or 0
         )
@@ -8187,14 +8242,16 @@ def _gguf_memory_breakdown(
         # target's context, which is why pinning the drafter to the CPU does not move
         # them and offloading no target layer does not put them on the GPU.
         if keeps_target_ctx and probe._kv_lora_rank is not None:
+            # Same layout the helper charged it at, or the subtraction below stops
+            # naming the same bytes.
             target_spec_bytes += probe._estimate_kv_cache_bytes(
-                runtime.n_ctx, "f16", n_parallel = n_parallel
+                runtime.n_ctx, "f16", n_parallel = runtime.n_parallel, **layout
             )
         if target_rollback and draft_n_max > 0:
-            target_spec_bytes += probe._mamba_recurrent_state_bytes(n_parallel) * draft_n_max
+            target_spec_bytes += (
+                probe._mamba_recurrent_state_bytes(runtime.n_parallel) * draft_n_max
+            )
         target_spec_bytes = min(target_spec_bytes, drafter_runtime_bytes)
-
-    runtime_bytes = runtime.kv_bytes + runtime.compute_bytes + drafter_runtime_bytes
 
     layer_count = runtime.layer_count
     gpu_fraction = _gguf_offloaded_layer_fraction(gpu_memory_mode, gpu_layers, layer_count, extras)
@@ -8209,13 +8266,28 @@ def _gguf_memory_breakdown(
     # charged and off-GPU: --no-mmproj-offload keeps it in host RAM. Priced by itself
     # rather than by moving every companion, which would strand a resident drafter.
     host_companion_bytes = 0
-    if _resolved_mmproj_offload(llama_extra_args) is False:
-        mmproj = getattr(config, "gguf_mmproj_file", None)
-        if mmproj and Path(mmproj).is_file():
-            host_companion_bytes = min(
-                companion_bytes, LlamaCppBackend._get_gguf_size_bytes(str(mmproj))
-            )
+    # The projector costs more than its file: the encoder's buffers run about 1.3x it,
+    # which the placement path budgets as _MMPROJ_VRAM_SAFETY - 1. Charged whenever the
+    # projector is in the resident set, and it is in the total wherever it sits, so a
+    # near-capacity multimodal load is not called a fit on the file size alone.
+    projector_runtime_bytes = 0
+    mmproj = getattr(config, "gguf_mmproj_file", None)
+    mmproj_bytes = (
+        LlamaCppBackend._get_gguf_size_bytes(str(mmproj))
+        if mmproj and Path(mmproj).is_file()
+        else 0
+    )
+    if mmproj_bytes and mmproj_bytes <= companion_bytes:
+        # <= companion_bytes is the test for "this launch opened it": the files term
+        # drops the projector on --no-mmproj / disabled vision, and nothing else can
+        # account for its bytes.
+        projector_runtime_bytes = int(mmproj_bytes * (LlamaCppBackend._MMPROJ_VRAM_SAFETY - 1.0))
+        if _resolved_mmproj_offload(llama_extra_args) is False:
+            host_companion_bytes = min(companion_bytes, mmproj_bytes)
     gpu_weights = int(main_bytes * gpu_fraction) + companion_bytes - host_companion_bytes
+    runtime_bytes = (
+        runtime.kv_bytes + runtime.compute_bytes + drafter_runtime_bytes + projector_runtime_bytes
+    )
 
     # -nkvo puts the cache in host RAM. At a long context that is most of the
     # footprint, so ignoring it would report VRAM pressure the load never creates.
@@ -8232,11 +8304,16 @@ def _gguf_memory_breakdown(
         gpu_bytes += target_spec_bytes
     if drafter_on_gpu:
         gpu_bytes += drafter_runtime_bytes - target_spec_bytes
+    # The encoder's buffers sit with the projector, so --no-mmproj-offload takes them
+    # to host RAM along with the file.
+    if not host_companion_bytes:
+        gpu_bytes += projector_runtime_bytes
     return _GgufMemoryBreakdown(
         weights_bytes = weights_bytes,
         kv_bytes = runtime.kv_bytes,
         compute_bytes = runtime.compute_bytes,
         drafter_runtime_bytes = drafter_runtime_bytes,
+        projector_runtime_bytes = projector_runtime_bytes,
         total_bytes = weights_bytes + runtime_bytes,
         gpu_bytes = gpu_bytes,
         kv_estimable = runtime.kv_estimable,
@@ -11829,16 +11906,19 @@ async def estimate_memory(
                 request.selected_gpu_ids or None,
                 None,
                 # Same resolution the breakdown prices with: an extras --split-mode
-                # decides the mode, not the toggle alone.
+                # decides the mode, not the toggle alone, and one card cannot take a
+                # tensor split whatever either of them says.
                 tensor_parallel = _effective_tensor_parallel(
                     request.llama_extra_args, bool(request.tensor_parallel)
-                ),
+                )
+                and _tensor_split_possible(request.selected_gpu_ids or None),
             ),
             disable_vision = bool(request.disable_vision),
             gpu_memory_mode = request.gpu_memory_mode,
             gpu_layers = request.gpu_layers,
             spec_draft_n_max = request.spec_draft_n_max,
             spec_draft_cache_type = request.spec_draft_cache_type,
+            tensor_split_possible = _tensor_split_possible(request.selected_gpu_ids or None),
         )
         if breakdown is None:
             return EstimateMemoryResponse(available = False, reason = "unsizable")
@@ -11848,6 +11928,7 @@ async def estimate_memory(
             kv_bytes = breakdown.kv_bytes,
             compute_bytes = breakdown.compute_bytes,
             drafter_runtime_bytes = breakdown.drafter_runtime_bytes,
+            projector_runtime_bytes = breakdown.projector_runtime_bytes,
             total_bytes = breakdown.total_bytes,
             gpu_bytes = breakdown.gpu_bytes,
             kv_estimable = breakdown.kv_estimable,

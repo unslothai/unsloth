@@ -22,6 +22,8 @@ export interface MemoryEstimate {
   computeBytes: number;
   /** A separate drafter's own cache and rollback state, on top of its file. */
   drafterRuntimeBytes: number;
+  /** The vision encoder's buffers, about 0.4x the projector file on top of it. */
+  projectorRuntimeBytes: number;
   /** Weights + KV + compute, wherever they land (VRAM, host RAM, or one unified pool). */
   totalBytes: number;
   /** The share of `totalBytes` that lands on the GPU under the requested offload. */
@@ -76,6 +78,7 @@ const UNAVAILABLE: MemoryEstimate = {
   kvBytes: 0,
   computeBytes: 0,
   drafterRuntimeBytes: 0,
+  projectorRuntimeBytes: 0,
   totalBytes: 0,
   gpuBytes: 0,
   kvEstimable: false,
@@ -95,6 +98,7 @@ interface ApiEstimateResponse {
   kv_bytes: number;
   compute_bytes: number;
   drafter_runtime_bytes: number;
+  projector_runtime_bytes: number;
   total_bytes: number;
   gpu_bytes: number;
   kv_estimable: boolean;
@@ -143,6 +147,7 @@ function toMemoryEstimate(body: ApiEstimateResponse): MemoryEstimate {
     kvBytes: body.kv_bytes ?? 0,
     computeBytes: body.compute_bytes ?? 0,
     drafterRuntimeBytes: body.drafter_runtime_bytes ?? 0,
+    projectorRuntimeBytes: body.projector_runtime_bytes ?? 0,
     totalBytes: body.total_bytes ?? 0,
     gpuBytes: body.gpu_bytes ?? 0,
     // Absent on an older backend: treat the KV figure as unverified, the safe
