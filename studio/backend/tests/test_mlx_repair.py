@@ -57,8 +57,9 @@ def test_uv_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
     # release published since the user last opened Unsloth in silently.
     assert "mlx==0.32.1" in cmd
     assert "mlx-lm==0.31.3" in cmd
-    assert not [spec for spec in mr.MLX_PACKAGES if spec.startswith("mlx==")
-                and ">=" in spec], "mlx must not be resolved against a floor"
+    assert not [
+        spec for spec in mr.MLX_PACKAGES if spec.startswith("mlx==") and ">=" in spec
+    ], "mlx must not be resolved against a floor"
 
 
 def test_uv_executable_finds_installer_location_when_path_is_minimal(monkeypatch, tmp_path):
