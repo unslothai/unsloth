@@ -1658,3 +1658,48 @@ def test_a_revalidation_still_re_reads_rather_than_answering_from_the_shared_pre
         body = source.split(f"def {fn}(", 1)[1].split("\ndef ", 1)[0]
         assert "_shared_gguf_header" not in body, f"{fn} must re-read, not consult the memo"
         assert "_read_gguf_header" in body
+
+
+def test_the_chat_backend_does_not_import_pyyaml_to_learn_the_speech_verdict():
+    """`core.inference.llama_cpp` must not drag the models package in at import time.
+
+    The speech verdict is shared, and reaching it through `utils.models.gguf_metadata` runs
+    `utils.models.__init__`, which imports `model_config`, which imports `yaml`. That made
+    PyYAML a hard import dependency of the chat backend and took the repo's own Source lint
+    job red, where `tests/studio/load_freeze/test_load_orchestrator.py` imports the backend
+    and PyYAML is not installed. The constants live in the leaf module `utils.gguf_archs`;
+    `gguf_metadata` re-exports them, so there is still one definition.
+    """
+    import importlib
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    backend = Path(diffusion_compat.__file__).resolve().parents[2]
+    probe = (
+        "import sys\n"
+        "class Blocker:\n"
+        "    def find_spec(self, name, path=None, target=None):\n"
+        "        if name == 'yaml' or name.startswith('yaml.'):\n"
+        "            raise ModuleNotFoundError(\"No module named 'yaml'\")\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, Blocker())\n"
+        f"sys.path.insert(0, {str(backend)!r})\n"
+        "import core.inference.llama_cpp as m\n"
+        "from utils.gguf_archs import SPEECH_GGUF_ARCHS\n"
+        # Identity, not equality: one definition, re-exported, never copied.
+        "assert m.LlamaCppBackend._SPEECH_ARCHES is SPEECH_GGUF_ARCHS\n"
+        "print('ok')\n"
+    )
+    # A subprocess because this pytest session has already imported yaml, and a meta_path
+    # blocker cannot un-import it.
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output = True, text = True, timeout = 300
+    )
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+
+    # And the re-export really is the same object, so no caller sees a second copy.
+    gguf_metadata = importlib.import_module("utils.models.gguf_metadata")
+    leaf = importlib.import_module("utils.gguf_archs")
+    assert gguf_metadata.SPEECH_GGUF_ARCHS is leaf.SPEECH_GGUF_ARCHS
+    assert gguf_metadata.is_speech_gguf_architecture is leaf.is_speech_gguf_architecture
