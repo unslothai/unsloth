@@ -15425,7 +15425,6 @@ async def openai_chat_completions(
         from core.inference.chat_template_helpers import (
             neutralize_control_markup_in_messages as _sf_sweep,
         )
-
         _sf_probe_messages = (
             jsonable_encoder(
                 _sf_sweep(
