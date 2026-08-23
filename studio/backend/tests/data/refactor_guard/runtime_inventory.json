@@ -10,6 +10,7 @@
       "Optional",
       "RAG_MAX_SEARCHES_PER_TURN",
       "RAG_SEARCH_CAP_NUDGE",
+      "RAG_SEARCH_TOOLS",
       "RENDER_HTML_REPEAT_NUDGE",
       "REPROMPT_MAX_CHARS",
       "StreamingMarkupStripper",

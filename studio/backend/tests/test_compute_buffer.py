@@ -56,7 +56,7 @@ except ImportError:
     )
     sys.modules["httpx"] = _httpx_stub
 
-from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_cpp import _FIT_MIN_CTX, LlamaCppBackend
 
 MIB = 1024 * 1024
 GIB = 1024 * MIB
@@ -806,8 +806,8 @@ class TestPerDeviceSplitReserve:
             subset = ranked[:n]
             pool = sum(max(0.0, usable(g)) for g in subset)
             ms = model_bytes + (n - 1) * self._OH
-            cc = lambda c, n = n: n * b._compute_buffer_ctx_bytes(
-                c, self._UB, "f16", layer_split = n > 1
+            cc = lambda c, n = n: (
+                n * b._compute_buffer_ctx_bytes(c, self._UB, "f16", layer_split = n > 1)
             )
             capped = b._fit_context_to_vram(
                 native_ctx,
@@ -847,10 +847,16 @@ class TestPerDeviceSplitReserve:
         min_gpus = 2,
         enforce = True,
     ):
-        """Mirror of the reduced-to-4096 loop the native loop falls through to. Same
-        pooled admission, so it needs the same per-device gate."""
+        """Mirror of the Auto offload loop the native loop falls through to. Same
+        pooled admission, so it needs the same per-device gate.
+
+        Driven at the fit search floor rather than at ``_AUTO_OFFLOAD_CTX``: what
+        this exercises is the per-device reserve gate, and the floor is the lowest
+        context the loop above can still be admitted at, so it is the value that
+        makes the gate decide anything.
+        """
         frac = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
-        ctx = 4096
+        ctx = _FIT_MIN_CTX
 
         def usable(g):
             return g[1] - (1.0 - frac) * totals[g[0]]
@@ -976,9 +982,8 @@ class TestPerDeviceReserveCap:
     def test_cap_is_exact_at_the_256_boundary(self):
         b = self._fit_backend()
         usable = 2_500 - 0.03 * 24_576  # 1762.72 MiB
-        reserve = (
-            lambda c: (self._OH + b._compute_buffer_ctx_bytes(c, self._UB, "f16", layer_split = True))
-            / MIB
+        reserve = lambda c: (
+            (self._OH + b._compute_buffer_ctx_bytes(c, self._UB, "f16", layer_split = True)) / MIB
         )
         assert reserve(31_488) == 1762.0 <= usable
         assert reserve(31_744) == 1768.0 > usable
@@ -1185,6 +1190,10 @@ class TestSplitRateRecheckAfterSelection:
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         # Explicit-context pin and the reduced-slot retry both pass the step.
         assert load.count("split_extra_bytes=_cc_split_extra(effective_ctx)") == 2
+        # The re-fit is a third call site, spelled `ctx` because it re-prices per
+        # candidate. Not exempt from the step; a rename that collapsed the two
+        # spellings would have to bump the count above.
+        assert load.count("split_extra_bytes=_cc_split_extra(ctx),") == 1
         assert "gpu_indices,use_fit=self._select_gpus_split_aware(" in load
         # The step rides _cc_bytes' pipelining gate, so it is 0 when llama.cpp declines.
         assert "returnmax(0,_cc_bytes(ctx,2)//2-_cc_bytes(ctx))" in load

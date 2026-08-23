@@ -26,6 +26,7 @@ workflows are named after, and they would still go green.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -41,11 +42,42 @@ COLD_INSTALL_WORKFLOWS = (
     "clean-machine-install-ci.yml",
     "desktop-app-clean-machine-ci.yml",
     "interrupted-install-ci.yml",
+    # Publishes the desktop app from a clean checkout; a restored dist would ship a
+    # bundle this run never built.
+    "release-desktop.yml",
 )
 
 
+def _own_steps(action: Path = ACTION) -> list[dict]:
+    return yaml.safe_load(action.read_text(encoding = "utf-8"))["runs"]["steps"]
+
+
 def _steps() -> list[dict]:
-    return yaml.safe_load(ACTION.read_text(encoding = "utf-8"))["runs"]["steps"]
+    """This action's steps, with the steps of every local action it delegates to inlined.
+
+    The frontend dist cache moved into `.github/actions/frontend-dist-restore` and
+    `-save` when the Windows jobs adopted it, because they do not go through this action
+    and the key must have exactly one definition. A reader that only walked this file's
+    own steps would have gone blind to that cache the moment it was factored out -- and
+    silently, since `uses: ./.github/actions/frontend-dist-restore` does not contain the
+    substring `actions/cache` that the path check below looks for. Every assertion in
+    this file would have kept passing while guarding one cache instead of two.
+
+    That is the same failure mode test_cache_budget_discipline.py's `_composite_actions`
+    was written for, one level in: a rule quietly stops applying to the thing it was
+    written for.
+    """
+    flat: list[dict] = []
+    for step in _own_steps():
+        uses = str(step.get("uses", ""))
+        local = re.match(r"\./\.github/actions/([\w-]+)$", uses)
+        if local:
+            nested = REPO_ROOT / ".github" / "actions" / local.group(1) / "action.yml"
+            assert nested.is_file(), f"{uses} does not exist, so this action cannot run"
+            flat.extend(_own_steps(nested))
+        else:
+            flat.append(step)
+    return flat
 
 
 def _index_of(predicate) -> int:
@@ -55,17 +87,41 @@ def _index_of(predicate) -> int:
     return -1
 
 
-def test_the_cache_holds_uvs_downloads_and_not_the_venv() -> None:
+# What this action is allowed to cache, and the argument for each. Anything else has
+# to be added here in a diff someone reads, with its own argument written down.
+#
+#   .uv-cache            uv's download cache. Content-addressed by URL and hash, so a
+#                        stale entry cannot serve wrong content; the worst it can do
+#                        is miss.
+#   studio/frontend/dist the built frontend. NOT a download, so it does not get the
+#                        argument above and needs its own: it is a directory of static
+#                        assets with no absolute paths, no interpreter coupling and no
+#                        console scripts, which is exactly what makes a venv unsafe to
+#                        cache and this safe. Its key hashes the same inputs
+#                        studio/setup.sh checks before rebuilding, so a hit means the
+#                        build inputs are byte-identical rather than merely similar.
+#                        tests/studio/test_frontend_dist_cache.py holds that agreement
+#                        together and is where the reasoning lives.
+CACHEABLE_PATHS = (".uv-cache", "studio/frontend/dist")
+
+
+def test_the_cache_holds_downloads_and_build_output_but_never_the_venv() -> None:
     """
     A venv cache would have to reason about the editable overlay, a moving
-    unsloth-zoo pin, and absolute paths in console scripts. A download cache
-    reasons about none of that, which is why this one is safe at all.
+    unsloth-zoo pin, and absolute paths in console scripts. Neither of the two
+    things this action caches reasons about any of that, which is why they are safe
+    at all. The forbidden list below is the invariant with teeth and applies to
+    every cache step regardless of which allowed path it uses.
     """
     for step in _steps():
         if "cache" not in str(step.get("uses", "")):
             continue
         path = str((step.get("with") or {}).get("path", ""))
-        assert ".uv-cache" in path, f"cache step points at {path!r}, not uv's download cache"
+        assert any(allowed in path for allowed in CACHEABLE_PATHS), (
+            f"cache step points at {path!r}, which is not one of the paths this action "
+            f"is allowed to cache ({', '.join(CACHEABLE_PATHS)}). Add it to "
+            f"CACHEABLE_PATHS with the argument for why restoring it cannot be wrong."
+        )
         for forbidden in (".unsloth", "site-packages", "unsloth_studio", "venv"):
             assert forbidden not in path, (
                 f"cache step points at {path!r}, which is an INSTALL, not a download "
@@ -130,9 +186,18 @@ def test_cold_install_lanes_never_adopt_this_action(name: str) -> None:
     path = WORKFLOWS / name
     if not path.exists():
         pytest.skip(f"{name} no longer exists")
-    assert "install-unsloth-local" not in path.read_text(encoding = "utf-8"), (
+    text = path.read_text(encoding = "utf-8")
+    assert "install-unsloth-local" not in text, (
         f"{name} uses install-unsloth-local, which warms uv's cache. A cached "
         f"cold-install test proves nothing and still goes green."
+    )
+    # Named separately because the frontend dist cache can now be adopted WITHOUT this
+    # action -- that is the whole point of splitting it out for the Windows jobs, which
+    # call install.ps1 from a hand-written step. Checking only for install-unsloth-local
+    # would let a cold lane paste in the two `uses:` lines and stay green.
+    assert "frontend-dist-" not in text, (
+        f"{name} restores a prebuilt frontend. A cold-install lane handed a bundle built "
+        f"on another machine last week is not testing a cold install."
     )
 
 
