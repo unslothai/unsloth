@@ -1744,9 +1744,7 @@ class TestARejectedToolCallIsHeldToTheRoomToo:
         uncapped = tools._check_code_safety(self._tampering(400))
         assert uncapped and len(uncapped) > 10_000, "the analyzer stopped amplifying"
 
-        out = tools.execute_tool(
-            "python", {"code": self._tampering(400)}, result_budget_tokens = 120
-        )
+        out = tools.execute_tool("python", {"code": self._tampering(400)}, result_budget_tokens = 120)
 
         assert out.startswith("Error: unsafe code detected")
         _within_room(out, 120)
@@ -1766,8 +1764,6 @@ class TestARejectedToolCallIsHeldToTheRoomToo:
         _window(monkeypatch, 4096)
         _tokenizer(monkeypatch)
 
-        out = tools.execute_tool(
-            "python", {"code": self._tampering(1)}, result_budget_tokens = 120
-        )
+        out = tools.execute_tool("python", {"code": self._tampering(1)}, result_budget_tokens = 120)
 
         assert out == tools._check_code_safety(self._tampering(1))
