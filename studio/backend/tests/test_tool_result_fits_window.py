@@ -2013,3 +2013,69 @@ class TestAToolResultIsPricedOnceOnTheNativePath:
         as_prose = self._budget({"role": "user", "content": text})
 
         assert as_result < as_prose
+
+
+class TestTheResultIsPricedAsItWillBeSent:
+    """A tool result is swept for control markup before it is sent (#7066), and the sweep
+    costs tokens: a live `<|eot_id|>` is one special token in the raw text and several
+    ordinary ones once it has been broken up. Measured on the raw prefix, a result full of
+    them fits the room here and does not fit the prompt that follows, which is the overflow
+    this budget exists to prevent reached through the accurate leg."""
+
+    @staticmethod
+    def _serving(monkeypatch, ctx):
+        """A loaded backend that charges a token per character, so the count moves with
+        exactly what the sweep does to the text."""
+        from types import SimpleNamespace
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            context_length = ctx,
+            count_chat_tokens = lambda messages, *a, **k: sum(
+                len(m["content"]) for m in messages
+            ),
+        )
+        monkeypatch.setattr("routes.inference.get_llama_cpp_backend", lambda: backend)
+        return backend
+
+    def test_the_counter_prices_the_swept_text(self, monkeypatch):
+        from core.inference.chat_template_helpers import (
+            neutralize_control_markup_in_messages,
+        )
+
+        self._serving(monkeypatch, 4096)
+        raw = "<|eot_id|>" * 50
+        swept = neutralize_control_markup_in_messages(
+            [{"role": "user", "content": raw}], None, None
+        )[0]["content"]
+        assert len(swept) > len(raw), "the sweep left this text alone; pick another marker"
+
+        counter = tools._loaded_token_counter(4096)
+
+        assert counter(raw) == len(swept)
+
+    def test_a_result_of_markers_is_cut_to_what_the_sweep_costs(self, monkeypatch):
+        self._serving(monkeypatch, 4096)
+        _window(monkeypatch, 4096)
+        _room(200)
+        text = "<|eot_id|>" * 400
+
+        kept = tools._dense_char_limit(text, 1_000_000)
+
+        from core.inference.chat_template_helpers import (
+            neutralize_control_markup_in_messages,
+        )
+
+        cost = len(
+            neutralize_control_markup_in_messages(
+                [{"role": "user", "content": text[:kept]}], None, None
+            )[0]["content"]
+        )
+        assert cost <= 200, f"{kept} characters cost {cost} tokens of a 200 token room"
+
+    def test_ordinary_text_is_unchanged_by_the_sweep(self, monkeypatch):
+        """The control: text with no markup in it is priced exactly as it was."""
+        self._serving(monkeypatch, 4096)
+        text = _dense(4_000)
+
+        assert tools._loaded_token_counter(4096)(text) == len(text)

@@ -12028,6 +12028,34 @@ def _probe_cache(llama, ctx: int) -> dict:
     return cache
 
 
+def _neutralized_for_prompt(chunk: str, llama) -> str:
+    """``chunk`` as the outgoing request will carry it, rather than as it is in hand.
+
+    The same sweep the request path applies, through the same helper and the backend's own
+    markup profile, so the two cannot disagree about what a marker becomes. `_PROBE_ROLE`
+    is a user role, which takes the full control rewrite a tool result takes rather than
+    the boundary-only one an assistant turn takes.
+
+    Best effort: a sweep that cannot run leaves the text as it was, which is the estimate
+    this had before and never worse.
+    """
+    if not chunk:
+        return chunk
+    try:
+        from .chat_template_helpers import neutralize_control_markup_in_messages  # noqa: PLC0415
+
+        swept = neutralize_control_markup_in_messages(
+            [{"role": _PROBE_ROLE, "content": chunk}],
+            None,
+            getattr(llama, "markup_profile", None),
+        )
+        content = swept[0].get("content") if swept else None
+        return content if isinstance(content, str) else chunk
+    except Exception:  # noqa: BLE001 -- measuring is never fatal
+        logger.debug("result budget: markup sweep failed", exc_info = True)
+        return chunk
+
+
 def _loaded_token_counter(ctx: int):
     """The tokenizer of the model serving this request, or None when there is not one.
 
@@ -12088,6 +12116,14 @@ def _loaded_token_counter(ctx: int):
             cache[chunk] = value
 
     def _rendered(chunk: str):
+        # Priced as the request will really carry it. A tool result is swept for control
+        # markup before it is sent (`neutralize_control_markup_in_messages`, #7066), and
+        # the sweep costs tokens: a live `<|eot_id|>` is one special token raw and several
+        # ordinary ones once it has been broken up. A result full of them measured on the
+        # raw text fits the room here and does not fit the prompt that follows, which is
+        # the overflow this budget exists to prevent, reached through the leg that is
+        # supposed to be the accurate one.
+        chunk = _neutralized_for_prompt(chunk, llama)
         with _PROBE_COUNT_LOCK:
             hit = cache.get(chunk)
             if hit is not None and chunk != _PROBE_BASELINE:
