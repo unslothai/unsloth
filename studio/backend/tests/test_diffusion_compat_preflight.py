@@ -16,6 +16,7 @@ and a stubbed ``hf_hub_download`` fails the test if anything tries to fetch a wh
 
 from __future__ import annotations
 
+import inspect
 import threading
 import time
 import types
@@ -1620,3 +1621,40 @@ def test_every_published_csm_spelling_is_refused_by_the_media_preflight(monkeypa
     _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header(_VOCODER_ARCH)})
     reason = diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE)
     assert reason is not None and "--model-vocoder" not in reason
+
+
+def test_one_pick_range_reads_the_header_once_for_both_probes(monkeypatch, tmp_path):
+    """The size pairing and the speech verdict read the SAME prefix of the SAME file.
+
+    `/images/download-plan` runs them back to back on every hub pick, and `or` only skips the
+    second when the first refuses -- so the ordinary case, a flux.2 GGUF that pairs correctly,
+    made two range requests. Each carries its own _HEADER_TIMEOUT_SECONDS, so a picker the user
+    is sitting in front of could wear twice the bound this module documents. One read now.
+    """
+    requests = _stub_range_reads(monkeypatch, {KLEIN_4B_FILE: _gguf_header(3072, tmp_path)})
+
+    assert (
+        diffusion_compat.flux2_pick_mismatch(
+            FLUX2_FAMILY, KLEIN_4B_GGUF, KLEIN_4B_FILE, KLEIN_4B_BASE
+        )
+        is None
+    ), "the fixture pairs correctly, so the speech probe behind it really does run"
+    assert diffusion_compat.speech_pick_refusal(KLEIN_4B_GGUF, KLEIN_4B_FILE) is None
+
+    assert len(requests) == 1, f"one pick, one header read; got {len(requests)}"
+
+
+def test_a_revalidation_still_re_reads_rather_than_answering_from_the_shared_prefix(
+    monkeypatch, tmp_path
+):
+    """The shared read must not reach the paths whose whole job is to re-read.
+
+    A checkpoint republished at the same filename is caught by re-reading its header off the
+    Hub. Serving that from the prefix memo would hand the revalidation the very bytes it is
+    trying to get past, and a media GGUF republished as speech would load.
+    """
+    source = inspect.getsource(diffusion_compat)
+    for fn in ("_revalidated_inner_dim", "_revalidated_speech_arch"):
+        body = source.split(f"def {fn}(", 1)[1].split("\ndef ", 1)[0]
+        assert "_shared_gguf_header" not in body, f"{fn} must re-read, not consult the memo"
+        assert "_read_gguf_header" in body

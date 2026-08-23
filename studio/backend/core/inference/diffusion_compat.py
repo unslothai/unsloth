@@ -349,7 +349,7 @@ def flux2_inner_dim_for_pick(
             inner_dim = gguf_flux2_inner_dim(local)
     else:
         inner_dim = gguf_flux2_inner_dim_from_header(
-            _read_gguf_header(repo_id, gguf_filename, token)
+            _shared_gguf_header(repo_id, gguf_filename, token, local)
         )
     with _CACHE_LOCK:
         # Plain FIFO-ish eviction: this only bounds a session's worth of picks, and a re-probe
@@ -428,6 +428,44 @@ _SPEECH_ARCH_CACHE_MAX = 256
 # Device checkpoint is permanent: it is the file the loader opens, so there is no revision to be
 # behind. Matches the variant listing's own freshness window for moved revisions.
 _SPEECH_REMOTE_TTL_SECONDS = 60.0
+
+# (repo_id, gguf_filename, token fingerprint, local file identity) -> the header prefix.
+#
+# The inner-dim probe and the speech probe read the SAME first _GGUF_HEADER_BYTES of the SAME
+# file, and a flux.2 pick that is not a size mismatch runs both: two range requests, each with
+# its own _HEADER_TIMEOUT_SECONDS, so a picker the user is waiting on could wear twice the bound
+# it is documented to. They share the read now. Keyed and aged exactly like the speech memo
+# beside it, so this adds no staleness the module did not already accept.
+#
+# Deliberately NOT consulted by the revalidation paths: their whole job is to re-read a file the
+# Hub has republished, and answering those from a memo would defeat them.
+_HEADER_PREFIX_CACHE: dict[tuple[str, str, str, Optional[tuple]], tuple[bytes, float]] = {}
+_HEADER_PREFIX_CACHE_MAX = 32
+
+
+def _shared_gguf_header(
+    repo_id: str, gguf_filename: str, token: Optional[str], local: Optional[str]
+) -> bytes:
+    """``_read_gguf_header``, read once for the probes that run back to back on one pick."""
+    key = (repo_id, gguf_filename, _token_fingerprint(token), _file_identity(local))
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        memo = _HEADER_PREFIX_CACHE.get(key)
+        if memo is not None:
+            prefix, expires_at = memo
+            if now < expires_at:
+                return prefix
+            del _HEADER_PREFIX_CACHE[key]
+    prefix = _read_gguf_header(repo_id, gguf_filename, token)
+    # An empty prefix is a failed read, and the two probes disagreeing about that is not worth a
+    # sticky miss: each still memoises its own "no verdict" on its own terms.
+    if not prefix:
+        return prefix
+    with _CACHE_LOCK:
+        if len(_HEADER_PREFIX_CACHE) >= _HEADER_PREFIX_CACHE_MAX:
+            _HEADER_PREFIX_CACHE.clear()
+        _HEADER_PREFIX_CACHE[key] = (prefix, now + _SPEECH_REMOTE_TTL_SECONDS)
+    return prefix
 
 
 def _arch_from_prefix(prefix: bytes, gguf_filename: str) -> Optional[str]:
@@ -513,7 +551,9 @@ def _speech_probe_architecture(
         # caller that CAN wait still gets a real answer instead of this one's silence.
         return None
     prefix = (
-        _read_local_header(local) if local else _read_gguf_header(repo_id, gguf_filename, token)
+        _read_local_header(local)
+        if local
+        else _shared_gguf_header(repo_id, gguf_filename, token, local)
     )
     arch = _arch_from_prefix(prefix, gguf_filename)
     # Inside the memo, so a republished checkpoint is caught in either direction and the HEAD is
@@ -606,3 +646,4 @@ def _reset_inner_dim_cache() -> None:
     with _CACHE_LOCK:
         _INNER_DIM_CACHE.clear()
         _SPEECH_ARCH_CACHE.clear()
+        _HEADER_PREFIX_CACHE.clear()
