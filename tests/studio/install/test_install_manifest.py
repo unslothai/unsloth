@@ -138,6 +138,23 @@ def test_a_pip_tilde_backup_is_named_as_a_backup(tmp_path, monkeypatch):
     assert im.pip_backup_metadata_paths("demo") != [site / "demo-2.0.dist-info"]
 
 
+def test_a_sole_pip_backup_is_reported_as_a_conflict(tmp_path, monkeypatch):
+    """pip killed after moving the old record aside leaves one readable version,
+    so a version count sees nothing wrong while the package is really gone."""
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    backup = site / "~emo-1.0.dist-info"
+    backup.mkdir()
+    (backup / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: demo\nVersion: 1.0\n", encoding = "utf-8"
+    )
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    assert im.metadata_conflict(im.installed_versions("demo")) is False
+    assert im.installed_version_probe("demo") == ("1.0", True)
+    assert im.installed_version_probe("other", ("demo",))[1] is True
+
+
 def test_a_healthy_install_has_no_pip_backups(tmp_path, monkeypatch):
     site = tmp_path / "site-packages"
     site.mkdir()

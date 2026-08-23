@@ -4270,7 +4270,12 @@ def _repair_duplicate_core_metadata(
         seen.add(canonical)
         versions = install_manifest.installed_versions(name)
         record_count = len(versions)
-        if install_manifest.metadata_conflict(versions):
+        # A sole `~` backup counts as one readable version, so metadata_conflict()
+        # cannot see it, yet pip and importlib both skip the directory and the real
+        # tree is usually renamed away with it. Repair it like any other duplicate.
+        if install_manifest.metadata_conflict(
+            versions
+        ) or install_manifest.pip_backup_metadata_paths(name):
             duplicates.append((name, record_count))
 
     repaired: list[str] = []
@@ -4334,7 +4339,11 @@ def _repair_duplicate_core_metadata(
             if invalid_paths or backups:
                 importlib.invalidate_caches()
                 record_count = len(install_manifest.installed_versions(name))
-            if (invalid_paths or backups) and not record_count:
+            # A backup names a payload pip has already renamed away, so once it is
+            # aside there is nothing for a replacement to be laid over: a fresh
+            # install is exactly right, and refusing here would abort the installer
+            # on the one state it can trivially fix.
+            if invalid_paths and not record_count:
                 # Nothing is left for pip to uninstall, so the replacement would be
                 # laid over a payload no record describes.
                 _safe_print(

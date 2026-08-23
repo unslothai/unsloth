@@ -880,6 +880,40 @@ class TestDuplicateCoreMetadataRepair:
         assert ips._repair_duplicate_core_metadata(("unsloth",)) is True
         assert not backup.exists()
 
+    def test_a_sole_tilde_backup_is_repaired_by_a_fresh_install(self, tmp_path, monkeypatch):
+        """pip killed after the rename but before the replacement landed leaves the
+        backup alone: one readable version, so a version count sees nothing wrong
+        while the package is genuinely unimportable. Once the backup is aside there
+        is no payload left to lay a replacement over, so installing fresh is right
+        and refusing would abort the installer on a trivially fixable state.
+        """
+        backup = tmp_path / "~nsloth-2026.8.12.dist-info"
+        backup.mkdir()
+        (backup / "METADATA").write_text(
+            "Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.8.12\n", encoding = "utf-8"
+        )
+        # One record, none once the backup is aside, then the reinstalled one.
+        probes = iter((["2026.8.12"], [], ["2026.8.15"]))
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))
+        monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _name: [])
+        monkeypatch.setattr(
+            ips.install_manifest, "pip_backup_metadata_paths", lambda _name: [backup]
+        )
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _name: "/staged")
+        installs = []
+        monkeypatch.setattr(
+            ips, "pip_install_try", lambda label, *a, **k: installs.append(label) or True
+        )
+        monkeypatch.setattr(
+            ips, "_run_ok", lambda *_a: pytest.fail("nothing is left for pip to uninstall")
+        )
+
+        assert ips._repair_duplicate_core_metadata(("unsloth",)) is True
+        assert len(installs) == 1
+        assert not backup.exists()
+
     def test_every_duplicate_record_is_uninstalled_before_reinstall(self, monkeypatch):
         probes = {
             "unsloth": iter(

@@ -224,13 +224,27 @@ def metadata_conflict(versions: Sequence[str]) -> bool:
     return len(versions) > 1 or any(not version for version in versions)
 
 
+def _metadata_is_inconsistent(dist_name: str, versions: Optional[List[str]] = None) -> bool:
+    """Duplicated, unreadable, or standing on a record pip will not honour.
+
+    A sole `~` backup is the case a version count cannot see: it reports one
+    readable version, so nothing looks wrong, while pip and importlib both skip
+    the directory and the real package tree is usually gone with it. Left
+    unflagged the fast path calls the package up to date and skips the very
+    dependency pass that would reinstall it.
+    """
+    if versions is None:
+        versions = installed_versions(dist_name)
+    return bool(metadata_conflict(versions) or pip_backup_metadata_paths(dist_name))
+
+
 def installed_version_probe(
     dist_name: str, companion_names: Sequence[str] = ()
 ) -> Tuple[str, bool]:
     """One unambiguous version and whether any requested metadata conflicts."""
     versions = installed_versions(dist_name)
-    conflict = metadata_conflict(versions) or any(
-        metadata_conflict(installed_versions(name)) for name in companion_names
+    conflict = _metadata_is_inconsistent(dist_name, versions) or any(
+        _metadata_is_inconsistent(name) for name in companion_names
     )
     version = versions[0] if len(versions) == 1 and versions[0] else ""
     return version, conflict
