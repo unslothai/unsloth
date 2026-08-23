@@ -241,14 +241,33 @@ RAIL_CORNER = """
   if (!card) return null;
   const rail = card.parentElement;
   const a = rail.getBoundingClientRect();
+  // Cards in the rail's own flow. A dragged loaded models card is `fixed`
+  // somewhere else and says nothing about the rail.
+  const flowed = Array.from(rail.children).filter(
+    (kid) => getComputedStyle(kid).position === 'static',
+  );
   return {
     rail: {top: Math.round(a.top), bottom: Math.round(a.bottom),
            right: Math.round(a.right)},
     viewport: {width: window.innerWidth, height: window.innerHeight},
-    // Distance from the two edges it is pinned to. bottom-4/right-4 is 16px,
-    // and both must hold however many cards are in the rail.
+    // Distance from the two edges the rail is pinned to, both 16px.
+    //
+    // The bottom off the rail itself: it has no vertical margin or padding, and
+    // its border box stays put however far the cards are scrolled.
+    //
+    // The right off a CARD, not the rail. The rail carries the shadow gutter,
+    // `-mx-3 px-3`, so its border box sits 4px from the edge while the cards it
+    // pads sit at 16. Measuring the rail here reported 4 and failed at every
+    // viewport. Horizontal, so scrolling cannot move it either.
     fromBottom: Math.round(window.innerHeight - a.bottom),
-    fromRight: Math.round(window.innerWidth - a.right),
+    fromRight: flowed.length
+      ? Math.max(...flowed.map(
+          (kid) => Math.round(
+            window.innerWidth - kid.getBoundingClientRect().right,
+          ),
+        ))
+      : null,
+    flowedCards: flowed.length,
     // Nothing inline may set either: an offset or a cap written by JS is the
     // placement coming back, whatever value it happens to have landed on.
     railStyle: {bottom: rail.style.bottom, maxHeight: rail.style.maxHeight,
@@ -589,17 +608,21 @@ def measure(page, label: str) -> dict:
         )
     if facts["railScrolls"] is not None:
         scrolls = facts["railScrolls"]
+        # Click-through in every state, scrolling or not. It used to take pointer
+        # input while it scrolled, which needed the JS that also placed it. The
+        # fold is reached by wheeling over a card, whose nearest scrollable
+        # ancestor is the rail, or by focus, which scrolls it into view.
         check(
-            f"{label}: the rail takes pointer input exactly when it scrolls",
-            facts["railPointerEvents"] == ("auto" if scrolls else "none"),
+            f"{label}: the rail stays click-through",
+            facts["railPointerEvents"] == "none",
             f"scrolls={scrolls} pointerEvents={facts['railPointerEvents']} "
             f"why={json.dumps(facts['widthWhy'], sort_keys = True)}",
         )
-        # Click-through is what pointer-events-none is for, and the gutter is
-        # the widest part of the rail that no card covers.
+        # The gutter is the widest part of the rail that no card covers, so it
+        # is where a swallowed click would show up first.
         check(
-            f"{label}: a rail with nothing to scroll to stays click-through",
-            scrolls or facts["gutterIsRail"] is False,
+            f"{label}: the rail's gutter never swallows a click",
+            facts["gutterIsRail"] is False,
             f"scrolls={scrolls} gutterIsRail={facts['gutterIsRail']}",
         )
     # The notes are allowed to yield all of their height, and do; the controls
