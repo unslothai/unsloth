@@ -266,6 +266,7 @@ CORE = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_pr
 
 class _VllmModel:
     """A model loaded with fast_inference = True carries a live engine."""
+
     vllm_engine = object()
 
 
@@ -287,7 +288,9 @@ def test_fast_inference_leaves_lm_head_alone():
 
     # embed_tokens still redirects, so fast inference still refuses it exactly as before.
     targets, saved, moved = _redirect_embedding_targets(
-        CORE + ["embed_tokens", "lm_head"], None, skip = skip,
+        CORE + ["embed_tokens", "lm_head"],
+        None,
+        skip = skip,
     )
     assert saved == ["embed_tokens"] and moved == ("embed_tokens",)
     assert targets == CORE + ["lm_head"], "the spared name is kept, not silently dropped"
