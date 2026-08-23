@@ -2,6 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
+import {
+  clearedServerTuningState,
+  committedServerTuningState,
+  serverTuningLoadPayload,
+} from "../lib/server-tuning-fields";
 import { getAuthToken } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { DOWNLOAD_KIND } from "@/features/hub/download-manager/constants";
@@ -165,8 +170,14 @@ import {
   type LastLocalModelKind,
 } from "../utils/last-local-model-load";
 import { createRetryableSharedRead } from "../utils/retryable-shared-read";
-import { getImageInputUnavailableReason } from "../utils/image-input-support";
-import { mergeContextTruncation } from "../utils/context-truncation";
+import {
+  createImageGateRunOwner,
+  getImageInputUnavailableReason,
+} from "../utils/image-input-support";
+import {
+  mergeContextTruncation,
+  promptWasShortened,
+} from "../utils/context-truncation";
 import {
   createThinkTagTracker,
   extractDeltaText,
@@ -1383,6 +1394,105 @@ function toOpenAIMessages(
   ];
 }
 
+/** Payload the turn carries in its own parts, so that a turn holding real history is kept
+ * even when the replay serialiser emits nothing for it.
+ *
+ * Tool calls are deliberately absent. A call the serialiser can carry leaves `tool_calls` on
+ * the wire and is caught by the shape check below; a call it cannot carry (a local call
+ * Stopped before its result arrived, which OpenAI forbids replaying without a responding
+ * `role="tool"` message) reaches the provider as nothing. Counting the second as payload keeps
+ * a turn the backend then drops (`_drop_empty_assistant_sentinels`), so
+ * `_coalesce_consecutive_user_turns` merges the two user turns, resending the cancelled
+ * prompt and inviting the tool request again. */
+function assistantTurnCarriesPayload(message: RunMessage): boolean {
+  for (const part of message.content ?? []) {
+    // sanitizeAssistantReplayText only substitutes, never empties, so the raw part is
+    // equivalent here and keeps the scan off that regex.
+    if (part.type === "text" && part.text.trim().length > 0) return true;
+  }
+  if (collectImageParts(message).length > 0) return true;
+  return "attachments" in message && (message.attachments?.length ?? 0) > 0;
+}
+
+/** Whitespace is not content: `_build_external_messages` (studio/backend/routes/inference.py)
+ * drops any assistant turn whose string content trims away, so counting it here would keep a
+ * pair the backend then splits apart again. */
+function hasReplayContent(content: OpenAIMessageContent | null): boolean {
+  if (typeof content === "string") return content.trim().length > 0;
+  return Boolean(content);
+}
+
+/** `status` is session state only (a reloaded thread comes back stamped complete), so the
+ * persisted marker is read alongside it. */
+function assistantTurnEndedEarly(message: RunMessage): boolean {
+  return (
+    message.status?.type === "incomplete" ||
+    readIncompleteInfo((message as { metadata?: unknown }).metadata) !== null
+  );
+}
+
+/** A Stop that landed before the turn produced anything: it serialises to a lone empty
+ * assistant message, which every backend drops, stranding two user turns in a row. */
+function isAbandonedAssistantTurn(
+  message: RunMessage,
+  includeReasoningContent: boolean,
+): boolean {
+  if (message.role !== "assistant") return false;
+  if (assistantTurnCarriesPayload(message)) return false;
+  // A turn that finished on reasoning alone is a reply; on an external request it serialises
+  // empty only because reasoning is stripped there, which must not read as abandoned.
+  if (
+    !assistantTurnEndedEarly(message) &&
+    (message.content ?? []).some((part) => part.type === "reasoning")
+  ) {
+    return false;
+  }
+  const [only, ...rest] = toOpenAIMessages(message, includeReasoningContent);
+  return (
+    rest.length === 0 &&
+    only?.role === "assistant" &&
+    !hasReplayContent(only.content) &&
+    !only.tool_calls &&
+    !only.reasoning_content
+  );
+}
+
+/** Drop refused and abandoned assistant turns along with the user prompt that triggered
+ * them: a refusal re-triggers the classifier, an abandoned turn breaks role alternation. */
+function pruneOutboundHistory(
+  messages: RunMessages,
+  includeReasoningContent: boolean,
+): RunMessage[] {
+  const history = [...messages];
+  const abandoned = history.map((message) =>
+    isAbandonedAssistantTurn(message, includeReasoningContent),
+  );
+  // A prompt is only stranded when something survives after it, so a thread whose last turn
+  // was abandoned keeps its trailing prompt: that is the history the next send needs.
+  let lastSurviving = -1;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    if (!abandoned[index] && !isAnthropicRefusalMessage(history[index])) {
+      lastSurviving = index;
+      break;
+    }
+  }
+
+  const surviving: RunMessage[] = [];
+  for (let index = 0; index < history.length; index += 1) {
+    const message = history[index];
+    const refused = isAnthropicRefusalMessage(message);
+    if (refused || abandoned[index]) {
+      if (refused || index < lastSurviving) {
+        const last = surviving.at(-1);
+        if (last && last.role === "user") surviving.pop();
+      }
+      continue;
+    }
+    surviving.push(message);
+  }
+  return surviving;
+}
+
 function extractImageBase64(input: string): string | undefined {
   if (!input) {
     return undefined;
@@ -1558,17 +1668,7 @@ export async function buildOutboundMessagesForTokenCount(
   messages: RunMessages,
   threadId: string | undefined,
 ): Promise<OpenAIChatMessage[]> {
-  const survivingMessages: RunMessage[] = [];
-  for (const message of messages) {
-    if (isAnthropicRefusalMessage(message)) {
-      const last = survivingMessages.at(-1);
-      if (last && last.role === "user") survivingMessages.pop();
-      continue;
-    }
-    survivingMessages.push(message);
-  }
-
-  const outboundMessages = survivingMessages
+  const outboundMessages = pruneOutboundHistory(messages, true)
     .flatMap((message) => toOpenAIMessages(message, true))
     .filter((message): message is NonNullable<typeof message> =>
       Boolean(message),
@@ -2027,8 +2127,19 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedNBatch",
   "nUbatch",
   "loadedNUbatch",
+  "specDraftCacheDtype",
+  "loadedSpecDraftCacheDtype",
+  "loadMode",
+  "loadedLoadMode",
+  "ctxCheckpoints",
+  "loadedCtxCheckpoints",
+  "cacheRam",
+  "loadedCacheRam",
   "tensorParallel",
   "loadedTensorParallel",
+  "loadedDisableVision",
+  "disableVision",
+  "loadedVisionDisabledByUser",
   "gpuMemoryMode",
   "loadedGpuMemoryMode",
   "loadedCpuFallback",
@@ -2193,8 +2304,11 @@ const IMAGE_OR_VIDEO_TASKS: ReadonlySet<string> = new Set([
   "image-diffusion-unsupported",
 ]);
 
-// Scan folders the picker exposes. hf_cache is already in the cached lists,
-// and ollama links are not loadable.
+// Scan folders the picker exposes. hf_cache is already in the cached lists.
+// ollama stays out by policy: its rows load through the picker, but the API
+// auto-switch index never resolves them (local_model_resolver.py skips the
+// Ollama scanner), so auto-loading one would promise an API identity that
+// cannot be reached.
 const AUTO_LOAD_LOCAL_SOURCES: ReadonlySet<string> = new Set([
   "models_dir",
   "lmstudio",
@@ -2721,6 +2835,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     gpu_memory_mode?: "auto" | "manual";
     cache_type_kv?: string | null;
     tensor_parallel?: boolean | null;
+    // The projector is part of what the guard has to size: a load that skips
+    // it needs ~1 GB less, and charging for it would refuse loads that fit.
+    disable_vision?: boolean | null;
     // The estimate charges a drafter whose size differs by mode (a DSpark
     // sidecar is ~11 GB, and Auto reaches it), so this preflight has to be told
     // what the load will send or it sizes a different model.
@@ -2904,6 +3021,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     const effectiveTensorParallel = isDiffusion
       ? false
       : config.tensorParallel;
+    // The diffusion runner has no projector to skip, so the toggle is inert there.
+    const effectiveDisableVision = isDiffusion ? false : config.disableVision;
     const effectiveGpuIds =
       config.selectedGpuIds !== undefined
         ? reconcilePersistedGpuIds(
@@ -2938,6 +3057,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         gguf_variant: candidate.ggufVariant,
         cache_type_kv: config.kvCacheDtype,
         tensor_parallel: effectiveTensorParallel,
+        disable_vision: effectiveDisableVision,
         // The same values the load below sends.
         speculative_type: effectiveSpeculativeType,
         spec_draft_n_max: effectiveSpecDraftNMax,
@@ -2953,6 +3073,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               // omitted when blank: a null counts as set and strips inherited -b / -ub
               ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
               ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
+              // Same omit-when-blank rule, and the same values the load sends:
+              // the draft cache dtype changes what the estimate charges the
+              // drafter, so a preflight without it disagrees with the launch.
+              ...serverTuningLoadPayload(config),
               // Checked with the same arguments the load below sends, or a list
               // the backend refuses would pass this gate and fail the launch.
               ...(resolvedExtraArgs !== undefined
@@ -2989,6 +3113,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
       tensor_parallel: effectiveTensorParallel,
+      disable_vision: effectiveDisableVision,
       // GGUF-only: the safetensors fallback loads via HF auto-placement (no
       // explicit pins). The split ratio is deliberately never remembered
       // (positionally bound to an exact GPU set), so auto-load leaves llama.cpp's
@@ -3003,6 +3128,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             n_parallel: config.nParallel ?? null,
             ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
             ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
+            // Remembered like the rest of this block, or the auto-load reverts
+            // an override the user asked to be remembered.
+            ...serverTuningLoadPayload(config),
             // Remembered pass-through arguments, for the same reason as the rest of
             // this block: nothing is resident at startup, so the omission path has
             // nothing to inherit them from and the model would come up without the
@@ -3121,6 +3249,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedNBatch: committedNBatch,
           nUbatch: committedNUbatch,
           loadedNUbatch: committedNUbatch,
+          ...committedServerTuningState(config, loadResp.is_diffusion ?? false),
           // What this launch is running, for a later rollback. The status applier
           // cannot seed it: the model-loading lease is held for the whole of this
           // load, which is exactly the guard that stops a mid-switch poll writing
@@ -3132,6 +3261,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               : (resolvedExtraArgs ?? null),
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
+          loadedDisableVision: loadResp.disable_vision ?? false,
+          // Repaired from the echo alongside tensorParallel: this load picked its
+          // own model and config, so a stale true would show Vision off over a
+          // loaded projector, and the next Apply would send it.
+          disableVision: loadResp.disable_vision ?? false,
+          loadedVisionDisabledByUser:
+            loadResp.vision_disabled_by_user ?? false,
           ...loadedGpuMemoryFields(loadResp),
           loadedCustomContextLength: keepCustomCtx,
           defaultChatTemplate: loadResp.chat_template ?? null,
@@ -3168,11 +3304,19 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedNBatch: null,
           nUbatch: null,
           loadedNUbatch: null,
+          ...clearedServerTuningState(),
           // Same reason, and the baseline has to be cleared rather than left: a
           // rollback to THIS model must not resend a GGUF's arguments.
           loadedLlamaExtraArgs: null,
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
+          loadedDisableVision: loadResp.disable_vision ?? false,
+          // Cleared, not carried, like the GGUF-only knobs above: a safetensors
+          // load has no projector, and a stale true would stage it for the next
+          // model that has one.
+          disableVision: false,
+          loadedVisionDisabledByUser:
+            loadResp.vision_disabled_by_user ?? false,
           // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
           // GGUF load left, matching the interactive/status sibling load paths.
           ...loadedGpuMemoryFields(loadResp),
@@ -3491,8 +3635,14 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         loadedNBatch: null,
         nUbatch: null,
         loadedNUbatch: null,
+        ...clearedServerTuningState(),
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
+        loadedDisableVision: loadResp.disable_vision ?? false,
+        // The request above omits disable_vision, so the echo is what the load
+        // ran with; adopting it stops a previous model's Vision-off carrying over.
+        disableVision: loadResp.disable_vision ?? false,
+        loadedVisionDisabledByUser: loadResp.vision_disabled_by_user ?? false,
         ...loadedGpuMemoryFields(loadResp),
         // Drives the GPU Memory controls' diffusion gate; set alongside the
         // GPU fields on every load path so the gate can't read stale.
@@ -4357,19 +4507,10 @@ export function createOpenAIStreamAdapter(
         throw new Error("Image generation edit unavailable.");
       }
 
-      // Drop refused assistant turns + their triggering user prompt;
-      // otherwise context re-triggers the classifier.
-      const survivingMessages: RunMessage[] = [];
-      for (const message of messages) {
-        if (isAnthropicRefusalMessage(message)) {
-          const last = survivingMessages.at(-1);
-          if (last && last.role === "user") {
-            survivingMessages.pop();
-          }
-          continue;
-        }
-        survivingMessages.push(message);
-      }
+      const survivingMessages = pruneOutboundHistory(
+        messages,
+        !isExternalRequest,
+      );
 
       // toOpenAIMessages emits assistant tool_calls + role="tool"
       // follow-ups; the backend Gemini translator rebuilds the
@@ -4585,6 +4726,7 @@ export function createOpenAIStreamAdapter(
           loadedIsMultimodal: runtime.loadedIsMultimodal,
           modelLoaded: !!params.checkpoint && !runtime.modelLoading,
           loadError: runtime.lastModelLoadError,
+          visionDisabledByUser: runtime.loadedVisionDisabledByUser,
           mmprojFallbackReason: runtime.mmprojFallbackReason,
         });
         if (imageGateReason) {
@@ -4594,8 +4736,10 @@ export function createOpenAIStreamAdapter(
           // before the streaming path's setThreadRunning(true).
           const gatedThreadKey = resolvedThreadId || "__default";
           // Own token: siblings share "__default", so an ownerless clear would drop their
-          // entries while they are still generating.
-          const gateOwner = () => {};
+          // entries while they are still generating. Marked as the gate's, so a reader that
+          // means "this thread's run started" is not told one did by a pair of flags that
+          // stand for a request nobody made.
+          const gateOwner = createImageGateRunOwner();
           runtime.setThreadRunning(gatedThreadKey, true, { owner: gateOwner });
           runtime.setThreadRunning(gatedThreadKey, false, { owner: gateOwner });
           clearSelectedImageEditReference();
@@ -5663,12 +5807,11 @@ export function createOpenAIStreamAdapter(
                   chunk.context_truncated,
                 );
                 const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
-                // fits:false means the fitter could NOT make the request fit and returned
-                // the original messages. Toasting "older turns were removed" is untrue
-                // there, and burns the once-per-thread flag so a real one is silent.
-                const reallyCompacted =
-                  chunk.context_truncated.fits === true &&
-                  (chunk.context_truncated.dropped_messages ?? 0) > 0;
+                // What must stay silent is a fit that returned the ORIGINAL messages:
+                // toasting "older turns were removed" is untrue there, and burns the
+                // once-per-thread flag. Not `fits`, which is also false for a shortened
+                // prompt that really was sent.
+                const reallyCompacted = promptWasShortened(chunk.context_truncated);
                 if (
                   reallyCompacted &&
                   resolvedThreadId &&

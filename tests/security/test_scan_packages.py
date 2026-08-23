@@ -2325,8 +2325,11 @@ def test_the_toml_helpers_run_without_stdlib_tomllib(monkeypatch):
     old AND taking `tomllib` away. Doing only the second is not the same thing -- the
     guard reads sys.version_info, not the module table.
 
-    The backport is supplied rather than required. `tests-security` installs only pytest
-    and PyYAML, so a test that leaned on a real `tomli` being importable would
+    The backport is supplied rather than required. The job that runs this suite installs
+    pytest and PyYAML and nothing that provides `tomli` (it was `tests-security` in
+    security-audit.yml, and is the `Security regression tests` step in
+    workflow-trigger-lint.yml since that job was absorbed onto a shared runner). So a test
+    that leaned on a real `tomli` being importable would
     `importorskip` its way to green there and never once execute the branch it exists to
     cover. Registering the stdlib parser under the name the fallback looks for keeps this
     load-bearing on every interpreter and in CI, while still proving the fallback is what

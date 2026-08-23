@@ -20,6 +20,7 @@ from hub.schemas.inventory import (
 from hub.utils.gguf import (
     gguf_variant_key,
     is_gguf_filename as _is_gguf_filename,
+    is_imatrix_filename as _is_imatrix_filename,
     is_mmproj_filename as _is_mmproj_filename,
     is_mtp_drafter_path as _is_mtp_drafter_path,
 )
@@ -66,7 +67,7 @@ _HF_CACHE_MODEL_FILE_PROBE_LIMIT = 2000
 
 
 def _is_model_directory(d: Path) -> bool:
-    """True when *d* has a config plus real weights; excludes mmproj GGUFs and non-weight ``.bin`` files (``tokenizer.bin``) to avoid false positives."""
+    """True when *d* has a config plus real weights; excludes mmproj GGUFs, calibration imatrices and non-weight ``.bin`` files (``tokenizer.bin``) to avoid false positives."""
 
     def _is_weight_file(f: Path) -> bool:
         if is_appledouble_metadata(f):
@@ -75,7 +76,11 @@ def _is_model_directory(d: Path) -> bool:
         if suffix == ".safetensors":
             return True
         if suffix == ".gguf":
-            return "mmproj" not in f.name.lower() and not _is_mtp_drafter_path(f.name)
+            return (
+                "mmproj" not in f.name.lower()
+                and not _is_mtp_drafter_path(f.name)
+                and not _is_imatrix_filename(f.name)
+            )
         if suffix == ".bin":
             name = f.name.lower()
             return (
@@ -550,7 +555,10 @@ def _classify_non_gguf_model_format(
 
 def _is_main_gguf_filename(name: str) -> bool:
     return (
-        _is_gguf_filename(name) and not _is_mmproj_filename(name) and not _is_mtp_drafter_path(name)
+        _is_gguf_filename(name)
+        and not _is_mmproj_filename(name)
+        and not _is_mtp_drafter_path(name)
+        and not _is_imatrix_filename(name)
     )
 
 
