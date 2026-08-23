@@ -860,7 +860,7 @@ def test_both_local_tool_loops_size_retrieval_with_the_same_policy():
     # expression from prompt_budget.
     source = inspect.getsource(safetensors_agentic)
     assert "retrieval_budget(" in source
-    budget_call = source[source.index('kwargs["conversation_budget_tokens"] = retrieval_budget('):]
+    budget_call = source[source.index('kwargs["conversation_budget_tokens"] = retrieval_budget(') :]
     assert "reply_returns = True" in budget_call[:400]
 
 
