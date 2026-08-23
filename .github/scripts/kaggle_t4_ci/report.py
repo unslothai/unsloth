@@ -336,6 +336,66 @@ def kernel_log_text(evidence: Path) -> str:
     return "".join(chunks)
 
 
+PREFETCH_SENTINEL = "KAGGLE_CI_PREFETCH"
+
+
+def prefetch_table(evidence: Path) -> list[str]:
+    """What the prefetch lane actually achieved, from the kernel log.
+
+    This is the instrument, not decoration. The gpt-oss download time was never
+    measured -- an earlier estimate of "~282s" was subtraction, not measurement
+    -- and the whole leg order is arranged around it. Putting the number in the
+    job summary is what lets the next person confirm or reject the reorder
+    without downloading an artifact, including the case where it did not pay
+    for itself.
+
+    Absent on a kernel built without the lane, which reads as no section at
+    all rather than as a table of zeroes.
+    """
+    text = kernel_log_text(evidence)
+    if not text:
+        return []
+    records = []
+    for line in text.splitlines():
+        marker = PREFETCH_SENTINEL + " "
+        if marker in line:
+            try:
+                records.append(json.loads(line.split(marker, 1)[1]))
+            except (ValueError, IndexError):
+                continue
+    if not records:
+        return []
+    lines = [
+        "#### model prefetch",
+        "",
+        "| repo | ok | download s | MB/s | GB | transport | attempts |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for r in records:
+        gb = round((r.get("bytes") or 0) / 1e9, 2)
+        lines.append(
+            f"| `{r.get('repo', '?')}` | {'yes' if r.get('ok') else '**NO**'} | "
+            f"{r.get('download_seconds') if r.get('download_seconds') is not None else '-'} | "
+            f"{r.get('mb_per_s') if r.get('mb_per_s') is not None else '-'} | {gb} | "
+            f"{r.get('transport', '?')} | {r.get('attempts', '?')} |"
+        )
+    failed = [r for r in records if not r.get("ok")]
+    lines.append("")
+    if failed:
+        # Not a failure of the run. Said out loud anyway, because the schedule
+        # assumes this lane worked: legs.KERNELS starts gptoss third to give it
+        # a window, and if the window went unused the makespan is the ~568s
+        # fallback rather than the ~500s the order was chosen for.
+        lines.append(
+            f"{len(failed)} of {len(records)} prefetch(es) failed. This does not fail "
+            "the run -- the leg downloads the model itself -- but the leg order in "
+            "`legs.KERNELS` is arranged around this lane working, so the makespan "
+            "above is the fallback rather than the intended one."
+        )
+        lines.append("")
+    return lines
+
+
 def diagnostic_lines(evidence: Path, limit: int = 40) -> list[str]:
     """The lines of the kernel log worth putting in front of a human.
 
@@ -407,6 +467,7 @@ def main() -> int:
         )
     lines.append("")
 
+    lines += prefetch_table(evidence)
     lines += version_table(reports)
     for report in reports:
         lines += render(report)

@@ -56,7 +56,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from legs import KERNELS, PACKAGE_UNDER_TEST, Leg, expand_install, resolve  # noqa: E402
+from legs import (  # noqa: E402
+    KERNELS,
+    PACKAGE_UNDER_TEST,
+    PREFETCH_REPOS,
+    Leg,
+    expand_install,
+    resolve,
+)
 
 DRIVER_SENTINEL = "KAGGLE_T4_CI_DRIVER"
 PAYLOAD_SENTINEL = "KAGGLE_T4_CI_PAYLOAD"
@@ -496,6 +503,8 @@ def build_driver(
     expected_gpus: int = SESSION_GPUS,
     cpu_lane: str | None = None,
     after_gpu: str | None = None,
+    prefetch_repos: tuple[str, ...] = (),
+    vram_source: dict | None = None,
 ) -> dict:
     """Kernel notebook that runs the payloads across the session's GPUs.
 
@@ -506,14 +515,20 @@ def build_driver(
     ``payloads`` may hold MORE entries than there are cards. They queue: one
     worker per card takes the next leg only when its current one has exited, so
     a card carries exactly one payload at a time. ``payloads`` is ordered, and
-    that order is the start order -- longest leg first, since the longest leg
-    is what sets the makespan and a greedy scheduler cannot balance around one
-    it picks up last.
+    that order is the start order. It comes from ``legs.KERNELS``, which
+    documents why gptoss sits third rather than first; do not sort it here.
+
+    ``prefetch_repos`` are warmed, in the order given, on a lane that takes no
+    card and no virtualenv. It runs in the driver's own interpreter using the
+    Kaggle image's ``huggingface_hub``, so it starts at t=0 rather than after a
+    venv build, and it deliberately does NOT set ``HF_HOME``: the legs read the
+    image default and the whole point is to land in the cache they read.
 
     ``expected_gpus`` is how many cards the packing was built for. It is what
     the kernel stands down against, and it is deliberately NOT ``len(payloads)``
     any more: see the guard in the generated cell.
     """
+    vram_source = vram_source or {}
     encoded = {name: _encode_bytes(json.dumps(nb).encode("utf-8")) for name, nb in payloads.items()}
     isolation = isolation or {}
     system_site = {name: bool(isolation.get(name, True)) for name in payloads}
@@ -527,11 +542,39 @@ def build_driver(
     order = [name for name in payloads if name not in off_queue]
     if not order:
         raise ValueError("every payload is off the card queue, so nothing would use a GPU")
+    # hf_home is left unset ON PURPOSE. See build_driver's docstring: a private
+    # root here downloads 12 GB into a cache no leg reads and reports success.
+    # Per-payload VRAM for the admission check. Off-queue payloads are absent
+    # on purpose: neither takes a card, so neither has a budget to consume.
+    vram_gb = {name: float(getattr(leg, "vram_gb", 1.0)) for name, leg in vram_source.items()}
+    prefetch_blob = ""
+    if prefetch_repos:
+        prefetch_blob = _encode_bytes(
+            _prefetch_builder().prefetch_cell(list(prefetch_repos)).encode("utf-8")
+        )
 
     setup = f"""import base64, gzip, json, os, pathlib, subprocess, sys, threading, time
 print("{DRIVER_SENTINEL} start", flush=True)
 
 WORK = pathlib.Path("/kaggle/working")
+
+# Virtualenvs do NOT live under WORK. /kaggle/working is 19.5 GB and is also
+# what Kaggle ships home as the artifact; $HOME and /tmp share a ~1 TB overlay.
+# Each leg's venv carries its own torch and its own NVIDIA runtime, and with
+# two legs per card there can now be FOUR of them alive at once -- which does
+# not fit in 19.5 GB and would surface as an install failing halfway through
+# for reasons that look nothing like a disk.
+#
+# Evidence stays on WORK, because that is the only thing that has to come back.
+VENV_ROOT = pathlib.Path("/tmp/t4ci_venvs")
+try:
+    VENV_ROOT.mkdir(parents=True, exist_ok=True)
+except OSError:
+    # A box without a writable /tmp is not one this kernel can fix. Falling
+    # back to WORK keeps a one-leg-per-card run working, which is the shape
+    # that fitted there before co-scheduling.
+    VENV_ROOT = WORK
+print("{DRIVER_SENTINEL}_VENV_ROOT " + json.dumps({{"path": str(VENV_ROOT)}}), flush=True)
 PAYLOADS = {json.dumps(encoded)}
 # Which payloads may see the Kaggle image's site-packages. A leg that
 # replaces torch must not: pip would then treat torch's pinned NVIDIA
@@ -571,6 +614,31 @@ ORDER = {order!r}
 CPU_LANE = {cpu_lane!r}
 AFTER_GPU = {after_gpu!r}
 
+# Measured peak_reserved_gb per payload (legs.Leg.vram_gb), and the budget a
+# single card will admit. A T4 reports 14.56 GB usable; the budget is 13.0 so
+# that fragmentation and the allocator's own headroom are not the thing that
+# discovers the limit.
+#
+# This is what lets two legs share a card. On run 32611343797 the three Qwen
+# legs peaked at 0.70 GB EACH -- 4.8% of the card -- while gptoss peaked at
+# 12.78 GB, so "one payload per card" was leaving a card 95% empty for three
+# quarters of the run. gptoss still never shares: 12.78 + 0.70 = 13.48 is over
+# budget, which is the arithmetic rather than a special case.
+#
+# MAX_LEGS_PER_CARD caps it at 2 even where VRAM would allow 3, because VRAM is
+# not the scarce resource here. A Kaggle session has 4 vCPUs and a leg is ~87%
+# install, import and download; the legs contend for CORES long before they
+# contend for memory, and a third concurrent install buys nothing the profile
+# says is available.
+VRAM_GB = {vram_gb!r}
+CARD_VRAM_BUDGET_GB = 13.0
+MAX_LEGS_PER_CARD = 2
+
+# The model prefetch, gzip+base64 like the payloads so its quoting survives
+# being embedded in a generated cell. Empty string means no prefetch, which is
+# what every kernel did before this existed.
+PREFETCH_BLOB = {prefetch_blob!r}
+
 # A shortfall is INFRASTRUCTURE, and it has to be called that HERE, before a
 # thread starts. `max(1, ...)` used to make one card look like enough: both
 # payloads were pinned to device 0, each child still saw exactly one GPU and
@@ -604,7 +672,7 @@ lock = threading.Lock()
 
 def _make_venv(idx, system_site):
     """Give a child its own site-packages. See this file's module docstring."""
-    vdir = WORK / f"venv_{{idx}}"
+    vdir = VENV_ROOT / f"venv_{{idx}}"
     try:
         uv = subprocess.run(["which", "uv"], capture_output=True,
                             text=True).stdout.strip()
@@ -710,7 +778,7 @@ def run_one(name, gpu_index, idx):
     # log are the evidence and they are NOT touched.
     try:
         import shutil as _sh
-        _sh.rmtree(WORK / f"venv_{{idx}}", ignore_errors=True)
+        _sh.rmtree(VENV_ROOT / f"venv_{{idx}}", ignore_errors=True)
     except Exception:
         pass
     print(f"{DRIVER_SENTINEL}_DONE " + json.dumps({{name: results[name]}}),
@@ -743,6 +811,37 @@ SEEDS = _queue[:N_GPU]
 pending = _queue[N_GPU:]
 pending_lock = threading.Lock()
 
+# What each card is currently carrying, in GB and in count. Admission is taken
+# under the same lock as the queue so two workers cannot both look at a card
+# with room and both decide to use it.
+card_load = {{i: 0.0 for i in range(N_GPU)}}
+card_count = {{i: 0 for i in range(N_GPU)}}
+
+
+def _admit(gpu_index, name):
+    """Reserve room for `name` on `gpu_index`, or return False.
+
+    Called holding `pending_lock`. Returning False leaves the leg on the queue
+    for a card that can take it -- or for this one, later, once something
+    finishes. It must never mutate on the failing path or a refused leg would
+    leak capacity it never used.
+    """
+    want = VRAM_GB.get(name, 1.0)
+    if card_count[gpu_index] >= MAX_LEGS_PER_CARD:
+        return False
+    if card_count[gpu_index] and card_load[gpu_index] + want > CARD_VRAM_BUDGET_GB:
+        return False
+    card_load[gpu_index] += want
+    card_count[gpu_index] += 1
+    return True
+
+
+def _release(gpu_index, name):
+    with pending_lock:
+        card_load[gpu_index] -= VRAM_GB.get(name, 1.0)
+        card_count[gpu_index] -= 1
+
+
 def worker(gpu_index, seed):
     if seed is not None:
         # The 5s stagger the per-payload threads used to get from the start
@@ -753,19 +852,71 @@ def worker(gpu_index, seed):
         if gpu_index:
             time.sleep(5 * gpu_index)
         idx, name = seed
-        run_one(name, gpu_index, idx)
+        with pending_lock:
+            _admit(gpu_index, name)
+        try:
+            run_one(name, gpu_index, idx)
+        finally:
+            _release(gpu_index, name)
     while True:
+        picked = None
         with pending_lock:
             if not pending:
+                # Nothing left to start. A worker whose card still holds a leg
+                # simply exits; the OTHER thread on that card is the one still
+                # running it, and the joins below wait for that.
                 return
-            idx, name = pending.pop(0)
-        run_one(name, gpu_index, idx)
+            # First leg on the queue this card can actually hold. Not strictly
+            # the head: gptoss cannot join an occupied card, and refusing to
+            # look past it would idle a card that has room for the small leg
+            # behind it.
+            for position, (idx, name) in enumerate(pending):
+                if _admit(gpu_index, name):
+                    picked = pending.pop(position)
+                    break
+        if picked is None:
+            # Every remaining leg is too big for what this card has free right
+            # now. Wait for a release rather than spin; something is running or
+            # the queue would have been empty.
+            time.sleep(1.0)
+            continue
+        idx, name = picked
+        try:
+            run_one(name, gpu_index, idx)
+        finally:
+            _release(gpu_index, name)
 
 # The CPU lane, started BEFORE the cards are handed out and running beside
 # them. It carries work that needs no GPU -- the Studio install: a checkout, a
 # frontend build, a venv, a llama.cpp download and a Playwright browser -- so
 # every second of it that overlaps the training legs is a second nobody waits
 # for. It is not given a card and does not queue for one.
+# The PREFETCH lane. Started before anything else, because it is the only lane
+# whose value is entirely a function of how early it starts: a prefetch pays
+# only for what it finishes before the leg that wants the model begins, and
+# legs.KERNELS puts gptoss third specifically to give this lane that window.
+#
+# A driver THREAD rather than a papermill payload, deliberately. It needs the
+# image's huggingface_hub and nothing else -- no venv, no install, no card --
+# so as a payload it would spend its first ~60s building a virtualenv it has no
+# use for, which is 60s taken off the head start that is the whole point.
+prefetch_thread = None
+if PREFETCH_BLOB:
+    def _prefetch_lane():
+        src = gzip.decompress(base64.b64decode(PREFETCH_BLOB)).decode("utf-8")
+        # The cell never raises by contract, but exec'ing generated source on a
+        # lane nobody joins before the cards start is not the place to find out
+        # otherwise: an escape here would kill the thread silently and the run
+        # would look like a prefetch that simply found nothing to do.
+        try:
+            exec(compile(src, "<prefetch>", "exec"), {{"__name__": "prefetch"}})
+        except BaseException as exc:
+            print("{DRIVER_SENTINEL}_PREFETCH_FAILED " + json.dumps(
+                {{"error": f"{{type(exc).__name__}}: {{exc}}"}}), flush=True)
+    prefetch_thread = threading.Thread(target = _prefetch_lane, daemon = True)
+    prefetch_thread.start()
+    print("{DRIVER_SENTINEL}_PREFETCH " + json.dumps({{"started": True}}), flush=True)
+
 cpu_thread = None
 if CPU_LANE:
     def _cpu_lane():
@@ -774,12 +925,17 @@ if CPU_LANE:
     cpu_thread.start()
     print("{DRIVER_SENTINEL}_CPU_LANE " + json.dumps({{"payload": CPU_LANE}}), flush=True)
 
+# MAX_LEGS_PER_CARD workers per card, not one. The extra worker is what lets a
+# card pick up a second small leg beside the one it is already running; it
+# takes nothing when VRAM says no, so a card carrying gptoss behaves exactly as
+# it did when there was one worker each.
 threads = []
 for gpu_index in range(N_GPU):
-    seed = SEEDS[gpu_index] if gpu_index < len(SEEDS) else None
-    t = threading.Thread(target=worker, args=(gpu_index, seed), daemon=False)
-    t.start()
-    threads.append(t)
+    for slot in range(MAX_LEGS_PER_CARD):
+        seed = SEEDS[gpu_index] if (slot == 0 and gpu_index < len(SEEDS)) else None
+        t = threading.Thread(target=worker, args=(gpu_index, seed), daemon=False)
+        t.start()
+        threads.append(t)
 for t in threads:
     t.join()
 
@@ -887,6 +1043,22 @@ def _studio_builder():
     return module
 
 
+def _prefetch_builder():
+    """Load ``kaggle_prefetch.py`` by PATH, for the reason ``_studio_builder``
+    documents: two sibling directories both ship a ``build_kernel`` and a
+    ``report``, so plain imports here resolve by test order rather than intent.
+    """
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[1] / "kaggle_prefetch.py"
+    spec = importlib.util.spec_from_file_location("kaggle_ci__prefetch", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load the prefetch builder from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def studio_payloads(*, unsloth_ref: str, repo_url: str, payload_args: str) -> dict[str, dict]:
     """The Studio payload, split into its GPU-free half and its GPU half."""
     studio = _studio_builder()
@@ -916,9 +1088,11 @@ def build_kernel(
     per_run_timeout: int,
     skip_reference: bool = False,
     studio: dict | None = None,
+    prefetch_repos: tuple[str, ...] = (),
 ) -> dict:
     payloads = {}
     isolation = {}
+    legs_by_payload = {}
     for leg in resolve(leg_names):
         name = f"t4_{leg.name}.ipynb"
         payloads[name] = build_payload_notebook(
@@ -930,6 +1104,7 @@ def build_kernel(
             reference = "" if skip_reference else None,
         )
         isolation[name] = leg.system_site_packages
+        legs_by_payload[name] = leg
     # The card queue is the LEGS. Studio's two halves ride the same kernel but
     # not the same queue, so expected_gpus is derived before they are added:
     # they are what the cards are freed FOR, not more work to schedule onto
@@ -956,6 +1131,8 @@ def build_kernel(
         expected_gpus = expected_gpus,
         cpu_lane = cpu_lane,
         after_gpu = after_gpu,
+        prefetch_repos = prefetch_repos,
+        vram_source = legs_by_payload,
     )
 
 
@@ -994,6 +1171,15 @@ def main() -> int:
         help = "build with no band check at all. Only for the one run that recaptures a reference",
     )
     ap.add_argument("--per-run-timeout", type = int, default = 2400)
+    ap.add_argument(
+        "--no-prefetch",
+        action = "store_true",
+        help = "do not warm the HF cache on a background lane. The models are "
+        "then downloaded by the legs that want them, as they were before the "
+        "lane existed. Note that legs.KERNELS is ORDERED for the prefetch -- "
+        "gptoss sits third to give the lane a window -- so this flag is for "
+        "isolating the lane when debugging, not a supported way to run",
+    )
     ap.add_argument(
         "--with-studio",
         action = "store_true",
@@ -1052,6 +1238,12 @@ def main() -> int:
             per_run_timeout = args.per_run_timeout,
             skip_reference = args.skip_reference,
             studio = studio,
+            # Only the kernel that CARRIES gptoss should pay for its 12 GB.
+            # There is one kernel today, so this reads as "always", but naming
+            # it stops a future second kernel prefetching a model it will never
+            # load -- which would be pure network cost, on a lane whose entire
+            # justification is that it is free.
+            prefetch_repos = () if args.no_prefetch else PREFETCH_REPOS,
         )
         out.parent.mkdir(parents = True, exist_ok = True)
         out.write_text(json.dumps(driver, indent = 1), encoding = "utf-8")

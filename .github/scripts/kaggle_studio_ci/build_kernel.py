@@ -115,6 +115,50 @@ def _code_cell(source: str) -> dict:
     }
 
 
+def _prefetch_builder():
+    """Load ``kaggle_prefetch.py`` by PATH. See the note in
+    ``kaggle_t4_ci/build_kernel.py``: two sibling script directories both ship
+    a ``build_kernel`` and a ``report``, so a plain import here resolves by
+    whichever landed in ``sys.modules`` first.
+    """
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[1] / "kaggle_prefetch.py"
+    spec = importlib.util.spec_from_file_location("kaggle_ci__prefetch", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load the prefetch builder from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _models_from(payload_args: str) -> list[str]:
+    """The repos this payload will load, read off its own argv.
+
+    NOT a second copy of the defaults. ``--chat-model`` and ``--train-model``
+    are dispatch inputs, so a hardcoded pair here would prefetch the wrong
+    models the moment anyone used them -- and prefetching the wrong repo is
+    invisible: it downloads happily, warms a cache nobody reads, and reports
+    success.
+    """
+    tokens = payload_args.split()
+    picked = {}
+    for flag, default in (
+        ("--chat-model", "unsloth/Qwen3.5-2B-GGUF"),
+        ("--train-model", "unsloth/Qwen2.5-0.5B-Instruct"),
+    ):
+        value = default
+        for i, token in enumerate(tokens):
+            if token == flag and i + 1 < len(tokens):
+                value = tokens[i + 1]
+            elif token.startswith(flag + "="):
+                value = token.split("=", 1)[1]
+        picked[flag] = value
+    # Chat model first: it is the GGUF that llama.cpp has to serve, and it is
+    # the larger of the two.
+    return [picked["--chat-model"], picked["--train-model"]]
+
+
 def build_payload_notebook(
     *, unsloth_ref: str, repo_url: str, payload_args: str, phase: str | None = None
 ) -> dict:
@@ -370,6 +414,33 @@ print("{PAYLOAD_SENTINEL} complete rc=" + str(proc.returncode), flush=True)
 # aborting here would lose the cells below it.
 """
 
+    # Studio's two models, fetched on the half that is ALREADY hidden.
+    #
+    # Both were previously pulled inside run_studio_gpu.py, which is the TEST
+    # half, so the merged kernel hid Studio's clone, pip and Playwright browser
+    # and then paid full price for its downloads with both cards idle. They go
+    # here instead, under Studio's own HF_HOME -- which is why this cannot use
+    # the t4 driver's lane: that one deliberately targets the image default so
+    # the training legs can read it, and Studio's install is a user-shaped
+    # install with a cache root of its own.
+    #
+    # Last in the install phase, after the venv and the browser: those are what
+    # the test half cannot start without, and a download that overruns the card
+    # queue must not be what delays them.
+    #
+    # hf_home=None means "inherit", NOT "use the default". The setup cell runs
+    # first in this same notebook and has already put Studio's private root in
+    # os.environ["HF_HOME"], so inheriting is how this lands there. Passing the
+    # path again would be a second copy of _pick_work_root's answer, free to
+    # disagree with the real one. `test_the_studio_prefetch_lands_in_studios
+    # _own_cache` pins the ordering that makes inheriting correct.
+    prefetch = _prefetch_builder().prefetch_cell(
+        _models_from(payload_args),
+        hf_home = None,
+        attempt_timeout = 600,
+        total_timeout = 1200,
+    )
+
     # Marks the GPU-free half done, on its own line, so the driver can gate the
     # test half on a sentinel it saw rather than on a returncode alone.
     installed = f"""print("{PAYLOAD_SENTINEL} INSTALLED " + json.dumps({{
@@ -389,11 +460,11 @@ print("{PAYLOAD_SENTINEL} venv " + str(VENV_PY), flush=True)
 """
 
     if phase == "install":
-        cells = [setup, clone, install, browser, installed]
+        cells = [setup, clone, install, browser, prefetch, installed]
     elif phase == "test":
         cells = [setup, bridge, verify, run]
     else:
-        cells = [setup, clone, install, browser, verify, run]
+        cells = [setup, clone, install, browser, prefetch, verify, run]
 
     return {
         "cells": [_code_cell(source) for source in cells],

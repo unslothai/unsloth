@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -34,7 +35,7 @@ sys.path.insert(0, str(CI_DIR))
 import build_kernel  # noqa: E402
 import gate  # noqa: E402
 import launch  # noqa: E402
-from legs import LEGS  # noqa: E402
+from legs import KERNELS, LEGS  # noqa: E402
 
 
 # ------------------------------------------------------------------ driver
@@ -115,7 +116,15 @@ def _drive(
     raised = None
     try:
         for cell in driver["cells"][:2]:
-            source = "".join(cell["source"]).replace("/kaggle/working", str(tmp_path))
+            source = (
+                "".join(cell["source"])
+                # Venvs moved off /kaggle/working (19.5 GB, and the artifact)
+                # onto the ~1 TB overlay when two legs per card made four of
+                # them possible at once. Both roots are rewritten here, or the
+                # stub counts venvs in a directory nothing ever writes to.
+                .replace("/tmp/t4ci_venvs", str(tmp_path / "venvs"))
+                .replace("/kaggle/working", str(tmp_path))
+            )
             try:
                 exec(compile(source, "<driver-cell>", "exec"), namespace)
             except SystemExit as exc:
@@ -173,6 +182,7 @@ class _PackedStub(_Stub):
         gpus,
         durations = None,
         hold = 0.05,
+        vram = None,
     ):
         super().__init__(gpus = gpus)
         self.durations = durations or {}
@@ -180,27 +190,76 @@ class _PackedStub(_Stub):
         self._live_on_card: dict = {}
         self._lock = threading.Lock()
         self.same_card_overlaps: list = []
+        self.peak_card_gb: dict = {}
+        self.peak_card_legs: dict = {}
+        self.vram = vram or {}
         self.max_live_venvs = 0
         self.root: Path | None = None
+        self.venv_root: Path | None = None
+        self.venvs_created: list = []
 
     def run(self, cmd, **kw):
         cmd = [str(c) for c in cmd]
         if len(cmd) > 2 and cmd[1] == "venv":
+            # Recorded at CREATION. Looking for leftover venv_* after the run
+            # cannot tell where they were built: the teardown removes them, so
+            # a kernel building every venv on the 19.5 GB artifact volume ends
+            # just as clean as one building them on the big overlay.
+            self.venvs_created.append(Path(cmd[2]))
             Path(cmd[2]).mkdir(parents = True, exist_ok = True)
         if "papermill" in cmd:
             notebook = Path(cmd[cmd.index("papermill") + 1]).name
             card = (kw.get("env") or {}).get("CUDA_VISIBLE_DEVICES")
             with self._lock:
-                if self._live_on_card.get(card):
-                    self.same_card_overlaps.append((card, self._live_on_card[card], notebook))
-                self._live_on_card[card] = notebook
-                if self.root is not None:
-                    live = len(list(self.root.glob("venv_*")))
-                    self.max_live_venvs = max(self.max_live_venvs, live)
+                live = self._live_on_card.setdefault(card, set())
+                live.add(notebook)
+                # Two legs on one card is now LEGAL when their measured VRAM
+                # fits, so the overlap itself is no longer the finding. What is
+                # recorded is the peak SUM, which is the thing that has to stay
+                # under budget -- an overlap of two 0.7 GB legs is the feature,
+                # and an overlap involving gptoss at 12.78 GB is the bug.
+                self.peak_card_gb[card] = max(
+                    self.peak_card_gb.get(card, 0.0),
+                    sum(self.vram.get(n, 1.0) for n in live),
+                )
+                self.peak_card_legs[card] = max(
+                    self.peak_card_legs.get(card, 0), len(live)
+                )
+                if len(live) > 1:
+                    self.same_card_overlaps.append((card, sorted(live)))
+                if self.venv_root is not None:
+                    self.max_live_venvs = max(
+                        self.max_live_venvs, len(list(self.venv_root.glob("venv_*")))
+                    )
             time.sleep(self.durations.get(notebook, self.hold))
             with self._lock:
-                self._live_on_card[card] = None
+                self._live_on_card[card].discard(notebook)
         return super().run(cmd, **kw)
+
+
+class _HubStub(types.ModuleType):
+    """Records `snapshot_download` calls in order, with a hold.
+
+    The hold is not decoration. The prefetch runs on a thread nobody joins, so
+    an instant stub would let it finish before the first card even starts and
+    every ordering question this file asks would answer itself trivially.
+    """
+
+    def __init__(self, hold = 0.02, fail_for = ()):
+        super().__init__("huggingface_hub")
+        self.calls: list = []
+        self.hold = hold
+        self.fail_for = set(fail_for)
+        self.hf_home_at_call: list = []
+        self._lock = threading.Lock()
+
+    def snapshot_download(self, repo_id = None, **kw):
+        with self._lock:
+            self.calls.append(repo_id)
+            self.hf_home_at_call.append(os.environ.get("HF_HOME"))
+        time.sleep(self.hold)
+        if repo_id in self.fail_for:
+            raise RuntimeError(f"stub refuses {repo_id}")
 
 
 def _drive_packed(
@@ -210,6 +269,8 @@ def _drive_packed(
     gpus,
     durations = None,
     studio = None,
+    prefetch_repos = (),
+    hub = None,
 ):
     driver = build_kernel.build_kernel(
         SMOKE_DIR,
@@ -220,42 +281,92 @@ def _drive_packed(
         per_run_timeout = 60,
         skip_reference = True,
         studio = studio,
+        prefetch_repos = prefetch_repos,
     )
-    stub = _PackedStub(gpus = gpus, durations = durations)
+    stub = _PackedStub(
+        gpus = gpus,
+        durations = durations,
+        vram = {f"t4_{n}.ipynb": LEGS[n].vram_gb for n in leg_names},
+    )
     stub.root = tmp_path
+    stub.venv_root = tmp_path / "venvs"
+    hub = hub if hub is not None else _HubStub()
     saved = sys.modules["subprocess"]
+    saved_hub = sys.modules.get("huggingface_hub")
     sys.modules["subprocess"] = stub
+    sys.modules["huggingface_hub"] = hub
     namespace: dict = {}
     raised = None
     try:
         for cell in driver["cells"][:2]:
-            source = "".join(cell["source"]).replace("/kaggle/working", str(tmp_path))
+            source = (
+                "".join(cell["source"])
+                # Venvs moved off /kaggle/working (19.5 GB, and the artifact)
+                # onto the ~1 TB overlay when two legs per card made four of
+                # them possible at once. Both roots are rewritten here, or the
+                # stub counts venvs in a directory nothing ever writes to.
+                .replace("/tmp/t4ci_venvs", str(tmp_path / "venvs"))
+                .replace("/kaggle/working", str(tmp_path))
+            )
             try:
                 exec(compile(source, "<driver-cell>", "exec"), namespace)
             except SystemExit as exc:
                 raised = exc
                 break
+        # JOIN the lane before handing back. The kernel deliberately does not
+        # (it is a daemon thread, so a slow download cannot hold the session
+        # open), but a test that merely SAMPLES it leaks: the lane resolves
+        # `huggingface_hub` out of sys.modules at call time, so one still
+        # running after its test returns records into the NEXT test's stub.
+        # That is not hypothetical -- it is how this harness first went order
+        # dependent, passing alone and failing inside the suite.
+        lane = namespace.get("prefetch_thread")
+        if lane is not None:
+            lane.join(30.0)
+            assert not lane.is_alive(), "the prefetch lane outlived its test"
     finally:
         sys.modules["subprocess"] = saved
-    return {"stood_down": raised, "stub": stub, "results": namespace.get("results") or {}}
+        if saved_hub is None:
+            sys.modules.pop("huggingface_hub", None)
+        else:
+            sys.modules["huggingface_hub"] = saved_hub
+    return {
+        "stood_down": raised,
+        "stub": stub,
+        "hub": hub,
+        "results": namespace.get("results") or {},
+        "card_load": namespace.get("card_load") or {},
+        "card_count": namespace.get("card_count") or {},
+    }
 
 
-ALL_FOUR = ["gptoss", "frontier", "canary", "control"]
+# Derived from KERNELS, not a second copy of it. As a literal this silently
+# went on describing the OLD longest-first order after legs.py moved to the
+# second-wave one, so every test driving it was exercising an order the kernel
+# no longer builds -- including the test that exists to assert the order.
+ALL_FOUR = list(KERNELS[0])
 
 
-def test_four_legs_on_two_cards_never_put_two_legs_on_one_card_at_once(tmp_path):
-    """The property that makes packing safe at all.
+def test_no_card_is_ever_asked_to_hold_more_than_it_has(tmp_path):
+    """Was "never two legs on one card"; is now "never over the VRAM budget".
 
-    Four payloads across two T4s is only sound because a card takes its next
-    leg when the previous one has EXITED. If they overlapped, each child would
-    still pass its own `device_count() == 1` assertion and then fight for 15GB,
-    which is exactly the failure the shortfall guard was added to prevent and
-    exactly the one it cannot see from where it stands.
+    Two legs on a card is the FEATURE, not the bug: measured on run
+    32611343797 the three Qwen legs peak at 0.70 GB each on a 14.56 GB card,
+    so one leg per card left it 95% empty. What must still never happen is the
+    thing that produced the OOM this file's shortfall guard was written for --
+    payloads whose summed appetite exceeds the card. gptoss peaks at 12.78 GB,
+    so it is excluded by the arithmetic rather than by a special case.
+
+    Asserted on the summed GB and not on the overlap, because after this change
+    an overlap is exactly what success looks like.
     """
     driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2)
     assert driven["stood_down"] is None
     stub = driven["stub"]
-    assert stub.same_card_overlaps == [], stub.same_card_overlaps
+    for card, peak in stub.peak_card_gb.items():
+        assert peak <= 13.0, f"card {card} peaked at {peak} GB: {stub.same_card_overlaps}"
+    for card, count in stub.peak_card_legs.items():
+        assert count <= 2, f"card {card} held {count} legs at once"
     assert len(stub.papermill) == 4, stub.papermill
     # Both cards are used, and every leg ran. The SPLIT is deliberately not
     # asserted: how many legs each card ends up with is a function of how long
@@ -268,21 +379,37 @@ def test_four_legs_on_two_cards_never_put_two_legs_on_one_card_at_once(tmp_path)
     assert set(p["cuda"] for p in stub.papermill) == {"0", "1"}, stub.papermill
 
 
-def test_the_longest_leg_starts_first_so_the_schedule_can_balance_around_it(tmp_path):
-    """Start order is longest-first, and it is load bearing rather than tidy.
+def test_gptoss_starts_in_the_second_wave_so_the_prefetch_has_a_window(tmp_path):
+    """Was longest-first; is now second-wave, and the change is the point.
 
-    Measured on run 32607621452: gptoss 384.1s, frontier 312.2s, canary 265.3s,
-    control 262.2s. Longest-first packs those as 646.3s, which is the optimal
-    split of the four; `sorted(PAYLOADS)` would start gptoss LAST, and a greedy
-    scheduler cannot balance around the leg that sets the makespan if it picks
-    it up at the end.
+    A prefetch only pays for what it finishes BEFORE the leg that wants the
+    model starts, and gptoss is the only leg with a ~12 GB download. Starting
+    it at t=0 leaves no window in front of it, which is why prefetching without
+    this reorder measures WORSE than doing neither (603.1s against 563.1s).
+
+    Third is first pick of the second wave: with two cards, positions 0 and 1
+    are seeded and 2 is the first to be taken off the pending queue, so gptoss
+    starts at ~190-220s under the measured durations. That is lead time the
+    prefetch spends, and a small leg is still running beside it.
+
+    Asserted on POSITION in the order rather than on a start timestamp: the
+    timestamp is a function of the stub's durations, and pinning it would pin
+    the stub. legs.KERNELS carries the full table.
     """
+    order = list(KERNELS[0])
+    assert order.index("gptoss") == 2, (
+        f"gptoss is at position {order.index('gptoss')} of {order}; first means "
+        "the prefetch has no window and second-wave is what buys the saving"
+    )
+    # ...and it must not be LAST either, which is the other intuitive answer.
+    # gptoss is the longest leg, so ending on it idles the other card for its
+    # whole ~284s: simulated at 651.1s worst case against 528.1s here.
+    assert order[-1] != "gptoss", order
+
     driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2)
     started = [p["notebook"] for p in driven["stub"].papermill]
-    assert started[0] == "t4_gptoss.ipynb", started
-    assert started != sorted(
-        started
-    ), "payloads are running in alphabetical order, so the longest leg is last"
+    assert started[0] != "t4_gptoss.ipynb", started
+    assert started != sorted(started), "payloads are running in alphabetical order"
 
 
 def test_each_leg_keeps_its_own_venv_compile_cache_and_ipykernel(tmp_path):
@@ -302,19 +429,35 @@ def test_each_leg_keeps_its_own_venv_compile_cache_and_ipykernel(tmp_path):
 
 
 def test_a_finished_leg_gives_its_virtualenv_back(tmp_path):
-    """Otherwise four torch trees sit on /kaggle/working at once.
+    """Each venv carries its own torch and its own NVIDIA runtime.
 
     The tail cell prunes `venv_*`, but only after every payload has finished,
-    which was sufficient when a kernel held one payload per card. Packed, the
-    peak is what matters, and it has to stay at one venv per CARD rather than
-    one per LEG.
+    so the PEAK is what matters and freeing at the end of each leg is what
+    bounds it. The bound is one venv per concurrent LEG, which co-scheduling
+    raised from 2 to 4.
+
+    That raise is precisely why the venvs no longer live on `/kaggle/working`.
+    That path is 19.5 GB and is also what Kaggle ships home; four torch trees
+    do not fit in it, and the failure would arrive as an install dying midway
+    for reasons that look nothing like a full disk. They go on the ~1 TB
+    overlay instead, and only the evidence stays where Kaggle collects it.
     """
     driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2)
     stub = driven["stub"]
+    ceiling = 2 * 2  # cards x MAX_LEGS_PER_CARD
     assert (
-        stub.max_live_venvs <= 2
-    ), f"{stub.max_live_venvs} virtualenvs were alive at once on a 2-card kernel"
-    assert list(tmp_path.glob("venv_*")) == [], "a payload left its virtualenv behind"
+        stub.max_live_venvs <= ceiling
+    ), f"{stub.max_live_venvs} virtualenvs were alive at once, ceiling {ceiling}"
+    assert list((tmp_path / "venvs").glob("venv_*")) == [], (
+        "a payload left its virtualenv behind"
+    )
+    # ...and none of them was ever created on the artifact volume.
+    assert stub.venvs_created, "no virtualenv was built at all"
+    for created in stub.venvs_created:
+        assert (tmp_path / "venvs") in created.parents, (
+            f"a virtualenv was built at {created}, on /kaggle/working -- which "
+            "is 19.5 GB and is also the artifact Kaggle ships home"
+        )
 
 
 # --------------------------------------------------- Studio in the same kernel
@@ -376,7 +519,10 @@ def test_the_studio_install_never_takes_a_card_and_the_legs_never_wait_for_it(
     assert len(leg_cards) == len(ALL_FOUR), calls
     assert set(leg_cards) <= {"0", "1"}, leg_cards
     assert set(leg_cards) == {"0", "1"}, leg_cards
-    assert driven["stub"].same_card_overlaps == [], driven["stub"].same_card_overlaps
+    # Two legs on a card is legal now (see the VRAM budget); what must hold is
+    # that the summed appetite never exceeds what the card has.
+    for card, peak in driven["stub"].peak_card_gb.items():
+        assert peak <= 13.0, (card, peak, driven["stub"].same_card_overlaps)
 
 
 def test_the_studio_assertions_wait_for_both_cards_rather_than_borrowing_one(
@@ -426,12 +572,21 @@ def test_a_failed_studio_install_skips_its_assertions_with_the_reason(
     )
     stub = _InstallFails(gpus = 2)
     stub.root = tmp_path
+    stub.venv_root = tmp_path / "venvs"
     saved = sys.modules["subprocess"]
     sys.modules["subprocess"] = stub
     namespace: dict = {}
     try:
         for cell in driver["cells"][:2]:
-            source = "".join(cell["source"]).replace("/kaggle/working", str(tmp_path))
+            source = (
+                "".join(cell["source"])
+                # Venvs moved off /kaggle/working (19.5 GB, and the artifact)
+                # onto the ~1 TB overlay when two legs per card made four of
+                # them possible at once. Both roots are rewritten here, or the
+                # stub counts venvs in a directory nothing ever writes to.
+                .replace("/tmp/t4ci_venvs", str(tmp_path / "venvs"))
+                .replace("/kaggle/working", str(tmp_path))
+            )
             exec(compile(source, "<driver-cell>", "exec"), namespace)
     finally:
         sys.modules["subprocess"] = saved
@@ -2098,3 +2253,329 @@ def test_the_build_step_actually_packs_studio_in():
     build = source.split("- name: Build the kernel notebooks")[1].split("- name:")[0]
     assert "--with-studio" in build
     assert "--studio-args" in build
+
+
+# ------------------------------------------------------------- the prefetch lane
+
+
+def test_the_prefetch_lane_never_takes_a_card(tmp_path):
+    """It is CPU and network work, and a card it held would be a card idle.
+
+    The whole saving is that downloading happens BESIDE training rather than
+    in front of it. A prefetch that consumed a GPU slot would move the wait
+    rather than remove it, and would also break the packing arithmetic that
+    assumes exactly two lanes compete for two cards.
+    """
+    hub = _HubStub()
+    driven = _drive_packed(
+        tmp_path, ALL_FOUR, gpus = 2, prefetch_repos = ("a/big", "b/small"), hub = hub
+    )
+    assert driven["stood_down"] is None
+    assert hub.calls == ["a/big", "b/small"], hub.calls
+    # Every papermill call is a LEG. The prefetch is not one of them, so it
+    # cannot have been handed CUDA_VISIBLE_DEVICES.
+    assert len(driven["stub"].papermill) == len(ALL_FOUR), driven["stub"].papermill
+    # Two legs on a card is legal now (see the VRAM budget); what must hold is
+    # that the summed appetite never exceeds what the card has.
+    for card, peak in driven["stub"].peak_card_gb.items():
+        assert peak <= 13.0, (card, peak, driven["stub"].same_card_overlaps)
+
+
+def test_the_leg_prefetch_does_not_redirect_hf_home(tmp_path):
+    """The legs read the Kaggle image's DEFAULT cache.
+
+    Pointing the lane at a private root is the silent failure this guards: it
+    downloads all 12 GB perfectly, into a directory no leg looks in, reports
+    success, and the run is green and no faster. Nothing at runtime would say
+    so, which is why it is asserted here.
+    """
+    hub = _HubStub()
+    before = os.environ.get("HF_HOME")
+    _drive_packed(tmp_path, ALL_FOUR, gpus = 2, prefetch_repos = ("a/big",), hub = hub)
+    assert hub.hf_home_at_call == [before], hub.hf_home_at_call
+    assert os.environ.get("HF_HOME") == before
+
+
+def test_a_failing_prefetch_does_not_fail_the_kernel(tmp_path):
+    """Graceful degradation is the entire safety argument for shipping this.
+
+    The leg that wants the model still downloads it itself, exactly as it did
+    before the lane existed, so a prefetch failure costs seconds. If it could
+    fail the kernel it would be a brand new way to go red for something that
+    is not under test -- on a payload that is not even the subject of the run.
+    """
+    hub = _HubStub(fail_for = ("a/big", "b/small"))
+    driven = _drive_packed(
+        tmp_path, ALL_FOUR, gpus = 2, prefetch_repos = ("a/big", "b/small"), hub = hub
+    )
+    assert driven["stood_down"] is None
+    assert len(driven["stub"].papermill) == len(ALL_FOUR), driven["stub"].papermill
+    assert all(r.get("returncode") == 0 for r in driven["results"].values()), driven["results"]
+
+
+def test_no_prefetch_repos_leaves_the_schedule_exactly_as_it_was(tmp_path):
+    """The lane is opt-in at the call site, and off means OFF: no thread, no
+    huggingface_hub import, no behaviour change for a kernel built without it."""
+    hub = _HubStub()
+    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2, prefetch_repos = (), hub = hub)
+    assert hub.calls == [], hub.calls
+    assert driven["stood_down"] is None
+    assert len(driven["stub"].papermill) == len(ALL_FOUR)
+
+
+def test_the_prefetch_list_matches_the_models_the_legs_actually_load():
+    """A prefetch of the wrong repo downloads happily and warms nothing.
+
+    There is no runtime feedback for this: the lane reports success, the legs
+    download for themselves, and the only symptom is a saving that never
+    arrives. So the declared list is checked against the DEFAULT_MODEL the
+    payload scripts really carry, read out of their source.
+    """
+    from legs import PREFETCH_REPOS
+
+    defaults = set()
+    for script in ("run_t4_smoke.py", "run_gptoss_t4.py"):
+        text = (SMOKE_DIR / script).read_text(encoding = "utf-8")
+        found = re.findall(r'^DEFAULT_MODEL\s*=\s*"([^"]+)"', text, re.MULTILINE)
+        assert len(found) == 1, f"{script} declares {found}"
+        defaults.add(found[0])
+
+    assert set(PREFETCH_REPOS) == defaults, (
+        f"prefetching {sorted(set(PREFETCH_REPOS))} but the legs load {sorted(defaults)}"
+    )
+    # gpt-oss first: ~12 GB against ~1 GB, and it is the leg the whole start
+    # order is arranged around, so it is the one that needs the head start.
+    assert "gpt-oss" in PREFETCH_REPOS[0], PREFETCH_REPOS
+
+
+def test_the_generated_prefetch_cell_runs_not_merely_compiles():
+    """Compiling it is not enough, and that is not hypothetical here.
+
+    The first version interpolated `hf_home` with `json.dumps`, so `None`
+    became the JSON literal `null`. It compiled cleanly and died with a
+    NameError the first time it RAN -- which on the real thing means minutes
+    into a paid Kaggle session.
+    """
+    prefetch = build_kernel._prefetch_builder()
+    hub = _HubStub(hold = 0.0)
+    saved = sys.modules.get("huggingface_hub")
+    sys.modules["huggingface_hub"] = hub
+    try:
+        for hf_home in (None, "/tmp/somewhere"):
+            source = prefetch.prefetch_cell(
+                ["a/b"], hf_home = hf_home, attempt_timeout = 2, total_timeout = 5
+            )
+            exec(compile(source, "<prefetch>", "exec"), {"__name__": "prefetch"})
+    finally:
+        if saved is None:
+            sys.modules.pop("huggingface_hub", None)
+        else:
+            sys.modules["huggingface_hub"] = saved
+    assert hub.calls == ["a/b", "a/b"], hub.calls
+
+
+def test_the_last_prefetch_attempt_falls_back_to_classic_http():
+    """Retrying a STALLING transport is how a retry loop eats the session.
+
+    Xet retries 408/429/5xx itself with backoff (5 attempts, 3s base, a
+    six-minute cap per delay), so a throttled transfer can sit inside one call
+    for minutes without raising. Repeating the same transport inherits that.
+    The escalation to HF_HUB_DISABLE_XET is what makes the last attempt a
+    genuinely different thing to try.
+    """
+    prefetch = build_kernel._prefetch_builder()
+    seen: list = []
+
+    class _Recording(_HubStub):
+        def snapshot_download(self, repo_id = None, **kw):
+            seen.append(os.environ.get("HF_HUB_DISABLE_XET"))
+            raise RuntimeError("always")
+
+    saved = sys.modules.get("huggingface_hub")
+    before = os.environ.get("HF_HUB_DISABLE_XET")
+    sys.modules["huggingface_hub"] = _Recording(hold = 0.0)
+    try:
+        source = prefetch.prefetch_cell(["a/b"], attempt_timeout = 1, total_timeout = 30)
+        exec(compile(source, "<prefetch>", "exec"), {"__name__": "prefetch"})
+    finally:
+        if saved is None:
+            sys.modules.pop("huggingface_hub", None)
+        else:
+            sys.modules["huggingface_hub"] = saved
+    assert seen[-1] == "1", seen
+    assert seen[:-1] == [None] * (len(seen) - 1), seen
+    # ...and it is not left set for whatever runs next in this interpreter.
+    assert os.environ.get("HF_HUB_DISABLE_XET") == before
+
+
+def test_the_studio_prefetch_lands_in_studios_own_cache():
+    """Studio keeps a private HF_HOME, and the prefetch must follow it there.
+
+    The t4 lane deliberately does the opposite -- it leaves HF_HOME alone so
+    the training legs can read what it warms -- so the two are easy to conflate
+    and the failure is silent either way: bytes land somewhere real, the
+    download reports success, and the payload that wanted them downloads again.
+
+    The install cell passes hf_home=None to INHERIT, which is only correct
+    because the setup cell has already exported Studio's root. That ordering is
+    what is pinned here; a prefetch cell hoisted above setup would inherit the
+    image default and quietly stop helping.
+    """
+    studio = build_kernel._studio_builder()
+    notebook = studio.build_payload_notebook(
+        unsloth_ref = "x", repo_url = "https://h/r", payload_args = "--max-steps 8",
+        phase = "install",
+    )
+    sources = ["".join(cell["source"]) for cell in notebook["cells"]]
+    sets_home = [i for i, src in enumerate(sources) if 'os.environ["HF_HOME"]' in src]
+    prefetches = [i for i, src in enumerate(sources) if "KAGGLE_CI_PREFETCH" in src]
+    assert sets_home, "the install phase never exports Studio's HF_HOME"
+    assert prefetches, "the install phase carries no prefetch"
+    assert min(sets_home) < min(prefetches), (
+        f"HF_HOME is exported at cell {min(sets_home)} but the prefetch runs at "
+        f"{min(prefetches)}, so it would warm the image default instead"
+    )
+    # And it must not hardcode a root of its own alongside the inherited one.
+    assert '_HF_HOME = None' in sources[min(prefetches)], sources[min(prefetches)][:400]
+
+
+def test_the_studio_prefetch_follows_the_dispatched_models():
+    """--chat-model and --train-model are dispatch inputs.
+
+    A hardcoded pair here would prefetch the defaults while the payload loaded
+    something else -- which downloads happily, warms a cache nobody reads, and
+    reports success.
+    """
+    studio = build_kernel._studio_builder()
+    assert studio._models_from("--chat-model a/b --train-model c/d") == ["a/b", "c/d"]
+    assert studio._models_from("--chat-model=e/f")[0] == "e/f"
+    defaults = studio._models_from("--max-steps 8")
+    payload = (SMOKE_DIR.parent / "studio_gpu" / "run_studio_gpu.py").read_text(encoding = "utf-8")
+    for flag in ("--chat-model", "--train-model"):
+        declared = re.search(
+            rf'ap\.add_argument\("{flag}", default = "([^"]+)"\)', payload
+        )
+        assert declared, f"{flag} default not found in run_studio_gpu.py"
+        assert declared.group(1) in defaults, (declared.group(1), defaults)
+
+
+def test_the_report_shows_what_the_prefetch_achieved(tmp_path):
+    """The number the leg order is arranged around has to be readable without
+    downloading an artifact -- including when it says the lane did not help."""
+    import report as t4_report
+
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "kernel.log").write_text(
+        'KAGGLE_CI_PREFETCH {"repo": "unsloth/gpt-oss-20b", "ok": true, "seconds": 141.0, '
+        '"download_seconds": 141.0, "bytes": 12000000000, "mb_per_s": 85.1, '
+        '"transport": "auto", "attempts": 1}\n'
+        'KAGGLE_CI_PREFETCH {"repo": "unsloth/Qwen2.5-0.5B-Instruct", "ok": false, '
+        '"seconds": 9.0, "download_seconds": null, "bytes": 0, "mb_per_s": null, '
+        '"transport": "http", "attempts": 3, "error": "nope"}\n',
+        encoding = "utf-8",
+    )
+    lines = "\n".join(t4_report.prefetch_table(evidence))
+    assert "unsloth/gpt-oss-20b" in lines
+    assert "141.0" in lines and "85.1" in lines and "12.0" in lines
+    assert "**NO**" in lines, "a failed prefetch must be visible, not rounded away"
+    assert "fallback" in lines, "a failed prefetch must say what it costs the schedule"
+    # A kernel built without the lane gets no section at all, rather than a
+    # table of zeroes that reads like a lane that ran and achieved nothing.
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    (bare / "kernel.log").write_text("nothing to see", encoding = "utf-8")
+    assert t4_report.prefetch_table(bare) == []
+
+    # ...and it is WIRED IN. Calling the renderer directly proves it renders,
+    # which is not the same claim: deleting the one line that appends it to the
+    # summary left this test green, because a table nobody calls still formats
+    # perfectly. So drive main() and read what a human would actually see.
+    (evidence / "launch_result.json").write_text(
+        json.dumps(
+            {
+                "verdict": "pass",
+                "reason": "all 1 payload(s) passed",
+                "slug": "u/s",
+                "kernel_state": "COMPLETE",
+                "reports": [{"label": "control", "passed": True, "steps": []}],
+            }
+        ),
+        encoding = "utf-8",
+    )
+    summary = tmp_path / "summary.md"
+    proc = subprocess.run(
+        [sys.executable, str(CI_DIR / "report.py"), "--evidence", str(evidence),
+         "--expect", "1"],
+        capture_output = True,
+        text = True,
+        env = {**os.environ, "GITHUB_STEP_SUMMARY": str(summary)},
+    )
+    assert proc.returncode == 0, proc.stdout
+    rendered = summary.read_text(encoding = "utf-8")
+    assert "model prefetch" in rendered, rendered
+    assert "unsloth/gpt-oss-20b" in rendered, rendered
+
+
+def test_gptoss_never_shares_a_card(tmp_path):
+    """12.78 GB of a 14.56 GB card, so it is alone by arithmetic.
+
+    Not by a special case -- there is no `if name == "gptoss"` anywhere. If a
+    leg's appetite ever grows past the budget it stops sharing on its own, and
+    if gptoss ever shrinks it starts sharing on its own. What must never happen
+    is the pairing that put 13.48 GB on a card and came back as an OOM reading
+    like a code failure.
+    """
+    durations = {f"t4_{n}.ipynb": 0.4 for n in ALL_FOUR}
+    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2, durations = durations)
+    for card, together in driven["stub"].same_card_overlaps:
+        assert "t4_gptoss.ipynb" not in together, (card, together)
+
+
+def test_two_small_legs_do_share_a_card(tmp_path):
+    """The feature, asserted positively.
+
+    Every other guard here is a bound -- never over budget, never more than two
+    -- and every one of them is satisfied by a scheduler that co-schedules
+    NOTHING. Without this the whole change could silently do no work at all and
+    the suite would stay green.
+    """
+    durations = {f"t4_{n}.ipynb": 0.4 for n in ALL_FOUR}
+    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2, durations = durations)
+    assert driven["stub"].same_card_overlaps, (
+        "no card ever held two legs at once, so the VRAM budget bought nothing"
+    )
+    assert max(driven["stub"].peak_card_legs.values()) == 2
+    # The admission ledger has to balance. A leg that reserves and never
+    # releases leaks capacity, and with four legs and four worker slots nothing
+    # ever waits, so the leak is invisible until the day a fifth leg is wired
+    # and one card silently stops taking work.
+    assert driven["card_load"] and all(
+        abs(v) < 1e-9 for v in driven["card_load"].values()
+    ), driven["card_load"]
+    assert all(v == 0 for v in driven["card_count"].values()), driven["card_count"]
+
+
+def test_the_declared_vram_matches_what_the_legs_reported():
+    """`Leg.vram_gb` decides who may share a card, and nothing checks it at
+    runtime: a leg that under-declares gets admitted beside another and the
+    contention comes back as an OOM attributed to whichever leg happened to
+    allocate last.
+
+    So the declared figures are checked against the peaks the payloads really
+    reported, captured in the evidence of run 32611343797 and committed beside
+    this test.
+    """
+    measured = json.loads(
+        (Path(__file__).parent / "t4_smoke" / "measured_vram.json").read_text(encoding = "utf-8")
+    )
+    for name, peak in measured["peak_reserved_gb"].items():
+        declared = LEGS[name].vram_gb
+        assert declared >= peak, (
+            f"{name} declares {declared} GB but peaked at {peak} GB, so the "
+            "admission check would let something share a card with it that "
+            "does not fit"
+        )
+        # ...and not so far above it that the budget stops admitting anything.
+        assert declared <= peak + 1.5, (name, declared, peak)
+    assert measured["card_total_gb"] > 13.0, measured

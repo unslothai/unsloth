@@ -1,0 +1,11 @@
+{
+  "_source": "executed payload notebooks of run 32611343797 (unslothai/unsloth), Tesla T4",
+  "_why": "Leg.vram_gb decides which legs may share a card and is checked against these. Recapture from a run's evidence, never by hand.",
+  "card_total_gb": 14.56,
+  "peak_reserved_gb": {
+    "canary": 0.7,
+    "control": 0.7,
+    "frontier": 0.7,
+    "gptoss": 12.78
+  }
+}
