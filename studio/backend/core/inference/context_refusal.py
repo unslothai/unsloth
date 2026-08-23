@@ -98,8 +98,8 @@ def _blame_latest_turn(context_tokens: int):
     None also covers no diagnosis recorded, and a diagnosis describing a different
     window than the one just refused: both fall back to generic advice rather than guess.
 
-    `fits_alone` is False only when the turn's own rendered size is at or over the
-    CONTEXT WINDOW, which is the only evidence that it cannot be sent at all.
+    `fits_alone` is False only when the turn's own COUNTED rendered size is at or over
+    the CONTEXT WINDOW, which is the only evidence that it cannot be sent at all.
     """
     refusal = latest_refusal()
     if not refusal:
@@ -129,9 +129,21 @@ def _blame_latest_turn(context_tokens: int):
     # `>=` to match that check. Compared without the shared floor, since the hard wording
     # is a claim about the turn's own size.
     window = recorded_context or context_tokens
+    # And only on a COUNTED turn. When the template drops the newest message on its own
+    # -- both bundled Gemma-4 templates render a lone `role: tool` as nothing, so every
+    # Gemma tool result lands here -- the fit falls back to pricing the message's JSON at
+    # four characters a token. Measured on the real template with a real Gemma tokenizer,
+    # 16,400 characters of whitespace runs estimates 8,219 tokens against 838 rendered,
+    # 9.8x; escaped JSON and long repeated characters run 2-4x. So the estimate alone can
+    # clear an 8,192-token window while the turn it describes costs under a thousand, and
+    # the hard wording would tell the user a tool result they could send is impossible to
+    # send. It is still fine for the ratio above -- that only ever compares two sides --
+    # but not for a claim about the turn's own size. Absent flag means a producer that
+    # predates it, which was always a count.
+    exact = bool(refusal.get("latest_turn_exact", True))
     # Not defaulted to "user": `describe_oversize` gives an unnameable role generic advice.
     role = str(refusal.get("latest_turn_role") or "")
-    return role, not (window and latest_turn >= window)
+    return role, not (exact and window and latest_turn >= window)
 
 
 def _history_cannot_help(context_tokens: int) -> bool:

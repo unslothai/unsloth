@@ -265,9 +265,20 @@ def turn_diagnosis(
     sides and compare what the turn actually contributed against what the rest of the
     conversation did. Zero when the turn was estimated rather than counted: that estimate
     prices the message's own JSON and no catalogue, so it has no floor to remove.
+
+    `latest_turn_exact` says which of the two `latest_turn_tokens` is. A consumer may
+    compare an estimate against the rest of the prompt -- both sides are only ever a
+    ratio -- but must not state it as the turn's size, because the estimate is four
+    characters to a token and text that tokenises sparsely blows straight through that.
     """
     if not messages:
-        return {"latest_turn_tokens": 0, "latest_turn_role": "", "shared_prompt_tokens": 0}
+        # Vacuously exact: nothing was estimated, and a zero count is ignored anyway.
+        return {
+            "latest_turn_tokens": 0,
+            "latest_turn_role": "",
+            "shared_prompt_tokens": 0,
+            "latest_turn_exact": True,
+        }
     latest, exact = _latest_turn_count(messages, count_tokens)
     shared = _shared_prompt_tokens(count_tokens) if exact else 0
     if exact and latest <= shared:
@@ -282,6 +293,10 @@ def turn_diagnosis(
         # because that estimate does not carry one.
         latest = int(estimate_messages_tokens(messages[-1:]))
         shared = 0
+        # Counted or not, what is REPORTED is now the estimate, and that is what the flag
+        # describes. Leaving it True here would be the worse half of the bug: this branch
+        # is the one every Gemma tool result takes.
+        exact = False
     # Never all of either side: a floor at or above them would leave no ratio to compare.
     shared = max(0, min(shared, latest - 1, int(irreducible_tokens) - 1))
     return {
@@ -289,6 +304,8 @@ def turn_diagnosis(
         # Whose message it is: often a tool result the user cannot shorten.
         "latest_turn_role": str(messages[-1].get("role") or ""),
         "shared_prompt_tokens": shared,
+        # Whether the number above is a token count or a four-characters-a-token guess.
+        "latest_turn_exact": bool(exact),
     }
 
 

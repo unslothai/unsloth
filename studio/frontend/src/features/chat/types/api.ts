@@ -752,6 +752,10 @@ export interface OpenAIChatChunk {
     // that one message is the problem, i.e. whether "shorten the conversation" helps.
     irreducible_tokens?: number;
     latest_turn_tokens?: number;
+    // Whether `latest_turn_tokens` is a real token count or the four-characters-a-token
+    // estimate the fit falls back to when the template renders the newest turn as
+    // nothing on its own. Only the counted one may be quoted as the turn's size.
+    latest_turn_exact?: boolean;
     // Where the compaction boundary sits in the messages THIS request was sent with.
     // Absolute, unlike dropped_messages, so re-sending it after a turn that refit several
     // times cannot advance the boundary past the turns actually evicted.

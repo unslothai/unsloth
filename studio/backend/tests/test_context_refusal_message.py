@@ -567,10 +567,118 @@ def test_a_turn_the_template_renders_as_nothing_is_not_counted_as_the_floor(
     # the result's size instead of pinning to the 1,500-token catalogue.
     assert truncation["shared_prompt_tokens"] == 0
     assert truncation["latest_turn_tokens"] != 1500
+    # And the payload says which of the two it is, so a consumer can use it as a ratio
+    # without quoting it as the turn's size.
+    assert truncation["latest_turn_exact"] is False
     _context_truncated_sse_chunk("cmpl-1", "model", truncation)
     assert expected in _friendly_error(
         ValueError("the request (9000 tokens) exceeds the available context size (8192 tokens)")
     )
+
+
+# ------------------------------------------------- an estimate is not a measurement
+
+
+@pytest.mark.parametrize(
+    "role,hard,soft",
+    [
+        ("user", "The message just sent does not fit on its own", "the message just sent"),
+        ("tool", "A tool returned more than this context window can hold", "a single tool result"),
+        (
+            "assistant",
+            "The reply being continued is already too long for this window",
+            "the reply being continued",
+        ),
+        ("system", "The system instructions do not fit on their own", "the system instructions"),
+    ],
+)
+def test_an_estimated_turn_is_never_called_too_big_to_send(role, hard, soft):
+    """The hard wording is a claim about a turn's size, so it needs a measured one.
+
+    The estimate the fit falls back to is `len(json.dumps(message)) // 4`, and text that
+    tokenises sparsely blows through that: rendered with the bundled gemma-4 template and
+    counted with the Gemma tokenizer, 16,400 characters of alternating newline and tab
+    runs estimate 8,219 tokens against 838 real, a 9.8x overshoot. A window that number
+    clears and the turn does not would otherwise tell the user a tool result they could
+    have sent is impossible to send. Softer wording is still true of it: an estimate that
+    large does mean the turn is the bulk of the prompt.
+    """
+    estimated = _refusal(irreducible = 5120, latest_turn = 5400, role = role) | {
+        "latest_turn_exact": False
+    }
+    context_refusal.record_fit(estimated)
+    message = _friendly_error(ValueError(_SERVER_ERROR))
+    assert hard not in message
+    assert f"Most of this prompt is {soft}" in message
+    assert "shortening the conversation will not help much" in message
+
+
+def test_a_measured_turn_still_gets_the_hard_wording():
+    # The gate is provenance, not size: a counted turn over the window is unchanged.
+    context_refusal.record_fit(
+        _refusal(irreducible = 5120, latest_turn = 5400, role = "tool")
+        | {"latest_turn_exact": True}
+    )
+    assert "A tool returned more than this context window can hold" in _friendly_error(
+        ValueError(_SERVER_ERROR)
+    )
+
+
+def test_a_payload_without_the_flag_is_read_as_a_count():
+    # Absent means a producer that predates the flag, and every one of those counted.
+    refusal = _refusal(irreducible = 5120, latest_turn = 5400, role = "tool")
+    refusal.pop("latest_turn_exact", None)
+    context_refusal.record_fit(refusal)
+    assert "A tool returned more than this context window can hold" in _friendly_error(
+        ValueError(_SERVER_ERROR)
+    )
+
+
+def test_a_sparse_tool_result_over_the_window_is_only_ever_hedged():
+    """End to end on the Gemma shape, with a counter that tokenises whitespace runs.
+
+    A real tokenizer merges long runs of whitespace into single tokens, so the JSON-length
+    estimate the fit is forced onto for a lone `role: tool` message can clear the window
+    while the rendered turn costs a fraction of it. The refusal is real -- an oversized
+    system prompt is what the request actually died of -- but the tool result is not what
+    could not be sent.
+    """
+
+    def count(messages):
+        total = 0
+        for index, message in enumerate(messages):
+            text = json.dumps(message, ensure_ascii = False)
+            if message.get("role") == "tool":
+                previous = messages[index - 1] if index else None
+                if not (
+                    previous
+                    and previous.get("role") == "assistant"
+                    and previous.get("tool_calls")
+                ):
+                    continue
+                # Calibrated to the measurement above: 32,876 characters of escaped
+                # JSON for this payload against 838 real tokens, so ~39 chars a token.
+                total += max(1, len(text) // 39)
+            else:
+                total += max(1, len(text) // 4)
+        return total
+
+    thread = _tool_loop_thread(20, system_tokens = 8000, history_turns = 0)
+    thread[-1]["content"] = ("\n" * 40 + "\t" * 40) * 205
+    _, truncation = fit_rolling_context(
+        thread, context_length = 8192, max_tokens = 512, count_tokens = count
+    )
+    assert truncation is not None and not truncation["fits"]
+    # The estimate really does clear the window, and the rendered turn really is small.
+    assert truncation["latest_turn_tokens"] >= 8192
+    assert truncation["latest_turn_exact"] is False
+    assert count(thread[-2:]) - count(thread[-2:-1]) < 1000
+    _context_truncated_sse_chunk("cmpl-1", "model", truncation)
+    message = _friendly_error(
+        ValueError("the request (9000 tokens) exceeds the available context size (8192 tokens)")
+    )
+    assert "A tool returned more than this context window can hold" not in message
+    assert "Most of this prompt is a single tool result" in message
 
 
 def test_a_diagnosis_with_no_window_recorded_is_still_usable():
