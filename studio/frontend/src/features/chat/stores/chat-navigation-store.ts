@@ -33,6 +33,10 @@ export interface ChatNavigationState {
   traversal: { order: string[]; index: number } | null;
   /** Registered by the sidebar, the only code that can route to a row. */
   openChatItem: ((item: SidebarItem) => void) | null;
+  /** Rows or folders are selected, so Escape is already spoken for. Published
+   *  because bare Escape also declines a waiting tool call, and one press must
+   *  not do both. */
+  selectionActive: boolean;
 
   publishLists: (next: {
     pinnedItems: SidebarItem[];
@@ -42,6 +46,7 @@ export interface ChatNavigationState {
     activeItemId: string | null;
   }) => void;
   setOpenChatItem: (fn: ((item: SidebarItem) => void) | null) => void;
+  setSelectionActive: (active: boolean) => void;
   markThreadsUnread: (threadIds: string[]) => void;
   clearThreadsUnread: (threadIds: string[]) => void;
   clearAllUnreads: () => void;
@@ -96,6 +101,7 @@ export const useChatNavigationStore = create<ChatNavigationState>(
     recentlyViewedIds: [],
     traversal: null,
     openChatItem: null,
+    selectionActive: false,
 
     // Published from an effect on every render, so bail out when nothing moved.
     publishLists: (next) =>
@@ -113,6 +119,11 @@ export const useChatNavigationStore = create<ChatNavigationState>(
       }),
 
     setOpenChatItem: (fn) => set({ openChatItem: fn }),
+
+    setSelectionActive: (active) =>
+      set((state) =>
+        state.selectionActive === active ? state : { selectionActive: active },
+      ),
 
     markThreadsUnread: (threadIds) =>
       set((state) => {

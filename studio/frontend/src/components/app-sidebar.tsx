@@ -1418,15 +1418,25 @@ export function AppSidebar() {
     dropProjectSelection,
   ]);
 
-  // Escape is the way out of a selection, as it is for the menus.
+  // Escape is the way out of a selection, as it is for the menus. It stays a
+  // passive listener rather than consuming the key: dictation's Escape reads
+  // defaultPrevented before cancelling, and a stale selection must not outrank
+  // a live recording. The one Escape that must not double up is declining a
+  // tool call, and that one steps aside on `selectionActive` below.
+  const selectionActive = selectionCount > 0 || projectSelectionCount > 0;
   useEffect(() => {
-    if (selectionCount === 0 && projectSelectionCount === 0) return;
+    if (!selectionActive) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") clearSelection();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selectionCount, projectSelectionCount, clearSelection]);
+  }, [selectionActive, clearSelection]);
+  const setSelectionActive = useChatNavigationStore((s) => s.setSelectionActive);
+  useEffect(() => {
+    setSelectionActive(selectionActive);
+    return () => setSelectionActive(false);
+  }, [selectionActive, setSelectionActive]);
 
   /** True when the click was a selection gesture, so the row must not navigate. */
   function handleSelectionClick(

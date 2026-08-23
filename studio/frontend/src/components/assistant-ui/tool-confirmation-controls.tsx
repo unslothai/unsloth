@@ -12,7 +12,7 @@ import type {
   ToolCallMessagePartStatus,
 } from "@assistant-ui/react";
 import { useCallback, useEffect, useState } from "react";
-import { useChatActive } from "@/features/chat";
+import { useChatActive, useChatNavigationStore } from "@/features/chat";
 
 /**
  * Allow / Always allow / Deny controls for a tool call paused awaiting the
@@ -110,9 +110,17 @@ export function ToolConfirmationControls({
   const soleRequest = useChatRuntimeStore(
     (s) => Object.keys(s.toolConfirmations).length === 1,
   );
+  // A sidebar selection answers Escape already, and that listener does not
+  // consume the key, so both would run off one press and deny a call the user
+  // was only dismissing a selection with. Escape there costs nothing to undo
+  // and this does not, so this is the one that waits. Enter goes with it: the
+  // buttons are still there, and a card that takes half its keys is worse to
+  // explain than one that takes none.
+  const selectionActive = useChatNavigationStore((s) => s.selectionActive);
   const keyboardReady =
     chatActive &&
     soleRequest &&
+    !selectionActive &&
     showControls &&
     pending === null &&
     !(autoAllowed && !failed);

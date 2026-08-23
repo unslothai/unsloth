@@ -779,7 +779,60 @@ test("the chords that need one target do not fire where there are two", async ()
   // to whichever registered its listener first.
   assert.match(thread, /enabled: chatActive && !inComparePane && isLast/);
   // Same for a second parked tool request: neither card claims the keys.
-  assert.match(toolCard, /soleRequest &&\n\s*showControls &&/);
+  assert.match(
+    toolCard,
+    /soleRequest &&\n\s*!selectionActive &&\n\s*showControls &&/,
+  );
+});
+
+// Bare Escape has more than one owner. The sidebar answers it while rows are
+// selected and does not consume it, so without a guard one press would clear
+// the selection and deny a waiting tool call at the same time.
+test("one Escape does not both drop a selection and deny a tool call", async () => {
+  const read = async (path: string) =>
+    readFile(new URL(path, import.meta.url), "utf8");
+  const sidebar = await read("../src/components/app-sidebar.tsx");
+  const toolCard = await read(
+    "../src/components/assistant-ui/tool-confirmation-controls.tsx",
+  );
+  const store = await read(
+    "../src/features/chat/stores/chat-navigation-store.ts",
+  );
+
+  // The tool card is the one that stands down: dropping a selection is undone
+  // by selecting again, and denying a call is not.
+  assert.match(toolCard, /const selectionActive = useChatNavigationStore\(/);
+  assert.match(toolCard, /!selectionActive &&/);
+  // Both keys, not just Escape: the buttons stay either way.
+  for (const id of ["approveToolRequest", "declineToolRequest"]) {
+    const at = toolCard.indexOf(`useShortcut("${id}"`);
+    assert.ok(at !== -1, `${id} lost its call site`);
+    assert.match(
+      toolCard.slice(at, toolCard.indexOf("});", at)),
+      /enabled: keyboardReady/,
+    );
+  }
+
+  // Published from the sidebar, cleared on unmount so an unmounted sidebar
+  // cannot leave the card mute.
+  assert.match(
+    sidebar,
+    /const selectionActive = selectionCount > 0 \|\| projectSelectionCount > 0;/,
+  );
+  assert.match(
+    sidebar,
+    /setSelectionActive\(selectionActive\);\n\s*return \(\) => setSelectionActive\(false\);/,
+  );
+  assert.match(store, /selectionActive: boolean;/);
+  assert.match(store, /selectionActive: false,/);
+
+  // And the sidebar listener stays passive. Dictation reads defaultPrevented
+  // before cancelling, so consuming Escape here would let a stale selection
+  // outrank a live recording.
+  const at = sidebar.indexOf("Escape is the way out of a selection");
+  const body = sidebar.slice(at, sidebar.indexOf("}, [selectionActive", at));
+  assert.ok(!body.includes("preventDefault"), "the listener consumes Escape");
+  assert.ok(!body.includes(", true)"), "the listener moved to capture");
 });
 
 test("the composer chords outlive the recording bar", async () => {
