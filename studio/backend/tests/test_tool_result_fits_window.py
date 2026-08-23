@@ -747,7 +747,11 @@ class TestAnonymousCallsRetainNothing:
         monkeypatch.setattr(tools, "_get_workdir", lambda _sid: str(tmp_path))
         real = tools._truncate
 
-        def _recording(text, limit = None, workdir = None):
+        def _recording(
+            text,
+            limit = None,
+            workdir = None,
+        ):
             seen["workdir"] = workdir
             return real(text, limit if limit is not None else 200, workdir = None)
 
