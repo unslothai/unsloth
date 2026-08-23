@@ -319,17 +319,33 @@ def collect(
         # itself, and a difference it observed is still a difference. Dropping it would silence a
         # regression, which is the worse direction of the two. So the conservative choice has
         # opposite signs on the two sides, because "conservative" means a different thing on each.
+        #
+        # READ THROUGH THE SAME FILTER THE ACTION ROWS ARE READ THROUGH. Taking `completed` from
+        # the raw stream while taking the action rows from `latest_attempt_rows` is the guard
+        # answering about a different attempt than the one it is guarding. `_resume_set` names the
+        # path that gets there without anybody doing anything unusual: an A/B pair is re-run WHOLE
+        # (`ab.skippable_cells`), so a resume re-runs an arm that had already succeeded, and if
+        # that retry is interrupted the payload holds a completed row and a LATER, unfinished row
+        # under the same deterministic `cell_id`. Read raw, the dead retry's action rows are
+        # admitted on the strength of the completion the run before them earned. On the null that
+        # is the worst direction: one valid repetition plus this one reaches `min_observations`,
+        # the action is called unstable, and that excuse hides a real result difference.
+        # Per file: the payload is append-only within one shard, and a cell id is reused across
+        # shards, so superseding has to be resolved inside the stream that appended it.
+        kept_rows = latest_attempt_rows(raw_rows)
         completed = {
-            r.get("cell_id") for r in raw_rows if r.get("row_type") == "cell" and r.get("completed")
+            r.get("cell_id")
+            for r in kept_rows
+            if r.get("row_type") == "cell" and r.get("completed")
         }
         # A payload with no `cell` rows at all predates them, or is a fixture. Falling back is
         # right; falling back SILENTLY is how a guard stops guarding, so it is counted and said.
+        # Asked of the raw stream on purpose: the question is whether this recorder ever wrote
+        # cell rows, not whether the surviving attempt happened to reach one.
         has_cell_rows = any(r.get("row_type") == "cell" for r in raw_rows)
         if not has_cell_rows:
             no_cell_rows += 1
-        # Per file: the payload is append-only within one shard, and a cell id is reused across
-        # shards, so superseding has to be resolved inside the stream that appended it.
-        for r in latest_attempt_rows(raw_rows):
+        for r in kept_rows:
             if r.get("row_type") != "action":
                 continue
             cid = r.get("cell_id") or ""

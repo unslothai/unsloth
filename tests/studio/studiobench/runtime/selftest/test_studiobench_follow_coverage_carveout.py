@@ -266,7 +266,11 @@ def test_both_admission_lists_agree_on_every_shape(tmp_path) -> None:
 # ---------------------------------------------------------------------------------------
 
 
-def _sampled(pinned, coverage, fell_behind = False) -> dict:
+def _sampled(
+    pinned,
+    coverage,
+    fell_behind = False,
+) -> dict:
     return {
         "follow_attempted": True,
         "pinned_fraction": pinned,
