@@ -4548,11 +4548,10 @@ def _resolve_ensure_weight_tying(model, modules_to_save, requested):
 
 
 def _drop_tied_output_module(modules_to_save, ensure_weight_tying):
-    """Leave the tied output module for PEFT to reconstruct, keeping the input embedding.
+    """Keep the input embedding and leave the tied output for PEFT to reconstruct.
 
     peft 0.18 ties only `tied_weight_keys - modules_to_save`, so naming both there ties
-    nothing and trains two copies that diverge. Measured on 0.18.1 and 0.20.0: this
-    spelling gives one trainable matrix on both.
+    nothing and trains two diverging copies. One matrix on 0.18.1 and 0.20.0 alike.
     """
     if not ensure_weight_tying or not EMBEDDING_MODULES <= set(modules_to_save or ()):
         return modules_to_save

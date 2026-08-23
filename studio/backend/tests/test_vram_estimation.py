@@ -2365,7 +2365,6 @@ def test_an_embedding_only_request_still_counts_the_default_projections():
     one_matrix = tied.vocab_size * tied.hidden_size
     for targets in (["embed_tokens"], ["embed_tokens", "lm_head"], ["lm_head"]):
         assert compute_lora_params(tied, 128, targets) == projections + one_matrix, targets
-    # "all-linear" alongside an embedding name expands the same way in the trainer, and
-    # matches no projection counter here unless it is normalized first.
+    # "all-linear" expands in the trainer too, but matches no counter here unnormalized.
     for targets in (["all-linear", "lm_head"], ["all-linear", "embed_tokens"]):
         assert compute_lora_params(tied, 128, targets) == projections + one_matrix, targets
