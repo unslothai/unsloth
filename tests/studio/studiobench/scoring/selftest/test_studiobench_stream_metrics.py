@@ -390,6 +390,57 @@ def test_a_window_the_frame_recorder_was_never_installed_in_is_still_only_skippe
     assert m["stream_jank_index"].value is not None
 
 
+def test_a_recorder_that_died_partway_poisons_every_streaming_metric():
+    """A cell whose page crashed is truncated, and a truncated cell must not report a rate.
+
+    `_stream_windows` records why it rejected each window, but `_stream_measures` reads that only
+    when NOTHING qualified. Once one window has qualified, the rejection that says the page went
+    away is discarded with the rest, and the cell publishes a rate computed over the prefix that
+    ran before the crash. Both halves of the rate lose the same unmeasured stretch, so the error
+    does not show up as a wide interval.
+
+    The shape is not hypothetical: 138 unaided windows in the payload corpus carry
+    `TargetClosedError` or `Target crashed` after a qualifying window, with a median duration of
+    11.0 s.
+    """
+    good = _window("stream:gap1")
+    dead = _window("stream:gap2", duration_ms = 14_000.0, attempted = False)
+    dead["instruments"]["stream_cost"]["unavailable"] = (
+        "TargetClosedError: Page.evaluate: Target page, context or browser has been closed"
+    )
+
+    m = _stream_measures([good, dead])
+    assert set(m) == set(STREAM_METRICS)
+    for key, measure in m.items():
+        assert measure.attempted is True, key
+        assert measure.value is None, key
+        assert "stopped partway through this cell" in (measure.note or ""), key
+    assert "Target page, context or browser has been closed" in (
+        m["stream_cost_ms_per_kchar"].note or ""
+    )
+
+    # The giveaway: without this the crashed cell was byte-identical to the one that never
+    # crashed, so nothing downstream could tell a truncated run from a complete one.
+    assert _stream_measures([good])["stream_cost_ms_per_kchar"].value is not None
+
+
+def test_a_window_the_instrument_merely_skipped_does_not_poison_the_cell():
+    """The control, and the reason this keys on `unavailable` rather than on not-attempted.
+
+    Windows with no `stream_cost` reading are ordinary -- the instrument is not installed in every
+    window -- and they are already handled by being left out of `picked`. Only a window that was
+    instrumented and reports the recorder going away means the cell is missing a stretch it cannot
+    account for. Poisoning on not-attempted alone would void most of the corpus.
+    """
+    good = _window("stream:gap1")
+    skipped = _window("stream:gap2", duration_ms = 14_000.0, attempted = False)
+    assert "unavailable" not in skipped["instruments"]["stream_cost"]
+
+    m = _stream_measures([good, skipped])
+    assert m["stream_cost_ms_per_kchar"].value is not None
+    assert m["stream_max_frame_ms"].value is not None
+
+
 def test_every_declared_stream_metric_is_produced():
     m = _stream_measures([_window("stream:gap1")])
     assert set(m) == set(STREAM_METRICS)

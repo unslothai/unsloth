@@ -50,10 +50,35 @@ _UNRESOLVED_PYTHON_MARKER = "No virtual environment or system Python installatio
 # Minimum versions unsloth-zoo requires on Apple Silicon (its pyproject darwin
 # deps). mlx-vlm especially must be >=0.4.4: an older one still imports but
 # breaks VLM Train/Export, so installing it would wrongly clear chat-only.
-_MLX_MIN_VERSIONS = {"mlx": "0.22.0", "mlx-lm": "0.22.0", "mlx-vlm": "0.4.4"}
+# mlx-lm's floor tracks unsloth-zoo, which needs GenerationBatch.Response and
+# BatchGenerator.next_generated from 0.31.2; it read 0.22.0 here, which would
+# have let a stack too old for batched generation clear the chat-only gate.
+_MLX_MIN_VERSIONS = {"mlx": "0.22.0", "mlx-lm": "0.31.2", "mlx-vlm": "0.4.4"}
 _MLX_PACKAGE_NAMES = tuple(_MLX_MIN_VERSIONS)
 _MLX_RUNTIME_IMPORTS = ("mlx.core", "mlx_lm", "mlx_lm.sample_utils", "mlx_vlm")
-MLX_PACKAGES = tuple(f"{name}>={version}" for name, version in _MLX_MIN_VERSIONS.items())
+# What the self-heal INSTALLS, as opposed to the floors above, which judge a
+# stack that is already there. Pinned rather than floored because this install is
+# unattended and default-on, and mlx ships breaking changes in patch releases:
+# 0.32.1 broke model loading here (unslothai/unsloth#9466). A floor would fetch
+# whatever shipped since the user last opened Unsloth, unasked.
+#
+# Keep in sync with unsloth-zoo's pyproject darwin deps. mlx-vlm stays a range so
+# the resolver can pick 0.6.15 here, where the installer overrides mlx-vlm's
+# transformers requirement, and 0.6.4 under the plain cap.
+#
+# 0.32.1 is chosen with its known defect, not in ignorance of it: it segfaults at
+# interpreter finalization when a fused Metal custom kernel is the last work a
+# process did, which unsloth-zoo measured and works around in
+# tests/_run_then_exit_hard.py. Staying on 0.32.0 to dodge that would give back
+# mlx#3833, where two fast.metal_kernel instances sharing a name but not a source
+# silently run the first kernel's code for the second. A noisy exit after the work
+# is finished beats wrong numbers from the fused kernels this stack is built on.
+_MLX_INSTALL_SPECS = {
+    "mlx": "==0.32.1",
+    "mlx-lm": "==0.31.3",
+    "mlx-vlm": ">=0.4.4,<0.7.0",
+}
+MLX_PACKAGES = tuple(f"{name}{spec}" for name, spec in _MLX_INSTALL_SPECS.items())
 _MLX_REINSTALL_ARGS = tuple(
     arg for name in _MLX_PACKAGE_NAMES for arg in ("--reinstall-package", name)
 )
@@ -500,6 +525,9 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
         logger.warning(
             "MLX self-heal produced an incomplete or too-old MLX stack "
             "(need %s); staying chat-only.",
+            # The floors, not MLX_PACKAGES: the gate above tests the floors, so
+            # quoting the install pins would tell someone on a usable mlx 0.33
+            # that they need exactly 0.32.1.
             ", ".join(f"{name}>={ver}" for name, ver in _MLX_MIN_VERSIONS.items()),
         )
         return False

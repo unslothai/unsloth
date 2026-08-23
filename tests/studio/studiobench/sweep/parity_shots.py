@@ -44,7 +44,9 @@ from tests.studio.studiobench.analysis import parity as P  # noqa: E402
 from tests.studio.studiobench.scoring.from_payload import latest_attempt_rows  # noqa: E402
 from tests.studio.studiobench.sweep.ui_parity import (  # noqa: E402
     compare_all,
+    confine_to_runner,
     corroborated,
+    in_arm_repeatability,
     is_unstable,
     shards_of,
     unstable_set,
@@ -66,7 +68,13 @@ def _pil():
 
 
 def shot_index(paths: list[Path]) -> dict:
-    """{(cell_id, action, arm): {"file": name, "scroll": int}} from the payload's own rows.
+    """{(shard, cell_id, action, arm): {"file": name, "scroll": int}} from the payload's own rows.
+
+    KEYED BY SHARD, because a cell id is deterministic and every shard restarts at
+    `r100K.base.rep0`. Without it the last shard read wins and `build` can pair a mismatch found
+    in one film with a picture taken during another -- the same class as reading a superseded
+    attempt's shot, one level up. `differing_actions` already carries the shard, so the lookup
+    has it; it was only the index that threw it away.
 
     Read from the payload rather than by globbing the directory, so a file whose name happens to
     look right but was written by another run cannot be picked up.
@@ -80,6 +88,7 @@ def shot_index(paths: list[Path]) -> dict:
     """
     out: dict = {}
     for path in paths:
+        shard = path.parent.name
         raw = []
         for line in path.read_text(encoding = "utf-8").splitlines():
             if not line.strip():
@@ -93,7 +102,7 @@ def shot_index(paths: list[Path]) -> dict:
                 continue
             cid = row.get("cell_id") or ""
             arm = "treatment" if ".treatment." in cid else "base"
-            out[(cid, row.get("action"), arm)] = {
+            out[(shard, cid, row.get("action"), arm)] = {
                 "file": parity["shot"],
                 "scroll": parity.get("shot_scroll_top", -1),
             }
@@ -125,7 +134,13 @@ def differing_actions(
     deliberately kept those shots for it. The two selections are held to the same bar as the
     report's -- excused by the null control, then corroborated at the verdict's own `--min-reps`.
     """
-    unstable, _derived, _checks = unstable_set(null_paths or None)
+    unstable, derived, _checks = unstable_set(null_paths or None)
+    # THE SAME EFFECTIVE SET THE VERDICT SCORED WITH. The verdict confines the imported
+    # exemptions to what the scored runner reproduces, so reading the raw imported set here would
+    # put the artifact back out of step with the job it illustrates -- an action the verdict
+    # failed on would have no picture, which is the same defect as publishing none at all.
+    if derived:
+        unstable, _dropped = confine_to_runner(unstable, *in_arm_repeatability(result_paths))
     out = []
     # `compare_all` returns (results, capture tally); only the results are wanted here.
     results, _tally = compare_all(result_paths)
@@ -134,16 +149,29 @@ def differing_actions(
         for action, shard, cell, r in results
         if r["verdict"] == P.DIFFER and not is_unstable(unstable, action, cell)
     ]
+    # Carrying the DIRECTION as the fifth element, exactly as `report` does, so the artifact
+    # illustrates the same set the verdict counted. Without it a direction-reversing pair would
+    # be firm here and uncorroborated there, and the evidence would show a regression the job
+    # did not fail on.
     one_sided = [
-        (action, shard, cell, [r.get("reason", "")])
+        (action, shard, cell, [r.get("reason", "")], r.get("one_sided") or None)
         for action, shard, cell, r in results
         if r["verdict"] == P.NOT_EXERCISED
         and r.get("one_sided")
-        and not is_unstable(unstable, action, cell)
+        and not P.racy_execution(action, r.get("idle_reason") or "")
+    ]
+    # The third way `report` returns 1: the action ran on both arms and its own assertion failed
+    # on one. Not filtered by the unstable set, for the same reason the verdict does not filter
+    # it -- that set measures digest stability, and this is not a digest.
+    expect_bad = [
+        (action, shard, cell, [r.get("expect_reason", "")], r["expect_regressed"])
+        for action, shard, cell, r in results
+        if r.get("expect_regressed")
     ]
     firm, _weak = corroborated(stable, min_reps)
     firm_one_sided, _weak_one_sided = corroborated(one_sided, min_reps)
-    for action, shard, cell, moved in firm + firm_one_sided:
+    firm_expect, _weak_expect = corroborated(expect_bad, min_reps)
+    for action, shard, cell, moved, *_dir in firm + firm_one_sided + firm_expect:
         out.append({"action": action, "shard": shard, "cell": cell, "moved": moved})
     return out
 
@@ -218,8 +246,8 @@ def build(
         # `cell` is "<rung> <rep>", and a cell id is "<rung>.<arm>.<rep>".
         rung, rep = d["cell"].split(" ", 1)
         base_id, treat_id = f"{rung}.base.{rep}", f"{rung}.treatment.{rep}"
-        b = index.get((base_id, d["action"], "base"))
-        t = index.get((treat_id, d["action"], "treatment"))
+        b = index.get((d["shard"], base_id, d["action"], "base"))
+        t = index.get((d["shard"], treat_id, d["action"], "treatment"))
         if not b or not t:
             missing += 1
             have = "base" if b else ("treatment" if t else "neither")
@@ -235,7 +263,10 @@ def build(
             missing += 1
             print(f"  {d['action']:<26} {d['cell']}: shot file absent on disk; not a pair")
             continue
-        stem = f"{d['action']}__{rung}_{rep}"
+        # The shard is in the FILENAME as well as the key. Two shards produce the same
+        # `<action>__<rung>_<rep>` stem, so without it the second composite silently overwrites
+        # the first and the artifact shows one picture for two findings.
+        stem = f"{d['shard']}__{d['action']}__{rung}_{rep}"
         ok = composite(
             bp,
             tp,
@@ -288,9 +319,11 @@ def prune(payload_dir: Path, shots_dir: Path) -> int:
     for action, _shard, cell, r in results:
         if r["verdict"] == P.MATCH:
             continue
+        # The prune reads one arm's own output dir, but key by the shard it came from anyway so
+        # the index has one shape everywhere.
         rung, rep = cell.split(" ", 1)
         for arm in ("base", "treatment"):
-            got = index.get((f"{rung}.{arm}.{rep}", action, arm))
+            got = index.get((_shard, f"{rung}.{arm}.{rep}", action, arm))
             if got:
                 keep.add(got["file"])
     removed = kept = 0

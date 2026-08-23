@@ -297,10 +297,33 @@ def actions_needing_an_excuse(paths: list[Path], min_reps: int) -> set[tuple[str
     the result matched and no excuse was ever consulted, so one missed observation at an
     unrelated rung failed the audit again. The rung is part of the identity here for the same
     reason it is part of it there -- instability is a property of the rung, not only the action.
+
+    THE SAME PREDICATES `report` USES, on both axes, or this scopes a verdict nobody runs. Two
+    ways it drifted, and both fail the job rather than pass it, which is why they are worth as
+    much care as the excusing direction:
+
+      RACY_EXECUTION. `report` does not count a one-arm-only result for the three actions whose
+      ABILITY to run is a race, so no excuse can move their verdict and the null owes them
+      nothing. Scoped anyway, the null observing the same legitimate stream-timing race made
+      `audit_null` return 1 and the workflow fail on stream timing.
+
+      THE DIRECTION. `report` carries the live arm in the corroboration key, so a pair that blames
+      opposite arms across the two repetitions is UNCORROBORATED and cannot move the verdict.
+      Built here as bare four-element tuples it corroborated, entered the scope, and an undecided
+      null then failed a job whose verdict would have been 0.
+
+    The rule for this function is simply: scope is what the verdict's FATAL set turns on. Anything
+    the verdict already declines to count is a question nobody is going to ask.
     """
     results, _ = compare_all(paths)
     differing = [e for e in results if e[3]["verdict"] == P.DIFFER]
-    one_sided = [e for e in results if e[3]["verdict"] == P.NOT_EXERCISED and e[3].get("one_sided")]
+    one_sided = [
+        (e[0], e[1], e[2], e[3], e[3].get("one_sided") or None)
+        for e in results
+        if e[3]["verdict"] == P.NOT_EXERCISED
+        and e[3].get("one_sided")
+        and not P.racy_execution(e[0], e[3].get("idle_reason") or "")
+    ]
     firm_differing, _ = corroborated(differing, min_reps)
     firm_one_sided, _ = corroborated(one_sided, min_reps)
     return {(rung_of_cell(e[2]), e[0]) for e in firm_differing + firm_one_sided}
@@ -371,12 +394,39 @@ def audit_null(
             if row["unstable"]:
                 differed.append(entry)
 
+    # AN ACTION THE NULL NEVER MEASURED AT ALL IS UNDECIDED, not absent. The loop above can only
+    # classify what `derive_unstable` produced, so a scoped (rung, action) with NO rows in the
+    # null payload fell into neither list and the audit never asked about it. One other scoped
+    # action being decided was then enough to return 0.
+    #
+    # That is the whole question this audit exists to put, answered by default. `unstable_set`
+    # unions the DECLARED names back in, so an action like `send_turn` that the null never
+    # observed is still excused by name, and a corroborated result difference on it passes.
+    # Reproduced end to end: scope {send_turn, settings}, null carrying no send_turn rows,
+    # audit 0, verdict 0, the regression printed under "expected to vary".
+    #
+    # Rows vanish entirely more easily than they look like they should: the null is collected with
+    # `require_complete = True`, so a cell that never finished takes every one of its action rows
+    # with it, and the action stops existing rather than becoming undetermined.
+    #
+    # Counted as MISSING as well as undecided, because the two are not the same reading. Measured
+    # and inconclusive means the null tried; never measured means it did not, and a reader chasing
+    # a failed audit needs to know which. `allow_undecided` still applies -- `image_upload` has no
+    # attachments button on this fixture and is waived by name whether it produced rows or not.
+    missing = []
+    if scope is not None:
+        seen = set(decided) | set(undecided) | set(excused)
+        for entry in sorted(scope - seen):
+            missing.append(entry)
+            (excused if entry[1] in allow_undecided else undecided).append(entry)
+
     report_ = {
         "decided": decided,
         "undecided": undecided,
         "excused": excused,
         "out_of_scope": out_of_scope,
         "differed": differed,
+        "missing": missing,
     }
     # NOTHING TO DECIDE IS A PASS, and only when a scope said so. A result whose every action
     # matched asks the null for no excuses at all, and there is no way to fail a question that
@@ -392,7 +442,11 @@ def audit_null(
         report_["reason"] = "no (rung, action) reached min_observations"
         return 1, report_
     if undecided:
-        report_["reason"] = "undecided actions outside the excused list"
+        report_["reason"] = (
+            "scoped actions the null never measured at all"
+            if missing and set(missing) >= set(undecided)
+            else "undecided actions outside the excused list"
+        )
         return 1, report_
     return 0, report_
 
@@ -439,8 +493,13 @@ def print_null_audit(rc: int, report_: dict, allow_undecided: frozenset) -> None
             print("\n  NOT ONE (rung, action) reached min_observations.")
         else:
             print("\n  These (rung, action) pairs never reached min_observations:")
+            _missing = set(report_.get("missing") or ())
             for rung, action in report_["undecided"][:12]:
-                print(f"    {action}@{rung}")
+                # Said apart from the rest: measured and inconclusive means the null tried and
+                # could not decide; NO ROWS means it never measured the action at all, which is a
+                # different thing to go and fix and used to be invisible here.
+                tail = "  -- NO ROWS in the null at all" if (rung, action) in _missing else ""
+                print(f"    {action}@{rung}{tail}")
         print(
             "\n  `analysis.parity.derive_unstable` needs two comparable observations of a"
             "\n  (rung, action) before it will decide anything about it, so the first thing to"
@@ -495,6 +554,88 @@ def unstable_set(paths: list[Path] | None) -> tuple[frozenset, dict, dict]:
     return frozenset(measured) | frozenset(UNSTABLE_ACTIONS), derived, checks
 
 
+def in_arm_repeatability(paths: list[Path]) -> tuple[set, set]:
+    """A base-vs-base null taken ON THE RUNNER BEING SCORED, at no extra cost.
+
+    Returns `(unstable, stable)` as `(rung, action)` sets. An action seen in fewer than two
+    repetitions of side A is in NEITHER: undecided is not stable.
+
+    WHY THIS EXISTS. The excuse set is measured by a different job. GitHub gives each matrix
+    entry its own runner, and it does not start them together: across four consecutive waves of
+    this workflow the two arms drew different runner ids every time, and the stagger between
+    their start times ran from 1 second to 6 minutes 30. So the exemptions the verdict applies
+    are a property of a machine and a moment that the result never touched, and the instability
+    mechanisms they describe are timing races -- the one class of thing that does not transfer.
+    The null cannot notice this: it is one machine measuring itself, and it agrees with itself.
+
+    WHAT SIDE A GIVES US FOR FREE. The result arm is merge_base vs head, so side A is the SAME
+    build in every repetition. Comparing side A at rep0 against side A at rep1 is therefore a
+    base-vs-base comparison in the same session, on the same runner, minutes from the digests it
+    is going to excuse. No extra install, no extra film, no change to what the job schedules.
+
+    WHY IT IS THE RIGHT ANALOGUE, checked rather than argued. The cross-job null derives its set
+    across ARMS within a repetition; this derives across REPETITIONS within an arm. On the null
+    control's own payload, where both constructs can be computed, they name the same three
+    actions at r100K -- keystroke, reasoning_toggle, scroll_during_generation -- so the axis is
+    not what the measurement is picking up.
+    """
+    got = collect(paths, require_complete = True)
+    # (shard, rung, session, action) -> {rep: side A row}
+    side_a: dict[tuple, dict] = collections.defaultdict(dict)
+    for (shard, rung, rep, sid, action), sides in got["pairs"].items():
+        row = sides.get("base")
+        if isinstance(row, dict):
+            side_a[(shard, rung, sid, action)][rep] = row
+    unstable: set = set()
+    stable: set = set()
+    for (_shard, rung, _sid, action), by_rep in side_a.items():
+        reps = sorted(by_rep)
+        if len(reps) < 2:
+            continue
+        verdicts = [
+            P.compare(by_rep[reps[0]].get("parity"), by_rep[r].get("parity"))["verdict"]
+            for r in reps[1:]
+        ]
+        # A capture that failed is blind, not agreement. Only a real MATCH earns "stable".
+        if any(v == P.DIFFER for v in verdicts):
+            unstable.add((rung, action))
+        elif all(v == P.MATCH for v in verdicts):
+            stable.add((rung, action))
+    return unstable, stable
+
+
+def confine_to_runner(
+    unstable: frozenset, local_unstable: set, local_stable: set
+) -> tuple[frozenset, list]:
+    """Drop an IMPORTED exemption the scored runner positively contradicts. Returns (set, dropped).
+
+    ONE-SIDED ON PURPOSE, and the asymmetry is the whole safety argument. An exemption is removed
+    only when this runner measured that (rung, action) and found it REPEATABLE -- two matching
+    observations of one build. An action the local signal could not decide keeps its exemption,
+    because "we did not look" must never read as "it is stable"; that is the direction which turns
+    a quiet moment into a red job, and the false-alarm data this gate was tuned on says a null
+    quieter than the result it scores is the failure mode that actually happens.
+
+    So the only findings this can newly surface are ones where the scored runner ran the action
+    twice against one build, got the same DOM both times, and then got a different DOM from head
+    in both repetitions. That is not a race. That is a build difference.
+
+    The DECLARED entries -- plain action names rather than `(rung, action)` -- are never touched.
+    They are a standing claim about the app, not a measurement of a machine, so a machine cannot
+    contradict them.
+    """
+    kept, dropped = set(), []
+    for entry in unstable:
+        if not isinstance(entry, tuple):
+            kept.add(entry)
+            continue
+        if entry in local_stable and entry not in local_unstable:
+            dropped.append(entry)
+            continue
+        kept.add(entry)
+    return frozenset(kept), sorted(dropped)
+
+
 def corroborated(entries: list[tuple], min_reps: int) -> tuple[list[tuple], list[tuple]]:
     """Split stable differences into those that REPEATED and those seen in one repetition only.
 
@@ -512,13 +653,32 @@ def corroborated(entries: list[tuple], min_reps: int) -> tuple[list[tuple], list
     once, and the repetitions are not independent runs of a fresh app but two passes in one
     session, so this is not free. It is printed as UNCORROBORATED rather than dropped, so the
     reading survives even when the verdict does not rest on it.
+
+    THE DIRECTION IS PART OF THE CLAIM, where there is one. An entry may carry a fifth element
+    naming the arm it is about: which arm went idle, or which arm's assertion failed. Two
+    repetitions that disagree about WHICH BUILD failed are not one finding seen twice, they are a
+    race that landed on either side, and grouping them only by action and rung let the pair reach
+    `firm` and report "the two builds did not behave the same way" while its own two lines named
+    opposite arms. Keyed on the direction they separate, and each side is then a single
+    repetition, so both print as UNCORROBORATED and the verdict does not rest on them.
+
+    A four-element entry has no direction and groups exactly as before, which is right for a
+    digest difference: `stable_bad` is a statement about a PAIR of arms and has no failing side.
     """
-    by_action: dict[tuple[str, str], list[tuple]] = collections.defaultdict(list)
+    by_action: dict[tuple, list[tuple]] = collections.defaultdict(list)
     for entry in entries:
-        by_action[(entry[0], rung_of_cell(entry[2]))].append(entry)
+        direction = entry[4] if len(entry) > 4 else None
+        by_action[(entry[0], rung_of_cell(entry[2]), direction)].append(entry)
     firm, weak = [], []
     for group in by_action.values():
         # DISTINCT repetitions, not rows: one repetition seen twice is one observation.
+        # DELIBERATELY NOT KEYED ON THE SHARD, and the shard is available in `e[1]`. Two shards
+        # carrying the same (rung, rep) cannot be told apart from ONE film recorded twice -- the
+        # duplicate-session case, where both copies are the same observation and counting them as
+        # two lets a single flake corroborate itself. Keying on the cell alone can only
+        # under-count, which costs a finding; keying on the shard can manufacture corroboration
+        # out of duplicated provenance, which is the failure this whole instrument is about.
+        # `test_one_repetition_seen_twice_is_not_two_observations` holds this direction.
         reps = {e[2] for e in group}
         (firm if len(reps) >= min_reps else weak).extend(group)
     return firm, weak
@@ -544,10 +704,28 @@ def report(
 
     stable_bad, unstable_bad, blind, style_bad, idle = [], [], [], [], []
     one_sided, one_sided_unstable = [], []
+    expect_bad = []
     matched = 0
     for action, shard, cell, r in results:
+        # COLLECTED BEFORE THE VERDICT BRANCHES AND OUTSIDE THE EXEMPTION, because it is not a
+        # digest. An action can run on both arms, produce two digests the instability exemption
+        # then excuses, and still have failed its own assertion on one arm only -- which is the
+        # two builds behaving differently and the one shape `ran` cannot see. `stop_generation`
+        # is the live example: `ran = True, expect_ok = stopped_ms is not None`, and it is on the
+        # declared unstable list, so a head that no longer stops generation was excused twice
+        # over. The exemption was measured for digest stability; applying it here would be
+        # applying it to a different quantity that happens to share an action name.
+        # The fifth element is the DIRECTION, and `corroborated` keys on it. Which arm's
+        # assertion failed is part of what is being claimed: a treatment failure in one
+        # repetition and a base failure in the next is a race that landed on either side, not
+        # one finding seen twice.
+        if r.get("expect_regressed"):
+            expect_bad.append(
+                (action, shard, cell, [r.get("expect_reason", "")], r["expect_regressed"])
+            )
         if r["verdict"] == P.NOT_EXERCISED:
-            entry = (action, shard, cell, [r.get("reason", "")])
+            # Same, for which arm stayed live: `one_sided` names the arm that DID run.
+            entry = (action, shard, cell, [r.get("reason", "")], r.get("one_sided") or None)
             if r.get("one_sided"):
                 # ONE ARM RAN IT AND THE OTHER COULD NOT, which is not the missed-slot case.
                 # A missed slot is a runner losing a race and it costs coverage; an action that
@@ -557,9 +735,20 @@ def report(
                 # else, so filing it under coverage is how "the button no longer works" ships
                 # green. Held to the SAME corroboration bar as a differing digest below rather
                 # than failed on sight, because a contended runner can lose one arm's slot once.
-                (one_sided_unstable if is_unstable(unstable, action, cell) else one_sided).append(
-                    entry
-                )
+                #
+                # EXEMPTED BY `RACY_EXECUTION`, NOT BY THE DIGEST SET, and the distinction is the
+                # same one `expect_regressed` rests on. Every UNSTABLE_ACTIONS mechanism describes
+                # what makes the CAPTURE move; none of them says the action can fail to happen.
+                # Keyed on that list, nine of sixteen actions were permanently exempt from the one
+                # regression shape that leaves no digest to differ, so a broken composer taking
+                # `keystroke` down on the treatment arm in both repetitions exited 0. `scroll_after`
+                # was exempt without even having a `not_run` path to reach.
+                # ON THE RECORDED REASON, not the action name. Each of the three has non-racy
+                # not_run paths too -- send_turn's "no composer on the page", stop_generation's
+                # "the stop button is not present" -- and a treatment build that REMOVES either
+                # control records exactly the regression this exists to catch.
+                _racy = P.racy_execution(action, r.get("idle_reason") or "")
+                (one_sided_unstable if _racy else one_sided).append(entry)
             else:
                 idle.append(entry)
             continue
@@ -579,6 +768,7 @@ def report(
     # one the exit code is taken from.
     stable_bad, uncorroborated = corroborated(stable_bad, min_reps)
     one_sided, one_sided_weak = corroborated(one_sided, min_reps)
+    expect_bad, expect_weak = corroborated(expect_bad, min_reps)
 
     print(f"\n{label}")
     print(f"  {len(results)} action pairs across {len(paths)} shard(s)")
@@ -606,6 +796,10 @@ def report(
         f"  ran on ONE arm only:        {len(one_sided)}"
         + (f"  (in >= {min_reps} repetitions)" if min_reps > 1 else "")
     )
+    print(
+        f"  ASSERTION failed on one arm:  {len(expect_bad)}"
+        + (f"  (in >= {min_reps} repetitions)" if min_reps > 1 else "")
+    )
     print(f"  unstable actions differing: {len(unstable_bad)}  (expected to vary; not a verdict)")
     print(f"  NOT COMPARABLE:             {len(blind)}  (never measured; not a pass)")
     print(f"  NOT EXERCISED:              {len(idle)}  (the action did not run; not coverage)")
@@ -629,12 +823,29 @@ def report(
         )
         return 3
 
+    if expect_bad:
+        print(
+            "\n  THE ACTION'S OWN ASSERTION FAILED ON ONE ARM -- it ran on both and did its job"
+            "\n  on only one, in every repetition. Not excused by the unstable set: that set is a"
+            "\n  measurement of whether a DIGEST races, and this is not a digest:"
+        )
+        for action, shard, cell, why, *_dir in expect_bad:
+            print(f"    {action:<26} {shard} {cell}: {why[0]}")
+
+    if expect_weak:
+        print(
+            f"\n  UNCORROBORATED assertion failure -- on one arm in fewer than {min_reps} "
+            f"repetitions; reported, not counted:"
+        )
+        for action, shard, cell, why, *_dir in expect_weak[:8]:
+            print(f"    {action:<26} {shard} {cell}: {why[0]}")
+
     if one_sided:
         print(
             "\n  RAN ON ONE ARM ONLY -- one build could perform these and the other could not,"
             "\n  in every repetition. That is a difference between the builds, not lost coverage:"
         )
-        for action, shard, cell, why in one_sided:
+        for action, shard, cell, why, *_dir in one_sided:
             print(f"    {action:<26} {shard} {cell}: {why[0]}")
 
     if one_sided_weak:
@@ -642,7 +853,7 @@ def report(
             f"\n  UNCORROBORATED one-arm-only -- ran on one arm in fewer than {min_reps} "
             f"repetitions; reported, not counted:"
         )
-        for action, shard, cell, why in one_sided_weak[:8]:
+        for action, shard, cell, why, *_dir in one_sided_weak[:8]:
             print(f"    {action:<26} {shard} {cell}: {why[0]}")
 
     if one_sided_unstable:
@@ -650,7 +861,7 @@ def report(
             "\n  (reported, not counted) one-arm-only on an action expected to vary between runs"
             "\n  of any build, so which arm reached its slot is a race rather than a signal:"
         )
-        for action, shard, cell, why in one_sided_unstable[:8]:
+        for action, shard, cell, why, *_dir in one_sided_unstable[:8]:
             print(f"    {action:<26} {shard} {cell}: {why[0]}")
 
     if stable_bad:
@@ -679,13 +890,13 @@ def report(
     if idle:
         # Named surfaces, deduplicated: what matters is WHICH actions this run never opened, not
         # that it failed to open one of them sixteen separate times.
-        names = sorted({action for action, _s, _c, _w in idle})
+        names = sorted({entry[0] for entry in idle})
         print(
             f"\n  NOT EXERCISED -- {len(idle)} pair(s) over {len(names)} action(s) that did not "
             f"run. These surfaces are UNCHECKED, not unchanged:"
         )
         for name in names:
-            why = next(w[0] for a, _s, _c, w in idle if a == name)
+            why = next(entry[3][0] for entry in idle if entry[0] == name)
             print(f"    {name:<26} {why}")
 
     if style_bad:
@@ -697,7 +908,7 @@ def report(
         print("\n  (reported, not counted) actions that vary between runs of any build:")
         for action, shard, cell, moved in unstable_bad[:8]:
             print(f"    {action:<26} {shard} {cell}: {', '.join(moved[:3])}")
-    return 1 if (stable_bad or one_sided) else 0
+    return 1 if (stable_bad or one_sided or expect_bad) else 0
 
 
 def tier_of(paths: list[Path]) -> set[str]:
@@ -963,9 +1174,25 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\n  REFUSING to score {pattern}: {mismatch}")
             worst = max(worst, 2)
             continue
+        # CONFINED TO THE RUNNER BEING SCORED, and only ever downward. The exemptions above were
+        # measured in the other matrix job, on another machine, minutes away; side A of THIS
+        # payload is the same build in every repetition, so it can say whether this machine
+        # reproduces them. One that it positively contradicts is dropped, one it could not decide
+        # is kept.
+        effective = unstable
+        if derived:
+            local_unstable, local_stable = in_arm_repeatability(paths)
+            effective, dropped = confine_to_runner(unstable, local_unstable, local_stable)
+            if dropped:
+                print(
+                    f"\n  {len(dropped)} imported exemption(s) DROPPED: this runner ran "
+                    f"{'them' if len(dropped) > 1 else 'it'} twice against one build and got the "
+                    f"same DOM, so the null's race did not reproduce here: "
+                    f"{', '.join(unstable_label(e) for e in dropped)}"
+                )
         worst = max(
             worst,
-            report(paths, f"UI PARITY: {pattern}", unstable, args.min_reps, args.min_compared),
+            report(paths, f"UI PARITY: {pattern}", effective, args.min_reps, args.min_compared),
         )
     return worst
 
