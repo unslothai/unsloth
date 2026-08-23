@@ -214,6 +214,7 @@ def test_verbose_json_never_emits_a_null_duration(monkeypatch):
     """A clip that decodes to no samples has no duration; OpenAI requires a number.
 
     Unlike the language this is not a guess: such a clip really is zero seconds."""
+
     async def _empty(raw):
         return {"text": "", "language": "en", "duration": None, "model": "small"}
 
@@ -320,6 +321,7 @@ def test_a_dict_detail_never_strands_the_row(monkeypatch, detail):
     """Only openai_error_body's shape nests the message. For any other dict the handler
     called .get() on a non-dict and raised AttributeError out of the context manager,
     which skipped finish() and left the row at "running" forever."""
+
     async def _boom(raw):
         raise HTTPException(status_code = 400, detail = detail)
 
@@ -336,6 +338,7 @@ def test_a_dict_detail_never_strands_the_row(monkeypatch, detail):
 def test_a_baseexception_still_closes_the_row(monkeypatch, exc):
     """KeyboardInterrupt and SystemExit are not Exception, so they used to fall past
     every handler and leave the row stuck at "running" for the life of the process."""
+
     async def _boom(raw):
         raise exc("bang")
 
