@@ -17813,28 +17813,54 @@ class LlamaCppBackend:
                         and self._can_estimate_kv()
                         and effective_ctx > 0
                     ):
+                        # The PROBE context for the search below, not the context the load
+                        # runs at: the re-fit further down awards that, from the final slot
+                        # count. So price the search at the fit search floor, never at
+                        # _AUTO_OFFLOAD_CTX.
+                        #
+                        # _AUTO_OFFLOAD_CTX is what Auto settles for once offload really is
+                        # unavoidable. Asking this search at that value asks the wrong
+                        # question, because this block exists to OVERTURN "offload is
+                        # unavoidable" by re-asking at fewer slots -- a higher probe can only
+                        # make it fail, and its failure is all-or-nothing: no reduction and
+                        # --fit on, so the load keeps the slot count it could not afford and
+                        # offloads anyway. Measured on a 12 GiB card, probing at 8192 instead
+                        # of the floor moves the hybrid 10,900-11,100 MiB and dense
+                        # 9,800-10,500 MiB bands from fully GPU-resident to host offload, the
+                        # ~3x decode collapse (#6718) this whole block was written to avoid.
+                        #
+                        # An explicit context is the exception: it launches verbatim, so the
+                        # search has to be priced at the context that will actually run or the
+                        # slot count it picks is one the card cannot hold.
+                        #
+                        # _FIT_MIN_CTX rather than a literal: _largest_ctx below starts its
+                        # binary search at the same floor, and the two must agree or the
+                        # search can pick a slot count the re-fit then refuses to confirm.
+                        _reduce_ctx = (
+                            effective_ctx if explicit_ctx else min(effective_ctx, _FIT_MIN_CTX)
+                        )
                         # Slot-independent footprint (folded compute buffer and the MTP
                         # reserve swapped out so the helper re-prices both per candidate).
                         _base_footprint = (
-                            model_size_fit - _compute_buffer_pipeline + _cc_bytes(effective_ctx)
+                            model_size_fit - _compute_buffer_pipeline + _cc_bytes(_reduce_ctx)
                         )
                         _gi_slots, _uf_slots, _slots = self._slots_that_fit_on_gpu(
                             n_parallel,
-                            effective_ctx,
+                            _reduce_ctx,
                             gpus,
                             total_by_idx,
                             _base_footprint,
                             cache_type_kv,
                             _pin_fraction,
-                            _pipeline_overhead_bytes + _cc_bytes(effective_ctx),
+                            _pipeline_overhead_bytes + _cc_bytes(_reduce_ctx),
                             _layer_min_gpus,
                             _effective_ubatch,
                             swa_full = swa_full,
                             kv_unified = planned_kv_unified,
                             flash_attn = planned_flash_attn,
-                            split_extra_bytes = _cc_split_extra(effective_ctx),
+                            split_extra_bytes = _cc_split_extra(_reduce_ctx),
                             ubatch_for_slots = _ubatch_for_slots,
-                            mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(effective_ctx, s, ub),
+                            mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(_reduce_ctx, s, ub),
                             ctx_checkpoints = _effective_ctx_checkpoints,
                         )
                         if not _uf_slots:
@@ -17884,8 +17910,8 @@ class LlamaCppBackend:
                                 is not always the one that binds it, and a GGUF with no
                                 native length would arrive with the 0 sentinel and search
                                 nothing."""
-                                _native = self._context_length or effective_ctx
-                                _lo = max(1, min(4096, _native) // 256)
+                                _native = self._context_length or _reduce_ctx
+                                _lo = max(1, min(_FIT_MIN_CTX, _native) // 256)
                                 _hi = _native // 256
                                 _best = None
                                 while _lo <= _hi:
@@ -17904,18 +17930,22 @@ class LlamaCppBackend:
                             _kept = set(_gi_slots or ())
                             _plan_gpus = [g for g in gpus if g[0] in _kept]
                             _refit = _largest_ctx(_plan_gpus)
-                            # Explicit contexts are never rewritten.
-                            if (
-                                _refit is not None
-                                and not explicit_ctx
-                                and _refit[0] > effective_ctx
-                            ):
-                                logger.info(
-                                    "Context re-fitted %d -> %d for %d serving slot(s).",
-                                    effective_ctx,
-                                    _refit[0],
-                                    n_parallel,
-                                )
+                            # Explicit contexts are never rewritten. Otherwise the re-fit is
+                            # the answer, in both directions: it is the largest context the
+                            # FINAL slot count holds on the cards the reduction chose, so
+                            # taking anything else launches a context that was never priced.
+                            # Not gated on it being an increase over effective_ctx -- that
+                            # gate was safe only while the search and effective_ctx shared a
+                            # value, and _AUTO_OFFLOAD_CTX above the probe floor is exactly
+                            # the case where the re-fit legitimately comes back lower.
+                            if _refit is not None and not explicit_ctx:
+                                if _refit[0] != effective_ctx:
+                                    logger.info(
+                                        "Context re-fitted %d -> %d for %d serving slot(s).",
+                                        effective_ctx,
+                                        _refit[0],
+                                        n_parallel,
+                                    )
                                 effective_ctx, gpu_indices = _refit
                             # After the re-fit, so it names the context that launches
                             # rather than one sized for slots this load dropped.
@@ -17934,7 +17964,14 @@ class LlamaCppBackend:
                                 _refit if len(_plan_gpus) == len(gpus) else _largest_ctx(gpus)
                             )
                             if _ceiling is not None:
-                                max_available_ctx = max(max_available_ctx, _ceiling[0])
+                                # Replaces the anchor rather than raising it. Reaching here
+                                # means the offload fallback set max_available_ctx for a plan
+                                # this block just superseded, and max() would keep publishing
+                                # that plan's number: with _AUTO_OFFLOAD_CTX above what the
+                                # final slot count holds, the sheet would advertise a context
+                                # the launched plan cannot serve, which is the same ceiling /
+                                # selection inversion #9492 removed, pointing the other way.
+                                max_available_ctx = _ceiling[0]
 
                     # Pass the final slot and micro-batch values instead of the defaults
                     # captured before slot reduction.
