@@ -3972,13 +3972,12 @@ def _overlay_source_spec(name: str, local_repo: str) -> str:
 def _rewrite_minimal_metadata(path: str, name: str) -> bool:
     """Replace an unparseable METADATA with the least pip needs to uninstall by RECORD.
 
-    Returns False when there is no RECORD to uninstall from, which is the one case
-    that has to fail closed: without it neither pip nor this installer knows which
-    files belong to the package, and laying a replacement over them would leave
-    whatever the new release no longer ships behind, still importable.
-
-    The version is taken from the directory name, which is where importlib's own
-    fallback reads it from when METADATA cannot be parsed.
+    Returns False when there is no RECORD to uninstall from, the one case that has
+    to fail closed: without it neither pip nor this installer knows which files
+    belong to the package, and laying a replacement over them would leave whatever
+    the new release no longer ships behind, still importable. The version is taken
+    from the directory name, where importlib's own fallback reads it from when
+    METADATA cannot be parsed.
     """
     # invalid_metadata_paths() hands back Path objects, so normalise before the
     # string work below.
@@ -4001,10 +4000,10 @@ class _QuarantinedMetadata:
     """Invalid metadata directories moved aside, restorable until committed.
 
     pip cannot parse an unreadable record: a non-UTF-8 METADATA makes pip list,
-    show and uninstall raise for the whole environment, so the record has to be
-    out of the way before pip runs at all. Deleting it outright is not an
-    option either, because staging the replacement can still fail and a package
-    whose only record was deleted is left with files and no install at all.
+    show and uninstall raise for the whole environment, so it has to be out of
+    the way before pip runs at all. Deleting it outright is not an option
+    either, because staging the replacement can still fail and a package whose
+    only record was deleted is left with files and no install at all.
     """
 
     def __init__(self) -> None:
@@ -4022,8 +4021,8 @@ class _QuarantinedMetadata:
 
         The rewrite has to happen before staging, and staging can still fail. Without
         this the original is gone and what remains is a synthetic record that parses:
-        the next run would see one readable record, decide there is nothing wrong, and
-        never attempt the payload repair that is still owed.
+        the next run would see one readable record, decide nothing is wrong, and never
+        attempt the payload repair that is still owed.
 
         An absent METADATA is nothing to back up rather than a failure. Recording it
         as absent still lets the rewrite proceed, so pip can uninstall that record by
@@ -4058,10 +4057,10 @@ class _QuarantinedMetadata:
         """Drop the backed-up METADATA copies, keeping the moved directories.
 
         Called once a staged reinstall has put the package back: the wheel's own
-        metadata is valid and authoritative, so copying the original over it would
-        re-break the package the rollback just repaired, and deleting it (where the
-        original was absent) would strip a record pip just wrote. The moved entries
-        stay, because a record pip cannot consume still has to go back as found.
+        metadata is authoritative, so copying the original over it would re-break the
+        package the rollback just repaired, and deleting it (where the original was
+        absent) would strip a record pip just wrote. The moved entries stay, because a
+        record pip cannot consume still has to go back as found.
         """
         self._copied.clear()
 
@@ -4151,17 +4150,16 @@ def _stage_replacement(name: str):
     """Build the wheel that will replace a package, before it is removed.
 
     Returns a directory to install from, or None when the package cannot be
-    obtained -- which must abort the repair while the existing install is still
-    intact. Uses pip directly, as the uninstall loop does.
+    obtained, which must abort the repair while the existing install is still
+    intact.
 
     pip wheel, not pip download: a source-only index leaves an sdist, and the
     install that follows runs --no-index, so its isolated build could not fetch
     setuptools and the package would stay uninstalled. Building here, while the
-    index is still reachable, keeps that install offline-safe.
-
-    pip and not uv because uv has no `wheel` subcommand, so uv's own index
-    variables and upload cutoff have to be handed across explicitly to keep the
-    provenance and the reproducibility policy the other installs run under.
+    index is still reachable, keeps that install offline-safe. pip and not uv
+    because uv has no `wheel` subcommand, so uv's own index variables and upload
+    cutoff have to be handed across explicitly to keep the provenance and the
+    reproducibility policy the other installs run under.
     """
     requirement, overrides, build_options = name, {}, []
     offline_local = USE_UV and _uv_is_offline() and _is_local_source(name)
@@ -4249,17 +4247,16 @@ def _repair_duplicate_core_metadata(
 ) -> bool:
     """Reinstall managed core packages whose metadata has more than one record.
 
-    Remove invalid records directly because pip cannot parse them. Then repeat
-    a dependency-free uninstall until no valid record remains, because pip's
+    Remove invalid records directly because pip cannot parse them, then repeat a
+    dependency-free uninstall until no valid record remains, because pip's
     force-reinstall only uninstalls the one record its finder selects. The
     requested source can then be installed without asking a resolver to replace
-    the existing torch build. The normal dependency pass still follows this
-    repair.
+    the existing torch build. The normal dependency pass still follows.
 
-    The replacement is fetched BEFORE anything is removed. The uninstall loop
-    deletes every record it finds, so an index that is unreachable at that
-    moment -- offline, a private package name, a mirror outage -- would
-    otherwise leave the venv with no unsloth at all and no way back.
+    The replacement is fetched BEFORE anything is removed: the uninstall loop
+    deletes every record it finds, so an index unreachable at that moment
+    (offline, a private package name, a mirror outage) would otherwise leave the
+    venv with no unsloth at all and no way back.
     """
     duplicates: list[tuple[str, int]] = []
     seen: set[str] = set()
@@ -4577,9 +4574,8 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
     Empty for anything that is not a `pip install` / `pip download` / `pip wheel` this
     module drives, every `uv` command included, so the "non-pinned installs inherit the
     caller env unchanged" contract holds on a machine with no hostile pip config.
-
     `wheel` is in that set because the duplicate-metadata repair stages its replacement
-    with `pip wheel`, and require-hashes applies there exactly as it does to install: an
+    with `pip wheel`, where require-hashes applies exactly as it does to install: an
     unpinned name is rejected before anything is built, so the repair would abort on a
     hardened machine and leave the conflict it exists to remove.
 
@@ -4603,18 +4599,18 @@ def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
 
     Returns (requirement, pip env overrides), or None when uv could not resolve it.
 
-    Staging has to run pip, because uv has no `wheel` subcommand. Reading uv's index
-    configuration out of the environment and translating it cannot be made correct: uv
-    also discovers uv.toml, pyproject.toml [tool.uv] and a user config, honours
-    UV_CONFIG_FILE, applies an implicit PyPI default, and resolves under an index-strategy
-    that pip has no equivalent for. Any of those missed means the repair can uninstall a
-    private build and reinstall the public package of the same name.
+    Staging has to run pip, because uv has no `wheel` subcommand. Translating uv's index
+    configuration out of the environment cannot be made correct: uv also discovers
+    uv.toml, pyproject.toml [tool.uv] and a user config, honours UV_CONFIG_FILE, applies
+    an implicit PyPI default, and resolves under an index-strategy pip has no equivalent
+    for. Any of those missed means the repair can uninstall a private build and reinstall
+    the public package of the same name.
 
     So uv is asked instead. `uv pip compile --emit-index-annotation` reports the exact
     index each package resolved from, under uv's own discovery, priority, strategy and
-    upload cutoff, and pip is then pointed at that one index with that one version. An
-    unreachable higher-priority index fails the compile rather than silently falling
-    through to a public fallback, which is the behaviour first-index exists to give.
+    upload cutoff, and pip is pointed at that one index with that one version. An
+    unreachable higher-priority index fails the compile rather than falling through to a
+    public fallback, which is the behaviour first-index exists to give.
     """
     cmd = [
         "uv",
@@ -4730,16 +4726,15 @@ def _pip_config_without_sources(directory: str) -> str:
 
     The environment overrides above cannot do this alone. Measured on pip 26.2: with
     `extra-index-url` in pip.conf, an empty PIP_EXTRA_INDEX_URL does NOT suppress it,
-    and pip contacts that index just as it does with the variable unset. So the config
-    has to go for this one command, or uv's chosen index is only one candidate among
-    the user's.
+    so the config has to go for this one command, or uv's chosen index is only one
+    candidate among the user's.
 
     Dropping it wholesale would take proxy, cert, client-cert and trusted-host with it,
-    and those are how a private index is reached in the first place, so uv would resolve
-    and pip would then fail to fetch. Everything except the four source keys is written
-    back instead. `pip config list` is asked rather than the files being located, so the
-    global, user and site files are already merged in pip's own order; `:env:` entries
-    are skipped because they come from the environment, which is handled above.
+    and those are how a private index is reached, so uv would resolve and pip would then
+    fail to fetch. Everything except the four source keys is written back instead.
+    `pip config list` is asked rather than the files located, so global, user and site
+    are merged in pip's own order; `:env:` entries are skipped as they come from the
+    environment, handled above.
     """
     path = os.path.join(directory, "pip.conf")
     try:

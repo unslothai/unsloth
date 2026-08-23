@@ -122,11 +122,10 @@ def _canonical(name: str) -> str:
 def _metadata_scan_paths() -> List[str]:
     """This interpreter's site-packages roots, excluding inherited sys.path entries.
 
-    Deduplicated by real path, not by string. purelib hardcodes `lib` while
-    platlib follows sys.platlibdir, so on a lib64 build (Fedora, SuSE) the two
-    are different strings for one directory -- venv creates lib64 as a symlink
-    to lib. Scanning both would report every installed package twice and turn a
-    healthy environment into a metadata conflict.
+    Deduplicated by real path, not by string: purelib hardcodes `lib` while
+    platlib follows sys.platlibdir, so a lib64 build (Fedora, SuSE) names one
+    directory twice through venv's lib64 -> lib symlink. Scanning both would
+    report every package twice and turn a healthy venv into a conflict.
     """
     import sysconfig
 
@@ -187,9 +186,8 @@ def installed_versions(dist_name: str) -> List[str]:
     """Every metadata version for one canonical distribution name.
 
     More than one answer is an inconsistent environment, not a choice between
-    equivalent records. importlib.metadata.version() returns whichever record
-    the filesystem finder happens to yield first, which can be a superseded
-    dist-info left behind by an interrupted uninstall.
+    equivalent records: importlib.metadata.version() returns whichever record
+    the finder yields first, which can be a dist-info left by a failed uninstall.
     """
     return [version for version, _path in _installed_metadata_records(dist_name)]
 
@@ -208,9 +206,8 @@ def pip_backup_metadata_paths(dist_name: str) -> List[Path]:
 
     pip renames the outgoing distribution to a `~` prefixed sibling while it
     installs the replacement, so a kill mid-operation keeps both. The METADATA
-    inside still names the real project, so the record counts as a duplicate
-    here, but pip calls the directory an invalid distribution and skips it:
-    `pip uninstall <name>` can never consume it.
+    still names the real project, so it counts as a duplicate here, but pip
+    calls the directory invalid: `pip uninstall <name>` can never consume it.
     """
     return [
         path
@@ -227,11 +224,10 @@ def metadata_conflict(versions: Sequence[str]) -> bool:
 def _metadata_is_inconsistent(dist_name: str, versions: Optional[List[str]] = None) -> bool:
     """Duplicated, unreadable, or standing on a record pip will not honour.
 
-    A sole `~` backup is the case a version count cannot see: it reports one
-    readable version, so nothing looks wrong, while pip and importlib both skip
-    the directory and the real package tree is usually gone with it. Left
-    unflagged the fast path calls the package up to date and skips the very
-    dependency pass that would reinstall it.
+    A sole `~` backup is the case a version count cannot see: one readable
+    version, so nothing looks wrong, while pip refuses the directory and the
+    package tree is usually renamed away with it. Left unflagged, the fast path
+    calls the package up to date and skips the pass that would reinstall it.
     """
     if versions is None:
         versions = installed_versions(dist_name)

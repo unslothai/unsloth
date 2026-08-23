@@ -123,7 +123,6 @@ def _venv_site_packages(root: Path) -> List[Path]:
     A venv upgraded in place can retain lib/pythonX.Y directories from older
     interpreters. Globbing all of them makes ordinary packages look duplicated,
     even though only the active interpreter's directory is importable.
-
     Deduplicated by real path: purelib hardcodes `lib` while platlib follows
     sys.platlibdir, so a lib64 build (Fedora, SuSE) names one directory twice
     through venv's lib64 -> lib symlink.
@@ -366,12 +365,10 @@ def _scan_paths() -> Dict[str, list]:
 
     Empty when the interpreter's site-packages cannot be resolved, which leaves
     the scan at its default of the whole sys.path: over-scanning is the safe
-    direction here, since the alternative is looking at nothing.
-
-    Deduplicated by real path, because purelib hardcodes `lib` while platlib
-    follows sys.platlibdir. On a lib64 build (Fedora, SuSE) those are two names
-    for one directory, and scanning both would report every installed package
-    as having duplicate metadata.
+    direction here, since the alternative is looking at nothing. Deduplicated
+    by real path, because purelib hardcodes `lib` while platlib follows
+    sys.platlibdir, so a lib64 build (Fedora, SuSE) names one directory twice
+    and scanning both reports every package as duplicated.
     """
     import sysconfig
 
@@ -455,13 +452,11 @@ def _installed_distribution_groups():
 
     Each record is (distribution, display name, readable). A nameless or
     unreadable METADATA still belongs to the distribution its directory is
-    named after, and still makes that distribution ambiguous -- which is what
-    install_manifest.installed_versions() reports for the same directory. It
-    is never file-checkable, so it is marked unreadable rather than trusted.
-
-    Readable means a name AND a version: install_manifest.metadata_conflict()
-    counts an empty version as inconsistent, so trusting such a record here
-    would leave the two checks disagreeing about the same directory.
+    named after, and still makes it ambiguous, which is what
+    install_manifest.installed_versions() reports for the same directory.
+    Readable means a name AND a version, since metadata_conflict() counts an
+    empty version as inconsistent: trusting such a record would leave the two
+    checks disagreeing about one directory.
     """
     from importlib.metadata import distributions
 
@@ -497,13 +492,11 @@ def installed_metadata_conflicts(
     """Distributions with multiple metadata records for one canonical name.
 
     A duplicate is an ambiguous install, even when both records name the same
-    version. importlib.metadata.version() chooses the first finder result rather
-    than identifying which RECORD owns the package tree, so none of the records
-    can safely drive the file-damage check until the package is reinstalled.
-
-    A single unreadable record counts too, matching
-    install_manifest.metadata_conflict(): pip cannot parse it either, so it must
-    be reported rather than silently skipped.
+    version: importlib.metadata.version() takes the first finder result rather
+    than identifying which RECORD owns the package tree, so none can drive the
+    file-damage check until the package is reinstalled. A single unreadable
+    record counts too, matching install_manifest.metadata_conflict(): pip
+    cannot parse it either, so it must be reported rather than skipped.
     """
     included = None if names is None else {_canonical(name) for name in names}
     excluded = {_canonical(name) for name in exclude_names}
@@ -535,41 +528,37 @@ def installed_metadata_conflicts(
 def damaged_installed_files(limit: int = 8) -> List[str]:
     """Installed files that are gone, or shorter than pip recorded.
 
-    pip treats a distribution with intact metadata as already satisfied, so an
-    update reinstalls nothing when a package's FILES are damaged: it reports
-    success and the backend then dies on import at boot. A missing-package check
-    cannot see this, because the damaged module still imports; the observed
-    failure was `cannot import name 'Depends' from 'fastapi'`, not a missing
-    fastapi. Comparing each RECORD entry against the filesystem does see it, and
-    since nothing is imported it costs well under a second even with torch
-    installed.
+    pip treats intact metadata as already satisfied, so an update reinstalls
+    nothing when a package's FILES are damaged: it reports success and the
+    backend dies on import at boot. A missing-package check cannot see this,
+    since the damaged module still imports; the observed failure was `cannot
+    import name 'Depends' from 'fastapi'`. Comparing RECORD against the
+    filesystem does see it, and imports nothing, so it costs under a second.
 
     Only shrinkage and disappearance count, and only for paths a single
     distribution claims. When two claim one path (descript-audio-codec ships a
     top-level tests/__init__.py that another package overwrites) whichever copy
-    landed is the one on disk, so its size says nothing about either RECORD --
-    in EITHER direction. Sizes are therefore compared after the whole scan, once
-    multiply-owned paths are known, rather than during it.
+    landed is the one on disk, so its size says nothing about either RECORD, in
+    EITHER direction. Sizes are therefore compared after the scan, once
+    multiply-owned paths are known.
 
     Rows that cannot be import-time damage are dropped up front, and a file our
-    own setup rewrites keeps its existence check but loses its size. The answer
+    own setup rewrites keeps its existence check but loses its size: the answer
     to a finding is "reinstall over the top", so a file no reinstall would
     change must not produce one. See _shared_non_runtime, _installer_rewritten.
 
-    Multiple metadata records for one canonical distribution name are excluded
-    entirely. None is authoritative: an older RECORD can legitimately name files
-    a newer wheel removed, while choosing the first or highest version also fails
-    after an interrupted upgrade or a deliberate downgrade. Callers surface that
-    separate condition through installed_metadata_conflicts().
+    Multiple records for one canonical name are excluded entirely, none being
+    authoritative: an older RECORD can legitimately name files a newer wheel
+    removed, while picking the first or highest also fails after an interrupted
+    upgrade or a downgrade. Callers surface that through
+    installed_metadata_conflicts().
 
-    Scanned over the interpreter's own site-packages rather than all of
-    sys.path. distributions() searches every sys.path entry, so a damaged
-    distribution reachable only through an inherited PYTHONPATH would otherwise
-    fail every update while sitting outside the installation, where neither
-    printed repair command can reach it.
-
-    RECORD is parsed here rather than read through Distribution.files, which
-    drops entries whose file no longer exists and so can never report a deletion.
+    Scanned over this interpreter's own site-packages, not all of sys.path: a
+    damaged distribution reachable only through an inherited PYTHONPATH would
+    otherwise fail every update from outside the installation, where neither
+    printed repair command reaches. RECORD is parsed directly rather than read
+    through Distribution.files, which drops entries whose file is gone and so
+    can never report a deletion.
 
     Describes this interpreter's environment. Callers that may be running
     outside the managed venv should check first; see install_state().
