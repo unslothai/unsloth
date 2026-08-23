@@ -17,6 +17,7 @@ import {
   useSidebarOrganizationStore,
 } from "@/features/chat";
 import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
+import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
 import { useUserProfileStore } from "@/features/profile";
 import { type TranslationKey, useT } from "@/i18n";
 import {
@@ -212,6 +213,14 @@ export function ChatTab() {
   const setPastedTextMinChars = useChatPreferencesStore(
     (state) => state.setPastedTextMinChars,
   );
+  // The platform's own paste-without-formatting chord, which the composer reads
+  // as "put it in the box" whatever this threshold says. macOS carries it on
+  // Option, that being the chord its Edit menu binds.
+  const macPlatform = isMacPlatform();
+  const plainPasteLabel = formatBindingLabel(
+    { code: "KeyV", mod: true, ctrl: false, shift: true, alt: macPlatform },
+    macPlatform,
+  );
 
   useEffect(() => {
     void hydratePersistedSettings();
@@ -341,7 +350,9 @@ export function ChatTab() {
         </SettingsRow>
         <SettingsRow
           label={t("settings.chat.pastedTextThreshold")}
-          description={t("settings.chat.pastedTextThresholdDescription")}
+          description={t("settings.chat.pastedTextThresholdDescription", {
+            shortcut: plainPasteLabel,
+          })}
         >
           <Select
             value={String(pastedTextMinChars)}
