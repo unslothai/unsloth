@@ -26224,7 +26224,8 @@ async def get_search_image_thumbnail(
     # Id-only on purpose: no URL parameter, so this cannot become a generic image proxy.
     from core.inference import search_images
 
-    if not search_images.IMAGE_ID_RE.match(image_id or ""):
+    # fullmatch, as the store does: `$` also matches before a trailing newline.
+    if not search_images.IMAGE_ID_RE.fullmatch(image_id or ""):
         raise HTTPException(status_code = 404, detail = "Image not found.")
     data = await asyncio.to_thread(search_images.thumbnail_bytes, image_id)
     if data is None:

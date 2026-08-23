@@ -43,6 +43,10 @@ _registry_lock = threading.Lock()
 # Bumped by clear_cache. A fetch that started before the clear must not publish its
 # thumbnail after it: the write is done under _registry_lock and skipped if this moved.
 _cache_generation = 0
+# Ids whose files a clear could not unlink -- on Windows another process holding the
+# JPEG open is enough. The cache-first read and the sidecar read both go around the
+# registry, so without this they would go on serving a picture the user had cleared.
+_cleared_unservable: set[str] = set()
 _fetch_slots = threading.BoundedSemaphore(_MAX_CONCURRENT_FETCHES)
 _inflight: dict[str, threading.Lock] = {}
 _inflight_lock = threading.Lock()
@@ -207,7 +211,7 @@ def is_image_entry(entry: object) -> bool:
     return (
         isinstance(entry, dict)
         and isinstance(entry.get("id"), str)
-        and bool(IMAGE_ID_RE.match(entry["id"]))
+        and bool(IMAGE_ID_RE.fullmatch(entry["id"]))
         and isinstance(entry.get("title"), str)
         and isinstance(entry.get("domain"), str)
         and isinstance(entry.get("source"), str)
@@ -376,9 +380,31 @@ def _fetch_thumbnail_bytes(url: str, website_policy: dict | None = None) -> byte
     return _encode_thumbnail(bytes(body))
 
 
+def _drop_if_cleared(image_id: str) -> bool:
+    """False while a clear's leftover files for this id are still on disk.
+
+    The unlink is retried on the way through: the process that had the JPEG open
+    has usually let go by the next request, and once both files are gone the id is
+    ordinary again -- nothing resolves it, so it 404s like any other unknown one.
+    """
+    with _registry_lock:
+        if image_id not in _cleared_unservable:
+            return True
+        for path in (_cache_path(image_id), _meta_path(image_id)):
+            try:
+                path.unlink(missing_ok = True)
+            except OSError:
+                return False
+        _cleared_unservable.discard(image_id)
+        return True
+
+
 def thumbnail_bytes(image_id: str) -> bytes | None:
     # Cache first: it survives the restart the in-memory registry does not.
     if not IMAGE_ID_RE.fullmatch(image_id or ""):
+        return None
+    # Ahead of that read and of the sidecar below, which both go around the registry.
+    if not _drop_if_cleared(image_id):
         return None
     path = _cache_path(image_id)
     try:
@@ -464,4 +490,8 @@ def clear_cache() -> None:
                 try:
                     path.unlink(missing_ok = True)
                 except OSError:
-                    pass
+                    # Still on disk, so remember the id and refuse to serve it until
+                    # the unlink does land. `.jpg`/`.json` share a stem; a `.tmp` was
+                    # never servable, and its stem carries the writer suffix.
+                    if pattern != "*.tmp":
+                        _cleared_unservable.add(path.stem)

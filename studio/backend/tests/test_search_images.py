@@ -54,6 +54,7 @@ RAW_IMAGES = [
 def _isolated_state(monkeypatch, tmp_path):
     monkeypatch.setattr(search_images, "_registry", {})
     monkeypatch.setattr(search_images, "_inflight", {})
+    monkeypatch.setattr(search_images, "_cleared_unservable", set())
     monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path)
 
 
@@ -926,3 +927,126 @@ def test_one_locked_thumbnail_does_not_strand_the_rest_of_the_clear(monkeypatch,
         if entry["id"] == entries[1]["id"]:
             continue
         assert search_images.thumbnail_bytes(entry["id"]) is None
+
+
+def test_a_thumbnail_the_clear_could_not_unlink_is_not_served(monkeypatch, tmp_path):
+    # Same Windows situation as above, from the reader's side: the cache-first read
+    # and the sidecar read both go around the registry, so the file the clear left
+    # behind would have gone on answering for a picture the user had cleared.
+    entry = search_images.register_images(RAW_IMAGES)[0]
+    monkeypatch.setattr(
+        tools, "_fetch_url_raw", lambda url, **kw: (None, _png_bytes((40, 30)), "image/png")
+    )
+    assert search_images.thumbnail_bytes(entry["id"]) is not None
+    stuck = tmp_path / f"{entry['id']}.jpg"
+    real_unlink = Path.unlink
+    held = [True]
+
+    def unlink(self, *args, **kwargs):
+        if self == stuck and held[0]:
+            raise OSError(13, "in use by another process")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    search_images.clear_cache()
+    assert stuck.is_file()
+    assert search_images.thumbnail_bytes(entry["id"]) is None
+    # Once the other process lets go, the retry reaps it and the id is ordinary again.
+    held[0] = False
+    assert search_images.thumbnail_bytes(entry["id"]) is None
+    assert not stuck.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_sidecar_the_clear_could_not_unlink_cannot_resurrect_an_id(monkeypatch, tmp_path):
+    # The sidecar carries the thumbnail and source URLs, so a surviving one is the
+    # half of the pair that matters: it is what lets a cleared id be fetched again.
+    entry = search_images.register_images(RAW_IMAGES)[0]
+    stuck = tmp_path / f"{entry['id']}.json"
+    real_unlink = Path.unlink
+
+    def unlink(self, *args, **kwargs):
+        if self == stuck:
+            raise OSError(13, "in use by another process")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    search_images.clear_cache()
+    assert stuck.is_file()
+    monkeypatch.setattr(
+        tools, "_fetch_url_raw", lambda url, **kw: (None, _png_bytes((40, 30)), "image/png")
+    )
+    assert search_images.thumbnail_bytes(entry["id"]) is None
+    assert not (tmp_path / f"{entry['id']}.jpg").exists()
+
+
+def test_the_route_rejects_an_id_with_a_trailing_newline():
+    # `$` matches before a trailing newline, so `.match` alone let one through to
+    # the store, which refused it with fullmatch. Refuse it at the door instead.
+    assert search_images.IMAGE_ID_RE.fullmatch("0123456789ab\n") is None
+    assert (
+        search_images.is_image_entry(
+            {"id": "0123456789ab\n", "title": "t", "domain": "d", "source": "https://example.com/"}
+        )
+        is False
+    )
+    app = FastAPI()
+    app.include_router(studio_router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "tester"
+    client = TestClient(app)
+    response = client.get("/api/inference/search-images/0123456789ab%0A")
+    assert response.status_code == 404
+
+
+def _fake_ddgs_with_text(monkeypatch):
+    class FakeDDGS:
+        def __init__(self, **_kwargs):
+            pass
+
+        def text(
+            self,
+            query,
+            max_results = 5,
+        ):
+            return [{"title": "AKC", "href": "https://akc.org/x", "body": "Breeds"}]
+
+        def images(
+            self,
+            query,
+            max_results = 5,
+            **kwargs,
+        ):
+            return RAW_IMAGES
+
+    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
+
+
+def test_a_failing_subject_lookup_does_not_discard_the_text_results(monkeypatch):
+    # The named-subject branch sits inside _web_search's own `except`, so a raise
+    # there came back as "Search failed: ..." with the results thrown away. The two
+    # sibling branches already swallow; this one has to as well.
+    _fake_ddgs_with_text(monkeypatch)
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(tools, "_image_search", boom)
+    result = tools._web_search(
+        "dog breeds", include_images = True, image_queries = ["Golden Retriever"]
+    )
+    assert "Title: AKC" in result
+    assert "Search failed" not in result
+    assert search_images.SEARCH_IMAGES_SENTINEL not in result
+
+
+def test_a_failing_image_only_lookup_still_returns_a_string(monkeypatch):
+    # This branch is evaluated before the try, so it carries its own guard:
+    # execute_tool answers with a string for every input the model can send.
+    _fake_ddgs_with_text(monkeypatch)
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(tools, "_image_search", boom)
+    result = tools._web_search("", include_images = True, image_queries = ["Golden Retriever"])
+    assert result == "No images found for: Golden Retriever"

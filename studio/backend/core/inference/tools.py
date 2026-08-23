@@ -11953,6 +11953,25 @@ def _search_failure_message(exc: BaseException, timeout: int) -> str:
     return f"Search failed: {exc}"
 
 
+def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy) -> "str | None":
+    """``_image_search`` that reports a failure as None instead of raising.
+
+    Every caller sits inside ``_web_search``'s own ``except``, which would turn a
+    raise into "Search failed: ..." and throw away the text results the search had
+    already found. A picture is a garnish: it must not become the answer.
+    """
+    try:
+        return _image_search(
+            subjects,
+            timeout = timeout,
+            cancel_event = cancel_event,
+            website_policy = website_policy,
+        )
+    except Exception as exc:  # noqa: BLE001 - a garnish must not become the answer
+        logger.debug("image lookup failed (%s)", type(exc).__name__)
+        return None
+
+
 def _empty_result_with_requested_images(
     empty_text: str, subjects: list, include_images: bool, timeout, cancel_event, website_policy
 ) -> str:
@@ -11970,17 +11989,8 @@ def _empty_result_with_requested_images(
         return empty_text + "\n\n---\n\n" + IMAGE_SEARCH_DISABLED
     if cancel_event is not None and cancel_event.is_set():
         return empty_text
-    try:
-        found = _image_search(
-            subjects,
-            timeout = timeout,
-            cancel_event = cancel_event,
-            website_policy = website_policy,
-        )
-    except Exception as exc:  # noqa: BLE001 - a garnish must not become the answer
-        # One caller is already inside an `except`; raising from here would replace a
-        # clean "No results found." with a traceback out of _web_search.
-        logger.debug("image lookup after an empty search failed (%s)", type(exc).__name__)
+    found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
+    if found is None:
         return empty_text
     return empty_text + "\n\n---\n\n" + found
 
@@ -12018,12 +12028,12 @@ def _web_search(
     if subjects and not (query and query.strip()):
         if not include_images:
             return IMAGE_SEARCH_DISABLED
-        return _image_search(
-            subjects,
-            timeout = timeout,
-            cancel_event = cancel_event,
-            website_policy = website_policy,
-        )
+        # Ahead of the try below, so this one has to carry its own guard: execute_tool
+        # returns a string for every input, and a raise here would escape _web_search.
+        found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
+        if found is None:
+            return "No images found for: " + ", ".join(subjects)
+        return found
 
     if not query or not query.strip():
         return "No query provided."
@@ -12087,12 +12097,9 @@ def _web_search(
         )
         if include_images and subjects:
             # The model named what it will show: one picture per subject, no generic pile.
-            text += "\n\n---\n\n" + _image_search(
-                subjects,
-                timeout = timeout,
-                cancel_event = cancel_event,
-                website_policy = website_policy,
-            )
+            found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
+            if found is not None:
+                text += "\n\n---\n\n" + found
         elif include_images:
             text += _web_search_images_suffix(
                 client,
