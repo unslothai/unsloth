@@ -2763,7 +2763,9 @@ def _generation_prompt_opens_think(
     # renders share is history. On a template that ignores the flag they match and nothing is
     # prefilled, which is the right answer for one that opens no block.
     body = _render_generation_prompt_probe(*args, messages, generation_prompt = False)
-    prefix = rendered[len(os.path.commonprefix((rendered, body))):] if body is not None else rendered
+    prefix = (
+        rendered[len(os.path.commonprefix((rendered, body))) :] if body is not None else rendered
+    )
     # ``<think>`` is not a substring of ``</think>``, so a later open tag means it stays open.
     return prefix.rfind("<think>") > prefix.rfind("</think>")
 
@@ -15415,10 +15417,13 @@ async def openai_chat_completions(
     # the backend renders (mlx_inference prepends system_prompt to chat_messages), so a
     # content-part array the probe left unflattened cannot read differently from generation.
     try:
-        _sf_probe_messages = jsonable_encoder(
-            ([{"role": "system", "content": system_prompt}] if system_prompt else [])
-            + chat_messages
-        ) or None
+        _sf_probe_messages = (
+            jsonable_encoder(
+                ([{"role": "system", "content": system_prompt}] if system_prompt else [])
+                + chat_messages
+            )
+            or None
+        )
     except Exception:
         _sf_probe_messages = None
 
