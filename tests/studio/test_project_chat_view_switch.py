@@ -2653,10 +2653,10 @@ def test_back_from_a_nonce_chats_own_row_keeps_that_chat():
         }));
         """,
     )
-    assert out["mainThreadId"] == out["started"], (
-        "Back must leave the user in the conversation they came back to, not a blank chat"
-    )
-    assert out["mintedOnReturn"] == 0, (
-        "the remembered chat was already current, so nothing needed opening at all"
-    )
+    assert (
+        out["mainThreadId"] == out["started"]
+    ), "Back must leave the user in the conversation they came back to, not a blank chat"
+    assert (
+        out["mintedOnReturn"] == 0
+    ), "the remembered chat was already current, so nothing needed opening at all"
     assert out["unhandled"] == 0
