@@ -523,9 +523,10 @@ KERNELS: tuple[tuple[str, ...], ...] = (("canary", "control", "gptoss", "frontie
 # The SMALL model first, which inverts what looks obvious. gpt-oss is bigger,
 # but it is wanted by ONE leg whose own setup does not finish until ~160s, so a
 # fetch that lands by then is early enough. Qwen2.5-0.5B gates THREE legs and
-# costs ~20s. Fetching the big one first pushes the small one out past the
-# moment the first leg is ready, delaying three legs to give one a head start
-# it did not need.
+# the first of them starts at t=0, so it is the only fetch with no lead time in
+# front of it at all. Fetching the big one first pushes the small one out past
+# the moment the first leg is ready, delaying three legs to give one a head
+# start it did not need.
 #
 # These must match what the legs LOAD, which is not the same thing as what
 # they ASK FOR, and the difference cost a whole prefetch once already. The

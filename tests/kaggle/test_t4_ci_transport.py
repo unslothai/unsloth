@@ -377,17 +377,19 @@ def test_a_seeds_seat_is_taken_before_any_worker_can_look_at_the_card(tmp_path):
     already finished and the test goes green on a schedule that never happened.
     """
     driven = _drive_packed(
-        tmp_path, ALL_FOUR, gpus = 2,
+        tmp_path,
+        ALL_FOUR,
+        gpus = 2,
         durations = {
-            "t4_canary.ipynb": 2.0, "t4_control.ipynb": 2.0,
-            "t4_frontier.ipynb": 0.2, "t4_gptoss.ipynb": 7.0,
+            "t4_canary.ipynb": 2.0,
+            "t4_control.ipynb": 2.0,
+            "t4_frontier.ipynb": 0.2,
+            "t4_gptoss.ipynb": 7.0,
         },
     )
     stub = driven["stub"]
     for card, peak in stub.peak_card_gb.items():
-        assert peak <= 13.0, (
-            f"card {card} peaked at {peak} GB. Overlaps: {stub.same_card_overlaps}"
-        )
+        assert peak <= 13.0, f"card {card} peaked at {peak} GB. Overlaps: {stub.same_card_overlaps}"
     # gptoss is 12.78 of a 13.0 budget, so it can only ever run alone. Asserted
     # on the overlap record as well as the sum: a VRAM table that silently
     # under-priced it would satisfy the sum check while the card burned.
@@ -2392,9 +2394,9 @@ def test_the_prefetch_list_matches_the_models_the_legs_actually_load():
         defaults.add(found[0])
 
     loaded = {LOAD_REDIRECTS.get(name, name) for name in defaults}
-    assert set(PREFETCH_REPOS) == loaded, (
-        f"prefetching {sorted(set(PREFETCH_REPOS))} but the legs load {sorted(loaded)}"
-    )
+    assert (
+        set(PREFETCH_REPOS) == loaded
+    ), f"prefetching {sorted(set(PREFETCH_REPOS))} but the legs load {sorted(loaded)}"
 
     # LOAD_REDIRECTS is only as good as its agreement with the payload. If the
     # redirect ever stops being real, this list must stop claiming it -- or the
@@ -2462,7 +2464,8 @@ def test_a_repos_allow_patterns_reach_the_hub_and_a_bare_repo_stays_unfiltered()
     try:
         source = prefetch.prefetch_cell(
             [("big/gguf", ["*UD-Q4_K_XL*"]), "small/model"],
-            attempt_timeout = 2, total_timeout = 5,
+            attempt_timeout = 2,
+            total_timeout = 5,
         )
         exec(compile(source, "<prefetch>", "exec"), {"__name__": "prefetch"})
     finally:
@@ -2580,9 +2583,7 @@ def test_the_studio_prefetch_follows_the_dispatched_models():
     flat = [entry[0] if isinstance(entry, tuple) else entry for entry in defaults]
     payload = (SMOKE_DIR.parent / "studio_gpu" / "run_studio_gpu.py").read_text(encoding = "utf-8")
     for flag in ("--chat-model", "--train-model", "--chat-variant"):
-        declared = re.search(
-            rf'ap\.add_argument\("{flag}", default = "([^"]+)"\)', payload
-        )
+        declared = re.search(rf'ap\.add_argument\("{flag}", default = "([^"]+)"\)', payload)
         assert declared, f"{flag} default not found in run_studio_gpu.py"
         if flag == "--chat-variant":
             assert defaults[0][1] == [f"*{declared.group(1)}*"], defaults[0]
