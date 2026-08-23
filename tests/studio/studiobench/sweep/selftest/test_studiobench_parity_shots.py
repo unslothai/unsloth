@@ -127,7 +127,7 @@ def test_a_verdict_with_no_stable_difference_produces_no_pictures(tmp_path, caps
     out = tmp_path / "out"
     assert S.build(result, null, shots, out) == 0
     assert list(out.glob("*.png")) == []
-    assert "no STABLE differences" in capsys.readouterr().out
+    assert "no corroborated stable difference" in capsys.readouterr().out
 
 
 # ── the pair has to be a pair ────────────────────────────────────────
@@ -310,3 +310,98 @@ def test_the_workflow_actually_runs_the_prune_it_documents():
     ).read_text(encoding = "utf-8")
     prune, upload = text.index("--prune"), text.index("- name: Upload the payload")
     assert prune < upload, "the prune has to happen BEFORE the upload it exists to shrink"
+
+
+# ── the evidence has to cover every way the verdict goes red ─────────
+
+
+def _one_sided_rows(action_name: str, reps: tuple[str, ...], shots: Path) -> list[dict]:
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            f = f"{action_name}_{rep}_{arm}.png"
+            png(shots / f, 200, 120, (10, 60, 10) if arm == "base" else (60, 10, 10))
+            row = action(f"r100K.{arm}.{rep}", action_name, "SAME", f)
+            if arm == "treatment" and rep in reps:
+                row["ran"] = False
+                row["reason"] = "the control never became visible"
+                row["slot_missed"] = False
+            rows.append(row)
+            rows.append({"row_type": "cell", "cell_id": f"r100K.{arm}.{rep}", "completed": True})
+    return rows
+
+
+def test_a_control_that_only_one_arm_can_operate_is_illustrated(tmp_path, capsys):
+    # The regression shape that leaves NO digest to differ: a control that stops opening records
+    # `ran: false`, not a different hash. `ui_parity.report` exits 1 on it, and the arm-side prune
+    # keeps its shots for exactly this step -- but the selector only accepted DIFFER, so a red
+    # verdict caused by it published "no STABLE differences" and no composite at all.
+    shots = tmp_path / "shots"
+    result = write(tmp_path, "result", _one_sided_rows("settings", ("rep0", "rep1"), shots))
+    null = quiet_null(tmp_path, "null", ["settings"])
+    out = tmp_path / "out"
+    assert S.build(result, null, shots, out, min_reps = 2) == 0
+    names = sorted(p.name for p in out.glob("*composite*"))
+    assert any("settings" in n for n in names), names
+    assert "no corroborated" not in capsys.readouterr().out
+
+
+def test_a_one_arm_miss_in_one_repetition_of_two_is_not_illustrated(tmp_path):
+    # The same bar the verdict uses. A contended runner can lose one arm's slot once, and that
+    # does not red the job -- so putting a picture of it beside the change that did would bury
+    # the finding the artifact exists to show.
+    shots = tmp_path / "shots"
+    result = write(tmp_path, "result", _one_sided_rows("settings", ("rep0",), shots))
+    null = quiet_null(tmp_path, "null", ["settings"])
+    out = tmp_path / "out"
+    assert S.build(result, null, shots, out, min_reps = 2) == 0
+    assert not list(out.glob("*composite*"))
+
+
+def test_a_superseded_attempts_screenshot_is_not_shown_for_the_retrys_verdict(tmp_path):
+    # `--resume` re-runs an A/B pair WHOLE, so an arm that already succeeded is re-run under the
+    # same deterministic cell id. If the retry captures the differing digest but its screenshot
+    # fails, a raw scan of the append-only payload keeps the DEAD attempt's `shot` -- because the
+    # newer row carries none -- and the artifact pairs the retry's verdict with a picture of a
+    # page that is not the one that turned the gate red. A missing half is a caption `build`
+    # already prints; a stale half is a lie.
+    shots = tmp_path / "shots"
+    png(shots / "old.png", 200, 120, (10, 60, 10))
+    png(shots / "base.png", 200, 120, (10, 60, 10))
+    rows = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        b = action(f"r100K.base.{rep}", "settings", "A", "base.png")
+        b["session_id"] = "s1"
+        rows.append(b)
+        rows.append({"row_type": "cell", "cell_id": f"r100K.base.{rep}", "completed": True,
+                     "session_id": "s1"})
+        old = action(f"r100K.treatment.{rep}", "settings", "A", "old.png")
+        old["session_id"] = "s1"
+        rows.append(old)
+        rows.append({"row_type": "cell", "cell_id": f"r100K.treatment.{rep}", "completed": True,
+                     "session_id": "s1"})
+    # The retry: a DIFFERENT digest, and no shot because the capture failed.
+    for rep in ("rep0", "rep1"):
+        new = action(f"r100K.treatment.{rep}", "settings", "B", None)
+        new["session_id"] = "s2"
+        rows.append(new)
+    result = write(tmp_path, "result", rows)
+    index = S.shot_index(S.shards_of(str(result)))
+    assert ("r100K.treatment.rep0", "settings", "treatment") not in index, index
+    assert ("r100K.base.rep0", "settings", "base") in index
+    null = quiet_null(tmp_path, "null", ["settings"])
+    out = tmp_path / "out"
+    assert S.build(result, null, shots, out, min_reps = 2) == 0
+    assert not list(out.glob("*composite*")), "stale evidence was published for the retry"
+
+
+def test_the_workflow_runs_the_gate_on_the_routes_the_measurement_depends_on():
+    # A gate that does not fire on a change that can move what it measures is not measuring it.
+    # chat-api.ts sends the scripted turn to /api/inference/chat/completions, and lifecycle.py
+    # logs each arm in through /api/auth/login and /api/auth/change-password before any scene
+    # renders -- so both can alter, empty, or block the measured DOM on a PR with no frontend file.
+    text = (
+        Path(__file__).resolve().parents[5] / ".github/workflows/studiobench-ui-parity.yml"
+    ).read_text(encoding = "utf-8")
+    for route in ("inference.py", "auth.py", "chat_history.py", "providers.py"):
+        assert f"studio/backend/routes/{route}" in text, route
