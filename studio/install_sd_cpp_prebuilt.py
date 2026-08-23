@@ -601,7 +601,9 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
         parent = os.path.dirname(str(dest))
         while parent != str(base) and parent.startswith(str(base)):
             if parent in link_dests:
-                raise RuntimeError(f"unsafe path in archive: {filename!r} is under a symlink member")
+                raise RuntimeError(
+                    f"unsafe path in archive: {filename!r} is under a symlink member"
+                )
             parent = os.path.dirname(parent)
     # Chains are normal (libwebp.so -> libwebp.so.7 -> libwebp.so.7.2.0) but must terminate:
     # a cycle installs a library nothing can read, so every load would reinstall it again.
