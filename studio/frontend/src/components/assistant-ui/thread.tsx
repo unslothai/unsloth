@@ -141,8 +141,10 @@ import {
   recordAutoContinue,
   shouldAutoContinueMessage,
 } from "@/features/chat/utils/continuation";
-import { issuedRunFor } from "@/features/chat/utils/auto-continue-issued-run";
-import { holdAutoContinueRun } from "@/features/chat/utils/auto-continue-run-keeper";
+import {
+  holdAutoContinueRun,
+  watchAutoContinueRun,
+} from "@/features/chat/utils/auto-continue-run-keeper";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
@@ -6679,15 +6681,18 @@ const ContinueMessageBarForLastMessage: FC = () => {
     return index > 0 ? thread.messages[index - 1].id : null;
   });
 
-  const startContinuation = useCallback(() => {
+  // Hands the started run back to its caller, untyped. `startRun` is declared to return `void`
+  // and returns the roundtrip's promise, which is the only handle identified with THIS run and
+  // so the only thing that can say it has ended rather than that some run on this thread has.
+  const startContinuation = useCallback((): unknown => {
     const messages = aui.thread().getState().messages;
     const index = messages.findIndex((message) => message.id === messageId);
     if (index < 0) {
-      return;
+      return undefined;
     }
     // Sibling of the truncated turn, so the branch picker can still reach the partial.
     const parent = index > 0 ? messages[index - 1].id : null;
-    aui.thread().startRun({
+    return aui.thread().startRun({
       parentId: parent,
       runConfig: {
         custom: {
@@ -6736,11 +6741,6 @@ const ContinueMessageBarForLastMessage: FC = () => {
   // passes the adapter as `unstable_threadId` and the key the run appears under in
   // `runningByThreadId`, and an uninitialized thread has an `id` but no `remoteId`.
   const runThreadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
-  // The local spelling of the same thread. `remoteId` above is the key the RUN files itself
-  // under and so the one the lease belongs to; this is the key the thread list files the live
-  // runtime under, so it is the one to look the runtime up by first. Both are handed over
-  // because `getById` throws rather than answering for an id it cannot resolve.
-  const localThreadId = useAuiState(({ threadListItem }) => threadListItem.id);
   const autoContinuing =
     !claimHeldElsewhere &&
     resumable &&
@@ -6801,21 +6801,7 @@ const ContinueMessageBarForLastMessage: FC = () => {
         // Held for as long as THIS thread's run generates, wherever the user navigates
         // to meanwhile. The bar cannot hold it itself: the continuation's sibling becomes
         // the selected branch and unmounts this component almost at once.
-        //
-        // The runtime handle goes with it, because this is the last place that has one: the
-        // keeper runs in module scope and the only way to the runtime is through `aui`, which
-        // is a hook. It is what tells a preflight the user STOPPED from one that is merely
-        // slow -- an aborted run raises no failure, by design, since the abort is what was
-        // asked for -- and without it that hold renewed its lease until the tab closed and
-        // every other tab refused the message for just as long.
-        holdAutoContinueRun(
-          messageId,
-          runThreadId,
-          issuedRunFor(aui.threads().__internal_getAssistantRuntime?.(), [
-            localThreadId,
-            runThreadId,
-          ]),
-        );
+        holdAutoContinueRun(messageId, runThreadId);
         // Started whether or not this component is still mounted: the run belongs to the
         // thread, not to the bar, and a claim taken and then dropped would leave the
         // message continued by nobody.
@@ -6823,7 +6809,12 @@ const ContinueMessageBarForLastMessage: FC = () => {
         // Recorded BEFORE the run, so a round that produces nothing still spends its
         // budget instead of re-firing this effect forever.
         recordAutoContinue(parentId);
-        startContinuation();
+        // The run's own promise is what ends the hold if this preflight is stopped: an
+        // aborted run raises no failure, by design, since the abort is what was asked for.
+        // Taken from the run itself rather than from anything per-thread, because the next
+        // round is claimed while the previous one is still winding down and only the promise
+        // says WHICH run ended.
+        watchAutoContinueRun(messageId, runThreadId, startContinuation());
         return;
       }
       // `skipped` is this tab's own duplicate call, where the run is coming from the
@@ -6842,7 +6833,6 @@ const ContinueMessageBarForLastMessage: FC = () => {
     messageId,
     startContinuation,
     runThreadId,
-    localThreadId,
   ]);
 
   // Newest turn only: appending to an older one would strand the replies after it.

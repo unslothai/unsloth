@@ -12,9 +12,9 @@
  */
 
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import { issuedRunFrom } from "./auto-continue-issued-run";
 import {
   AUTO_CONTINUE_LEASE_RENEW_MS,
-  type AutoContinueIssuedRun,
   createAutoContinueLeaseKeeper,
 } from "./continuation";
 import { isImageGateRunOnly } from "./image-input-support";
@@ -100,23 +100,15 @@ let listening = false;
  * remote id yet (the first turn of a New Chat) files its run under a shared placeholder
  * that is not safe to watch, so nothing is held for it and its lease simply runs out its
  * TTL. That is the same outcome as a tab closing mid-run, and it is never an early release.
- *
- * `issued` is the runtime's own view of that run, built by `issuedRunFor` from the ids the
- * caller has in hand. It is what ends a hold whose preflight the user STOPPED, which nothing
- * else reports: the abort is what was asked for, so the adapter wrapper raises no failure and
- * the stream flag this file watches never moved in either direction. Optional, and its absence
- * only restores the earlier behaviour, where such a hold is kept and renewed like any other
- * that has not armed.
  */
 export function holdAutoContinueRun(
   messageId: string,
   threadId: string | undefined,
-  issued?: AutoContinueIssuedRun,
 ): void {
   if (!threadId) {
     return;
   }
-  keeper.hold(messageId, threadId, issued);
+  keeper.hold(messageId, threadId);
   // Registered with the first hold rather than at import, so a module nobody continues in
   // adds no listener. Once, and never removed: it is one handler for the tab.
   if (!listening && typeof window !== "undefined") {
@@ -124,4 +116,30 @@ export function holdAutoContinueRun(
     window.addEventListener(PROMPT_QUEUE_RUN_FAILED_EVENT, onRunFailed);
   }
   timer ??= setInterval(tick, AUTO_CONTINUE_LEASE_RENEW_MS);
+}
+
+/**
+ * Tie the hold just taken for `messageId` to the run the bar has just issued for it.
+ *
+ * `started` is whatever `startRun` handed back, passed through untyped: the runtime declares
+ * `void` and returns the roundtrip's promise, and `issuedRunFrom` is what decides which of
+ * those it actually got.
+ *
+ * This is the only thing that ends a hold whose preflight the user STOPPED. That run raises no
+ * failure -- the abort is what was asked for, so the adapter wrapper skips its notice on
+ * purpose -- and it never reached the stream flag either, so without this the hold renewed its
+ * lease until the tab closed and every other tab refused the message for just as long.
+ *
+ * Nothing here reads a clock. A preflight that is merely long leaves the promise pending, and
+ * a pending promise settles nothing, which is what the absence of an arming deadline is for.
+ */
+export function watchAutoContinueRun(
+  messageId: string,
+  threadId: string | undefined,
+  started: unknown,
+): void {
+  if (!threadId) {
+    return;
+  }
+  keeper.settleOn(messageId, threadId, issuedRunFrom(started));
 }
