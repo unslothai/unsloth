@@ -1185,6 +1185,12 @@ class TestSplitRateRecheckAfterSelection:
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         # Explicit-context pin and the reduced-slot retry both pass the step.
         assert load.count("split_extra_bytes=_cc_split_extra(effective_ctx)") == 2
+        # The post-reduction context re-fit is a third call site. It spells the
+        # argument `ctx` because it re-prices per candidate context rather than
+        # off the one the reduction started from, so it does not add to the count
+        # above -- but it is not exempt from the step, and a future rename that
+        # collapsed it into the same spelling has to update the 2 as well.
+        assert load.count("split_extra_bytes=_cc_split_extra(ctx),") == 1
         assert "gpu_indices,use_fit=self._select_gpus_split_aware(" in load
         # The step rides _cc_bytes' pipelining gate, so it is 0 when llama.cpp declines.
         assert "returnmax(0,_cc_bytes(ctx,2)//2-_cc_bytes(ctx))" in load
