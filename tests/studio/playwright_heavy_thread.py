@@ -1207,7 +1207,10 @@ TABLE_ROWS = (
     ("highlighted tokens", lambda r: r["counts"]["highlightedTokens"]),
     ("fence blocks", lambda r: r["counts"].get("fenceBlocks", 0)),
     ("deferred fences", lambda r: r["counts"].get("deferredFences", 0)),
-    ("mounted but unhighlighted fences", lambda r: r["counts"].get("unhighlightedMountedFences", 0)),
+    (
+        "mounted but unhighlighted fences",
+        lambda r: r["counts"].get("unhighlightedMountedFences", 0),
+    ),
     ("tool parts", lambda r: r["counts"]["toolParts"]),
     ("collapsible tool outputs", lambda r: r["counts"]["collapsibleOutputs"]),
     ("code execution panes", lambda r: r["counts"]["codeExecutionPanes"]),
