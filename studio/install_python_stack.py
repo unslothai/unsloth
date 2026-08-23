@@ -4130,14 +4130,12 @@ def _stage_replacement(name: str):
     requirement, overrides, build_options = name, {}, []
     offline_local = USE_UV and _uv_is_offline() and _is_local_source(name)
     if offline_local:
-        # The checkout itself needs no network, but pip builds it in an isolated
-        # environment and fetches the build backend for that, which UV_OFFLINE does not
-        # reach. Measured: an isolated build of a local project with no index reachable
-        # fails at "installing build dependencies", and this repository pins its build
-        # requirements exactly, so they would be fetched unless already cached. Build
-        # against the interpreter's own backend instead and forbid the index outright,
-        # so no-network means no network. If the backend is not importable the build
-        # fails and the installation is left intact.
+        # The checkout needs no network, but pip's isolated build fetches the build
+        # backend, which UV_OFFLINE does not reach: measured, an isolated build with no
+        # index fails at "installing build dependencies", and this repo pins those
+        # exactly. Build against the interpreter's own backend and forbid the index, so
+        # no-network means no network. An unimportable backend fails the build and
+        # leaves the installation intact.
         build_options = ["--no-build-isolation"]
         overrides = {"PIP_NO_INDEX": "1"}
     if USE_UV and _uv_is_offline() and not _is_local_source(name):
@@ -4242,9 +4240,9 @@ def _repair_duplicate_core_metadata(
     repaired: list[str] = []
     staging_dirs: list[str] = []
     # One quarantine per package, discarded as soon as that package is back in place.
-    # A single one shared across both would, when a later package fails, restore the
-    # first package's stale record on top of the install that has already replaced it:
-    # the conflict returns, and its old RECORD then describes a payload that is gone.
+    # Sharing one would, on a later package's failure, restore the first package's stale
+    # record over the install that replaced it: the conflict returns, and its old RECORD
+    # then describes a payload that is gone.
     quarantine = _QuarantinedMetadata()
     succeeded = False
     try:
@@ -4252,12 +4250,11 @@ def _repair_duplicate_core_metadata(
             quarantine = _QuarantinedMetadata()
             _step(_LABEL, f"duplicate metadata for {name} detected; reinstalling it", _dim)
             invalid_paths = install_manifest.invalid_metadata_paths(name)
-            # Give pip a parseable METADATA beside every intact RECORD, so it can
-            # uninstall those records normally and remove exactly the files they list.
-            # Quarantining one instead drops its RECORD on the floor: the uninstall
-            # loop then only removes what the readable records claim, and a module
-            # that exists solely in the older release stays on disk and importable
-            # while the repair reports success.
+            # Give pip a parseable METADATA beside every intact RECORD so it can
+            # uninstall them normally, removing exactly the files they list.
+            # Quarantining one instead drops its RECORD, so the uninstall loop removes
+            # only what the readable records claim and a module existing solely in the
+            # older release stays on disk and importable while the repair reports success.
             unrewritable = [
                 path
                 for path in invalid_paths
@@ -4600,11 +4597,10 @@ def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
             option, _, value = line.partition(" ")
             build_options.extend((option, value.strip()))
         elif line.startswith("# from "):
-            # The annotation names the index this package actually came from, which is
-            # the one to reproduce. It is not usable as written: measured on uv 0.10.7,
-            # userinfo is stripped from the annotation while the emitted index lines
-            # keep it, so it is matched back to the emitted URL that carries the
-            # credentials. A private index would answer 401 otherwise.
+            # Names the index this package came from, the one to reproduce, but is not
+            # usable as written: measured on uv 0.10.7 the annotation drops userinfo
+            # while the emitted index lines keep it, so it is matched back to the
+            # emitted URL. A private index would answer 401 otherwise.
             origin = line[len("# from ") :].strip() or origin
         elif line and not line.startswith(("#", "-")):
             # uv continues a hashed pin onto the following lines with a backslash.
