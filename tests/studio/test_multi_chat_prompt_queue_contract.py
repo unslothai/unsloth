@@ -883,12 +883,12 @@ def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
     )
 
     # The pane knows it is hidden.
-    assert "backgrounded: boolean;" in autosave, (
-        "ThreadBackendAutosave has to be told, like every other sync component here"
-    )
-    assert "backgrounded={backgrounded}" in RUNTIME_PROVIDER, (
-        "and the provider has to pass it, or the prop is inert"
-    )
+    assert (
+        "backgrounded: boolean;" in autosave
+    ), "ThreadBackendAutosave has to be told, like every other sync component here"
+    assert (
+        "backgrounded={backgrounded}" in RUNTIME_PROVIDER
+    ), "and the provider has to pass it, or the prop is inert"
 
     # Read at publish time, not captured when the save was queued: the save that publishes
     # may have been scheduled while the pane was on screen and resolve long after Compare
@@ -897,9 +897,9 @@ def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
     assert "backgroundedRef.current = backgrounded;" in autosave
 
     # The publication is what is gated -- and ONLY the publication.
-    assert 'if (modelType === "base" && !pairId && !backgroundedRef.current) {' in autosave, (
-        "the active-thread publication must be gated on the pane being visible"
-    )
+    assert (
+        'if (modelType === "base" && !pairId && !backgroundedRef.current) {' in autosave
+    ), "the active-thread publication must be gated on the pane being visible"
     publish_at = autosave.index("store.setActiveThreadId(remoteId)")
     guard_at = autosave.index("!backgroundedRef.current")
     assert guard_at < publish_at, "the guard has to come before the write it guards"
@@ -911,6 +911,4 @@ def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
         "await syncExportedRepositoryToBackend(remoteId, exported)",
     ):
         assert call in autosave, f"{call} must still run while backgrounded"
-        assert autosave.index(call) < guard_at, (
-            f"{call} must not sit behind the visibility guard"
-        )
+        assert autosave.index(call) < guard_at, f"{call} must not sit behind the visibility guard"

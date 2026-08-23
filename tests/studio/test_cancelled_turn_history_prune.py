@@ -33,9 +33,7 @@ CODEX = source_path("studio/frontend/src/features/chat/codex-reasoning.ts")
 CONTINUATION = source_path("studio/frontend/src/features/chat/utils/continuation.ts")
 # sanitizeAssistantReplayText strips web-search image tokens before replay (#9490), so
 # the real stripper has to come along or the slice references a name that is not there.
-SEARCH_IMAGES = source_path(
-    "studio/frontend/src/features/chat/search-images/search-images.ts"
-)
+SEARCH_IMAGES = source_path("studio/frontend/src/features/chat/search-images/search-images.ts")
 
 TEMP = WORKDIR / "temp" / "cancelled_turn_history_prune"
 

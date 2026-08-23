@@ -1989,9 +1989,7 @@ def test_two_saved_switches_in_flight_are_both_corrected():
         }));
         """,
     )
-    assert out["savedSwitches"] == ["thread-a", "thread-b"], (
-        "both saved switches really started"
-    )
+    assert out["savedSwitches"] == ["thread-a", "thread-b"], "both saved switches really started"
     assert out["afterB"] != "thread-b", "the first arrival is corrected, as before"
     assert out["mainThreadId"] != "thread-a", (
         "the second stale arrival must be corrected too, or the visible project landing is "
@@ -2023,12 +2021,13 @@ def test_outstanding_claims_stay_bounded():
     )
     assert out["started"] == 40, "every switch really was started"
     assert len(out["claims"]) == 16, "the claim list is capped"
-    assert out["claims"][-1] == {"id": "thread-39", "settled": False}, (
-        "and it keeps the newest, dropping the oldest"
-    )
-    assert all(claim["settled"] is False for claim in out["claims"]), (
-        "none of these switches ever settled, which is why nothing retired them"
-    )
+    assert out["claims"][-1] == {
+        "id": "thread-39",
+        "settled": False,
+    }, "and it keeps the newest, dropping the oldest"
+    assert all(
+        claim["settled"] is False for claim in out["claims"]
+    ), "none of these switches ever settled, which is why nothing retired them"
     assert out["unhandled"] == 0
 
 
@@ -2078,9 +2077,7 @@ def test_the_same_saved_thread_opened_twice_is_corrected_twice():
         }));
         """,
     )
-    assert out["savedSwitches"] == ["thread-a", "thread-b", "thread-a"], (
-        "all three really started"
-    )
+    assert out["savedSwitches"] == ["thread-a", "thread-b", "thread-a"], "all three really started"
     assert out["mainThreadId"] != "thread-a", (
         "the second arrival for the same id must be corrected too, or the visible landing is "
         "left pointed at the saved chat"
@@ -2189,15 +2186,17 @@ def test_a_claim_whose_switch_settled_off_view_does_not_outlive_it():
         }));
         """,
     )
-    assert out["armedAfterB"] == 0, (
-        "a switch that settled while another saved chat was visible leaves nothing armed"
-    )
+    assert (
+        out["armedAfterB"] == 0
+    ), "a switch that settled while another saved chat was visible leaves nothing armed"
     assert out["newThreadSwitches"] == 1, (
         "the landing's own switch and no correction: a legitimate saved chat that the user "
         "opened and left is not a stale arrival"
     )
     assert out["claims"] == []
     assert out["unhandled"] == 0
+
+
 0
 
 
