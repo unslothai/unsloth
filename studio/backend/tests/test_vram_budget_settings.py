@@ -465,15 +465,13 @@ class TestPendingOwnership:
 
         import core.inference.llama_cpp as lc
 
-        # Read the finalizer as a scope, not as text after "finally:": a substring match
-        # also passes on a clear moved below the `with`, which an exception through the
-        # yield skips, leaking the value. Any position in the finalbody is fine, and so
-        # are sibling clears -- #9292 added _binary_revision_pending.
+        # The finalizer as a scope, not as text after "finally:": a substring also passes
+        # on a clear moved below the `with`, which an exception through the yield skips.
+        # Position in the finalbody is free, as are siblings (#9292's _binary_revision_pending).
         scope = ast.parse(
             textwrap.dedent(inspect.getsource(lc.LlamaCppBackend._serial_load_scope))
         ).body[0]
-        # Defaulted rather than bare next(): a rewritten scope should fail here with
-        # what it lost, not with a StopIteration from the search.
+        # Defaulted, so a rewritten scope fails on what it lost, not on a StopIteration.
         held = next((n for n in scope.body if isinstance(n, (ast.With, ast.AsyncWith))), None)
         assert held is not None, "the scope no longer takes the load lock in a with"
         assert ast.unparse(held.items[0].context_expr) == "self._serial_load_lock"

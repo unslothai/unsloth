@@ -348,8 +348,7 @@ class TestBinaryRevisionPathSpace:
         backend = LlamaCppBackend.__new__(LlamaCppBackend)
         backend._launch_binary_revision = ()
 
-        # *args/**kwargs, or a caller passing include_denied fails on the signature
-        # instead of on the thing this asserts.
+        # *args/**kwargs, or a caller passing include_denied fails on the signature.
         def _unexpected_discovery(*args, **kwargs):  # pragma: no cover - must never run
             raise AssertionError("binary discovery ran without a revision to compare")
 
