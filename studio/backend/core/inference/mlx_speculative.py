@@ -2171,7 +2171,7 @@ def mlx_speculative_options(target_id: str) -> dict[str, Any]:
 
 
 def _pinned_drafter(
-    target_id: str, mode: str, draft_model: Optional[str]
+    mode: str, draft_model: Optional[str], candidates: list[dict[str, Any]]
 ) -> tuple[Optional[str], Optional[str]]:
     """An accepted drafter carries the candidate's own repository id, not the spelling the
     request used, because the loader matches names exactly: accepting one it cannot resolve
@@ -2182,7 +2182,7 @@ def _pinned_drafter(
     _, named, _ = mlx_speculative_request_identity(mode, draft_model, None)
     if not named:
         return draft_model, "checkpoint_required"
-    for candidate in mlx_speculative_options(target_id)["candidates"]:
+    for candidate in candidates:
         if candidate["method"] == mode and candidate["repo_id"].casefold() == named:
             return candidate["repo_id"], candidate["reason"]
     return draft_model, "checkpoint_not_compatible"
@@ -2316,9 +2316,15 @@ def resolve_mlx_speculative_request(
     target_id = _canonical_target_id(target_id)
     target_config = _read_config(target_id)
     if requested != "auto":
-        return MlxSpeculativeResolution(
-            requested, *_pinned_drafter(target_id, requested, draft_model)
-        )
+        available = (options or mlx_speculative_options(target_id))["candidates"]
+        pinned, reason = _pinned_drafter(requested, draft_model, available)
+        # Offering nothing because the target is unknown is not incompatibility. Candidates are
+        # matched against the target's identity, so one whose configuration has not been fetched
+        # offers none and would be refused for having none -- and the preflights run before the
+        # fetch. The load resolves again once the configuration is there, and pins that answer.
+        if reason == "checkpoint_not_compatible" and not available and target_config is None:
+            return MlxSpeculativeResolution(requested, draft_model)
+        return MlxSpeculativeResolution(requested, pinned, reason)
 
     # No readable configuration is a different answer from having matched no drafter.
     if target_config is None:

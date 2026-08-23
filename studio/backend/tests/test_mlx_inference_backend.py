@@ -4945,6 +4945,25 @@ def test_an_accepted_drafter_name_is_pinned_to_the_one_the_loader_resolves(
     ).reason == "checkpoint_not_compatible"
 
 
+def test_an_unfetched_target_defers_an_explicit_request_rather_than_refusing_it(monkeypatch):
+    # The preflights run before the load fetches the configuration, and candidates are matched
+    # against the target's identity, so an unfetched target offers none. Refusing there rejects
+    # a pairing that becomes valid the moment the configuration arrives.
+    from core.inference import mlx_speculative as spec
+
+    monkeypatch.setattr(spec, "ENABLED_MLX_SPECULATIVE_METHODS", frozenset({"mtp"}))
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": []})
+    monkeypatch.setattr(spec, "_read_config", lambda _t: None)
+    assert spec.mlx_speculative_request_reason("org/unfetched", "mtp", "org/Drafter") is None
+
+    # A target that is readable and simply carries no drafter is still refused.
+    monkeypatch.setattr(spec, "_read_config", lambda _t: {"model_type": "qwen3_5"})
+    assert (
+        spec.mlx_speculative_request_reason("org/known", "mtp", "org/Drafter")
+        == "checkpoint_not_compatible"
+    )
+
+
 @pytest.mark.parametrize(
     "reason", [None, "insufficient_unified_memory", "checkpoint_config_mismatch"],
 )
