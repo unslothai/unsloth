@@ -254,9 +254,11 @@ def test_the_probe_source_is_the_first_thing_in_its_script():
         "semantics than the file it was read from"
     )
     assert "window.__sbExtraInitScript" in scripts[0]
-    # Appended on its own line, opening with an identifier, so ASI cannot join it to the probe's
-    # last expression.
-    assert scripts[0][len(source) :].lstrip("\n").startswith("window.__sbExtraInitScript")
+    # Appended after an explicit statement boundary, so neither ASI nor an unterminated
+    # expression can join it to the probe's last line.
+    assert scripts[0][len(source) :].lstrip("\n").lstrip(";").lstrip("\n").startswith(
+        "window.__sbExtraInitScript"
+    )
 
 
 def test_a_refused_run_does_not_leave_a_stale_ab_table(main_src: str):
@@ -297,3 +299,81 @@ def test_the_event_counter_is_the_one_potency_rests_on(probe_src: str):
     # The geometry route is a documented false negative and must stay documented rather than
     # quietly removed: someone will reimplement it otherwise.
     assert "KNOWN FALSE NEGATIVE" in probe_src
+
+
+def _node_parses(source: str):
+    """Parse `source` the way Playwright ships it: wrapped in its `class InitScript` arrow IIFE.
+
+    Returns None when it parses, or the engine's message when it does not. Skips with no node.
+    """
+
+    import shutil
+    import subprocess
+    import tempfile
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("no node on PATH; this assertion needs a real JS parser, not a regex")
+    with tempfile.TemporaryDirectory() as tmp:
+        # `--check` reads a FILE, so the IIFE is written out rather than passed with `-e`: an
+        # argument would have to survive the shell, and the point of this helper is that nothing
+        # between the producer and the parser is allowed to edit the bytes.
+        script = Path(tmp) / "init_script.js"
+        script.write_text("(() => {\n" + source + "\n})();", encoding = "utf-8")
+        done = subprocess.run([node, "--check", str(script)], capture_output = True, text = True)
+    return None if done.returncode == 0 else done.stderr.strip().splitlines()[-1]
+
+
+@pytest.mark.parametrize(
+    "truncated",
+    [
+        "var result =",
+        "let out =",
+        "const seen =",
+        'window.__cvpot = {\n  count: 0,\n};\nvar next =',
+        '"use strict";\nvar result =',
+    ],
+)
+def test_a_truncated_probe_cannot_stamp_itself_installed(truncated: str):
+    """REGRESSION. The stamp must not be able to complete the source it is attesting to.
+
+    A file cut off after an assignment operator is a SyntaxError on its own, and concatenating the
+    stamp onto it USED TO MAKE IT VALID: `window.__sbExtraInitScript = <path>` became the dangling
+    initializer, so the one variable the probe never got to compute was assigned the stamp and the
+    deferred check returned early. Nothing threw, so `pageerror` said nothing either. Measured on
+    webkit and chromium: stamp set, console silent, probe never ran -- the harness reporting a
+    clean probe run for a probe whose source does not parse.
+
+    This drives the PRODUCER and a real parser, because the defect is JavaScript grammar: any
+    assertion made of string matching would have passed against the broken version too.
+    """
+
+    import studiobench.__main__ as sb
+
+    assert _node_parses(truncated) is not None, "fixture is not actually malformed"
+    combined = sb._probe_init_scripts("probes/p.js", truncated)[0]
+    assert _node_parses(combined) is not None, (
+        "a truncated probe became a VALID script once the stamp was appended, so "
+        "window.__sbExtraInitScript is set by source the probe never executed and the deferred "
+        f"check stays silent about a probe that never ran: {combined!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "healthy",
+    [
+        '"use strict";\nvar ticks = 0;',
+        "window.__cvpot = 1;",
+        "// nothing but a comment",
+        "function f() { return 1; }\nf();",
+        "(function () { window.q = 1; })()",
+    ],
+)
+def test_a_healthy_probe_still_parses_and_still_stamps(healthy: str):
+    """The boundary must not cost a well-formed probe its stamp."""
+
+    import studiobench.__main__ as sb
+
+    combined = sb._probe_init_scripts("probes/p.js", healthy)[0]
+    assert _node_parses(combined) is None, f"the boundary broke a valid probe: {combined!r}"
+    assert combined.startswith(healthy), "the probe source is no longer the first thing in it"

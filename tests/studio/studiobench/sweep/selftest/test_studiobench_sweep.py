@@ -507,6 +507,85 @@ def frame_window(cid: str, kind: str, gaps: list[float], duration_ms: float, **e
     return row
 
 
+def stream_window(
+    cid: str,
+    gaps: list[float],
+    duration_ms: float = 10_000.0,
+) -> dict:
+    """One qualifying, unaided streaming window: SSE traffic plus enough reply growth."""
+    return {
+        "row_type": "window",
+        "cell_id": cid,
+        "kind": "gap",
+        "name": "stream:gap1",
+        "duration_ms": duration_ms,
+        "instruments": {
+            "stream_cost": {
+                "stream_cost_attempted": True,
+                "streaming_observed": True,
+                "streaming_ms": 9_000.0,
+                "delta_task_ms": 900.0,
+                "stream_blocked_ms": 1_800.0,
+                "reply_chars_delta": 3_000,
+            },
+            "frames": {
+                "frames_attempted": True,
+                "frame_gaps_ms": gaps,
+                "frame_gaps_truncated": False,
+                "max_frame_ms": max(gaps),
+            },
+        },
+    }
+
+
+def stream_payload(tmp_path: Path, name: str, pairs: list[tuple[list, list]]) -> Path:
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "corpus_hash": "c0"}]
+    for i, (base_gaps, treat_gaps) in enumerate(pairs):
+        for arm, gaps in (("base", base_gaps), ("treatment", treat_gaps)):
+            cid = f"100K.{arm}.rep{i}"
+            rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+            rows.append(stream_window(cid, gaps))
+    return write(tmp_path, name, rows)
+
+
+SMOOTH = [16.7] * 540  # a clean stream: stream_time_in_jank_pct is exactly 0.0
+JANKY = [16.7] * 530 + [120.0] * 10
+
+
+def test_a_clean_zero_base_arm_still_pairs_so_a_jank_regression_is_not_lost(tmp_path):
+    """Zero is these metrics' CLEAN reading, and `if b` dropped every pair that had one.
+
+    Measured on this repository's recorded payloads, 349 of 668 `stream_time_in_jank_pct` pairs
+    have a zero base arm. Dropped, a treatment that introduces jank against a clean base left no
+    row in the table at all, and where only some repetitions had a zero base the metric was pooled
+    over whichever pairs the BASE arm happened to make non-zero.
+    """
+    result = stream_payload(tmp_path, "result", [(SMOOTH, JANKY)] * 4)
+    null = stream_payload(tmp_path, "null", [(SMOOTH, SMOOTH)] * 4)
+
+    pairs = F.paired(F.read_rows(result))
+    assert pairs["stream_time_in_jank_pct"] == [(0.0, 12.0)] * 4
+    assert len(pairs["stream_jank_index"]) == 4
+
+    stats, floors = F.summarise([result]), F.summarise([null])
+    s = stats["stream_time_in_jank_pct"]
+    assert s["n"] == 4
+    # Compared by DIFFERENCE, in the metric's own unit: 0.0% to 12.0% is +12.0 points.
+    assert s["difference"] is True
+    assert s["delta_pct"] == pytest.approx(12.0)
+    assert "stream_time_in_jank_pct" in floors
+    _f, v = F.verdict_for(s, floors["stream_time_in_jank_pct"])
+    assert v == "SLOWER"
+
+
+def test_a_ratio_metric_still_drops_a_zero_base_rather_than_dividing_by_it(tmp_path):
+    """The control: only the metrics whose zero is a clean reading changed."""
+    result = stream_payload(tmp_path, "result", [(SMOOTH, JANKY)] * 4)
+    pairs = F.paired(F.read_rows(result))
+    assert F.summarise([result])["stream_max_frame_ms"]["difference"] is False
+    assert all(b > 0.0 for b, _ in pairs["stream_max_frame_ms"])
+
+
 def test_the_enforced_idle_window_is_not_pooled_into_the_frame_metrics(tmp_path):
     # Every cell records a 1.5 s `idle:calibrate` window with the frame recorder running. Pooling
     # its quiet into the film halves the jank share, so the column would not be the quantity the
