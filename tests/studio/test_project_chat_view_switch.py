@@ -607,7 +607,12 @@ def test_a_first_new_chat_switches_once_and_clears_nothing():
     assert out["cleared"] == 0, "the first switch has no outgoing composer to clear"
     assert out["stops"] == 1
     assert out["activeThreadId"] is None
-    assert out["switchState"] == {"activeNonce": "n1", "hasSwitched": True, "attempt": 1, "pendingSavedThreadId": None}
+    assert out["switchState"] == {
+        "activeNonce": "n1",
+        "hasSwitched": True,
+        "attempt": 1,
+        "pendingSavedThreadId": None,
+    }
     assert out["unhandled"] == 0
 
 
@@ -730,7 +735,12 @@ def test_resuming_at_the_same_nonce_does_not_switch_again():
     assert out["switched"] == 1, "a round trip through compare must not open a second thread"
     assert out["cleared"] == 0, "nor empty the composer the user left something staged in"
     assert out["stops"] == 1, "nor re-stop the temporary prompt queue"
-    assert out["switchState"] == {"activeNonce": "n1", "hasSwitched": True, "attempt": 1, "pendingSavedThreadId": None}
+    assert out["switchState"] == {
+        "activeNonce": "n1",
+        "hasSwitched": True,
+        "attempt": 1,
+        "pendingSavedThreadId": None,
+    }
     assert out["activeThreadId"] is None
 
 
@@ -822,7 +832,12 @@ def test_an_implicit_new_chat_defers_the_clear_until_the_new_thread_arrives():
         """,
     )
     assert out["implicit"]["switched"] == 0, "an implicit new chat opens no thread of its own"
-    assert out["implicit"]["state"] == {"activeNonce": None, "hasSwitched": True, "attempt": 0, "pendingSavedThreadId": None}
+    assert out["implicit"]["state"] == {
+        "activeNonce": None,
+        "hasSwitched": True,
+        "attempt": 0,
+        "pendingSavedThreadId": None,
+    }
     assert out["midSwitch"]["switched"] == 1
     assert out["midSwitch"]["cleared"] == 0, "the deferred clear must wait for the switch"
     assert out["midSwitch"]["stops"] == 1
@@ -897,7 +912,12 @@ def test_an_attachment_remove_that_fails_is_not_an_unhandled_rejection(setup, pa
         f"a rejecting attachment remove() on the {path} path became an unhandled "
         f"rejection: {out['reasons']}"
     )
-    assert out["state"] == {"activeNonce": nonce, "hasSwitched": True, "attempt": attempts, "pendingSavedThreadId": None}
+    assert out["state"] == {
+        "activeNonce": nonce,
+        "hasSwitched": True,
+        "attempt": attempts,
+        "pendingSavedThreadId": None,
+    }
     assert out["activeThreadId"] is None, "and the switch below it still ran"
 
 
@@ -925,10 +945,20 @@ def test_opening_a_saved_thread_releases_the_nonce_so_the_same_one_switches_agai
         }));
         """,
     )
-    assert out["opened"]["state"] == {"activeNonce": None, "hasSwitched": True, "attempt": 1, "pendingSavedThreadId": None}
+    assert out["opened"]["state"] == {
+        "activeNonce": None,
+        "hasSwitched": True,
+        "attempt": 1,
+        "pendingSavedThreadId": None,
+    }
     assert out["opened"]["switchedTo"] == ["thread-a"]
     assert out["switched"] == 2, "back to the same nonce must restore the new thread"
-    assert out["state"] == {"activeNonce": "n1", "hasSwitched": True, "attempt": 2, "pendingSavedThreadId": None}
+    assert out["state"] == {
+        "activeNonce": "n1",
+        "hasSwitched": True,
+        "attempt": 2,
+        "pendingSavedThreadId": None,
+    }
 
 
 def test_new_chat_then_a_saved_thread_then_new_chat_clears_the_staged_attachment():
@@ -1049,7 +1079,12 @@ def test_a_deferred_clear_for_a_nonce_that_moved_on_is_dropped():
         out["cleared"] == 1
     ), "the stale deferred clear must not fire: n1's composer is two views behind"
     assert out["switched"] == 2
-    assert out["state"] == {"activeNonce": "n2", "hasSwitched": True, "attempt": 2, "pendingSavedThreadId": None}
+    assert out["state"] == {
+        "activeNonce": "n2",
+        "hasSwitched": True,
+        "attempt": 2,
+        "pendingSavedThreadId": None,
+    }
     assert out["pending"] == 0, "no switch callback may be left waiting"
     assert out["unhandled"] == 0
 
@@ -1090,7 +1125,12 @@ def test_three_nonces_faster_than_the_switch_resolves_clear_once_each_at_most():
         out["cleared"] == 2
     ), "n2 and n3 clear immediately; n1's deferred clear is dropped as stale"
     assert out["beforeRelease"]["cleared"] == 2, "neither immediate clear waited for a switch"
-    assert out["state"] == {"activeNonce": "n3", "hasSwitched": True, "attempt": 3, "pendingSavedThreadId": None}
+    assert out["state"] == {
+        "activeNonce": "n3",
+        "hasSwitched": True,
+        "attempt": 3,
+        "pendingSavedThreadId": None,
+    }
     assert out["pending"] == 0
 
 
@@ -1159,7 +1199,12 @@ def test_a_rejected_switch_releases_the_nonce_so_the_same_one_can_be_retried():
         "the released nonce lets the same New Chat be served in place; without the release "
         "the view stays on the old thread for good"
     )
-    assert out["state"] == {"activeNonce": "n2", "hasSwitched": True, "attempt": 3, "pendingSavedThreadId": None}
+    assert out["state"] == {
+        "activeNonce": "n2",
+        "hasSwitched": True,
+        "attempt": 3,
+        "pendingSavedThreadId": None,
+    }
     assert out["mainThreadId"] == "local-3", "and the retry is the thread the user ends on"
     assert out["unhandled"] == 0
 
@@ -1209,7 +1254,12 @@ def test_a_rejected_switch_on_the_deferred_path_keeps_the_draft_and_releases_the
     }, "the nonce is released on the deferred path too"
     assert out["switched"] == 2, "the same nonce is retried once the effect re-runs"
     assert out["cleared"] == 1, "and the retry that does open a thread clears as it should"
-    assert out["state"] == {"activeNonce": "n1", "hasSwitched": True, "attempt": 2, "pendingSavedThreadId": None}
+    assert out["state"] == {
+        "activeNonce": "n1",
+        "hasSwitched": True,
+        "attempt": 2,
+        "pendingSavedThreadId": None,
+    }
     assert out["unhandled"] == 0
 
 
@@ -1247,7 +1297,12 @@ def test_a_late_rejection_cannot_disturb_a_nonce_that_has_since_moved_on():
         }));
         """,
     )
-    assert out["beforeFailure"]["state"] == {"activeNonce": "n2", "hasSwitched": True, "attempt": 2, "pendingSavedThreadId": None}
+    assert out["beforeFailure"]["state"] == {
+        "activeNonce": "n2",
+        "hasSwitched": True,
+        "attempt": 2,
+        "pendingSavedThreadId": None,
+    }
     assert out["beforeFailure"]["switched"] == 2
     assert out["state"] == {
         "activeNonce": "n2",
@@ -1335,7 +1390,12 @@ def test_a_late_failure_cannot_release_a_nonce_a_newer_attempt_owns():
         """,
     )
     assert out["beforeFailure"] == {
-        "state": {"activeNonce": "n1", "hasSwitched": True, "attempt": 2, "pendingSavedThreadId": None},
+        "state": {
+            "activeNonce": "n1",
+            "hasSwitched": True,
+            "attempt": 2,
+            "pendingSavedThreadId": None,
+        },
         "switched": 2,
         "mainThreadId": "local-2",
     }, "two attempts for one nonce, the second of which opened the thread on screen"
@@ -1350,12 +1410,22 @@ def test_a_late_failure_cannot_release_a_nonce_a_newer_attempt_owns():
     ), "and must not disturb the thread attempt 2 opened"
     assert out["afterFailure"]["switched"] == 2
     assert out["afterNextCommit"] == {
-        "state": {"activeNonce": "n1", "hasSwitched": True, "attempt": 2, "pendingSavedThreadId": None},
+        "state": {
+            "activeNonce": "n1",
+            "hasSwitched": True,
+            "attempt": 2,
+            "pendingSavedThreadId": None,
+        },
         "switched": 2,
         "mainThreadId": "local-2",
     }, "a released nonce would have made the next commit switch away from local-2"
     assert out["loneFailure"] == {
-        "state": {"activeNonce": None, "hasSwitched": True, "attempt": 3, "pendingSavedThreadId": None},
+        "state": {
+            "activeNonce": None,
+            "hasSwitched": True,
+            "attempt": 3,
+            "pendingSavedThreadId": None,
+        },
         "switched": 3,
     }, "with nothing overlapping, a failed attempt must still release its nonce"
     assert out["pending"] == 0
@@ -1454,7 +1524,12 @@ def test_every_switch_the_effect_starts_bumps_the_attempt_exactly_once():
         "attempt must count switches started, not renders: a bump on a render that "
         "returned at a guard would let a stale rejection think it is current"
     )
-    assert out["state"] == {"activeNonce": "n3", "hasSwitched": True, "attempt": 4, "pendingSavedThreadId": None}
+    assert out["state"] == {
+        "activeNonce": "n3",
+        "hasSwitched": True,
+        "attempt": 4,
+        "pendingSavedThreadId": None,
+    }
 
 
 def test_a_rejected_saved_thread_switch_blanks_the_bar_only_while_visible():
@@ -1658,7 +1733,12 @@ def test_a_hundred_and_twenty_view_switches_stay_bounded():
     assert out["stops"] == 2 * passes, "one stop per switch, not a growing number per switch"
     assert out["listeners"] == 0, "no listener may survive a view switch"
     assert out["pending"] == 0, "no switch callback may be left waiting"
-    assert out["state"] == {"activeNonce": None, "hasSwitched": True, "attempt": 60, "pendingSavedThreadId": None}
+    assert out["state"] == {
+        "activeNonce": None,
+        "hasSwitched": True,
+        "attempt": 60,
+        "pendingSavedThreadId": None,
+    }
     assert out["unhandled"] == 0
 
 
@@ -1798,7 +1878,7 @@ def test_a_saved_switch_that_fails_late_does_not_detach_the_view_that_replaced_i
         }));
         """,
     )
-    assert out["activeThreadId"] == "owned-by-the-landing", (
-        "a superseded failure must not clear an active id a newer view owns"
-    )
+    assert (
+        out["activeThreadId"] == "owned-by-the-landing"
+    ), "a superseded failure must not clear an active id a newer view owns"
     assert out["unhandled"] == 0
