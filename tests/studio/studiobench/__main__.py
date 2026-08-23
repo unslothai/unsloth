@@ -613,6 +613,34 @@ def run(args, ab_ref = None) -> int:
         paths, requested_identity(args, ab_ref, corpus.corpus_hash), resume = bool(args.resume)
     )
 
+    # AND THE SUMMARY THE ARCHIVE LEFT BEHIND. `archive_payload` moves `payload.jsonl` and nothing
+    # else, so a `summary.md` written by an earlier `--report` of this directory -- step three of
+    # the README quickstart, into the same `--out` -- stays at the standard artifact path while
+    # the payload underneath it is replaced by a probed one. Nothing later puts that right: a
+    # probe run is read through the probe's own output, not through a score, so the `--report`
+    # whose `SystemExit` clause would have overwritten the file is the one command nobody has a
+    # reason to run. Without `--ab` there is no `ab.md` either, so the summary is then the only
+    # report-shaped file in the directory and it describes the payload that was moved aside.
+    #
+    # OVERWRITTEN, not deleted, for the reason `_render_ab` gives: whoever opens the path gets the
+    # reason rather than a missing file. HERE, not at the probe banner further down, for the
+    # reason 52fc3e848 moved the `ab.md` refusal above its early return: everything between this
+    # point and the banner can `return`, raise or be killed by the wall-clock watchdog, and every
+    # one of those paths has already archived the payload the summary belongs to. After
+    # `prepare_payload`, though, because a `--resume` it refuses touched nothing.
+    if extra_init:
+        stale_summary = paths.out / "summary.md"
+        if stale_summary.exists():
+            stale_summary.write_text(
+                "# No summary\n\n"
+                f"NO SUMMARY: this output directory was reused by a run carrying an external "
+                f"init script ({extra_init}), so its timings measure the page and the instrument "
+                f"together. The payload this summary described was archived; the payload beside "
+                f"it now is not scorable. Re-run with SBENCH_EXTRA_INIT_SCRIPT unset.\n",
+                encoding = "utf-8",
+            )
+            _log(f"  a previous {stale_summary} was replaced by this refusal")
+
     # One spec per side, with its own home and password. Without --ab there is exactly one.
     specs = side_specs(args, ab_ref)
     # Armed AFTER the sides are known, because what it has to cover depends on them: see

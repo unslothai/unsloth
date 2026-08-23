@@ -511,6 +511,77 @@ def test_an_unreadable_probe_is_refused_before_the_payload_is_archived(studio, m
     assert studio["installed"] == ["main"]
 
 
+def _clean_summary(studio) -> Path:
+    """A clean run, then the `--report` the README quickstart runs on it, into the same `--out`."""
+
+    paths = Paths.under(studio["out"])
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+    assert sb.main(["--report", str(paths.payload_jsonl), "--tier", "quick", "--rungs", "1K"]) == 0
+    summary = paths.out / "summary.md"
+    assert summary.exists()
+    assert "studiobench summary" in summary.read_text(encoding = "utf-8")
+    return summary
+
+
+def test_a_fresh_probe_run_replaces_the_summary_it_inherited(studio, monkeypatch, tmp_path):
+    """REGRESSION. A clean summary may not sit at the standard path over a probed payload.
+
+    `archive_payload` moves `payload.jsonl` and nothing else, so the `summary.md` an earlier
+    `--report` of this directory wrote stayed where every reader opens it while the payload it
+    described was moved aside and a probed one took its place. Nothing later corrected it: a probe
+    run is read through the probe's own console output, so `--report`, whose `SystemExit` clause
+    does replace the file, is the one command nobody has a reason to run on that payload. Without
+    `--ab` there is no `ab.md` either, so the stale summary was the only report-shaped file in the
+    directory.
+    """
+
+    monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT", raising = False)
+    summary = _clean_summary(studio)
+    clean = summary.read_text(encoding = "utf-8")
+
+    script = tmp_path / "paint_counter.js"
+    script.write_text("window.__probe_ticks = 0;\n", encoding = "utf-8")
+    monkeypatch.setattr(browser_mod, "launch", lambda *a, **k: _ProbedBundle())
+    monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", str(script))
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+
+    text = summary.read_text(encoding = "utf-8")
+    assert text != clean
+    assert "NO SUMMARY" in text
+    assert script.name in text
+    assert "studiobench summary" not in text
+    # The evidence itself is untouched: the refusal replaces the report, never the payload the
+    # summary described, which is still on disk under its archived name.
+    assert len(list(Paths.under(studio["out"]).out.glob("payload-*.jsonl"))) == 1
+
+
+def test_a_probe_run_invents_no_summary_where_there_was_none(studio, monkeypatch, tmp_path):
+    """The control. The refusal replaces a stale report; it does not create a report-shaped file
+    in a directory whose reader was never given one to misread."""
+
+    script = tmp_path / "paint_counter.js"
+    script.write_text("window.__probe_ticks = 0;\n", encoding = "utf-8")
+    monkeypatch.setattr(browser_mod, "launch", lambda *a, **k: _ProbedBundle())
+    monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", str(script))
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+    assert not (Paths.under(studio["out"]).out / "summary.md").exists()
+
+
+def test_a_clean_rerun_leaves_the_summary_for_report_to_rewrite(studio, monkeypatch):
+    """The other control. Only a PROBE run invalidates, and `--report` still writes a real one."""
+
+    monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT", raising = False)
+    summary = _clean_summary(studio)
+    paths = Paths.under(studio["out"])
+
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+    assert "NO SUMMARY" not in summary.read_text(encoding = "utf-8")
+
+    # And the legitimate `--report` path still scores the new payload rather than refusing it.
+    assert sb.main(["--report", str(paths.payload_jsonl), "--tier", "quick", "--rungs", "1K"]) == 0
+    assert "studiobench summary" in summary.read_text(encoding = "utf-8")
+
+
 def test_a_resume_under_the_same_probe_still_resumes(studio, probe):
     """The control. A potency ladder that died is meant to be resumable as the ladder it was."""
 
