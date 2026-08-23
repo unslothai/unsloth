@@ -105,9 +105,18 @@ class _RefitSpy:
         return False
 
 
-def _plan(tmp_path, *, os_key, vendor, weights_mib = 10_200, n_parallel = 4,
-          vram_mib = CARD_MIB, n_ctx = 0, tensor_parallel = False,
-          gpu_memory_mode = None):
+def _plan(
+    tmp_path,
+    *,
+    os_key,
+    vendor,
+    weights_mib = 10_200,
+    n_parallel = 4,
+    vram_mib = CARD_MIB,
+    n_ctx = 0,
+    tensor_parallel = False,
+    gpu_memory_mode = None,
+):
     """Drive the real planner under a spoofed host. Returns (plan, refit_entries)."""
     sys_platform, system, apple_silicon = OS_CELLS[os_key]
     vulkan, enumerates_gpu = VENDOR_CELLS[vendor]
@@ -127,9 +136,7 @@ def _plan(tmp_path, *, os_key, vendor, weights_mib = 10_200, n_parallel = 4,
                 staticmethod(lambda: (48 * 1024 * MIB) if apple_silicon else 0),
             )
         )
-        stack.enter_context(
-            patch.object(llama_mod, "_metal_device_is_paravirtual", lambda: False)
-        )
+        stack.enter_context(patch.object(llama_mod, "_metal_device_is_paravirtual", lambda: False))
 
         # macOS enumerates no torch.cuda device; a CPU-only host has none either.
         cards = [] if (not enumerates_gpu or sys_platform == "darwin") else [vram_mib]
@@ -175,9 +182,7 @@ def _plan(tmp_path, *, os_key, vendor, weights_mib = 10_200, n_parallel = 4,
 
 
 class TestWhoTheRefitIsAllowedToTouch:
-    @pytest.mark.parametrize(
-        "os_key,vendor", ALL_CELLS, ids = [f"{o}-{v}" for o, v in ALL_CELLS]
-    )
+    @pytest.mark.parametrize("os_key,vendor", ALL_CELLS, ids = [f"{o}-{v}" for o, v in ALL_CELLS])
     def test_only_a_gpu_host_enters_the_refit(self, tmp_path, os_key, vendor):
         """Metal and CPU-only hosts must not reach the new block at all."""
         _, entries = _plan(tmp_path, os_key = os_key, vendor = vendor)
@@ -196,16 +201,17 @@ class TestWhoTheRefitIsAllowedToTouch:
     def test_tensor_parallel_is_excluded(self, tmp_path):
         """The tensor arm has no --fit valve, so the re-fit must stay out."""
         _, entries = _plan(
-            tmp_path, os_key = "linux", vendor = "nvidia", tensor_parallel = True,
+            tmp_path,
+            os_key = "linux",
+            vendor = "nvidia",
+            tensor_parallel = True,
             vram_mib = 24 * 1024,
         )
         assert entries == 0
 
     def test_manual_memory_mode_is_excluded(self, tmp_path):
         """Manual mode is the caller taking the budget over."""
-        _, entries = _plan(
-            tmp_path, os_key = "linux", vendor = "nvidia", gpu_memory_mode = "manual"
-        )
+        _, entries = _plan(tmp_path, os_key = "linux", vendor = "nvidia", gpu_memory_mode = "manual")
         assert entries == 0
 
     def test_a_single_slot_request_is_excluded(self, tmp_path):
@@ -224,6 +230,8 @@ class TestWindowsPlansLikeLinux:
         assert win_entries == linux_entries > 0
         # Same plan either way; only the Windows-only thread pin differs.
         assert (win["ctx"], win["slots"], win["fit"]) == (
-            linux["ctx"], linux["slots"], linux["fit"]
+            linux["ctx"],
+            linux["slots"],
+            linux["fit"],
         )
         assert linux["threads"] is None

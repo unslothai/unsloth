@@ -47,8 +47,15 @@ SWA = {
 }
 
 
-def _plan(tmp_path, *, weights_mib, n_parallel, ctx_checkpoints, vram_mib = CARD_MIB,
-          cache_type_kv = "q8_0"):
+def _plan(
+    tmp_path,
+    *,
+    weights_mib,
+    n_parallel,
+    ctx_checkpoints,
+    vram_mib = CARD_MIB,
+    cache_type_kv = "q8_0",
+):
     """Return the generated plan plus what its own context really costs."""
     memory = [(0, vram_mib, vram_mib)]
     backend, gguf = _backend(tmp_path, vulkan = False, memory = memory)
@@ -100,12 +107,8 @@ def _plan(tmp_path, *, weights_mib, n_parallel, ctx_checkpoints, vram_mib = CARD
         "checkpoints": flag("--ctx-checkpoints"),
         # What the launch was told to reserve, over and above the plain cache.
         "reserve_bytes": (
-            backend._estimate_kv_cache_bytes(
-                ctx, cache_type_kv, ctx_checkpoints = _cp, **kv_kwargs
-            )
-            - backend._estimate_kv_cache_bytes(
-                ctx, cache_type_kv, ctx_checkpoints = 0, **kv_kwargs
-            )
+            backend._estimate_kv_cache_bytes(ctx, cache_type_kv, ctx_checkpoints = _cp, **kv_kwargs)
+            - backend._estimate_kv_cache_bytes(ctx, cache_type_kv, ctx_checkpoints = 0, **kv_kwargs)
         ),
     }
 
@@ -164,10 +167,9 @@ class TestThePredicateChargesTheReserve:
         backend = LlamaCppBackend.__new__(LlamaCppBackend)
         _prime(backend)
         kv = dict(n_parallel = 4, swa_full = False, kv_unified = True, flash_attn = True)
-        assert (
-            backend._estimate_kv_cache_bytes(8192, "q8_0", ctx_checkpoints = 32, **kv)
-            > backend._estimate_kv_cache_bytes(8192, "q8_0", ctx_checkpoints = 0, **kv)
-        )
+        assert backend._estimate_kv_cache_bytes(
+            8192, "q8_0", ctx_checkpoints = 32, **kv
+        ) > backend._estimate_kv_cache_bytes(8192, "q8_0", ctx_checkpoints = 0, **kv)
 
 
 class TestTheRefitDoesNotSpendTheReserve:
@@ -183,9 +185,7 @@ class TestTheRefitDoesNotSpendTheReserve:
         large --ctx-checkpoints gets, while the child still allocates it.
         """
         free = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = 0)
-        charged = _plan(
-            tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = checkpoints
-        )
+        charged = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = checkpoints)
         assert charged["reserve_bytes"] > 0
         assert charged["checkpoints"] == str(checkpoints)
         assert charged["ctx"] < free["ctx"], (free, charged)
