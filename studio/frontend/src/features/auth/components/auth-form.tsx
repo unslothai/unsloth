@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Eye, EyeOff } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import type { SyntheticEvent } from "react";
 import { refreshSession } from "../api";
@@ -88,6 +88,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const [initialized, setInitialized] = useState<boolean | null>(null);
   const [requiresPasswordChange, setRequiresPasswordChange] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const reloadReadySent = useRef(false);
 
   useEffect(() => {
     let canceled = false;
@@ -152,6 +153,12 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       canceled = true;
     };
   }, [navigate]);
+
+  useEffect(() => {
+    if (statusLoading || reloadReadySent.current) return;
+    reloadReadySent.current = true;
+    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+  }, [statusLoading]);
 
   // Seed password from bootstrap credentials injected into HTML by web CLI.
   useEffect(() => {

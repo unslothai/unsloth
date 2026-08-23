@@ -20,6 +20,16 @@ A REGRESSION BEYOND THE NOISE FLOOR IS A FAIL REGARDLESS OF THE HEADLINE. A chan
 the aggregate by 12% while tripling the worst frame is not a win, and a single headline number is
 exactly the instrument that would let it ship. Every metric is checked individually.
 
+A POINT ESTIMATE PAST THE NOISE FLOOR IS NOT YET AN EFFECT. The noise floor answers "could this
+machine resolve a difference of this size at all", which is a question about the harness; it says
+nothing about whether these repetitions agree. Ratios of 0.7, 0.7, 1.2, 1.2 have a geometric mean
+of 0.917, clear of a 5% floor, and a bootstrap CI of 0.700-1.200 that contains 1.0: the pairs do
+not agree on the sign, and the honest reading is that nothing was resolved. So a direction is only
+claimed when the CI clears 1.0. On the worse side the metric still counts as a regression -- an
+unresolved regression is not a cleared one -- but it is labelled unresolved rather than quoted as
+a measured loss. `sweep/floor_table.py` applies the same rule to its own pooled ratios under
+"VOID (pairs disagree on sign)".
+
 FOUR REFUSALS. Rendering is refused outright when `bench_version`, `corpus_hash`, `rung_ladder_id`
 or `weights_id` differ between the two sides. Each of those changes what the numbers mean, and a
 table that prints them side by side is not a comparison, it is a category error with column
@@ -172,10 +182,24 @@ class MetricComparison:
     ci_high: float | None
     verdict: str = "no_reading"
     beyond_noise: bool = False
+    #: The 95% CI of the paired geometric mean contains 1.0, so the data cannot rule out "no
+    #: effect" however far the point estimate landed from the noise floor. Carried so the table
+    #: can say the size is unresolved rather than print a direction as a finding.
+    ci_spans_no_effect: bool = False
     #: At least one contributing pair had a sub-floor arm, so the ratio is a BOUND: the true
     #: magnitude is larger. Carried so the table can say so rather than let a number derived from
     #: an instrument floor be quoted as a measurement.
     bounded: bool = False
+
+    @property
+    def unresolved(self) -> bool:
+        """Moved past the noise floor and still could not rule out no effect."""
+        return self.beyond_noise and self.ci_spans_no_effect
+
+    @property
+    def resolves_direction(self) -> bool:
+        """Cleared the floor AND its own CI, so this metric can speak for a headline."""
+        return self.verdict in ("improved", "regressed")
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -186,6 +210,7 @@ class MetricComparison:
             "ci95": [self.ci_low, self.ci_high],
             "verdict": self.verdict,
             "beyond_noise": bool(self.beyond_noise),
+            "ci_spans_no_effect": bool(self.ci_spans_no_effect),
             "bounded": bool(self.bounded),
         }
 
@@ -252,7 +277,22 @@ class AbResult:
         if self.regressions:
             return "FAIL"
         if self.headline_ratio is None:
+            # UNRESOLVED IS NOT UNMEASURED. `compare` keeps unresolved metrics out of the headline
+            # entirely, so a run whose every moving metric straddled 1.0 arrives here with no
+            # ratio at all. That is not the same as an empty payload: the data exists and says
+            # nothing, which is INCONCLUSIVE, while NO READING means there was nothing to read.
+            if any(m.unresolved for m in self.metrics):
+                return "INCONCLUSIVE"
             return "NO READING"
+        # NO DIFFERENCE IS A CLAIM, AND A STRONGER ONE THAN THIS DATA SUPPORTS. Excluding an
+        # unresolved mover from the headline can leave only flat metrics behind, putting the
+        # aggregate back inside the noise floor. Reporting "no difference" there would assert the
+        # change did nothing, when in fact one metric moved and could not resolve its own sign.
+        # Only say that once some metric actually resolved a direction.
+        if any(m.unresolved for m in self.metrics) and not any(
+            m.resolves_direction for m in self.metrics
+        ):
+            return "INCONCLUSIVE"
         if abs(self.headline_ratio - 1.0) * 100.0 <= self.noise_floor_pct:
             return "NO DIFFERENCE"
         return "IMPROVED" if self.headline_ratio < 1.0 else "REGRESSED"
@@ -333,18 +373,35 @@ def compare(
             lower_is_better = anchor.lower_is_better if anchor else True
             worse = delta_pct > 0 if lower_is_better else delta_pct < 0
             comparison.beyond_noise = abs(delta_pct) > noise_floor_pct
+            comparison.ci_spans_no_effect = lo is not None and hi is not None and lo <= 1.0 <= hi
             if not comparison.beyond_noise:
                 comparison.verdict = "within noise"
             elif worse:
-                comparison.verdict = "regressed"
+                comparison.verdict = (
+                    "regressed (unresolved)" if comparison.ci_spans_no_effect else "regressed"
+                )
+                unresolved = (
+                    f"; 95% CI {lo:.3f}-{hi:.3f} spans no effect, so the size is unresolved"
+                    if comparison.ci_spans_no_effect
+                    else ""
+                )
                 result.regressions.append(
                     f"{metric_key}: {abs(delta_pct):.1f}% worse "
-                    f"(noise floor {noise_floor_pct:.1f}%)"
+                    f"(noise floor {noise_floor_pct:.1f}%{unresolved})"
                 )
             else:
-                comparison.verdict = "improved"
-            weight = anchor.weight if anchor else 1.0
-            weighted_logs.append((weight, math.log(geo)))
+                comparison.verdict = "inconclusive" if comparison.ci_spans_no_effect else "improved"
+            # AN UNRESOLVED METRIC LENDS ITS MAGNITUDE TO NOTHING. The headline is a weighted
+            # geometric mean of point estimates and carries no interval of its own, so a metric
+            # that moved a long way but could not resolve its own sign would otherwise supply most
+            # of the number that gets quoted. keystroke_p95_ms at 0.2, 0.2, 1.5, 1.5 (geomean
+            # 0.548, CI 0.200-1.500) beside a resolved menu_open_ms of 0.900 produced a headline
+            # of 0.631 and the word IMPROVED: a quoted 36.9% win almost entirely made of data the
+            # table itself labels inconclusive. Metrics still within noise keep contributing --
+            # they pull the headline toward 1.0, which is the conservative direction.
+            if not comparison.unresolved:
+                weight = anchor.weight if anchor else 1.0
+                weighted_logs.append((weight, math.log(geo)))
         result.metrics.append(comparison)
 
     if weighted_logs:

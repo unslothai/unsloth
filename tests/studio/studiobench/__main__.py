@@ -250,8 +250,38 @@ def side_specs(args, ab_ref) -> list:
 
 
 def planned_rungs(args) -> list:
-    """The ladder this run will actually walk: `--rungs` when given, else the tier's own."""
-    return args.rungs.split(",") if args.rungs else list(TIER_RUNGS[args.tier])
+    """The ladder this run will actually walk: `--rungs` when given, else the tier's own.
+
+    NORMALISED AND CHECKED HERE, because a rung label that `RUNGS` does not carry is not merely a
+    late crash. `--rungs "1K, 10K"` split to `[\"1K\", \" 10K\"]`, and the first thing `run` does
+    with that list is record it: `run_meta` carries the rungs the run PROMISED, `plan_rung` does
+    not reach `RUNGS[rung]` until `build_cells` a hundred lines later, and `recorded_ladder` folds
+    every `run_meta` in the file. So a resumed run mistyped this way appended a rung nothing can
+    ever satisfy to a payload that was complete, and `--report` scored it INCOMPLETE from then on
+    -- the same permanent damage the ladder-ratio refusal had to learn to roll back, arriving
+    through the argument parser. The install and the browser sit between the two points as well,
+    so the check is worth minutes even when the payload is fresh.
+
+    Whitespace around a comma and a lowercase suffix are the two ways to type this that read as
+    correct, so both are accepted rather than rejected; anything else is named against the ladder
+    it was measured against.
+    """
+    if not args.rungs:
+        return list(TIER_RUNGS[args.tier])
+    # Imported here, not at module scope, on the same rule the rest of this file follows: `--help`
+    # has to answer on a machine with nothing installed.
+    from .fixture.corpus import RUNGS
+
+    rungs = [label.strip().upper() for label in args.rungs.split(",")]
+    rungs = [label for label in rungs if label]
+    unknown = [label for label in rungs if label not in RUNGS]
+    if not rungs or unknown:
+        named = ", ".join(repr(label) for label in unknown) or "nothing"
+        raise SystemExit(
+            f"--rungs {args.rungs!r} names {named}, which is not a rung. "
+            f"The ladder is {', '.join(RUNGS)}, comma-separated."
+        )
+    return rungs
 
 
 #: What a cell costs BESIDES its film, measured from the steps `CellRunner._run_inner` runs around
@@ -711,6 +741,11 @@ def run(args, ab_ref = None) -> int:
                 side["seed_script"](auth_now)
             )
 
+        # WHAT WAS IN THE FILE BEFORE THIS SESSION COULD WRITE A BYTE. `make_context` opens the
+        # `Recorder` on the next line, and the only check left after that point -- the ladder ratio,
+        # which is not known until the corpus has been measured -- has to be able to put the payload
+        # back the way it found it. See `rollback_session_rows`.
+        mark = payload_mark(paths.payload_jsonl)
         ctx, session = make_context(
             bundle, base_url, args.tier, args.instrument_level, paths, _log, procs
         )
@@ -837,6 +872,14 @@ def run(args, ab_ref = None) -> int:
                         if problem not in ratio_issues:
                             ratio_issues.append(problem)
                 if ratio_issues:
+                    # AND NOTHING THIS SESSION WROTE SURVIVES THE REFUSAL. Unlike the commit check
+                    # above, this one runs after the `Recorder` has opened the payload, so refusing
+                    # is not enough on its own: `run_meta` is already in the file and
+                    # `recorded_ladder` folds every one of them, so a refused
+                    # `--resume --rungs 1K,10K` would leave 10K promised and unrecorded in a
+                    # payload that was complete. See `rollback_session_rows`.
+                    rec.close()
+                    rollback_session_rows(paths.payload_jsonl, mark)
                     raise SystemExit(
                         f"refusing to resume {paths.payload_jsonl}: the ladder is sized by a "
                         "different chars-per-token ratio than the cells already in it.\n  "
@@ -929,7 +972,16 @@ def run(args, ab_ref = None) -> int:
         rec.close()
 
     if ab_ref:
-        _render_ab(paths, sides, ctx.session_id, corpus.corpus_hash)
+        # The cells THIS session was asked to measure. A resumed A/B skips whole pairs or none
+        # (`ab.skippable_cells`), so this is either every planned cell or none of them, and it is
+        # what `_render_ab` checks the payload against before it is allowed to print a verdict.
+        _render_ab(
+            paths,
+            sides,
+            ctx.session_id,
+            corpus.corpus_hash,
+            planned = [c.cell_id for _t, c, _p in work if c.cell_id not in done],
+        )
 
     _summarise(rows, paths)
     completed = sum(1 for r in rows if r.get("completed"))
@@ -986,15 +1038,27 @@ def _sweep_surfaces(sides: list, ctx, paths) -> None:
         ctx.recorder.gate(f"surface_sweep:{label}", passed, manifest)
 
 
-def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
+def _render_ab(
+    paths,
+    sides,
+    session_id: str,
+    corpus_hash: str,
+    planned = (),
+) -> None:
     """Render the A/B table from the payload the run just wrote.
 
     Read back from disk rather than kept in memory on purpose: it is the same path a tester takes
     with `--report`, so the table nobody checks and the table everybody reads are produced by one
     piece of code.
+
+    NO VERDICT OVER A PLAN WITH A HOLE IN IT. `planned` is the cells this session was asked to
+    measure, and a failed cell does not stop the run -- `CellRunner.run` records the failure and
+    returns -- so without this check the comparison is rendered over whatever pairs survived. See
+    `ab.unmeasured_planned_cells`: the loss is not the failed cell but its healthy partner, which
+    the arm intersection removes silently.
     """
     from .report.render import render_ab_table
-    from .runtime.ab import compare_arms
+    from .runtime.ab import compare_arms, unmeasured_planned_cells
 
     records = []
     with paths.payload_jsonl.open(encoding = "utf-8") as fh:
@@ -1035,10 +1099,23 @@ def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
         _log(f"\nA/B table could not be built: {type(exc).__name__}: {exc}")
         return
 
+    missing = unmeasured_planned_cells(records, planned, session_id = session_id)
+    if missing:
+        result.void = True
+        result.void_reason = (
+            f"{len(missing)} of {len(planned)} planned cells did not complete, so what remains is "
+            "a selection rather than the plan: " + ", ".join(missing)
+        )
+
     text = render_ab_table(result)
     print("\n" + text)
     out.write_text(text, encoding = "utf-8")
     _log(f"A/B table written to {out}")
+    if missing:
+        # A noise floor derived from a partial null control is a number about the cells that did
+        # not die, quoted afterwards at every real A/B on this machine.
+        _log("the plan did not complete, so no noise floor is derived from it")
+        return
     if is_null:
         from .scoring.ab import noise_floor_from_null_control
         try:
@@ -1366,6 +1443,65 @@ def archive_payload(paths, log = _log):
     return dest
 
 
+def payload_mark(payload_path) -> int:
+    """How long the payload was BEFORE this session was allowed to append to it.
+
+    Taken before the `Recorder` opens the file, and paired with `rollback_session_rows`. See there
+    for what the pair is for; `0` for a payload that does not exist yet, which is the length it
+    has.
+    """
+    try:
+        return Path(payload_path).stat().st_size
+    except OSError:
+        return 0
+
+
+def rollback_session_rows(
+    payload_path,
+    mark: int,
+    log = _log,
+) -> int:
+    """Undo everything this session appended, back to `mark`. The bytes dropped.
+
+    THE RULE `prepare_payload` STATES: a refusal has to leave the payload it refused exactly as it
+    found it. `prepare_payload` and `commit_problems` keep it by running before the `Recorder`
+    exists -- the identity axes are known from the CLI, and the commit is known once the sides are
+    installed, both still before the first recorded row. `ladder_ratio_problems` cannot: the ratio
+    is not known until `build_cells` has measured the corpus, which is after `make_context` has
+    opened the file, written `run_meta` and possibly a failed `instrument_unavailable` gate, and
+    after an optional `--surfaces` sweep. So that check keeps the same rule from the other end.
+
+    What a refused resume costs if it does not. `recorded_ladder` folds the `rungs` of EVERY
+    `run_meta` in the file, deliberately -- a session killed after its header still owes what it
+    promised -- so a refused `--resume --rungs 1K,10K` over a finished 1K payload leaves 10K
+    promised and never recorded, and `--report` scores that payload INCOMPLETE from then on.
+    `excluded_from_rows` turns every failed gate into an excluded cell, so the refused session's
+    own `ladder_ratio_measured` gate is charged to the payload it never touched. Neither is
+    recoverable by re-running: the rows are in somebody else's evidence file.
+
+    TRUNCATED, NOT ARCHIVED, which is the opposite of `archive_payload` and for the reason that
+    makes it the opposite: an archive preserves a run's evidence, and a refused resume produced no
+    evidence. There is one writer -- `Recorder` is the only thing that opens this file, on the main
+    thread, and it is closed by the caller before this runs -- so the tail being dropped is this
+    session's rows and nothing else.
+    """
+    path = Path(payload_path)
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return 0
+    if size <= mark:
+        return 0
+    try:
+        os.truncate(path, mark)
+    except OSError as exc:
+        log(f"  could not roll back {path.name}: {exc}")
+        return 0
+    dropped = size - mark
+    log(f"  rolled back {dropped} bytes this refused session had appended to {path.name}")
+    return dropped
+
+
 def prepare_payload(
     paths,
     requested: dict,
@@ -1565,7 +1701,7 @@ def report_only(args) -> int:
 
 
 def assert_liveness(args) -> int:
-    """Fail unless every scheduled action in a payload actually ran.
+    """Fail unless every scheduled action in a payload ran, kept its slot and proved its effect.
 
     THE FAILURE THIS CATCHES. The most expensive wrong answers this harness has produced were not
     wrong numbers, they were absent ones reported as "no effect": four scene actions recorded NOT
@@ -1653,13 +1789,37 @@ def assert_liveness(args) -> int:
             problems.append(f"{where}: the cell did not complete")
         for action in row.get("actions") or []:
             name = action.get("action") or action.get("name") or "?"
-            if name in allowed:
-                continue
             if action.get("slot_missed"):
-                # A machine-speed fact, whether or not the action also reports ran=False.
+                # A MISSED SLOT IS NOT AN ACTION THE PLATFORM CANNOT PERFORM, so it is classified
+                # before the allowance rather than inside it. `scene/schedule.py` records an
+                # overrun as `ran = False, slot_missed = True`, so under an allowance-first order a
+                # listed name never reached this branch at all and its slot miss left the run
+                # silently: an excuse written for "the fixture cannot mount this" swallowed a fact
+                # about the machine. Ordering it first is what keeps the two buckets below honest.
+                # It is a machine-speed fact whether or not the action also reports ran=False, so
+                # it lands in `missed` and is judged against `--allow-slot-misses`, never here.
                 missed.append(f"{where}: {name} missed its slot ({action.get('reason') or '?'})")
             elif not action.get("ran"):
+                # THE ALLOWANCE IS EXACTLY WHAT ITS NAME SAYS. `--allow-not-run` excuses an action
+                # the fixture cannot mount at all; it is not a blanket exemption from the gate.
+                # `image_upload` is listed in studiobench-ci.yml only because the fixture cannot
+                # mount it, so if it ever does mount, an upload that produces no attachment must
+                # be a failure rather than an excuse inherited from a different reason.
+                if name in allowed:
+                    continue
                 problems.append(f"{where}: {name} NOT RUN ({action.get('reason') or 'no reason'})")
+            elif action.get("expect_ok") is False:
+                # RAN IS NOT DID WHAT IT CLAIMED. `scoring/from_payload.py` and
+                # `report/payload.py` both already refuse a timing whose own assertion failed;
+                # this loop did not, so `ran = True` with `expect_ok = False` fell past both
+                # branches above and the gate exited 0. A selector regression that fails EVERY
+                # cell's assertion left the workflow green with the surface non-functional --
+                # the same "absent reported as no effect" this gate exists for, one branch over.
+                # It is a scene problem, not machine speed, so no allowance and no slack reach it.
+                problems.append(
+                    f"{where}: {name} ran but its own assertion failed "
+                    f"({action.get('reason') or 'no reason'})"
+                )
 
     if cells == 0:
         # An empty payload passing every check is the same false negative in a different costume.
@@ -1738,16 +1898,18 @@ def parse_args(argv: list):
         metavar = "PAYLOAD",
         dest = "assert_liveness",
         help = "exit non-zero unless every scheduled action in an existing "
-        "payload.jsonl actually ran. Offline. This is the gate that catches an "
-        "action which never fired reporting as 'no effect'",
+        "payload.jsonl actually ran, kept its slot and passed its own assertion. "
+        "Offline. This is the gate that catches an action which never fired, or "
+        "never did what it claimed, reporting as 'no effect'",
     )
     ap.add_argument(
         "--allow-not-run",
         metavar = "ACTIONS",
         dest = "allow_not_run",
-        help = "comma-separated action names --assert-liveness may excuse. Use only "
-        "for an action a platform genuinely cannot perform, and say which in "
-        "the pull request: every name here is a hole in the gate",
+        help = "comma-separated action names --assert-liveness may excuse for NOT RUNNING "
+        "only. A listed action that does run is still held to its slot and its own "
+        "assertion. Use only for an action a platform genuinely cannot perform, and say "
+        "which in the pull request: every name here is a hole in the gate",
     )
     ap.add_argument(
         "--allow-slot-misses",

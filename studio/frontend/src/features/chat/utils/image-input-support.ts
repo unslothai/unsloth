@@ -104,3 +104,44 @@ export function getImageInputUnavailableReason({
     `${label} cannot accept images. Load a vision-capable model${suffix}`
   );
 }
+
+/**
+ * The owners of the running-flag pulse the gate fires when it refuses a turn.
+ *
+ * `chat-adapter.ts` flips `runningByThreadId` on and straight back off before it throws,
+ * so compare mode's `waitForRunEnd` resolves instead of hanging on a run that never
+ * reached the streaming path. It is a settlement for waiters, not a run: nothing was
+ * requested, nothing was generated, and anything reading that field as "this thread's run
+ * started, and then it ended" is reading a request that was never issued as a finished one.
+ *
+ * A WeakSet rather than a flag on the function, because the store types an owner as a bare
+ * `() => void` and the identity is all either side needs. Fresh per pulse: siblings share
+ * the "__default" key and `setThreadRunning` clears by owner, so two gates firing on one
+ * key must not clear each other's entry.
+ */
+const imageGateRunOwners = new WeakSet<() => void>();
+
+/** A run-owner token that marks its `setThreadRunning` pair as the gate's own pulse. */
+export function createImageGateRunOwner(): () => void {
+  const owner = () => {};
+  imageGateRunOwners.add(owner);
+  return owner;
+}
+
+/**
+ * Whether everything holding this thread's running flag is a gate pulse.
+ *
+ * Asked by readers that mean "is this thread generating", so a real run sharing the key --
+ * an unresolved sibling under "__default", or a gate firing on one pane while the other
+ * streams -- still answers yes. An empty list is a run from before per-run tracking and is
+ * taken at face value.
+ */
+export function isImageGateRunOnly(
+  owners: readonly { owner: () => void }[] | undefined,
+): boolean {
+  return (
+    owners !== undefined &&
+    owners.length > 0 &&
+    owners.every((entry) => imageGateRunOwners.has(entry.owner))
+  );
+}

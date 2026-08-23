@@ -75,6 +75,7 @@ test("renders browser callback completion and cancellation controls", () => {
   const markup = render({ initialFlow: flow({ method: "browser" }) });
   assert.match(markup, /paste the complete localhost callback URL/i);
   assert.match(markup, /http:\/\/localhost:1455\/auth\/callback/);
+  assert.match(markup, /<input[^>]*data-reload-snapshot-sensitive="true"/);
   assert.match(markup, />Complete</);
   assert.match(markup, />Cancel</);
 });
@@ -85,6 +86,10 @@ test("renders device-code instructions without exposing OAuth internals", () => 
   });
   assert.match(markup, /Enter this code in ChatGPT/);
   assert.match(markup, /ABCD-EFGH/);
+  assert.match(
+    markup,
+    /<div data-reload-snapshot-sensitive="true" class="space-y-2 text-sm">/,
+  );
   assert.match(markup, />Copy code</);
   assert.doesNotMatch(markup, /code_verifier|device_auth_id|secret-state/);
 });

@@ -18,7 +18,26 @@ import pytest
 import routes.inference as inference_route
 from fastapi import HTTPException
 from models.inference import AudioSpeechRequest, ChatCompletionRequest
+from starlette.requests import Request
 from utils.inference import inference_config as ic
+
+
+def _request(path = "/v1/audio/speech"):
+    """/v1/audio/speech opens an API monitor row, so it needs a real request."""
+    return Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "root_path": "",
+            "headers": [],
+        }
+    )
 
 
 class _FakeLlama:
@@ -127,7 +146,7 @@ def test_whisper_is_rejected_cleanly_by_both_tts_endpoints(monkeypatch):
     speech = AudioSpeechRequest(input = "hi", model = "some/custom-tts")
     for request in (
         inference_route.generate_audio(payload, request = None, current_subject = "t"),
-        inference_route.openai_audio_speech(speech, request = None, current_subject = "t"),
+        inference_route.openai_audio_speech(speech, request = _request(), current_subject = "t"),
     ):
         with pytest.raises(HTTPException) as exc:
             asyncio.run(request)
