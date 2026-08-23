@@ -1169,20 +1169,13 @@ async def start_training(
         logger.info(f"Starting training job with model: {request.model_name}")
         backend = get_training_backend()
         job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
-        if request.start_request_id:
-            reservation, record = backend.reserve_start_request(
-                request.start_request_id,
-                job_id,
-            )
-            if reservation == "existing":
-                return _start_request_response(record)
-            if reservation == "conflict":
-                return _start_request_response(record)
-            reserved_start_request_id = request.start_request_id
-
         # When Unsloth is driven as an inference API (API-key auth), refuse to start training while
         # a request is in flight: training frees VRAM by unloading the chat model, killing the
         # stream. The UI (session auth) still starts and coexists. Mixed UI+API is not special-cased.
+        # Checked BEFORE reserving start_request_id: this refusal is transient (it clears when the
+        # stream ends), so it must not resolve the caller's idempotency key to "rejected" -- that
+        # record is permanent, and a retry with the same key would replay the stale rejection
+        # forever instead of starting the run.
         if via_api_key is True:
             from core.inference.llama_keepwarm import other_inference_request_count
             if (
@@ -1196,6 +1189,17 @@ async def start_training(
                         "progress. Wait for it to finish, or start training from the Unsloth UI."
                     ),
                 )
+
+        if request.start_request_id:
+            reservation, record = backend.reserve_start_request(
+                request.start_request_id,
+                job_id,
+            )
+            if reservation == "existing":
+                return _start_request_response(record)
+            if reservation == "conflict":
+                return _start_request_response(record)
+            reserved_start_request_id = request.start_request_id
 
         # No in-process ensure_transformers_version(): worker.py activates it before ML imports.
 

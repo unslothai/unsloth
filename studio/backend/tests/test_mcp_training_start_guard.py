@@ -202,8 +202,8 @@ def test_a_pending_waiter_counts_as_active(monkeypatch):
 # --------------------------------------------------------------------------------------
 
 
-def test_a_guard_409_permanently_poisons_the_supplied_start_request_id(monkeypatch):
-    """Transient refusal, permanent record: the retry can never start."""
+def test_a_guard_409_does_not_poison_the_supplied_start_request_id(monkeypatch):
+    """The refusal is transient, so it must not resolve the idempotency key."""
     route = _load_training_route("training_route_guard_sticky_test")
     counter = {"n": 1}
     backend = TrainingBackend()
@@ -221,17 +221,15 @@ def test_a_guard_409_permanently_poisons_the_supplied_start_request_id(monkeypat
         asyncio.run(_call(route, config))
     assert first.value.status_code == 409
 
-    record = backend.get_start_request("agent-retry-1")
-    assert record is not None
-    assert record.state == "rejected"
+    # The guard runs before the reservation, so no permanent record is written.
+    assert backend.get_start_request("agent-retry-1") is None
 
-    # Stream is over. The agent retries with the same idempotency key.
+    # Stream is over. The agent retries with the same idempotency key and the
+    # start is admitted (it fails later on the fake model, never on the guard).
     counter["n"] = 0
-    response = asyncio.run(_call(route, config))
-
-    # It never re-enters the route: it gets the cached rejection back as an error.
-    assert response.status == "error"
-    assert "inference request is in progress" in (response.error or "")
+    with pytest.raises(HTTPException) as second:
+        asyncio.run(_call(route, config))
+    assert "inference request is in progress" not in str(second.value.detail)
 
 
 def test_a_fresh_start_request_id_recovers(monkeypatch):
