@@ -469,6 +469,30 @@ def test_safe_extractall_rejects_malformed_symlink_targets(tmp_path, link_target
     assert not any(target.iterdir())
 
 
+def test_safe_extractall_rejects_a_symlink_redirected_parent(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    # An earlier member can turn a later member's parent into a link, which the pre-extraction
+    # pass cannot see because no link exists yet. Without a re-check at creation time, the
+    # third member's unlink/symlink_to lands on a file outside the install dir.
+    target = tmp_path / "install"
+    target.mkdir()
+    outside = tmp_path / "outside_dir"
+    outside.mkdir()
+    victim = outside / "victim"
+    victim.write_bytes(b"outside the install dir")
+    archive = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        _link_member(zf, "a", ".")
+        _link_member(zf, "a/out", "../outside_dir")
+        _link_member(zf, "a/out/victim", "replacement")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "unsafe symlink"):
+            _safe_extractall(zf, target)
+    assert not victim.is_symlink()
+    assert victim.read_bytes() == b"outside the install dir"
+
+
 def test_safe_extractall_rejects_symlink_cycles(tmp_path):
     # Chains are normal, a cycle is not: it installs a library nothing can read, so the
     # loader failure would send the backend round the reinstall loop on every load.

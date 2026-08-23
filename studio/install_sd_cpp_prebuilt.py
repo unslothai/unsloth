@@ -585,6 +585,16 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     # Validated before the first write, so a rejected archive leaves the install untouched.
     zf.extractall(target, members = plain)
     for dest, link_target, member in links:
+        dest = Path(os.path.normpath(dest))
+        # Re-resolved HERE, never reused from the pass above: that pass ran before a single
+        # link existed, so an earlier member (a -> .) can turn a later member's parent into a
+        # link (a/out -> ../outside) and send this unlink/symlink_to outside base. A parent
+        # that no longer resolves to itself has been redirected.
+        resolved = (dest.parent / link_target).resolve()
+        if os.path.realpath(dest.parent) != str(dest.parent) or (
+            resolved != base and base not in resolved.parents
+        ):
+            raise RuntimeError(f"unsafe symlink in archive: {member.filename!r} -> {link_target!r}")
         if dest.is_dir() and not dest.is_symlink():
             raise RuntimeError(f"symlink member collides with a directory: {member.filename!r}")
         dest.parent.mkdir(parents = True, exist_ok = True)
