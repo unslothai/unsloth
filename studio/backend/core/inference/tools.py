@@ -14421,9 +14421,7 @@ def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
         stat = os.stat(name, dir_fd = dir_fd, follow_symlinks = False)
         return ":".join(
             str(part)
-            for part in (
-                stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
-            )
+            for part in (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
         )
     except OSError:
         logger.debug("tool result spill write failed", exc_info = True)
