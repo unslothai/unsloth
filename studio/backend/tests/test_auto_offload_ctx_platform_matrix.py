@@ -98,11 +98,7 @@ _SOURCE_LINES, _SOURCE_FIRST = inspect.getsourcelines(_LOAD_MODEL)
 
 
 def _anchor_lines(needle: str) -> list[int]:
-    return [
-        _SOURCE_FIRST + offset
-        for offset, line in enumerate(_SOURCE_LINES)
-        if needle in line
-    ]
+    return [_SOURCE_FIRST + offset for offset, line in enumerate(_SOURCE_LINES) if needle in line]
 
 
 def _one_anchor(needle: str) -> int:
@@ -194,8 +190,7 @@ class Accelerator:
 # The four the extra-args matrix already ships, kept byte-identical so both suites
 # describe the same hardware, plus the four this change makes worth separating.
 ACCELERATORS = [
-    Accelerator(label, vulkan, tuple(memory))
-    for label, vulkan, memory in _platforms.ACCELERATORS
+    Accelerator(label, vulkan, tuple(memory)) for label, vulkan, memory in _platforms.ACCELERATORS
 ] + [
     # ROCm without Vulkan: the torch fallback probe, not amd-smi, and the only
     # vendor for which sys.platform changes the free VRAM figure (see G6 below).
@@ -298,9 +293,7 @@ def cell_backend(
         "_apple_metal_memory_budget_bytes",
         staticmethod(lambda: accelerator.apple_budget_bytes),
     )
-    backend, gguf = _backend(
-        tmp_path, vulkan = accelerator.vulkan, memory = list(accelerator.memory)
-    )
+    backend, gguf = _backend(tmp_path, vulkan = accelerator.vulkan, memory = list(accelerator.memory))
 
     # Sized against the cell's own reported free memory so "fits" and "overflows"
     # mean the same thing on a 12 GB card and on a 24 GB shared pool. With no GPU
@@ -372,9 +365,7 @@ def test_an_overflowing_model_reaches_the_expected_arm_and_pins_nothing(
 
 
 @pytest.mark.parametrize("platform,accelerator", MATRIX)
-def test_a_model_that_fits_never_reaches_either_site(
-    tmp_path, monkeypatch, platform, accelerator
-):
+def test_a_model_that_fits_never_reaches_either_site(tmp_path, monkeypatch, platform, accelerator):
     """G1. The far more common shape: the subset loop awards, so the constant is
     never read. Pinned devices and ``--fit off`` are the evidence the loop won."""
     outcome = run_cell(tmp_path, monkeypatch, platform, accelerator, model_fraction = FITS)
@@ -487,9 +478,7 @@ def test_manual_memory_mode_bypasses_both_sites_on_a_gpu_box(
 
 
 @pytest.mark.parametrize("platform", PLATFORMS, ids = [p[0] for p in PLATFORMS])
-def test_the_rocm_arch_gate_drops_an_amd_host_onto_the_cpu_path(
-    tmp_path, monkeypatch, platform
-):
+def test_the_rocm_arch_gate_drops_an_amd_host_onto_the_cpu_path(tmp_path, monkeypatch, platform):
     """G8. Every present device gated out (#7624) empties ``_gpu_mem``, so an AMD
     box with real cards takes the same no-arm path a CPU-only box takes and never
     reaches either site."""
@@ -587,9 +576,7 @@ def test_windows_rocm_feeds_a_smaller_free_reading_into_the_planner(
     assert total_bytes // MIB == 16_384
 
 
-def test_the_windows_rocm_cap_is_what_pushes_a_load_into_the_fallback(
-    tmp_path, monkeypatch
-):
+def test_the_windows_rocm_cap_is_what_pushes_a_load_into_the_fallback(tmp_path, monkeypatch):
     """G6, second half: the smaller number changes the outcome.
 
     Same card, same model. Linux keeps the driver's 16000 MiB and the subset loop

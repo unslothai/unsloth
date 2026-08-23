@@ -139,9 +139,7 @@ def test_auto_never_publishes_a_ceiling_below_the_context_it_runs(native, model_
     itself. Drive the ceiling probe and the context decision from the same inputs
     and require that they agree.
     """
-    published = _compute_max_available_ctx(
-        native_ctx = native, model_gib = model_gib, gpus = gpus
-    )
+    published = _compute_max_available_ctx(native_ctx = native, model_gib = model_gib, gpus = gpus)
     plan = _drive(n_ctx = 0, model_gib = model_gib, gpus = gpus, native_ctx = native)
     running = plan["c_arg"]
 

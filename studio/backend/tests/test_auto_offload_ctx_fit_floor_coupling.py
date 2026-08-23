@@ -80,7 +80,13 @@ def _fit_helper_floors() -> dict:
     }
 
 
-def _award_at(tmp_path, monkeypatch, offload_ctx: int, *, model_mib: int = MODEL_MIB):
+def _award_at(
+    tmp_path,
+    monkeypatch,
+    offload_ctx: int,
+    *,
+    model_mib: int = MODEL_MIB,
+):
     """Run the fallback with the constant set to ``offload_ctx``; report the award."""
     monkeypatch.setattr(_llama_cpp, "_AUTO_OFFLOAD_CTX", offload_ctx)
     backend, gguf = _matrix.cell_backend(

@@ -17222,9 +17222,7 @@ class LlamaCppBackend:
                                 # that as "context exceeds the estimated VRAM
                                 # capacity" while advising the user to leave it
                                 # on Auto.
-                                max_available_ctx = min(
-                                    _AUTO_OFFLOAD_CTX, native_ctx_for_cap
-                                )
+                                max_available_ctx = min(_AUTO_OFFLOAD_CTX, native_ctx_for_cap)
 
                         if explicit_ctx:
                             # Honor the requested context verbatim. If it fits,
