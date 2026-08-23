@@ -60,11 +60,54 @@ def test_cell_metrics_refuses_to_collapse_two_sessions():
     with pytest.raises(SystemExit) as caught:
         floor_table.cell_metrics(_two_session_payload())
     message = str(caught.value)
-    assert "sessions" in message, (
+    assert "more than one session" in message, (
         "cell_metrics keyed on cell_id alone and returned the last writer's values. That is how a "
         "payload holding two concurrent runs reported a 149.8% regression that does not exist."
     )
+    # The colliding cell is NAMED, not just counted. A refusal that says only "two sessions" sends
+    # the reader back to the payload to find out which reading it was protecting them from.
+    assert "r1M.base.rep0" in message
     assert "91c4d6d94da8" in message and "430f0b831dda" in message
+
+
+def test_a_resumed_run_is_not_mistaken_for_two_concurrent_ones():
+    """The refusal keys on a COLLIDING COMPLETED CELL, not on the payload holding two sessions.
+
+    `--resume` re-runs the arm that died under a NEW session id into the same shard directory, so a
+    resumed payload legitimately carries two sessions. The attempt that died is not marked
+    completed, so no cell id completes twice and there is nothing to refuse. Keying the refusal on
+    the session count instead would reject every resumed run -- deleting good readings to guard
+    against a collision that is not there.
+    """
+    rows = [
+        {"row_type": "cell", "cell_id": "r100K.base.rep0", "session_id": "s1", "completed": True},
+        # died, then re-run under a new session id
+        {
+            "row_type": "cell",
+            "cell_id": "r100K.treatment.rep0",
+            "session_id": "s1",
+            "completed": False,
+        },
+        {
+            "row_type": "cell",
+            "cell_id": "r100K.treatment.rep0",
+            "session_id": "s2",
+            "completed": True,
+        },
+    ]
+    assert floor_table.collided_cells(rows) == {}
+    assert set(floor_table.cell_metrics(rows)) == {"r100K.base.rep0", "r100K.treatment.rep0"}
+
+
+def test_a_cell_completing_twice_is_what_is_refused():
+    """The other direction: two COMPLETED copies of one cell id is the concurrent-run signature."""
+    rows = [
+        {"row_type": "cell", "cell_id": "r100K.base.rep0", "session_id": "s1", "completed": True},
+        {"row_type": "cell", "cell_id": "r100K.base.rep0", "session_id": "s2", "completed": True},
+    ]
+    assert floor_table.collided_cells(rows) == {"r100K.base.rep0": {"s1", "s2"}}
+    with pytest.raises(SystemExit):
+        floor_table.cell_metrics(rows)
 
 
 def test_a_single_session_payload_is_unaffected():

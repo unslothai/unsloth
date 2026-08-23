@@ -23,7 +23,19 @@ import sys
 import time
 from pathlib import Path
 
-TOOL_VERSION = "0.1.0"
+# BUMPED BECAUSE THE INSTRUMENTS CHANGED, not because the tool gained features. This is one of the
+# fields the comparability key is computed over, and it is the ONLY field that can separate a run
+# taken before this change from one taken after it: the corpus is untouched, so the corpus hash,
+# the tier and the rungs all match across the change.
+#
+# They must not match. `reasoning_toggle` now settles on a quiet DOM, so
+# `highlight_spans_while_open` reads 74,250 where it used to read 44,075 on the same bundle, and
+# `open_ms` now terminates on a settled mount rather than on the `data-state` flip, which makes it
+# a different quantity rather than a better-measured one. A key that certified those two runs as
+# comparable would be the exact failure this key exists to prevent, committed by the guard itself.
+#
+# Any future change to what an instrument MEASURES has to bump this for the same reason.
+TOOL_VERSION = "0.2.0"
 TIERS = ("fast", "quick", "standard", "full")
 TIER_RUNGS = {
     # One rung, and it is 100K on purpose. The 10K rung was measured across six PRs and could
@@ -1669,6 +1681,16 @@ def _summarise(rows: list, paths) -> None:
         if not r.get("completed"):
             f = r.get("failure") or {}
             _log(f"    FAILED: {f.get('kind')}: {str(f.get('message'))[:100]}")
+    # SAID UNDER THE TABLE THAT PRINTS THEM. `elems` and `spans` come from `census_peak`, whose
+    # action is chosen by a max() over per-action censuses that race their own teardown, so it is
+    # not the same moment on two arms. Differencing these two columns between arms is what
+    # produced a withdrawn "43% more standing DOM" claim. The columns stay because the high-water
+    # mark is a useful diagnostic; the warning stays with them so it cannot be read without it.
+    _log(
+        "\n  elems/spans are census_peak: a diagnostic high-water mark, taken at whichever "
+        "action mounted most.\n  Do NOT difference them between arms. For a cross-arm census use "
+        "a settled measure."
+    )
 
 
 def _rung_tokens(labels: list) -> list:

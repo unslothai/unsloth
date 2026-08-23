@@ -190,6 +190,36 @@ def _meta(
     }
 
 
+def test_a_run_from_before_the_settling_fix_is_not_comparable_with_one_from_after():
+    """The corpus did not change here, so `tool_version` is the only field that can separate them.
+
+    This change redefines two published measures on an UNCHANGED corpus:
+    `highlight_spans_while_open` reads 74,250 where it read 44,075 on the same bundle, and
+    `open_ms` now terminates on a settled mount rather than on the `data-state` flip. Every other
+    field the key covers -- corpus hash, tier, rungs, engine, cadence -- is identical across the
+    change. If the key could not tell those two runs apart it would certify as comparable the pair
+    that differs by the largest instrument change in the campaign, which is the failure it exists
+    to prevent.
+    """
+    corpus = "ac9d5d8e37be2a3844deed559fde6070247ad2322377295fb383b60b5eec5a0c"
+    before = _meta(corpus)
+    before["tool_version"] = "0.1.0"
+    after = _meta(corpus)
+    after["tool_version"] = "0.2.0"
+    assert payload_rules.comparability_key(before) != payload_rules.comparability_key(after)
+    assert payload_rules.explain_incomparable(before, after) == ["tool_version: '0.1.0' != '0.2.0'"]
+
+
+def test_the_shipping_tool_version_is_the_settled_one():
+    """The bump has to be on the constant the harness actually stamps, not only in a fixture."""
+    from tests.studio.studiobench.__main__ import TOOL_VERSION
+    assert TOOL_VERSION != "0.1.0", (
+        "TOOL_VERSION still reads 0.1.0, so every payload written after the settling fix carries "
+        "the same comparability key as one written before it, and `--compare` reports the two as "
+        "comparable."
+    )
+
+
 def test_the_key_is_keyed_on_the_computed_corpus_hash_not_the_harness_commit():
     old = _meta("f113503e6cea3574e9c1a99653ee140904ab24f7606505f9e0d8d66efda96070")
     new = _meta("ac9d5d8e37be2a3844deed559fde6070247ad2322377295fb383b60b5eec5a0c")

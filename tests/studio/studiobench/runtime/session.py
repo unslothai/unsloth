@@ -801,7 +801,19 @@ class CellRunner:
         """
         s = self.session
         page = s.ctx.page
+        # THE STREAMED SIDE IS THE PEAK, AND THE PEAK IS TAKEN AT AN UNSTABLE MOMENT. Recorded on
+        # the row rather than left implicit, because the seeded side below is read after an
+        # explicit 4 s wait -- a settled moment -- so this gate differences a racing census against
+        # a stable one. That is the same shape as the defect that made `census_peak` unquotable
+        # across arms.
+        #
+        # It is NOT the same harm and the behaviour is deliberately left alone here: both sides of
+        # this comparison come from ONE cell on ONE build, so the instability widens the gate's
+        # tolerance rather than pointing a difference in a direction. Changing which census feeds
+        # it would change what the gate asserts, and that cannot be justified without measuring it
+        # against a browser. Said out loud so the next reader does not have to rediscover it.
         streamed = row.get("census_peak") or row.get("census_after") or {}
+        streamed_from = "census_peak" if row.get("census_peak") else "census_after"
         follow_ups = self._streamed_follow_ups(plan, row)
         try:
             all_units = list(plan.seeded_units) + [plan.streamed_unit] + follow_ups
@@ -830,7 +842,10 @@ class CellRunner:
             }
         out = compare_signatures(streamed, seeded_sig)
         out["streamed_census"] = streamed
+        out["streamed_census_from"] = streamed_from
+        out["streamed_census_settled"] = streamed_from != "census_peak"
         out["seeded_census"] = seeded_sig
+        out["seeded_census_settled"] = True
         out["readiness_mode"] = self.readiness_mode
         if self.readiness_mode == MODE_WINDOWED:
             # SAID OUT LOUD RATHER THAN SCORED QUIETLY. Both sides of this check are loaded by the

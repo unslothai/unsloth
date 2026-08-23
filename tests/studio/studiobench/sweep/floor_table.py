@@ -102,12 +102,35 @@ def sessions_in(records: list[dict]) -> set[str]:
     }
 
 
+def collided_cells(records: list[dict]) -> dict[str, set[str]]:
+    """{cell_id: sessions} for every cell id COMPLETED under more than one session id.
+
+    THIS, AND NOT THE SESSION COUNT, IS WHAT SEPARATES THE TWO CASES. More than one session in a
+    payload is ordinary and legitimate: `--resume` re-runs the arm that died under a new session id
+    into the same shard directory, and sharding appends several sessions on purpose. What is never
+    legitimate is the SAME cell completing twice, because a cell id is unique within a session, so
+    two completed copies mean two runs measured the same thing and only one of them can be
+    reported.
+
+    The resumed case is distinguishable precisely because the attempt that died is not marked
+    completed: only the retry is, so the id does not collide. The concurrent case is the one where
+    every id is present twice with `completed: true` on both.
+    """
+    seen: dict[str, set[str]] = {}
+    for r in records:
+        if r.get("row_type") == "cell" and r.get("completed") and r.get("cell_id"):
+            seen.setdefault(r["cell_id"], set()).add(str(r.get("session_id") or ""))
+    return {cid: s for cid, s in seen.items() if len(s) > 1}
+
+
 def cell_metrics(records: list[dict], session: str | None = None) -> dict[str, dict[str, float]]:
     """{cell_id: {metric: value}} for every COMPLETED cell in ONE session of the payload.
 
-    REFUSES rather than letting the last writer win. `cell_id` is unique within a session and NOT
-    across sessions, so keying on it alone silently collapses two measurements of the same cell
-    into whichever was appended last.
+    REFUSES rather than letting the last writer win, when and only when a cell id COMPLETED under
+    more than one session. `cell_id` is unique within a session and NOT across sessions, so keying
+    on it alone silently collapses two measurements of the same cell into whichever was appended
+    last. Several sessions in one payload is not itself the fault -- `--resume` and sharding both
+    produce that legitimately, and refusing them would delete good readings. See `collided_cells`.
 
     That is not hypothetical. A launcher started twice ran two full sessions concurrently against
     one `--out`, and both appended: three `run_meta` rows, every `cell_id` present twice, both
@@ -128,14 +151,16 @@ def cell_metrics(records: list[dict], session: str | None = None) -> dict[str, d
     frame metrics dilutes `time_in_jank_pct` and `jank_index` away from the film that was measured.
     A metric here has to be the same quantity the rest of the tool calls by that name.
     """
-    live = sessions_in(records)
-    if session is None and len(live) > 1:
+    collided = collided_cells(records)
+    if session is None and collided:
+        listed = ", ".join(f"{cid} in {sorted(s)}" for cid, s in sorted(collided.items())[:4])
+        more = "" if len(collided) <= 4 else f" (and {len(collided) - 4} more)"
         raise SystemExit(
-            f"refusing to pool cells from {len(live)} sessions in one payload: "
-            f"{sorted(live)}. `cell_id` is unique within a session, not across them, so keying "
-            f"on it alone would report whichever session was appended last. Two concurrent runs "
-            f"sharing one --out is the usual cause. Pass `session=` to pick one, or use `paired`, "
-            f"which pairs within a session."
+            f"refusing to pool {len(collided)} cell id(s) that completed under more than one "
+            f"session in this payload: {listed}{more}. `cell_id` is unique within a session, not "
+            f"across them, so keying on it alone would report whichever session was appended "
+            f"last. Two concurrent runs sharing one --out is the usual cause. Pass `session=` to "
+            f"pick one, or use `paired`, which pairs within a session."
         )
     out: dict[str, dict[str, float]] = {}
     if session is not None:
