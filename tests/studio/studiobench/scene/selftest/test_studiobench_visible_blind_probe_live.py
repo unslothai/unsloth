@@ -137,15 +137,16 @@ def _capture(browser, **kw) -> dict:
 
 
 #: The base arm: an ordinary settled thread on the shipped build.
-_SETTLED = dict(tail = "the whole reply, arrived", hook = "data-status",
-                tail_running = False, generating = False)
+_SETTLED = dict(
+    tail = "the whole reply, arrived", hook = "data-status", tail_running = False, generating = False
+)
 #: The treatment arm: its reply is still being written and its status hook is not one this
 #: instrument knows, so every row reads settled.
-_BLIND = dict(tail = "the whole reply, arr", hook = "data-state",
-              tail_running = True, generating = True)
+_BLIND = dict(tail = "the whole reply, arr", hook = "data-state", tail_running = True, generating = True)
 #: The same mid-stream moment on a build whose hook IS known. Already handled, as residue.
-_MIDSTREAM = dict(tail = "the whole reply, arr", hook = "data-status",
-                  tail_running = True, generating = True)
+_MIDSTREAM = dict(
+    tail = "the whole reply, arr", hook = "data-status", tail_running = True, generating = True
+)
 
 
 def test_a_blinded_treatment_is_refused_not_scored_as_a_rendering_difference(browser):
