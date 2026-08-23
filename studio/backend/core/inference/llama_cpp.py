@@ -56,6 +56,7 @@ from core.inference.context_window import (
     evicted_messages,
     fit_rolling_context,
     messages_have_media,
+    retrieval_budget,
 )
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.llama_server_args import (
@@ -300,7 +301,16 @@ def _fit_with_instruction_pins(
     fitted, truncation = _fit_context(
         messages, protected_message_ids = (anchors | pins) or None, **kwargs
     )
-    if pins and truncation and not truncation.get("fits"):
+    # Only a refusal that returned the ORIGINAL messages was "already failing". A rescue
+    # reports `fits` false too but is servable, and dropping its pins would trade a working
+    # prompt WITH the standing instruction for one without, the very thing this seam
+    # prevents. `dropped_messages` separates them.
+    if (
+        pins
+        and truncation
+        and not truncation.get("fits")
+        and not int(truncation.get("dropped_messages") or 0)
+    ):
         return _fit_context(messages, protected_message_ids = anchors or None, **kwargs)
     return fitted, truncation
 
@@ -798,6 +808,17 @@ def _branch_boundary(conversation: list[dict], branch: Optional[list[dict]]) -> 
     return count
 
 
+def _records_boundary(truncation: dict) -> bool:
+    """Whether a fit removed turns from the prompt it sent, so its depth is worth saving.
+
+    Not ``fits``: a rescue reports false yet really did evict, and the client reads this
+    depth to place the compaction notice, so recording nothing compacts silently. Saving
+    is not replaying -- `_sticky_compaction_boundary` still declines any `fits` false
+    record, which is where a missed reserve belongs.
+    """
+    return bool(truncation.get("fits")) or bool(truncation.get("dropped_messages"))
+
+
 def _branch_non_system(branch: Optional[list[dict]]) -> list[dict]:
     """The branch as ``_branch_boundary`` counts it: system and developer turns removed."""
     return [
@@ -1011,6 +1032,10 @@ def _prefix_user_text(message: dict, prefix: str) -> dict:
                 return {**message, "content": parts}
         return {**message, "content": [{"type": "text", "text": prefix}] + parts}
     return message
+
+
+# A readable local name for the shared `context_window` policy, not a second implementation.
+_retrieval_budget = retrieval_budget
 
 
 def _recall_top_k(budget_tokens: int) -> int:
@@ -23273,7 +23298,7 @@ class LlamaCppBackend:
                         tools_withheld = tools_withheld,
                     ),
                 )
-                if truncation and truncation["fits"]:
+                if truncation:
                     # Inline, not a forged tool exchange: this path sends no tools array,
                     # and strict templates reject a tool role with no catalogue.
                     _recalled = _archive_and_recall(
@@ -23285,11 +23310,13 @@ class LlamaCppBackend:
                         # Checkpoint mode recalls once, on the turn that reset; rolling has no
                         # such key and keeps recalling on every turn that evicted anything.
                         force_recall = bool(truncation.get("checkpoint_started", True)),
-                        recall_done = False,
-                        recall_budget_tokens = max(
-                            0,
-                            prompt_budget(self._effective_context_length, payload["max_tokens"])
-                            - int(truncation.get("prompt_tokens_after") or 0),
+                        # A rescued refusal may evict messages; archive them without recall.
+                        recall_done = not truncation["fits"],
+                        # This single-shot answer never returns to the prompt.
+                        recall_budget_tokens = _retrieval_budget(
+                            self._effective_context_length,
+                            payload["max_tokens"],
+                            truncation.get("prompt_tokens_after") or 0,
                         ),
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
@@ -23304,7 +23331,7 @@ class LlamaCppBackend:
                     )
                     openai_messages = _recalled["conversation"]
                     truncation = {**truncation, **_recalled["counts"]}
-                if truncation and truncation.get("fits"):
+                if truncation and _records_boundary(truncation):
                     truncation = {
                         **truncation,
                         "boundary_messages": _branch_boundary(openai_messages, _before_fit),
@@ -23953,7 +23980,7 @@ class LlamaCppBackend:
                         _prompt_token_offset = int(
                             truncation.get("prompt_tokens_after") or 0
                         ) - estimate_messages_tokens(conversation)
-                    if truncation and truncation["fits"]:
+                    if truncation:
                         _recalled = _archive_and_recall(
                             conversation,
                             _before_fit,
@@ -23970,11 +23997,14 @@ class LlamaCppBackend:
                             # Checkpoint mode recalls once, on the turn that reset; rolling has
                             # no such key and recalls on every turn that evicted anything.
                             force_recall = bool(truncation.get("checkpoint_started", True)),
-                            recall_done = _conversation_recall_done,
-                            recall_budget_tokens = max(
-                                0,
-                                prompt_budget(self._effective_context_length, max_tokens)
-                                - int(truncation.get("prompt_tokens_after") or 0),
+                            # A rescued refusal may evict messages; archive them without recall.
+                            recall_done = _conversation_recall_done or not truncation["fits"],
+                            # Leave room for the answer appended on the next iteration.
+                            recall_budget_tokens = _retrieval_budget(
+                                self._effective_context_length,
+                                max_tokens,
+                                truncation.get("prompt_tokens_after") or 0,
+                                reply_returns = True,
                             ),
                             count_tokens = lambda fitted: self.count_chat_tokens(
                                 neutralize_control_markup_in_messages(
@@ -23999,7 +24029,7 @@ class LlamaCppBackend:
                                 _rolling_anchor_ids.add(id(_message))
                             for _ev in _recalled["events"]:
                                 yield _ev
-                    if truncation and truncation.get("fits"):
+                    if truncation and _records_boundary(truncation):
                         truncation = {
                             **truncation,
                             "boundary_messages": _branch_boundary(conversation, _request_branch),
@@ -24097,11 +24127,9 @@ class LlamaCppBackend:
                             tools_withheld = _memory_tool_withheld(thread_id, tools),
                         ),
                     )
-                    if truncation and truncation["fits"]:
-                        # Archive only: this refit runs against a smaller replacement
-                        # window with no reserve held back, so injecting a recall is
-                        # exactly what would push the retry over. The next request can
-                        # still recall these turns.
+                    if truncation:
+                        # Archive only. The replacement fit reserves no recall room, and a
+                        # rescued refusal may still have evicted messages.
                         truncation.update(
                             _archive_and_recall(
                                 conversation,
@@ -24115,13 +24143,15 @@ class LlamaCppBackend:
                     payload["messages"] = neutralize_control_markup_in_messages(
                         conversation, _markup_cache, self.markup_profile
                     )
-                    if truncation and truncation["fits"]:
-                        truncation["boundary_messages"] = _branch_boundary(
-                            conversation, _request_branch
-                        )
-                        truncation["boundary_anchor"] = _branch_boundary_anchor(
-                            conversation, _request_branch
-                        )
+                    if truncation:
+                        if _records_boundary(truncation):
+                            truncation["boundary_messages"] = _branch_boundary(
+                                conversation, _request_branch
+                            )
+                            truncation["boundary_anchor"] = _branch_boundary_anchor(
+                                conversation, _request_branch
+                            )
+                        # Report every shortened retry, including a rescued refusal.
                         _respawn_truncations.append(truncation)
                 except Exception as exc:
                     logger.warning("Could not refit rolling context after respawn: %s", exc)
@@ -25287,10 +25317,13 @@ class LlamaCppBackend:
                                             strict = False,
                                         )
                                     )
-                                kwargs["conversation_budget_tokens"] = max(
-                                    0,
-                                    prompt_budget(self._effective_context_length, max_tokens)
-                                    - _spent,
+                                # The result and reply are protected on the next fit, so
+                                # the result cannot spend their entire shared budget.
+                                kwargs["conversation_budget_tokens"] = _retrieval_budget(
+                                    self._effective_context_length,
+                                    max_tokens,
+                                    _spent,
+                                    reply_returns = True,
                                 )
                             if accepts_output_callback(execute_tool):
                                 kwargs["output_callback"] = _output_callback
@@ -25493,7 +25526,7 @@ class LlamaCppBackend:
                     ),
                 )
                 _sticky_boundary_applied = True
-                if truncation and truncation["fits"]:
+                if truncation:
                     _recalled = _archive_and_recall(
                         conversation,
                         _before_final_fit,
@@ -25506,11 +25539,13 @@ class LlamaCppBackend:
                         # Checkpoint mode recalls once, on the turn that reset; rolling has no
                         # such key and keeps recalling on every turn that evicted anything.
                         force_recall = bool(truncation.get("checkpoint_started", True)),
-                        recall_done = _conversation_recall_done,
-                        recall_budget_tokens = max(
-                            0,
-                            prompt_budget(self._effective_context_length, max_tokens)
-                            - int(truncation.get("prompt_tokens_after") or 0),
+                        # A rescued refusal may evict messages; archive them without recall.
+                        recall_done = _conversation_recall_done or not truncation["fits"],
+                        # The synthesized final answer never returns to the prompt.
+                        recall_budget_tokens = _retrieval_budget(
+                            self._effective_context_length,
+                            max_tokens,
+                            truncation.get("prompt_tokens_after") or 0,
                         ),
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
@@ -25530,7 +25565,7 @@ class LlamaCppBackend:
                             _rolling_anchor_ids.add(id(_message))
                         for _ev in _recalled["events"]:
                             yield _ev
-                if truncation and truncation.get("fits"):
+                if truncation and _records_boundary(truncation):
                     truncation = {
                         **truncation,
                         "boundary_messages": _branch_boundary(conversation, _request_branch),
@@ -25609,8 +25644,8 @@ class LlamaCppBackend:
                         tools_withheld = True,
                     ),
                 )
-                if truncation and truncation["fits"]:
-                    # Archive only, for the same reason as the iteration refit above.
+                if truncation:
+                    # Archive only; see the iteration respawn refit above.
                     truncation.update(
                         _archive_and_recall(
                             conversation,
@@ -25624,13 +25659,14 @@ class LlamaCppBackend:
                 stream_payload["messages"] = neutralize_control_markup_in_messages(
                     conversation, None, self.markup_profile
                 )
-                if truncation and truncation["fits"]:
-                    truncation["boundary_messages"] = _branch_boundary(
-                        conversation, _request_branch
-                    )
-                    truncation["boundary_anchor"] = _branch_boundary_anchor(
-                        conversation, _request_branch
-                    )
+                if truncation:
+                    if _records_boundary(truncation):
+                        truncation["boundary_messages"] = _branch_boundary(
+                            conversation, _request_branch
+                        )
+                        truncation["boundary_anchor"] = _branch_boundary_anchor(
+                            conversation, _request_branch
+                        )
                     _final_respawn_truncations.append(truncation)
             except Exception as exc:
                 logger.warning("Could not refit rolling context after respawn: %s", exc)

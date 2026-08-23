@@ -6702,9 +6702,7 @@ const ContinueMessageBarForLastMessage: FC = () => {
   const truncation = useAuiState(({ message }) => {
     const custom = (message.metadata as { custom?: Record<string, unknown> } | undefined)
       ?.custom;
-    return (custom?.contextTruncation ?? null) as
-      | { fits?: boolean; prompt_target?: number }
-      | null;
+    return (custom?.contextTruncation ?? null) as ContextTruncation | null;
   });
 
   // Hitting Max Tokens is the reply running out of room mid-sentence, not a decision the
