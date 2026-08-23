@@ -24,6 +24,8 @@ from core.inference.llama_server_args import (
 )
 
 GIB = 1024**3
+# What a proven fit picks; the constant is deliberately the only switch.
+FIT_MODE = LlamaCppBackend._FIT_LOAD_MODE
 MIB = 1024 * 1024
 
 # (label, gpu rows, vulkan?, unified-memory APU?, shared ordinals)
@@ -60,6 +62,9 @@ class _Stub:
         return self._is_apu
 
     _fits_without_paging = LlamaCppBackend._fits_without_paging
+    # The mode a proven fit picks, read off the backend so flipping the
+    # constant moves the whole matrix with it rather than failing 100 cases.
+    _FIT_LOAD_MODE = LlamaCppBackend._FIT_LOAD_MODE
 
 
 def _mode(platform, hw, footprint, avail_mib, monkeypatch, **kwargs):
@@ -92,7 +97,7 @@ def test_a_load_that_fits_in_vram_takes_none(platform, hw, monkeypatch):
         # No usable dedicated VRAM to fit into, and 4 GiB of RAM cannot hold it.
         assert got is None
     else:
-        assert got == "none"
+        assert got == FIT_MODE
 
 
 @pytest.mark.parametrize("platform,hw", _OS_GPU)
@@ -104,7 +109,7 @@ def test_a_load_that_fits_in_vram_plus_ram_takes_none(platform, hw, monkeypatch)
         assert got is None
     else:
         # Unified memory is priced against RAM alone, which still holds 32 GiB here.
-        assert got == "none", (platform, hw, apu, rows)
+        assert got == FIT_MODE, (platform, hw, apu, rows)
 
 
 @pytest.mark.parametrize("platform,hw", _OS_GPU)
@@ -163,7 +168,7 @@ def test_every_footprint_term_is_charged(monkeypatch):
         "compute_buffer_ctx",
         "soft_overhead",
     ):
-        assert _mode(footprint = rows_free, **base, **{term: 0}) == "none"
+        assert _mode(footprint = rows_free, **base, **{term: 0}) == FIT_MODE
         assert _mode(footprint = rows_free, **base, **{term: 20 * GIB}) is None
 
 

@@ -8780,11 +8780,36 @@ class LlamaCppBackend:
             avail_mib = avail_mib,
         ):
             logger.info(
-                "Load mode: the whole load (%.1f GB) fits without paging, using --load-mode none.",
+                "Load mode: the whole load (%.1f GB) fits without paging, using --load-mode %s.",
                 footprint / (1024**3),
+                self._FIT_LOAD_MODE,
             )
-            return "none"
+            return self._FIT_LOAD_MODE
         return None
+
+    # What a proven fit picks. One name, because the choice is a measurement and
+    # measurements move. Load-to-ready on a B200 over local NVMe, median of 3,
+    # full offload, llama.cpp b10360:
+    #
+    #   Qwen3-4B Q4_K_M (2.5 GB)          cold   warm
+    #     mmap (no flag)                  1.81   1.42
+    #     none                            2.04   1.49
+    #     dio                             2.05   1.69
+    #   Qwen3-30B-A3B UD-Q4_K_XL (17 GB)  cold   warm
+    #     mmap (no flag)                  5.43   2.81
+    #     none                            5.49   3.21
+    #     dio                             2.26   2.30
+    #
+    # So "none" is NOT the fast one here: it drops mmap, which does unlock
+    # llama.cpp's async pinned-buffer uploader, but it still reads through the
+    # page cache and pays that copy, and on this storage that costs more than the
+    # uploader wins. "dio" takes the same uploader AND skips the page cache, and
+    # on the model big enough for loading to matter it is 2.4x faster cold.
+    # Upstream's own guidance says the same, that dio is the answer when you were
+    # reaching for --no-mmap. Kept at "none" because that is what was asked for;
+    # this constant is the whole switch. Note dio has no pre-enum spelling, so a
+    # build without --load-mode would emit nothing rather than a legacy flag.
+    _FIT_LOAD_MODE = "none"
 
     METAL_CTX_OVERCOMMIT_ENV = "UNSLOTH_ALLOW_METAL_CTX_OVERCOMMIT"
 
