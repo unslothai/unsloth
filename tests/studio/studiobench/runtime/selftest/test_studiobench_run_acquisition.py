@@ -552,6 +552,60 @@ def test_a_duplicate_run_is_refused_before_it_archives_or_installs_anything(stud
     assert sb.run(_args(studio, "--branch", "main", "--resume")) == 0
 
 
+def test_a_duplicate_is_still_refused_while_the_report_is_being_rendered(studio, monkeypatch):
+    """REGRESSION. The directory stays held until `run()` has finished READING the payload back.
+
+    `rec.close()` runs in the `finally` under the cells; `_render_ab` and `_summarise` then reopen
+    `payload.jsonl` after it and before `run()`'s own outer `finally` lets the directory go. While
+    `Recorder.close` released the lock it had ADOPTED from `run()`, the directory was free for the
+    whole of that window, and a duplicate arriving in it was admitted. It then did what the guard
+    exists to stop, to a run whose cells had all completed:
+
+      * `prepare_payload` renames `payload.jsonl` to `payload-<stamp>.jsonl` BEFORE it clones
+        anything, so for the minutes it spends installing there is no `payload.jsonl` at all and
+        the first run's reporting step dies with `FileNotFoundError` -- after every cell passed.
+      * once it has opened a payload of its own, that empty file is what `_render_ab` reads, so
+        `ab.md` is written out of another run's rows and the first run still exits 0.
+
+    The duplicate is driven through the real `run()`, from inside the reporting window, so it meets
+    the guard exactly where a second launcher meets it in the field. `flock` treats two descriptors
+    on one file independently even within a process, so the in-process contender is refused by the
+    same kernel lock a separate launcher is.
+    """
+
+    paths = Paths.under(studio["out"])
+    real_render = sb._render_ab
+    seen: dict = {}
+
+    def render_with_a_duplicate_arriving(*args, **kwargs):
+        if "duplicate" not in seen:
+            seen["installed_before"] = list(studio["installed"])
+            seen["payload_before"] = paths.payload_jsonl.read_text(encoding = "utf-8")
+            try:
+                seen["duplicate"] = sb.run(_args(studio, "--branch", "main"))
+            except SystemExit as exc:
+                seen["duplicate"] = exc
+        return real_render(*args, **kwargs)
+
+    monkeypatch.setattr(sb, "_render_ab", render_with_a_duplicate_arriving)
+    assert sb.run(_args(studio, "--branch", "main", "--ab", "pr-9296"), ab_ref = "pr-9296") == 0
+
+    assert isinstance(seen["duplicate"], SystemExit), (
+        "a second run was admitted to the output directory while the first was still reporting"
+    )
+    assert "still running" in str(seen["duplicate"])
+    # Nothing of the first run's was moved, and nothing was installed on top of it.
+    assert paths.payload_jsonl.exists(), "the duplicate archived the payload being reported on"
+    assert paths.payload_jsonl.read_text(encoding = "utf-8") == seen["payload_before"]
+    assert sorted(p.name for p in paths.out.glob("payload-*.jsonl")) == []
+    assert studio["installed"] == seen["installed_before"]
+    # The report is the first run's own, over its own rows.
+    table = (paths.out / "ab.md").read_text(encoding = "utf-8")
+    assert "main -> pr-9296" in table
+    # And the control: the directory is released once `run()` has actually finished with it.
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+
+
 def test_a_resume_under_the_same_probe_still_resumes(studio, probe):
     """The control. A potency ladder that died is meant to be resumable as the ladder it was."""
 
