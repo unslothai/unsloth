@@ -362,6 +362,7 @@ function createEnvironment(options: {
   htmlVariables?: Record<string, string>;
   htmlAttributes?: Record<string, string>;
   styleSheets?: string[];
+  frameDataBody?: string;
   inlineStyleSheets?: string[];
   trackScrollRestores?: boolean;
   localStorage?: Map<string, string>;
@@ -449,7 +450,9 @@ function createEnvironment(options: {
           width: 0,
           height: 0,
           getContext: () => ({ drawImage() {} }),
-          toDataURL: () => "data:image/webp;base64,retained-frame",
+          toDataURL: () =>
+            "data:image/webp;base64," +
+            (options.frameDataBody ?? "retained-frame"),
         };
       }
       const element = {
@@ -1673,6 +1676,43 @@ test("keeps trusted chart CSS while stripping every other style", () => {
   const { html } = storedSnapshot(environment.storage);
   assert.match(html, /--color-displayLoss: #16a34a/);
   assert.doesNotMatch(html, /\.untrusted/);
+});
+
+test("keeps the shell when materialized media alone passes the cap", () => {
+  // capturePixels rasterizes at devicePixelRatio, so the same page costs 4x on
+  // a 2x display. Discarding the whole snapshot there puts back the blank
+  // flash this exists to remove; drop the pixels and keep the layout instead.
+  const tiles = Array.from({ length: 6 }, (_, index) => ({
+    tag: "img",
+    rect: [10 + index, 400, 200 + index, 200] as [number, number, number, number],
+    naturalWidth: 1400,
+    naturalHeight: 1000,
+    attributes: { src: "blob:https://studio/tile-" + index },
+  }));
+  const environment = createEnvironment({
+    navigationType: "navigate",
+    styleSheets: ["/assets/index-abc123.css"],
+    frameDataBody: "A".repeat(600 * 1024),
+    rootTree: {
+      tag: "div",
+      children: [
+        { tag: "h1", rect: [10, 60, 400, 20], text: "Images" },
+        ...tiles,
+      ],
+    },
+  });
+  environment.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const { html } = storedSnapshot(environment.storage);
+  assert.match(html, /Images/, "the shell must survive the overflow");
+  assert.ok(html.length < 3 * 1024 * 1024);
+  assert.equal(
+    (html.match(/data:image/g) ?? []).length,
+    0,
+    "the pixels that caused the overflow must be the thing dropped",
+  );
 });
 
 test("materializes visible canvas pixels into the retained shell", () => {

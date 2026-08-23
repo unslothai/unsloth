@@ -634,6 +634,32 @@
     );
   }
 
+  // Materialized pixels are rasterized at devicePixelRatio, so the same page
+  // costs 4x on a 2x display and can pass the cap on its own. Dropping them
+  // leaves the layout intact, which is the point of the copy; dropping the
+  // whole snapshot puts the blank flash back.
+  function dropMaterializedMedia(clone) {
+    var dropped = 0;
+    clone.querySelectorAll("[src], [poster], [style]").forEach(function (el) {
+      ["src", "poster"].forEach(function (name) {
+        var value = el.getAttribute(name);
+        if (value && value.slice(0, 5) === "data:") {
+          el.removeAttribute(name);
+          dropped += 1;
+        }
+      });
+      var style = el.getAttribute("style");
+      if (style && style.indexOf("url(data:") !== -1) {
+        el.setAttribute(
+          "style",
+          style.replace(/background-image:url\(data:[^)]*\);?/g, ""),
+        );
+        dropped += 1;
+      }
+    });
+    return dropped;
+  }
+
   function saveSnapshot() {
     if (
       document.documentElement.hasAttribute("data-reload-snapshot-private")
@@ -780,6 +806,9 @@
         element.removeAttribute("data-reload-spacer-cross");
       });
       var html = clone.innerHTML;
+      if (html && html.length > maxSnapshotLength && dropMaterializedMedia(clone)) {
+        html = clone.innerHTML;
+      }
       if (!html || html.length > maxSnapshotLength) {
         clearStoredSnapshot();
         return;
