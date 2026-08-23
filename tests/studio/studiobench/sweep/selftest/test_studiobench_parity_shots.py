@@ -373,13 +373,25 @@ def test_a_superseded_attempts_screenshot_is_not_shown_for_the_retrys_verdict(tm
         b = action(f"r100K.base.{rep}", "settings", "A", "base.png")
         b["session_id"] = "s1"
         rows.append(b)
-        rows.append({"row_type": "cell", "cell_id": f"r100K.base.{rep}", "completed": True,
-                     "session_id": "s1"})
+        rows.append(
+            {
+                "row_type": "cell",
+                "cell_id": f"r100K.base.{rep}",
+                "completed": True,
+                "session_id": "s1",
+            }
+        )
         old = action(f"r100K.treatment.{rep}", "settings", "A", "old.png")
         old["session_id"] = "s1"
         rows.append(old)
-        rows.append({"row_type": "cell", "cell_id": f"r100K.treatment.{rep}", "completed": True,
-                     "session_id": "s1"})
+        rows.append(
+            {
+                "row_type": "cell",
+                "cell_id": f"r100K.treatment.{rep}",
+                "completed": True,
+                "session_id": "s1",
+            }
+        )
     # The retry: a DIFFERENT digest, and no shot because the capture failed.
     for rep in ("rep0", "rep1"):
         new = action(f"r100K.treatment.{rep}", "settings", "B", None)

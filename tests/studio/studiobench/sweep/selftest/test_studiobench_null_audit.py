@@ -793,8 +793,9 @@ def test_an_interrupted_retry_does_not_inherit_the_completion_it_superseded(tmp_
         row = action_row(f"r100K.{arm}.rep1", "settings", digest)
         row["session_id"] = "s2"
         rows.append(row)
-    rows.append({"row_type": "cell", "cell_id": "r100K.base.rep1", "completed": True,
-                 "session_id": "s2"})
+    rows.append(
+        {"row_type": "cell", "cell_id": "r100K.base.rep1", "completed": True, "session_id": "s2"}
+    )
 
     out = tmp_path / "resumed"
     out.mkdir()

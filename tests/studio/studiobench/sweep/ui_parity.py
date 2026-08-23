@@ -167,7 +167,9 @@ def collect(paths: list[Path], require_complete: bool = False) -> dict:
         # shards, so superseding has to be resolved inside the stream that appended it.
         kept_rows = latest_attempt_rows(raw_rows)
         completed = {
-            r.get("cell_id") for r in kept_rows if r.get("row_type") == "cell" and r.get("completed")
+            r.get("cell_id")
+            for r in kept_rows
+            if r.get("row_type") == "cell" and r.get("completed")
         }
         # A payload with no `cell` rows at all predates them, or is a fixture. Falling back is
         # right; falling back SILENTLY is how a guard stops guarding, so it is counted and said.
