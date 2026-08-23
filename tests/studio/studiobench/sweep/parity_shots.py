@@ -41,6 +41,7 @@ if __package__ in (None, ""):  # pragma: no cover
     sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 from tests.studio.studiobench.analysis import parity as P  # noqa: E402
+from tests.studio.studiobench.scoring.from_payload import latest_attempt_rows  # noqa: E402
 from tests.studio.studiobench.sweep.ui_parity import (  # noqa: E402
     compare_all,
     corroborated,
@@ -69,13 +70,22 @@ def shot_index(paths: list[Path]) -> dict:
 
     Read from the payload rather than by globbing the directory, so a file whose name happens to
     look right but was written by another run cannot be picked up.
+
+    THROUGH `latest_attempt_rows`, because the verdict this index is captioning is. `compare_all`
+    scores only the surviving attempt at a `cell_id`; a raw scan here keeps a superseded attempt's
+    `shot` whenever the newer row carries none, which is exactly what a retry whose capture failed
+    writes. The artifact would then pair the retry's verdict with the dead attempt's pictures and
+    say nothing about the mismatch. A missing half is a caption `build` already knows how to
+    print; a stale half is evidence of a page that is not the one that turned the gate red.
     """
     out: dict = {}
     for path in paths:
+        raw = []
         for line in path.read_text(encoding = "utf-8").splitlines():
             if not line.strip():
                 continue
-            row = json.loads(line)
+            raw.append(json.loads(line))
+        for row in latest_attempt_rows(raw):
             if row.get("row_type") != "action":
                 continue
             parity = row.get("parity") or {}
@@ -106,6 +116,14 @@ def differing_actions(
     the same artifact as the change that actually failed the job, and the reader has no way to
     tell which is which -- so the artifact would bury the finding it exists to show, which is the
     same failure as not producing it.
+
+    EVERY WAY THE VERDICT CAN GO RED, not only the one that leaves a digest. `ui_parity.report`
+    exits 1 on `stable_bad or one_sided`, and a corroborated one-arm-only action is the regression
+    shape that produces NO digest to differ: a control that stops opening records `ran: false`
+    rather than a different hash. Selecting on `DIFFER` alone made the evidence step print "no
+    STABLE differences" under a red verdict caused by exactly that, while the arm-side prune had
+    deliberately kept those shots for it. The two selections are held to the same bar as the
+    report's -- excused by the null control, then corroborated at the verdict's own `--min-reps`.
     """
     unstable, _derived, _checks = unstable_set(null_paths or None)
     out = []
@@ -116,8 +134,16 @@ def differing_actions(
         for action, shard, cell, r in results
         if r["verdict"] == P.DIFFER and not is_unstable(unstable, action, cell)
     ]
+    one_sided = [
+        (action, shard, cell, [r.get("reason", "")])
+        for action, shard, cell, r in results
+        if r["verdict"] == P.NOT_EXERCISED
+        and r.get("one_sided")
+        and not is_unstable(unstable, action, cell)
+    ]
     firm, _weak = corroborated(stable, min_reps)
-    for action, shard, cell, moved in firm:
+    firm_one_sided, _weak_one_sided = corroborated(one_sided, min_reps)
+    for action, shard, cell, moved in firm + firm_one_sided:
         out.append({"action": action, "shard": shard, "cell": cell, "moved": moved})
     return out
 
@@ -180,7 +206,10 @@ def build(
     out_dir.mkdir(parents = True, exist_ok = True)
 
     if not diffs:
-        print("\nno STABLE differences to illustrate; the verdict was not red on structure.")
+        print(
+            "\nnothing to illustrate: no corroborated stable difference and no corroborated "
+            "one-arm-only action, so the verdict was not red on structure."
+        )
         return 0
 
     print(f"\nSCREENSHOT EVIDENCE for {len(diffs)} stable difference(s)")

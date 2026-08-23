@@ -24267,6 +24267,16 @@ class LlamaCppBackend:
                             tools_withheld = _memory_tool_withheld(thread_id, tools),
                         ),
                     )
+                    # Recorded here, not left to the forwarding below. That list is
+                    # drained from INSIDE the reopened stream, so a replacement server
+                    # that came back with a smaller window and then refused this prompt
+                    # raises at the door and the refusal reaches `_friendly_error` as
+                    # nothing at all -- which then advises shortening a conversation
+                    # eviction has already emptied. Idempotent, and safe on a fit:
+                    # `record_fit` clears whatever the last one left.
+                    from core.inference import context_refusal  # noqa: PLC0415
+
+                    context_refusal.record_fit(truncation)
                     if truncation:
                         # Archive only. The replacement fit reserves no recall room, and a
                         # rescued refusal may still have evicted messages.
@@ -25797,6 +25807,11 @@ class LlamaCppBackend:
                             branch_messages = _extend_live_branch(conversation),
                         )["counts"]
                     )
+                # Recorded rather than only forwarded, for the same reason as the
+                # iteration refit above.
+                from core.inference import context_refusal  # noqa: PLC0415
+
+                context_refusal.record_fit(truncation)
                 stream_payload["messages"] = neutralize_control_markup_in_messages(
                     conversation, None, self.markup_profile
                 )
