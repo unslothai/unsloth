@@ -417,6 +417,16 @@ def test_the_workflow_runs_the_gate_on_the_routes_the_measurement_depends_on():
     ).read_text(encoding = "utf-8")
     for route in ("inference.py", "auth.py", "chat_history.py", "providers.py"):
         assert f"studio/backend/routes/{route}" in text, route
+    # A route is not one file. Its response models, its provider lookups and its storage can each
+    # change the measured picker without the route module being touched, which is how the same
+    # item arrived three rounds running, one file further down each time.
+    for dep in (
+        "studio/backend/storage/studio_db.py",
+        "studio/backend/models/providers.py",
+        "studio/backend/core/inference/providers.py",
+        "studio/backend/storage/providers_db.py",
+    ):
+        assert dep in text, dep
 
 
 def test_the_evidence_uses_the_same_confined_set_the_verdict_scored_with(tmp_path):

@@ -113,6 +113,19 @@ on:
       # (`.unsloth-model-selector-menu`). So this route both shapes the measured
       # picker and can stop the scripted chat from sending at all.
       - 'studio/backend/routes/providers.py'
+      # What that route is assembled FROM, and the same gap one file down that
+      # chat_history.py had. ProviderResponse and ProviderRegistryEntry are the
+      # shapes of /api/providers/ and /api/providers/registry; get_provider_info
+      # and list_available_providers are what fill them; providers_db is what
+      # persists the row lifecycle.py creates. All three can change or empty the
+      # picker rows `model_change` clicks without the route file being touched.
+      # Listed together rather than one per round, because the route, its
+      # storage and its response models are one surface split across three
+      # files, and naming only the one the import happens to sit in is what left
+      # the last two gaps.
+      - 'studio/backend/models/providers.py'
+      - 'studio/backend/core/inference/providers.py'
+      - 'studio/backend/storage/providers_db.py'
       # Where the scripted turn actually goes. chat-api.ts sends the composer's
       # message to POST /api/inference/chat/completions, which is this file, and
       # the `send` action's success condition is that the turn started streaming
