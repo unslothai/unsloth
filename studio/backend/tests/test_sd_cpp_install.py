@@ -664,6 +664,58 @@ def test_safe_extractall_rejects_a_symlink_at_a_reserved_installer_path(tmp_path
     assert not any(target.iterdir())
 
 
+def test_safe_extractall_rejects_a_reserved_path_reached_through_a_directory_alias(tmp_path):
+    # A previous bundle's directory link makes alias/<record> land on the record itself, so a
+    # lexical comparison misses it and _write_install_record overwrites sd-cli with JSON.
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / "sd-cli").write_bytes(b"\x7fELF real binary")
+    (target / "alias").symlink_to(".")
+    archive = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        _link_member(zf, "alias/" + sdmod.INSTALL_RECORD, "sd-cli")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "reserved installer path"):
+            _safe_extractall(zf, target)
+    assert not (target / sdmod.INSTALL_RECORD).exists()
+    assert (target / "sd-cli").read_bytes() == b"\x7fELF real binary"
+
+
+def test_safe_extractall_rejects_a_cycle_hidden_behind_a_directory_alias(tmp_path):
+    # alias -> real means alias/a and real/b are one cycle, though the member names differ.
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / "real").mkdir()
+    (target / "alias").symlink_to("real")
+    archive = tmp_path / "cycle.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        _link_member(zf, "alias/a", "b")
+        _link_member(zf, "real/b", "a")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "symlink cycle"):
+            _safe_extractall(zf, target)
+    assert not (target / "real" / "a").is_symlink()
+    assert not (target / "real" / "b").is_symlink()
+
+
+def test_safe_extractall_rejects_a_directory_collision_before_writing_anything(tmp_path):
+    # The collision used to be caught after extractall, so the refused archive had already
+    # replaced the working binary.
+    target = tmp_path / "install"
+    (target / "build" / "bin").mkdir(parents = True)
+    (target / "build" / "bin" / "sd-cli").write_bytes(b"\x7fELF working")
+    (target / "libz.so").mkdir()
+    archive = tmp_path / "collide.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("build/bin/sd-cli", b"\x7fELF replacement")
+        _link_member(zf, "libz.so", "libz.so.1")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "collides with a directory"):
+            _safe_extractall(zf, target)
+    assert (target / "build" / "bin" / "sd-cli").read_bytes() == b"\x7fELF working"
+    assert (target / "libz.so").is_dir() and not (target / "libz.so").is_symlink()
+
+
 def test_safe_extractall_rejects_symlink_cycles(tmp_path):
     # Chains are normal, a cycle is not: it installs a library nothing can read, so the
     # loader failure would send the backend round the reinstall loop on every load.

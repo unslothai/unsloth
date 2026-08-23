@@ -570,6 +570,22 @@ def _checked_link_target(
     return link_target
 
 
+def _plan_key(dest: Path, base: Path, replaced: set[str]) -> Path:
+    """Where ``dest`` will really land, given the directory links the tree will have.
+
+    Parents are resolved, the final component is left alone: it is the link about to be
+    created, and following it would compare the wrong thing. Links this archive replaces
+    are not followed, since they are gone before anything is written."""
+    if dest == base or base not in dest.parents:
+        return dest
+    cur = base
+    for part in dest.relative_to(base).parts[:-1]:
+        cur = cur / part
+        if str(cur) not in replaced and cur.is_symlink():
+            cur = Path(os.path.realpath(cur))
+    return cur / dest.name
+
+
 def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     """``extractall`` with a per-member containment check, so an archive carrying an
     absolute path or a ``..`` entry can't write outside ``target`` (Zip-Slip).
@@ -591,12 +607,12 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
         # PREVIOUS install wrote and end with the real library replaced by a link to itself.
         dest = Path(os.path.normpath(base / member.filename))
         checked = dest.resolve()
-        if checked != base and base not in checked.parents:
+        if (dest != base and base not in dest.parents) or (
+            checked != base and base not in checked.parents
+        ):
             raise RuntimeError(f"unsafe path in archive: {member.filename!r}")
         written.append((dest, member.filename))
         if _is_symlink_member(member):
-            if dest in reserved:
-                raise RuntimeError(f"symlink at a reserved installer path: {member.filename!r}")
             links.append((dest, _checked_link_target(zf, member, dest, base), member))
         else:
             plain.append(member)
@@ -612,17 +628,32 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
                 raise RuntimeError(
                     f"unsafe path in archive: {filename!r} is under a symlink member"
                 )
-    # Chains are normal (libwebp.so -> libwebp.so.7 -> libwebp.so.7.2.0) but must terminate: a
-    # cycle installs a library nothing can read, so every load would reinstall it again. Walk the
-    # graph the tree will HAVE, archive edges first and then links a previous bundle left, since
-    # an archive edge can close a loop with one this archive never ships. Done here rather than
-    # after creating the links, so a refused archive has still written nothing.
-    by_dest = {str(d): t for d, t, _ in links}
     # Every destination this archive writes stops being whatever it is now, so a stale link at
     # one of them must not be followed: it is about to become this archive's own member.
     replaced = {str(d) for d, _ in written}
+    replaced |= {str(_plan_key(d, base, replaced)) for d, _ in written}
+    # A member path is not where the link lands: a directory link a PREVIOUS bundle left
+    # (alias -> .) makes alias/<record> land on the record itself, and a lexical comparison
+    # here misses it, so _write_install_record would follow the link and overwrite whatever
+    # it points at while still reading back as a valid install. Same for a directory already
+    # sitting where a link goes: checked here rather than at creation, so a refused archive
+    # has not yet replaced a working binary.
+    keys = {str(d): _plan_key(d, base, replaced) for d, _, _ in links}
     for dest, _, member in links:
-        seen, cur = set(), str(dest)
+        key = keys[str(dest)]
+        if key in reserved:
+            raise RuntimeError(f"symlink at a reserved installer path: {member.filename!r}")
+        if key.is_dir() and not key.is_symlink():
+            raise RuntimeError(f"symlink member collides with a directory: {member.filename!r}")
+    # Chains are normal (libwebp.so -> libwebp.so.7 -> libwebp.so.7.2.0) but must terminate: a
+    # cycle installs a library nothing can read, so every load would reinstall it again. Walk the
+    # graph the tree will HAVE, archive edges first and then links a previous bundle left, since
+    # an archive edge can close a loop with one this archive never ships. Keyed by landing point
+    # for the same reason: alias/a and real/b are one cycle once alias -> real is followed.
+    # Done here rather than after creating the links, so a refused archive has written nothing.
+    by_dest = {str(keys[str(d)]): t for d, t, _ in links}
+    for dest, _, member in links:
+        seen, cur = set(), str(keys[str(dest)])
         while cur not in seen:
             seen.add(cur)
             if cur in by_dest:
@@ -631,7 +662,8 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
                 nxt = os.readlink(cur)
             else:
                 break
-            cur = os.path.normpath(os.path.join(os.path.dirname(cur), nxt))
+            nxt = Path(os.path.normpath(os.path.join(os.path.dirname(cur), nxt)))
+            cur = str(_plan_key(nxt, base, replaced))
         else:
             raise RuntimeError(f"symlink cycle in archive: {member.filename!r}")
     # Validated before the first write, so a rejected archive leaves the install untouched.
