@@ -47,9 +47,18 @@ def test_uv_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
     assert cmd is not None
     assert cmd[:5] == ["/usr/bin/uv", "pip", "install", "--python", sys.executable]
     assert set(mr.MLX_PACKAGES) <= set(cmd)
-    # Minimum versions are pinned so the resolver cannot backtrack to an old
-    # mlx-vlm that imports but breaks VLM Train/Export.
-    assert "mlx-vlm>=0.4.4" in cmd
+    # mlx-vlm keeps a floor so the resolver cannot backtrack to an old one that
+    # imports but breaks VLM Train/Export, and a ceiling so this unattended
+    # install cannot cross a major line on its own.
+    assert "mlx-vlm>=0.4.4,<0.7.0" in cmd
+    # mlx and mlx-lm are pinned, not floored. This install runs on the normal
+    # startup path without confirmation, and mlx ships breaking changes in patch
+    # releases: 0.32.1 broke model loading here (#9466). A floor would let any
+    # release published since the user last opened Unsloth in silently.
+    assert "mlx==0.32.1" in cmd
+    assert "mlx-lm==0.31.3" in cmd
+    assert not [spec for spec in mr.MLX_PACKAGES if spec.startswith("mlx==")
+                and ">=" in spec], "mlx must not be resolved against a floor"
 
 
 def test_uv_executable_finds_installer_location_when_path_is_minimal(monkeypatch, tmp_path):

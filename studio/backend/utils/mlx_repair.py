@@ -50,10 +50,33 @@ _UNRESOLVED_PYTHON_MARKER = "No virtual environment or system Python installatio
 # Minimum versions unsloth-zoo requires on Apple Silicon (its pyproject darwin
 # deps). mlx-vlm especially must be >=0.4.4: an older one still imports but
 # breaks VLM Train/Export, so installing it would wrongly clear chat-only.
-_MLX_MIN_VERSIONS = {"mlx": "0.22.0", "mlx-lm": "0.22.0", "mlx-vlm": "0.4.4"}
+# mlx-lm's floor tracks unsloth-zoo, which needs GenerationBatch.Response and
+# BatchGenerator.next_generated from 0.31.2; it read 0.22.0 here, which would
+# have let a stack too old for batched generation clear the chat-only gate.
+_MLX_MIN_VERSIONS = {"mlx": "0.22.0", "mlx-lm": "0.31.2", "mlx-vlm": "0.4.4"}
 _MLX_PACKAGE_NAMES = tuple(_MLX_MIN_VERSIONS)
 _MLX_RUNTIME_IMPORTS = ("mlx.core", "mlx_lm", "mlx_lm.sample_utils", "mlx_vlm")
-MLX_PACKAGES = tuple(f"{name}>={version}" for name, version in _MLX_MIN_VERSIONS.items())
+# What the self-heal INSTALLS, as opposed to the floors above, which say whether
+# an already-installed stack is usable.
+#
+# This install is unattended and default-on: it runs on the normal startup path
+# without confirmation. Resolving it against a floor means any mlx release
+# published since the user last opened Unsloth gets pulled in silently, and mlx
+# ships breaking changes in patch releases. 0.32.1 replaced mx.random.state with
+# a sentinel refusing item assignment and broke model loading here
+# (unslothai/unsloth#9466, fixed in #9478); the reporter had not asked for that
+# upgrade, this code fetched it. So pin what we install, and keep the floors
+# above for judging what is already there.
+#
+# Keep in sync with unsloth-zoo's pyproject darwin deps. mlx-vlm stays a range
+# because the resolver must be free to pick 0.6.15 here, where the installer
+# overrides mlx-vlm's transformers requirement, and 0.6.4 under the plain cap.
+_MLX_INSTALL_SPECS = {
+    "mlx": "==0.32.1",
+    "mlx-lm": "==0.31.3",
+    "mlx-vlm": ">=0.4.4,<0.7.0",
+}
+MLX_PACKAGES = tuple(f"{name}{spec}" for name, spec in _MLX_INSTALL_SPECS.items())
 _MLX_REINSTALL_ARGS = tuple(
     arg for name in _MLX_PACKAGE_NAMES for arg in ("--reinstall-package", name)
 )
@@ -500,7 +523,7 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
         logger.warning(
             "MLX self-heal produced an incomplete or too-old MLX stack "
             "(need %s); staying chat-only.",
-            ", ".join(f"{name}>={ver}" for name, ver in _MLX_MIN_VERSIONS.items()),
+            ", ".join(MLX_PACKAGES),
         )
         return False
     return True
