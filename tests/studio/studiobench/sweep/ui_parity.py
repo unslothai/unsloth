@@ -1885,16 +1885,21 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             )
 
-    remaining = [e for e in plan if e["structural"] is None or e["structural"]]
-    if not remaining:
-        return worst
-    if scored_windowed:
-        # The rest still get the digest they were owed, in the same run.
-        print(
-            f"\n  {len(remaining)} payload(s) still hold fully mounted pairs, which are scored "
-            "structurally below and not behaviourally."
-        )
-
+    # AHEAD OF THE STRUCTURAL EARLY RETURN, because this mode does not read the plan at all.
+    #
+    # It takes its shards from `args.payloads` directly, audits each one AS a null control, resets
+    # `worst` and returns unconditionally -- so it shares nothing with the windowed/structural
+    # split it used to sit under. Below the return it was simply unreachable whenever `remaining`
+    # came out empty, and that is not an exotic payload: `--mode visible` and `--mode behaviour`
+    # both hard-set `structural` to an empty set for EVERY pattern, so `--audit-null` with either
+    # of them could never run the audit at all, and auto mode joined them the moment every pair
+    # classified as windowed. The command then exited 0 out of the ordinary visible report, having
+    # silently skipped the audit the caller explicitly asked for and the `--compared-in`
+    # enforcement that goes with it -- an option whose whole promise is to FAIL unless the null
+    # decided the actions the result needs an excuse for.
+    #
+    # Moved here rather than duplicated above the return: one call site, and the auto-mode path
+    # that already worked reaches it after exactly the same windowed reports as before.
     if args.audit_null:
         allow = frozenset(a.strip() for a in args.allow_undecided.split(",") if a.strip())
         scope = None
@@ -1926,6 +1931,16 @@ def main(argv: list[str] | None = None) -> int:
             print_null_audit(rc, report_, allow)
             worst = max(worst, rc)
         return worst
+
+    remaining = [e for e in plan if e["structural"] is None or e["structural"]]
+    if not remaining:
+        return worst
+    if scored_windowed:
+        # The rest still get the digest they were owed, in the same run.
+        print(
+            f"\n  {len(remaining)} payload(s) still hold fully mounted pairs, which are scored "
+            "structurally below and not behaviourally."
+        )
 
     null_paths: list[Path] = []
     for pattern in args.null:
