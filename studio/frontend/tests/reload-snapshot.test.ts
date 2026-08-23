@@ -1393,10 +1393,19 @@ test("carries live form state, except what sensitive fields hide", () => {
     attachmentPreviewSource,
     /AttachmentPreviewDialog[\s\S]*?redactFromReload/,
   );
-  assert.match(
-    attachmentPreviewSource,
-    /data-reload-snapshot-sensitive=\{redactFromReload \? "" : undefined\}/,
-  );
+  for (const dialog of [
+    "AttachmentImageDialog",
+    "AttachmentTextDialog",
+    "AttachmentAudioDialog",
+  ]) {
+    assert.match(
+      attachmentPreviewSource,
+      new RegExp(
+        `${dialog}[\\s\\S]*?data-reload-snapshot-sensitive=\\{redactFromReload \\? "" : undefined\\}`,
+      ),
+      `${dialog} must redact its portaled content`,
+    );
+  }
 });
 
 test("keeps native select options that paint the closed control label", () => {

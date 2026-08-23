@@ -196,8 +196,8 @@ const AttachmentTextBody: FC<{ text: string; language: string | null }> = ({
 };
 
 const AttachmentTextDialog: FC<
-  PropsWithChildren<{ source: AttachmentSource }>
-> = ({ children, source }) => {
+  PropsWithChildren<{ source: AttachmentSource; redactFromReload?: boolean }>
+> = ({ children, source, redactFromReload = false }) => {
   const [opened, setOpened] = useState(false);
   const state = useAttachmentTextPreview(
     opened,
@@ -249,7 +249,10 @@ const AttachmentTextDialog: FC<
       }}
     >
       <AttachmentPreviewTrigger>{children}</AttachmentPreviewTrigger>
-      <DialogContent className="aui-attachment-text-dialog-content gap-4 sm:max-w-2xl">
+      <DialogContent
+        data-reload-snapshot-sensitive={redactFromReload ? "" : undefined}
+        className="aui-attachment-text-dialog-content gap-4 sm:max-w-2xl"
+      >
         <DialogHeader className="gap-1 pr-10">
           <DialogTitle className="truncate">
             {source.name || "Attachment"}
@@ -304,12 +307,15 @@ const AttachmentAudioBody: FC<{ source: AttachmentSource }> = ({ source }) => {
 };
 
 const AttachmentAudioDialog: FC<
-  PropsWithChildren<{ source: AttachmentSource }>
-> = ({ children, source }) => {
+  PropsWithChildren<{ source: AttachmentSource; redactFromReload?: boolean }>
+> = ({ children, source, redactFromReload = false }) => {
   return (
     <Dialog>
       <AttachmentPreviewTrigger>{children}</AttachmentPreviewTrigger>
-      <DialogContent className="aui-attachment-audio-dialog-content gap-4 sm:max-w-lg">
+      <DialogContent
+        data-reload-snapshot-sensitive={redactFromReload ? "" : undefined}
+        className="aui-attachment-audio-dialog-content gap-4 sm:max-w-lg"
+      >
         <DialogHeader className="gap-1 pr-10">
           <DialogTitle className="truncate">
             {source.name || "Audio attachment"}
@@ -347,7 +353,9 @@ export const AttachmentPreviewDialog: FC<
 
   if (source.kind === "audio") {
     return source.src || source.audio ? (
-      <AttachmentAudioDialog source={source}>{children}</AttachmentAudioDialog>
+      <AttachmentAudioDialog source={source} redactFromReload={redactFromReload}>
+        {children}
+      </AttachmentAudioDialog>
     ) : (
       children
     );
@@ -358,6 +366,8 @@ export const AttachmentPreviewDialog: FC<
   }
 
   return (
-    <AttachmentTextDialog source={source}>{children}</AttachmentTextDialog>
+    <AttachmentTextDialog source={source} redactFromReload={redactFromReload}>
+      {children}
+    </AttachmentTextDialog>
   );
 };
