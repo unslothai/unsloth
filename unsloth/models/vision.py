@@ -1936,8 +1936,10 @@ class FastBaseModel:
             modules_to_save,
             allow_redirect = finetune_language_layers,
         )
-        _raise_if_no_lora_targets_left(target_modules, _moved)
-        ensure_weight_tying = _resolve_ensure_weight_tying(model, _moved, ensure_weight_tying)
+        _raise_if_no_lora_targets_left(target_modules, _moved, target_parameters)
+        ensure_weight_tying = _resolve_ensure_weight_tying(
+            model, modules_to_save, ensure_weight_tying,
+        )
         if _moved:
             logger.warning_once(
                 f"Unsloth: Moved {', '.join(_moved)} from `target_modules` to "

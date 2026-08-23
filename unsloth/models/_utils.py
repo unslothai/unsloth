@@ -4488,9 +4488,13 @@ def _redirect_embedding_targets(
     return remaining, saved, tuple(moved)
 
 
-def _raise_if_no_lora_targets_left(target_modules, moved):
-    """embed_tokens/lm_head train via modules_to_save, so they cannot be the only targets."""
-    if moved and type(target_modules) in (list, tuple) and len(target_modules) == 0:
+def _raise_if_no_lora_targets_left(target_modules, moved, target_parameters = None):
+    """embed_tokens/lm_head train via modules_to_save, so they cannot be the only targets.
+
+    `target_parameters` (fused MoE expert weights) is a LoRA target in its own right;
+    PEFT accepts it with no `target_modules` at all, so an empty list is fine there.
+    """
+    if moved and type(target_modules) in (list, tuple) and not target_modules and not target_parameters:
         raise RuntimeError(
             f"Unsloth: {', '.join(moved)} are trained as full modules via `modules_to_save`, "
             "not as LoRA targets, so `target_modules` is now empty.\n"
@@ -4500,18 +4504,20 @@ def _raise_if_no_lora_targets_left(target_modules, moved):
         )
 
 
-def _resolve_ensure_weight_tying(model, moved, requested):
-    """Default `ensure_weight_tying` to True when we redirected a tied embedding pair.
+def _resolve_ensure_weight_tying(model, modules_to_save, requested):
+    """Default `ensure_weight_tying` to True when a tied pair lands in modules_to_save.
 
-    PEFT gives each `modules_to_save` entry its own copy, so on a tied model the
-    two copies diverge during training and the merged checkpoint keeps only one of
-    them (measured: the trained lm_head is dropped). PEFT warns about this and
-    documents `ensure_weight_tying` as the fix, so opt in when we caused it.
-    Only applies when the caller left it unset.
+    PEFT gives each entry its own copy, so on a tied model the two copies diverge
+    during training and the merged checkpoint keeps only one (measured: the trained
+    lm_head is dropped). PEFT warns about this and documents `ensure_weight_tying`
+    as the fix, which moves the counterpart into `modules_to_tie` instead.
+
+    Keyed on the final `modules_to_save`, not on what we moved, so callers that pass
+    both names themselves (Studio's CPT path) are covered too. Caller wins if set.
     """
     if requested is not None:
         return bool(requested)
-    if len(moved) < 2:
+    if not EMBEDDING_MODULES <= set(modules_to_save or ()):
         return False
     return bool(getattr(getattr(model, "config", None), "tie_word_embeddings", False))
 
