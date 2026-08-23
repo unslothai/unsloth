@@ -12,6 +12,8 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPath, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
 
+# The helpers under test. Anything they call is pulled in below, so a helper that
+# gains a dependency does not have to be added here by hand.
 $helperNames = @(
     "Start-StudioVenvRollback",
     "Remove-StudioVenvTreeWithRetry",
@@ -20,13 +22,44 @@ $helperNames = @(
     "Restore-StudioVenvRollback",
     "Complete-StudioVenvRollback"
 )
-foreach ($name in $helperNames) {
-    $fn = $ast.FindAll({ param($node)
-        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
-    }, $true)
-    if ($fn.Count -ne 1) { throw "expected exactly one $name in install.ps1, found $($fn.Count)" }
-    Invoke-Expression $fn[0].Extent.Text
+
+# install.ps1 nests these inside Install-UnslothStudio, so at runtime PowerShell's
+# dynamic scoping hands each one its siblings. An extracted function has no such
+# frame, so extract its callees too or the first call dies with "term not
+# recognized" (#9501 added Test-StudioPathPresent and hit exactly that).
+$defs = @{}
+foreach ($fn in $ast.FindAll({ param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
+}, $true)) {
+    if (-not $defs.ContainsKey($fn.Name)) { $defs[$fn.Name] = @() }
+    $defs[$fn.Name] += $fn
 }
+
+# Output sinks this file stubs below. Extracting install.ps1's real ones would leave
+# which definition wins depending on the order of this file.
+$stubbedHere = @("substep", "Write-StudioLine")
+
+$needed = [System.Collections.Generic.List[string]]::new()
+$queue = [System.Collections.Generic.Queue[string]]::new()
+foreach ($name in $helperNames) { $queue.Enqueue($name) }
+while ($queue.Count -gt 0) {
+    $name = $queue.Dequeue()
+    if ($needed.Contains($name)) { continue }
+    if (-not $defs.ContainsKey($name)) { throw "install.ps1 does not define $name" }
+    if ($defs[$name].Count -ne 1) {
+        throw "expected exactly one $name in install.ps1, found $($defs[$name].Count)"
+    }
+    $needed.Add($name)
+    foreach ($call in $defs[$name][0].FindAll({ param($node)
+        $node -is [System.Management.Automation.Language.CommandAst]
+    }, $true)) {
+        $called = $call.GetCommandName()
+        if ($called -and $defs.ContainsKey($called) -and $stubbedHere -notcontains $called) {
+            $queue.Enqueue($called)
+        }
+    }
+}
+foreach ($name in $needed) { Invoke-Expression $defs[$name][0].Extent.Text }
 
 function substep { param([string]$Message, [string]$Color) }
 # The rollback helpers report through install.ps1's UTF-8 stdout sink on their warn
