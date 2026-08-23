@@ -51,10 +51,7 @@ export function chatLocalModelOptions(
     seen.add(model.id);
     options.push({
       id: model.id,
-      name:
-        model.source === "lmstudio" && model.model_id
-          ? model.model_id
-          : model.display_name,
+      name: model.display_name,
       baseModel: baseModelLabel(model.source),
       updatedAt: model.updated_at ?? undefined,
       source: "local" as const,
