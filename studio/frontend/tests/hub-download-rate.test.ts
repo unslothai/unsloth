@@ -180,6 +180,38 @@ test("one outlier gap does not disable stall detection", () => {
   assert.equal(rate, 0, "a dead transfer should stop reporting a rate");
 });
 
+// A transfer that stalls past the stall window and then resumes keeps its byte
+// counter, so nothing resets. Reaching back past the break for the older
+// increase averaged the dead time into the rate: a 20 MB/s transfer resuming
+// after a 30 minute drop published 0.64 MB/s, a 31x understatement, for a full
+// burst period. Silence is the honest answer until the resumed run has a span.
+test("a resume after a long stall is not priced across the stall", () => {
+  const samples: TransferSample[] = [];
+  let bytes = 0;
+  let t = 0;
+  for (; t <= 600; t += 1) {
+    if (t % 60 === 0 && t > 0) bytes += 60 * 20 * MB;
+    publishedRate(samples, t, bytes);
+  }
+  // 30 minutes with no progress and no counter reset.
+  for (; t <= 600 + 1_800; t += 1) publishedRate(samples, t, bytes);
+  // Then the same 20 MB/s in the same 60s bursts.
+  const resumeAt = t;
+  const published: number[] = [];
+  for (; t <= resumeAt + 300; t += 1) {
+    if ((t - resumeAt) % 60 === 0 && t > resumeAt) bytes += 60 * 20 * MB;
+    const rate = publishedRate(samples, t, bytes);
+    if (rate > 0) published.push(rate);
+  }
+  assert.ok(published.length > 0, "the resumed transfer should publish again");
+  for (const rate of published) {
+    assert.ok(
+      Math.abs(rate - 20 * MB) < 1 * MB,
+      `published ${(rate / MB).toFixed(2)} MB/s after a resume, want 20`,
+    );
+  }
+});
+
 test("a restart drops the samples from the previous run", () => {
   const samples: TransferSample[] = [];
   for (let t = 0; t <= 10; t++) publishedRate(samples, t, t * 20 * MB);

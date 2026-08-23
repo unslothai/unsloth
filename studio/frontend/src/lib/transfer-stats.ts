@@ -140,17 +140,33 @@ function measurableSpan(
     }
   }
   if (to < 1) return null;
+  const stall = stallWindowSeconds(samples);
   let from = -1;
+  let newer = to;
+  let resumed = false;
   for (let i = to - 1; i > 0; i -= 1) {
     if (samples[i].b <= samples[i - 1].b) continue;
+    // A silence longer than the stall window is a break in the transfer, not a
+    // slow burst. Reaching across it averages the dead time into the rate: a
+    // 20 MB/s transfer resuming after a 30 minute drop published 0.64 MB/s.
+    if (samples[newer].t - samples[i].t > stall) {
+      resumed = true;
+      break;
+    }
     from = i;
+    newer = i;
     if (samples[to].t - samples[i].t >= MAX_WINDOW_SECONDS) break;
   }
   if (from < 1) return null;
   // Increases clumped inside the smoothing span are spaced by arrival jitter, not
   // by the rate. Price the whole buffer instead, and stay silent while even that is
   // too short to divide by, so no single clump is ever published as the speed.
-  if (samples[to].t - samples[from].t < MAX_WINDOW_SECONDS) from = 0;
+  if (samples[to].t - samples[from].t < MAX_WINDOW_SECONDS) {
+    // Unless the buffer reaches back over a break: stay silent until the
+    // resumed transfer has produced a span of its own.
+    if (resumed) return null;
+    from = 0;
+  }
   return samples[to].t - samples[from].t < MIN_WINDOW_SECONDS ? null : [from, to];
 }
 
