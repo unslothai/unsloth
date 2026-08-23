@@ -161,5 +161,3 @@ def test_cli_export_forwards_private_flag(
     assert result.exit_code == 0, f"CLI error:\n{result.output}"
     assert _FakeExportBackend.last_call.get("method") == expected_method
     assert _FakeExportBackend.last_call.get("kwargs", {}).get("private") is True
-
-

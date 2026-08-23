@@ -364,7 +364,3 @@ def test_worker_passes_gguf_private():
         q,
     )
     assert captured.get("private") is False
-
-
-
-

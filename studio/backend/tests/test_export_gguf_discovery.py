@@ -502,7 +502,12 @@ def test_hub_push_with_an_imatrix_passes_the_token_exactly_once(monkeypatch, tmp
     )
 
     assert success is True, message
-    assert calls["push"] == {"repo_id": "org/model", "token": "hf_secret", "imatrix_file": True, "private": False}
+    assert calls["push"] == {
+        "repo_id": "org/model",
+        "token": "hf_secret",
+        "imatrix_file": True,
+        "private": False,
+    }
 
 
 @pytest.mark.parametrize("imatrix_file", [None, False, True])
@@ -524,7 +529,6 @@ def test_hub_push_gguf_forwards_private_flag(monkeypatch, tmp_path, imatrix_file
 
     assert success is True, message
     assert calls["push"]["private"] is private
-
 
 
 def test_gguf_export_without_an_imatrix_does_not_forward_the_token(monkeypatch, tmp_path):
