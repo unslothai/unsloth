@@ -295,6 +295,54 @@ test("the tab-search chord counts as browser-owned on both platforms", () => {
   assert.ok(isBrowserReservedBinding("Mod+Shift+KeyA", false));
 });
 
+// Firefox's new private window, which no page can cancel. Chrome's incognito
+// on ⇧⌘N was already reserved; this is the other half of the same pair.
+test("the private-window chord is reserved and carries no default", () => {
+  for (const mac of [true, false]) {
+    assert.ok(isBrowserReservedBinding("Mod+Shift+KeyP", mac));
+    assert.ok(isBrowserReservedBinding("Mod+Shift+KeyN", mac));
+  }
+  // Search keeps ⌘K alone rather than moving the alternate somewhere else.
+  const search = SHORTCUT_DEFS.find((d) => d.id === "searchChats");
+  assert.ok(search);
+  for (const mac of [true, false]) {
+    assert.equal(defaultBindingFor(search, "primary", mac), "Mod+KeyK");
+    assert.equal(defaultBindingFor(search, "alternate", mac), null);
+  }
+});
+
+// Train is the only workspace the chat-only guard turns away, so it is the
+// only workspace chord that can navigate a user off the page they were on.
+test("the workspace chords land where the guard lets them", async () => {
+  const root = await readFile(
+    new URL("../src/app/routes/__root.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    root,
+    /const chatOnlyMeasured = usePlatformStore\(\n\s*\(s\) => s\.isChatOnly\(\) && !s\.capabilitiesUnknown\(\),/,
+  );
+  assert.match(
+    root,
+    /useShortcut\("switchToTrain", goTo\("\/studio"\), \{\n\s*enabled: !isAuthFlowRoute && !chatOnlyMeasured,/,
+  );
+  // The rest are on the allowlist, so they stay reachable and ungated: gating
+  // them would take away a page the guard is happy to serve.
+  for (const [id, path] of [
+    ["switchToProjects", "/projects"],
+    ["switchToHub", "/hub"],
+    ["switchToExport", "/export"],
+  ] as const) {
+    const at = root.indexOf(`useShortcut("${id}"`);
+    assert.ok(at !== -1, `${id} lost its call site`);
+    assert.ok(
+      !root.slice(at, root.indexOf(");", at)).includes("chatOnlyMeasured"),
+      `${id} gated on a verdict its route does not answer to`,
+    );
+    assert.match(root, new RegExp(`goTo\\("${path.replace("/", "\\/")}"\\)`));
+  }
+});
+
 // A chord behind a hidden developer menu is not one the browser took from the
 // user, and these sets drive a warning the user reads. Safari has both of
 // these, but only once the Develop menu is switched on, so reserving them
@@ -557,20 +605,20 @@ test("the pre-alternate override shape migrates to the primary slot", () => {
   const legacy = JSON.stringify({
     toggleSidebar: "Mod+Alt+KeyB",
     searchChats: null,
+    newChat: "Mod+Alt+KeyJ",
     someRemovedAction: "Mod+KeyZ",
   });
   const migrated = migrateStoredOverrides(JSON.parse(legacy));
   assert.deepEqual(migrated, {
     toggleSidebar: { primary: "Mod+Alt+KeyB" },
     searchChats: { primary: null },
+    newChat: { primary: "Mod+Alt+KeyJ" },
   });
   assert.equal(resolveBinding(migrated, "toggleSidebar"), "Mod+Alt+KeyB");
   assert.equal(resolveBinding(migrated, "searchChats"), null);
-  // The alternate is untouched, so a default added later still reaches them.
-  assert.equal(
-    resolveBinding(migrated, "searchChats", "alternate"),
-    "Mod+Shift+KeyP",
-  );
+  // The alternate is untouched, so the shipped one still reaches a user who
+  // rebound the primary before alternates existed.
+  assert.equal(resolveBinding(migrated, "newChat", "alternate"), "Mod+KeyN");
 });
 
 test("the current override shape round-trips unchanged", () => {

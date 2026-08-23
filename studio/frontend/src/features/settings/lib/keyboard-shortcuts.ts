@@ -229,8 +229,9 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     nonMacDefaultBinding: "Mod+Alt+KeyC",
   }),
   def("forkChat", null),
-  // ⇧⌘P is the usual command-menu chord, and the search dialog is that surface.
-  def("searchChats", "Mod+KeyK", { defaultAlternateBinding: "Mod+Shift+KeyP" }),
+  // No ⇧⌘P alternate: it is the command-menu chord everywhere else, but in
+  // Firefox it opens a private window, and ⌘K is the one people reach for.
+  def("searchChats", "Mod+KeyK"),
   def("renameChat", "Mod+Alt+KeyR"),
   def("openKeyboardShortcuts", "Mod+Slash"),
 ];
@@ -297,6 +298,9 @@ const BROWSER_RESERVED_VALUES = new Set<string>([
   "Mod+KeyR",
   "Mod+Shift+KeyR",
   "Mod+KeyP",
+  // Firefox's new private window, on both platforms. Chrome puts that on
+  // ⇧⌘N, which is already here; this is the other half of the same pair.
+  "Mod+Shift+KeyP",
   // Chrome's tab search, and Firefox's add-ons manager.
   "Mod+Shift+KeyA",
   "Mod+Tab",

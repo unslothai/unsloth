@@ -279,6 +279,10 @@ function RootLayout() {
   const isAuthFlowRoute = useMatches({
     select: (matches) => matches.some((match) => match.staticData.isAuthFlow),
   });
+  // Measured, not guessed: the same pair the sidebar reads to gray Train out.
+  const chatOnlyMeasured = usePlatformStore(
+    (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
+  );
   // Exact match: a prefix would treat /chatty as chat, hiding its not-found UI.
   const isChatRoute = pathname === "/chat";
   const { pinned, setPinned, togglePinned } = useSidebarPin();
@@ -454,7 +458,14 @@ function RootLayout() {
     enabled: !isAuthFlowRoute,
   });
   useShortcut("switchToHub", goTo("/hub"), { enabled: !isAuthFlowRoute });
-  useShortcut("switchToTrain", goTo("/studio"), { enabled: !isAuthFlowRoute });
+  // Train is the one workspace the chat-only guard turns away, so its chord is
+  // the one that has to ask first: firing it on a host without the hardware
+  // would bounce off /studio and land the user on /chat, away from whatever
+  // they had open. The sidebar disables the row on the same measured check,
+  // and only once measured, since the guess is what the row waits out too.
+  useShortcut("switchToTrain", goTo("/studio"), {
+    enabled: !isAuthFlowRoute && !chatOnlyMeasured,
+  });
   useShortcut("switchToRecipes", goTo("/data-recipes"), {
     enabled: !isAuthFlowRoute,
   });
