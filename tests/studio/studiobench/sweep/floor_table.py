@@ -46,6 +46,7 @@ from tests.studio.studiobench.scoring.from_payload import (  # noqa: E402
     FRAME_METRICS,
     UNSCORED_WINDOW_KINDS,
     STREAM_METRICS,
+    latest_attempt_rows,
     _actions_for,
     _frame_measures,
     _stream_measures,
@@ -146,11 +147,56 @@ def refuse_collisions(records: list[dict]) -> None:
     collided = collided_cells(records)
     if not collided:
         return
+    # A SEQUENTIAL RE-RUN IS NOT A COLLISION, and refusing it rejected every resumed A/B.
+    #
+    # `ab.skippable_cells` skips a repetition only when EVERY arm of it completed, and an A/B with
+    # any work left re-runs EVERY pair in one new session -- deliberately, because a lone arm
+    # measured in a new session can never be paired and a partial table publishes a verdict over
+    # whichever rungs survived. So a resumed comparison legitimately writes a SECOND completed row
+    # under the same deterministic `cell_id`, and the writer's own docstring says what happens
+    # next: "The old attempt stays in the payload and `latest_attempt_rows` supersedes it."
+    # Nothing here superseded anything, so a resumed run could not be scored at all.
+    #
+    # WHAT IS ASKED IS WHETHER THE TWO SESSIONS WERE RUNNING AT ONCE, which is the property that
+    # makes the readings contended, and it is recorded: each session's `run_meta` carries
+    # `started_at` and every row carries `ts_ms` from that session's own clock. On the real
+    # two-launcher payload of defect 9 the two sessions occupy 23:50:24-00:10:03 and
+    # 23:53:45-00:12:43, sixteen minutes of overlap. A resume starts after its predecessor stopped.
+    #
+    # SILENCE IS NOT A LICENCE. A payload that does not carry the evidence -- no `started_at`, no
+    # `ts_ms` -- is refused exactly as before, because "no proof they overlapped" is not "proof
+    # they did not", and this is the guard that stands between a reader and a blend of two
+    # contending runs. Only a payload that can SHOW its sessions were sequential is superseded.
+    guilty: set[str] = set()
+    for sessions in collided.values():
+        guilty |= sessions
+    verdict, both = concurrent_sessions(records, only = guilty)
+    if verdict == "sequential":
+        # The caller supersedes through `latest_attempt_rows`, which keeps the LAST attempt that
+        # wrote anything -- so a resume that was itself hard-killed leaves an incomplete cell and
+        # drops out, rather than resurrecting the older completed reading.
+        return
+    if verdict == "overlap":
+        why = (
+            f"sessions {both[0]} and {both[1]} were RUNNING AT THE SAME TIME by their own "
+            f"`started_at` and `ts_ms`"
+        )
+    elif verdict == "interleaved":
+        why = (
+            f"the rows of sessions {both[0]} and {both[1]} INTERLEAVE in the file, which one "
+            f"writer appending after another cannot produce"
+        )
+    else:
+        why = (
+            "this payload does not say when its sessions ran -- no `started_at`, or no `ts_ms` -- "
+            "so it cannot show they were sequential rather than concurrent"
+        )
     listed = ", ".join(f"{cid} in {sorted(s)}" for cid, s in sorted(collided.items())[:4])
     more = "" if len(collided) <= 4 else f" (and {len(collided) - 4} more)"
     raise SystemExit(
         f"refusing to pool {len(collided)} cell id(s) that completed under more than one "
-        f"session in this payload: {listed}{more}. `cell_id` is unique within a session, not "
+        f"session in this payload, and {why}: {listed}{more}. `cell_id` is unique within a "
+        f"session, not "
         f"across them, so keying on it alone would report whichever session was appended last, "
         f"and pairing across them would report two contending runs as repetitions of one. Two "
         f"concurrent runs sharing one --out is the usual cause. Split the payload by session, or "
@@ -177,6 +223,85 @@ def collided_cells(records: list[dict]) -> dict[str, set[str]]:
         if r.get("row_type") == "cell" and r.get("completed") and r.get("cell_id"):
             seen.setdefault(r["cell_id"], set()).add(str(r.get("session_id") or ""))
     return {cid: s for cid, s in seen.items() if len(s) > 1}
+
+
+def session_spans(records: list[dict]) -> dict[str, tuple[int, int]]:
+    """{session: (first row index, last row index)} over the file as written."""
+    spans: dict[str, list[int]] = {}
+    for i, row in enumerate(records):
+        sid = row.get("session_id")
+        if sid is None:
+            continue
+        sid = str(sid)
+        if sid in spans:
+            spans[sid][1] = i
+        else:
+            spans[sid] = [i, i]
+    return {k: (v[0], v[1]) for k, v in spans.items()}
+
+
+def session_clocks(records: list[dict]) -> dict[str, tuple[float, float]]:
+    """{session: (start, end)} in seconds since the epoch, for sessions that can say.
+
+    A session's `run_meta` records `started_at` in wall clock and every row it writes carries
+    `ts_ms` from that session's own monotonic clock, so its occupancy is `started_at` to
+    `started_at + max(ts_ms)`. A session missing either is absent from this map rather than
+    given a guessed one: the caller treats absence as unknown and refuses.
+    """
+    import datetime
+
+    starts: dict[str, float] = {}
+    spans: dict[str, float] = {}
+    for row in records:
+        sid = row.get("session_id")
+        if sid is None:
+            continue
+        sid = str(sid)
+        if row.get("row_type") == "run_meta" and row.get("started_at") and sid not in starts:
+            try:
+                starts[sid] = datetime.datetime.fromisoformat(str(row["started_at"])).timestamp()
+            except ValueError:
+                continue
+        ts = row.get("ts_ms")
+        if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+            spans[sid] = max(spans.get(sid, 0.0), float(ts) / 1000.0)
+    return {sid: (t0, t0 + spans[sid]) for sid, t0 in starts.items() if sid in spans}
+
+
+def concurrent_sessions(
+    records: list[dict],
+    only: set[str] | None = None,
+) -> tuple[str, tuple[str, str] | None]:
+    """Were these sessions running at once? `("sequential"|"overlap"|"interleaved"|"unknown", pair)`.
+
+    TWO INDEPENDENT WITNESSES, because either alone can be fooled. The clocks answer the question
+    actually being asked -- contention is a property of time, not of file layout -- but they rest
+    on a `started_at` a machine with a stepped clock can misreport. File order answers a narrower
+    question that cannot be misreported: a payload is append-only with one writer per process, so
+    a session's rows are one contiguous stretch unless somebody else was writing into the gaps. A
+    run that stalls long enough for a whole second run to start and finish inside its own gap is
+    caught too, since the nested stretch overlaps the enclosing one.
+
+    Sorted by first row, so comparing each session with the next is enough: if any two stretches
+    overlap then some ADJACENT pair does, because the later one's start is at or before the
+    earlier one's end.
+
+    UNKNOWN IS NOT SEQUENTIAL. A payload that cannot show when its sessions ran gets the refusal
+    it got before this distinction existed.
+    """
+    spans = {k: v for k, v in session_spans(records).items() if only is None or k in only}
+    order = sorted(spans.items(), key = lambda kv: kv[1][0])
+    for (first, a), (second, b) in zip(order, order[1:]):
+        if a[1] >= b[0]:
+            return "interleaved", (first, second)
+    clocks = {k: v for k, v in session_clocks(records).items() if only is None or k in only}
+    if set(clocks) != set(spans) or len(clocks) < 2:
+        return "unknown", None
+    by_start = sorted(clocks.items(), key = lambda kv: kv[1][0])
+    for (first, a), (second, b) in zip(by_start, by_start[1:]):
+        if a[1] > b[0]:
+            return "overlap", (first, second)
+    return "sequential", None
 
 
 def cell_metrics(records: list[dict], session: str | None = None) -> dict[str, dict[str, float]]:
@@ -209,6 +334,18 @@ def cell_metrics(records: list[dict], session: str | None = None) -> dict[str, d
     """
     if session is None:
         refuse_collisions(records)
+        # SUPERSEDED ATTEMPTS ARE DROPPED, because a resumed A/B re-runs a repetition that had
+        # already completed and both copies are in the file. Keyed on the LAST attempt that wrote
+        # anything rather than the last that FINISHED: a resume killed inside a cell has flushed
+        # its action rows and never reaches the cell row its `finally` would write, and treating
+        # the older completed attempt as current would hand a stale reading to a floor. Dropped
+        # here, that repetition has no completed cell and falls out of the table instead.
+        #
+        # ONLY WHEN NO SESSION WAS NAMED. `session=` is the escape hatch this module's own refusal
+        # points a reader at -- "pass `session=` to score one of them" -- and superseding inside it
+        # would empty the older of two concurrent sessions and take the hatch away. A caller who
+        # names a session is asking for that session, not for the payload's latest view of it.
+        records = list(latest_attempt_rows(records))
 
     # A CELL THAT FAILED AN INVALIDATING GATE IS NOT A READING, HERE EITHER. Both gates are
     # advisory where they are emitted, so such a cell arrives `completed=True` with a full set of
@@ -223,8 +360,9 @@ def cell_metrics(records: list[dict], session: str | None = None) -> dict[str, d
     # census going from 12 mounted messages to 0 and never recovering, and a headline of 28.2%
     # faster weighted. Nothing between the two noticed.
     #
-    # Scoped by hand, because this module never calls `latest_attempt_rows` -- it scopes attempts
-    # itself, below -- and a gate row is not one of the row types that function covers anyway.
+    # Scoped by hand, because a gate row is not one of the row types `latest_attempt_rows` covers:
+    # that reduction has already dropped the superseded attempt's cells, actions and windows above,
+    # and a `gate` row carries no attempt of its own to supersede.
     gate_failures = failed_invalidating_gates(records)
 
     out: dict[str, dict[str, float]] = {}
@@ -319,6 +457,10 @@ def paired(records: list[dict], shard: str = "") -> dict[str, list[tuple[float, 
     # unreachable from the shipped path and a payload of two concurrent runs pooled straight
     # through it.
     refuse_collisions(records)
+    # The same superseding `cell_metrics` applies, done once here so the session list below is the
+    # set of sessions that still own a completed cell. Without it a finished ladder re-run pairs
+    # ONCE PER SESSION and one repetition is pooled twice, under two different sets of numbers.
+    records = list(latest_attempt_rows(records))
     by_key: dict[tuple[str, str, str, str], dict[str, dict[str, float]]] = collections.defaultdict(
         dict
     )
@@ -461,7 +603,12 @@ def partial_censoring(paths: list[Path]) -> dict[str, str]:
     """
     everything: list[dict] = []
     for path in paths:
-        everything += read_rows(path)
+        # SUPERSEDED ATTEMPTS DROPPED, exactly as `paired` drops them, because this decides whether
+        # the number `paired` produced may be quoted. A resume that died mid-cell leaves an action
+        # row whose `expect_ok` is False, and `censored_metrics` counts that as a censored cell --
+        # so reading the raw file here would mark a metric partially censored on the strength of an
+        # attempt that contributed nothing to the mean. The two readers have to see one payload.
+        everything += list(latest_attempt_rows(read_rows(path)))
     out: dict[str, str] = {}
     for metric in sorted(censorable_metrics(everything)):
         why = payload_rules.refuse_partial_censoring(everything, metric)
