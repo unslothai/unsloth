@@ -25,9 +25,11 @@ machine resolve a difference of this size at all", which is a question about the
 nothing about whether these repetitions agree. Ratios of 0.7, 0.7, 1.2, 1.2 have a geometric mean
 of 0.917, clear of a 5% floor, and a bootstrap CI of 0.700-1.200 that contains 1.0: the pairs do
 not agree on the sign, and the honest reading is that nothing was resolved. So a direction is only
-claimed when the CI clears 1.0. On the worse side the metric still counts as a regression -- an
-unresolved regression is not a cleared one -- but it is labelled unresolved rather than quoted as
-a measured loss. `sweep/floor_table.py` applies the same rule to its own pooled ratios under
+claimed when the CI clears 1.0, and an interval that does not exist cannot clear it: below three
+usable pairs there is no bootstrap CI at all, and that reads as unresolved rather than as
+permission. The refusal is one-sided: an unresolved WIN is withheld from the headline, while an
+unresolved regression keeps both its FAIL and its place in the aggregate, where it can only pull
+the number toward worse. Withholding a win costs a headline; withholding a loss ships it. `sweep/floor_table.py` applies the same rule to its own pooled ratios under
 "VOID (pairs disagree on sign)".
 
 FOUR REFUSALS. Rendering is refused outright when `bench_version`, `corpus_hash`, `rung_ladder_id`
@@ -192,9 +194,34 @@ class MetricComparison:
     bounded: bool = False
 
     @property
+    def ci_rules_out_no_effect(self) -> bool:
+        """An interval exists AND it lies entirely on one side of 1.0."""
+        if self.ci_low is None or self.ci_high is None:
+            return False
+        return not (self.ci_low <= 1.0 <= self.ci_high)
+
+    @property
+    def withheld(self) -> bool:
+        """An unresolved BETTER-side metric, whose magnitude is kept out of the headline.
+
+        Only the better side is withheld. An unresolved regression keeps contributing, where it
+        can only pull the aggregate toward worse; dropping it would make the headline read rosier
+        than the run actually was, which is the one direction this table must never round toward.
+        """
+        return self.verdict == "inconclusive"
+
+    @property
     def unresolved(self) -> bool:
-        """Moved past the noise floor and still could not rule out no effect."""
-        return self.beyond_noise and self.ci_spans_no_effect
+        """Moved past the floor without an interval that rules out no effect.
+
+        Covers two cases, and the second is the one that failed open. An interval can straddle
+        1.0, or there can be no interval at all: `bootstrap_geomean_ci` returns `(None, None)`
+        below three usable pairs, which a short ladder or a partially measured metric reaches
+        easily. A rule that claims a direction only when the CI clears 1.0 cannot be satisfied
+        by a CI that does not exist, so an absent one has to read as unresolved rather than as
+        permission. Two pairs at 0.5 used to print a 50% win with no interval behind it.
+        """
+        return self.beyond_noise and not self.ci_rules_out_no_effect
 
     @property
     def resolves_direction(self) -> bool:
@@ -377,6 +404,13 @@ def compare(
             if not comparison.beyond_noise:
                 comparison.verdict = "within noise"
             elif worse:
+                # THE ASYMMETRY IS THE POINT, ON BOTH THE LABEL AND THE HEADLINE. Withholding an
+                # unresolved win costs a headline; withholding an unresolved loss ships the
+                # regression. So the worse side keeps counting and keeps contributing to the
+                # aggregate, where it can only drag the number toward worse, which is the
+                # conservative direction. A single bounded pair over a zero base is the case that
+                # proves it: `_divisible` exists because that regression once vanished from the
+                # table, the headline and this list at once, and it must not vanish again.
                 comparison.verdict = (
                     "regressed (unresolved)" if comparison.ci_spans_no_effect else "regressed"
                 )
@@ -390,7 +424,7 @@ def compare(
                     f"(noise floor {noise_floor_pct:.1f}%{unresolved})"
                 )
             else:
-                comparison.verdict = "inconclusive" if comparison.ci_spans_no_effect else "improved"
+                comparison.verdict = "inconclusive" if comparison.unresolved else "improved"
             # AN UNRESOLVED METRIC LENDS ITS MAGNITUDE TO NOTHING. The headline is a weighted
             # geometric mean of point estimates and carries no interval of its own, so a metric
             # that moved a long way but could not resolve its own sign would otherwise supply most
@@ -399,7 +433,7 @@ def compare(
             # of 0.631 and the word IMPROVED: a quoted 36.9% win almost entirely made of data the
             # table itself labels inconclusive. Metrics still within noise keep contributing --
             # they pull the headline toward 1.0, which is the conservative direction.
-            if not comparison.unresolved:
+            if not comparison.withheld:
                 weight = anchor.weight if anchor else 1.0
                 weighted_logs.append((weight, math.log(geo)))
         result.metrics.append(comparison)
