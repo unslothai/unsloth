@@ -1342,6 +1342,22 @@ def run_safetensors_tool_loop(
                             + estimate_messages_tokens_dense(tools or []),
                             reply_returns = True,
                         )
+                    # And what a RESULT may add, which is the same question asked of
+                    # every tool rather than of retrieval alone. This loop has no rolling
+                    # fit behind it either, so a `cat` of a file the model just wrote is
+                    # protected as the newest exchange and there is nothing downstream to
+                    # evict it.
+                    if context_length and _accepts_kwarg(execute_tool, "result_budget_tokens"):
+                        from core.inference.context_window import (
+                            estimate_messages_tokens_dense as _dense_tokens,
+                            tool_result_budget,
+                        )
+
+                        kwargs["result_budget_tokens"] = tool_result_budget(
+                            int(context_length),
+                            max_tokens,
+                            _dense_tokens(conversation) + _dense_tokens(tools or []),
+                        )
                     if _accepts_output_callback(execute_tool):
                         kwargs["output_callback"] = _output_callback
                     kwargs.update(_search_images_kwargs(execute_tool, _decision.tool_name))

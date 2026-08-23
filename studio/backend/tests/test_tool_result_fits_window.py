@@ -840,3 +840,109 @@ class TestTheRetryHintIsInsideTheCap:
 
     def test_a_result_that_fits_still_carries_it(self):
         assert tools._truncate("ok", 1_000, hint = self._HINT) == "ok" + self._HINT
+
+
+class TestTheSafetensorsLoopPricesItToo:
+    """The native path runs the same tools against the same window, and has no rolling fit
+    behind it: a `cat` of a file the model just wrote lands in the newest exchange with
+    nothing downstream able to evict it."""
+
+    @staticmethod
+    def _run(context_length):
+        """One `terminal` call through the real loop, returning the kwargs it was given."""
+        import threading
+
+        from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
+        def _model(messages):
+            state["turns"] += 1
+            if state["turns"] > 1:
+                yield "done"
+                return
+            call = '<tool_call>{"name":"terminal","arguments":{"command":"cat game.html"}}</tool_call>'
+            for n in range(1, len(call) + 1):
+                yield call[:n]
+
+        state = {"turns": 0}
+        seen = []
+        list(
+            run_safetensors_tool_loop(
+                single_turn = _model,
+                messages = [{"role": "user", "content": "print game.html"}],
+                tools = [{"type": "function", "function": {"name": "terminal"}}],
+                execute_tool = lambda name, args, **kwargs: seen.append(kwargs) or "x" * 40_000,
+                cancel_event = threading.Event(),
+                max_tool_iterations = 2,
+                thread_id = "t-sf",
+                context_length = context_length,
+                max_tokens = 512,
+            )
+        )
+        return seen[0]
+
+    def test_it_prices_the_room_for_the_tool(self):
+        """Without it execute_tool takes the None default and every cap is disabled here."""
+        room = self._run(4096).get("result_budget_tokens")
+
+        assert isinstance(room, int)
+        assert 0 < room < prompt_budget(4096, 512)
+
+    def test_an_unknown_window_prices_nothing(self):
+        """The same leg the GGUF loop takes: no window, no budget, today's behaviour."""
+        assert self._run(None).get("result_budget_tokens") is None
+
+
+class TestAProjectIsBoundedAsOneWorkspace:
+    def test_the_byte_budget_spans_every_scope(self, tmp_path, monkeypatch):
+        """A project's chats share one sandbox and get one scope each, so a per-directory
+        budget is really a per-chat budget multiplied by however many chats there are."""
+        monkeypatch.setattr(tools, "_SPILL_MAX_TOTAL_BYTES", 30_000)
+        for chat in range(6):
+            tools._truncate(
+                f"chat {chat}\n" + _dense(9_000), 200, workdir = str(tmp_path), scope = f"{chat:012x}"
+            )
+
+        root = tmp_path / tools._SPILL_DIR
+        spilled = [p for p in root.rglob("*.txt")]
+        assert sum(p.stat().st_size for p in spilled) <= 30_000
+        assert spilled, "the newest spill has to survive; it is the one just named"
+
+    def test_an_emptied_scope_leaves_no_directory_behind(self, tmp_path, monkeypatch):
+        """Deleting a chat does not remove its scope, and an empty directory left in the
+        sandbox is what makes the cleanup treat it as holding something."""
+        monkeypatch.setattr(tools, "_SPILL_MAX_TOTAL_BYTES", 12_000)
+        for chat in range(4):
+            tools._truncate(
+                f"chat {chat}\n" + _dense(9_000), 200, workdir = str(tmp_path), scope = f"{chat:012x}"
+            )
+
+        root = tmp_path / tools._SPILL_DIR
+        scopes = [p for p in root.iterdir() if p.is_dir()]
+        # The budget holds two of the four, so the other two were emptied by the prune and
+        # then removed rather than left standing.
+        assert len(scopes) < 4
+        assert all(any(scope.iterdir()) for scope in scopes)
+
+
+class TestDeletingAChatIsNotBlockedByItsSpills:
+    def test_a_sandbox_holding_only_spills_is_still_removable(self, tmp_path):
+        """Spills are Studio's own, written by this process and deliberately kept off the
+        file cards. Counted as the user's content they leave an unreachable sandbox behind,
+        reported as holding files the user never created."""
+        tools._truncate(
+            "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path), scope = "abc123abc123"
+        )
+
+        assert tools._holds_no_user_files(str(tmp_path))
+
+    def test_a_real_file_beside_them_still_counts(self):
+        """The control: this must not turn into "delete any sandbox"."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as workdir:
+            tools._truncate(
+                "\n".join(str(i) for i in range(5_000)), 200, workdir = workdir, scope = "abc123abc123"
+            )
+            open(os.path.join(workdir, "game.html"), "w").close()
+
+            assert not tools._holds_no_user_files(workdir)

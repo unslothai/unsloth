@@ -8773,6 +8773,12 @@ def _holds_no_user_files(target: str, owner: "str | None" = None) -> bool:
     """
     budget = _MAX_SNAPSHOT_DIRS
     for parent, dirs, files in os.walk(target):
+        # Studio's own, like the marker below: spills are truncated tool output this
+        # process wrote and deliberately hid from the file cards, so counting them as the
+        # user's content is what would leave an unreachable sandbox behind, reported as
+        # holding files the user never created.
+        if parent == target and _SPILL_DIR in dirs:
+            dirs.remove(_SPILL_DIR)
         # A link to a directory is listed here, not in files, and a tool made
         # it: a sandbox holding one is not empty.
         if any(os.path.islink(os.path.join(parent, name)) for name in dirs):
@@ -14268,7 +14274,7 @@ def _spill_full_output(
                     os.remove(tmp)
                 except OSError:
                     pass
-        _prune_spills(target_dir)
+        _prune_spills(target_dir, os.path.join(workdir, _SPILL_DIR))
         # Relative, so the command works from the cwd the tools already run in, and so
         # the absolute sandbox path never reaches the model.
         return f"{relative}/{name}", complete
@@ -14277,42 +14283,77 @@ def _spill_full_output(
         return None, True
 
 
-def _prune_spills(target_dir: str) -> None:
-    """Keep the newest spills within both the count and the byte budget, delete nothing else.
-
-    A long session prints many large results and each one is retained in full; without
-    this the sandbox grows without bound for output the model has almost certainly
-    finished paging through.
+def _spill_files(directory: str) -> "list[str]":
+    """The spills in one directory, and nothing else that happens to live there.
 
     Matched by ``_SPILL_NAME_RE`` rather than by extension, because the sandbox can be a
     directory the user already had: a `.unsloth_tool_output/notes.txt` that Studio did not
-    write is not Studio's to prune.
+    write is not Studio's to prune. Links are skipped for the same reason.
     """
     try:
-        entries = [
-            os.path.join(target_dir, name)
-            for name in os.listdir(target_dir)
-            if _SPILL_NAME_RE.fullmatch(name) and not os.path.islink(os.path.join(target_dir, name))
-        ]
-        # Newest first, kept while BOTH budgets hold. A count bounds nothing in bytes, and
-        # twenty large-but-legal spills are still tens of gigabytes of a disk the host
-        # needs for models.
+        names = os.listdir(directory)
+    except OSError:
+        return []
+    return [
+        os.path.join(directory, name)
+        for name in names
+        if _SPILL_NAME_RE.fullmatch(name) and not os.path.islink(os.path.join(directory, name))
+    ]
+
+
+def _prune_spills(target_dir: str, root: "str | None" = None) -> None:
+    """Bound this scope by count and the whole spill tree by bytes.
+
+    A long session prints many large results and each one is retained; without this the
+    sandbox grows without bound for output the model has almost certainly finished paging
+    through.
+
+    The byte budget is enforced across ``root`` rather than per directory. A project's
+    chats each get their own scope under one shared sandbox, so a per-directory limit is
+    really a per-chat limit and a project with many tool-using chats multiplies it by
+    however many there are.
+    """
+    try:
+        # Newest first within this scope, so the count keeps the ones still being paged.
+        for extra in sorted(_spill_files(target_dir), key = os.path.getmtime, reverse = True)[
+            _SPILL_KEEP:
+        ]:
+            try:
+                os.remove(extra)
+            except OSError:
+                pass
+
+        root = root or target_dir
+        everything = list(_spill_files(root))
+        for name in sorted(os.listdir(root)):
+            scope = os.path.join(root, name)
+            if os.path.isdir(scope) and not os.path.islink(scope):
+                everything.extend(_spill_files(scope))
         kept, total = 0, 0
-        for path in sorted(entries, key = os.path.getmtime, reverse = True):
+        for path in sorted(everything, key = os.path.getmtime, reverse = True):
             try:
                 size = os.path.getsize(path)
             except OSError:
                 continue
-            # The newest is always kept, whatever the budgets say: it is the file the
+            # The newest is always kept, whatever the budget says: it is the file the
             # notice about to be returned names, and a hint pointing at a path that was
             # deleted on the way out is worse than no hint at all.
-            if kept == 0 or (kept < _SPILL_KEEP and total + size <= _SPILL_MAX_TOTAL_BYTES):
+            if kept == 0 or total + size <= _SPILL_MAX_TOTAL_BYTES:
                 kept, total = kept + 1, total + size
                 continue
             try:
                 os.remove(path)
             except OSError:
                 pass
+        # An emptied scope is a chat that stopped spilling, and leaving its directory
+        # behind is what makes the sandbox look non-empty to the cleanup.
+        for name in sorted(os.listdir(root)):
+            scope = os.path.join(root, name)
+            if os.path.isdir(scope) and not os.path.islink(scope) and not os.listdir(scope):
+                try:
+                    os.rmdir(scope)
+                except OSError:
+                    pass
     except Exception:
         logger.debug("tool result spill prune failed", exc_info = True)
 
