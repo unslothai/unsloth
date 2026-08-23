@@ -112,6 +112,25 @@ def _blame_latest_turn(context_tokens: int):
     latest_turn = _int(refusal.get("latest_turn_tokens"))
     if irreducible <= 0 or latest_turn <= 0:
         return None
+    # Only a COUNTED turn is comparable to `irreducible_tokens`. That is a tokenizer count
+    # of the rendered prompt; the fallback `latest_turn_tokens` is the message's JSON at
+    # four characters a token, so weighing them against each other compares a guess with a
+    # truth rather than two sides of one. Measured on the bundled gemma-4 template with a
+    # real Gemma tokenizer: 16,400 characters of newlines estimate 8,207 tokens against
+    # 557 rendered, 14.8x, which alone clears this ratio against a 8,629-token prompt the
+    # turn is 6.5% of -- next to a system prompt that is 93% of it. The user was then told
+    # "Most of this prompt is a single tool result" and to fetch a smaller slice of a file
+    # that was not the problem. Escaped JSON runs the other way at 0.86x, so the error is
+    # not even one-directional and cannot be corrected for.
+    #
+    # The producer now prices such a turn by difference against the prompt it measured
+    # (`turn_diagnosis`), so this flag is False only when nothing could be counted at all.
+    # There, no turn is named: a lost diagnosis costs the user a specific lever, a false
+    # one sends them after the wrong one. Absent flag means a producer that predates it,
+    # which was always a count.
+    exact = bool(refusal.get("latest_turn_exact", True))
+    if not exact:
+        return None
     # Both numbers price a whole rendered PROMPT, so both carry the same floor (template
     # wrapper plus any tool catalogue). Left in, it swamps the comparison: a 6,000-token
     # MCP catalogue makes a 20-token "hi" 97% of the irreducible prompt. Off BOTH sides,
@@ -129,21 +148,13 @@ def _blame_latest_turn(context_tokens: int):
     # `>=` to match that check. Compared without the shared floor, since the hard wording
     # is a claim about the turn's own size.
     window = recorded_context or context_tokens
-    # And only on a COUNTED turn. When the template drops the newest message on its own
-    # -- both bundled Gemma-4 templates render a lone `role: tool` as nothing, so every
-    # Gemma tool result lands here -- the fit falls back to pricing the message's JSON at
-    # four characters a token. Measured on the real template with a real Gemma tokenizer,
-    # 16,400 characters of whitespace runs estimates 8,219 tokens against 838 rendered,
-    # 9.8x; escaped JSON and long repeated characters run 2-4x. So the estimate alone can
-    # clear an 8,192-token window while the turn it describes costs under a thousand, and
-    # the hard wording would tell the user a tool result they could send is impossible to
-    # send. It is still fine for the ratio above -- that only ever compares two sides --
-    # but not for a claim about the turn's own size. Absent flag means a producer that
-    # predates it, which was always a count.
-    exact = bool(refusal.get("latest_turn_exact", True))
+    # Reached only on a counted turn, per the gate above, so this is a claim about a size
+    # that was measured. A turn the template renders as nothing on its own is counted by
+    # difference, which is why every Gemma tool result can earn this wording again rather
+    # than being hedged down for being a guess.
     # Not defaulted to "user": `describe_oversize` gives an unnameable role generic advice.
     role = str(refusal.get("latest_turn_role") or "")
-    return role, not (exact and window and latest_turn >= window)
+    return role, not (window and latest_turn >= window)
 
 
 def _history_cannot_help(context_tokens: int) -> bool:

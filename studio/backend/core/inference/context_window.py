@@ -284,8 +284,34 @@ def _shared_prompt_tokens(count_tokens: Callable[[list[dict]], int]) -> int:
         return 0
 
 
+def _marginal_turn_count(
+    fitted: list[dict], count_tokens: Callable[[list[dict]], int], irreducible_tokens: int
+) -> Optional[int]:
+    """What the newest turn ADDED to the prompt that was actually measured.
+
+    The one-message slice is unusable when the template renders the newest message as
+    nothing on its own, but the difference against the same prompt WITHOUT it is a real
+    tokenizer count of exactly the turn's contribution, with the floor cancelled on both
+    sides of the subtraction. So the diagnosis keeps a counted turn where it used to fall
+    back to a guess.
+
+    `irreducible_tokens` must be the count of `fitted` itself, which is what both callers
+    pass. One extra count, on a branch that has already decided to refuse the request,
+    next to the one `_shared_prompt_tokens` takes there. None when the counter cannot
+    price the prefix, which is the caller's cue to fall back to the estimate.
+    """
+    try:
+        return int(irreducible_tokens) - int(count_tokens(list(fitted)[:-1]))
+    except Exception:
+        return None
+
+
 def turn_diagnosis(
-    messages: list[dict], count_tokens: Callable[[list[dict]], int], *, irreducible_tokens: int
+    messages: list[dict],
+    count_tokens: Callable[[list[dict]], int],
+    *,
+    irreducible_tokens: int,
+    fitted: Optional[list[dict]] = None,
 ) -> dict[str, Any]:
     """The fields that say WHICH part of a refused prompt is which.
 
@@ -295,10 +321,18 @@ def turn_diagnosis(
     conversation did. Zero when the turn was estimated rather than counted: that estimate
     prices the message's own JSON and no catalogue, so it has no floor to remove.
 
-    `latest_turn_exact` says which of the two `latest_turn_tokens` is. A consumer may
-    compare an estimate against the rest of the prompt -- both sides are only ever a
-    ratio -- but must not state it as the turn's size, because the estimate is four
-    characters to a token and text that tokenises sparsely blows straight through that.
+    `latest_turn_exact` says which of the two `latest_turn_tokens` is. It is False only
+    on the fallback below, where nothing could be counted at all, and a consumer must
+    then not compare it against `irreducible_tokens`: that number is a tokenizer count of
+    the rendered prompt while the estimate is four characters to a token over the
+    message's JSON, and the two do not share units. Measured on the bundled gemma-4
+    template with a real Gemma tokenizer, 16,400 characters of newlines estimate 8,207
+    tokens against 557 rendered, 14.8x, which is enough for the estimate alone to clear
+    the dominance ratio against a prompt the turn is 6% of.
+
+    `fitted` is the message list `irreducible_tokens` was counted over. Given it, a turn
+    the template refuses to render alone is still priced by difference rather than
+    guessed.
     """
     if not messages:
         # Vacuously exact: nothing was estimated, and a zero count is ignored anyway.
@@ -317,15 +351,26 @@ def turn_diagnosis(
         # result is emitted only while scanning forward from the assistant tool call that
         # asked for it, which a one-message slice does not contain. So the number is the
         # floor and nothing else, and subtracting the floor from it would leave the turn
-        # contributing ~0 and blame the conversation. Same remedy as a template that
-        # refuses the slice outright: price the message's own JSON, and record no floor,
-        # because that estimate does not carry one.
-        latest = int(estimate_messages_tokens(messages[-1:]))
-        shared = 0
-        # Counted or not, what is REPORTED is now the estimate, and that is what the flag
-        # describes. Leaving it True here would be the worse half of the bug: this branch
-        # is the one every Gemma tool result takes.
-        exact = False
+        # contributing ~0 and blame the conversation.
+        #
+        # Price it by DIFFERENCE against the prompt that was measured instead: the slice
+        # is unrenderable, the contribution is not. Reported floor-inclusive, so the
+        # consumer's existing subtraction of `shared` leaves exactly the marginal and the
+        # ratio still compares two tokenizer counts.
+        marginal = _marginal_turn_count(
+            fitted if fitted is not None else messages, count_tokens, irreducible_tokens
+        )
+        if marginal is not None and marginal > 0:
+            latest = marginal + shared
+        else:
+            # Nothing countable left: same remedy as a template that refuses the slice
+            # outright -- price the message's own JSON, and record no floor, because that
+            # estimate does not carry one.
+            latest = int(estimate_messages_tokens(messages[-1:]))
+            shared = 0
+            # What is REPORTED is now the estimate, and that is what the flag describes.
+            # Leaving it True would be the worse half of the bug.
+            exact = False
     # Never all of either side: a floor at or above them would leave no ratio to compare.
     shared = max(0, min(shared, latest - 1, int(irreducible_tokens) - 1))
     return {
@@ -445,7 +490,11 @@ def fit_rolling_context(
             # Floor for the conversation, and how much of it is the message just sent:
             # together they say whether the chat or the single message is the problem.
             "irreducible_tokens": current_tokens,
-            **turn_diagnosis(messages, count_tokens, irreducible_tokens = current_tokens),
+            # `fitted` is what `current_tokens` prices, so the turn can be counted by
+            # difference against it rather than estimated.
+            **turn_diagnosis(
+                messages, count_tokens, irreducible_tokens = current_tokens, fitted = fitted
+            ),
             "context_length": context_length,
             "prompt_target": prompt_target,
         }

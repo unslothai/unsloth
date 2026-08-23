@@ -25,7 +25,10 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from core.inference import context_refusal  # noqa: E402
-from core.inference.context_window import fit_rolling_context  # noqa: E402
+from core.inference.context_window import (  # noqa: E402
+    estimate_messages_tokens,
+    fit_rolling_context,
+)
 from routes.inference import (  # noqa: E402
     _accumulate_context_truncation,
     _context_truncated_sse_chunk,
@@ -554,7 +557,8 @@ def test_a_turn_the_template_renders_as_nothing_is_not_counted_as_the_floor(
     Gemma 4 renders a lone tool result as nothing, so the one-message slice succeeds and
     returns the floor exactly. Recording that as an exact turn size makes the turn worth
     ~0 once the floor comes off both sides, and a 5,000-token tool result reads as the
-    conversation's fault. Fall back to the estimate, as an outright refusal already does.
+    conversation's fault. The remedy is to price the turn by DIFFERENCE against the prompt
+    that was measured, which is still a tokenizer count of exactly its contribution.
     """
     _, truncation = fit_rolling_context(
         _tool_loop_thread(turn_tokens, system_tokens = system_tokens),
@@ -563,13 +567,18 @@ def test_a_turn_the_template_renders_as_nothing_is_not_counted_as_the_floor(
         count_tokens = _gemma_style_counter(1500),
     )
     assert truncation is not None and not truncation["fits"]
-    # Not the floor reported as the turn: no floor recorded, and a number that moves with
-    # the result's size instead of pinning to the 1,500-token catalogue.
-    assert truncation["shared_prompt_tokens"] == 0
+    # Not the floor reported as the turn: a number that moves with the result's size
+    # instead of pinning to the 1,500-token catalogue.
     assert truncation["latest_turn_tokens"] != 1500
-    # And the payload says which of the two it is, so a consumer can use it as a ratio
-    # without quoting it as the turn's size.
-    assert truncation["latest_turn_exact"] is False
+    # Counted by difference, so the floor IS recorded and comes off both sides, and what
+    # is left is the turn's own contribution rather than a four-chars-a-token guess.
+    assert truncation["shared_prompt_tokens"] == 1500
+    assert truncation["latest_turn_exact"] is True
+    # The payload plus its envelope (`tool_call_id`, `name`), and nothing else: 5,018 for
+    # the big result and 38 for the small one, against a 1,500-token catalogue that used
+    # to be the whole number.
+    contribution = truncation["latest_turn_tokens"] - truncation["shared_prompt_tokens"]
+    assert turn_tokens <= contribution <= turn_tokens + 100
     _context_truncated_sse_chunk("cmpl-1", "model", truncation)
     assert expected in _friendly_error(
         ValueError("the request (9000 tokens) exceeds the available context size (8192 tokens)")
@@ -592,16 +601,20 @@ def test_a_turn_the_template_renders_as_nothing_is_not_counted_as_the_floor(
         ("system", "The system instructions do not fit on their own", "the system instructions"),
     ],
 )
-def test_an_estimated_turn_is_never_called_too_big_to_send(role, hard, soft):
-    """The hard wording is a claim about a turn's size, so it needs a measured one.
+def test_an_estimated_turn_names_no_turn_at_all(role, hard, soft):
+    """Neither wording, because an estimate cannot be weighed against a count.
 
-    The estimate the fit falls back to is `len(json.dumps(message)) // 4`, and text that
-    tokenises sparsely blows through that: rendered with the bundled gemma-4 template and
-    counted with the Gemma tokenizer, 16,400 characters of alternating newline and tab
-    runs estimate 8,219 tokens against 838 real, a 9.8x overshoot. A window that number
-    clears and the turn does not would otherwise tell the user a tool result they could
-    have sent is impossible to send. Softer wording is still true of it: an estimate that
-    large does mean the turn is the bulk of the prompt.
+    The fallback `latest_turn_tokens` is `len(json.dumps(message)) // 4` while
+    `irreducible_tokens` is a tokenizer count of the rendered prompt, so the dominance
+    ratio compares a guess with a truth. Text that tokenises sparsely blows through the
+    guess: on the bundled gemma-4 template with a real Gemma tokenizer, 16,400 characters
+    of newlines estimate 8,207 tokens against 557 rendered, 14.8x. That alone clears the
+    ratio against an 8,629-token prompt the turn is 6.5% of, beside a system prompt that
+    is 93% of it -- and the softer wording is then a false attribution, not a hedge. It is
+    not correctable either: escaped JSON runs the other way, 0.86x.
+
+    The producer prices such a turn by difference now, so this flag is only ever False
+    when nothing could be counted, and there the generic advice is the honest answer.
     """
     estimated = _refusal(irreducible = 5120, latest_turn = 5400, role = role) | {
         "latest_turn_exact": False
@@ -609,8 +622,12 @@ def test_an_estimated_turn_is_never_called_too_big_to_send(role, hard, soft):
     context_refusal.record_fit(estimated)
     message = _friendly_error(ValueError(_SERVER_ERROR))
     assert hard not in message
-    assert f"Most of this prompt is {soft}" in message
-    assert "shortening the conversation will not help much" in message
+    assert f"Most of this prompt is {soft}" not in message
+    # No turn named, so the advice is whichever generic branch fits. This refusal is
+    # irreducible at its window, so it is the one that says shortening cannot work and
+    # names the levers instead of a role.
+    assert "Even with every earlier turn dropped" in message
+    assert "the system prompt and any tools that are enabled" in message
 
 
 def test_a_measured_turn_still_gets_the_hard_wording():
@@ -633,14 +650,20 @@ def test_a_payload_without_the_flag_is_read_as_a_count():
     )
 
 
-def test_a_sparse_tool_result_over_the_window_is_only_ever_hedged():
+def test_a_sparse_tool_result_is_blamed_for_no_more_than_it_rendered():
     """End to end on the Gemma shape, with a counter that tokenises whitespace runs.
 
     A real tokenizer merges long runs of whitespace into single tokens, so the JSON-length
-    estimate the fit is forced onto for a lone `role: tool` message can clear the window
-    while the rendered turn costs a fraction of it. The refusal is real -- an oversized
-    system prompt is what the request actually died of -- but the tool result is not what
-    could not be sent.
+    estimate the fit used to be forced onto for a lone `role: tool` message can clear the
+    window while the rendered turn costs a fraction of it. Measured on the bundled
+    gemma-4 template with a real Gemma tokenizer: 16,400 characters of newlines estimate
+    8,207 tokens and render 557, 14.8x, and a lone tool message renders to exactly the
+    empty prompt.
+
+    The band this pins is the one no estimate can survive. Here the turn is 29% of the
+    prompt -- too small to blame, too large for the estimate's error to cancel out of a
+    ratio -- so the refusal is real, an oversized system prompt is what the request died
+    of, and the tool result is neither what could not be sent nor the bulk of the prompt.
     """
 
     def count(messages):
@@ -660,22 +683,30 @@ def test_a_sparse_tool_result_over_the_window_is_only_ever_hedged():
                 total += max(1, len(text) // 4)
         return total
 
-    thread = _tool_loop_thread(20, system_tokens = 8000, history_turns = 0)
+    thread = _tool_loop_thread(20, system_tokens = 2000, history_turns = 0)
     thread[-1]["content"] = ("\n" * 40 + "\t" * 40) * 205
     _, truncation = fit_rolling_context(
-        thread, context_length = 8192, max_tokens = 512, count_tokens = count
+        thread, context_length = 2048, max_tokens = 512, count_tokens = count
     )
     assert truncation is not None and not truncation["fits"]
-    # The estimate really does clear the window, and the rendered turn really is small.
-    assert truncation["latest_turn_tokens"] >= 8192
-    assert truncation["latest_turn_exact"] is False
-    assert count(thread[-2:]) - count(thread[-2:-1]) < 1000
+    # The estimate this replaced really would have blamed the turn: 8,218 against a
+    # 2,899-token prompt clears the 0.66 share several times over.
+    assert estimate_messages_tokens(thread[-1:]) >= 0.66 * truncation["irreducible_tokens"]
+    # What it really contributed is 842 of 2,899, 29%, and it is a count, not a guess.
+    assert truncation["latest_turn_exact"] is True
+    contribution = truncation["latest_turn_tokens"] - truncation["shared_prompt_tokens"]
+    assert contribution == count(thread) - count(thread[:-1])
+    assert contribution < 0.4 * truncation["irreducible_tokens"]
     _context_truncated_sse_chunk("cmpl-1", "model", truncation)
     message = _friendly_error(
-        ValueError("the request (9000 tokens) exceeds the available context size (8192 tokens)")
+        ValueError("the request (2899 tokens) exceeds the available context size (2048 tokens)")
     )
+    # Neither wording blames the tool result, and the advice names the parts eviction
+    # never touches, which is where the 2,000-token system prompt actually is.
     assert "A tool returned more than this context window can hold" not in message
-    assert "Most of this prompt is a single tool result" in message
+    assert "Most of this prompt is a single tool result" not in message
+    assert "Even with every earlier turn dropped" in message
+    assert "the system prompt and any tools that are enabled" in message
 
 
 def test_a_diagnosis_with_no_window_recorded_is_still_usable():
