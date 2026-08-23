@@ -1948,6 +1948,12 @@ def _rocm_windows_per_device_vram(
         try:
             props = mod.get_device_properties(ordinal)
             total_bytes = int(props.total_memory)
+            # What the Dedicated Usage counters are RANKED against, which is not
+            # what is shown to the user: that counter measures the dedicated
+            # segment, so the carve-out is its ceiling and the pool is not.
+            # Ranking against a widened total puts a 2 GiB APU reading above a
+            # 10 GiB discrete one and admits a counter no visible card can hold.
+            dedicated_bytes = total_bytes
             # On a unified-memory APU props.total_memory is the dedicated
             # carve-out, not what torch can use; same correction, and the same
             # APU-only price for a context, as _torch_get_device_inventory. The
@@ -1956,8 +1962,13 @@ def _rocm_windows_per_device_vram(
             if _rocm_props_total_is_carve_out(props) and hasattr(mod, "mem_get_info"):
                 try:
                     pool_bytes = int(mod.mem_get_info(ordinal)[1])
-                    total_is_pool = pool_bytes > total_bytes
-                    total_bytes = pool_bytes
+                    # Only a WIDER total is worth adopting. The classifier says
+                    # carve-out for a discrete card on an unsettled runtime too,
+                    # and unlike the inventory this path carries a used: a shrunk
+                    # total reports past 100% utilization and zero free.
+                    if pool_bytes > total_bytes:
+                        total_bytes = pool_bytes
+                        total_is_pool = True
                 except Exception as e:
                     logger.debug("ROCm APU driver total failed for ordinal %d: %s", ordinal, e)
             dev_meta.append(
@@ -1966,6 +1977,7 @@ def _rocm_windows_per_device_vram(
                     "visible_ordinal": ordinal,
                     "name": props.name,
                     "total_bytes": total_bytes,
+                    "dedicated_bytes": dedicated_bytes,
                     "total_is_pool": total_is_pool,
                 }
             )
@@ -1978,7 +1990,8 @@ def _rocm_windows_per_device_vram(
     aggregate_gb: Optional[float] = None
     if adapters:
         adapter_useds = [used for _, used in adapters]
-        totals = [d["total_bytes"] for d in dev_meta]
+        # Carve-out capacities, not the displayed totals: see dedicated_bytes.
+        totals = [d["dedicated_bytes"] for d in dev_meta]
         assigned = _match_adapter_used_to_devices(adapter_useds, totals)
         aggregate_bytes = _rocm_windows_aggregate_used_bytes(adapter_useds, totals)
         if aggregate_bytes is not None:
