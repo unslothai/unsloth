@@ -180,8 +180,26 @@ def order_is_balanced(plan: list[tuple[Target, Cell, RungPlan]]) -> bool:
     return len(labels) > 1 and len(set(first_counts.values())) == 1
 
 
+#: The per-cell gates whose failure means the cell's TIMINGS ARE NOT A READING OF THE BUILD, and
+#: therefore the only ones that may take the whole cell out of the ratios.
+#:
+#: NAMED RATHER THAN "ANY FAILED GATE", because a per-cell gate is not automatically fatal and the
+#: one that is not says so itself. `timer_clamp` fails whenever idle calibration cannot establish a
+#: floor -- an overloaded machine, or simply the frames instrument not being loaded -- and
+#: `session.py` is explicit that this is "NOT fatal, and NOT silently zero": blocked time is a
+#: subtraction against that floor, so `busy_pct` is null with the reason attached AND EVERY OTHER
+#: COLUMN STANDS. Excluding the cell for it would delete keystroke latency, frame and census
+#: readings that were measured correctly, and would do it most often on exactly the machines least
+#: able to spare a repetition.
+#:
+#: The two below are different in kind: both say the FILM ITSELF was wrong. A thread that lost
+#: messages and a reply that stopped being rendered do not produce a suspect column, they produce a
+#: cheaper cell, and there is no metric in it that can be trusted afterwards.
+INVALIDATING_CELL_GATES: frozenset[str] = frozenset({"thread_complete", "follows_the_stream"})
+
+
 def _failed_cell_gates(records: list[dict]) -> dict[str, set[str]]:
-    """`{cell_id: {gate name}}` for every cell carrying a FAILED per-cell gate row.
+    """`{cell_id: {gate name}}` for every cell carrying a FAILED INVALIDATING per-cell gate row.
 
     RUN-LEVEL GATES ARE NOT IN HERE. `production_build` and `reportable_tier` are emitted without a
     `cell_id`, and they are properties of the whole run: reading them as per-cell would empty both
@@ -204,6 +222,8 @@ def _failed_cell_gates(records: list[dict]) -> dict[str, set[str]]:
     failed: dict[str, set[str]] = {}
     for row in records:
         if row.get("row_type") != "gate" or row.get("passed") is not False:
+            continue
+        if str(row.get("name")) not in INVALIDATING_CELL_GATES:
             continue
         if row.get("cell_id") is None:
             continue
