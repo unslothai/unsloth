@@ -93,8 +93,30 @@ def _action_timings(records: list[dict], cid: str) -> dict[str, float]:
     return out
 
 
-def cell_metrics(records: list[dict]) -> dict[str, dict[str, float]]:
-    """{cell_id: {metric: value}} for every COMPLETED cell in the payload.
+def sessions_in(records: list[dict]) -> set[str]:
+    """Every `session_id` that produced a completed cell in this payload."""
+    return {
+        r.get("session_id")
+        for r in records
+        if r.get("row_type") == "cell" and r.get("completed") and r.get("session_id")
+    }
+
+
+def cell_metrics(records: list[dict], session: str | None = None) -> dict[str, dict[str, float]]:
+    """{cell_id: {metric: value}} for every COMPLETED cell in ONE session of the payload.
+
+    REFUSES rather than letting the last writer win. `cell_id` is unique within a session and NOT
+    across sessions, so keying on it alone silently collapses two measurements of the same cell
+    into whichever was appended last.
+
+    That is not hypothetical. A launcher started twice ran two full sessions concurrently against
+    one `--out`, and both appended: three `run_meta` rows, every `cell_id` present twice, both
+    marked completed, and the two copies carrying materially different timings because the runs
+    were contending with each other -- `r1M.treatment.rep1` keystroke `p50_ms` read 73.4 ms in one
+    session and 144.5 ms in the other. Scored last-wins it reported a 149.8% regression; scored
+    per session it read +149.8% in one and +42.8% in the other.
+
+    Pass `session` to select one, or use `paired`, which keys on the session and pairs within it.
 
     SCOPED TO THE CELL'S OWN SESSION, not to its cell id. The payload is append-only and a cell id
     is REUSED: `--resume` re-runs a cell that died, and a second run into the same output directory
@@ -106,9 +128,22 @@ def cell_metrics(records: list[dict]) -> dict[str, dict[str, float]]:
     frame metrics dilutes `time_in_jank_pct` and `jank_index` away from the film that was measured.
     A metric here has to be the same quantity the rest of the tool calls by that name.
     """
+    live = sessions_in(records)
+    if session is None and len(live) > 1:
+        raise SystemExit(
+            f"refusing to pool cells from {len(live)} sessions in one payload: "
+            f"{sorted(live)}. `cell_id` is unique within a session, not across them, so keying "
+            f"on it alone would report whichever session was appended last. Two concurrent runs "
+            f"sharing one --out is the usual cause. Pass `session=` to pick one, or use `paired`, "
+            f"which pairs within a session."
+        )
     out: dict[str, dict[str, float]] = {}
+    if session is not None:
+        records = [r for r in records if r.get("session_id") in (session, None)]
     for row in records:
         if row.get("row_type") != "cell" or not row.get("completed"):
+            continue
+        if session is not None and row.get("session_id") != session:
             continue
         cid = row["cell_id"]
         # Scoped to this cell's OWN attempt: `--resume` re-runs a died cell under a new
@@ -180,14 +215,21 @@ def paired(records: list[dict], shard: str = "") -> dict[str, list[tuple[float, 
 
     A payload recorded before session ids existed has `""` on both arms and pairs exactly as before.
     """
-    cells = cell_metrics(records)
-    sessions = cell_sessions(records)
+    # THE SESSION IS PART OF THE KEY, for the same reason the shard is. Two sessions in one
+    # payload both produce `rep0`, and pairing on the repetition alone matches one session's base
+    # against the other's treatment -- which is a comparison between two different runs under two
+    # different machine loads, reported as a repetition.
+    #
+    # Looped per session rather than calling `cell_metrics(records)` once, because that call now
+    # REFUSES a multi-session payload outright. Selecting each session in turn is what makes the
+    # refusal survivable for the one caller that genuinely has to read across sessions.
     by_key: dict[tuple[str, str, str, str], dict[str, dict[str, float]]] = collections.defaultdict(
         dict
     )
-    for cid, vals in cells.items():
-        rung = cid.split(".", 1)[0]
-        by_key[(shard, rung, rep_of(cid), sessions.get(cid, ""))][arm_of(cid)] = vals
+    for sess in sorted(sessions_in(records)) or [None]:
+        for cid, vals in cell_metrics(records, session = sess).items():
+            rung = cid.split(".", 1)[0]
+            by_key[(shard, str(sess), rung, rep_of(cid))][arm_of(cid)] = vals
     out: dict[str, list[tuple[float, float]]] = collections.defaultdict(list)
     for sides in by_key.values():
         if "base" not in sides or "treatment" not in sides:

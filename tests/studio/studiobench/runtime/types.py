@@ -339,6 +339,44 @@ class Recorder:
         self.path.parent.mkdir(parents = True, exist_ok = True)
         self.session_id = session_id
         self.t0 = t0 if t0 is not None else time.monotonic()
+        # REFUSE A SECOND LIVE SESSION IN ONE OUTPUT DIRECTORY.
+        #
+        # Appending is correct across SHARDS, which are deliberate and sequential. It is never
+        # correct for two runs going at once: they contend with each other, so neither measures
+        # the machine the other thought it had, and they write the same `cell_id`s into one file
+        # where a reader keyed on `cell_id` sees only the last writer.
+        #
+        # Observed: a launcher started twice produced three `run_meta` rows and every `cell_id`
+        # twice, both marked completed, with `r1M.treatment.rep1` keystroke `p50_ms` reading
+        # 73.4 ms in one session and 144.5 ms in the other. Scored last-wins that payload showed a
+        # 149.8% regression that does not exist at that size.
+        #
+        # The marker carries the pid, so a crashed run leaves a marker that names a dead process
+        # and the next run says so rather than refusing forever.
+        self._live_marker = self.path.parent / f".running.{session_id}"
+        for other in sorted(self.path.parent.glob(".running.*")):
+            if other == self._live_marker:
+                continue
+            try:
+                pid = int(other.read_text().split()[0])
+            except (OSError, ValueError, IndexError):
+                pid = -1
+            alive = False
+            if pid > 0:
+                try:
+                    os.kill(pid, 0)
+                    alive = True
+                except (OSError, ProcessLookupError):
+                    alive = False
+            if alive:
+                raise SystemExit(
+                    f"refusing to append to {self.path.parent}: session "
+                    f"{other.name.removeprefix('.running.')} is still running as pid {pid}. "
+                    f"Two concurrent runs sharing one --out contend with each other and write "
+                    f"the same cell ids into one file. Give this run its own --out."
+                )
+            other.unlink(missing_ok = True)
+        self._live_marker.write_text(f"{os.getpid()} {session_id}\n", encoding = "utf-8")
         self._fh = self.path.open("a", encoding = "utf-8")
         self._count = 0
 
@@ -411,6 +449,12 @@ class Recorder:
     def close(self) -> None:
         try:
             self._fh.close()
+        except OSError:
+            pass
+        # Drop this session's live marker so a later run may use the directory. Done on close
+        # rather than on success, because a run that crashed still holds no claim on the output.
+        try:
+            self._live_marker.unlink(missing_ok = True)
         except OSError:
             pass
 
