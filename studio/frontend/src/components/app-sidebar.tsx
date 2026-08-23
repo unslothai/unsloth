@@ -2070,7 +2070,10 @@ export function AppSidebar() {
   }
 
   type RenameTarget =
-    | { kind: "chat"; item: SidebarItem; current: string }
+    // `inline` is the row's own pill, which only the row renders. A chord has
+    // no row under the cursor and the chat may not have one on screen at all,
+    // so it opens the dialog the other two kinds already use.
+    | { kind: "chat"; item: SidebarItem; current: string; inline: boolean }
     | { kind: "project"; project: ProjectRecord; current: string }
     | { kind: "run"; run: TrainingRunSummary; current: string };
   const [renamingTarget, setRenamingTarget] = useState<RenameTarget | null>(
@@ -2111,9 +2114,9 @@ export function AppSidebar() {
         ? renameTrimmed !== renamingTarget.current
         : renamingTarget.run.display_name != null);
 
-  function openRenameChat(item: SidebarItem) {
+  function openRenameChat(item: SidebarItem, inline = true) {
     setRenameDraft(item.title);
-    setRenamingTarget({ kind: "chat", item, current: item.title });
+    setRenamingTarget({ kind: "chat", item, current: item.title, inline });
   }
   function openRenameRun(run: TrainingRunSummary) {
     const current = getTrainingRunDisplayTitle(run);
@@ -2526,7 +2529,13 @@ export function AppSidebar() {
   useShortcut("deleteSelectedChats", () => {
     if (selectionCount > 0) deleteSelected();
   });
-  useShortcut("renameChat", () => withActiveChat(openRenameChat));
+  // Through the dialog: the row's inline pill is rendered by the row, and the
+  // open chat may be behind a collapsed section, past a folder's "show more",
+  // or on a route with no chat list at all, where the chord would look dead and
+  // leave a rename waiting to appear the moment the row came back.
+  useShortcut("renameChat", () =>
+    withActiveChat((item) => openRenameChat(item, false)),
+  );
   useShortcut("copyChatAsMarkdown", () =>
     withActiveChat((item) => void copyChatItemAsMarkdown(item)),
   );
@@ -2814,7 +2823,9 @@ export function AppSidebar() {
     );
 
     const isRenamingThis =
-      renamingTarget?.kind === "chat" && renamingTarget.item.id === item.id;
+      renamingTarget?.kind === "chat" &&
+      renamingTarget.inline &&
+      renamingTarget.item.id === item.id;
 
     // Inline rename edits the title in place as a rounded pill, no dialog.
     if (isRenamingThis) {
@@ -4369,7 +4380,10 @@ export function AppSidebar() {
       </DialogContent>
     </Dialog>
     <Dialog
-      open={renamingTarget !== null && renamingTarget.kind !== "chat"}
+      open={
+        renamingTarget !== null &&
+        (renamingTarget.kind !== "chat" || !renamingTarget.inline)
+      }
       onOpenChange={(open) => {
         if (!open) setRenamingTarget(null);
       }}

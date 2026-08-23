@@ -785,6 +785,41 @@ test("the chords that need one target do not fire where there are two", async ()
   );
 });
 
+// The inline rename pill is rendered by the row, so it needs the row to be on
+// screen. A chord has no row under the cursor, and the open chat may be behind
+// a collapsed section, past a folder's limit, or on a route with no chat list.
+test("the rename chord does not land in a surface only a row can show", async () => {
+  const sidebar = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  // The chord asks for the dialog; the context menu, which has a row under the
+  // cursor by definition, keeps the pill.
+  assert.match(
+    sidebar,
+    /useShortcut\("renameChat", \(\) =>\n\s*withActiveChat\(\(item\) => openRenameChat\(item, false\)\),/,
+  );
+  assert.match(sidebar, /onSelect=\{\(\) => openRenameChat\(item\)\}/);
+  assert.match(
+    sidebar,
+    /function openRenameChat\(item: SidebarItem, inline = true\)/,
+  );
+
+  // The pill is gated on it, so a dialog rename cannot also arm a row that is
+  // off screen and surprise the user when it comes back.
+  assert.match(
+    sidebar,
+    /const isRenamingThis =\n\s*renamingTarget\?\.kind === "chat" &&\n\s*renamingTarget\.inline &&/,
+  );
+  // And the dialog takes chats now, which is what its chat strings were always
+  // written for.
+  assert.match(
+    sidebar,
+    /\(renamingTarget\.kind !== "chat" \|\| !renamingTarget\.inline\)/,
+  );
+  assert.ok(sidebar.includes('t("shell.dialog.renameChat.title")'));
+});
+
 // Bare Escape has more than one owner. The sidebar answers it while rows are
 // selected and does not consume it, so without a guard one press would clear
 // the selection and deny a waiting tool call at the same time.
