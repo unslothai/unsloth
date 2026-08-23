@@ -87,6 +87,25 @@ def _adapter_slice(start: str, end: str) -> str:
     return slice_between(read(ADAPTER), start, end)
 
 
+def _send_path_slice() -> str:
+    """The send path's own outbound build, wrapped so the test runs it instead of reading it.
+
+    Sliced out of ``createOpenAIStreamAdapter``. Wiring assertions on the source text pass just
+    as happily against a send path that went back to ``messages.flatMap(...)``; this one only
+    passes while the payload is actually built from pruned history.
+    """
+    body = slice_between(
+        read(ADAPTER),
+        "const survivingMessages = pruneOutboundHistory(",
+        "if (selectedImageEditReference) {",
+    )
+    return (
+        "export function buildSendPathOutbound(messages: any, isExternalRequest: boolean) {\n"
+        + body
+        + "  return outboundMessages;\n}\n"
+    )
+
+
 def _harness_source() -> str:
     return (
         HARNESS
@@ -140,6 +159,7 @@ export function wireRoles(messages: any[], includeReasoningContent: boolean): st
 
 export { pruneOutboundHistory, toOpenAIMessages };
 """
+        + _send_path_slice()
     )
 
 
@@ -338,3 +358,67 @@ def test_the_count_and_send_paths_prune_the_same_history():
         sent = _run(_script(history, "false"))
         assert counted["kept"] == sent["kept"], name
         assert counted["keptText"] == sent["keptText"], name
+
+
+def _send_script(history: str, is_external: str) -> str:
+    return textwrap.dedent(
+        f"""
+        // @ts-nocheck
+        import {{ buildSendPathOutbound }} from "./harness.ts";
+        const outbound = buildSendPathOutbound({history}, {is_external});
+        console.log(JSON.stringify({{
+          roles: outbound.map((m) => m.role),
+          contents: outbound.map((m) => m.content),
+        }}));
+        """
+    )
+
+
+def test_the_send_path_builds_its_payload_out_of_pruned_history():
+    """Run the send path's own outbound build, not a restatement of it.
+
+    A send path that stopped pruning would still satisfy every wiring assertion on the source
+    text, so the abandoned pair is put through the real slice here.
+    """
+    for is_external in ("false", "true"):
+        out = _run(_send_script(f"[{_user('first')}, {CANCELLED}, {_user('second')}]", is_external))
+        assert out["roles"] == ["user"], f"isExternalRequest={is_external}"
+        assert out["contents"] == ["second"]
+
+
+def test_the_send_path_still_carries_an_answered_exchange():
+    """The counterpart: pruning must not be the send path quietly dropping history."""
+    answered = '{ role: "assistant", content: [{ type: "text", text: "an answer" }] }'
+    out = _run(_send_script(f"[{_user('first')}, {answered}, {_user('second')}]", "false"))
+    assert out["roles"] == ["user", "assistant", "user"]
+    assert out["contents"] == ["first", "an answer", "second"]
+
+
+def test_a_stop_that_produced_only_whitespace_takes_its_prompt_with_it():
+    """Whitespace is not an answer, and the backend already agrees.
+
+    ``_build_external_messages`` drops any assistant turn whose string content trims away
+    (studio/backend/routes/inference.py). Keeping the pair here because "   " is truthy in JS
+    only moved the defect one hop: the backend removed the assistant alone and put the two user
+    turns back on the wire touching.
+    """
+    for blank in ("   ", "\\n\\t"):
+        whitespace = (
+            '{ role: "assistant", content: [{ type: "text", text: "%s" }],'
+            ' status: { type: "incomplete" },'
+            ' metadata: { custom: { incomplete: { reason: "cancelled" } } } }' % blank
+        )
+        out = _run(_script(f"[{_user('first')}, {whitespace}, {_user('second')}]"))
+        assert out["kept"] == ["user"], repr(blank)
+        assert out["keptText"] == ["second"]
+        assert out["wireBefore"] == ["user", "assistant", "user"], (
+            "the refusal-only prune kept the whitespace turn, which is the hop the backend "
+            "trim then undid"
+        )
+
+
+def test_whitespace_only_replies_leave_no_pair_for_the_backend_to_split():
+    """The same shape without a Stop marker: the backend trims it either way."""
+    whitespace = '{ role: "assistant", content: [{ type: "text", text: "  " }] }'
+    out = _run(_script(f"[{_user('first')}, {whitespace}, {_user('second')}]"))
+    assert out["kept"] == ["user"]

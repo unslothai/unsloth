@@ -1392,17 +1392,24 @@ function toOpenAIMessages(
  * of it fits back on the wire. A turn holding any of this is real history even when the
  * serialiser emits nothing for it, so pruning it would delete a user prompt that was answered. */
 function assistantTurnCarriesPayload(message: RunMessage): boolean {
-  if (collectImageParts(message).length > 0) return true;
   for (const part of message.content ?? []) {
     if (part.type === "tool-call") return true;
-    if (
-      part.type === "text" &&
-      sanitizeAssistantReplayText(part.text).length > 0
-    ) {
-      return true;
-    }
+    // sanitizeAssistantReplayText only substitutes (an audio data URI becomes "[audio]"),
+    // so it can never empty text that had any. Reading the raw part keeps the scan off that
+    // regex for every turn of a long thread.
+    if (part.type === "text" && part.text.trim().length > 0) return true;
   }
+  if (collectImageParts(message).length > 0) return true;
   return "attachments" in message && (message.attachments?.length ?? 0) > 0;
+}
+
+/** Whether a serialised turn still says something once the backend is done with it. The
+ * external-provider translator drops any assistant turn whose string content trims away
+ * (`_build_external_messages` in studio/backend/routes/inference.py), so treating
+ * whitespace as content here would keep a pair the backend then splits apart again. */
+function hasReplayContent(content: OpenAIMessageContent | null): boolean {
+  if (typeof content === "string") return content.trim().length > 0;
+  return Boolean(content);
 }
 
 /** A turn that stopped before it was done. `status` is session state only (a reloaded thread
@@ -1435,7 +1442,7 @@ function isAbandonedAssistantTurn(
   return (
     rest.length === 0 &&
     only?.role === "assistant" &&
-    !only.content &&
+    !hasReplayContent(only.content) &&
     !only.tool_calls &&
     !only.reasoning_content
   );

@@ -14,13 +14,28 @@ test("a Stop with no output is recognised by what it puts on the wire", () => {
   assert.match(adapter, /function isAbandonedAssistantTurn\(/);
   assert.match(
     adapter,
-    /!only\.content &&\s*!only\.tool_calls &&\s*!only\.reasoning_content/,
+    /!hasReplayContent\(only\.content\) &&\s*!only\.tool_calls &&\s*!only\.reasoning_content/,
+  );
+});
+
+test("whitespace is not content, the way the backend already reads it", () => {
+  assert.match(adapter, /function hasReplayContent\(/);
+  assert.match(
+    adapter,
+    /if \(typeof content === "string"\) return content\.trim\(\)\.length > 0;/,
+  );
+  assert.match(
+    adapter,
+    /part\.type === "text" && part\.text\.trim\(\)\.length > 0/,
   );
 });
 
 test("a turn that carries payload of its own is never abandoned", () => {
   assert.match(adapter, /function assistantTurnCarriesPayload\(/);
-  assert.match(adapter, /if \(assistantTurnCarriesPayload\(message\)\) return false;/);
+  assert.match(
+    adapter,
+    /if \(assistantTurnCarriesPayload\(message\)\) return false;/,
+  );
 });
 
 test("a turn that finished on reasoning alone keeps its prompt", () => {
@@ -29,7 +44,10 @@ test("a turn that finished on reasoning alone keeps its prompt", () => {
 });
 
 test("an abandoned turn is pruned with the user prompt that triggered it", () => {
-  assert.match(adapter, /if \(last && last\.role === "user"\) surviving\.pop\(\)/);
+  assert.match(
+    adapter,
+    /if \(last && last\.role === "user"\) surviving\.pop\(\)/,
+  );
 });
 
 test("a trailing abandoned turn keeps the prompt it followed", () => {
