@@ -257,10 +257,7 @@ def _shared_prompt_tokens(count_tokens: Callable[[list[dict]], int]) -> int:
 
 
 def turn_diagnosis(
-    messages: list[dict],
-    count_tokens: Callable[[list[dict]], int],
-    *,
-    irreducible_tokens: int,
+    messages: list[dict], count_tokens: Callable[[list[dict]], int], *, irreducible_tokens: int
 ) -> dict[str, Any]:
     """The fields that say WHICH part of a refused prompt is which.
 

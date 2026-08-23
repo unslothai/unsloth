@@ -255,13 +255,21 @@ def _tool_catalogue_counter(catalogue_tokens: int):
     """
 
     def count(messages):
-        body = sum(max(1, len(json.dumps(message, ensure_ascii = False)) // 4) for message in messages)
+        body = sum(
+            max(1, len(json.dumps(message, ensure_ascii = False)) // 4) for message in messages
+        )
         return body + catalogue_tokens
 
     return count
 
 
-def _thread(*, system_tokens: int, turn_tokens: int, role: str = "user", history_turns: int = 6):
+def _thread(
+    *,
+    system_tokens: int,
+    turn_tokens: int,
+    role: str = "user",
+    history_turns: int = 6,
+):
     messages = [{"role": "system", "content": "s" * (system_tokens * 4)}]
     for index in range(history_turns):
         messages.append({"role": "user", "content": f"q{index} " + "x" * 1200})
@@ -270,7 +278,14 @@ def _thread(*, system_tokens: int, turn_tokens: int, role: str = "user", history
     return messages
 
 
-def _refuse_and_explain(*, window: int, catalogue: int, system_tokens: int, turn_tokens: int, role: str = "user"):
+def _refuse_and_explain(
+    *,
+    window: int,
+    catalogue: int,
+    system_tokens: int,
+    turn_tokens: int,
+    role: str = "user",
+):
     """Drive the real path: fit -> recorded diagnosis -> the message the user reads."""
     _, truncation = fit_rolling_context(
         _thread(system_tokens = system_tokens, turn_tokens = turn_tokens, role = role),
@@ -281,7 +296,9 @@ def _refuse_and_explain(*, window: int, catalogue: int, system_tokens: int, turn
     assert truncation is not None and not truncation["fits"]
     _context_truncated_sse_chunk("cmpl-1", "model", truncation)
     return truncation, _friendly_error(
-        ValueError(f"the request (9000 tokens) exceeds the available context size ({window} tokens)")
+        ValueError(
+            f"the request (9000 tokens) exceeds the available context size ({window} tokens)"
+        )
     )
 
 
@@ -351,7 +368,9 @@ def test_the_floor_is_never_all_of_either_count():
     )
     assert "shorten the conversation" in _friendly_error(ValueError(_SERVER_ERROR))
     for bad in (None, "", -5, "junk"):
-        context_refusal.record_fit(_refusal(irreducible = 5120, latest_turn = 3500) | {"shared_prompt_tokens": bad})
+        context_refusal.record_fit(
+            _refusal(irreducible = 5120, latest_turn = 3500) | {"shared_prompt_tokens": bad}
+        )
         assert "Most of this prompt is the message just sent" in _friendly_error(
             ValueError(_SERVER_ERROR)
         )
