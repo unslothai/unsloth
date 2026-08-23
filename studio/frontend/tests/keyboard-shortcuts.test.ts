@@ -1292,9 +1292,30 @@ test("a selection does not outlive the rows it was made on", async () => {
     new URL("../src/components/app-sidebar.tsx", import.meta.url),
     "utf8",
   );
+  // The whole sidebar going takes the whole selection with it.
   assert.match(
     sidebar,
-    /useEffect\(\(\) => \{\n\s*if \(!chatListsOnScreen\) clearSelection\(\);\n\s*\}, \[chatListsOnScreen, clearSelection\]\);/,
+    /if \(!chatListsOnScreen\) \{\n\s*clearSelection\(\);\n\s*return;\n\s*\}/,
+  );
+  // A single section closing takes only its own rows: the rest are still on
+  // screen, so the selection is held to what is rendered rather than dropped.
+  assert.match(
+    sidebar,
+    /for \(const id of prev\) \{\n\s*if \(renderedChatIds\.has\(id\)\) kept\.add\(id\);/,
+  );
+  assert.match(
+    sidebar,
+    /return kept\.size === prev\.size \? prev : kept;/,
+  );
+  assert.match(
+    sidebar,
+    /\}, \[chatListsOnScreen, clearSelection, renderedChatIds\]\);/,
+  );
+  // Built from the three arrays that already carry every disclosure state, so
+  // a collapse or a "show less" needs nothing restated here.
+  assert.match(
+    sidebar,
+    /const renderedChatIds = useMemo\(\(\) => \{[\s\S]*?visiblePinnedItems[\s\S]*?renderedProjectChatItems[\s\S]*?visibleRecentItems/,
   );
   // Which is what makes the four bulk branches safe to leave as they are.
   for (const id of [
@@ -1311,9 +1332,12 @@ test("a selection does not outlive the rows it was made on", async () => {
       `${id} no longer prefers the selection`,
     );
   }
-  // The clear drops the anchor too, so a later shift-click cannot reach back
-  // to a row that went away with it.
-  assert.match(sidebar, /selectionAnchorRef\.current = null;\n\s*setSelectedChatIds/);
+  // The anchor goes with its row, so a later shift-click cannot reach back to
+  // one that is no longer there.
+  assert.match(
+    sidebar,
+    /if \(anchor && !renderedChatIds\.has\(anchor\.id\)\) \{\n\s*selectionAnchorRef\.current = null;/,
+  );
 });
 
 // Two parked requests must count as two, or both cards claim Enter and mount

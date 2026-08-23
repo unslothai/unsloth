@@ -1274,6 +1274,16 @@ export function AppSidebar() {
     () => (chatListsOnScreen && chatOpen ? sortedRecentChatItems : []),
     [chatListsOnScreen, chatOpen, sortedRecentChatItems],
   );
+  // Every row on screen, in one set. The three arrays above already fold in
+  // each section's disclosure, each folder's, and the per-folder limit, so a
+  // selection can be held to what is rendered without restating any of it.
+  const renderedChatIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const item of visiblePinnedItems) ids.add(item.id);
+    for (const item of renderedProjectChatItems) ids.add(item.id);
+    for (const item of visibleRecentItems) ids.add(item.id);
+    return ids;
+  }, [visiblePinnedItems, renderedProjectChatItems, visibleRecentItems]);
   // Rows wanting attention, most urgent first. Same rule the Priority sort uses.
   const attentionItemIds = useMemo(
     () =>
@@ -1395,9 +1405,27 @@ export function AppSidebar() {
   // count lives in their context menus. So a selection carried onto Train or
   // behind the icon rail would be invisible and still be what the chords hit.
   // Same reason opening a row drops it.
+  // Sections close one at a time, though, and a "show less" takes back only
+  // its own overflow, so the rest of the selection is still on screen and
+  // still worth acting on. Drop what went and keep what stayed.
   useEffect(() => {
-    if (!chatListsOnScreen) clearSelection();
-  }, [chatListsOnScreen, clearSelection]);
+    if (!chatListsOnScreen) {
+      clearSelection();
+      return;
+    }
+    const anchor = selectionAnchorRef.current;
+    if (anchor && !renderedChatIds.has(anchor.id)) {
+      selectionAnchorRef.current = null;
+    }
+    setSelectedChatIds((prev) => {
+      if (prev.size === 0) return prev;
+      const kept = new Set<string>();
+      for (const id of prev) {
+        if (renderedChatIds.has(id)) kept.add(id);
+      }
+      return kept.size === prev.size ? prev : kept;
+    });
+  }, [chatListsOnScreen, clearSelection, renderedChatIds]);
 
   /** Select every chat row on screen, pinned block included. */
   const selectAllChats = useCallback(() => {
