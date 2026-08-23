@@ -2,6 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
+import {
+  type ServerTuningValues,
+  clearedServerTuningState,
+  committedServerTuningState,
+  serverTuningLoadPayload,
+} from "../lib/server-tuning-fields";
 import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
@@ -22,12 +28,6 @@ import { consumeNativePathToken } from "@/features/native-intents/api";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
-import {
-  notifyNative,
-  primeNativeNotificationPermission,
-  safeNotificationLabel,
-  sanitizeNotificationBody,
-} from "@/lib/native-notifications";
 import { ModelLoadDescription } from "../components/model-load-status";
 import {
   getDownloadProgress,
@@ -81,6 +81,7 @@ import {
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
+import { resolveQwenThinkingParams } from "../utils/qwen-params";
 import { refreshContextUsage } from "../utils/refresh-context-usage";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
@@ -449,6 +450,7 @@ async function syncInferenceStatusToStore(options?: {
         residentCheckpoint: null,
         modelRequiresTrustRemoteCode: false,
         loadedIsMultimodal: false,
+        loadedVisionDisabledByUser: null,
         loadedIsDiffusion: false,
       });
       // Known resident a moment ago, and nothing loading now. Both matter: a
@@ -542,7 +544,6 @@ export function useChatModelRuntime() {
   const loadAbortRef = useRef<AbortController | null>(null);
   const loadingModelRef = useRef<typeof loadingModel>(null);
   const loadToastIdRef = useRef<string | number | null>(null);
-  const loadAttemptRef = useRef(0);
   const loadToastDismissedRef = useRef(false);
   const cancelUnloadPendingRef = useRef(false);
   const loadLifecycleLeaseRef = useRef<ModelLifecycleLease | null>(null);
@@ -1002,10 +1003,6 @@ export function useChatModelRuntime() {
         explicitIsLora ?? model?.isLora ?? loraIsAdapter ?? false;
       const displayName = model?.name || lora?.name || modelId;
       const toastDisplayName = shortModelLabel(displayName);
-      const loadAttemptId = ++loadAttemptRef.current;
-      primeNativeNotificationPermission().catch(() => undefined);
-      const notificationModelKey = `${modelId}:${ggufVariant ?? ""}:${loadAttemptId}`;
-      const safeModelName = safeNotificationLabel(toastDisplayName, "The model");
       const currentCheckpoint =
         useChatRuntimeStore.getState().params.checkpoint;
       const previousCheckpoint = currentCheckpoint;
@@ -1080,6 +1077,12 @@ export function useChatModelRuntime() {
             typeof selection !== "string" && selection.previousConfig
               ? (selection.previousConfig.nUbatch ?? null)
               : useChatRuntimeStore.getState().nUbatch;
+          // The outgoing tuning intent, read the same way and for the same
+          // reason: a rollback restores the control, not the echo.
+          const previousServerTuning: ServerTuningValues =
+            typeof selection !== "string" && selection.previousConfig
+              ? selection.previousConfig
+              : useChatRuntimeStore.getState();
           // Same reason: the rollback echo would overwrite an edit staged against it.
           const previousMlxKvBits =
             typeof selection !== "string" && selection.previousConfig
@@ -1178,6 +1181,29 @@ export function useChatModelRuntime() {
             ? false
             : (pendingLoadConfig?.tensorParallel ??
               stateBeforeUnload.tensorParallel);
+          // The diffusion runner has no projector to skip, so the toggle is inert
+          // there for the same reason tensorParallel is.
+          //
+          // Unlike tensorParallel, this does NOT survive a model switch: it is
+          // per-model config defaulting to vision on, so a target that saved none gets
+          // that default, not the outgoing model's setting. Carrying it over loaded the
+          // new model text-only and silently, because the dedupe comparison above
+          // already builds its own view of an unconfigured switch from
+          // DEFAULT_PER_MODEL_CONFIG. resetsPerModelSettings cannot repair it: this
+          // constant is captured before that block runs.
+          const loadSwitchesModelOrVariant = Boolean(
+            currentCheckpoint &&
+              (currentCheckpoint !== modelId ||
+                (stateBeforeUnload.activeGgufVariant ?? null) !==
+                  (ggufVariant ?? null)) &&
+              !keepSpeculative,
+          );
+          const loadDisableVision = targetIsDiffusion
+            ? false
+            : (pendingLoadConfig?.disableVision ??
+              (loadSwitchesModelOrVariant
+                ? DEFAULT_PER_MODEL_CONFIG.disableVision
+                : stateBeforeUnload.disableVision));
           const loadActivePresetSource = stateBeforeUnload.activePresetSource;
           const loadActiveGgufVariant = stateBeforeUnload.activeGgufVariant;
           const loadGpuMemoryMode =
@@ -1227,6 +1253,16 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.nBatch ?? stateBeforeUnload.nBatch;
           let loadNUbatch =
             pendingLoadConfig?.nUbatch ?? stateBeforeUnload.nUbatch;
+          let loadServerTuning: ServerTuningValues = {
+            loadMode: pendingLoadConfig?.loadMode ?? stateBeforeUnload.loadMode,
+            specDraftCacheDtype:
+              pendingLoadConfig?.specDraftCacheDtype ??
+              stateBeforeUnload.specDraftCacheDtype,
+            ctxCheckpoints:
+              pendingLoadConfig?.ctxCheckpoints ??
+              stateBeforeUnload.ctxCheckpoints,
+            cacheRam: pendingLoadConfig?.cacheRam ?? stateBeforeUnload.cacheRam,
+          };
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
@@ -1268,6 +1304,16 @@ export function useChatModelRuntime() {
             const validateNUbatch = resetsPerModelSettings
               ? (pendingLoadConfig?.nUbatch ?? null)
               : loadNUbatch;
+            const validateServerTuning: ServerTuningValues =
+              resetsPerModelSettings
+                ? {
+                    loadMode: pendingLoadConfig?.loadMode ?? null,
+                    specDraftCacheDtype:
+                      pendingLoadConfig?.specDraftCacheDtype ?? null,
+                    ctxCheckpoints: pendingLoadConfig?.ctxCheckpoints ?? null,
+                    cacheRam: pendingLoadConfig?.cacheRam ?? null,
+                  }
+                : loadServerTuning;
             const validateMaxSeqLength = resolveFitMaxSeqLength(
               isGguf,
               loadGpuMemoryMode,
@@ -1295,6 +1341,7 @@ export function useChatModelRuntime() {
               gguf_variant: ggufVariant ?? null,
               cache_type_kv: loadKvCacheDtype,
               tensor_parallel: loadTensorParallel,
+              disable_vision: loadDisableVision,
               gpu_ids: validateGpuIds ?? undefined,
               ...(isGguf
                 ? {
@@ -1310,6 +1357,9 @@ export function useChatModelRuntime() {
                     ...(validateNUbatch != null
                       ? { n_ubatch: validateNUbatch }
                       : {}),
+                    // Same omit-when-blank rule, and the same values: the preflight
+                    // has to approve the command the follow-up /load sends.
+                    ...serverTuningLoadPayload(validateServerTuning),
                     // The same list the load below sends. A --ctx-size or cache
                     // override in here changes the memory this preflight estimates,
                     // so omitting it approves a different command: during training
@@ -1412,6 +1462,9 @@ export function useChatModelRuntime() {
                 loadedNBatch: null,
                 nUbatch: null,
                 loadedNUbatch: null,
+                // Per-model too, and cleared in both halves: a baseline left from
+                // the model that just went would be re-sent by a later rollback.
+                ...clearedServerTuningState(),
                 // Per-model GPU knobs must not follow onto a different model
                 // (gpuMemoryMode is a standing preference and is kept).
                 selectedGpuIds: null,
@@ -1431,6 +1484,13 @@ export function useChatModelRuntime() {
               loadNParallel = pendingLoadConfig?.nParallel ?? null;
               loadNBatch = pendingLoadConfig?.nBatch ?? null;
               loadNUbatch = pendingLoadConfig?.nUbatch ?? null;
+              loadServerTuning = {
+                loadMode: pendingLoadConfig?.loadMode ?? null,
+                specDraftCacheDtype:
+                  pendingLoadConfig?.specDraftCacheDtype ?? null,
+                ctxCheckpoints: pendingLoadConfig?.ctxCheckpoints ?? null,
+                cacheRam: pendingLoadConfig?.cacheRam ?? null,
+              };
               // Both payload-only. The store keeps its values: a width is dormant
               // preset state off MLX, and a completed load rewrites both anyway.
               loadMlxKvBits = pendingLoadConfig?.mlxKvBits ?? null;
@@ -1528,7 +1588,13 @@ export function useChatModelRuntime() {
               ...(isGguf && loadNUbatch != null
                 ? { n_ubatch: loadNUbatch }
                 : {}),
+              // llama-server's own, so gated like the extras above: GGUF, and not
+              // the diffusion runner, which builds its command without them.
+              ...(isGguf && !targetIsDiffusion
+                ? serverTuningLoadPayload(loadServerTuning)
+                : {}),
               tensor_parallel: loadTensorParallel,
+              disable_vision: loadDisableVision,
               gpu_memory_mode: loadGpuMemoryMode,
               gpu_layers: loadGpuLayers,
               n_cpu_moe: loadNCpuMoe,
@@ -1627,6 +1693,11 @@ export function useChatModelRuntime() {
               !(loadResponse.is_diffusion ?? false)
                 ? (loadNUbatch ?? null)
                 : null;
+            const committedServerTuning =
+              (loadResponse.is_gguf ?? false) &&
+              !(loadResponse.is_diffusion ?? false)
+                ? committedServerTuningState(loadServerTuning)
+                : clearedServerTuningState();
             const nativeCtx = loadResponse.is_gguf
               ? (loadResponse.context_length ?? 131072)
               : null;
@@ -1706,6 +1777,16 @@ export function useChatModelRuntime() {
               ...mlxRuntimeStateFrom(loadResponse),
               tensorParallel: loadedTp,
               loadedTensorParallel: loadedTp,
+              loadedDisableVision: loadResponse.disable_vision ?? false,
+              // Repaired from the echo like the knob above: loadDisableVision
+              // forces the flag off for a diffusion target without writing the
+              // store, so a Vision-off GGUF followed by a diffusion load would
+              // otherwise leave the switch off over a load that never sent it.
+              disableVision: loadResponse.disable_vision ?? false,
+              // Set alongside loadedIsMultimodal so the composer can say WHY
+              // images are unavailable.
+              loadedVisionDisabledByUser:
+                loadResponse.vision_disabled_by_user ?? false,
               ...loadedGpuMemoryFields(loadResponse),
               speculativeType: loadedSpec,
               loadedSpeculativeType: loadedSpec,
@@ -1717,6 +1798,7 @@ export function useChatModelRuntime() {
               loadedNParallel: committedSlots,
               nBatch: committedNBatch,
               loadedNBatch: committedNBatch,
+              ...committedServerTuning,
               // What this model is running, for the rollback below. An omitted field
               // inherited the resident process's list, so the last thing we knew
               // still holds unless this was a different model.
@@ -1760,35 +1842,17 @@ export function useChatModelRuntime() {
             });
             // Unlock attach menus for capabilities the catalog entry lacked.
             syncModelCapabilities(modelId, loadResponse);
-            // Qwen3/3.5/3.6: apply thinking-mode-specific params after load
+            // Qwen3-family: apply thinking-mode-specific params after load.
+            const p = resolveQwenThinkingParams(
+              modelId,
+              nextReasoningEnabled,
+            );
             if (
-              modelId.toLowerCase().includes("qwen3") &&
+              p !== null &&
               (loadResponse.supports_reasoning ?? false)
             ) {
               const store = useChatRuntimeStore.getState();
               if (store.activePresetSource === "builtin-default") {
-                const mid = modelId.toLowerCase();
-                const needsPresencePenalty =
-                  mid.includes("qwen3.5") || mid.includes("qwen3.6");
-                const p = nextReasoningEnabled
-                  ? {
-                      temperature: 0.6,
-                      topP: 0.95,
-                      topK: 20,
-                      minP: 0.0,
-                      ...(needsPresencePenalty
-                        ? { presencePenalty: 1.5 }
-                        : {}),
-                    }
-                  : {
-                      temperature: 0.7,
-                      topP: 0.8,
-                      topK: 20,
-                      minP: 0.0,
-                      ...(needsPresencePenalty
-                        ? { presencePenalty: 1.5 }
-                        : {}),
-                    };
                 // Same rule as the load response: defaults first, this model's
                 // remembered settings over them.
                 store.setParams({ ...store.params, ...p }, {
@@ -1871,6 +1935,13 @@ export function useChatModelRuntime() {
                   ...(stateBeforeUnload.loadedNUbatch != null
                     ? { n_ubatch: stateBeforeUnload.loadedNUbatch }
                     : {}),
+                  ...serverTuningLoadPayload({
+                    loadMode: stateBeforeUnload.loadedLoadMode,
+                    specDraftCacheDtype:
+                      stateBeforeUnload.loadedSpecDraftCacheDtype,
+                    ctxCheckpoints: stateBeforeUnload.loadedCtxCheckpoints,
+                    cacheRam: stateBeforeUnload.loadedCacheRam,
+                  }),
                   // Explicit, unlike the batch pair above: the failed switch left the
                   // TARGET resident, so an omitted field here inherits across models,
                   // which the route refuses, and the previous model would come back
@@ -1881,6 +1952,14 @@ export function useChatModelRuntime() {
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
                   tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
+                  // What the PREVIOUS server was loaded with. Not the control field:
+                  // applyPerModelConfigToRuntime writes disableVision before this
+                  // baseline is captured, so it holds the TARGET's setting. Not
+                  // loadedVisionDisabledByUser either: that is narrowed to models that
+                  // can do images, so a non-vision GGUF would come back with vision on
+                  // while the control restored to off. Same separately tracked baseline
+                  // tensor_parallel uses above.
+                  disable_vision: stateBeforeUnload.loadedDisableVision ?? false,
                   // Restore the previous model's GPU Memory placement, not backend defaults.
                   gpu_memory_mode: stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
                   gpu_layers: stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
@@ -1916,6 +1995,19 @@ export function useChatModelRuntime() {
                   loadedNBatch: stateBeforeUnload.loadedNBatch ?? null,
                   nUbatch: previousNUbatch,
                   loadedNUbatch: stateBeforeUnload.loadedNUbatch ?? null,
+                  // Same split: the controls keep the outgoing model's intent and
+                  // the baselines come from what that model was launched with.
+                  loadMode: previousServerTuning.loadMode ?? null,
+                  loadedLoadMode: stateBeforeUnload.loadedLoadMode ?? null,
+                  specDraftCacheDtype:
+                    previousServerTuning.specDraftCacheDtype ?? null,
+                  loadedSpecDraftCacheDtype:
+                    stateBeforeUnload.loadedSpecDraftCacheDtype ?? null,
+                  ctxCheckpoints: previousServerTuning.ctxCheckpoints ?? null,
+                  loadedCtxCheckpoints:
+                    stateBeforeUnload.loadedCtxCheckpoints ?? null,
+                  cacheRam: previousServerTuning.cacheRam ?? null,
+                  loadedCacheRam: stateBeforeUnload.loadedCacheRam ?? null,
                   loadedSpeculativeType: rollbackSpeculativeType,
                   loadedSpecDraftNMax:
                     rollbackResponse.spec_draft_n_max ?? null,
@@ -1930,6 +2022,18 @@ export function useChatModelRuntime() {
                   tensorParallel: rollbackResponse.tensor_parallel ?? false,
                   loadedTensorParallel:
                     rollbackResponse.tensor_parallel ?? false,
+                  loadedDisableVision:
+                    rollbackResponse.disable_vision ?? false,
+                  // The rolled-back model's own loaded value, matching the request
+                  // above field for field. Not stateBeforeUnload.disableVision, which
+                  // holds the TARGET's value by now and would show Vision off over a
+                  // restored projector, arming the next Apply to switch it off for real.
+                  // Not the echo either: the replayed request is gated on the model
+                  // having a projector, so a text-only GGUF switched off echoes false
+                  // and would flip Vision back on.
+                  disableVision: stateBeforeUnload.loadedDisableVision ?? false,
+                  loadedVisionDisabledByUser:
+                    rollbackResponse.vision_disabled_by_user ?? false,
                   customContextLength:
                     stateBeforeUnload.loadedCustomContextLength,
                   loadedCustomContextLength:
@@ -2131,12 +2235,6 @@ export function useChatModelRuntime() {
                   ),
                 });
               }
-              notifyNative({
-                key: `model-downloaded:${notificationModelKey}`,
-                title: "Model downloaded",
-                body: `${safeModelName} finished downloading and is loading into memory.`,
-                requestPermission: false,
-              }).catch(() => undefined);
               // Keep polling: the mmap branch below takes over from here.
             }
           } catch {
@@ -2241,12 +2339,6 @@ export function useChatModelRuntime() {
               onDismiss: undefined,
             });
           }
-          notifyNative({
-            key: `model-loaded:${notificationModelKey}`,
-            title: "Model ready",
-            body: `${safeModelName} is loaded and ready to chat.`,
-            requestPermission: false,
-          }).catch(() => undefined);
         } catch (err) {
           if (!abortCtrl.signal.aborted) {
             const message =
@@ -2264,12 +2356,6 @@ export function useChatModelRuntime() {
                 onDismiss: undefined,
               });
             }
-            notifyNative({
-              key: `model-load-failed:${notificationModelKey}`,
-              title: "Model failed to load",
-              body: sanitizeNotificationBody(message, "The model failed to load."),
-              requestPermission: false,
-            }).catch(() => undefined);
           }
           throw err;
         } finally {

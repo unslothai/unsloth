@@ -74,6 +74,7 @@ from core.inference.tool_stream_exec import (
     TOOL_HEARTBEAT_INTERVAL_S,
     accepts_kwarg,
     accepts_output_callback,
+    search_images_kwargs,
     stream_tool_execution,
 )
 from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
@@ -548,7 +549,15 @@ class _Turn:
                 # Never replayed upstream: the conversation carries the
                 # de-duplicated id, which is the whole point of the rename.
                 normalized["stream_id"] = normalized["id"]
-                normalized["id"] = f"{normalized['id']}_{self.round}_{position}"
+                # The renamed id is itself stored and replayed, so a single-shot
+                # rename collides again on the next request. Counting up over a
+                # finite ledger terminates and leaves the first attempt as is.
+                renamed = f"{normalized['id']}_{self.round}_{position}"
+                attempt = 0
+                while renamed in seen:
+                    attempt += 1
+                    renamed = f"{normalized['id']}_{self.round}_{position}_{attempt}"
+                normalized["id"] = renamed
             seen.add(normalized["id"])
             out.append(normalized)
         return out
@@ -660,6 +669,27 @@ def _usage_chunk_line(model: str, totals: dict[str, Any]) -> str | None:
 def _is_usage_only(payload: dict[str, Any]) -> bool:
     choices = payload.get("choices")
     return "usage" in payload and isinstance(choices, list) and not choices
+
+
+def _replayed_call_ids(conversation: list[dict[str, Any]]) -> set[str]:
+    """Every tool-call id already in the history this run starts from.
+
+    The healer restarts its counter every request, so a freshly minted call_0
+    collides with a stripped call_0 replayed from history inside one upstream
+    body. Seeding the ledger makes calls() rename the new one as it does any
+    repeat within a run.
+    """
+    taken: set[str] = set()
+    for message in conversation:
+        if not isinstance(message, dict):
+            continue
+        for call in message.get("tool_calls") or []:
+            if isinstance(call, dict) and isinstance(call.get("id"), str) and call["id"]:
+                taken.add(call["id"])
+        result_id = message.get("tool_call_id")
+        if isinstance(result_id, str) and result_id:
+            taken.add(result_id)
+    return taken
 
 
 def _append_user_turn(conversation: list[dict[str, Any]], content: str) -> None:
@@ -781,7 +811,7 @@ async def stream_with_studio_tools(
     max_reprompts = MAX_ACT_REPROMPTS
     last_reprompt_text = ""
     provider_turns = 0
-    used_call_ids: set[str] = set()
+    used_call_ids: set[str] = _replayed_call_ids(conversation)
     spent_budget_passes = 0
     fruitless_turns = 0
     # One provider call per possible execution, plus headroom for the no-op,
@@ -1233,6 +1263,11 @@ async def stream_with_studio_tools(
                 # an external model's window, and a custom OpenAI-compatible endpoint can
                 # be a small local server, so a model-chosen 8 chunks is roughly 4K tokens
                 # replayed on every later call. Unmeasurable means one recall's worth.
+                # Explicitly unknowable, not absent: this request is served by an
+                # external provider, so the resident GGUF's window says nothing about
+                # what it can hold. 0 keeps the default page cap instead of inheriting it.
+                if accepts_kwarg(execute_tool, "context_tokens"):
+                    kwargs["context_tokens"] = 0
                 if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
                     try:
                         from core.rag import config as rag_config
@@ -1243,6 +1278,7 @@ async def stream_with_studio_tools(
                         pass
                 if accepts_output_callback(execute_tool):
                     kwargs["output_callback"] = output_callback
+                kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
                 return execute_tool(call.tool_name, call.arguments, **kwargs)
 
             # The same wrapper the local loops run tools through: live stdout for
