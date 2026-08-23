@@ -843,7 +843,8 @@ def test_generate_refuses_a_replacement_that_committed_while_it_waited(fake_runt
     assert "ok" not in outcome, "denoised on the replacement with the snapshot's parameters"
     assert isinstance(outcome["err"], DiffusionModelReplacedError)
     assert (outcome["err"].expected.repo_id, outcome["err"].actual.repo_id) == (
-        str(old_dir), str(new_dir)
+        str(old_dir),
+        str(new_dir),
     )
 
 
@@ -858,15 +859,19 @@ def test_the_same_path_reloaded_under_a_different_base_is_a_replacement(fake_run
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
     backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf",
-        base_repo = "black-forest-labs/FLUX.1-dev", family_override = "z-image",
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "black-forest-labs/FLUX.1-dev",
+        family_override = "z-image",
     )
     st = backend.status()
     snapshot = load_identity(st["repo_id"], st["base_repo"], st["family"])
 
     backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf",
-        base_repo = "black-forest-labs/FLUX.1-schnell", family_override = "z-image",
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "black-forest-labs/FLUX.1-schnell",
+        family_override = "z-image",
     )
     assert backend.status()["repo_id"] == snapshot.repo_id  # repo_id alone sees no change
     with pytest.raises(DiffusionModelReplacedError) as replaced:
