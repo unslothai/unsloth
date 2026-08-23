@@ -783,6 +783,67 @@ def test_generate_refuses_when_the_model_was_replaced_since_the_snapshot(fake_ru
     assert len(gen2["images"]) == 1
 
 
+def test_generate_refuses_a_replacement_that_committed_while_it_waited(fake_runtime, tmp_path):
+    """The reported interleaving end to end (#9448), not just the guard in isolation.
+
+    A load drops its teardown fence right after _unload_locked, then holds _generate_lock
+    alone for the whole construction of the new model. A generate arriving in that window
+    used to block, then denoise on the NEW model with the snapshot's steps/guidance.
+    """
+    old_dir, new_dir = tmp_path / "old", tmp_path / "new"
+    for d in (old_dir, new_dir):
+        d.mkdir()
+        (d / "model.gguf").write_bytes(b"weights")
+    load_kwargs = dict(gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image")
+
+    backend = DiffusionBackend()
+    backend.load_pipeline(str(old_dir), **load_kwargs)
+    snapshot = backend.status()["repo_id"]  # the route's pre-generation read
+
+    # Park a replacement inside the construction of the new model: the fence is down there.
+    reached, release = threading.Event(), threading.Event()
+    original = _FakeTransformer.from_single_file.__func__
+
+    def _parked(cls, path, **kwargs):
+        reached.set()
+        assert release.wait(30)
+        return original(cls, path, **kwargs)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_FakeTransformer, "from_single_file", classmethod(_parked))
+        loader = threading.Thread(
+            target = backend.load_pipeline, args = (str(new_dir),), kwargs = load_kwargs, daemon = True
+        )
+        loader.start()
+        assert reached.wait(30)
+        assert backend._teardown_waiters == 0  # the window under test is genuinely open
+
+        outcome = {}
+
+        def _generate():
+            try:
+                outcome["ok"] = backend.generate(
+                    prompt = "a sloth", steps = 9, guidance = 0.0, expected_repo_id = snapshot
+                )
+            except BaseException as exc:  # noqa: BLE001 (the exception IS the assertion)
+                outcome["err"] = exc
+
+        gen = threading.Thread(target = _generate, daemon = True)
+        gen.start()
+        gen.join(1.0)
+        assert gen.is_alive()  # blocked on _generate_lock, which the load holds
+
+        release.set()
+        loader.join(30)
+        gen.join(30)
+
+    assert not gen.is_alive()
+    assert backend.status()["repo_id"] == str(new_dir)  # the replacement did commit
+    assert "ok" not in outcome, "denoised on the replacement with the snapshot's parameters"
+    assert isinstance(outcome["err"], DiffusionModelReplacedError)
+    assert (outcome["err"].expected, outcome["err"].actual) == (str(old_dir), str(new_dir))
+
+
 def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()

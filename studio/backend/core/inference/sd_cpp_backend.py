@@ -43,6 +43,7 @@ from core.inference.diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
     DiffusionFamily,
+    DiffusionModelReplacedError,
     detect_family_for_pick,
     family_sd_cpp_supported,
     mirror_repo,
@@ -2137,6 +2138,8 @@ class SdCppDiffusionBackend:
         loras: Optional[list[tuple[str, float]]] = None,
         # ControlNet is diffusers-only; rejected by the guard below (accepted for parity).
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
+        # Refuse rather than run when the loaded model changed since the caller snapshotted it (#9448).
+        expected_repo_id: Optional[str] = None,
     ) -> dict[str, Any]:
         import tempfile
 
@@ -2183,6 +2186,10 @@ class SdCppDiffusionBackend:
                 ):
                     self._state = None
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
+                # A replacement can commit while this waits for the lock, so a caller that snapshotted
+                # status() earlier would otherwise run a different model with its parameters (#9448).
+                if expected_repo_id is not None and state.repo_id != expected_repo_id:
+                    raise DiffusionModelReplacedError(expected_repo_id, state.repo_id)
                 self._active_generate_cancel = cancel
                 # Publish an active (step 0) state before the slow pre-generate setup so a reload probe does not read idle while this holds _generate_lock.
                 self._gen = _SdGen(total_steps = int(steps))

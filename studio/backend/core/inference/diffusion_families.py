@@ -30,6 +30,25 @@ DIFFUSION_NOT_LOADED_MSG = "No diffusion model is loaded."
 DIFFUSION_CANCELLED_MSG = "Diffusion generation was cancelled."
 
 
+class DiffusionModelReplacedError(RuntimeError):
+    """A generation reached the lock after a replacement invalidated its snapshot (#9448).
+
+    Raised by both engines' ``generate`` when ``expected_repo_id`` names a model other than
+    the one actually loaded, so the caller's per-model steps/guidance and workflow verdict
+    (taken from an earlier ``status()`` read) are never applied to a different model. Lives
+    here, not in ``diffusion``, so the native sd.cpp engine can raise it without importing
+    the torch backend.
+    """
+
+    def __init__(self, expected: str, actual: str):
+        super().__init__(
+            f"The image model was replaced while this request waited "
+            f"(expected {expected!r}, loaded {actual!r}); retry with fresh parameters."
+        )
+        self.expected = expected
+        self.actual = actual
+
+
 @dataclass(frozen = True)
 class DiffusionFamily:
     name: str

@@ -752,6 +752,21 @@ def test_generate_qwen_passes_sampling_args():
     assert "--flow-shift" in (kw.get("extra_args") or [])
 
 
+def test_generate_refuses_a_snapshot_naming_another_model():
+    # Parity with the diffusers engine (#9448): on a no-GPU host this is the engine the OpenAI
+    # images route runs on, so its caller's steps/guidance must not reach a replacement model.
+    eng = _FakeEngine()
+    b = _loaded_backend(engine = eng)
+    with pytest.raises(bk.DiffusionModelReplacedError) as replaced:
+        b.generate(prompt = "stale", expected_repo_id = "other/model")
+    assert replaced.value.expected == "other/model"
+    assert replaced.value.actual == "unsloth/Z-Image-Turbo-GGUF"
+    assert eng.calls == []  # refused before any sd-cli run
+    # A matching snapshot, and an absent one (the pre-#9448 caller), both still generate.
+    assert b.generate(prompt = "x", steps = 4, expected_repo_id = "unsloth/Z-Image-Turbo-GGUF")
+    assert b.generate(prompt = "x", steps = 4)
+
+
 def test_generate_raises_when_not_loaded():
     b = SdCppDiffusionBackend(engine = _FakeEngine())
     with pytest.raises(RuntimeError, match = "No diffusion model is loaded"):

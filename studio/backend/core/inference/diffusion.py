@@ -43,6 +43,7 @@ from .diffusion_families import (
     IDEOGRAM4_FAMILY_NAME,
     LUMINA2_FAMILY_NAME,
     DiffusionFamily,
+    DiffusionModelReplacedError,  # re-exported: callers import it from either module
     assert_flux2_gguf_matches_base,
     assert_pipeline_class_available,
     _is_local_path,
@@ -755,24 +756,6 @@ def _assert_base_repo_accessible(
     except Exception:  # noqa: BLE001 — no manifest / offline / transient is not an access verdict
         return None
     return None
-
-
-class DiffusionModelReplacedError(RuntimeError):
-    """A generation ran after a model replacement invalidated its request-time snapshot.
-
-    Raised by :meth:`DiffusionBackend.generate` when ``expected_repo_id`` names a
-    model other than the one actually loaded once the generation lock was
-    acquired (#9448): the caller picked per-model steps/guidance and workflow
-    eligibility from a ``status()`` read that a replacement has since invalidated.
-    """
-
-    def __init__(self, expected: str, actual: str):
-        super().__init__(
-            f"The image model was replaced while this request waited "
-            f"(expected {expected!r}, loaded {actual!r}); retry with fresh parameters."
-        )
-        self.expected = expected
-        self.actual = actual
 
 
 @dataclass(frozen = True)
@@ -5486,9 +5469,8 @@ class DiffusionBackend:
                 state = self._state
                 if state is None:
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
-                # Why: a replacement can commit between the caller's status() read and this
-                # lock (the load's teardown fence is already down for most of its construction),
-                # silently running the NEW model with the OLD model's steps/guidance (#9448).
+                # The fence above is down for most of a replacement's construction, so a caller that
+                # snapshotted status() earlier can land here on a different model (#9448).
                 if expected_repo_id is not None and state.repo_id != expected_repo_id:
                     raise DiffusionModelReplacedError(expected_repo_id, state.repo_id)
                 # Register under _lock so unload()/a load can signal THIS generation.

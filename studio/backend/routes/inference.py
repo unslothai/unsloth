@@ -25268,14 +25268,11 @@ async def openai_image_generations(
     # Use the active engine (diffusers OR native sd.cpp), the same accessor /images/generate uses.
     backend = get_active_diffusion_engine()
     from core.inference.diffusion_memory import ImageActivationShortfallError
-    from core.inference.diffusion import DiffusionModelReplacedError
+    from core.inference.diffusion_families import DiffusionModelReplacedError
 
-    # Why (#9448): the per-model steps/guidance and the edit-only gate are decided from a
-    # status() read that a concurrent model replacement can invalidate before generate()
-    # acquires its lock — the replacement's teardown fence is already down for most of its
-    # construction, so the refusal there does not cover this window. Pin the read to the
-    # generation via expected_repo_id; when a replacement did slip in, re-decide from fresh
-    # state once instead of running the new model with the old model's parameters.
+    # A replacement can commit between this status() read and generate() taking its lock (#9448),
+    # running the NEW model with the OLD model's steps/guidance and edit-only verdict. Pin the read
+    # to the generation via expected_repo_id, then re-decide from fresh state once.
     result = None
     for attempt in range(2):
         status = backend.status()
@@ -25291,7 +25288,7 @@ async def openai_image_generations(
                 detail = openai_error_body(
                     "The loaded image model is edit-only (it requires an input image); "
                     "load a text-to-image model to use this endpoint.",
-                    status_code = 400,
+                    status = 400,
                     param = "model",
                 ),
             )
@@ -25316,7 +25313,7 @@ async def openai_image_generations(
                     status_code = 503,
                     detail = openai_error_body(
                         "The image model was replaced while this request waited; retry with fresh parameters.",
-                        status_code = 503,
+                        status = 503,
                         param = "model",
                     ),
                 )
@@ -25332,7 +25329,7 @@ async def openai_image_generations(
             if isinstance(exc, ImageActivationShortfallError):
                 raise HTTPException(
                     status_code = 400,
-                    detail = openai_error_body(str(exc), status_code = 400, param = "size"),
+                    detail = openai_error_body(str(exc), status = 400, param = "size"),
                 )
             logger.error("openai_images.generate_failed: %s", exc)
             raise HTTPException(status_code = 500, detail = "Image generation failed.")
