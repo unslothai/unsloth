@@ -19,6 +19,7 @@ import pytest
 from core.training.worker import (
     _check_finetune_targets_after_detect,
     _check_mlx_finetune_targets,
+    _names_a_cpt_target,
     _finetune_selectors,
     _pre_detect_training_model,
     _requests_all_linear,
@@ -232,13 +233,20 @@ def test_mlx_guard_only_fires_on_an_empty_module_selection(
         SELECTOR_CASES[selector_case],
         TARGET_MODULE_CASES[targets_case],
     )
-    _, _, attention, mlp = _finetune_selectors(config)
+    vision, language, attention, mlp = _finetune_selectors(config)
+    targets = config.get("target_modules")
 
-    expected = (
-        training_type == "LoRA/QLoRA"
-        and not config.get("target_modules")
-        and not (attention or mlp)
-    )
+    # Two rules, because the loader has two. With no explicit list the default seven are
+    # wholly attention and MLP, so an empty module selection leaves nothing. With one, the
+    # module-type filter is not the only gate: the text branch also needs a layer family,
+    # and only a CPT target (embed_tokens / lm_head) trains without one.
+    if not targets:
+        empty = not (attention or mlp)
+    else:
+        empty = not _names_a_cpt_target(targets) and not (
+            attention or mlp or language or vision
+        )
+    expected = training_type == "LoRA/QLoRA" and empty
 
     assert _mlx_guard_fires(config) is expected
 
@@ -449,14 +457,39 @@ def test_all_linear_alongside_other_leaves_is_not_the_keyword():
 
 
 @pytest.mark.parametrize(
-    "target_modules",
-    [["lm_head"], ["embed_tokens"], ["Wqkv"], ["c_fc"], ["all-linear"], ["lm_head", "Wqkv"]],
+    "target_modules", [["lm_head"], ["embed_tokens"], ["lm_head", "Wqkv"]]
 )
-def test_mlx_keeps_targets_outside_the_attention_and_mlp_sets(target_modules):
-    """FastMLXModel filters target_modules by the two module flags, but only drops names it
-    recognises as attention or MLP leaves. Anything else survives with both flags off and
-    trains, so the preflight must not refuse it."""
+def test_mlx_keeps_a_target_the_loader_trains_whatever_the_flags_say(target_modules):
+    """embed_tokens and lm_head go down get_peft_model's CPT path, where the full module and
+    the head adapter are applied without consulting the layer families. Something trains, so
+    the preflight must not refuse these however the four selectors are set."""
     config = _request_config("LoRA/QLoRA", "text", SELECTOR_CASES["all_false"], target_modules)
+
+    _check_mlx_finetune_targets(config)
+
+
+@pytest.mark.parametrize("target_modules", [["Wqkv"], ["c_fc"], ["all-linear"]])
+def test_mlx_refuses_an_all_false_request_whose_targets_need_a_layer_family(target_modules):
+    """Surviving the module-type filter is not the same as training.
+
+    These names are not attention or MLP leaves, so get_peft_model's filter keeps them -- but
+    the text branch then gates the LoRA application on finetune_language_layers, and with all
+    four selectors off the worker's back-fill (which only fires when a module type is on)
+    never turns it back on. The run applies no adapters at all: a warning, and a model with
+    no trainable parameters. A VLM raises, but only after the weights are loaded."""
+    config = _request_config("LoRA/QLoRA", "text", SELECTOR_CASES["all_false"], target_modules)
+
+    with pytest.raises(ValueError, match = "Nothing to train"):
+        _check_mlx_finetune_targets(config)
+
+
+@pytest.mark.parametrize("target_modules", [["Wqkv"], ["c_fc"], ["all-linear"]])
+def test_mlx_keeps_those_same_targets_once_a_layer_family_is_on(target_modules):
+    """The refusal above is about the layer families, not the names. With
+    finetune_language_layers on, the filter keeps these and they train, so refusing here
+    would turn a working run away."""
+    selectors = {**SELECTOR_CASES["all_false"], "finetune_language_layers": True}
+    config = _request_config("LoRA/QLoRA", "text", selectors, target_modules)
 
     _check_mlx_finetune_targets(config)
 

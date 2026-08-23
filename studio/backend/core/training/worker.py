@@ -796,6 +796,21 @@ def _check_finetune_targets_after_detect(trainer, config: dict) -> None:
         raise ValueError(_NOTHING_TO_TRAIN)
 
 
+# Targets the MLX loader trains regardless of the layer-family flags: embed_tokens becomes a
+# full trainable module and lm_head its own adapter, both on the CPT path.
+_CPT_TARGET_NAMES = frozenset({"embed_tokens", "lm_head"})
+
+
+def _names_a_cpt_target(target_modules) -> bool:
+    """Whether an explicit target list names something that trains on its own."""
+    if isinstance(target_modules, str):
+        return target_modules in _CPT_TARGET_NAMES
+    try:
+        return any(name in _CPT_TARGET_NAMES for name in target_modules)
+    except TypeError:  # not iterable -> not a list of names, so nothing is guaranteed
+        return False
+
+
 def _check_mlx_finetune_targets(config: dict) -> None:
     """MLX equivalent, called from the LoRA branch of the MLX worker.
 
@@ -804,13 +819,29 @@ def _check_mlx_finetune_targets(config: dict) -> None:
     finetune_language_layers whenever a module type is on, so only an empty module selection
     can survive here.
 
-    The filter only drops names it recognises as attention or MLP leaves, so a request naming
-    anything else (lm_head, embed_tokens, a fused qkv, all-linear) still has targets left with
-    both module types off, and trains. Only the default seven leaves are wholly attention and
-    MLP, so refuse just the runs that let the default stand; an explicit list that does filter
-    down to nothing still gets the loader's own message, which names the two flags."""
-    if config.get("target_modules"):
-        return
+    Surviving the module-type filter is NOT enough to train. get_peft_model drops only the
+    names it recognises as attention or MLP leaves, so a fused qkv, a c_fc or an expanded
+    all-linear does come out the other side with both module types off -- but the text branch
+    then gates the LoRA application itself on finetune_language_layers, and with all four
+    selectors off the caller's back-fill never fires. Those runs apply no adapters at all:
+    the model warns and trains nothing, and a VLM raises only once the weights are loaded.
+
+    The exception is a target the loader handles independently of the layer families. Naming
+    embed_tokens or lm_head puts it on the CPT path, where the full module or the head adapter
+    trains whatever the flags say, so such a request is left alone.
+
+    An explicit list that merely filters down to nothing still gets the loader's own message,
+    which names the two flags."""
+    targets = config.get("target_modules")
+    if targets:
+        if _names_a_cpt_target(targets):
+            return
+        vision, language, attention, mlp = _finetune_selectors(config)
+        # Any one of them leaves something that can train, or leaves the loader to say so
+        # with a better message than this one.
+        if attention or mlp or language or vision:
+            return
+        raise ValueError(_NOTHING_TO_TRAIN)
     _, _, attention, mlp = _finetune_selectors(config)
     if not (attention or mlp):
         raise ValueError(_NOTHING_TO_TRAIN)
