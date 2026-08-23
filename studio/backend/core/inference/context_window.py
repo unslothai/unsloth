@@ -218,9 +218,8 @@ def prompt_budget(context_length: int, max_tokens: Optional[int]) -> int:
 # Cap a tool-loop retrieval without reducing the allowance of smaller results.
 _RETRIEVAL_BUDGET_SHARE = 0.5
 
-# The least reply room a rescued prompt must leave, as a fraction of the window. Small
-# on purpose: the point of the rescue is that missing the RESERVE is survivable, so this
-# only rules out the degenerate end of the band, where what comes back is a stub.
+# The least reply room a rescued prompt must leave, as a fraction of the window. Small on
+# purpose: missing the RESERVE is survivable, so this only rules out the stub-answer end.
 _RESCUE_REPLY_FLOOR_DIVISOR = 16
 
 
@@ -233,13 +232,12 @@ def retrieval_budget(
 ) -> int:
     """Return the prompt room available to one retrieval.
 
-    In a tool loop, the retrieved exchange and the reply are protected on the next fit,
-    so one retrieval may use at most half the prompt budget. Single-shot requests use the
-    full remainder.
+    In a tool loop, the retrieved exchange and the reply are protected on the next fit, so
+    one retrieval may use at most half the prompt budget. Single-shot uses the remainder.
 
-    Lives beside ``prompt_budget`` and for the same reason: every local tool loop sizes
-    the same ``search_conversation`` against the same window, and a policy kept privately
-    by one backend is a policy the others quietly disagree with.
+    Beside ``prompt_budget`` for the same reason: every local tool loop sizes the same
+    ``search_conversation``, and a policy kept privately by one backend is one the others
+    quietly disagree with.
     """
     target = prompt_budget(context_length, max_tokens)
     room = max(0, target - int(prompt_tokens or 0))
@@ -352,11 +350,9 @@ def fit_rolling_context(
         # it fits the physical window, else an eviction that does. Under it on both
         # sides: llama-server refuses at `n_ctx` exactly, since the first generated
         # token needs a KV cell. `fits` stays false because the target was not reached.
-        # ...but not by one token. Serving a prompt of `n_ctx - 1` evicts the history
-        # AND returns a one-token answer stopped on `length`, which is strictly worse
-        # than the refusal it replaces: that at least kept the turns and said which one
-        # was too big. Ask for a floor of reply room, capped by the reserve the fit
-        # wanted, so a caller that asked for 16 tokens is not held to more.
+        # ...but not by one token: a prompt of `n_ctx - 1` loses the history AND answers
+        # in one token, worse than the refusal it replaces, which kept the turns and named
+        # the one too big. Capped by the reserve, so asking for 16 tokens demands no more.
         reply_floor = min(
             max(1, context_length // _RESCUE_REPLY_FLOOR_DIVISOR),
             context_length - prompt_target,

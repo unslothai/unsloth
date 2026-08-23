@@ -34,11 +34,9 @@ export function promptWasShortened(
  * Whether the LAST fit of a turn shortened the prompt it sent.
  *
  * Distinct from `promptWasShortened`, which asks whether the turn compacted at all and is
- * right for the notice. A turn refits once per tool iteration: `dropped_messages` sums
- * every fit while `fits` takes the last one, so an early rescue followed by a final
- * refusal that sent the originals reads as "shortened AND not fitting" -- the signature of
- * a rescue, from a turn that had none. Anything deciding what to do with the prompt that
- * was actually sent has to ask the last fit.
+ * right for the notice. A turn refits per tool iteration: `dropped_messages` sums every
+ * fit while `fits` takes the last, so an early rescue followed by a final refusal that
+ * sent the originals reads as a rescue the turn never had.
  */
 export function lastFitShortened(
   truncation: ContextTruncation | undefined,

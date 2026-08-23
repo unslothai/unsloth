@@ -347,14 +347,12 @@ export function shouldAutoContinue(
     return false;
   }
   if (fits === false && !promptWasShortened) {
-    // This turn's own fit was already refused AND returned the original messages, so the
-    // request never fitted at all. Resuming re-sends a partial that is only ever longer,
-    // so the next round cannot fit either.
+    // Refused AND returned the originals, so the request never fitted. Resuming re-sends a
+    // partial that is only ever longer, so the next round cannot fit either.
     //
-    // A fit that missed only the reply reserve is a different animal: it evicted turns,
-    // the shortened prompt WAS sent, and it answered. That is precisely the turn that
-    // runs out of reply room and stops on `length`, and the fitter can still evict
-    // further to make room for the replayed partial. The genuinely hopeless case is
+    // A fit that missed only the reply reserve is different: it evicted, was sent, and
+    // answered -- precisely the turn that runs out of reply room and stops on `length`,
+    // and the fitter can evict further for the replayed partial. The hopeless case is
     // caught on its own merits by the partialTokens check below.
     return false;
   }

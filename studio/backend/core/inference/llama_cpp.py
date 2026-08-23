@@ -301,11 +301,10 @@ def _fit_with_instruction_pins(
     fitted, truncation = _fit_context(
         messages, protected_message_ids = (anchors | pins) or None, **kwargs
     )
-    # Only a refusal that returned the ORIGINAL messages was "already failing". A fit that
-    # missed the reply reserve but landed under the physical window reports `fits` false
-    # too, and dropping the pins there would trade a servable prompt that HAS the standing
-    # instruction for one that does not, which is the single thing this seam exists to
-    # prevent. `dropped_messages` is what separates them.
+    # Only a refusal that returned the ORIGINAL messages was "already failing". A rescue
+    # reports `fits` false too, but is servable, and dropping its pins would trade a
+    # working prompt WITH the standing instruction for one without -- the very thing this
+    # seam prevents. `dropped_messages` separates them.
     if (
         pins
         and truncation
@@ -812,15 +811,12 @@ def _branch_boundary(conversation: list[dict], branch: Optional[list[dict]]) -> 
 def _records_boundary(truncation: dict) -> bool:
     """Whether a fit removed turns from the prompt it sent, so its depth is worth saving.
 
-    Not ``fits``. A rescued fit misses the reply reserve and reports false, but it really
-    did evict, and the client reads the recorded depth to decide which turn shows the
-    "this conversation was compacted" notice -- so a rescue that records nothing is a
-    compaction the user is never told about, and never told about again after a reload.
+    Not ``fits``: a rescue reports false yet really did evict, and the client reads this
+    depth to place the compaction notice, so recording nothing compacts silently.
 
-    Saving it does not make it REPLAYABLE: `_sticky_compaction_boundary` returns 0 for any
-    record whose `fits` is false, before it ever reads the depth. That is the right place
-    for the distinction, because replaying is what a missed reserve makes unsafe -- being
-    honest about what was dropped is not.
+    Saving is not replaying. `_sticky_compaction_boundary` declines any `fits` false record
+    before reading the depth, which is the right home for the distinction: a missed reserve
+    makes the replay unsafe, not the reporting.
     """
     return bool(truncation.get("fits")) or bool(truncation.get("dropped_messages"))
 
@@ -1040,9 +1036,8 @@ def _prefix_user_text(message: dict, prefix: str) -> dict:
     return message
 
 
-# Local alias for the shared policy in `context_window`, which the safetensors loop sizes
-# the same tool against. Kept as a name here because this module's call sites read better
-# with it, but there is only one implementation.
+# Alias for the shared policy in `context_window`, which the safetensors loop uses too.
+# A local name for readability, not a second implementation.
 _retrieval_budget = retrieval_budget
 
 

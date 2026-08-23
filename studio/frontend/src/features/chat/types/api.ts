@@ -767,10 +767,9 @@ export interface OpenAIChatChunk {
     // The prompt's share of the window (context_length minus the reply reserve), which is
     // what one turn must fit inside. Not re-derived here: the formula lives in the fit.
     prompt_target?: number;
-    // Client-derived, not sent by the server: what the LAST fit of the turn dropped, kept
-    // apart from the running total by `mergeContextTruncation`. A turn refits per tool
-    // iteration, so `dropped_messages` accumulates while `fits` is last-wins; a question
-    // about the prompt that was actually SENT cannot be answered from that pair.
+    // Client-derived, not sent by the server: what the LAST fit dropped, kept apart from
+    // the running total by `mergeContextTruncation`. That total accumulates while `fits`
+    // is last-wins, so the pair cannot answer what the prompt SENT looked like.
     last_fit_dropped_messages?: number;
   };
 }

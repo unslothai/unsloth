@@ -1327,10 +1327,9 @@ def run_safetensors_tool_loop(
                         # chat: 1295 estimated against 2737 real, reporting 1777 tokens of
                         # room where 335 remained.
                         #
-                        # `reply_returns`, as the GGUF loop does: the result and the reply
-                        # it produces are both protected on the next fit, so one retrieval
-                        # cannot spend the budget they share. Having no rolling fit to
-                        # recover makes that MORE important here, not less.
+                        # `reply_returns`, as the GGUF loop does: result and reply are both
+                        # protected on the next fit, so one retrieval cannot spend the
+                        # budget they share. Having no rolling fit makes that matter more.
                         kwargs["conversation_budget_tokens"] = retrieval_budget(
                             int(context_length),
                             max_tokens,
