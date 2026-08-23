@@ -494,6 +494,8 @@ def build_driver(
     per_run_timeout: int,
     isolation: dict[str, bool] | None = None,
     expected_gpus: int = SESSION_GPUS,
+    cpu_lane: str | None = None,
+    after_gpu: str | None = None,
 ) -> dict:
     """Kernel notebook that runs the payloads across the session's GPUs.
 
@@ -515,7 +517,16 @@ def build_driver(
     encoded = {name: _encode_bytes(json.dumps(nb).encode("utf-8")) for name, nb in payloads.items()}
     isolation = isolation or {}
     system_site = {name: bool(isolation.get(name, True)) for name in payloads}
-    order = list(payloads)
+    # The CARD queue, which is not every payload. cpu_lane runs beside the
+    # cards and after_gpu runs once they are free; leaving either in here would
+    # hand it a card and defeat the point of both.
+    off_queue = {name for name in (cpu_lane, after_gpu) if name}
+    for name in off_queue:
+        if name not in payloads:
+            raise KeyError(f"{name!r} is scheduled off the card queue but is not a payload")
+    order = [name for name in payloads if name not in off_queue]
+    if not order:
+        raise ValueError("every payload is off the card queue, so nothing would use a GPU")
 
     setup = f"""import base64, gzip, json, os, pathlib, subprocess, sys, threading, time
 print("{DRIVER_SENTINEL} start", flush=True)
@@ -550,6 +561,15 @@ N_GPU = len(GPUS)
 # it -- it is the leg that sets the makespan. Declaration order comes from
 # legs.KERNELS, so the packing decision lives beside the legs it packs.
 ORDER = {order!r}
+
+# Payloads that are NOT in the card queue.
+#
+# CPU_LANE runs from t=0 alongside the training legs and never takes a card.
+# AFTER_GPU runs once the queue has drained and wants every card. Both are None
+# on an ordinary notebook-only kernel, which leaves the schedule exactly as it
+# was.
+CPU_LANE = {cpu_lane!r}
+AFTER_GPU = {after_gpu!r}
 
 # A shortfall is INFRASTRUCTURE, and it has to be called that HERE, before a
 # thread starts. `max(1, ...)` used to make one card look like enough: both
@@ -617,7 +637,17 @@ def run_one(name, gpu_index, idx):
     env = dict(os.environ)
     # One GPU per payload. This is what makes the run comparable to the
     # single T4 a Colab user gets; two visible GPUs is a different test.
-    env["CUDA_VISIBLE_DEVICES"] = str(gpu_index)
+    #
+    # gpu_index None means DO NOT PIN, and it is not the same as pinning to
+    # nothing. It is used by the Studio lanes: the install half must still see
+    # both cards, because install.sh --local resolves torch and a CPU-only
+    # torch resolved by an installer that could not find a device is the exact
+    # regression Studio's verify cell exists to catch; and the test half wants
+    # both because Studio's own device selection is part of what it tests, so
+    # masking one would test a machine nobody has. Blanking the variable would
+    # do the opposite of both.
+    if gpu_index is not None:
+        env["CUDA_VISIBLE_DEVICES"] = str(gpu_index)
     env["PYTHONUNBUFFERED"] = "1"
     # One compile cache per payload. `unsloth_compiled_cache` is a RELATIVE
     # path resolved against the working directory, which both papermill
@@ -731,6 +761,19 @@ def worker(gpu_index, seed):
             idx, name = pending.pop(0)
         run_one(name, gpu_index, idx)
 
+# The CPU lane, started BEFORE the cards are handed out and running beside
+# them. It carries work that needs no GPU -- the Studio install: a checkout, a
+# frontend build, a venv, a llama.cpp download and a Playwright browser -- so
+# every second of it that overlaps the training legs is a second nobody waits
+# for. It is not given a card and does not queue for one.
+cpu_thread = None
+if CPU_LANE:
+    def _cpu_lane():
+        run_one(CPU_LANE, None, len(ORDER))
+    cpu_thread = threading.Thread(target = _cpu_lane, daemon = False)
+    cpu_thread.start()
+    print("{DRIVER_SENTINEL}_CPU_LANE " + json.dumps({{"payload": CPU_LANE}}), flush=True)
+
 threads = []
 for gpu_index in range(N_GPU):
     seed = SEEDS[gpu_index] if gpu_index < len(SEEDS) else None
@@ -739,6 +782,31 @@ for gpu_index in range(N_GPU):
     threads.append(t)
 for t in threads:
     t.join()
+
+# AFTER_GPU wants every card, so it waits for the queue to drain rather than
+# taking one from it. Studio's own driver keeps both T4s visible on purpose --
+# "Studio's own device selection is part of what is under test; masking one
+# would test a machine nobody has" -- and that stays true here.
+if cpu_thread is not None:
+    cpu_thread.join()
+
+if AFTER_GPU:
+    prior = results.get(CPU_LANE) if CPU_LANE else None
+    if CPU_LANE and (prior is None or prior.get("returncode") != 0):
+        # Do NOT run it. The install half is what puts the interpreter and the
+        # llama.cpp on disk, so without it this half fails on a missing venv
+        # and reports that as a Studio regression. Recording the skip keeps the
+        # cause attached to the effect.
+        results[AFTER_GPU] = {{
+            "returncode": None, "gpu": None, "seconds": 0.0,
+            "error": "the install lane did not succeed, so there is nothing "
+                     "installed to test",
+            "kernel": None, "output_exists": False,
+        }}
+        print("{DRIVER_SENTINEL}_SKIPPED " + json.dumps({{AFTER_GPU: results[AFTER_GPU]}}),
+              flush=True)
+    else:
+        run_one(AFTER_GPU, None, len(ORDER) + 1)
 
 print("{DRIVER_SENTINEL}_RESULTS " + json.dumps(results), flush=True)
 '''
@@ -793,6 +861,51 @@ print("{DRIVER_SENTINEL} complete", flush=True)
     }
 
 
+STUDIO_INSTALL_NOTEBOOK = "studio_install.ipynb"
+STUDIO_TEST_NOTEBOOK = "studio_test.ipynb"
+
+
+def _studio_builder():
+    """Load ``kaggle_studio_ci/build_kernel.py`` under a name of its own.
+
+    By PATH, not by import. That directory and this one BOTH contain a module
+    called ``build_kernel`` (and both contain a ``report`` too), and the test
+    suite puts both on ``sys.path``, so a plain ``import build_kernel`` resolves
+    to whichever reached ``sys.modules`` first -- which is decided by test
+    order, not by intent. That exact collision has already been paid for once
+    here: adding one ``sys.path.insert`` to a test took nine unrelated summary
+    tests down with it.
+    """
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[1] / "kaggle_studio_ci" / "build_kernel.py"
+    spec = importlib.util.spec_from_file_location("kaggle_studio_ci__build_kernel", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load the Studio kernel builder from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def studio_payloads(*, unsloth_ref: str, repo_url: str, payload_args: str) -> dict[str, dict]:
+    """The Studio payload, split into its GPU-free half and its GPU half."""
+    studio = _studio_builder()
+    return {
+        STUDIO_INSTALL_NOTEBOOK: studio.build_payload_notebook(
+            unsloth_ref = unsloth_ref,
+            repo_url = repo_url,
+            payload_args = payload_args,
+            phase = "install",
+        ),
+        STUDIO_TEST_NOTEBOOK: studio.build_payload_notebook(
+            unsloth_ref = unsloth_ref,
+            repo_url = repo_url,
+            payload_args = payload_args,
+            phase = "test",
+        ),
+    }
+
+
 def build_kernel(
     payload_dir: Path,
     leg_names,
@@ -802,6 +915,7 @@ def build_kernel(
     extra_args: tuple[str, ...],
     per_run_timeout: int,
     skip_reference: bool = False,
+    studio: dict | None = None,
 ) -> dict:
     payloads = {}
     isolation = {}
@@ -816,6 +930,22 @@ def build_kernel(
             reference = "" if skip_reference else None,
         )
         isolation[name] = leg.system_site_packages
+    # The card queue is the LEGS. Studio's two halves ride the same kernel but
+    # not the same queue, so expected_gpus is derived before they are added:
+    # they are what the cards are freed FOR, not more work to schedule onto
+    # them.
+    expected_gpus = min(len(payloads), SESSION_GPUS)
+    cpu_lane = after_gpu = None
+    if studio:
+        payloads.update(studio_payloads(**studio))
+        cpu_lane = STUDIO_INSTALL_NOTEBOOK
+        after_gpu = STUDIO_TEST_NOTEBOOK
+        # Both halves see the Kaggle image, as the standalone Studio kernel
+        # does: install.sh builds its OWN venv under STUDIO_HOME and that is
+        # the interpreter every assertion runs under, so the outer one only has
+        # to be able to start papermill.
+        isolation[STUDIO_INSTALL_NOTEBOOK] = True
+        isolation[STUDIO_TEST_NOTEBOOK] = True
     # min(), so a one-leg kernel (a --legs dispatch, or a debugging run) still
     # stands down only on a genuinely empty allocation rather than demanding a
     # second card it will never use.
@@ -823,7 +953,9 @@ def build_kernel(
         payloads,
         per_run_timeout,
         isolation,
-        expected_gpus = min(len(payloads), SESSION_GPUS),
+        expected_gpus = expected_gpus,
+        cpu_lane = cpu_lane,
+        after_gpu = after_gpu,
     )
 
 
@@ -862,7 +994,31 @@ def main() -> int:
         help = "build with no band check at all. Only for the one run that recaptures a reference",
     )
     ap.add_argument("--per-run-timeout", type = int, default = 2400)
+    ap.add_argument(
+        "--with-studio",
+        action = "store_true",
+        help = "also carry the Studio GPU payload in this kernel, split in two: "
+        "its checkout/install/browser half runs on a CPU lane beside the "
+        "training legs and never takes a card, and its assertions run once "
+        "the legs have freed both. Only valid with --all-kernels",
+    )
+    ap.add_argument(
+        "--studio-repo-url",
+        default = "https://github.com/unslothai/unsloth",
+        help = "repository the Studio half checks out and installs",
+    )
+    ap.add_argument(
+        "--studio-args",
+        default = "",
+        help = "extra args for tests/kaggle/studio_gpu/run_studio_gpu.py",
+    )
     args = ap.parse_args()
+
+    if args.with_studio and not args.all_kernels:
+        # --legs builds ONE kernel of named legs, which is the debugging shape.
+        # Attaching Studio to it would put a 10-minute install beside a
+        # deliberately narrowed run.
+        raise SystemExit("--with-studio requires --all-kernels")
 
     if args.all_kernels == bool(args.legs):
         raise SystemExit("pass exactly one of --legs and --all-kernels")
@@ -876,7 +1032,17 @@ def main() -> int:
         if not plan[0]:
             raise SystemExit("--legs named nothing")
 
-    for names, out in zip(plan, outputs):
+    # Studio rides the FIRST kernel only. There is one kernel today, so this is
+    # not a choice with consequences yet, but naming it stops a future second
+    # kernel quietly installing Studio twice and paying for it twice.
+    for index, (names, out) in enumerate(zip(plan, outputs)):
+        studio = None
+        if args.with_studio and index == 0:
+            studio = {
+                "unsloth_ref": args.unsloth_ref,
+                "repo_url": args.studio_repo_url,
+                "payload_args": args.studio_args,
+            }
         driver = build_kernel(
             Path(args.payload_dir),
             names,
@@ -885,18 +1051,41 @@ def main() -> int:
             extra_args = tuple(args.smoke_args.split()),
             per_run_timeout = args.per_run_timeout,
             skip_reference = args.skip_reference,
+            studio = studio,
         )
         out.parent.mkdir(parents = True, exist_ok = True)
         out.write_text(json.dumps(driver, indent = 1), encoding = "utf-8")
+        # Says whether Studio is aboard, because a build that quietly stopped
+        # packing it looks exactly like one that never asked for it.
         print(
             f"wrote {out} ({out.stat().st_size / 1024:.0f} KB) packing "
             f"{len(names)} leg(s): {', '.join(names)}"
+            + (" + the Studio install and test halves" if studio else "")
         )
     # The launcher needs one --notebook per kernel and the expected payload
     # count; both follow from the plan, so they are emitted here rather than
     # restated in the workflow.
+    #
+    # Studio counts as ONE payload, not two, and that holds on both paths.
+    # Its two notebooks are halves of one experiment: on a healthy run the
+    # install half emits no report at all and the test half emits the only
+    # one, and on a broken install the install half emits a failure report and
+    # the driver then SKIPS the test half. Either way the kernel produces
+    # exactly one `studio-gpu` report, so counting the install half would make
+    # every healthy run look like it lost one.
+    #
+    # Getting this wrong in the other direction is worse and is why it is
+    # derived rather than typed: a merged kernel that quietly stopped running
+    # Studio would still report the four legs and go green.
+    legs = sum(len(n) for n in plan)
+    expected_payloads = legs + (1 if args.with_studio else 0)
     _github_output("notebooks", " ".join(f"--notebook {o}" for o in outputs))
-    _github_output("payloads", str(sum(len(n) for n in plan)))
+    _github_output("payloads", str(expected_payloads))
+    # The launcher counts every report in the kernel; each REPORTER counts only
+    # the labels it owns. So the T4 reporter is told the leg count, not the
+    # payload count -- handing it 5 would have it treat a complete four-leg
+    # result as short by one and dump the kernel log under a healthy run.
+    _github_output("legs", str(legs))
     return 0
 
 

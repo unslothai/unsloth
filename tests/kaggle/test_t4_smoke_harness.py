@@ -3236,11 +3236,35 @@ def test_the_workflow_is_never_preempted_by_the_capacity_sweeper():
 # ----------------------------------------------------------------- report
 
 
+_TWO_LEGS = [
+    {"label": "control", "passed": True, "steps": []},
+    {"label": "canary", "passed": True, "steps": []},
+]
+_A_FAILING_LEG = [
+    {"label": "control", "passed": False, "failures": ["x"], "steps": []},
+    {"label": "canary", "passed": True, "steps": []},
+]
+# The Studio payload from the merged kernel. Not this reporter's.
+_STUDIO = [{"label": "studio-gpu", "passed": False, "failures": ["x"], "assertions": []}]
+
+
 @pytest.mark.parametrize(
-    ("verdict", "expected_exit"),
-    [("pass", 0), ("partial", 0), ("infra", 0), ("fail", 1)],
+    ("verdict", "reports", "expected_exit"),
+    [
+        ("pass", _TWO_LEGS, 0),
+        ("partial", [], 0),
+        ("infra", [], 0),
+        ("fail", _A_FAILING_LEG, 1),
+        # Since --with-studio the kernel verdict covers a payload this reporter
+        # does not own, so a failing Studio run must not print "Kaggle T4
+        # smoke: FAIL" over two green legs. kaggle_studio_ci/report.py turns
+        # that red, in the same job, from the same evidence directory.
+        ("fail", _TWO_LEGS + _STUDIO, 0),
+    ],
 )
-def test_only_a_real_assertion_failure_turns_the_job_red(tmp_path, verdict, expected_exit):
+def test_only_a_real_assertion_failure_turns_the_job_red(
+    tmp_path, verdict, reports, expected_exit
+):
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     (evidence / "launch_result.json").write_text(
@@ -3250,7 +3274,7 @@ def test_only_a_real_assertion_failure_turns_the_job_red(tmp_path, verdict, expe
                 "reason": "test",
                 "slug": "u/s",
                 "kernel_state": "COMPLETE",
-                "reports": [],
+                "reports": reports,
             }
         )
     )

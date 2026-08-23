@@ -115,8 +115,40 @@ def _code_cell(source: str) -> dict:
     }
 
 
-def build_payload_notebook(*, unsloth_ref: str, repo_url: str, payload_args: str) -> dict:
-    """The notebook that installs Studio and runs the payload against it."""
+def build_payload_notebook(
+    *, unsloth_ref: str, repo_url: str, payload_args: str, phase: str | None = None
+) -> dict:
+    """The notebook that installs Studio and runs the payload against it.
+
+    ``phase`` splits that notebook in two, for the merged kernel that runs this
+    payload beside the T4 notebook legs (see ``kaggle_t4_ci/build_kernel.py``).
+    The split point is not arbitrary: everything up to and including the
+    Playwright install is checkout, download and compile, none of which touches
+    a GPU, and the ``verify`` cell is the first thing that requires one -- it
+    refuses with "no CUDA device in the Studio venv" when
+    ``torch.cuda.is_available()`` is False. So
+
+    * ``"install"`` is the GPU-free prefix and can run while both cards are
+      busy training,
+    * ``"test"`` is everything that needs a card, and runs once they are free.
+
+    ``None`` builds the whole thing as one notebook, which is what the
+    standalone Studio workflow still does.
+
+    The two halves communicate through the DISK, not through the interpreter:
+    ``setup`` recomputes the same paths in both (``_pick_work_root`` is
+    deterministic within a session) and the test half re-derives ``VENV_PY``
+    from ``STUDIO_HOME`` rather than inheriting it.
+
+    One trap that is easy to walk into here: the install half must still SEE
+    both GPUs. ``install.sh --local`` resolves torch, and a CPU-only torch
+    resolved by an installer that could not find a device is precisely the
+    regression the verify cell exists to catch. So the caller leaves
+    ``CUDA_VISIBLE_DEVICES`` unset on that lane rather than blanking it; the
+    install reads device capability and never allocates.
+    """
+    if phase not in (None, "install", "test"):
+        raise ValueError(f"phase must be None, 'install' or 'test', not {phase!r}")
 
     setup = f"""# Where everything lives.
 #
@@ -338,15 +370,33 @@ print("{PAYLOAD_SENTINEL} complete rc=" + str(proc.returncode), flush=True)
 # aborting here would lose the cells below it.
 """
 
+    # Marks the GPU-free half done, on its own line, so the driver can gate the
+    # test half on a sentinel it saw rather than on a returncode alone.
+    installed = f"""print("{PAYLOAD_SENTINEL} INSTALLED " + json.dumps({{
+    "studio_home": str(STUDIO_HOME), "venv": str(VENV_PY),
+}}), flush=True)
+"""
+
+    # Re-derives what the install half left on disk. VENV_PY is defined in the
+    # install cell, which the test half does not carry, so without this the
+    # verify cell below dies on a NameError rather than on anything it tests.
+    bridge = f"""VENV_PY = STUDIO_HOME / "unsloth_studio" / "bin" / "python"
+if not VENV_PY.is_file():
+    fail_report(f"the install phase left no interpreter at {{VENV_PY}}; it either "
+                f"did not run or did not land in the directory this half looks in")
+    raise SystemExit(f"no interpreter at {{VENV_PY}}")
+print("{PAYLOAD_SENTINEL} venv " + str(VENV_PY), flush=True)
+"""
+
+    if phase == "install":
+        cells = [setup, clone, install, browser, installed]
+    elif phase == "test":
+        cells = [setup, bridge, verify, run]
+    else:
+        cells = [setup, clone, install, browser, verify, run]
+
     return {
-        "cells": [
-            _code_cell(setup),
-            _code_cell(clone),
-            _code_cell(install),
-            _code_cell(browser),
-            _code_cell(verify),
-            _code_cell(run),
-        ],
+        "cells": [_code_cell(source) for source in cells],
         "metadata": {
             "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
             "language_info": {"name": "python"},

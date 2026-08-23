@@ -25,6 +25,23 @@
 # session. Longest first, because the longest leg is what sets the makespan and
 # a greedy schedule cannot balance around one it picks up last.
 #
+# A FIFTH payload rides the same kernel and is not on that queue: the Studio GPU
+# smoke, packed in by --with-studio and split into two halves. Its install --
+# clone, pip, a Playwright browser -- takes no card at all and runs from t=0
+# beside the training legs, so it finishes at ~400s inside a 646.3s card queue
+# and costs nothing. Its GPU half then waits for the queue to DRAIN and takes
+# both cards, because Studio loads a model and serves it rather than sharing a
+# card with a training run. Measured makespan 763.3s against 646.3s without it.
+#
+# The install half is a gate as well as a lane: if it fails, the GPU half is
+# skipped rather than run against a Studio that is not there, and the skip is
+# reported rather than silent.
+#
+# This does NOT replace kaggle-t4-studio-gpu-ci.yml, whose paths filter and
+# budget are untouched. A studio/** change still gets a dedicated run there;
+# this is the same payload answering for the events THIS workflow already
+# triggered on.
+#
 # This was two kernels of two, one leg per T4, and the reason it is one kernel
 # is NOT quota: a session bills its wall clock once rather than per card, so the
 # two shapes cost within a few percent of each other. It is that two kernels
@@ -132,15 +149,31 @@
 #   rest. Per-leg durations measured on run 32607621452: gptoss 384.1s, frontier
 #   312.2s, canary 265.3s, control 262.2s. Packed longest-first across two cards
 #   that is 384.1 + 262.2 = 646.3s on one card against 312.2 + 265.3 = 577.5s on
-#   the other, so one kernel of four legs measures ~0.18 h:
+#   the other, so one kernel of four legs measures ~0.18 h.
+#
+#   The Studio payload rides the same kernel (--with-studio below) and adds
+#   ~117s to that, not the ~0.75 h it costs standalone. Its install is CPU work
+#   -- clone, pip, a Playwright browser download -- so it runs on a lane of its
+#   own from t=0, finishes at ~400s against a 646.3s card queue, and is
+#   therefore FULLY hidden. What is left is its GPU half at ~200s, which starts
+#   once both cards are free. 646.3 + 117 = 763.3s, or ~0.21 h:
 #     one kernel, four legs                        0.18 h
+#     + the Studio payload, install hidden        +0.03 h
 #     TOTAL, expected                             ~0.25 h  (rounded up)
 #   The two-kernel shape this replaced measured 0.10 h + 0.13 h = 0.23 h, so
 #   consolidating is roughly quota-neutral; the gain is the freed session, not
-#   the hours. The 0.25 h envelope is DELIBERATELY not lowered to match the new
-#   measurement. Every figure below is derived from it, the real cost moved
-#   DOWN so it remains an upper bound, and re-deriving a whole budget to book a
-#   0.05 h saving would be a lot of arithmetic to make the reserve thinner.
+#   the hours. The 0.25 h envelope is unchanged and still an
+#   upper bound: 0.21 h measured against it. Every figure below is derived from
+#   that envelope, so leaving it alone is what keeps the sampling rate, the
+#   expected spend and the reserve below true without re-deriving all of them.
+#
+#   Note what packing Studio in does NOT do: it does not widen the paths filter
+#   below. Studio's own thirteen paths stay on kaggle-t4-studio-gpu-ci.yml,
+#   which still runs standalone for a studio/** change and still owns the 35h
+#   share. The payload here is EXTRA coverage on events this workflow already
+#   answered -- an unsloth/** change now also says whether Studio still
+#   installs and serves on a T4 -- bought for 0.03 h because the install had
+#   nothing to contend with.
 #
 #   SAMPLING RATE, solved at the pessimistic end of the eligible range and
 #   targeting 9h rather than the full 15, so a busy week does not spend the
@@ -767,7 +800,9 @@ jobs:
             --unsloth-ref '${{ steps.ref.outputs.ref }}' \
             --zoo-ref '${{ steps.pins.outputs.zoo_ref }}' \
             --smoke-args "--max-steps $MAX_STEPS" \
-            --per-run-timeout 3300 \
+            --with-studio \
+            --studio-args "--max-steps 8" \
+            --per-run-timeout 3900 \
             $SKIP
 
       # kernel-timeout-sec is passed to Kaggle at push time as a BACKSTOP, not
@@ -857,6 +892,21 @@ jobs:
             --poll-every 60 \
             --deadline-epoch "$(( JOB_START_EPOCH + JOB_TIMEOUT_MINUTES * 60 ))"
 
+      # The launcher collects executed notebooks and the kernel log and nothing
+      # else, deliberately. The Studio payload therefore encodes its
+      # screenshots and logs into its own cell output; this puts them back.
+      # Lifted from kaggle-t4-studio-gpu-ci.yml along with the payload itself.
+      #
+      # It is safe on a run that carried no Studio payload: the collector finds
+      # no encoded evidence and writes nothing.
+      - name: Unpack the Playwright evidence
+        if: always() && steps.recheck.outputs.should_run == 'true'
+        continue-on-error: true
+        run: |
+          python .github/scripts/kaggle_studio_ci/collect_evidence.py \
+            --evidence kaggle_evidence \
+            --outdir studio_evidence
+
       # always(): the evidence is most valuable when something went wrong, and
       # the executed notebooks are kilobytes.
       #
@@ -881,6 +931,7 @@ jobs:
           name: kaggle-t4-evidence
           path: |
             kaggle_evidence/**
+            studio_evidence/**
             kernel*.ipynb
           # 14 rather than the repo's usual 7: this job runs on a minority of
           # commits, so two consecutive samples can be a fortnight apart, and
@@ -905,4 +956,18 @@ jobs:
         run: |
           python .github/scripts/kaggle_t4_ci/report.py \
             --evidence kaggle_evidence \
-            --expect '${{ steps.build.outputs.payloads || 4 }}'
+            --expect '${{ steps.build.outputs.legs || 4 }}'
+
+      # Two reporters over ONE evidence directory, each rendering the labels it
+      # owns: the four training legs above, the Studio assertions here. They
+      # are not merged because the two payload shapes are not comparable -- a
+      # per-step metric trace against a list of assertions -- and a single
+      # renderer over both produces a training leg made of question marks.
+      #
+      # Its exit code is the same contract as the T4 reporter's: red only for a
+      # payload that ran and failed its assertions.
+      - name: Report Studio
+        if: always() && steps.recheck.outputs.should_run == 'true'
+        run: |
+          python .github/scripts/kaggle_studio_ci/report.py \
+            --evidence kaggle_evidence

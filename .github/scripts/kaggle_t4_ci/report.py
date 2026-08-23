@@ -92,6 +92,41 @@ def version_table(reports: list) -> list[str]:
     return lines
 
 
+# The label the Studio payload reports under. Duplicated in
+# kaggle_studio_ci/report.py rather than shared: these two packages have no
+# import relationship and both already ship a module called `report`, so a
+# shared helper would mean putting one of them on the other's sys.path -- which
+# is how `import report` starts resolving to the wrong file.
+STUDIO_LABEL = "studio-gpu"
+
+def own_verdict(kernel_verdict: str, kernel_reason: str, reports: list, expect: int):
+    """This reporter's verdict over ITS OWN payloads, not the kernel's.
+
+    The launcher writes one verdict for the whole kernel, and since
+    --with-studio that kernel holds two unrelated experiments. Reading the
+    kernel verdict here means a failing training leg prints "Kaggle T4 smoke: FAIL"
+    above a section listing zero failures, and a failing Studio payload prints
+    the same over four green legs. Both are the misleading-red twin of the
+    green tick that tested nothing, and both would send someone to read the
+    wrong payload.
+
+    So the verdict is recomputed from the filtered reports. The kernel reason
+    is kept only when the two agree; otherwise it describes the other half.
+
+    `infra` is deliberately not synthesised: with nothing of ours back, the
+    kernel-level reason (quota, concurrency cap, a push that was throttled) is
+    the only account of why, and it applies to every payload equally.
+    """
+    if not reports:
+        return (kernel_verdict if kernel_verdict == "infra" else "partial"), kernel_reason
+    failing = [r for r in reports if not r.get("passed")]
+    if failing:
+        return "fail", f"{len(failing)} of {len(reports)} payload(s) failed their assertions"
+    if len(reports) < expect:
+        return "partial", f"only {len(reports)} of {expect} payload(s) reported back"
+    return "pass", f"all {len(reports)} payload(s) passed"
+
+
 def render(report: dict) -> list[str]:
     lines = [
         f"#### payload `{report.get('label', '?')}`  " f"model `{report.get('model', '?')}`",
@@ -337,6 +372,15 @@ def main() -> int:
     verdict = result.get("verdict", "infra")
     reason = result.get("reason", "")
     reports = result.get("reports", [])
+
+    # The Studio payload can share this kernel (see kaggle_t4_ci/build_kernel.py
+    # --with-studio), and it emits its report through the same prefix, so it
+    # arrives in this list. It is a different SHAPE -- assertions rather than a
+    # per-step metric trace, no `config`, no `model` -- so rendering it here
+    # produces a training leg made of question marks. kaggle_studio_ci/report.py
+    # renders it properly; each reporter owns its own labels.
+    reports = [r for r in reports if r.get("label") != STUDIO_LABEL]
+    verdict, reason = own_verdict(verdict, reason, reports, args.expect)
 
     header = {
         "pass": "### Kaggle T4 smoke: PASS",

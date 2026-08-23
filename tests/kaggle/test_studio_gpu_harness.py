@@ -994,11 +994,30 @@ def test_the_gate_and_launcher_are_the_shared_ones():
 # ------------------------------------------------------------------ report
 
 
+_PASSING = [{"label": "studio-gpu", "passed": True, "assertions": []}]
+_FAILING = [{"label": "studio-gpu", "passed": False, "failures": ["x"], "assertions": []}]
+# A training leg from the merged kernel. Not this reporter's payload.
+_LEG = [{"label": "control", "passed": False, "steps": []}]
+
+
 @pytest.mark.parametrize(
-    ("verdict", "expected_exit"),
-    [("pass", 0), ("partial", 0), ("infra", 0), ("fail", 1)],
+    ("verdict", "reports", "expected_exit"),
+    [
+        ("pass", _PASSING, 0),
+        ("partial", [], 0),
+        ("infra", [], 0),
+        ("fail", _FAILING, 1),
+        # The kernel verdict is the WHOLE kernel's, and since --with-studio
+        # that kernel also carries four training legs. A leg failing must not
+        # print "Studio GPU smoke: FAIL" over a passing Studio payload and send
+        # someone to read the wrong half: the T4 reporter is what turns that
+        # red, in the same job, from the same evidence directory.
+        ("fail", _PASSING + _LEG, 0),
+    ],
 )
-def test_only_a_real_assertion_failure_turns_the_job_red(tmp_path, verdict, expected_exit):
+def test_only_a_real_assertion_failure_turns_the_job_red(
+    tmp_path, verdict, reports, expected_exit
+):
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     (evidence / "launch_result.json").write_text(
@@ -1008,7 +1027,7 @@ def test_only_a_real_assertion_failure_turns_the_job_red(tmp_path, verdict, expe
                 "reason": "test",
                 "slug": "u/s",
                 "kernel_state": "COMPLETE",
-                "reports": [],
+                "reports": reports,
             }
         )
     )

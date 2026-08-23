@@ -209,6 +209,7 @@ def _drive_packed(
     *,
     gpus,
     durations = None,
+    studio = None,
 ):
     driver = build_kernel.build_kernel(
         SMOKE_DIR,
@@ -218,6 +219,7 @@ def _drive_packed(
         extra_args = (),
         per_run_timeout = 60,
         skip_reference = True,
+        studio = studio,
     )
     stub = _PackedStub(gpus = gpus, durations = durations)
     stub.root = tmp_path
@@ -313,6 +315,154 @@ def test_a_finished_leg_gives_its_virtualenv_back(tmp_path):
         stub.max_live_venvs <= 2
     ), f"{stub.max_live_venvs} virtualenvs were alive at once on a 2-card kernel"
     assert list(tmp_path.glob("venv_*")) == [], "a payload left its virtualenv behind"
+
+
+# --------------------------------------------------- Studio in the same kernel
+
+STUDIO = {
+    "unsloth_ref": "main",
+    "repo_url": "https://github.com/unslothai/unsloth",
+    "payload_args": "--max-steps 8",
+}
+STUDIO_INSTALL = build_kernel.STUDIO_INSTALL_NOTEBOOK
+STUDIO_TEST = build_kernel.STUDIO_TEST_NOTEBOOK
+# A value no card index can be confused with, so "the driver left this alone"
+# and "the driver pinned a card" are distinguishable. An unpinned lane inherits
+# whatever the ambient environment has; a pinned one is overwritten with a
+# single index.
+AMBIENT_CUDA = "0,1"
+
+
+def _drive_with_studio(tmp_path, monkeypatch, leg_names, *, gpus = 2, durations = None):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", AMBIENT_CUDA)
+    return _drive_packed(
+        tmp_path, leg_names, gpus = gpus, durations = durations, studio = STUDIO
+    )
+
+
+def test_the_studio_install_never_takes_a_card_and_the_legs_never_wait_for_it(
+    tmp_path, monkeypatch
+):
+    """The whole point of carrying Studio here: its install is free time.
+
+    Checkout, `install.sh --local`, the frontend build and the Playwright
+    browser are network and CPU and touch no GPU, so they run beside the
+    training legs rather than after them. If this lane ever queued for a card
+    it would displace a leg and the merge would cost more than it saves.
+    """
+    driven = _drive_with_studio(
+        tmp_path,
+        monkeypatch,
+        ALL_FOUR,
+        durations = {n: 0.30 for n in ("t4_gptoss.ipynb", "t4_frontier.ipynb",
+                                       "t4_canary.ipynb", "t4_control.ipynb")},
+    )
+    assert driven["stood_down"] is None
+    calls = {c["notebook"]: c for c in driven["stub"].papermill}
+    assert STUDIO_INSTALL in calls, sorted(calls)
+
+    # Unpinned. install.sh --local resolves torch, and an installer that cannot
+    # see a device resolves a CPU-only one -- which is the exact regression
+    # Studio's verify cell exists to catch, so hiding the cards here would
+    # manufacture it.
+    assert calls[STUDIO_INSTALL]["cuda"] == AMBIENT_CUDA, calls[STUDIO_INSTALL]
+    # ...while every leg is still pinned to exactly one card. The SPLIT is not
+    # asserted, for the reason given in
+    # test_four_legs_on_two_cards_never_put_two_legs_on_one_card_at_once: how
+    # many legs each card takes depends on leg duration against the 5s venv
+    # stagger, and under sub-second stubs the first card legitimately drains
+    # most of the queue.
+    leg_cards = [c["cuda"] for n, c in calls.items() if n.startswith("t4_")]
+    assert len(leg_cards) == len(ALL_FOUR), calls
+    assert set(leg_cards) <= {"0", "1"}, leg_cards
+    assert set(leg_cards) == {"0", "1"}, leg_cards
+    assert driven["stub"].same_card_overlaps == [], driven["stub"].same_card_overlaps
+
+
+def test_the_studio_assertions_wait_for_both_cards_rather_than_borrowing_one(
+    tmp_path, monkeypatch
+):
+    """Studio keeps both T4s visible, and that is deliberate upstream.
+
+    Its own driver says so: "Studio's own device selection is part of what is
+    under test; masking one would test a machine nobody has." So the GPU half
+    runs once the leg queue has drained, unpinned, rather than being handed a
+    single card out of the queue.
+    """
+    driven = _drive_with_studio(tmp_path, monkeypatch, ALL_FOUR)
+    calls = [c["notebook"] for c in driven["stub"].papermill]
+    assert STUDIO_TEST in calls, calls
+    # Last, after every leg.
+    assert calls[-1] == STUDIO_TEST, calls
+    by_name = {c["notebook"]: c for c in driven["stub"].papermill}
+    assert by_name[STUDIO_TEST]["cuda"] == AMBIENT_CUDA, by_name[STUDIO_TEST]
+
+
+def test_a_failed_studio_install_skips_its_assertions_with_the_reason(
+    tmp_path, monkeypatch
+):
+    """Otherwise the missing venv is reported as a Studio regression.
+
+    The install half is what puts the interpreter, the frontend and the
+    llama.cpp on disk. Running the assertions against a half-built tree fails
+    on `no interpreter at ...`, which reads like the code under test broke
+    rather than like the install did.
+    """
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", AMBIENT_CUDA)
+
+    class _InstallFails(_PackedStub):
+        def run(self, cmd, **kw):
+            cmd = [str(c) for c in cmd]
+            if "papermill" in cmd and STUDIO_INSTALL in " ".join(cmd):
+                self.papermill.append({"notebook": STUDIO_INSTALL, "cuda": None,
+                                       "kernel": None, "compile_location": None})
+                Path(cmd[cmd.index("papermill") + 2]).write_text("{}", encoding = "utf-8")
+                return types.SimpleNamespace(returncode = 1, stdout = "", stderr = "")
+            return super().run(cmd, **kw)
+
+    driver = build_kernel.build_kernel(
+        SMOKE_DIR, ALL_FOUR, unsloth_ref = "main", zoo_ref = "main", extra_args = (),
+        per_run_timeout = 60, skip_reference = True, studio = STUDIO,
+    )
+    stub = _InstallFails(gpus = 2)
+    stub.root = tmp_path
+    saved = sys.modules["subprocess"]
+    sys.modules["subprocess"] = stub
+    namespace: dict = {}
+    try:
+        for cell in driver["cells"][:2]:
+            source = "".join(cell["source"]).replace("/kaggle/working", str(tmp_path))
+            exec(compile(source, "<driver-cell>", "exec"), namespace)
+    finally:
+        sys.modules["subprocess"] = saved
+
+    ran = [c["notebook"] for c in stub.papermill]
+    assert STUDIO_TEST not in ran, ran
+    # Every leg still ran: a broken Studio install must not take the notebook
+    # signal down with it.
+    assert sorted(n for n in ran if n.startswith("t4_")) == sorted(
+        f"t4_{leg}.ipynb" for leg in ALL_FOUR
+    )
+    recorded = (namespace.get("results") or {}).get(STUDIO_TEST)
+    assert recorded is not None, "the skip was not recorded at all"
+    assert recorded["returncode"] is None
+    assert "install lane did not succeed" in recorded["error"]
+
+
+def test_studio_is_not_in_the_card_queue(tmp_path, monkeypatch):
+    """ORDER is the legs. Either Studio half in it would be handed a card."""
+    driver = build_kernel.build_kernel(
+        SMOKE_DIR, ALL_FOUR, unsloth_ref = "main", zoo_ref = "main", extra_args = (),
+        per_run_timeout = 60, skip_reference = True, studio = STUDIO,
+    )
+    setup = "".join(driver["cells"][0]["source"])
+    order = next(l for l in setup.splitlines() if l.startswith("ORDER = "))
+    assert STUDIO_INSTALL not in order, order
+    assert STUDIO_TEST not in order, order
+    assert order.count("t4_") == len(ALL_FOUR), order
+    # ...but both are carried, or the kernel would have nothing to run.
+    payloads = set(driver["metadata"]["kaggle_t4_ci"]["payloads"])
+    assert {STUDIO_INSTALL, STUDIO_TEST} <= payloads, sorted(payloads)
 
 
 def test_a_one_card_allocation_still_stands_a_packed_kernel_down(tmp_path):
@@ -1853,3 +2003,98 @@ def test_main_bounds_the_whole_evidence_phase_it_is_budgeted_for(monkeypatch, tm
     assert seen[0] is not None, "main() never handed the collection a deadline"
     assert seen[0] == seen[1], "the two kernels must share ONE budget, not get one each"
     assert seen[0] - started <= launch.EVIDENCE_BUDGET_SEC
+
+
+# --------------------------------------------------------- the merged kernel's
+# --------------------------------------------------------- two reporters
+
+NOTEBOOK_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml"
+
+
+def test_the_merged_kernel_runs_both_reporters():
+    """One kernel, two experiments, so two report steps over one evidence dir.
+
+    Dropping the Studio one is the failure this guard exists for: the kernel
+    would still install Studio, still drive the UI on a T4, and the job would
+    still go green with nothing said about it. The T4 reporter FILTERS the
+    studio-gpu label out, so its section would look complete while the payload
+    that half the wall clock went on is unreported.
+    """
+    source = NOTEBOOK_WORKFLOW.read_text(encoding = "utf-8")
+    assert ".github/scripts/kaggle_t4_ci/report.py" in source
+    assert ".github/scripts/kaggle_studio_ci/report.py" in source
+    assert ".github/scripts/kaggle_studio_ci/collect_evidence.py" in source
+
+
+def test_the_t4_reporter_is_told_the_leg_count_not_the_payload_count():
+    """`payloads` counts Studio; `legs` does not, and this reporter drops it.
+
+    Handing it `payloads` makes a complete four-leg result read as short by one
+    forever: it filters the studio-gpu report out and then compares what is
+    left against a number that included it.
+    """
+    source = NOTEBOOK_WORKFLOW.read_text(encoding = "utf-8")
+    reporter = source.split(".github/scripts/kaggle_t4_ci/report.py")[1].split("- name:")[0]
+    assert "steps.build.outputs.legs" in reporter
+    assert "steps.build.outputs.payloads" not in reporter
+
+
+@pytest.mark.parametrize(
+    ("label", "reporter", "expect_red"),
+    [
+        ("control", "kaggle_t4_ci", True),
+        ("control", "kaggle_studio_ci", False),
+        ("studio-gpu", "kaggle_t4_ci", False),
+        ("studio-gpu", "kaggle_studio_ci", True),
+    ],
+)
+def test_a_failing_payload_only_reddens_the_reporter_that_owns_it(
+    tmp_path, label, reporter, expect_red
+):
+    """The launcher writes ONE verdict for a kernel that now holds two
+    unrelated experiments. A reporter reading it directly would announce a
+    failure it cannot describe, over a section listing none, and point at the
+    wrong half of a 13-minute kernel."""
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    reports = [
+        {"label": "control", "passed": label != "control", "steps": []},
+        {"label": "studio-gpu", "passed": label != "studio-gpu", "assertions": []},
+    ]
+    (evidence / "launch_result.json").write_text(
+        json.dumps(
+            {
+                "verdict": "fail",
+                "reason": "1 of 2 payload(s) failed their assertions",
+                "slug": "u/s",
+                "kernel_state": "COMPLETE",
+                "reports": reports,
+            }
+        )
+    )
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / ".github" / "scripts" / reporter / "report.py"),
+            "--evidence",
+            str(evidence),
+            "--expect",
+            "1",
+        ],
+        capture_output = True,
+        text = True,
+    )
+    assert (proc.returncode == 1) is expect_red, proc.stdout
+
+
+def test_the_build_step_actually_packs_studio_in():
+    """The whole pipelining claim in this workflow's header rests on one flag.
+
+    Without it the kernel builds four legs, every reporter still renders, the
+    Studio section reads NOT RUN with a plausible-sounding reason, and the job
+    is green -- which is indistinguishable from a run whose sampling declined.
+    """
+    source = NOTEBOOK_WORKFLOW.read_text(encoding = "utf-8")
+    build = source.split("- name: Build the kernel notebooks")[1].split("- name:")[0]
+    assert "--with-studio" in build
+    assert "--studio-args" in build
