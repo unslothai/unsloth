@@ -28,8 +28,12 @@ export const MIN_WINDOW_SECONDS = 3;
 export const MAX_WINDOW_SECONDS = 15;
 /** Buffer depth, so sparse progress bursts still leave two points to measure. */
 export const MAX_RETAIN_SECONDS = 60;
+/** Increases kept regardless of age, so a slow cadence still leaves a span. */
+export const MIN_RETAINED_INCREASES = 3;
 /** No byte growth for this long clears the rate instead of carrying it. */
 export const STALL_WINDOW_SECONDS = 15;
+/** A silence this many times the observed increase cadence reads as a stall. */
+export const STALL_CADENCE_MULTIPLIER = 3;
 
 /**
  * Mutate ``samples`` in place: append the sample, drop any out of the rolling
@@ -47,17 +51,55 @@ export function appendSample(
   }
   samples.push({ t, b });
   const cutoff = t - maxWindowSeconds;
-  while (samples.length > 2 && samples[0].t < cutoff) {
+  // Age alone cannot decide this. On a slow link one blob can take minutes to
+  // finalize, so trimming purely by seconds throws away the older increase that
+  // {@link measurableSpan} needs and the UI goes blank between every jump.
+  while (
+    samples.length > 2 &&
+    samples[0].t < cutoff &&
+    countIncreases(samples, 1) >= MIN_RETAINED_INCREASES
+  ) {
     samples.shift();
   }
   return samples;
+}
+
+/** Byte increases in ``samples`` at or after ``from``. */
+function countIncreases(samples: readonly TransferSample[], from: number): number {
+  let n = 0;
+  for (let i = Math.max(from, 1); i < samples.length; i += 1) {
+    if (samples[i].b > samples[i - 1].b) n += 1;
+  }
+  return n;
+}
+
+/**
+ * How long a silence runs before it is a stall rather than a gap between jumps.
+ *
+ * A fixed window is a floor, not an answer: a transfer whose blobs finalize
+ * every 60s is healthy, but reads as stalled every single time against a 15s
+ * one, which blanks the rate on 95% of ticks at 3 MB/s. Track the observed
+ * cadence instead, uncapped, since it is measured from real intervals.
+ */
+function stallWindowSeconds(samples: readonly TransferSample[]): number {
+  const gaps: number[] = [];
+  let previous = -1;
+  for (let i = 1; i < samples.length; i += 1) {
+    if (samples[i].b <= samples[i - 1].b) continue;
+    if (previous >= 0) gaps.push(samples[i].t - samples[previous].t);
+    previous = i;
+  }
+  if (gaps.length < 1) return STALL_WINDOW_SECONDS;
+  gaps.sort((a, b) => a - b);
+  const median = gaps[Math.floor(gaps.length / 2)];
+  return Math.max(STALL_WINDOW_SECONDS, median * STALL_CADENCE_MULTIPLIER);
 }
 
 function hasRecentProgress(
   samples: readonly TransferSample[],
   last: TransferSample,
 ): boolean {
-  const cutoff = last.t - STALL_WINDOW_SECONDS;
+  const cutoff = last.t - stallWindowSeconds(samples);
   for (let index = samples.length - 2; index >= 0; index -= 1) {
     const sample = samples[index];
     if (sample.t < cutoff) break;
