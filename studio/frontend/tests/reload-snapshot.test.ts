@@ -839,9 +839,8 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
     /createRuntimeHook\([\s\S]*?modelType,[\s\S]*?pairId,[\s\S]*?initialThreadId,[\s\S]*?onInitialHistoryReady/,
   );
   // A compare pane reports readiness through onInitialHistoryReady, and its
-  // runtime bootstraps on an empty thread before switching to the requested
-  // one, so this branch has to check the thread too or both panes go ready
-  // while their conversations are still loading.
+  // runtime bootstraps on an empty thread first, so this branch must check the
+  // thread or both panes go ready while their conversations still load.
   assert.match(
     runtimeProviderSource,
     /const completeLoad =[\s\S]*?if \(onInitialHistoryReady\) \{\s*if \(loadedTheRequestedThread\) onInitialHistoryReady\(\);/,
@@ -1361,9 +1360,8 @@ test("carries live form state, except what sensitive fields hide", () => {
           attributes: { "data-reload-snapshot-sensitive": "" },
         },
         {
-          // A filename row repeats the same value in its tooltip and in the
-          // accessible name of the button beside it, so clearing text alone
-          // would still ship it.
+          // A filename row repeats the value in its tooltip and in the
+          // accessible name beside it, so clearing text alone still ships it.
           tag: "span",
           rect: [0, 1440, 560, 0],
           text: "rendered-local-filename.csv",
@@ -1438,9 +1436,8 @@ test("carries live form state, except what sensitive fields hide", () => {
     imageDropzoneSource,
     /if \(value\)[\s\S]*?data-reload-snapshot-sensitive/,
   );
-  // A picked file's NAME is rendered outside the file input in several places,
-  // where neither type=file nor a marked ancestor reaches it: the dialogs
-  // portal out of the app root.
+  // A picked file's NAME renders outside the file input in several places that
+  // neither type=file nor a marked ancestor reaches: the dialogs portal out.
   assert.match(
     referencePickerSource,
     /if \(value\)[\s\S]*?data-reload-snapshot-sensitive[\s\S]*?value\.name/,
@@ -1457,9 +1454,8 @@ test("carries live form state, except what sensitive fields hide", () => {
     seedDialogSource,
     /data-reload-snapshot-sensitive[\s\S]*?localFile\?\.name/,
   );
-  // The monitor puts prompt and reply text in three places, not just the
-  // expanded payload: every visible row carries a two-line excerpt, and a
-  // lifecycle row carries backend error text.
+  // The monitor renders prompt/reply text in three places, not just the
+  // expanded payload: every row's excerpt, and a lifecycle row's error text.
   assert.match(
     apiMonitorPageSource,
     /function PayloadBlock[\s\S]*?data-reload-snapshot-sensitive/,
@@ -1476,8 +1472,8 @@ test("carries live form state, except what sensitive fields hide", () => {
     sharedComposerSource,
     /data-reload-snapshot-sensitive[\s\S]*?pendingAudio\.name/,
   );
-  // Both carriers here: the tooltip on the name, and the accessible name on
-  // the remove button, which is a sibling no ancestor marker would reach.
+  // Both carriers: the tooltip on the name, and the accessible name on the
+  // remove button, a sibling no ancestor marker would reach.
   assert.match(
     projectSourceDropzoneSource,
     /data-reload-snapshot-sensitive[\s\S]*?title=\{entry\.name\}/,

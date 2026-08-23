@@ -385,10 +385,9 @@
   function mirrorFieldState(original, cloned) {
     var tag = original.tagName;
     if (isSensitiveField(original)) {
-      // cloneNode can retain input attributes, textarea text, or a secret
-      // rendered into an ordinary code/span subtree. The same value is
-      // routinely repeated in a tooltip or an accessible name beside it, and
-      // clearing children alone leaves those behind.
+      // cloneNode retains input attributes, textarea text, and any secret in a
+      // code/span subtree. The same value usually also sits in a tooltip or an
+      // accessible name, which clearing children alone would leave behind.
       cloned.removeAttribute("value");
       sensitiveAttributes.forEach(function (name) {
         cloned.removeAttribute(name);
@@ -593,9 +592,8 @@
     if (source.slice(0, 5) !== "blob:" && !hasSensitiveUrl(source)) return;
 
     // Audio controls still read as a shell without their expiring source.
-    // Images and video can carry rendered pixels as a bounded data URL; a
-    // cross-origin frame may refuse canvas capture, and then the protected URL
-    // is removed rather than persisted.
+    // Images and video can carry rendered pixels as a bounded data URL; if a
+    // cross-origin frame refuses canvas capture, the URL is dropped, not kept.
     if (tag !== "IMG" && tag !== "VIDEO") {
       cloned.removeAttribute("src");
       return;
@@ -703,12 +701,10 @@
           continue;
         }
         var style = getComputedStyle(original);
-        // A `display: contents` wrapper generates no box, so its rectangle is
-        // empty however much of the viewport its children fill. Judging it by
-        // that rectangle takes the whole visible subtree with it.
-        // Native select descendants normally have empty rectangles while the
-        // closed select still paints the selected option's label. Treat that
-        // content as part of its owning control rather than as an offscreen box.
+        // Two shapes with empty rectangles that are nonetheless visible: a
+        // `display: contents` wrapper generates no box however much its
+        // children fill, and a closed select still paints its selected
+        // option's label. Judging either by its rectangle drops what it shows.
         var paintsThroughSelect =
           (original.tagName === "OPTION" ||
             original.tagName === "OPTGROUP") &&
