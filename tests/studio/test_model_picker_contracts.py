@@ -151,6 +151,45 @@ def test_model_config_page_floors_the_context_ceiling():
     assert "normalizeMaxSeqLength(modelMaxPosition.maxPositionEmbeddings)" not in src
 
 
+def test_auto_offload_context_matches_picker_custom_seed():
+    """Custom's safe seed must track the backend Auto offload context."""
+    frontend = _read("features/model-picker/components/model-config-page.tsx")
+    backend = _read_backend("core/inference/llama_cpp.py")
+    frontend_value = re.search(r"\bAUTO_OFFLOAD_CONTEXT_LENGTH\s*=\s*(\d+)", frontend)
+    backend_value = re.search(r"\b_AUTO_OFFLOAD_CTX\s*=\s*(\d+)", backend)
+    assert frontend_value is not None
+    assert backend_value is not None
+    assert frontend_value.group(1) == backend_value.group(1)
+
+
+def test_ui_safe_zone_anchor_tracks_the_auto_offload_context():
+    """The published ceiling and the context Auto runs must come from one constant.
+
+    ``max_context_length`` is the threshold the chat settings sheet warns above.
+    When no GPU subset fits, Auto runs at ``_AUTO_OFFLOAD_CTX`` and the ceiling is
+    anchored in the same branch. A literal there drifts the moment the constant
+    moves, and the symptom is every Auto load warning about a context Auto chose
+    for itself, so pin the reference rather than the value.
+    """
+    backend = _read_backend("core/inference/llama_cpp.py")
+    anchor = re.search(
+        r"max_available_ctx\s*=\s*min\(\s*([A-Za-z_0-9]+)\s*,\s*native_ctx_for_cap",
+        backend,
+    )
+    assert anchor is not None, "the no-fit UI safe-zone anchor moved or was renamed"
+    assert anchor.group(1) == "_AUTO_OFFLOAD_CTX"
+
+
+def test_auto_offload_context_is_not_below_the_fit_floor():
+    """Raising the Auto offload context is placement-neutral only above the fit
+    floor: below it, the offload re-check starts awarding GPU residency again."""
+    backend = _read_backend("core/inference/llama_cpp.py")
+    auto = re.search(r"\b_AUTO_OFFLOAD_CTX\s*=\s*(\d+)", backend)
+    floor = re.search(r"\b_FIT_MIN_CTX\s*=\s*(\d+)", backend)
+    assert auto is not None and floor is not None
+    assert int(auto.group(1)) >= int(floor.group(1))
+
+
 def test_compare_load_clears_stale_native_lease():
     """A compare-pane load never comes from the desktop file picker, so it must
     clear any prior picked file's lease token + expiry, otherwise a reload can
@@ -927,11 +966,7 @@ def test_reset_enabled_for_explicit_context_pin_at_native():
     """An explicit customContextLength that equals the native ceiling is still a user
     override, so contextAtDefault must require customContextLength == null."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert (
-        "const contextAtDefault = !target.isGguf || "
-        "(config.customContextLength == null && "
-        "(nativeContextLength == null || contextValue === nativeContextLength));" in src
-    )
+    assert "const contextAtDefault = !target.isGguf || config.customContextLength == null;" in src
     # The old form that ignored an explicit pin equal to native must not return.
     assert (
         "(nativeContextLength == null ? config.customContextLength == null : "
