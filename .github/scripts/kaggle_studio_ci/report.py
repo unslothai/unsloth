@@ -145,6 +145,7 @@ def render(report: dict) -> list[str]:
 # see the note there for why it is not shared.
 STUDIO_LABEL = "studio-gpu"
 
+
 def own_verdict(kernel_verdict: str, kernel_reason: str, reports: list, expect: int):
     """This reporter's verdict over ITS OWN payloads, not the kernel's.
 

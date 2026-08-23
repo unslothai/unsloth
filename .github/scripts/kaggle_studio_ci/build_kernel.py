@@ -116,7 +116,11 @@ def _code_cell(source: str) -> dict:
 
 
 def build_payload_notebook(
-    *, unsloth_ref: str, repo_url: str, payload_args: str, phase: str | None = None
+    *,
+    unsloth_ref: str,
+    repo_url: str,
+    payload_args: str,
+    phase: str | None = None,
 ) -> dict:
     """The notebook that installs Studio and runs the payload against it.
 
