@@ -1200,9 +1200,7 @@ class TrainingBackend:
             self._prune_start_requests_locked()
             return "reserved", record
 
-    def peek_start_request(
-        self, start_request_id: str
-    ) -> Optional[TrainingStartRequestRecord]:
+    def peek_start_request(self, start_request_id: str) -> Optional[TrainingStartRequestRecord]:
         """The lookup half of reserve_start_request(), with no reservation.
 
         Returns the record a retry of `start_request_id` would replay -- live or

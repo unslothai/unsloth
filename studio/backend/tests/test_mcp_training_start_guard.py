@@ -309,9 +309,7 @@ def test_a_cancelled_start_request_id_replays_and_keeps_its_tombstone(monkeypatc
     assert "inference request is in progress" not in str(response.message)
 
     expires_at, _ = backend._start_cancel_tombstones["agent-cancelled"]
-    assert expires_at > time.monotonic() + (
-        training_module._START_CANCEL_TOMBSTONE_TTL_S / 2
-    )
+    assert expires_at > time.monotonic() + (training_module._START_CANCEL_TOMBSTONE_TTL_S / 2)
 
 
 def test_an_unknown_start_request_id_is_still_refused_without_a_record(monkeypatch):
