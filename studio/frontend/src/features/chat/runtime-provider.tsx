@@ -1624,6 +1624,12 @@ type NewThreadSwitchState = {
   // had its chance to be corrected and must be retired, or opening that thread legitimately
   // later would spend the stale entry and leave the fresh one to be misread as an arrival.
   pendingSavedThreadIds: PendingSavedThreadSwitch[];
+  // The thread the ACTIVE nonce view is on, so a stale arrival can be undone by going
+  // back to it. switchToNewThread() cannot stand in for this: once the user has sent a
+  // message the nonce's thread is materialized and assistant-ui's newThreadId has been
+  // cleared, so asking for "a new thread" mints a second blank one and walks the composer
+  // off the conversation they just started.
+  nonceThreadId: string | null;
 };
 
 function ThreadAutoSwitch({
@@ -1770,6 +1776,8 @@ function ThreadNewChatSwitch({
     if (switchState.activeNonce === nonce) {
       return;
     }
+    // A new nonce owns nothing yet; the old record must not survive into it.
+    switchState.nonceThreadId = null;
     const shouldClearAttachments = switchState.hasSwitched;
     const clearAfterSwitch =
       shouldClearAttachments && switchState.activeNonce === null;
@@ -1853,10 +1861,21 @@ function ThreadNewChatSwitch({
       ? switchState.pendingSavedThreadIds.findIndex((claim) => claim.id === mainThreadId)
       : -1;
     if (claimed === -1) {
+      // Not a stale arrival, so this IS the thread this view owns. Recorded here rather
+      // than at the switch, because the id changes underneath us: a fresh local thread
+      // materializes on first message and the persisted id is what a reattach must use.
+      if (mainThreadId) {
+        switchState.nonceThreadId = mainThreadId;
+      }
       return;
     }
     switchState.pendingSavedThreadIds.splice(claimed, 1);
-    void Promise.resolve(aui.threads().switchToNewThread()).catch(() => undefined);
+    const reattachTo = switchState.nonceThreadId;
+    void Promise.resolve(
+      reattachTo && reattachTo !== mainThreadId
+        ? aui.threads().switchToThread(reattachTo)
+        : aui.threads().switchToNewThread(),
+    ).catch(() => undefined);
   }, [aui, isLoading, mainThreadId, newThreadSwitchStateRef, nonce, paused]);
 
   // The effect above blanks the bar, and this view reaches no other recount trigger: no persisted
@@ -1914,6 +1933,7 @@ function ActiveThreadSync({
 function NonceThreadResumeRestore({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
+  const aui = useAui();
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
   const wasEnabledRef = useRef(enabled);
 
@@ -1936,8 +1956,22 @@ function NonceThreadResumeRestore({
     if (!mainThreadId) {
       return;
     }
+    // ...but an UNTOUCHED landing must stay untouched. Opening one of a project's compare
+    // chats and coming back leaves this runtime holding a blank placeholder thread that no
+    // row exists for, and publishing it makes ProjectLanding read a chat into being: it
+    // sets pendingNewThreadId and swaps the project overview for an empty Thread.
+    //
+    // Discriminated on remoteId, NOT on the id's shape, exactly per the note above: a
+    // materialized new chat keeps its `__LOCALID_` id and carries a remoteId, so it still
+    // restores, while a placeholder that has never been persisted carries none.
+    const runtime = aui.threads().__internal_getAssistantRuntime?.();
+    const { remoteId } =
+      runtime?.threads.getItemById(mainThreadId).getState() ?? {};
+    if (!remoteId) {
+      return;
+    }
     useChatRuntimeStore.getState().setActiveThreadId(mainThreadId);
-  }, [enabled, mainThreadId]);
+  }, [aui, enabled, mainThreadId]);
 
   return null;
 }
@@ -2446,6 +2480,7 @@ export function ChatRuntimeProvider({
     hasSwitched: false,
     attempt: 0,
     pendingSavedThreadIds: [],
+    nonceThreadId: null,
   });
   useEffect(() => {
     if (!initialThreadId && !newThreadNonce) {

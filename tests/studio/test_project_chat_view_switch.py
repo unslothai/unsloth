@@ -353,8 +353,17 @@ __PENDING_SWITCH_CAP__
 
 const newThreadSwitchStateRef: any = { current: __REF_INITIAL_VALUE__ };
 
+// The four fields the exact-state assertions below were written to lock. `nonceThreadId`
+// is deliberately NOT among them: it is bookkeeping for the reattach correction, its value
+// is whatever thread a given test happens to be on, and folding it into twenty unrelated
+// pins would add churn rather than coverage. It has its own accessor, and its own tests.
 export function switchState(): any {
-  return { ...newThreadSwitchStateRef.current };
+  const { nonceThreadId: _ignored, ...pinned } = newThreadSwitchStateRef.current;
+  return pinned;
+}
+
+export function nonceThreadId(): any {
+  return newThreadSwitchStateRef.current.nonceThreadId ?? null;
 }
 
 const providerMemo: any[] = [];
@@ -1829,12 +1838,14 @@ def test_a_saved_switch_that_lands_after_the_route_moved_does_not_take_the_view(
           beforeArrival,
           mainThreadId: world.mainThreadId,
           switchedTo: world.switchedToThread,
+          savedSwitches: world.switchedToThread.filter((id) => id.startsWith("thread-")),
           state: switchState(),
           unhandled: unhandled.length,
         }));
         """,
     )
-    assert out["switchedTo"] == ["thread-a"], "the saved switch really was started"
+    # switchedToThread also carries the correction's reattach, so name the saved ones.
+    assert out["savedSwitches"] == ["thread-a"], "the saved switch really was started"
     assert out["mainThreadId"] != "thread-a", (
         "a switch that landed after the user returned must not leave the visible project "
         "landing pointed at the saved chat, or the next message goes to the wrong thread"
@@ -1956,13 +1967,15 @@ def test_two_saved_switches_in_flight_are_both_corrected():
         console.log(JSON.stringify({
           afterB,
           mainThreadId: world.mainThreadId,
-          switchedTo: world.switchedToThread,
+          savedSwitches: world.switchedToThread.filter((id) => id.startsWith("thread-")),
           state: switchState(),
           unhandled: unhandled.length,
         }));
         """,
     )
-    assert out["switchedTo"] == ["thread-a", "thread-b"], "both saved switches really started"
+    assert out["savedSwitches"] == ["thread-a", "thread-b"], (
+        "both saved switches really started"
+    )
     assert out["afterB"] != "thread-b", "the first arrival is corrected, as before"
     assert out["mainThreadId"] != "thread-a", (
         "the second stale arrival must be corrected too, or the visible project landing is "
@@ -2043,13 +2056,15 @@ def test_the_same_saved_thread_opened_twice_is_corrected_twice():
 
         console.log(JSON.stringify({
           mainThreadId: world.mainThreadId,
-          switchedTo: world.switchedToThread,
+          savedSwitches: world.switchedToThread.filter((id) => id.startsWith("thread-")),
           state: switchState(),
           unhandled: unhandled.length,
         }));
         """,
     )
-    assert out["switchedTo"] == ["thread-a", "thread-b", "thread-a"], "all three really started"
+    assert out["savedSwitches"] == ["thread-a", "thread-b", "thread-a"], (
+        "all three really started"
+    )
     assert out["mainThreadId"] != "thread-a", (
         "the second arrival for the same id must be corrected too, or the visible landing is "
         "left pointed at the saved chat"
@@ -2166,4 +2181,72 @@ def test_a_claim_whose_switch_settled_off_view_does_not_outlive_it():
         "opened and left is not a stale arrival"
     )
     assert out["claims"] == []
+    assert out["unhandled"] == 0
+0
+
+
+def test_a_stale_arrival_reattaches_the_chat_the_user_started():
+    """Correcting a stale arrival with switchToNewThread() is only right while the nonce's
+    thread is still blank.
+
+    Once the user has sent a message that thread is materialized and assistant-ui's
+    newThreadId has been cleared, so asking for "a new thread" mints a SECOND blank one:
+    the composer walks off the conversation they just started, it looks lost, and the next
+    message lands in the blank thread. The correction has to reattach the thread this view
+    actually owns.
+    """
+    out = _run(
+        "renderProvider, renderSettled, nonceThreadId, world",
+        """
+        await renderSettled({ newThreadNonce: "n1" });
+        const ownThread = world.mainThreadId;
+
+        // Open a saved chat and hold it.
+        let release: any;
+        world.switchToThreadGate = new Promise((resolve) => { release = resolve; });
+        renderProvider({ initialThreadId: "thread-a" });
+        await tick();
+
+        // Back to the landing, which reattaches its own thread...
+        world.switchToThreadGate = null;
+        renderProvider({ newThreadNonce: "n1" });
+        await tick();
+        // ...and the user sends a message, materializing it.
+        world.mainThreadId = "remote-1";
+        renderProvider({ newThreadNonce: "n1" });
+        await tick();
+        await tick();
+
+        const switchesBefore = world.switchedToNewThread;
+
+        // Only now does the saved switch land.
+        release();
+        await tick();
+        await tick();
+        renderProvider({ newThreadNonce: "n1" });
+        await tick();
+        await tick();
+
+        console.log(JSON.stringify({
+          ownThread,
+          mainThreadId: world.mainThreadId,
+          newThreadSwitches: world.switchedToNewThread - switchesBefore,
+          savedSwitches: world.switchedToThread.filter((id) => id.startsWith("thread-")),
+          reattachedTo: world.switchedToThread[world.switchedToThread.length - 1],
+          owned: nonceThreadId(),
+          unhandled: unhandled.length,
+        }));
+        """,
+    )
+    assert out["mainThreadId"] == "remote-1", (
+        "the correction must put the user back on the conversation they started, not on a "
+        "fresh blank thread"
+    )
+    assert out["newThreadSwitches"] == 0, "and it must not mint another thread to do it"
+    assert out["reattachedTo"] == "remote-1", "it reattaches by id"
+    assert out["savedSwitches"] == ["thread-a"], "only the one saved switch was started"
+    assert out["owned"] == "remote-1", (
+        "and the record follows the thread through materialization, which is why the "
+        "reattach can name the persisted id rather than the local one it opened"
+    )
     assert out["unhandled"] == 0

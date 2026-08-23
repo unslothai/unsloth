@@ -49,7 +49,7 @@ def _restore_effect() -> str:
     match = re.search(r"useEffect\(\(\) => \{\n(.*?)\n  \}, \[([^\]]*)\]\);", component, re.S)
     assert match, "NonceThreadResumeRestore effect not found"
     deps = [name.strip() for name in match.group(2).split(",") if name.strip()]
-    assert deps == ["enabled", "mainThreadId"], f"emulator does not bind {deps}"
+    assert deps == ["aui", "enabled", "mainThreadId"], f"emulator does not bind {deps}"
     return match.group(1)
 
 
@@ -70,14 +70,30 @@ const useChatRuntimeStore = {{
 const isAssistantLocalThreadId = (id) =>
   typeof id === "string" && id.startsWith("__LOCALID_");
 
+// Which threads have been persisted. A thread NOT listed here is a placeholder the
+// runtime minted and nothing was ever written for -- what an untouched project landing
+// holds after a compare round trip. Keyed by thread id, exactly as getItemById is.
+export const remoteIds = {{}};
+const aui = {{
+  threads: () => ({{
+    __internal_getAssistantRuntime: () => ({{
+      threads: {{
+        getItemById: (id) => ({{
+          getState: () => ({{ remoteId: remoteIds[id] }}),
+        }}),
+      }},
+    }}),
+  }}),
+}};
+
 // One mounted component: a ref that survives renders, and an effect re-run only when a
 // dependency actually changed.
 export function mount(initialEnabled) {{
   const wasEnabledRef = {{ current: initialEnabled }};
   let last = null;
   return function render(enabled, mainThreadId) {{
-    const deps = [enabled, mainThreadId];
-    if (last !== null && last[0] === deps[0] && last[1] === deps[1]) return;
+    const deps = [aui, enabled, mainThreadId];
+    if (last !== null && last[1] === deps[1] && last[2] === deps[2]) return;
     last = deps;
     (() => {{
 {_restore_effect()}
@@ -100,7 +116,7 @@ def _run(body: str) -> dict:
     script = textwrap.dedent(
         f"""
         // @ts-nocheck
-        import {{ mount, report, state, sets }} from "./harness.ts";
+        import {{ mount, report, state, sets, remoteIds }} from "./harness.ts";
         {textwrap.dedent(body)}
         """
     )
@@ -111,6 +127,7 @@ def test_returning_from_compare_reattaches_the_materialized_thread() -> None:
     """The bug, end to end: hide the view, clear the id as Compare does, show it again."""
     out = _run(
         """
+        remoteIds["thread-42"] = "remote-42";   // materialized: a row exists for it
         const render = mount(true);
         render(true, "thread-42");        // the chat, materialized and attached
         state.activeThreadId = "thread-42";
@@ -167,6 +184,9 @@ def test_a_materialized_chat_keeping_its_runtime_id_is_still_restored() -> None:
     persisted id filter for themselves."""
     out = _run(
         """
+        // initialize() wrote the row under the minted id and handed it back, so this
+        // thread IS persisted despite its shape. That is the whole point of the test.
+        remoteIds["__LOCALID_7"] = "__LOCALID_7";
         const render = mount(true);
         render(false, "__LOCALID_7");
         state.activeThreadId = null;
@@ -239,3 +259,27 @@ def test_the_harness_binds_every_name_the_effect_reaches() -> None:
         if name in {"if", "return", "for", "while", "switch", "catch"}:
             continue
         assert name in _harness_source(), f"the effect calls {name}(), which the harness omits"
+
+
+def test_an_untouched_landing_is_not_read_into_a_chat_on_resume() -> None:
+    """A project landing that was never typed in still holds a blank placeholder thread
+    after a compare round trip, because the runtime mints one eagerly. Publishing it makes
+    ProjectLanding set pendingNewThreadId and swap the project overview for an empty
+    Thread, so the user comes back to a chat they never started.
+
+    Note what is NOT the discriminator: the placeholder here has the same `__LOCALID_`
+    shape as the materialized chat two tests up. Only the absence of a row tells them
+    apart.
+    """
+    out = _run(
+        """
+        const render = mount(true);
+        render(false, "__LOCALID_9");   // hidden by Compare, nothing ever written for it
+        state.activeThreadId = null;
+        sets.length = 0;
+        render(true, "__LOCALID_9");    // back to the landing
+        report({});
+        """
+    )
+    assert out["sets"] == [], "an unpersisted placeholder must not be published"
+    assert out["activeThreadId"] is None, "so the landing stays a landing"
