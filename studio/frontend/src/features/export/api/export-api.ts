@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { openStreamResponse } from "@/lib/open-stream-response";
 
 const readError = (r: Response): Promise<string> => readFastApiError(r);
 
@@ -343,8 +344,7 @@ export async function streamExportLogs(options: {
       ? `/api/export/logs/stream?since=${options.since}`
       : "/api/export/logs/stream";
 
-  const response = await authFetch(url, {
-    method: "POST",
+  const response = await openStreamResponse(authFetch, url, {
     headers,
     signal: options.signal,
   });
