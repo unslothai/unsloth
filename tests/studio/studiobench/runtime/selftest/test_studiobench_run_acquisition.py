@@ -612,15 +612,36 @@ def test_a_probe_run_invents_no_summary_where_there_was_none(studio, monkeypatch
     assert not (Paths.under(studio["out"]).out / "summary.md").exists()
 
 
-def test_a_clean_rerun_leaves_the_summary_for_report_to_rewrite(studio, monkeypatch):
-    """The other control. Only a PROBE run invalidates, and `--report` still writes a real one."""
+def test_a_clean_rerun_also_invalidates_the_summary_it_inherited(studio, monkeypatch):
+    """REGRESSION, and this test previously asserted the opposite.
+
+    It was written as a control reading "only a PROBE run invalidates", on the reasoning that
+    `--report` rewrites the summary properly afterwards. That reasoning holds only for a reader
+    who runs `--report`, and it is the same asymmetry in reverse that made the probe case a bug:
+    `archive_payload` moves `payload.jsonl` and nothing else, so after ANY rerun of this directory
+    the standing `summary.md` describes a payload that is no longer at the path it names. A plain
+    run writes `summary.md` never and `ab.md` only under `--ab`, so a single-arm rerun produces no
+    report-shaped file to displace it.
+
+    The sharper version of the same hole is probed-then-clean: the probe refusal says in so many
+    words that the payload beside it is not scorable, and that claim survives into a directory
+    whose payload is now perfectly scorable. A refusal that outlives its reason is read as a
+    finding about the run that is actually there.
+
+    `--report` still writes a real summary over it, which is the half of the original control
+    that was correct and is kept below.
+    """
 
     monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT", raising = False)
     summary = _clean_summary(studio)
     paths = Paths.under(studio["out"])
 
     assert sb.run(_args(studio, "--branch", "main")) == 0
-    assert "NO SUMMARY" not in summary.read_text(encoding = "utf-8")
+    text = summary.read_text(encoding = "utf-8")
+    assert "NO SUMMARY" in text
+    assert "studiobench summary" not in text, "a summary of the archived payload survived a rerun"
+    # It names where the payload it described went, so the reader can still reach it.
+    assert "payload-" in text
 
     # And the legitimate `--report` path still scores the new payload rather than refusing it.
     assert sb.main(["--report", str(paths.payload_jsonl), "--tier", "quick", "--rungs", "1K"]) == 0

@@ -609,51 +609,14 @@ def run(args, ab_ref = None) -> int:
     # a refusal that arrives after two clones and two builds has cost the caller an hour to say
     # something it could have said in a millisecond, and an archive that arrives after the Recorder
     # has opened the file has already appended this run's header to the payload it was moving.
-    prepare_payload(
+    archived = prepare_payload(
         paths, requested_identity(args, ab_ref, corpus.corpus_hash), resume = bool(args.resume)
     )
 
-    # AND THE SUMMARY THE ARCHIVE LEFT BEHIND. `archive_payload` moves `payload.jsonl` and nothing
-    # else, so a `summary.md` written by an earlier `--report` of this directory -- step three of
-    # the README quickstart, into the same `--out` -- stays at the standard artifact path while
-    # the payload underneath it is replaced by a probed one. Nothing later puts that right: a
-    # probe run is read through the probe's own output, not through a score, so the `--report`
-    # whose `SystemExit` clause would have overwritten the file is the one command nobody has a
-    # reason to run. Without `--ab` this run writes no `ab.md` of its own either, so the summary
-    # is the only report-shaped file it produces, and it describes the payload that was moved
-    # aside.
-    #
-    # OVERWRITTEN, not deleted, for the reason `_render_ab` gives: whoever opens the path gets the
-    # reason rather than a missing file. HERE, not at the probe banner further down, for the
-    # reason 52fc3e848 moved the `ab.md` refusal above its early return: everything between this
-    # point and the banner can `return`, raise or be killed by the wall-clock watchdog, and every
-    # one of those paths has already archived the payload the summary belongs to. After
-    # `prepare_payload`, though, because a `--resume` it refuses touched nothing.
-    #
-    # BOTH ARTIFACTS, and `ab.md` is not already covered by the refusal inside `_render_ab`. That
-    # function runs only under `if ab_ref`, so a FRESH SINGLE-ARM probe run into a directory left
-    # by an earlier `--ab` run never reaches it, and the old table survives beside the new
-    # unscorable payload for as long as the directory lasts. Handled here rather than there
-    # because here is the one point every probe run passes through, whether or not it has a
-    # second arm and whether or not it lives long enough to render.
-    if extra_init:
-        for name, heading, what in (
-            ("summary.md", "# No summary", "summary"),
-            ("ab.md", "# No A/B table", "table"),
-        ):
-            stale = paths.out / name
-            if not stale.exists():
-                continue
-            stale.write_text(
-                f"{heading}\n\n"
-                f"NO {what.upper()}: this output directory was reused by a run carrying an "
-                f"external init script ({extra_init}), so its timings measure the page and the "
-                f"instrument together. The payload this {what} described was archived; the "
-                f"payload beside it now is not scorable. Re-run with SBENCH_EXTRA_INIT_SCRIPT "
-                f"unset.\n",
-                encoding = "utf-8",
-            )
-            _log(f"  a previous {stale} was replaced by this refusal")
+    # AND THE REPORTS THE ARCHIVE LEFT BEHIND. See `invalidate_stale_reports`: this is the one
+    # point every reuse of an output directory passes through, whichever of the two ways it
+    # invalidates what is already sitting there.
+    invalidate_stale_reports(paths.out, archived = archived, extra_init = extra_init)
 
     # One spec per side, with its own home and password. Without --ab there is exactly one.
     specs = side_specs(args, ab_ref)
@@ -1977,6 +1940,74 @@ def rollback_session_rows(
     dropped = size - mark
     log(f"  rolled back {dropped} bytes this refused session had appended to {path.name}")
     return dropped
+
+
+def invalidate_stale_reports(out, *, archived, extra_init, log = _log) -> list:
+    """Replace `summary.md` and `ab.md` when the payload they describe is no longer the one there.
+
+    `archive_payload` moves `payload.jsonl` and nothing else, so a `summary.md` written by an
+    earlier `--report` of this directory -- step three of the README quickstart, into the same
+    `--out` -- stays at the standard artifact path while the payload underneath it is replaced.
+    Nothing later puts that right, because the report that would overwrite it is a command the
+    next run has no reason to issue: a plain run writes `summary.md` never (only `--report` does)
+    and `ab.md` only under `--ab`, so a single-arm run produces no report-shaped file at all and
+    both stale ones survive it.
+
+    TWO INDEPENDENT INVALIDATIONS, and each is sufficient on its own.
+
+    `archived` is the general case: the payload these reports described has been moved aside, so
+    they describe a file that is no longer at the path they name, whatever the incoming run is.
+    This is the half that was missing. Keying only on `extra_init` closed the clean-then-probed
+    direction and left probed-then-clean open, where a probe run's refusal text -- which says in
+    so many words that the payload beside it is not scorable -- survives into a directory whose
+    payload is now perfectly scorable. A refusal that outlives its reason is worse than no file,
+    because it is read as a finding about the run that is actually there.
+
+    `extra_init` is the narrower case and is NOT covered by `archived`: a `--resume` that
+    `prepare_payload` accepts archives nothing, so `archived` is `None` while the continued
+    payload is being extended by a probed run and becomes unscorable under the old summary.
+
+    OVERWRITTEN, not deleted, for the reason `_render_ab` gives: whoever opens the path gets the
+    reason rather than a missing file. HERE, not at the probe banner further down, for the reason
+    52fc3e848 moved the `ab.md` refusal above its early return: everything between this point and
+    the banner can `return`, raise or be killed by the wall-clock watchdog, and every one of those
+    paths has already archived the payload the summary belongs to. After `prepare_payload`,
+    though, because a `--resume` it refuses touched nothing.
+
+    BOTH ARTIFACTS, and `ab.md` is not already covered by the refusal inside `_render_ab`. That
+    function runs only under `if ab_ref`, so a fresh SINGLE-ARM run into a directory left by an
+    earlier `--ab` run never reaches it, and the old table survives beside the new payload for as
+    long as the directory lasts.
+
+    Returns the paths it rewrote, so a caller can assert on them.
+    """
+    if not archived and not extra_init:
+        return []
+    if extra_init:
+        why = (
+            f"this output directory was reused by a run carrying an external init script "
+            f"({extra_init}), so its timings measure the page and the instrument together. The "
+            f"payload beside it now is not scorable. Re-run with SBENCH_EXTRA_INIT_SCRIPT unset."
+        )
+    else:
+        why = (
+            f"this output directory was reused by a later run, which moved the payload this "
+            f"described to {Path(archived).name} and recorded a new one beside it. Re-report the "
+            f"payload that is there now, or read the archived one directly."
+        )
+
+    rewritten = []
+    for name, heading, what in (
+        ("summary.md", "# No summary", "summary"),
+        ("ab.md", "# No A/B table", "table"),
+    ):
+        stale = Path(out) / name
+        if not stale.exists():
+            continue
+        stale.write_text(f"{heading}\n\nNO {what.upper()}: {why}\n", encoding = "utf-8")
+        log(f"  a previous {stale} was replaced by this refusal")
+        rewritten.append(stale)
+    return rewritten
 
 
 def prepare_payload(
