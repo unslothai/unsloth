@@ -5724,8 +5724,8 @@ export function createOpenAIStreamAdapter(
                 const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
                 // What must stay silent is a fit that returned the ORIGINAL messages:
                 // toasting "older turns were removed" is untrue there, and burns the
-                // once-per-thread flag so a real one is silent. Not gated on `fits`,
-                // which is also false for a shortened prompt that was sent.
+                // once-per-thread flag. Not `fits`, which is also false for a shortened
+                // prompt that really was sent.
                 const reallyCompacted = promptWasShortened(chunk.context_truncated);
                 if (
                   reallyCompacted &&

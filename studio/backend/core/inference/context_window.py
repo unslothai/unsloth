@@ -219,7 +219,7 @@ def prompt_budget(context_length: int, max_tokens: Optional[int]) -> int:
 _RETRIEVAL_BUDGET_SHARE = 0.5
 
 # The least reply room a rescued prompt must leave, as a fraction of the window. Small on
-# purpose: missing the RESERVE is survivable, so this only rules out the stub-answer end.
+# purpose: missing the reserve is survivable, so this only rules out the stub-answer end.
 _RESCUE_REPLY_FLOOR_DIVISOR = 16
 
 
@@ -232,12 +232,10 @@ def retrieval_budget(
 ) -> int:
     """Return the prompt room available to one retrieval.
 
-    In a tool loop, the retrieved exchange and the reply are protected on the next fit, so
-    one retrieval may use at most half the prompt budget. Single-shot uses the remainder.
-
-    Beside ``prompt_budget`` for the same reason: every local tool loop sizes the same
-    ``search_conversation``, and a policy kept privately by one backend is one the others
-    quietly disagree with.
+    In a tool loop the retrieved exchange and the reply are protected on the next fit, so
+    one retrieval may use at most half the prompt budget; single-shot uses the remainder.
+    Kept beside ``prompt_budget`` so every backend sizing ``search_conversation`` shares
+    one policy rather than quietly disagreeing.
     """
     target = prompt_budget(context_length, max_tokens)
     room = max(0, target - int(prompt_tokens or 0))
@@ -346,13 +344,11 @@ def fit_rolling_context(
         current_tokens = count_tokens(fitted)
 
     if current_tokens > prompt_target:
-        # Missing the prompt target only loses reserved reply room. Keep the original if
-        # it fits the physical window, else an eviction that does. Under it on both
-        # sides: llama-server refuses at `n_ctx` exactly, since the first generated
-        # token needs a KV cell. `fits` stays false because the target was not reached.
-        # ...but not by one token: a prompt of `n_ctx - 1` loses the history AND answers
-        # in one token, worse than the refusal it replaces, which kept the turns and named
-        # the one too big. Capped by the reserve, so asking for 16 tokens demands no more.
+        # Missing the prompt target only loses reserved reply room, so keep the original
+        # if it fits the physical window, else an eviction that does. Strictly under on
+        # both sides: llama-server refuses at `n_ctx` exactly. But not under by one token,
+        # which would lose the history AND answer in one token, worse than the refusal it
+        # replaces. Capped by the reserve, so the floor demands no room the target did not.
         reply_floor = min(
             max(1, context_length // _RESCUE_REPLY_FLOOR_DIVISOR),
             context_length - prompt_target,

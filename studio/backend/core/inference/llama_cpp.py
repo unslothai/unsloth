@@ -302,9 +302,9 @@ def _fit_with_instruction_pins(
         messages, protected_message_ids = (anchors | pins) or None, **kwargs
     )
     # Only a refusal that returned the ORIGINAL messages was "already failing". A rescue
-    # reports `fits` false too, but is servable, and dropping its pins would trade a
-    # working prompt WITH the standing instruction for one without -- the very thing this
-    # seam prevents. `dropped_messages` separates them.
+    # reports `fits` false too but is servable, and dropping its pins would trade a working
+    # prompt WITH the standing instruction for one without, the very thing this seam
+    # prevents. `dropped_messages` separates them.
     if (
         pins
         and truncation
@@ -812,10 +812,9 @@ def _records_boundary(truncation: dict) -> bool:
     """Whether a fit removed turns from the prompt it sent, so its depth is worth saving.
 
     Not ``fits``: a rescue reports false yet really did evict, and the client reads this
-    depth to place the compaction notice, so recording nothing compacts silently. Saving is
-    not replaying -- `_sticky_compaction_boundary` declines any `fits` false record before
-    reading the depth, which is where that belongs: a missed reserve makes the replay
-    unsafe, not the reporting.
+    depth to place the compaction notice, so recording nothing compacts silently. Saving
+    is not replaying -- `_sticky_compaction_boundary` still declines any `fits` false
+    record, which is where a missed reserve belongs.
     """
     return bool(truncation.get("fits")) or bool(truncation.get("dropped_messages"))
 
@@ -1035,8 +1034,7 @@ def _prefix_user_text(message: dict, prefix: str) -> dict:
     return message
 
 
-# Alias for the shared policy in `context_window`, which the safetensors loop uses too.
-# A local name for readability, not a second implementation.
+# A readable local name for the shared `context_window` policy, not a second implementation.
 _retrieval_budget = retrieval_budget
 
 

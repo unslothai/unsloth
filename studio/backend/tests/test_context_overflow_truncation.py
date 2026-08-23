@@ -592,9 +592,9 @@ def test_an_irreducible_fit_refuses_a_rescue_that_leaves_no_room_to_answer():
     """A rescue has to buy an ANSWER, not just an accepted request.
 
     Serving a prompt one token under the window evicts the history and comes back with a
-    one-token reply stopped on `length`: the turns are gone and the user has nothing.
-    The refusal it replaces at least kept them and named the turn that was too big, so
-    below a floor of reply room the old behaviour is the better one.
+    one-token reply stopped on `length`: the turns are gone and the user has nothing. The
+    refusal it replaces at least kept them and named the turn that was too big, so below a
+    floor of reply room the old behaviour wins.
     """
     latest = {"role": "user", "content": "x" * 495}
     messages = [
@@ -1380,10 +1380,9 @@ def test_a_pinned_fit_that_only_missed_the_reserve_keeps_its_pins():
     """The pinless retry fires on a REFUSAL, not on a prompt that was merely reduced.
 
     `_fit_with_instruction_pins` drops the pins and refits when the pinned attempt does
-    not fit, because pinning turning a servable request into a refusal is worse than
-    losing the instruction. A rescued fit reports `fits` false too, but it is servable:
-    it sits under the physical window and is what gets sent. Retrying there trades a
-    prompt that HAS the standing instruction for one that does not, for nothing.
+    not fit, since pinning turning a servable request into a refusal is worse than losing
+    the instruction. A rescued fit reports `fits` false too, but it is servable and is
+    what gets sent, so retrying there loses the instruction for nothing.
     """
     from core.inference import instruction_pin, llama_cpp
 
