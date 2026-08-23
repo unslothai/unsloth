@@ -94,7 +94,17 @@ function measurableSpan(
     from = i;
     if (samples[to].t - samples[i].t >= MAX_WINDOW_SECONDS) break;
   }
-  return from < 1 ? null : [from, to];
+  if (from < 1) return null;
+  // Increases clumped inside the window after a plateau longer than the buffer:
+  // their spacing is arrival jitter, not the rate. Price the whole window, which
+  // holds every byte seen since, rather than let one clump set the speed.
+  if (
+    samples[to].t - samples[from].t < MAX_WINDOW_SECONDS &&
+    samples[to].t - samples[0].t >= MAX_WINDOW_SECONDS
+  ) {
+    return [0, to];
+  }
+  return [from, to];
 }
 
 /**

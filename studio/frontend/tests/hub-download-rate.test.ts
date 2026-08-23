@@ -77,6 +77,21 @@ test("bursts too far apart to measure publish no rate at all", () => {
   assert.equal(burstyRates(90, 100 * MB, 600).length, 0);
 });
 
+// Recovering from a stall longer than the buffer leaves only the clump that just
+// landed. Its samples are a second apart, so measuring across them alone would
+// turn one xorb into the transfer speed.
+test("a clump landing after a long stall does not become the speed", () => {
+  const samples: TransferSample[] = [];
+  let bytes = 0;
+  let peak = 0;
+  for (let t = 0; t <= 95; t++) {
+    if (t <= 20) bytes = t * 100 * MB;
+    else if (t === 82 || t === 83) bytes += 1_000 * MB;
+    peak = Math.max(peak, publishedRate(samples, t, bytes));
+  }
+  assert.ok(peak <= 100 * MB, `published ${(peak / MB).toFixed(0)} MB/s`);
+});
+
 test("a stall reports no rate instead of carrying an old window forward", () => {
   const samples: TransferSample[] = [];
   for (let t = 0; t <= 10; t++) publishedRate(samples, t, t * 20 * MB);
