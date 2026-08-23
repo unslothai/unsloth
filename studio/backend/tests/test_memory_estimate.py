@@ -263,6 +263,35 @@ class TestGgufRuntimeBytes:
         assert runtime.layer_count == 12
         assert ri._gguf_offloaded_layer_fraction("manual", 0, runtime.layer_count) == 0.0
 
+    def test_a_recurrent_model_keeps_its_layer_count(self, tmp_path):
+        """The unsizable-KV path is reached by whole model families, not just stubs.
+
+        llama.cpp reads the attention head counts with ``required = false``
+        (llama-model.cpp:1177) while block_count and embedding_length are required
+        (:1111, :1116), so every pure SSM model -- Mamba, Mamba2, RWKV -- loads with a
+        layer count and no attention dimensions, which is exactly what
+        ``_can_estimate_kv`` rejects. Dropping the count there would report a manual
+        --gpu-layers 0 as a fully GPU-resident load on all of them.
+        """
+        mamba = _write_gguf(
+            tmp_path,
+            "mamba",
+            {
+                "block_count": 24,
+                "embedding_length": 2048,
+                "context_length": 8192,
+                "ssm.conv_kernel": 4,
+                "ssm.inner_size": 4096,
+                "ssm.state_size": 16,
+                "ssm.time_step_rank": 128,
+            },
+            name = "mamba.gguf",
+        )
+        runtime = ri._gguf_runtime_bytes(mamba, 32768)
+        assert runtime.kv_estimable is False
+        assert runtime.layer_count == 24
+        assert ri._gguf_offloaded_layer_fraction("manual", 0, runtime.layer_count) == 0.0
+
     def test_unreadable_file_is_unknown(self, tmp_path):
         # Not a GGUF at all: the header walk raises and the caller must still get
         # a well-formed "unknown", never a partial number.
@@ -949,7 +978,9 @@ class TestDrafterAccounting:
 
     def test_the_charged_drafter_is_found_by_the_bytes_it_added(self, config, tmp_path):
         size = os.path.getsize(config.gguf_mtp_file)
-        assert ri._charged_drafter_path(config, size) == config.gguf_mtp_file
+        # The kind rides along with the path: it decides which target-side terms the
+        # reserve carries, and deriving it separately could name another mode.
+        assert ri._charged_drafter_path(config, size) == (config.gguf_mtp_file, "mtp")
         # A figure matching no candidate must not pick one at random.
         assert ri._charged_drafter_path(config, size + 1) is None
         assert ri._charged_drafter_path(config, 0) is None
@@ -1205,7 +1236,7 @@ class TestDrafterEdgeCases:
         custom = tmp_path / "my-drafter.gguf"
         custom.write_bytes(Path(gqa_gguf).read_bytes())
         found = ri._charged_drafter_path(bare_config, 4096, extras = ["--model-draft", str(custom)])
-        assert found == str(custom)
+        assert found == (str(custom), "extras")
         # A remote repo is not a local file, so it stays unsized rather than guessed.
         assert (
             ri._charged_drafter_path(
@@ -1228,3 +1259,155 @@ class TestDrafterEdgeCases:
         source = inspect.getsource(ri._gguf_memory_breakdown)
         assert "_extra_args_draft_cache_types(extras)" in source
         assert "draft_cache_type_k = draft_k or spec_draft_cache_type" in source
+
+
+class TestSpeculativeModeTerms:
+    """A separate drafter is not an MTP head, and the two are not placed together.
+
+    ``_estimate_mtp_overhead_bytes`` defaults to charging both target-side terms
+    because an unsure caller should over-reserve. The loader does not stay unsure: it
+    derives them from the engaged mode. Defaulting here charged DSpark and DFlash a
+    second full copy of an MLA target's KV, which the mode never allocates.
+    """
+
+    @pytest.fixture
+    def mla(self, tmp_path) -> str:
+        # kv_lora_rank is what makes the duplicated target context real.
+        return _write_gguf(
+            tmp_path,
+            "deepseek2",
+            {**_GQA_FIELDS, "attention.kv_lora_rank": 512},
+            name = "mla.gguf",
+        )
+
+    def _config(self, mla, tmp_path, kind: str):
+        drafter = tmp_path / f"{kind}-drafter.gguf"
+        drafter.write_bytes(Path(mla).read_bytes())
+        return SimpleNamespace(
+            identifier = "local/mla",
+            gguf_file = mla,
+            is_gguf = True,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = str(drafter) if kind == "mtp" else None,
+            gguf_dspark_file = str(drafter) if kind == "dspark" else None,
+            gguf_dflash_file = None,
+        )
+
+    @pytest.fixture
+    def priced_files(self, mla, tmp_path, monkeypatch):
+        """The files term as the real one behaves: drafter charged unless pinned."""
+        drafter_bytes = os.path.getsize(mla)
+
+        def _files(
+            cfg,
+            *,
+            llama_extra_args = None,
+            **kw,
+        ):
+            pinned = _draft_on_cpu(list(llama_extra_args or ()))
+            return 1.0 + (0.0 if pinned else drafter_bytes / 1024**3)
+
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", _files)
+
+    def _target_ctx_copy(self, mla, n_ctx: int) -> int:
+        probe = ri.LlamaCppBackend()
+        probe._read_gguf_metadata(mla)
+        return probe._estimate_kv_cache_bytes(n_ctx, "f16")
+
+    def test_a_dspark_drafter_is_not_charged_the_targets_context(self, mla, tmp_path, priced_files):
+        ctx = 131072
+        mtp = ri._gguf_memory_breakdown(self._config(mla, tmp_path, "mtp"), mla, n_ctx = ctx)
+        dspark = ri._gguf_memory_breakdown(self._config(mla, tmp_path, "dspark"), mla, n_ctx = ctx)
+        # DSpark loads its own drafter with its own cache and keeps no copy of the
+        # target's, so the difference is exactly that copy, priced at f16.
+        assert mtp.drafter_runtime_bytes - dspark.drafter_runtime_bytes == self._target_ctx_copy(
+            mla, ctx
+        )
+        assert dspark.total_bytes < mtp.total_bytes
+
+    def test_a_gpu_drafter_is_charged_when_the_target_keeps_no_layers(
+        self, mla, tmp_path, priced_files
+    ):
+        # A separate drafter does not inherit --gpu-layers: llama.cpp overwrites it
+        # with the draft placement, whose default is auto. At --gpu-layers 0 the
+        # drafter is still on the GPU and still holds its cache there.
+        config = self._config(mla, tmp_path, "dspark")
+        manual = dict(gpu_memory_mode = "manual", gpu_layers = 0, n_ctx = 131072)
+        on_gpu = ri._gguf_memory_breakdown(config, mla, **manual)
+        pinned = ri._gguf_memory_breakdown(
+            config, mla, llama_extra_args = ["--spec-draft-ngl", "0"], **manual
+        )
+        assert on_gpu.drafter_runtime_bytes > 0
+        # The drafter's file and its cache both leave the GPU when it is pinned, and
+        # DSpark on this target keeps nothing in the target's context.
+        assert (
+            on_gpu.gpu_bytes - pinned.gpu_bytes
+            == on_gpu.drafter_runtime_bytes + os.path.getsize(mla)
+        )
+
+    def test_the_target_side_of_the_reserve_stays_with_the_target(
+        self, mla, tmp_path, priced_files
+    ):
+        ctx = 131072
+        config = self._config(mla, tmp_path, "mtp")
+        copy_bytes = self._target_ctx_copy(mla, ctx)
+        # Target on the CPU, drafter on the GPU: the draft cache is charged, the
+        # duplicated target context is not.
+        manual = dict(gpu_memory_mode = "manual", gpu_layers = 0, n_ctx = ctx)
+        no_layers = ri._gguf_memory_breakdown(config, mla, **manual)
+        no_layers_pinned = ri._gguf_memory_breakdown(
+            config, mla, llama_extra_args = ["--spec-draft-ngl", "0"], **manual
+        )
+        assert copy_bytes > 0
+        # What pinning the drafter takes off the GPU is its own cache and file, never
+        # the target's copy, which was not on the GPU here in the first place.
+        assert no_layers.gpu_bytes - no_layers_pinned.gpu_bytes == (
+            no_layers.drafter_runtime_bytes - copy_bytes + os.path.getsize(mla)
+        )
+        # The mirror image: drafter pinned to the CPU, target fully offloaded. The
+        # copy lives in the target's context, so pinning does not move it.
+        pinned = ri._gguf_memory_breakdown(
+            config, mla, n_ctx = ctx, llama_extra_args = ["--spec-draft-ngl", "0"]
+        )
+        unpinned = ri._gguf_memory_breakdown(config, mla, n_ctx = ctx)
+        assert unpinned.gpu_bytes - pinned.gpu_bytes == (
+            unpinned.drafter_runtime_bytes - copy_bytes + os.path.getsize(mla)
+        )
+        # And the copy is still charged with the drafter pinned away, which is what
+        # the loader reserves for the same launch.
+        assert pinned.gpu_bytes - no_layers_pinned.gpu_bytes > copy_bytes
+
+    def test_extras_owning_the_spec_block_price_the_builds_depth(self, mla):
+        # _build_speculative_flags returns without emitting a depth once the extras
+        # name --spec-type, so neither the panel field nor Studio's 2/3 platform
+        # default reaches the child: it drafts at the build's own number.
+        config = SimpleNamespace(gguf_dspark_file = None)
+        owned = ["--spec-type", "draft-mtp"]
+        assert ri._estimate_draft_n_max(config, mla, requested = None, extras = owned) == 16
+        assert ri._estimate_draft_n_max(config, mla, requested = 2, extras = owned) == 16
+        # An explicit depth still wins, and without --spec-type the field does.
+        assert (
+            ri._estimate_draft_n_max(
+                config, mla, requested = 2, extras = [*owned, "--spec-draft-n-max", "5"]
+            )
+            == 5
+        )
+        assert ri._estimate_draft_n_max(config, mla, requested = 2, extras = []) == 2
+
+    def test_each_mode_charges_only_the_terms_it_allocates(self):
+        # Studio's own sidecars: only MTP duplicates the target context, and all three
+        # pay rollback. Extras that name a type own the answer, and a bare
+        # --model-draft is draft-simple, which allocates neither.
+        assert ri._estimate_spec_mode_terms("mtp", []) == (True, True)
+        assert ri._estimate_spec_mode_terms("dspark", []) == (False, True)
+        assert ri._estimate_spec_mode_terms("dflash", []) == (False, True)
+        assert ri._estimate_spec_mode_terms("extras", []) == (False, False)
+        assert ri._estimate_spec_mode_terms("extras", ["--spec-type", "draft-simple"]) == (
+            False,
+            False,
+        )
+        assert ri._estimate_spec_mode_terms("extras", ["--spec-type", "draft-mtp"]) == (True, True)
+        assert ri._estimate_spec_mode_terms("extras", ["--spec-type", "draft-eagle3"]) == (
+            False,
+            True,
+        )

@@ -7887,8 +7887,12 @@ def _charged_drafter_path(
     drafter_bytes: int,
     *,
     extras: Optional[list[str]] = None,
-) -> Optional[str]:
-    """Which drafter file accounts for ``drafter_bytes``, or None.
+) -> Optional[tuple[str, str]]:
+    """Which drafter file accounts for ``drafter_bytes``, and by which route.
+
+    Returns ``(path, kind)`` with kind one of ``extras``, ``dspark``, ``dflash``,
+    ``mtp``, or None when no drafter was charged. The kind decides which target-side
+    terms the reserve carries, so it has to come from the same match as the path.
 
     Identified by size rather than by re-deriving the mode precedence. That
     precedence lives in ``_estimate_gguf_required_gb`` and depends on capability
@@ -7907,14 +7911,62 @@ def _charged_drafter_path(
 
     named = _extra_args_mtp_draft_path(extras, env = {}) if extras else None
     if named and Path(named).is_file():
-        return str(named)
-    for attr in ("gguf_dspark_file", "gguf_dflash_file", "gguf_mtp_file"):
+        return str(named), "extras"
+    for attr, kind in (
+        ("gguf_dspark_file", "dspark"),
+        ("gguf_dflash_file", "dflash"),
+        ("gguf_mtp_file", "mtp"),
+    ):
         candidate = getattr(config, attr, None)
         if not candidate or not Path(candidate).is_file():
             continue
         if LlamaCppBackend._get_gguf_size_bytes(str(candidate)) == drafter_bytes:
-            return str(candidate)
+            return str(candidate), kind
     return None
+
+
+def _build_default_spec_draft_n_max() -> int:
+    """The draft depth a build runs on its own, for extras that own the spec block.
+
+    Read from the capability cache the loader already fills, never by probing: this
+    runs on every settings change. Unprobed, assume the deepest llama.cpp has shipped,
+    which is the same assumption the loader's budget makes.
+    """
+    try:
+        binary = LlamaCppBackend._exec_path_for_launch(LlamaCppBackend._find_llama_server_binary())
+        stat = os.stat(str(binary))
+        caps = LlamaCppBackend._capability_cache.get((str(binary), stat.st_mtime_ns, stat.st_size))
+        default = (caps or {}).get("spec_draft_n_max_default")
+        return int(default) if default else LlamaCppBackend._UNKNOWN_SPEC_DRAFT_N_MAX
+    except Exception:
+        return LlamaCppBackend._UNKNOWN_SPEC_DRAFT_N_MAX
+
+
+def _estimate_spec_mode_terms(drafter_kind: str, extras: list[str]) -> tuple[bool, bool]:
+    """Which target-side terms this speculative mode allocates.
+
+    Returns ``(mtp_keeps_target_ctx, target_rollback)`` for
+    ``_estimate_mtp_overhead_bytes``, whose defaults charge both. Both defaults are
+    wrong for a separate drafter: only true MTP keeps the duplicated target context
+    (an MLA target's whole KV again, multi-GiB at a long context), and draft-simple
+    keeps no rollback state either. Mirrors the loader's own budget, where the same
+    two are derived per mode rather than defaulted.
+
+    Extras that name ``--spec-type`` own the mode outright, so the accumulated types
+    decide; otherwise Studio picked the sidecar, and DSpark and DFlash are separate
+    drafters that pay rollback without duplicating the context.
+    """
+    from core.inference.llama_cpp import _accumulated_spec_types, _TARGET_ROLLBACK_SPEC_TYPES
+
+    # env {}: the launch is priced from the panel and its extras, not from whatever
+    # this server process happens to have inherited.
+    spec_types = _accumulated_spec_types(extras, env = {})
+    if spec_types or drafter_kind == "extras":
+        return (
+            bool(spec_types & {"mtp", "draft-mtp"}),
+            bool(spec_types & _TARGET_ROLLBACK_SPEC_TYPES),
+        )
+    return drafter_kind == "mtp", True
 
 
 def _estimate_draft_n_max(
@@ -7929,12 +7981,18 @@ def _estimate_draft_n_max(
     cost on a hybrid target at several parallel slots -- from both total and GPU bytes.
 
     Same precedence as the launch and as the loader's own budget: an extras depth wins
-    (last-wins at launch), then the request field, then the platform default. An
-    explicit 0 is honoured, since that is a real request to draft nothing.
+    (last-wins at launch), then the build's own default where the extras own the spec
+    block, then the request field, then the platform default. An explicit 0 is
+    honoured, since that is a real request to draft nothing.
     """
-    from core.inference.llama_cpp import _extra_args_spec_draft_n_max
+    from core.inference.llama_cpp import _extra_args_set_spec_type, _extra_args_spec_draft_n_max
 
     depth = _extra_args_spec_draft_n_max(extras)
+    if depth is None and _extra_args_set_spec_type(extras):
+        # _build_speculative_flags returns without emitting a depth here, so neither
+        # the field below nor the platform default reaches the child: it drafts at the
+        # build's number, and the rollback state scales by it.
+        depth = _build_default_spec_draft_n_max()
     if depth is None:
         depth = requested
     if depth is not None:
@@ -8042,32 +8100,52 @@ def _gguf_memory_breakdown(
     # wherever the drafter itself lives: a CPU-pinned one still holds that state, in
     # host RAM, so it belongs in the total even though it never reaches the GPU.
     drafter_runtime_bytes = 0
+    # The part of that reserve allocated in the TARGET's context rather than the
+    # drafter's, so it stays with the target when the two are placed apart.
+    target_spec_bytes = 0
     drafter_on_gpu = host_drafter_bytes == 0
-    drafter_path = _charged_drafter_path(
+    charged_drafter = _charged_drafter_path(
         config, host_drafter_bytes or gpu_drafter_bytes, extras = extras
     )
-    if drafter_path:
+    if charged_drafter:
+        drafter_path, drafter_kind = charged_drafter
         probe = LlamaCppBackend()
         probe._read_gguf_metadata(gguf_path)
         # K and V are independent overrides, and extras beat the panel field the same
         # way they do at launch; passing the field for both priced a cache the load
         # will not allocate.
         draft_k, draft_v = _extra_args_draft_cache_types(extras)
+        draft_n_max = _estimate_draft_n_max(
+            config, drafter_path, requested = spec_draft_n_max, extras = extras
+        )
+        keeps_target_ctx, target_rollback = _estimate_spec_mode_terms(drafter_kind, extras)
         drafter_runtime_bytes = (
             probe._estimate_mtp_overhead_bytes(
                 runtime.n_ctx,
-                spec_draft_n_max = _estimate_draft_n_max(
-                    config, drafter_path, requested = spec_draft_n_max, extras = extras
-                ),
+                spec_draft_n_max = draft_n_max,
                 draft_cache_type_k = draft_k or spec_draft_cache_type,
                 draft_cache_type_v = draft_v or spec_draft_cache_type,
                 drafter_path = drafter_path,
                 # The file is already in weights_bytes; this term is runtime only.
                 draft_weights_bytes = 0,
                 n_parallel = n_parallel,
+                mtp_keeps_target_ctx = keeps_target_ctx,
+                target_rollback = target_rollback,
             )
             or 0
         )
+        # Same two terms the helper added above, recomputed here to say where they
+        # sit. An MLA target under MTP duplicates its own KV context, and a hybrid
+        # target keeps one rollback copy per drafted token: both are allocated in the
+        # target's context, which is why pinning the drafter to the CPU does not move
+        # them and offloading no target layer does not put them on the GPU.
+        if keeps_target_ctx and probe._kv_lora_rank is not None:
+            target_spec_bytes += probe._estimate_kv_cache_bytes(
+                runtime.n_ctx, "f16", n_parallel = n_parallel
+            )
+        if target_rollback and draft_n_max > 0:
+            target_spec_bytes += probe._mamba_recurrent_state_bytes(n_parallel) * draft_n_max
+        target_spec_bytes = min(target_spec_bytes, drafter_runtime_bytes)
 
     runtime_bytes = runtime.kv_bytes + runtime.compute_bytes + drafter_runtime_bytes
 
@@ -8097,11 +8175,16 @@ def _gguf_memory_breakdown(
     kv_on_gpu = _kv_offload_from_args(llama_extra_args) and gpu_fraction > 0.0
     gpu_bytes = gpu_weights + (runtime.kv_bytes if kv_on_gpu else 0)
     if gpu_fraction > 0.0:
-        # Compute buffers land on the devices running layers, and the drafter's
-        # own state goes wherever the drafter itself was placed.
+        # Compute buffers land on the devices running layers.
         gpu_bytes += runtime.compute_bytes
-        if drafter_on_gpu:
-            gpu_bytes += drafter_runtime_bytes
+    # The target-side spec terms are target KV allocations, so they follow the target
+    # cache. The drafter's own KV follows the drafter: a separate drafter does not
+    # inherit --gpu-layers (llama.cpp overwrites it with the draft placement, default
+    # auto), so at --gpu-layers 0 it is still on the GPU and still holds that cache.
+    if kv_on_gpu:
+        gpu_bytes += target_spec_bytes
+    if drafter_on_gpu:
+        gpu_bytes += drafter_runtime_bytes - target_spec_bytes
     return _GgufMemoryBreakdown(
         weights_bytes = weights_bytes,
         kv_bytes = runtime.kv_bytes,
