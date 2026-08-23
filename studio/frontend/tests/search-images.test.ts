@@ -53,6 +53,7 @@ function liftAdapterFunction(opener: string): string {
 const privateContentPredicateJs = ts.transpileModule(
   [
     liftAdapterFunction("export function messagesContainImage("),
+    liftAdapterFunction("function isPrivateMediaPart("),
     liftAdapterFunction("export function messagesUsePrivateContent("),
     "return messagesUsePrivateContent;",
   ].join("\n\n"),
@@ -935,5 +936,84 @@ test("a thumbnail response that lands after the id changed is ignored", () => {
     notOk.slice(0, notOk.indexOf("return;") + 7),
     /controller\.signal\.aborted/,
     "the not-ok branch must check the abort like the success branch does",
+  );
+});
+
+
+// A voice note or a clip is the user's own content in the sense the text-attachment rule
+// already covers, and the answer's subjects go to external image engines. Both arrive
+// with no text part beside them: AudioAttachmentAdapter.send emits exactly
+// [{ type: "audio", ... }], so nothing else in the predicate could have caught them.
+test("an audio or video input blocks automatic image lookup", () => {
+  assert.equal(
+    messagesUsePrivateContent([
+      {
+        role: "user",
+        content: [],
+        attachments: [
+          {
+            type: "file",
+            content: [
+              { type: "audio", audio: { data: "cHJpdmF0ZQ==", format: "wav" } },
+            ],
+          },
+        ],
+      },
+      { role: "user", content: [{ type: "text", text: "list what it mentions" }] },
+    ]),
+    true,
+    "a recording the user attached must not have its subjects searched for",
+  );
+  assert.equal(
+    messagesUsePrivateContent([
+      {
+        role: "user",
+        content: [{ type: "audio", audio: "cHJpdmF0ZQ==" }],
+      },
+    ]),
+    true,
+    "the compare view puts audio on the message itself, not in an attachment",
+  );
+  assert.equal(
+    messagesUsePrivateContent([
+      {
+        role: "user",
+        content: [],
+        attachments: [
+          {
+            type: "file",
+            content: [{ type: "file", data: "cHJpdmF0ZQ==", mimeType: "video/mp4" }],
+          },
+        ],
+      },
+    ]),
+    true,
+    "video reaches the model the same way and leaks the same way",
+  );
+  // Matched on the type, not on a payload that parses: a clip whose base64 is malformed
+  // is still a clip, and failing open on it is the wrong way round.
+  assert.equal(
+    messagesUsePrivateContent([
+      { role: "user", content: [{ type: "audio", audio: { data: "", format: "wav" } }] },
+    ]),
+    true,
+    "an audio part with an unusable payload is still private",
+  );
+  // The complement: a plain typed question is what the lookup exists for.
+  assert.equal(
+    messagesUsePrivateContent([
+      { role: "user", content: [{ type: "text", text: "name three dog breeds" }] },
+    ]),
+    false,
+    "an ordinary text turn must still be eligible",
+  );
+  // A non-video file part is not media this rule speaks for; the attachment rule below
+  // it already decides those on their text.
+  assert.equal(
+    messagesUsePrivateContent([
+      { role: "user", content: [{ type: "file", data: "eA==", mimeType: "application/pdf" }] },
+    ]),
+    false,
+    "the video test is on the mime type, not on being a file part",
   );
 });

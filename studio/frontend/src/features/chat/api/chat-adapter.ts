@@ -1498,21 +1498,39 @@ export function messagesContainImage(messages: RunMessages): boolean {
   return false;
 }
 
+// A recording or a clip the user supplied is their own content in exactly the sense the
+// text-attachment rule already covers: the model answers from what is inside it, so the
+// subjects of that answer must not reach the image engines either. Matched on the part
+// TYPE rather than through the base64 extractors above -- a clip whose payload does not
+// parse is still a clip, and a predicate that fails open on it is the wrong way round.
+// Video arrives as a file part carrying a video mime type, the shape
+// extractVideoPartBase64 reads.
+function isPrivateMediaPart(part: { type: string }): boolean {
+  if (part.type === "audio") return true;
+  return (
+    part.type === "file" &&
+    /^video\//i.test((part as { mimeType?: string }).mimeType ?? "")
+  );
+}
+
 export function messagesUsePrivateContent(messages: RunMessages): boolean {
   if (messagesContainImage(messages)) return true;
   return messages.some((message) => {
     if (
       (message.content ?? []).some(
         (part) =>
-          part.type === "tool-call" &&
-          (part as { toolName?: string }).toolName === "search_knowledge_base",
+          (part.type === "tool-call" &&
+            (part as { toolName?: string }).toolName === "search_knowledge_base") ||
+          isPrivateMediaPart(part),
       )
     ) {
       return true;
     }
     if (!("attachments" in message)) return false;
     return (message.attachments ?? []).some((attachment) =>
-      (attachment.content ?? []).some((part) => part.type === "text"),
+      (attachment.content ?? []).some(
+        (part) => part.type === "text" || isPrivateMediaPart(part),
+      ),
     );
   });
 }
