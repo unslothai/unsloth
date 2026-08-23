@@ -118,13 +118,22 @@ def test_the_same_payload_complete_is_the_fail_the_omission_erased(tmp_path):
 
 
 def test_the_unguarded_render_is_the_wrong_verdict(tmp_path):
-    """What the guard is for, through the same path: without the plan, the surviving 100K pair is
-    published as a 20% win over a payload whose measured 10K pair is a 100% regression."""
+    """What the guard is for, through the same path: without the plan, the surviving 100K pair
+    stands in for a payload whose measured 10K pair is a 100% regression.
+
+    The 20% win this used to publish is now withheld on its own, because one pair carries no
+    bootstrap CI and no direction is claimed without one. The guard is still what this test is
+    about: unguarded, nothing names the failed cell and the regression is simply absent, whereas
+    the guarded render VOIDs the run and says which cell died.
+    """
 
     table = _table(tmp_path, failed = "r10K.base.rep0", planned_known = False)
 
-    assert "VERDICT: IMPROVED" in table
-    assert "20.0% faster" in table
+    assert "VERDICT: INCONCLUSIVE" in table
+    assert "20.0% faster" not in table
+    # The failure the guard exists to catch: unguarded, the dead cell is never mentioned.
+    assert "VOID" not in table
+    assert "r10K.base.rep0" not in table
 
 
 def test_a_complete_plan_is_not_voided(tmp_path):
