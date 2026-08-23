@@ -166,7 +166,7 @@ class TestTheRefitStaysOnTheCardsTheReductionChose:
         assert (reduced["ctx"], reduced["ceiling"]) == (direct["ctx"], direct["ceiling"])
 
     def test_the_ceiling_still_counts_the_card_the_launch_left_out(self, tmp_path):
-        """The ceiling is a hardware bound, so it keeps measuring across both cards."""
+        """The ceiling keeps measuring across both cards, not just the launched one."""
         mixed = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off", vram_mib = MIXED_CARDS)
         alone = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off")
         assert mixed["ctx"] == alone["ctx"] == 7_680

@@ -3,20 +3,14 @@
 
 """Which platforms the post-reduction context re-fit is allowed to touch.
 
-The re-fit is guarded by ``use_fit and n_parallel > 1 and gpus and
-self._can_estimate_kv() and effective_ctx > 0``. Three of those conjuncts encode
-a hardware claim that is easy to lose in a refactor:
+Its guard -- ``use_fit and n_parallel > 1 and gpus and self._can_estimate_kv()
+and effective_ctx > 0`` -- encodes a hardware claim that is easy to lose in a
+refactor. ``gpus`` is empty on Metal (no torch.cuda device is enumerated, which
+is why the Apple arm exists) and on any CPU-only host; tensor-parallel clears
+``use_fit`` first; manual memory mode empties ``gpus``. All are excluded.
 
-  * ``gpus`` is empty on Metal (no torch.cuda device is enumerated there, which
-    is the very reason the Apple arm exists) and on any CPU-only host, so every
-    macOS cell and every CPU-only cell is excluded by construction.
-  * tensor-parallel sets ``use_fit = False`` before this point, so it is excluded.
-  * ``gpu_memory_mode = "manual"`` empties ``gpus``, so it is excluded.
-
-Excluded means the plan has to come out byte-identical to the one the same host
-produced before the re-fit existed. Asserting on the emitted argv would only show
-that the outputs agree; these tests watch the predicate itself, so a cell that
-starts entering the block fails here even if its numbers happen not to move.
+These watch the predicate, not the argv, so a cell that starts entering the
+block fails here even when its numbers happen not to move.
 """
 
 from __future__ import annotations
@@ -79,11 +73,7 @@ ALL_CELLS = [(o, v) for o in OS_CELLS for v in VENDOR_CELLS]
 
 
 class _RefitSpy:
-    """Counts entries into the re-fit predicate.
-
-    ``include_requested`` is passed by exactly one call site, the re-fit's own
-    ``_slots_hold``, so a non-zero count means the new block ran.
-    """
+    """Counts re-fit entries: only ``_slots_hold`` passes ``include_requested``."""
 
     def __init__(self):
         self.calls = 0
@@ -122,13 +112,10 @@ def _plan(
     vulkan, enumerates_gpu = VENDOR_CELLS[vendor]
 
     with ExitStack() as stack:
-        # Patch sys.platform on the module under test, and platform.system()
-        # globally -- but never os.name, which would swap pathlib's flavour and
-        # leave the harness unable to open its own temp GGUF.
+        # Never os.name: it swaps pathlib's flavour and the temp GGUF stops opening.
         stack.enter_context(patch.object(llama_mod.sys, "platform", sys_platform))
         stack.enter_context(patch.object(_platform, "system", lambda: system))
-        # The Metal budget is what selects the Apple arm; it reads 0 everywhere
-        # else, which is what keeps that arm inert off Apple Silicon.
+        # The Metal budget selects the Apple arm; 0 elsewhere keeps it inert.
         stack.enter_context(
             patch.object(
                 LlamaCppBackend,

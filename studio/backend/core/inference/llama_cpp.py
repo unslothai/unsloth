@@ -9913,13 +9913,11 @@ class LlamaCppBackend:
         included, so a multi-GPU candidate is re-checked at the split rate. Returns
         (gpu_indices, use_fit=False, slots) for the largest fitting count, else (None, True,
         n_parallel). Unit-testable with synthetic VRAM maps.
-        ``exact`` stops after the first candidate: a caller that only accepts ``n_parallel``
-        itself discards every lower count anyway, and the walk down to 1 re-runs the whole
-        KV + compute-buffer + GPU-selection estimate per candidate for an answer it throws away.
+        ``exact`` stops after the first candidate, for a caller that accepts only
+        ``n_parallel`` itself and would re-price every lower count just to discard it.
         ``ctx_checkpoints`` mirrors --ctx-checkpoints, which allocates N SWA/recurrent
-        snapshots PER SLOT. Omitting it under-prices every candidate, and the caller that
-        re-fits the context off this predicate would then buy context with bytes the launch
-        has already promised to the checkpoints.
+        snapshots PER SLOT; omitting it under-prices every candidate, so the caller that
+        re-fits context off this predicate would spend bytes already promised to them.
         ``ubatch_for_slots`` re-derives the micro-batch per candidate: the emitted
         --batch-size is raised to max(slots, 2), and llama.cpp caps the micro-batch
         against it, so a batch below the requested slot count shrinks as the candidates
@@ -17745,9 +17743,8 @@ class LlamaCppBackend:
                             # smaller micro-batch than the one this was sized at. Re-derive
                             # it, or the recorded _n_ubatch describes a graph never built.
                             _effective_ubatch = _ubatch_for_slots(n_parallel)
-                            # Re-fit with the final slot count. KV and context-compute
-                            # closures read the rebound slot and micro-batch values; the
-                            # helper re-prices flat compute and MTP per candidate.
+                            # Re-fit at the final slot count; the KV and compute closures
+                            # read the values just rebound above.
 
                             def _slots_hold(
                                 ctx: int, devices: list[tuple[int, int]]
@@ -17772,23 +17769,20 @@ class LlamaCppBackend:
                                     mtp_bytes_for_slots = (lambda s, ub, c = ctx: _mtp_bytes(c, s, ub)),
                                     ctx_checkpoints = _effective_ctx_checkpoints,
                                     include_requested = True,
-                                    # Only n_parallel itself is accepted below, so the walk
-                                    # down to 1 slot prices candidates this discards.
-                                    exact = True,
+                                    exact = True,  # only n_parallel is accepted below
                                 )
                                 return _gi if not _uf and _got == n_parallel else None
 
                             def _largest_ctx(
                                 devices: list[tuple[int, int]],
                             ) -> Optional[tuple[int, list[int]]]:
-                                """Largest 256-aligned context these cards hold. The
+                                """Largest 256-aligned context these cards hold; the
                                 footprint grows monotonically with context.
 
-                                Bound at the read site like the two sweeps above, rather
-                                than off a value an earlier arm may not have set: the arm
-                                that reaches here is not always the one that binds it, and
-                                a GGUF with no native length reaches this with the 0
-                                sentinel still in effective_ctx, which searched nothing."""
+                                Bound here, not by the arm above: the arm that reaches this
+                                is not always the one that binds it, and a GGUF with no
+                                native length would arrive with the 0 sentinel and search
+                                nothing."""
                                 _native = self._context_length or effective_ctx
                                 _lo = max(1, min(4096, _native) // 256)
                                 _hi = _native // 256
@@ -17824,9 +17818,8 @@ class LlamaCppBackend:
                                     n_parallel,
                                 )
                                 effective_ctx, gpu_indices = _refit
-                            # Logged after the re-fit, against the context that launches:
-                            # the pre-re-fit value was sized for slots this load no longer
-                            # uses, so naming it here described a plan that never ran.
+                            # After the re-fit, so it names the context that launches
+                            # rather than one sized for slots this load dropped.
                             logger.info(
                                 "Serving slots reduced %d -> %d to keep the model on GPU "
                                 "(avoid --fit offload) at context %d.",
@@ -17834,13 +17827,10 @@ class LlamaCppBackend:
                                 n_parallel,
                                 effective_ctx,
                             )
-                            # Measured across every card at the final slot count, so it is
-                            # the same bound the best_cap sweep above reports and an
-                            # explicit request that large does re-select GPUs and load.
-                            # Not a hardware maximum: it is the largest context attainable
-                            # AT THE SLOT COUNT THIS LOAD SETTLED ON, and a larger request
-                            # can drive a deeper reduction that frees the KV for more.
-                            # effective_parallel_slots is what makes it interpretable.
+                            # Across every card at the final slot count, matching the
+                            # best_cap sweep above; an explicit request that large does
+                            # re-select GPUs and load. Not a hardware maximum -- a larger
+                            # request can reduce slots further and free KV for more.
                             _ceiling = (
                                 _refit if len(_plan_gpus) == len(gpus) else _largest_ctx(gpus)
                             )
@@ -18560,8 +18550,7 @@ class LlamaCppBackend:
                         logger.info("Draft KV cache dtype: %s", _draft_cache_type)
                     else:
                         logger.info(
-                            "llama-server has no draft KV cache flags; skipping the "
-                            "requested %s.",
+                            "llama-server has no draft KV cache flags; skipping the requested %s.",
                             _draft_cache_type,
                         )
                 # Remember where the spec block sits so a drafter-load failure

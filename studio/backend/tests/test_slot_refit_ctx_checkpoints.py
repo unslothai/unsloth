@@ -3,16 +3,12 @@
 
 """The slot/context fit predicate has to charge the --ctx-checkpoints reserve.
 
-``--ctx-checkpoints N`` allocates N SWA/recurrent snapshots PER SLOT, so the
-reserve scales with the slot count the plan settles on. ``_slots_that_fit_on_gpu``
-priced its candidates without it, which was survivable while the only consumer
-was the slot count: an over-optimistic candidate lost slots, not memory it had
-already promised. The post-reduction context re-fit made the same predicate pick
-the launched ``-c``, so the same omission started buying context with bytes the
-child had already been told to spend on checkpoints.
+``--ctx-checkpoints N`` allocates N SWA/recurrent snapshots PER SLOT.
+``_slots_that_fit_on_gpu`` priced its candidates without it: survivable while the
+only consumer was the slot count, but the post-reduction re-fit uses the same
+predicate to pick the launched ``-c``, so it spent bytes already promised.
 
-The synthetic target is a Gemma-3 shaped sliding-window model, since the reserve
-is charged only on SWA layers.
+The target is Gemma-3 shaped, since the reserve is charged only on SWA layers.
 """
 
 from __future__ import annotations
@@ -105,7 +101,7 @@ def _plan(
         "slots": slots,
         "fit": flag("--fit", "off"),
         "checkpoints": flag("--ctx-checkpoints"),
-        # What the launch was told to reserve, over and above the plain cache.
+        # What the launch reserves beyond the plain cache.
         "reserve_bytes": (
             backend._estimate_kv_cache_bytes(ctx, cache_type_kv, ctx_checkpoints = _cp, **kv_kwargs)
             - backend._estimate_kv_cache_bytes(ctx, cache_type_kv, ctx_checkpoints = 0, **kv_kwargs)
@@ -179,11 +175,8 @@ class TestTheRefitDoesNotSpendTheReserve:
     def test_a_checkpointed_launch_gets_less_context_than_an_uncheckpointed_one(
         self, tmp_path, checkpoints
     ):
-        """Pinned to the same final slot count, the reserve can only cost context.
-
-        Without the reserve in the predicate the two are identical no matter how
-        large --ctx-checkpoints gets, while the child still allocates it.
-        """
+        """Unpriced, the two stay identical however large --ctx-checkpoints gets,
+        while the child allocates it anyway."""
         free = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = 0)
         charged = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = checkpoints)
         assert charged["reserve_bytes"] > 0
