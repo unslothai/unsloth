@@ -356,10 +356,9 @@ from state.tool_approvals import (
 )
 from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
 
-# The leaf module, NOT utils.models.gguf_metadata, which re-exports these: importing anything
-# from that package runs its __init__, which pulls in model_config and therefore PyYAML. This
-# is the chat backend, imported wherever Studio's Python is, so it must not make the whole
-# models package a hard import dependency. Same objects either way.
+# The leaf module, not utils.models: importing anything from that package runs its __init__,
+# which pulls in model_config and therefore PyYAML. This is the chat backend, imported wherever
+# Studio's Python is, so it must not make the whole models package a hard import dependency.
 from utils.gguf_archs import (
     SPEECH_GGUF_ARCHS as _SPEECH_GGUF_ARCHS,
     is_speech_gguf_architecture,
@@ -12306,9 +12305,8 @@ class LlamaCppBackend:
     _DIFFUSION_ARCHES = (
         _IMAGE_ARCHES | _AMBIGUOUS_IMAGE_ARCHES | _VIDEO_ARCHES | _UNRUNNABLE_MEDIA_ARCHES
     )
-    # TTS archs llama.cpp cannot load (CSM support is only on an unmerged upstream branch). The
-    # one shared definition, so this gate and the listing classifier cannot drift; a published
-    # bundle spells it "llama-csm", "csm" or "csm-tts", and its vocoder half "mimi".
+    # TTS archs llama.cpp cannot load (CSM support is only on an unmerged upstream branch). One
+    # shared definition, so this gate and the listing classifier cannot drift.
     _SPEECH_ARCHES = _SPEECH_GGUF_ARCHS
 
     # Not architectures: the literal placeholders gguf-connector writes into
@@ -12423,9 +12421,8 @@ class LlamaCppBackend:
             arch = ""
         if arch:
             if is_speech_gguf_architecture(arch):
-                # Does NOT send the user to the Audio page for THIS file: the page cannot list a
-                # speech GGUF either, so pointing at it would promise a row that is not there.
-                # The Transformers build of the same model is the thing that actually runs.
+                # Points at the Transformers build, not this file on the Audio page: that page
+                # cannot list a speech GGUF either, so it would promise a row that is not there.
                 return (
                     "This is a text-to-speech GGUF, which llama.cpp cannot load: it has no "
                     "CSM decoder. Run the model's Transformers build (for example "

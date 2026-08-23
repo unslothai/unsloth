@@ -283,10 +283,10 @@ async def load_video_model_gated(
             gpu_ordinal = gpu_ordinal,
         )
         # Same bar again, for a speech GGUF picked out of a mixed video repo. The backend's own
-        # assertion runs on the load worker, which is INSIDE acquire_for: a refusal raised there
-        # arrives having already evicted the chat model this gate exists to preserve. Off-thread
-        # because the probe reads a header, and cache-only when the load is not user-initiated,
-        # matching the locality promise begin_load makes below.
+        # assertion runs on the load worker, INSIDE acquire_for, so a refusal there arrives
+        # having already evicted the chat model this gate exists to preserve. Off-thread because
+        # the probe reads a header, and cache-only when the load is not user-initiated, matching
+        # the locality promise begin_load makes below.
         from core.inference.diffusion_compat import assert_pick_is_not_speech
 
         await asyncio.to_thread(

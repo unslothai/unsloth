@@ -5860,8 +5860,8 @@ def test_the_real_sesame_bundle_is_classified_as_speech(tmp_path):
 
 
 def test_a_speech_arch_is_the_same_answer_in_every_layer():
-    """Three layers gate on this and they used to hold three separate copies of the set. The
-    listing classifier, the chat refusal and the media preflight now read one definition."""
+    """The listing classifier, the chat refusal and the media preflight held three separate
+    copies of the set; they read one definition now."""
     from core.inference.diffusion_compat import _SPEECH_GGUF_ARCHS as compat_archs
     from core.inference.llama_cpp import LlamaCppBackend
     from utils.gguf_archs import SPEECH_GGUF_ARCHS

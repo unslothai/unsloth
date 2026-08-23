@@ -98,13 +98,12 @@ def _local_gguf_path(repo_id: str, gguf_filename: str) -> Optional[str]:
     already in either cache root: reading a file we hold beats a range request, and it is the same
     file ``_resolve_gguf_path`` will open.
 
-    The file case is resolved the way the loader resolves it.
+    The file case is resolved the way the loader resolves it:
     ``VideoBackend._resolve_checkpoint_path`` answers a file-valued ``repo_id`` with that file,
-    ignoring ``gguf_filename`` entirely, and
-    ``validate_load_request`` has a branch admitting exactly that pick, so ``/video/load`` really
-    can be handed one. Appending the filename under a file instead raises ``FileNotFoundError``,
-    which is an ``OSError`` and so is swallowed below as "remote id" -- and a preflight that fails
-    open on the pick the loader is about to open directly is the one hole it exists to close."""
+    ignoring ``gguf_filename``, and ``validate_load_request`` admits exactly that pick, so
+    ``/video/load`` really can be handed one. Appending the filename under a file instead raises
+    ``FileNotFoundError``, an ``OSError``, swallowed below as "remote id" -- and failing open on
+    the pick the loader is about to open directly is the one hole this exists to close."""
     try:
         local_root = Path(repo_id).expanduser()
         if local_root.is_file():
@@ -176,11 +175,11 @@ def _ranged_stream(session: Any, url: str, headers: dict) -> Any:
     """A context manager over a ranged GET, on either HTTP client huggingface_hub ships.
 
     ``huggingface_hub`` 1.0 replaced requests with httpx, and ``get_session`` returns whichever
-    the installed version builds. The two streaming APIs do not overlap at all: httpx has no
-    ``stream = True`` keyword (its streaming call is ``Client.stream``), so asking for one on 1.x
-    raises ``TypeError`` inside the worker's blanket except and every remote probe silently reads
-    nothing -- a preflight that refuses nothing at all. studio.txt floors 1.23 on python >= 3.10
-    and pins 0.36 below it, so BOTH are shipped and both have to work.
+    the installed version builds. The two streaming APIs do not overlap: httpx has no
+    ``stream = True`` keyword (it streams via ``Client.stream``), so asking for one on 1.x raises
+    ``TypeError`` inside the worker's blanket except and every remote probe silently reads nothing
+    -- a preflight that refuses nothing. studio.txt floors 1.23 on python >= 3.10 and pins 0.36
+    below it, so BOTH are shipped and both have to work.
 
     ``Client.stream`` is a method; ``requests.Session.stream`` is a plain bool attribute, so the
     branch tests for a callable rather than for the name."""
@@ -409,8 +408,8 @@ def flux2_pick_mismatch(
 
 
 # GGUF ``general.architecture`` values nothing in Studio can decode. Beside the FLUX.2 check
-# because both ask whether the pick is loadable, off the same prefix. The set itself lives with
-# the header reader, shared with the chat gate and the listing classifier so they cannot drift.
+# because both ask whether the pick is loadable, off the same prefix. The set itself lives in a
+# leaf module, shared with the chat gate and the listing classifier so they cannot drift.
 from utils.gguf_archs import (  # noqa: E402 -- beside the cache it keys
     SPEECH_GGUF_ARCHS as _SPEECH_GGUF_ARCHS,
     is_speech_gguf_architecture,
@@ -420,22 +419,22 @@ _SPEECH_ARCH_CACHE: dict[
     tuple[str, str, str, Optional[tuple]], tuple[Optional[str], Optional[float]]
 ] = {}
 _SPEECH_ARCH_CACHE_MAX = 256
-# Every remote-backed verdict ages out. An UNCACHED one is keyed on a local identity of None, so a
-# republish under the same filename changes nothing about the key. A SNAPSHOT-backed one is keyed
-# on the file's identity, which a republish does change -- but only once the new bytes have been
-# downloaded, and the entry is the memo of a revision check that only ran the first time, so
-# holding it forever means never asking the Hub again for the life of the process. Only a true On
-# Device checkpoint is permanent: it is the file the loader opens, so there is no revision to be
-# behind. Matches the variant listing's own freshness window for moved revisions.
+# Every remote-backed verdict ages out. An UNCACHED one keys on a local identity of None, so a
+# republish under the same filename changes nothing about the key. A SNAPSHOT-backed one keys on
+# the file's identity, which a republish does change -- but only once the new bytes are down, and
+# the entry memoises a revision check that ran only the first time, so holding it forever means
+# never asking the Hub again for the life of the process. Only a true On Device checkpoint is
+# permanent: it is the file the loader opens, so there is no revision to be behind. Matches the
+# variant listing's own freshness window for moved revisions.
 _SPEECH_REMOTE_TTL_SECONDS = 60.0
 
 # (repo_id, gguf_filename, token fingerprint, local file identity) -> the header prefix.
 #
 # The inner-dim probe and the speech probe read the SAME first _GGUF_HEADER_BYTES of the SAME
-# file, and a flux.2 pick that is not a size mismatch runs both: two range requests, each with
-# its own _HEADER_TIMEOUT_SECONDS, so a picker the user is waiting on could wear twice the bound
-# it is documented to. They share the read now. Keyed and aged exactly like the speech memo
-# beside it, so this adds no staleness the module did not already accept.
+# file, and a flux.2 pick that is not a size mismatch runs both: two range requests, each with its
+# own _HEADER_TIMEOUT_SECONDS, so a picker the user waits on could wear twice its documented
+# bound. They share the read now, keyed and aged exactly like the speech memo beside it, so this
+# adds no staleness the module did not already accept.
 #
 # Deliberately NOT consulted by the revalidation paths: their whole job is to re-read a file the
 # Hub has republished, and answering those from a memo would defeat them.
@@ -516,10 +515,9 @@ def _revalidated_speech_arch(
     if live is None or live == cached:
         return arch
     refreshed = _arch_from_prefix(_read_gguf_header(repo_id, gguf_filename, token), gguf_filename)
-    # A re-read that said nothing -- the range request failed, or the new header is unparseable --
-    # leaves the verdict we already had rather than replacing it with silence. Failing open on an
-    # UNKNOWN pick is the contract here; throwing away a known one is not, and it is what let a
-    # csm file through on nothing worse than a dropped connection.
+    # A re-read that said nothing -- failed range request, or an unparseable new header -- keeps
+    # the verdict we had rather than replacing it with silence. Failing open on an UNKNOWN pick is
+    # the contract; throwing away a known one let a csm file through on a dropped connection.
     return refreshed if refreshed is not None else arch
 
 
@@ -568,7 +566,7 @@ def _speech_probe_architecture(
             _SPEECH_ARCH_CACHE.clear()
         # Permanent only for a true On Device file, which has no revision to be behind. A cached
         # Hub snapshot ages out like an uncached pick: its entry memoises a revision check, and
-        # holding that forever means the Hub is asked exactly once per file per process.
+        # holding that forever would ask the Hub exactly once per file per process.
         permanent = local is not None and _snapshot_revision(local) is None
         _SPEECH_ARCH_CACHE[key] = (
             arch,

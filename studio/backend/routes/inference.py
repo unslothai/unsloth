@@ -25824,9 +25824,9 @@ async def load_diffusion_model_gated(
                 text_encoder_quant = request.text_encoder_quant,
             )
         # And the same for a speech GGUF picked out of a mixed image repo. Both engines assert it
-        # too, but the diffusers copy runs inside acquire_for and the native one on its worker, so
-        # a refusal from either arrives after chat was evicted and after an engine switch unloaded
-        # the resident model. Off-thread for the header read; cache-only unless the user asked.
+        # too, but the diffusers copy runs inside acquire_for and the native one on its worker,
+        # so either refusal arrives after chat was evicted and an engine switch unloaded the
+        # resident model. Off-thread for the header read; cache-only unless the user asked.
         from core.inference.diffusion_compat import assert_pick_is_not_speech
 
         await asyncio.to_thread(

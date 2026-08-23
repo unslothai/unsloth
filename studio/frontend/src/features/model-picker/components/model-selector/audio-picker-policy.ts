@@ -85,13 +85,13 @@ export function speechGgufIsUndecodable({
 }
 
 /** `csm` as its own path or name segment. The separator class carries a BACKSLASH as well as a
- * slash: this is handed local checkpoint paths, and on Windows the same file arrives as
- * `C:\models\csm-1b\model.gguf`, which a posix-only class reads as one long segment and clears. */
+ * slash: this is handed local checkpoint paths, and on Windows `C:\models\csm-1b\model.gguf`
+ * reads as one long segment to a posix-only class, and clears. */
 const CSM_PATH_SEGMENT = /(?:^|[-_./\\])csm(?:$|[-_./\\])/;
 
 /** Whether a fine-tuned or exported row is a CSM checkpoint in a GGUF container, which no
- * runtime here decodes. `audioType` is read off the checkpoint by the backend, so it is the
- * authoritative signal and holds even where nothing in the path says "csm". */
+ * runtime here decodes. `audioType` is read off the checkpoint by the backend, so it holds
+ * even where nothing in the path says "csm". */
 export function localAudioRowIsUndecodableGguf({
   audioType,
   exportType,

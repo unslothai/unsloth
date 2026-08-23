@@ -4091,8 +4091,7 @@ _UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
 
 # TTS-only GGUF archs llama.cpp cannot load, tagged speech so the chat picker keeps them out of
 # llama-server. One shared definition rather than a copy per layer: the chat gate, this classifier
-# and the media preflight all have to agree, and no published CSM bundle spells the arch the same
-# way twice.
+# and the media preflight all have to agree.
 _SPEECH_GGUF_ARCHS = SPEECH_GGUF_ARCHS
 _SPEECH_TASK = "text-to-speech"
 
@@ -4330,12 +4329,11 @@ def _gguf_folder_task(
         # Trimmed back to the cap as it fills: a folder holding thousands of GGUFs should not cost
         # a list of thousands of paths to read 64 of them.
         scored: list[tuple[tuple[str, str], Path]] = []
-        # Recorded as the tail is dropped, never inferred from `scored` afterwards. The trimming
-        # branch cuts the list back to the cap, so a folder that overflows it and then ends leaves
-        # exactly `_MAX_TASK_CLASSIFY_GGUFS` entries behind -- indistinguishable, after the fact,
-        # from a folder that fit. Reading that as a complete scan is what would let a folder of
-        # 129 files answer speech off its first 64 and hide the runnable sibling in the discarded
-        # tail, the one thing the `complete` gate below exists to prevent.
+        # Recorded as the tail is dropped, never inferred from `scored` afterwards: the trimming
+        # branch cuts back to the cap, so a folder that overflows and then ends leaves exactly
+        # `_MAX_TASK_CLASSIFY_GGUFS` entries behind, indistinguishable from a folder that fit.
+        # Reading that as a complete scan is what would let 129 files answer speech off their
+        # first 64 and hide the runnable sibling in the discarded tail.
         overflowed = False
         for path in _iter_gguf_paths(root, deadline):
             name = path.name
@@ -4369,13 +4367,13 @@ def _gguf_folder_task(
         try:
             task = _arch_to_task(_gguf_architecture(str(path)), name_hints = id_hints + (path.name,))
         except Exception:
-            # Unread, so unranked: this file might have been the runnable sibling. Speech is the
-            # one verdict that hides the row, so it cannot rest on a folder we only partly read.
+            # Unread, so unranked: this file might have been the runnable sibling, and speech
+            # cannot rest on a folder we only partly read.
             complete = False
             continue
         if task is None:
-            # Same as the read that raised. A truncated or unreadable header gives no
-            # architecture, and `_arch_to_task` answers None rather than guessing.
+            # Same as the read that raised: a truncated header gives no architecture, and
+            # `_arch_to_task` answers None rather than guessing.
             complete = False
             continue
         if task in _LOADABLE_MEDIA_GGUF_TASKS:
@@ -4394,11 +4392,11 @@ def _gguf_folder_task(
                 unsupported = task
         elif task is not None and fallback is None:
             fallback = task
-    # Speech only when the ranking above actually saw the whole folder. It is the one answer that
-    # HIDES a row rather than filing it, so a walk that gave up at its deadline, a folder past the
-    # cap, or a read budget that ran out after the csm quant sorted first would otherwise hide the
-    # runnable sibling it never got to. Every other verdict is safe to give on a partial read: the
-    # worst case is a row filed on the wrong page, not one the user cannot find at all.
+    # Speech only when the ranking above saw the whole folder. It is the one answer that HIDES a
+    # row rather than filing it, so a walk that gave up at its deadline, a folder past the cap, or
+    # a read budget spent after the csm quant sorted first would otherwise hide the runnable
+    # sibling it never reached. Every other verdict is safe on a partial read: the worst case is a
+    # row filed on the wrong page, not one the user cannot find at all.
     return unsupported or fallback or (speech if complete else None)
 
 

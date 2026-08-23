@@ -1199,16 +1199,14 @@ def test_a_pick_that_names_the_checkpoint_outright_is_probed_like_the_loader_ope
     """A file-valued ``repo_id`` is a pick the video loader accepts, so the preflight must read it.
 
     ``VideoBackend._resolve_checkpoint_path`` answers ``if root.is_file(): return root`` and
-    ignores ``gguf_filename`` entirely, and ``VideoBackend.validate_load_request`` has a branch
-    admitting exactly that pick (it only checks the file's own suffix against the kind), so
-    ``POST /video/load`` with ``model_path`` naming a .gguf reaches the loader today.
+    ignores ``gguf_filename``, and ``VideoBackend.validate_load_request`` admits exactly that
+    pick, so ``POST /video/load`` with ``model_path`` naming a .gguf reaches the loader today.
 
-    Resolving it as a repo ROOT instead appends the filename under the file, which raises
-    ``FileNotFoundError`` -- an ``OSError``, hence swallowed as "this is a remote id". The pick
-    then has no local path at all: an offline preflight allows it outright, and an online one
-    range-requests a filesystem path off the Hub and fails open. Either way the csm checkpoint
-    survives the gate, the resident pipeline is evicted, and the file reaches the media loader --
-    the exact sequence this preflight exists to prevent."""
+    Resolving it as a repo ROOT instead appends the filename under the file, raising
+    ``FileNotFoundError`` -- an ``OSError``, hence swallowed as "remote id". The pick then has no
+    local path: an offline preflight allows it outright, an online one range-requests a
+    filesystem path off the Hub and fails open. Either way the csm checkpoint survives the gate,
+    the resident pipeline is evicted, and the file reaches the media loader."""
     direct = tmp_path / "wan-models" / CSM_FILE
     direct.parent.mkdir(parents = True)
     direct.write_bytes(_arch_header("llama-csm"))
@@ -1402,10 +1400,10 @@ def test_a_snapshot_backed_verdict_keeps_its_entry_across_the_window(monkeypatch
 
 
 def test_both_media_routes_refuse_a_speech_pick_before_taking_the_gpu():
-    """The backends assert this too, but on the load worker, which is INSIDE acquire_for. A
-    refusal raised there arrives having already evicted the chat model the gate exists to
-    preserve, and on the image route after an engine switch unloaded the resident pipeline. Both
-    routes must refuse before they reach the arbiter."""
+    """The backends assert this too, but on the load worker, INSIDE acquire_for, so a refusal
+    there arrives having already evicted the chat model the gate exists to preserve -- and on the
+    image route after an engine switch unloaded the resident pipeline. Both routes must refuse
+    before they reach the arbiter."""
     import inspect
 
     from routes import inference as inference_route
@@ -1667,8 +1665,8 @@ def test_the_chat_backend_does_not_import_pyyaml_to_learn_the_speech_verdict():
     `utils.models.__init__`, which imports `model_config`, which imports `yaml`. That made
     PyYAML a hard import dependency of the chat backend and took the repo's own Source lint
     job red, where `tests/studio/load_freeze/test_load_orchestrator.py` imports the backend
-    and PyYAML is not installed. The constants live in the leaf module `utils.gguf_archs`;
-    `gguf_metadata` re-exports them, so there is still one definition.
+    without PyYAML installed. The constants live in the leaf module `utils.gguf_archs`, and
+    every caller imports them from there.
     """
     import importlib
     import subprocess
@@ -1698,8 +1696,8 @@ def test_the_chat_backend_does_not_import_pyyaml_to_learn_the_speech_verdict():
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
 
-    # And nothing re-exports them from inside the heavy package: a re-export there would let
-    # an importer reach them by the very path this test exists to keep out of the chain, and
+    # And nothing re-exports them from inside the heavy package: that would let an importer
+    # reach them by the very path this test exists to keep out of the chain, and
     # scripts/verify_import_hoist.py blocks one outside a package __init__ anyway.
     gguf_metadata = importlib.import_module("utils.models.gguf_metadata")
     for name in ("SPEECH_GGUF_ARCHS", "is_speech_gguf_architecture"):
