@@ -738,7 +738,7 @@ def test_opening_a_slot_starts_empty():
 
 def test_both_non_streaming_gguf_drains_open_a_slot_first():
     # Dropping either `open_slot` would silently restore the generic advice.
-    source = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text()
+    source = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
     for drain in ("_drain_gguf_tool_loop", "_drain_gguf_choices"):
         spawn = f"asyncio.create_task(asyncio.to_thread({drain}))"
         assert spawn in source
