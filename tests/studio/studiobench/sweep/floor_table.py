@@ -342,9 +342,8 @@ def summarise(paths: list[Path]) -> dict[str, dict[str, float]]:
                 "base": statistics.fmean(b for b, _ in rows),
                 "treat": statistics.fmean(t for _, t in rows),
                 "delta_pct": statistics.fmean(diffs),
-                "consistent": bool(nonzero) and (
-                    all(d >= 0.0 for d in diffs) or all(d <= 0.0 for d in diffs)
-                ),
+                "consistent": bool(nonzero)
+                and (all(d >= 0.0 for d in diffs) or all(d <= 0.0 for d in diffs)),
                 "spread_pct": max(diffs) - min(diffs),
                 "difference": True,
             }
