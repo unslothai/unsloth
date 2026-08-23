@@ -25,7 +25,9 @@ def _src(rel):
 def _func_src(rel, name):
     src = _src(rel)
     node = next(
-        n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef) and n.name == name
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name
     )
     return ast.get_source_segment(src, node)
 
@@ -38,6 +40,12 @@ def test_gguf_request_imatrix_defaults_and_set():
     assert ExportGGUFRequest(save_directory = "/tmp/x").imatrix_path is None
     r = ExportGGUFRequest(save_directory = "/tmp/x", imatrix = True, imatrix_path = "/i.dat")
     assert r.imatrix is True and r.imatrix_path == "/i.dat"
+
+
+def test_gguf_request_private_defaults_and_set():
+    assert ExportGGUFRequest(save_directory = "/tmp/x").private is False
+    r = ExportGGUFRequest(save_directory = "/tmp/x", private = True)
+    assert r.private is True
 
 
 def test_merged_request_accepts_compressed_formats():
@@ -282,3 +290,77 @@ def test_orchestrator_and_worker_pass_compressed_method():
 
 def test_route_passes_compressed_method():
     assert "compressed_method = request.compressed_method" in _src("routes/export.py")
+
+
+def test_export_gguf_threads_private_to_push_to_hub():
+    g = _func_src("core/export/export.py", "export_gguf")
+    assert "private: bool = False" in g
+    assert "private = private" in g
+
+
+def test_route_passes_gguf_private():
+    src = _func_src("routes/export.py", "export_gguf")
+    assert "private = request.private" in src
+
+
+def test_route_export_gguf_forwards_private(monkeypatch):
+    import asyncio
+    from routes import export as export_route
+
+    captured = {}
+
+    class FakeBackend:
+        def export_gguf(self, **kwargs):
+            captured.update(kwargs)
+            return True, "ok", "/tmp/out"
+
+    async def _mock_supported():
+        return None
+
+    monkeypatch.setattr(export_route, "_ensure_export_supported", _mock_supported)
+    monkeypatch.setattr(export_route, "get_export_backend", lambda: FakeBackend())
+    monkeypatch.setattr(export_route, "_export_details", lambda *args, **kwargs: {})
+
+    req = ExportGGUFRequest(save_directory = "/tmp/out", private = True)
+    res = asyncio.run(export_route.export_gguf(req, current_subject = "test"))
+    assert res.success is True
+    assert captured.get("private") is True
+
+    captured.clear()
+    req_default = ExportGGUFRequest(save_directory = "/tmp/out")
+    res_default = asyncio.run(export_route.export_gguf(req_default, current_subject = "test"))
+    assert res_default.success is True
+    assert captured.get("private") is False
+
+
+def test_orchestrator_passes_gguf_private():
+    o = _func_src("core/export/orchestrator.py", "export_gguf")
+    assert "private: bool = False" in o and '"private": private' in o
+
+
+def test_worker_passes_gguf_private():
+    import queue
+    from core.export.worker import _handle_export
+
+    captured = {}
+
+    class FakeBackend:
+        def export_gguf(self, **kwargs):
+            captured.update(kwargs)
+            return True, "ok", "/out"
+
+    q = queue.Queue()
+    _handle_export(
+        FakeBackend(),
+        {"export_type": "gguf", "save_directory": "/tmp/out", "private": True},
+        q,
+    )
+    assert captured.get("private") is True
+
+    captured.clear()
+    _handle_export(
+        FakeBackend(),
+        {"export_type": "gguf", "save_directory": "/tmp/out"},
+        q,
+    )
+    assert captured.get("private") is False

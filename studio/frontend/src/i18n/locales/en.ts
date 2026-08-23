@@ -516,7 +516,7 @@ export const en = {
           "Save the KV cache before an idle unload so resumed chats skip re-reading history. Up to 10 GB on disk.",
         apiOnly: "Only unload models loaded by the API",
         apiOnlyDescription:
-          "Idle unload leaves a model you loaded from Studio in memory, and frees only the ones an API request loaded.",
+          "Idle unload leaves a model you loaded from Unsloth in memory, and frees only the ones an API request loaded.",
       },
       previewSharing: {
         sectionTitle: "Preview sharing",
@@ -1005,7 +1005,7 @@ export const en = {
       quickstart: {
         title: "Build a command",
         description:
-          "Launch an agent against the model currently loaded in Studio. Load a model first, then swap claude for any supported agent below.",
+          "Launch an agent against the model currently loaded in Unsloth. Load a model first, then swap claude for any supported agent below.",
         noneDetected: "No supported agent CLIs were found on your PATH.",
         installed: "Installed",
       },
@@ -1026,7 +1026,7 @@ export const en = {
         description:
           "Unsloth flags are parsed first; anything it doesn't recognize is passed straight through to the agent.",
         model:
-          "Select a model. Without --model, unsloth start uses the model currently loaded in Studio and errors if none is loaded.",
+          "Select a model. Without --model, unsloth start uses the model currently loaded in Unsloth and errors if none is loaded.",
         contextLength:
           "Set the requested context length (alias: --max-seq-length).",
         ggufVariant: "Choose the GGUF quantization variant.",
@@ -1045,9 +1045,9 @@ export const en = {
         yolo: "Skip approval prompts. Use only in trusted environments.",
       },
       remote: {
-        title: "Connect to a remote Studio",
+        title: "Connect to a remote Unsloth Studio",
         description:
-          "Point unsloth start at a Studio running elsewhere by setting these before launching (or pass --api-key directly):",
+          "Point unsloth start at an Unsloth Studio running elsewhere by setting these before launching (or pass --api-key directly):",
       },
       passthrough: {
         title: "Passing agent arguments",

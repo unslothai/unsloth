@@ -335,3 +335,261 @@ class TestADenseResultIsSizedByWhatItCosts:
         _window(monkeypatch, 4864)
 
         assert tools._dense_char_limit(self._CJK_PAGE, 200) == 200
+
+
+class TestDenseAsciiIsMeasuredNotEstimated:
+    """`base64`, `hexdump -C` and `sha256sum` are ordinary terminal output, and the flat
+    0.25 tokens per ASCII character the estimate charges them is off by a factor of four.
+
+    Measured with Qwen3-4B and Llama-3.2 on the 5,120-token window this PR was built
+    against, where the character cap admits 7,168 characters against a 1,792-token share:
+
+        base64 payload.bin    7,168 chars -> 5,361 tokens   105% of the whole window
+        hexdump -C            7,168 chars -> 5,540 tokens   108%
+        sha256sum *           7,168 chars -> 5,109 tokens   100%
+        English prose         7,168 chars -> 1,230 tokens    24%   (the estimate is right)
+
+    A four-message thread -- system turn, an 8-token question, one tool call and one such
+    result -- was then refused by `fit_rolling_context` as irreducible at 5,475 tokens
+    against a 3,840-token prompt budget, with `dropped_messages: 0`. That is the exact
+    refusal this budget exists to prevent, so where a tokenizer is serving the request the
+    prefix is measured with it instead of estimated.
+    """
+
+    # 1.33 characters per token: the Qwen3-4B rate measured on `base64` output above.
+    _RATE = 1.33
+
+    def _serving(
+        self,
+        monkeypatch,
+        ctx,
+        rate = None,
+    ):
+        """A loaded llama.cpp backend that prices text at a real dense-ASCII rate."""
+        rate = self._RATE if rate is None else rate
+        backend = SimpleNamespace(
+            is_loaded = True,
+            context_length = ctx,
+            count_chat_tokens = lambda messages, *a, **k: int(
+                sum(len(m["content"]) for m in messages) / rate
+            ),
+        )
+        monkeypatch.setattr("routes.inference.get_llama_cpp_backend", lambda: backend)
+        return backend
+
+    def test_a_base64_result_is_cut_to_what_it_really_costs(self, monkeypatch):
+        _window(monkeypatch, 5120)
+        self._serving(monkeypatch, 5120)
+        text = "aGVsbG8gd29ybGQgdGhpcyBpcyBiaW5hcnkgcGF5bG9hZA" * 600
+
+        kept = tools._dense_char_limit(text, tools._tool_result_char_budget())
+
+        # The share it was promised, not the whole window.
+        assert kept / self._RATE <= 5120 * tools._PAGE_CONTEXT_SHARE
+        # And this is not vacuous: the estimate alone would have kept the full cap.
+        assert tools._dense_prefix_chars(text, 5120 * tools._PAGE_CONTEXT_SHARE) > kept
+
+    def test_a_dense_result_no_longer_outweighs_the_window(self, monkeypatch):
+        """The refusal itself: 7,168 characters of base64 is 105% of a 5,120-token
+        window, so the request cannot be made to fit by dropping anything."""
+        _window(monkeypatch, 5120)
+        self._serving(monkeypatch, 5120)
+        text = "0123456789abcdef" * 2000
+
+        out = tools._truncate(text)
+
+        assert len(out) / self._RATE < 5120
+
+    def test_english_keeps_every_character_the_cap_gave_it(self, monkeypatch):
+        """The blast radius: at a real English rate the exact count agrees with the
+        estimate, so nothing that already fitted is shrunk."""
+        _window(monkeypatch, 5120)
+        self._serving(monkeypatch, 5120, rate = 4.2)
+        text = (
+            "Artificial intelligence is the study of machines that perceive their "
+            "environment and take actions that maximise the chance of a goal. "
+        ) * 200
+        budget = tools._tool_result_char_budget()
+
+        assert tools._dense_char_limit(text, budget) == budget
+
+    def test_a_resident_gguf_does_not_price_another_model_s_request(self, monkeypatch):
+        """A 262k GGUF sitting in memory must not tokenize for the 5,120-token native
+        model actually answering: different tokenizer, different text."""
+        _window(monkeypatch, 5120)
+        self._serving(monkeypatch, 262_144)
+
+        assert tools._loaded_token_counter(5120) is None
+
+    def test_a_tokenizer_that_raises_falls_back_to_the_estimate(self, monkeypatch):
+        _window(monkeypatch, 5120)
+
+        def _boom(*a, **k):
+            raise RuntimeError("llama-server is busy")
+
+        monkeypatch.setattr(
+            "routes.inference.get_llama_cpp_backend",
+            lambda: SimpleNamespace(is_loaded = True, context_length = 5120, count_chat_tokens = _boom),
+        )
+        text = "0123456789abcdef" * 2000
+
+        assert tools._dense_char_limit(text, 7168) == 7168
+
+    def test_no_backend_at_all_leaves_the_estimate_alone(self, monkeypatch):
+        _window(monkeypatch, 5120)
+        monkeypatch.setattr(
+            "routes.inference.get_llama_cpp_backend",
+            lambda: SimpleNamespace(is_loaded = False),
+        )
+
+        assert tools._dense_char_limit("0123456789abcdef" * 2000, 7168) == 7168
+
+    def test_a_dense_prefix_with_a_prose_tail_is_measured_not_assumed(self, monkeypatch):
+        """The shape a proportional shrink gets wrong, and the one the code tools emit
+        most: `base64 payload.bin` followed by the shell's ordinary English report.
+
+        Cutting the prose off raises the average density of what is left, so each pass
+        gains less than it asked for. Measured with Qwen3-4B on a real 2,500-character
+        base64 prefix (1.38 chars/token) followed by English (4.2-6.2), the fixed pass
+        count returned 3,497 characters costing 1,978 tokens against the 1,792-token
+        share: 110%, unmeasured, which is the irreducible overflow this budget prevents.
+        Whatever comes back now has been counted.
+        """
+        _window(monkeypatch, 5120)
+        dense_chars = 2500
+
+        # The measured Qwen3-4B rates, priced per character so the count is exact at
+        # every prefix length rather than only at the two the test happens to check.
+        def _price(chunk):
+            dense = min(len(chunk), dense_chars)
+            return int(dense / 1.376 + (len(chunk) - dense) / 4.2)
+
+        monkeypatch.setattr(
+            "routes.inference.get_llama_cpp_backend",
+            lambda: SimpleNamespace(
+                is_loaded = True,
+                context_length = 5120,
+                count_chat_tokens = lambda messages, *a, **k: sum(
+                    _price(m["content"]) for m in messages
+                ),
+            ),
+        )
+        text = (
+            "ABCDefgh0123+/9z" * 157
+            + ("The build finished and the archive was uploaded to the release bucket. ") * 400
+        )
+        share = 5120 * tools._PAGE_CONTEXT_SHARE
+
+        kept = tools._dense_char_limit(text, tools._tool_result_char_budget())
+
+        assert _price(text[:kept]) <= share, "the retained prefix must be counted, not assumed"
+        # And not by collapsing to the floor: the fit is still worth reading.
+        assert kept > tools._MIN_PAGE_CHARS
+
+    def test_a_template_that_drops_tool_messages_is_still_measured(self, monkeypatch):
+        """The probe has to price a prompt that CONTAINS the chunk.
+
+        `count_chat_tokens` renders through the model's chat template, so a role the
+        template skips is priced as framing and nothing else. Both bundled Gemma-4
+        templates do exactly that -- `gemma-4.jinja:232` is
+        `{%- if message['role'] != 'tool' -%}`, and a tool result is only emitted while
+        scanning forward from an assistant tool call. Rendered directly, a 600-character
+        payload came back as 46 characters with the payload absent, so the count was a
+        small positive constant, the first pass saw it fit, and the whole estimated prefix
+        was returned unmeasured on a whole model family.
+        """
+        _window(monkeypatch, 5120)
+        seen = []
+
+        def _count_chat_tokens(messages, *a, **k):
+            # A template with the Gemma-4 convention: user turns render, a standalone
+            # tool message does not.
+            seen.append([m["role"] for m in messages])
+            body = "".join(m["content"] for m in messages if m["role"] == "user")
+            return 11 + int(len(body) / 1.33)
+
+        monkeypatch.setattr(
+            "routes.inference.get_llama_cpp_backend",
+            lambda: SimpleNamespace(
+                is_loaded = True, context_length = 5120, count_chat_tokens = _count_chat_tokens
+            ),
+        )
+        text = "0123456789abcdef" * 2000
+        share = 5120 * tools._PAGE_CONTEXT_SHARE
+
+        kept = tools._dense_char_limit(text, tools._tool_result_char_budget())
+
+        assert kept / 1.33 <= share, "a skipped role priced framing, not the result"
+        assert kept >= tools._MIN_PAGE_CHARS
+        assert seen and all(roles == ["user"] for roles in seen)
+
+    def test_a_template_that_renders_no_content_falls_back_to_the_estimate(self, monkeypatch):
+        """The guard. If some future template drops the probe role too, the count is a
+        small constant regardless of chunk size -- which is not a measurement and must not
+        be accepted as one. Keeping the estimate is the pre-existing behaviour; reporting
+        the constant is the silent no-op this exists to prevent."""
+        _window(monkeypatch, 5120)
+        monkeypatch.setattr(
+            "routes.inference.get_llama_cpp_backend",
+            lambda: SimpleNamespace(
+                is_loaded = True,
+                context_length = 5120,
+                count_chat_tokens = lambda messages, *a, **k: 11,  # framing, whatever is sent
+            ),
+        )
+
+        assert tools._loaded_token_counter(5120)("0123456789abcdef" * 250) is None
+        # And the caller keeps the estimate rather than a prefix nothing priced.
+        assert tools._dense_char_limit("0123456789abcdef" * 2000, 7168) == 7168
+
+    def test_the_readable_floor_still_holds_under_an_exact_count(self, monkeypatch):
+        _window(monkeypatch, 1024)
+        self._serving(monkeypatch, 1024)
+
+        kept = tools._dense_char_limit("0123456789abcdef" * 2000, tools._MAX_PAGE_CHARS)
+
+        assert kept == tools._MIN_PAGE_CHARS
+
+
+class TestAConfiguredCapIsNeverRaised:
+    """`UNSLOTH_TOOL_RESULT_MAX_CHARS` is a ceiling the install set, and the readability
+    floor is not a reason to exceed it.
+
+    Before this, an install running a 500-character cap got 500 characters from the
+    hosted path (`studio_tool_loop._truncate_for_model`) and 2,000 from the local one the
+    moment a window became readable, so the one function whose job is to LOWER the cap
+    raised it fourfold instead -- and did so hardest on the smallest windows, which is
+    where the operator asked for the small cap.
+    """
+
+    def test_a_configured_cap_below_the_floor_survives_a_known_window(self, monkeypatch):
+        monkeypatch.setattr(tools, "_MAX_OUTPUT_CHARS", 500)
+        _window(monkeypatch, 8192)
+
+        assert tools._tool_result_char_budget() == 500
+
+    def test_it_survives_a_tiny_window_too(self, monkeypatch):
+        """The window-derived share is 1,433 characters here, so the floor is the only
+        thing that could have raised 500."""
+        monkeypatch.setattr(tools, "_MAX_OUTPUT_CHARS", 500)
+        _window(monkeypatch, 1024)
+
+        assert tools._tool_result_char_budget() == 500
+
+    def test_the_local_result_matches_the_hosted_one(self, monkeypatch):
+        from core.inference import studio_tool_loop
+
+        monkeypatch.setattr(tools, "_MAX_OUTPUT_CHARS", 500)
+        _window(monkeypatch, 8192)
+        text = "x" * 5000
+
+        assert len(tools._truncate(text)) - len(text[:500]) < 400  # notice only
+        assert tools._truncate(text).startswith(text[:500])
+        assert studio_tool_loop._truncate_for_model(text).startswith(text[:500])
+
+    def test_an_unconfigured_install_still_gets_the_floor(self, monkeypatch):
+        """The floor is untouched wherever the cap is above it, which is the default."""
+        _window(monkeypatch, 512)
+
+        assert tools._tool_result_char_budget() == tools._MIN_PAGE_CHARS
+        assert tools._page_char_budget() == tools._MIN_PAGE_CHARS
