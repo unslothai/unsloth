@@ -542,9 +542,13 @@ def test_a_clear_between_the_two_registry_reads_still_wins(monkeypatch, tmp_path
 
     def clearing_lookup(image_id):
         found = real_lookup(image_id)
-        # Inline rather than clear_cache(): the caller already holds _registry_lock.
+        # Inline rather than clear_cache(): the caller already holds _registry_lock. It has
+        # to move _full_clear_generation as well, because that -- not the bare generation --
+        # is what a clear-everything raises to abort every in-flight fetch. Bumping only the
+        # generation simulates a clear that spared this id, which is a different test.
         search_images._registry.clear()
         search_images._cache_generation += 1
+        search_images._full_clear_generation = search_images._cache_generation
         for stale in tmp_path.glob("*"):
             stale.unlink()
         return found
@@ -1077,3 +1081,87 @@ def test_an_unreadable_cache_dir_snapshots_as_clear_everything(monkeypatch, tmp_
     search_images.clear_cache(snapshot)
     assert search_images._registry == {}, "a clear that could not snapshot must still clear"
     assert search_images.lookup_image(entries[0]["id"]) is None
+
+
+def test_a_selective_clear_does_not_abort_a_fetch_for_an_image_it_spared(monkeypatch, tmp_path):
+    """The whole point of the snapshot is that a spared image keeps working.
+
+    `clear_cache` bumps the generation for a selective reap too, and the in-flight check used
+    to compare that bare number: a fetch already running for an id the clear went out of its
+    way to spare therefore aborted, thumbnail_bytes answered None and the endpoint 404ed. The
+    frontend does not recover from that -- SearchImageThumb sets `failed`, renders nothing,
+    and its effect depends only on (id, nearViewport), so nothing re-runs it. The card is gone
+    until the component remounts.
+    """
+    spared = search_images.register_images(RAW_IMAGES)[0]
+    # Only one of RAW_IMAGES survives the policy filter, and this needs a second id purely
+    # as something for the clear to reap. Straight into the registry: what matters is that
+    # it is NOT the id being fetched.
+    doomed_id = "0123456789ab"
+    search_images._registry[doomed_id] = dict(search_images._registry[spared["id"]])
+    real_lookup = search_images._lookup_locked
+
+    def clearing_lookup(image_id):
+        found = real_lookup(image_id)
+        # A selective clear landing mid-fetch, reaping the OTHER image. Inline because the
+        # caller already holds _registry_lock; the bookkeeping matches clear_cache's.
+        search_images._registry.pop(doomed_id, None)
+        search_images._cache_generation += 1
+        search_images._reaped_at[doomed_id] = search_images._cache_generation
+        return found
+
+    monkeypatch.setattr(search_images, "_lookup_locked", clearing_lookup)
+    monkeypatch.setattr(
+        tools, "_fetch_url_raw", lambda url, **kw: (None, _png_bytes((40, 30)), "image/png")
+    )
+
+    assert search_images.thumbnail_bytes(spared["id"]) is not None, (
+        "a clear that deliberately kept this image must not take its in-flight fetch down"
+    )
+    assert list(tmp_path.glob(f"{spared['id']}.jpg")), "and its bytes belong on disk"
+
+
+def test_a_selective_clear_still_aborts_the_fetch_for_an_image_it_reaped(monkeypatch, tmp_path):
+    """The other half. Publishing here would write back a thumbnail the clear just deleted,
+    and the cache-first read would go on serving it."""
+    doomed = search_images.register_images(RAW_IMAGES)[0]
+    real_lookup = search_images._lookup_locked
+
+    def clearing_lookup(image_id):
+        found = real_lookup(image_id)
+        search_images._registry.pop(doomed["id"], None)
+        search_images._cache_generation += 1
+        search_images._reaped_at[doomed["id"]] = search_images._cache_generation
+        for stale in tmp_path.glob("*"):
+            stale.unlink()
+        return found
+
+    monkeypatch.setattr(search_images, "_lookup_locked", clearing_lookup)
+    monkeypatch.setattr(
+        tools, "_fetch_url_raw", lambda url, **kw: (None, _png_bytes((40, 30)), "image/png")
+    )
+
+    assert search_images.thumbnail_bytes(doomed["id"]) is None
+    assert list(tmp_path.glob("*.jpg")) == []
+
+
+def test_an_overflowing_reap_record_falls_back_to_aborting_everything(monkeypatch, tmp_path):
+    """The per-id record is bounded, and losing it must fail SAFE.
+
+    Forgetting that an id was reaped would republish a thumbnail the user cleared, which is
+    the failure this module treats as the worse one. Over-aborting only costs a re-fetch.
+    """
+    monkeypatch.setattr(search_images, "_REAPED_AT_MAX", 2)
+    monkeypatch.setattr(search_images, "_reaped_at", {})
+    reaped_ids = {f"{index:012x}" for index in range(5)}
+    assert len(reaped_ids) > 2, "need more ids than the cap to force the overflow"
+
+    before = search_images.cache_generation()
+    search_images.clear_cache(reaped_ids)
+
+    assert search_images._reaped_at == {}, "the per-id record is dropped, not half-kept"
+    assert search_images._full_clear_generation > before, (
+        "so the blunt signal has to take over, or a reaped id would look spared"
+    )
+    with search_images._registry_lock:
+        assert search_images._reaped_since_locked("aaaaaaaaaaaa", before) is True

@@ -43,6 +43,16 @@ _registry_lock = threading.Lock()
 # Bumped by clear_cache. A fetch that started before the clear must not publish its
 # thumbnail after it: the write is done under _registry_lock and skipped if this moved.
 _cache_generation = 0
+# The generation at which a CLEAR-EVERYTHING last ran, and the generation at which each
+# individually reaped id was taken. A selective clear must not abort an in-flight fetch for
+# an id it deliberately spared: thumbnail_bytes would answer None, the endpoint 404s, and
+# SearchImageThumb renders nothing and never retries -- its effect depends only on (id,
+# nearViewport), so "re-fetches on the next request" is not true, there is no next request.
+# Bounded; on overflow the per-id record is dropped and the full-clear generation is moved
+# instead, which over-aborts rather than republishing a thumbnail a clear removed.
+_full_clear_generation = 0
+_reaped_at: dict[str, int] = {}
+_REAPED_AT_MAX = 4096
 # Ids whose files a clear could not unlink -- on Windows another process holding the
 # JPEG open is enough. The cache-first read and the sidecar read both go around the
 # registry, so without this they would go on serving a picture the user had cleared.
@@ -274,7 +284,10 @@ def _persist_entry(image_id: str, entry: dict[str, Any], generation: int) -> Non
             ensure_ascii = True,
         )
         with _registry_lock:
-            if generation != _cache_generation:
+            # Per id, like the thumbnail write: a selective clear bumps the generation
+            # without touching this image, and dropping its sidecar then costs the id its
+            # only way back after a restart.
+            if _reaped_since_locked(image_id, generation):
                 return
             # writer-unique, like the JPEG: a torn read must not be possible.
             tmp = _meta_path(image_id).with_suffix(f".{secrets.token_hex(4)}.tmp")
@@ -441,11 +454,15 @@ def thumbnail_bytes(image_id: str) -> bytes | None:
             if data is None:
                 return None
             with _registry_lock:
-                if _cache_generation != generation:
-                    # Clear all chats landed while this was in flight. The chat that
-                    # asked for it is gone, so publish nothing and hand back nothing --
-                    # writing here would restore a thumbnail the clear had removed, and
-                    # the cache-first path above would keep serving it.
+                if _reaped_since_locked(image_id, generation):
+                    # A clear that covered THIS id landed while the fetch was in flight.
+                    # The chat that asked for it is gone, so publish nothing and hand back
+                    # nothing -- writing here would restore a thumbnail the clear had
+                    # removed, and the cache-first path above would keep serving it.
+                    #
+                    # Asked per id, not off the bare generation: a selective clear bumps
+                    # that too, and aborting on it took down fetches for the images the
+                    # clear had gone out of its way to spare.
                     return None
                 try:
                     # Writer-unique: racing writers must not publish a torn JPEG.
@@ -491,6 +508,13 @@ def registered_image_ids() -> set[str] | None:
     return ids
 
 
+def _reaped_since_locked(image_id: str, generation: int) -> bool:
+    """Whether a clear covering ``image_id`` landed after ``generation``. Caller holds the lock."""
+    if _full_clear_generation > generation:
+        return True
+    return _reaped_at.get(image_id, 0) > generation
+
+
 def clear_cache(only_ids: set[str] | None = None) -> None:
     """Drop registered images and their cached bytes. Called when the user clears all
     chats: the thumbnails say what was searched for.
@@ -498,10 +522,11 @@ def clear_cache(only_ids: set[str] | None = None) -> None:
     ``only_ids`` limits the reap to a snapshot taken before the caller's slow work, so
     an image registered meanwhile -- by another tab or the LAN listener, for a chat the
     clear is not deleting -- keeps its bytes instead of 404ing out of ``thumbnail_bytes``.
-    The generation still bumps either way: it is the signal that aborts every in-flight
-    fetch, and a spared entry merely re-fetches on the next request.
+    The generation still bumps either way -- ``register_images`` compares against it to
+    refuse a registration racing a clear -- but the in-flight fetch check is per id, so a
+    spared image's fetch is left alone. Aborting it would 404 a card that never retries.
     """
-    global _cache_generation
+    global _cache_generation, _full_clear_generation
     # The unlinks are under the lock too, so an in-flight fetch cannot slip its write
     # in between the bump and the delete and leave a cleared thumbnail on disk.
     with _registry_lock:
@@ -511,6 +536,21 @@ def clear_cache(only_ids: set[str] | None = None) -> None:
             for image_id in only_ids:
                 _registry.pop(image_id, None)
         _cache_generation += 1
+        if only_ids is None:
+            # Nothing survives, so every in-flight fetch has to abort. One number says so
+            # for all of them, including ids this process has never seen.
+            _full_clear_generation = _cache_generation
+            _reaped_at.clear()
+        else:
+            if len(_reaped_at) + len(only_ids) > _REAPED_AT_MAX:
+                # Out of room to be precise. Fall back to the blunt signal rather than
+                # forgetting a reap: over-aborting costs a re-fetch, under-aborting
+                # republishes a thumbnail the user cleared.
+                _reaped_at.clear()
+                _full_clear_generation = _cache_generation
+            else:
+                for image_id in only_ids:
+                    _reaped_at[image_id] = _cache_generation
         for pattern in ("*.jpg", "*.json", "*.tmp"):
             try:
                 paths = list(_cache_dir().glob(pattern))
