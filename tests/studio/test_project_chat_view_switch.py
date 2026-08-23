@@ -629,9 +629,9 @@ def test_the_provider_wires_the_pause_and_the_shared_ref():
     for child in ("ThreadAutoSwitch", "ThreadNewChatSwitch", "ThreadBackendAutosave"):
         opening = jsx.index(f"<{child}")
         element = jsx[opening : jsx.index("/>", opening)]
-        assert "newThreadSwitchStateRef={newThreadSwitchStateRef}" in element, (
-            f"{child} must be handed the shared switch state ref"
-        )
+        assert (
+            "newThreadSwitchStateRef={newThreadSwitchStateRef}" in element
+        ), f"{child} must be handed the shared switch state ref"
     assert jsx.count("paused={backgrounded}") == 2, (
         "BOTH children must be paused while backgrounded. ThreadAutoSwitch's first effect "
         "reaches requestTemporaryPromptQueueStop, which names every temporary queue on the "
