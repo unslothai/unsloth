@@ -2330,15 +2330,19 @@ def test_embedding_targets_cost_full_matrices_not_lora_pairs():
 
     assert _full_weight_embedding_elements(untied, DEFAULT_TARGET_MODULES) == 0
     assert _full_weight_embedding_elements(untied, DEFAULT_TARGET_MODULES + ["embed_tokens"]) == one
-    assert _full_weight_embedding_elements(
-        untied, DEFAULT_TARGET_MODULES + ["embed_tokens", "lm_head"]
-    ) == 2 * one
+    assert (
+        _full_weight_embedding_elements(
+            untied, DEFAULT_TARGET_MODULES + ["embed_tokens", "lm_head"]
+        )
+        == 2 * one
+    )
 
     # A tied pair gets ensure_weight_tying, which leaves ONE trainable matrix.
     tied = replace(LLAMA_8B, tie_word_embeddings = True)
-    assert _full_weight_embedding_elements(
-        tied, DEFAULT_TARGET_MODULES + ["embed_tokens", "lm_head"]
-    ) == tied.vocab_size * tied.hidden_size
+    assert (
+        _full_weight_embedding_elements(tied, DEFAULT_TARGET_MODULES + ["embed_tokens", "lm_head"])
+        == tied.vocab_size * tied.hidden_size
+    )
 
     # Regex / all-linear / None never carry these names.
     assert _full_weight_embedding_elements(untied, "all-linear") == 0
