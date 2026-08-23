@@ -756,13 +756,16 @@ def test_generate_refuses_a_snapshot_naming_another_model():
     # Parity with the diffusers engine (#9448): on a no-GPU host the OpenAI images route runs here.
     eng = _FakeEngine()
     b = _loaded_backend(engine = eng)
+    st = b.status()
+    loaded = bk.load_identity(st["repo_id"], st["base_repo"], st["family"])
     with pytest.raises(bk.DiffusionModelReplacedError) as replaced:
-        b.generate(prompt = "stale", expected_repo_id = "other/model")
-    assert replaced.value.expected == "other/model"
-    assert replaced.value.actual == "unsloth/Z-Image-Turbo-GGUF"
+        stale = bk.load_identity("other/model", st["base_repo"], st["family"])
+        b.generate(prompt = "stale", expected_load = stale)
+    assert replaced.value.expected.repo_id == "other/model"
+    assert replaced.value.actual == loaded
     assert eng.calls == []  # refused before any sd-cli run
     # A matching snapshot, and an absent one (the pre-#9448 caller), both still generate.
-    assert b.generate(prompt = "x", steps = 4, expected_repo_id = "unsloth/Z-Image-Turbo-GGUF")
+    assert b.generate(prompt = "x", steps = 4, expected_load = loaded)
     assert b.generate(prompt = "x", steps = 4)
 
 

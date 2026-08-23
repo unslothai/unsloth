@@ -42,6 +42,7 @@ from core.inference.diffusion_families import (
     canonical_base,
     detect_family,
     family_prequant_repo,
+    load_identity,
     mirror_repo,
     prefer_ungated_mirror,
     resolve_base_repo,
@@ -764,15 +765,17 @@ def test_generate_refuses_when_the_model_was_replaced_since_the_snapshot(fake_ru
         base_repo = "base/repo",
         family_override = "z-image",
     )
-    repo_id = backend.status()["repo_id"]
+    st = backend.status()
+    loaded = load_identity(st["repo_id"], st["base_repo"], st["family"])
 
     # Snapshot names a different model: typed refusal, no denoise started.
+    stale = load_identity("other/model", st["base_repo"], st["family"])
     with pytest.raises(DiffusionModelReplacedError) as replaced:
-        backend.generate(prompt = "stale request", expected_repo_id = "other/model")
-    assert replaced.value.expected == "other/model"
-    assert replaced.value.actual == repo_id
+        backend.generate(prompt = "stale request", expected_load = stale)
+    assert replaced.value.expected == stale
+    assert replaced.value.actual == loaded
 
-    gen = backend.generate(prompt = "fresh request", expected_repo_id = repo_id, steps = 4)
+    gen = backend.generate(prompt = "fresh request", expected_load = loaded, steps = 4)
     assert len(gen["images"]) == 1
 
     # And callers that pass no snapshot keep the historical behaviour.
@@ -795,7 +798,8 @@ def test_generate_refuses_a_replacement_that_committed_while_it_waited(fake_runt
 
     backend = DiffusionBackend()
     backend.load_pipeline(str(old_dir), **load_kwargs)
-    snapshot = backend.status()["repo_id"]  # the route's pre-generation read
+    st = backend.status()  # the route's pre-generation read
+    snapshot = load_identity(st["repo_id"], st["base_repo"], st["family"])
 
     # Park a replacement inside the construction of the new model: the fence is down there.
     reached, release = threading.Event(), threading.Event()
@@ -820,7 +824,7 @@ def test_generate_refuses_a_replacement_that_committed_while_it_waited(fake_runt
         def _generate():
             try:
                 outcome["ok"] = backend.generate(
-                    prompt = "a sloth", steps = 9, guidance = 0.0, expected_repo_id = snapshot
+                    prompt = "a sloth", steps = 9, guidance = 0.0, expected_load = snapshot
                 )
             except BaseException as exc:  # noqa: BLE001 (the exception IS the assertion)
                 outcome["err"] = exc
@@ -838,7 +842,36 @@ def test_generate_refuses_a_replacement_that_committed_while_it_waited(fake_runt
     assert backend.status()["repo_id"] == str(new_dir)  # the replacement did commit
     assert "ok" not in outcome, "denoised on the replacement with the snapshot's parameters"
     assert isinstance(outcome["err"], DiffusionModelReplacedError)
-    assert (outcome["err"].expected, outcome["err"].actual) == (str(old_dir), str(new_dir))
+    assert (outcome["err"].expected.repo_id, outcome["err"].actual.repo_id) == (
+        str(old_dir), str(new_dir)
+    )
+
+
+def test_the_same_path_reloaded_under_a_different_base_is_a_replacement(fake_runtime, tmp_path):
+    """repo_id is not a load identity (#9448).
+
+    /images/load takes base_repo and family_override independently of the path, so one local
+    checkpoint reloads as a different model. The route derives steps/guidance from base_repo
+    whenever repo_id names nothing known, so pinning the path alone let a FLUX.1-dev request
+    reach a schnell pipeline.
+    """
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf",
+        base_repo = "black-forest-labs/FLUX.1-dev", family_override = "z-image",
+    )
+    st = backend.status()
+    snapshot = load_identity(st["repo_id"], st["base_repo"], st["family"])
+
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf",
+        base_repo = "black-forest-labs/FLUX.1-schnell", family_override = "z-image",
+    )
+    assert backend.status()["repo_id"] == snapshot.repo_id  # repo_id alone sees no change
+    with pytest.raises(DiffusionModelReplacedError) as replaced:
+        backend.generate(prompt = "p", steps = 28, guidance = 3.5, expected_load = snapshot)
+    assert replaced.value.actual.base_repo == "black-forest-labs/FLUX.1-schnell"
 
 
 def test_load_generate_unload_gguf(fake_runtime, tmp_path):

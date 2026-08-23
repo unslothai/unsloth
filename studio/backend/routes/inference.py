@@ -26774,7 +26774,7 @@ async def _generate_openai_images(
     # Use the active engine (diffusers OR native sd.cpp), the same accessor /images/generate uses.
     backend = get_active_diffusion_engine()
     from core.inference.diffusion_memory import ImageActivationShortfallError
-    from core.inference.diffusion_families import DiffusionModelReplacedError
+    from core.inference.diffusion_families import DiffusionModelReplacedError, load_identity
 
     # A replacement can commit between this status() read and generate() taking its lock, running the
     # new model with the old one's steps/guidance and edit-only verdict (#9448). Pin the read to the
@@ -26810,7 +26810,9 @@ async def _generate_openai_images(
                 steps = steps,
                 guidance = guidance,
                 batch_size = body.n,
-                expected_repo_id = status.get("repo_id"),
+                expected_load = load_identity(
+                    status.get("repo_id"), status.get("base_repo"), status.get("family")
+                ),
             )
             break
         except DiffusionModelReplacedError:

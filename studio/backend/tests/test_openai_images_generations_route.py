@@ -23,6 +23,7 @@ from core.inference.api_monitor import api_monitor
 from core.inference.diffusion_families import (
     DiffusionModelReplacedError,
     default_generation_params,
+    load_identity,
 )
 from routes.inference import router, _parse_openai_image_size
 from utils.api_errors import install_api_error_handlers
@@ -108,8 +109,8 @@ class _FakeBackend:
         native_seeds = False,
         # Supported workflows: a list, or a repo_id -> list map so a replacement changes them.
         workflows = None,
-        # repo_id values generate() reports as loaded, one per call: models a replacement landing
-        # between the route's status() read and generate() taking its lock (#9448).
+        # (repo_id, base_repo) pairs generate() reports as loaded, one per call: models a
+        # replacement landing between the route's status() read and its lock (#9448).
         replaced_by = None,
     ) -> None:
         self._loaded = loaded
@@ -153,15 +154,16 @@ class _FakeBackend:
         steps,
         guidance,
         batch_size = 1,
-        expected_repo_id = None,
+        expected_load = None,
     ):
         if not self._loaded:
             raise RuntimeError("No diffusion model is loaded.")
         # Both engines refuse in-lock when the caller's snapshot named a different model.
         if self._replaced_by:
-            self._repo_id = self._replaced_by.pop(0)
-        if expected_repo_id is not None and expected_repo_id != self._repo_id:
-            raise DiffusionModelReplacedError(expected_repo_id, self._repo_id)
+            self._repo_id, self._base_repo = self._replaced_by.pop(0)
+        loaded = load_identity(self._repo_id, self._base_repo, "z-image")
+        if expected_load is not None and expected_load != loaded:
+            raise DiffusionModelReplacedError(expected_load, loaded)
         if self._generate_error is not None:
             if self._unload_on_generate:
                 self._loaded = False
@@ -174,7 +176,7 @@ class _FakeBackend:
                 steps = steps,
                 guidance = guidance,
                 batch_size = batch_size,
-                expected_repo_id = expected_repo_id,
+                expected_load = expected_load,
             )
         )
         out = {
@@ -237,7 +239,7 @@ def test_url_response_shape(client):
         steps = 9,
         guidance = 0.0,
         batch_size = 1,
-        expected_repo_id = "unsloth/Z-Image-Turbo-GGUF",
+        expected_load = load_identity("unsloth/Z-Image-Turbo-GGUF", None, "z-image"),
     )
 
 
@@ -586,13 +588,15 @@ def test_generation_pins_the_status_read_it_derived_its_params_from(monkeypatch)
     backend = _FakeBackend()
     cli, _ = _replacement_client(monkeypatch, backend)
     assert cli.post("/v1/images/generations", json = {"prompt": "p"}).status_code == 200
-    assert backend.calls[0]["expected_repo_id"] == "unsloth/Z-Image-Turbo-GGUF"
+    assert backend.calls[0]["expected_load"] == load_identity(
+        "unsloth/Z-Image-Turbo-GGUF", None, "z-image"
+    )
 
 
 def test_replacement_retries_once_with_the_new_models_params(monkeypatch):
     # Z-Image-Turbo (9 steps, guidance 0) is replaced by Z-Image (20 steps, guidance 4). The first
     # attempt is refused in-lock; the retry must re-derive from fresh state, not reuse the turbo's.
-    backend = _FakeBackend(replaced_by = ["unsloth/Z-Image-GGUF"])
+    backend = _FakeBackend(replaced_by = [("unsloth/Z-Image-GGUF", None)])
     cli, _ = _replacement_client(monkeypatch, backend)
     resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
     assert resp.status_code == 200
@@ -602,7 +606,7 @@ def test_replacement_retries_once_with_the_new_models_params(monkeypatch):
 
 def test_second_replacement_is_a_503_not_a_sanitized_500(monkeypatch):
     # Bounded at one retry, and the client is told to retry rather than handed a server error.
-    backend = _FakeBackend(replaced_by = ["a/one", "b/two"])
+    backend = _FakeBackend(replaced_by = [("a/one", None), ("b/two", None)])
     cli, _ = _replacement_client(monkeypatch, backend)
     resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
     assert resp.status_code == 503
@@ -616,7 +620,7 @@ def test_replacement_into_an_edit_only_model_is_a_400(monkeypatch):
     # The retry re-decides eligibility too, not just the parameters.
     edit_only = "unsloth/Qwen-Image-Edit-GGUF"
     backend = _FakeBackend(
-        replaced_by = [edit_only],
+        replaced_by = [(edit_only, None)],
         workflows = {"unsloth/Z-Image-Turbo-GGUF": ["txt2img"], edit_only: ["img2img"]},
     )
     cli, _ = _replacement_client(monkeypatch, backend)
@@ -650,4 +654,32 @@ def test_backend_reporting_no_repo_id_still_generates(monkeypatch):
     backend = _FakeBackend(repo_id = None)
     cli, _ = _replacement_client(monkeypatch, backend)
     assert cli.post("/v1/images/generations", json = {"prompt": "p"}).status_code == 200
-    assert backend.calls[0]["expected_repo_id"] is None
+    assert backend.calls[0]["expected_load"] == load_identity(None, None, "z-image")
+
+
+def test_same_repo_reloaded_under_a_different_base_is_a_replacement(monkeypatch):
+    # /images/load takes base_repo independently of the path, so one local checkpoint reloads
+    # under a different base, and the route derives steps/guidance from base_repo whenever
+    # repo_id names no known model. Pinning repo_id alone let that through: FLUX.1-dev's
+    # 28 steps / 3.5 guidance reached a schnell pipeline.
+    local = "/models/my-ckpt"
+    dev, schnell = "black-forest-labs/FLUX.1-dev", "black-forest-labs/FLUX.1-schnell"
+    assert default_generation_params(local, dev) != default_generation_params(local, schnell)
+    backend = _FakeBackend(repo_id = local, base_repo = dev, replaced_by = [(local, schnell)])
+    cli, _ = _replacement_client(monkeypatch, backend)
+    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
+    assert resp.status_code == 200
+    assert len(backend.calls) == 1  # the refused attempt never generated
+    assert (backend.calls[0]["steps"], backend.calls[0]["guidance"]) == (4, 0.0)
+
+
+def test_the_pin_covers_every_field_the_request_is_derived_from():
+    # Whatever the route derives parameters or eligibility from has to be in the pin, or a
+    # replacement that differs only there is accepted as the snapshot.
+    turbo, base = "unsloth/Z-Image-Turbo-GGUF", "Tongyi-MAI/Z-Image"
+    pin = load_identity(turbo, base, "z-image")
+    assert pin != load_identity("unsloth/Z-Image-GGUF", base, "z-image")  # steps/guidance
+    assert pin != load_identity(turbo, "black-forest-labs/FLUX.1-dev", "z-image")  # steps/guidance
+    assert pin != load_identity(turbo, base, "qwen-image-edit")  # edit-only verdict
+    # None and "" describe the same absent field, so they must not read as a replacement.
+    assert load_identity(turbo, None, "z-image") == load_identity(turbo, "", "z-image")

@@ -30,18 +30,44 @@ DIFFUSION_NOT_LOADED_MSG = "No diffusion model is loaded."
 DIFFUSION_CANCELLED_MSG = "Diffusion generation was cancelled."
 
 
+@dataclass(frozen = True)
+class LoadIdentity:
+    """What a caller's derived request parameters depend on, as one comparable value.
+
+    ``repo_id`` alone is NOT a load identity: /images/load takes ``base_repo`` and
+    ``family_override`` independently of the path, so the same local checkpoint reloads
+    under a different base or family. The OpenAI images route derives steps/guidance from
+    ``base_repo`` whenever ``repo_id`` names no known model, and its edit-only verdict from
+    the family, so both belong in the pin (#9448). Two loads agreeing on all three derive
+    identical parameters, which is exactly when accepting one for the other is correct.
+
+    A distinct type, not a tuple: a caller who pins a bare repo id compares unequal and is
+    refused, rather than matching some other shape by accident.
+    """
+
+    repo_id: str
+    base_repo: str
+    family: str
+
+
+def load_identity(repo_id, base_repo, family) -> LoadIdentity:
+    """``LoadIdentity`` for one load. None and "" describe the same absent field."""
+    return LoadIdentity(str(repo_id or ""), str(base_repo or ""), str(family or ""))
+
+
 class DiffusionModelReplacedError(RuntimeError):
-    """Both engines' ``generate`` refusing an ``expected_repo_id`` that is no longer loaded.
+    """Both engines' ``generate`` refusing a ``LoadIdentity`` that is no longer loaded.
 
     Keeps a caller's per-model steps/guidance and workflow verdict, taken from an earlier
     ``status()`` read, off a model they never validated (#9448). Here rather than in
     ``diffusion`` so the native engine can raise it without importing the torch backend.
     """
 
-    def __init__(self, expected: str, actual: str):
+    def __init__(self, expected: LoadIdentity, actual: LoadIdentity):
         super().__init__(
             f"The image model was replaced while this request waited "
-            f"(expected {expected!r}, loaded {actual!r}); retry with fresh parameters."
+            f"(expected {expected.repo_id!r}, loaded {actual.repo_id!r}); "
+            "retry with fresh parameters."
         )
         self.expected = expected
         self.actual = actual
