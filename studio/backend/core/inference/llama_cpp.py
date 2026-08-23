@@ -17443,8 +17443,7 @@ class LlamaCppBackend:
                             if (
                                 n_ctx_auto_derived
                                 and _mtp_reserves_gpu
-                                and (_canonicalize_spec_mode(speculative_type) or "auto")
-                                != "auto"
+                                and (_canonicalize_spec_mode(speculative_type) or "auto") != "auto"
                             ):
                                 # Re-fit against the cards the context was fit for,
                                 # not the whole pool: the complaint is the drafter
@@ -17473,27 +17472,29 @@ class LlamaCppBackend:
                                     else []
                                 )
                                 _refit_pool = (
-                                    _pool_budget_mib(_base_gpus, _pin_fraction)
-                                    if _base_gpus
-                                    else 0
+                                    _pool_budget_mib(_base_gpus, _pin_fraction) if _base_gpus else 0
                                 )
-                                _refit = 0 if not _refit_pool else self._fit_context_to_vram(
-                                    effective_ctx,
-                                    _refit_pool,
-                                    model_size_fit,
-                                    cache_type_kv,
-                                    swa_full = swa_full,
-                                    n_parallel = n_parallel,
-                                    kv_unified = planned_kv_unified,
-                                    n_ubatch = _effective_ubatch,
-                                    ctx_checkpoints = _effective_ctx_checkpoints,
-                                    flash_attn = planned_flash_attn,
-                                    mtp_engaged = _mtp_reserves_gpu,
-                                    mtp_overhead_fn = mtp_overhead_fn,
-                                    compute_ctx_bytes_fn = _cc_bytes,
-                                    budget_frac = 1.0,
-                                    pooled = True,
-                                    total_mib = None,
+                                _refit = (
+                                    0
+                                    if not _refit_pool
+                                    else self._fit_context_to_vram(
+                                        effective_ctx,
+                                        _refit_pool,
+                                        model_size_fit,
+                                        cache_type_kv,
+                                        swa_full = swa_full,
+                                        n_parallel = n_parallel,
+                                        kv_unified = planned_kv_unified,
+                                        n_ubatch = _effective_ubatch,
+                                        ctx_checkpoints = _effective_ctx_checkpoints,
+                                        flash_attn = planned_flash_attn,
+                                        mtp_engaged = _mtp_reserves_gpu,
+                                        mtp_overhead_fn = mtp_overhead_fn,
+                                        compute_ctx_bytes_fn = _cc_bytes,
+                                        budget_frac = 1.0,
+                                        pooled = True,
+                                        total_mib = None,
+                                    )
                                 )
                                 # Only ever downwards. The fitter returns the request
                                 # unchanged when the weights alone are over budget,

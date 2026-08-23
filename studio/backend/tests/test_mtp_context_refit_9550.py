@@ -134,9 +134,9 @@ def test_the_mtp_reserve_does_cost_context(tmp_path):
     with_mtp = _fit(backend, NATIVE_CTX, mtp = True)
 
     assert without_mtp < NATIVE_CTX, "the fit should have reduced the requested context"
-    assert with_mtp < without_mtp, (
-        "the MTP reserve must cost context, or there is nothing to re-fit"
-    )
+    assert (
+        with_mtp < without_mtp
+    ), "the MTP reserve must cost context, or there is nothing to re-fit"
 
 
 def _auto_then_forced(tmp_path: Path, *, auto_derived: bool):
@@ -180,14 +180,14 @@ def test_forcing_mtp_refits_the_context_against_its_reserve(tmp_path):
 
     assert cmd[cmd.index("--spec-type") + 1] == "draft-mtp"
     launched_ctx = int(cmd[cmd.index("-c") + 1])
-    assert launched_ctx < resolved_ctx, (
-        f"expected a re-fit below {resolved_ctx}, launched at {launched_ctx}"
-    )
+    assert (
+        launched_ctx < resolved_ctx
+    ), f"expected a re-fit below {resolved_ctx}, launched at {launched_ctx}"
 
     backend2._read_gguf_metadata(None)
-    assert launched_ctx <= _fit(backend2, resolved_ctx, mtp = True), (
-        "the launched context must fit the budget that now carries the reserve"
-    )
+    assert launched_ctx <= _fit(
+        backend2, resolved_ctx, mtp = True
+    ), "the launched context must fit the budget that now carries the reserve"
 
 
 def test_a_user_typed_context_is_still_honored_verbatim(tmp_path):
