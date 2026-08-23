@@ -129,7 +129,6 @@ LOCAL_MODELS = {
             "path": LOCAL_MODEL_ALPHA,
             "source": "models_dir",
             "model_format": "safetensors",
-            "runtime": "transformers",
             "capabilities": {
                 "can_train": True,
                 "can_chat": True,
@@ -150,7 +149,6 @@ LOCAL_MODELS = {
             "path": LOCAL_MODEL_BETA,
             "source": "models_dir",
             "model_format": "safetensors",
-            "runtime": "transformers",
             "capabilities": {
                 "can_train": True,
                 "can_chat": True,

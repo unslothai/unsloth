@@ -2,8 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // How /api/inference/status moves the chat-template override pair. The control is what the
-// next load or Apply sends and what the Hub settings page presents as the live config; the
-// loaded baseline is what the resident server is running and what a rollback resends.
+// next load or Apply sends; the loaded baseline is what the resident server is running and
+// what a rollback resends.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

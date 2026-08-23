@@ -4,20 +4,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { settingsGgufVariantForRow } from "../src/features/hub/inventory/settings-identity.ts";
-import type {
-  CachedInventoryRow,
-  LocalInventoryRow,
-} from "../src/features/hub/inventory/types.ts";
 import {
-  isOllamaLinkPath,
-  isStandaloneGgufPath,
-  modelDisplayName,
+  ggufVariantsMatch,
   modelIdsMatch,
   normalizeModelIdentity,
-  publicModelId,
-  residentModelIdMatches,
-} from "../src/features/hub/lib/model-identity.ts";
+} from "../src/lib/model-identity.ts";
 import {
   installLocalStorageFake,
   registerBundlerResolver,
@@ -40,8 +31,16 @@ store.set(
 
 const { listPerModelConfigs, resolveInitialConfig, savePerModelConfig } =
   await import("../src/features/model-picker/model-config/per-model-config.ts");
-const { modelStorageKey, splitQuantSuffix } = await import(
-  "../src/features/model-picker/model-config/model-identity.ts"
+const {
+  isOllamaLinkPath,
+  isStandaloneGgufPath,
+  modelDisplayName,
+  modelStorageKey,
+  publicModelId,
+  splitQuantSuffix,
+} = await import("../src/features/model-picker/model-config/model-identity.ts");
+const { residentModelIdMatches } = await import(
+  "../src/features/chat/lib/resident-model-match.ts"
 );
 
 function config(maxSeqLength: number, kvCacheDtype: string | null = null) {
@@ -192,6 +191,12 @@ test("Ollama link paths are recognised the way the resolver excludes them", () =
     isOllamaLinkPath("C:\\Users\\u\\.ollama\\models\\.studio_links\\q\\a.gguf"),
     true,
   );
+  assert.equal(
+    isOllamaLinkPath(
+      "ollama-manifest:%2Fhome%2Fu%2F.ollama%2Fmodels%2Fmanifests%2Fllama3",
+    ),
+    true,
+  );
   // Only those exact segments, not a directory that merely contains the name.
   assert.equal(isOllamaLinkPath("/srv/studio_links_backup/a.gguf"), false);
   assert.equal(isOllamaLinkPath("/srv/models/Qwen3-8B-Q4_K_M.gguf"), false);
@@ -199,33 +204,10 @@ test("Ollama link paths are recognised the way the resolver excludes them", () =
   assert.equal(isOllamaLinkPath(null), false);
 });
 
-test("a standalone gguf keeps one settings identity across surfaces", () => {
-  const loose = {
-    kind: "local",
-    path: "/srv/models/Qwen3-8B-Q4_K_M.gguf",
-    // What hub/services/models/common.py emits for a single scanned file.
-    formatVariant: "Q4_K_M",
-  } as LocalInventoryRow;
-  // The Chat picker opens the same file with no variant, so adopting the filename label would split the config.
-  assert.equal(settingsGgufVariantForRow(loose), null);
-
-  // A GGUF directory still has a variant slot for the quant lookup to fill.
-  const repoDir = {
-    kind: "local",
-    path: "/srv/models/Qwen3-8B-GGUF",
-    formatVariant: null,
-  } as LocalInventoryRow;
-  assert.equal(settingsGgufVariantForRow(repoDir), null);
-  const lmStudioDir = {
-    kind: "local",
-    path: "/srv/lmstudio/Qwen3-8B-GGUF",
-    formatVariant: "Q8_0",
-  } as LocalInventoryRow;
-  assert.equal(settingsGgufVariantForRow(lmStudioDir), "Q8_0");
-
-  // Cached repo rows are unaffected (cache_inventory.py never sets one).
-  const cached = { kind: "cache", formatVariant: null } as CachedInventoryRow;
-  assert.equal(settingsGgufVariantForRow(cached), null);
+test("GGUF variants match case-insensitively after trimming", () => {
+  assert.equal(ggufVariantsMatch(" Q4_K_M ", "q4_k_m"), true);
+  assert.equal(ggufVariantsMatch("Q4_K_M", "Q8_0"), false);
+  assert.equal(ggufVariantsMatch(null, undefined), true);
 });
 
 // The backfill matches on the folded identity, unambiguous only because storage holds one record per model.

@@ -13,9 +13,8 @@ registerBundlerResolver();
 // somewhere the persistence cases below can read back.
 const { store: storageStore, fireWindowEvent } = installLocalStorageFake();
 
-const { pinKey, usePinnedModelsStore } = await import(
-  "../src/features/model-picker/components/model-selector/pinned-models.ts"
-);
+const { parsePinKey, pinKey, pinKeyMatchesRepo, usePinnedModelsStore } =
+  await import("../src/stores/pinned-models.ts");
 
 const STORAGE_KEY = "unsloth_pinned_models";
 
@@ -198,6 +197,16 @@ test("a repo key never moves a pin that was stored per quant", () => {
   usePinnedModelsStore.getState().movePinned(pinKey("r1"), "r2");
   usePinnedModelsStore.getState().movePinned("r2", pinKey("r1"));
   assert.deepEqual(usePinnedModelsStore.getState().pinned, ["r1::Q4_K_M", "r2"]);
+});
+
+test("pin identities match repository casing without changing the stored key", () => {
+  assert.equal(pinKeyMatchesRepo("Org/Model", "org/model"), true);
+  assert.equal(pinKeyMatchesRepo("ORG/MODEL::Q4_K_M", "org/model"), true);
+  assert.equal(pinKeyMatchesRepo("Org/Other::Q4_K_M", "org/model"), false);
+  assert.deepEqual(parsePinKey("ORG/MODEL::Q4_K_M"), {
+    repoId: "ORG/MODEL",
+    quant: "Q4_K_M",
+  });
 });
 
 // --- persistence -----------------------------------------------------------
@@ -496,8 +505,9 @@ test("the hub's pinned grid never makes a dataset row draggable", async () => {
     ),
     "utf8",
   );
+  assert.match(rows, /const deleteAction = deletableRepoId \? \(/);
   assert.match(
     rows,
-    /pin=\{\s*isDataset \|\| !deletableRepoId\s*\?\s*undefined/,
+    /pin=\{\s*isDataset\s*\?\s*undefined/,
   );
 });

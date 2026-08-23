@@ -3,9 +3,9 @@
 
 /**
  * #8893's fix skips the reload when the picked model is already resident. Identity is not
- * the whole of a load, though: the picker and Hub's Run button both pass a REMEMBERED
- * config without forceReload (chat-page.tsx stageOrLoad, hub-page.tsx handleRun), and the
- * backend reloads for any of those settings changing. Adopting on identity alone dropped
+ * the whole of a load, though: the picker passes a REMEMBERED config without forceReload
+ * (chat-page.tsx stageOrLoad), and the backend reloads for any of those settings changing.
+ * Adopting on identity alone dropped
  * them silently, because the same path rolls the panel back to the resident model and so
  * looks consistent either way.
  */
@@ -1406,8 +1406,8 @@ test("no config at all still adopts, whatever the resident runtime is", () => {
 /**
  * The nullable per-model settings are pinned for the same reason the standing four are, and
  * the reason is the applier rather than the field's type. `applyModelLoadConfigToRuntime`
- * writes the config over the runtime store before `selectModel` runs (`chat-page.tsx:3242`,
- * `hub-page.tsx:1329`) and resolves each of these with `?? null`, so the snapshot
+ * writes the config over the runtime store before `selectModel` runs and resolves each
+ * of these with `?? null`, so the snapshot
  * `performLoad` takes reads null rather than inheriting the resident model's value. A pick
  * that leaves the box empty is asking for the default, not for silence.
  */

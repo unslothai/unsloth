@@ -66,7 +66,10 @@ test("a background auto-load hydrates a server-only override", () => {
   // Resolved under the advertised repository id as well as the load path: cached
   // inventory can hand back a different loadId, and the row was written under
   // whichever of the two was on screen.
-  assert.match(ADAPTER, /candidate\.id,\n\s*candidate\.ggufVariant \?\? null,/);
+  assert.match(
+    ADAPTER,
+    /aliasId: candidate\.id,\n\s*ggufVariant: candidate\.ggufVariant \?\? null,/,
+  );
   // And both the preflight and the load send what was resolved, not the raw config.
   assert.equal(
     ADAPTER.match(/llama_extra_args: resolvedExtraArgs \?\? \[\]/g)?.length,
@@ -74,18 +77,6 @@ test("a background auto-load hydrates a server-only override", () => {
   );
   // A diffusion GGUF takes none of them, so it is not fetched for either.
   assert.match(ADAPTER, /candidate\.kind === "gguf" &&\s*\n?\s*!isDiffusion/);
-});
-
-const HUB = readFileSync(
-  path.join(HERE, "..", "src/features/hub/hub-page.tsx"),
-  "utf8",
-);
-
-test("applying from the Hub settings page carries the arguments into the load", () => {
-  // applyPerModelConfigToRuntime does not store llamaExtraArgs, so a selection made
-  // without the config left the field undefined: the load omitted it, the route kept
-  // the resident server's old list, and an edit or a clear did nothing.
-  assert.match(HUB, /forceReload: true,\n(\s*\/\/.*\n)*\s*config,/);
 });
 
 test("a collapsed section stops objecting once nothing is left to object to", () => {
@@ -183,7 +174,7 @@ test("the panel adopts a shared server config without overwriting a live edit", 
   // with whatever the resident model is running.
   assert.match(
     PANEL,
-    /const storedAtStart = resolveInitialConfig\(\s*\n?\s*configId,\s*\n?\s*target\.ggufVariant,\s*\n?\s*\)\.config;/,
+    /const storedAtStart = resolveInitialConfig\(\s*\n?\s*target\.id,\s*\n?\s*target\.ggufVariant,\s*\n?\s*\)\.config;/,
   );
   assert.match(
     PANEL,
@@ -192,7 +183,7 @@ test("the panel adopts a shared server config without overwriting a live edit", 
   // Whitespace-tolerant: the call carries an eviction list now, so it spans lines.
   assert.match(
     PANEL,
-    /savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*rememberedConfig,/,
+    /savePerModelConfig\(\s*target\.id,\s*target\.ggufVariant,\s*rememberedConfig,/,
   );
   assert.match(PANEL, /configRef\.current === configAtStart/);
   assert.match(PANEL, /rememberRef\.current === rememberAtStart/);
@@ -258,21 +249,11 @@ const CHAT_PAGE = readFileSync(
 test("a launch that only applies the remembered config still carries its arguments", () => {
   // applyPerModelConfigToRuntime has no field for the launch flags, and /load only
   // inherits them from the SAME resident model, so a cold launch or a switch from
-  // another model ran without the arguments this model was remembered with. Both
-  // paths that load through the runtime alone now pass the config itself.
-  assert.match(
-    HUB,
-    /\.\.\.\(rememberedConfig \? \{ config: rememberedConfig \} : \{\}\),/,
-  );
-  assert.match(
-    CHAT_PAGE,
-    /const remembered = rememberedConfigFor\(selection\);/,
-  );
-  assert.match(
-    CHAT_PAGE,
-    /\.\.\.\(remembered \? \{ config: remembered \} : \{\}\),/,
-  );
+  // another model ran without the arguments this model was remembered with. The
+  // path that loads through the runtime alone now passes the config itself.
+  assert.match(CHAT_PAGE, /const remembered = rememberedConfigFor\(selection\);/);
+  assert.match(CHAT_PAGE, /\.\.\.\(remembered \? \{ config: remembered \} : \{\}\),/);
   // Nothing is invented when there is no remembered config: the field stays absent,
   // which is what lets /load keep a resident model's own flags.
-  assert.doesNotMatch(HUB, /config: rememberedConfig \?\? null/);
+  assert.doesNotMatch(CHAT_PAGE, /config: remembered \?\? null/);
 });

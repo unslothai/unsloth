@@ -91,7 +91,7 @@ _n = [0]
 _failed: list[str] = []
 
 
-# Ported from features/hub/lib/local-path.ts and features/hub/lib/model-identity.ts.
+# Ported from src/lib/local-path.ts and src/lib/model-identity.ts.
 _LOCAL_PATH_PREFIX_RE = re.compile(
     r"^(?:/|\.{1,2}(?:$|[\\/])|~(?:$|[\\/])|~[^\\/]+[\\/]|[A-Za-z]:[\\/]|\\\\)"
 )
@@ -108,7 +108,7 @@ def _normalize_case_insensitive_path(path: str, min_length: int) -> str:
 
 
 def _normalize_model_identity(model_id: str) -> str:
-    """Mirror of normalizeModelIdentity in features/hub/lib/model-identity.ts.
+    """Mirror of normalizeModelIdentity in src/lib/model-identity.ts.
 
     Case folding is not unconditional there: a plain POSIX path keeps its case,
     because /models/Foo.gguf and /models/foo.gguf are different files. Only a hub

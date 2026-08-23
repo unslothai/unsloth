@@ -209,6 +209,39 @@ def test_variant_resolves_across_all_cache_roots(monkeypatch, tmp_path):
     assert resolved == second_root / "snapshots" / "bbb" / "Model-Q4_K_M.gguf"
 
 
+def test_variant_reveal_stays_with_the_selected_cache_copy(monkeypatch, tmp_path):
+    active_root = tmp_path / "active"
+    previous_root = tmp_path / "previous"
+    active_repo = active_root / "models--Org--Repo"
+    previous_repo = previous_root / "models--Org--Repo"
+    active = _revision(
+        active_repo / "snapshots" / "active-rev",
+        2_000.0,
+        ["Model-Q4_K_M.gguf"],
+    )
+    previous = _revision(
+        previous_repo / "snapshots" / "previous-rev",
+        1_000.0,
+        ["Model-Q4_K_M.gguf"],
+    )
+    _patch_caches(
+        monkeypatch,
+        [_repo(active_repo, [active]), _repo(previous_repo, [previous])],
+    )
+    monkeypatch.setattr(
+        "hub.utils.hf_cache_state.hf_cache_roots",
+        lambda: [active_root, previous_root],
+    )
+
+    resolved = routes_models._resolve_cached_model_path(
+        "Org/Repo",
+        "Q4_K_M",
+        str(previous_repo),
+    )
+
+    assert resolved == previous_repo / "snapshots" / "previous-rev" / "Model-Q4_K_M.gguf"
+
+
 def test_repo_path_matches_largest_visible_cache_entry(monkeypatch, tmp_path):
     first_root = tmp_path / "active"
     second_root = tmp_path / "default"

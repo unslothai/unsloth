@@ -6,7 +6,7 @@ import test from "node:test";
 
 // The indicator .tsx pulls in the router, motion and hugeicons, so it cannot be
 // imported here. The status to row mapping lives in a plain module, driven directly.
-import { modelIdsMatch } from "../src/features/hub/lib/model-identity.ts";
+import { modelIdsMatch } from "../src/lib/model-identity.ts";
 import {
   type LoadedModelEntry,
   describeDiffusionStatus,

@@ -624,7 +624,7 @@ test("opening the panel ticks Remember for any model with a resolvable row", () 
   // the entry, so a merge that comes out default is a clear that has to travel.
   assert.match(
     PANEL,
-    /savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*rememberedConfig,/,
+    /savePerModelConfig\(\s*target\.id,\s*target\.ggufVariant,\s*rememberedConfig,/,
   );
   // Whatever that write evicted is cleared before the block returns, or a dropped
   // model keeps applying its server row with nothing able to forget it.

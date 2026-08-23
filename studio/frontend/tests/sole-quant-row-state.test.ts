@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { soleQuantRowState } from "../src/features/model-picker/components/model-selector/row-identity.ts";
+import {
+  ggufVariantMayOverlapResidentForPicker,
+  soleQuantRowState,
+} from "../src/features/model-picker/components/model-selector/row-identity.ts";
 
 const REPO = "unsloth/Qwen3-8B-GGUF";
 const OTHER_REPO = "unsloth/Llama-3.1-8B-Instruct-GGUF";
@@ -51,6 +54,29 @@ test("repo resident with no quant reported: not this row", () => {
     selected: false,
     loaded: false,
   });
+});
+
+test("cache rewrites distinguish resident and sibling quants", () => {
+  assert.equal(
+    ggufVariantMayOverlapResidentForPicker(REPO, QUANT, REPO, QUANT),
+    true,
+  );
+  assert.equal(
+    ggufVariantMayOverlapResidentForPicker(REPO, QUANT, REPO, "Q8_0"),
+    false,
+  );
+  assert.equal(
+    ggufVariantMayOverlapResidentForPicker(REPO, " q4_k_m ", REPO, QUANT),
+    true,
+  );
+  assert.equal(
+    ggufVariantMayOverlapResidentForPicker(REPO, null, REPO, "Q8_0"),
+    true,
+  );
+  assert.equal(
+    ggufVariantMayOverlapResidentForPicker(OTHER_REPO, QUANT, REPO, QUANT),
+    false,
+  );
 });
 
 test("another model resident: the picker's value still selects the row", () => {

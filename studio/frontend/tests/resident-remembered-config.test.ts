@@ -21,8 +21,8 @@ const {
 );
 
 // What /api/inference/status reports as model_identifier after an API auto-switch: the concrete
-// snapshot path the resolver index handed the loader. The repo id is what the Hub keys this
-// model's settings by (modelConfigIdentity) and what status.active_model reports.
+// snapshot path the resolver index handed the loader. The repo id is what the picker keys this
+// model's settings by, and what status.active_model reports.
 const SNAPSHOT_PATH =
   "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/2f1c9ab";
 const REPO_ID = "unsloth/Repo-GGUF";

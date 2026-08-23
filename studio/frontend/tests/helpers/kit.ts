@@ -3,9 +3,6 @@
 
 import { register } from "node:module";
 
-import type { ResidentAdoptionState } from "../../src/features/hub/lib/adopt-inference-status.ts";
-import type { ResidentStatusRefreshTargets } from "../../src/features/hub/lib/resident-status-refresh.ts";
-
 /**
  * Teach the loader the two resolution rules vite and tsconfig's "bundler" mode give the
  * app. Call before dynamically importing any src module that resolves that way.
@@ -84,89 +81,4 @@ export function installLocalStorageFake(): {
       return set?.size ?? 0;
     },
   };
-}
-
-/** The chat-runtime store as it stands before anything has hydrated it. */
-export function emptyStore(
-  overrides: Partial<ResidentAdoptionState> = {},
-): ResidentAdoptionState {
-  return {
-    checkpoint: null,
-    checkpointIsExternal: false,
-    activeGgufVariant: null,
-    modelLoading: false,
-    // Off by default, as the setting is, so a test opts in to the stash case.
-    idleUnloadArmed: false,
-    ...overrides,
-  };
-}
-
-/** Records the store actions adoptResidentModelStatus takes, in order. */
-export function spies() {
-  const calls: string[] = [];
-  const previouslySeen: { checkpoint: string | null; ggufVariant: string | null }[] =
-    [];
-  return {
-    calls,
-    previouslySeen,
-    actions: {
-      setCheckpoint(checkpointId: string, ggufVariant: string | null) {
-        calls.push(`setCheckpoint:${checkpointId}:${ggufVariant ?? ""}`);
-      },
-      applyStatus(previous: {
-        checkpoint: string | null;
-        ggufVariant: string | null;
-      }) {
-        calls.push("applyStatus");
-        previouslySeen.push(previous);
-      },
-    },
-  };
-}
-
-/** A window/document pair whose events and visibility a test drives by hand. */
-export function fakeTargets(): ResidentStatusRefreshTargets & {
-  hidden: boolean;
-  fire: (target: "window" | "document", type: string) => void;
-  listenerCount: () => number;
-} {
-  const listeners = new Map<string, Set<EventListenerOrEventListenerObject>>();
-  const key = (target: string, type: string) => `${target}:${type}`;
-  const make = (target: "window" | "document") => ({
-    addEventListener(type: string, fn: EventListenerOrEventListenerObject) {
-      const set = listeners.get(key(target, type)) ?? new Set();
-      set.add(fn);
-      listeners.set(key(target, type), set);
-    },
-    removeEventListener(type: string, fn: EventListenerOrEventListenerObject) {
-      listeners.get(key(target, type))?.delete(fn);
-    },
-  });
-  const visibility = { hidden: false };
-  const state = {
-    get hidden() {
-      return visibility.hidden;
-    },
-    set hidden(next: boolean) {
-      visibility.hidden = next;
-    },
-    window: make("window"),
-    document: {
-      ...make("document"),
-      get hidden() {
-        return visibility.hidden;
-      },
-    },
-    fire(target: "window" | "document", type: string) {
-      for (const fn of listeners.get(key(target, type)) ?? []) {
-        (fn as EventListener)(new Event(type));
-      }
-    },
-    listenerCount() {
-      let total = 0;
-      for (const set of listeners.values()) total += set.size;
-      return total;
-    },
-  };
-  return state as never;
 }

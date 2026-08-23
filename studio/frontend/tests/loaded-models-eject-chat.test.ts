@@ -6,7 +6,7 @@ import test from "node:test";
 
 // The real comparator, not a stand-in: scoping the eject to one row is the whole
 // behaviour, and a permissive fake would prove nothing about it.
-import { modelIdsMatch } from "../src/features/hub/lib/model-identity.ts";
+import { modelIdsMatch } from "../src/lib/model-identity.ts";
 import {
   type ResidentChatModel,
   ejectChatModel,

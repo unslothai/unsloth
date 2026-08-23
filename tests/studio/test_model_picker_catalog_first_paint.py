@@ -39,7 +39,11 @@ def test_curated_catalog_becomes_rows_without_a_request():
     # The recommendable gate now runs in `keep`, over seeds and listing rows alike.
     assert "isRecommendable: isRecommendableFormat(r.id, r.isGguf, isMac)," in source
     # Device fit reads the catalog size, not an id "<n>B" guess.
-    assert "curatedSizeBytes: catalog ? curatedSizeBytesFor(id, catalog) : undefined," in seed
+    normalized_seed = " ".join(seed.split())
+    assert (
+        "curatedSizeBytes: catalog ? curatedSizeBytesFor(id, catalog) : undefined,"
+        in normalized_seed
+    )
 
 
 def test_listing_takes_over_each_id_once_it_reports_it():

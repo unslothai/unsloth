@@ -116,10 +116,9 @@ test("a model still loading is not loaded yet", () => {
   );
 });
 
-// The trigger tick was only one of three places claiming "loaded", and all three
-// read the picker selection. The dropdown's own green "Loaded" badge and the
-// Model hub cards kept it after an eviction, which is the same lie in a second
-// and third spot.
+// The trigger tick was only one of two places claiming "loaded", and both read
+// the picker selection. The dropdown's own green "Loaded" badge kept it after
+// an eviction, which is the same lie in a second spot.
 test("the picker's Loaded badge asks residency, not the selection", () => {
   const pickers = readFileSync(
     new URL(
@@ -138,14 +137,6 @@ test("the picker's Loaded badge asks residency, not the selection", () => {
     pickers,
     /const loadedModelId = useChatRuntimeStore\(\(s\) => s\.params\.checkpoint\)/,
   );
-});
-
-test("the hub cards ask residency before saying Loaded", () => {
-  const hub = readFileSync(
-    new URL("../src/features/hub/hub-page.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(hub, /residentCheckpoint !== null\s*\n?\s*\? checkpoint/);
 });
 
 // Nothing in the chat runtime polls /status: refresh runs on mount and when the

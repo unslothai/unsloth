@@ -81,8 +81,11 @@ export async function loadManagedLlamaFlags(): Promise<any> {
 }
 export async function fetchLoadExtraArgs(
   _loadId: string,
-  _aliasId?: string | null,
-  _variant?: string | null,
+  _options?: {
+    aliasId?: string;
+    ggufVariant?: string | null;
+    fallbackKeys?: readonly string[];
+  },
 ): Promise<{ tokens: string[]; explicit: boolean }> {
   return { tokens: [], explicit: false };
 }

@@ -921,7 +921,7 @@ test("data-backed routes own reload readiness until hydration settles", () => {
   );
   assert.match(
     hubPageSource,
-    /!initialResidentStatusSettled[\s\S]*?\(isDiscoverTab \? isLoading : !inventorySettled\)[\s\S]*?unsloth:app-shell-ready/,
+    /\(isDiscoverTab \? isLoading : !inventorySettled\)[\s\S]*?unsloth:app-shell-ready/,
   );
   assert.match(
     projectsPageSource,

@@ -4,6 +4,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { hubModelFitsDevice } from "../src/lib/model-device-fit.ts";
+
 import {
   IMAGE_CATALOG,
   VIDEO_CATALOG,
@@ -256,6 +258,34 @@ test("a task row is sized against the device the load lands on", () => {
   const sdxl = seed(SDXL);
   assert.equal(hfModelFitsDevice(sdxl, twoCards), true);
   assert.equal(hfModelFitsDevice(sdxl, loadScopedGpu(twoCards, true)), false);
+});
+
+test("Hub fit filtering uses the backend each model format loads on", () => {
+  const gpu = {
+    memoryTotalGb: 8,
+    systemRamAvailableGb: 0,
+    budgetKnown: true,
+  };
+  const inferenceGpu = {
+    memoryTotalGb: 2,
+    systemRamAvailableGb: 0,
+    budgetKnown: true,
+  };
+  const model = { id: "org/model-8B", totalParams: 8e9 };
+
+  assert.equal(hubModelFitsDevice(model, gpu, inferenceGpu), true);
+  assert.equal(
+    hubModelFitsDevice({ ...model, isGguf: true }, gpu, inferenceGpu),
+    false,
+  );
+  assert.equal(
+    hubModelFitsDevice(
+      { ...model, id: "org/model-8B-GGUF" },
+      gpu,
+      inferenceGpu,
+    ),
+    false,
+  );
 });
 
 test("both search lists judge a curated id the same way", () => {

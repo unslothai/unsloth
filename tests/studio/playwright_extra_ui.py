@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unsloth extra-UI Playwright test: Compare tab, Recipes editor, /export, /studio, Settings tabs."""
+"""Unsloth extra-UI Playwright test: offline Hub, Compare, Recipes, Export, Studio, Settings."""
 
 import json
 import os
@@ -111,6 +111,211 @@ def page_crashed(pg, exc: Exception) -> bool:
         return True
     msg = str(exc).lower()
     return "has been closed" in msg or "target closed" in msg or "crash" in msg
+
+
+def exercise_offline_hub(browser, storage_state) -> None:
+    cached_repo = "offline-fixture/cached-model"
+    cached_title = "cached-model"
+    local_title = "Offline local model"
+    cache_path = "/offline/hf-cache/models--offline-fixture--cached-model"
+    cached_present = [True]
+    blocked_hf_requests: list[str] = []
+    reveal_payloads: list[dict] = []
+    delete_payloads: list[dict] = []
+    hugging_face_url = re.compile(
+        r"^https://(?:[^/]+\.)?(?:huggingface\.co|hf\.co)(?:/|$)"
+    )
+
+    def fulfill_json(route, body, status = 200):
+        route.fulfill(
+            status = status,
+            content_type = "application/json",
+            body = json.dumps(body),
+        )
+
+    def cached_models(route):
+        cached = []
+        if cached_present[0]:
+            cached.append(
+                {
+                    "repo_id": cached_repo,
+                    "model_format": "safetensors",
+                    "size_bytes": 8 * 1024 * 1024,
+                    "cache_path": cache_path,
+                }
+            )
+        fulfill_json(route, {"cached": cached})
+
+    def local_models(route):
+        fulfill_json(
+            route,
+            {
+                "models_dir": "/offline/models",
+                "lmstudio_dirs": [],
+                "models": [
+                    {
+                        "id": "/offline/models/local-model",
+                        "display_name": local_title,
+                        "path": "/offline/models/local-model",
+                        "model_format": "safetensors",
+                        "source": "models_dir",
+                    }
+                ],
+            },
+        )
+
+    def reject_hugging_face(route):
+        blocked_hf_requests.append(route.request.url)
+        route.abort("internetdisconnected")
+
+    def reveal_cached_model(route):
+        reveal_payloads.append(json.loads(route.request.post_data or "{}"))
+        fulfill_json(route, {})
+
+    def delete_cached_model(route):
+        delete_payloads.append(json.loads(route.request.post_data or "{}"))
+        cached_present[0] = False
+        fulfill_json(route, {})
+
+    def route_json(pattern, body):
+        hub_context.route(pattern, lambda route: fulfill_json(route, body))
+
+    hub_context = browser.new_context(
+        storage_state = storage_state,
+        viewport = {"width": 1280, "height": 900},
+        reduced_motion = "reduce",
+    )
+    install_view_transition_killer(hub_context)
+    hub_context.add_init_script(
+        """
+        localStorage.setItem("unsloth.hub.allModelsView", "grid");
+        localStorage.setItem("unsloth_pinned_models", "[]");
+        localStorage.setItem("unsloth_models_fit_on_device_only", "false");
+        """
+    )
+    hub_context.route(
+        hugging_face_url,
+        reject_hugging_face,
+    )
+    route_json(
+        "**/api/hub/hidden-models",
+        {"needles": [], "exact_ids": [], "exact_paths": []},
+    )
+    route_json("**/api/hub/cached-gguf", {"cached": []})
+    hub_context.route("**/api/hub/cached-models", cached_models)
+    hub_context.route("**/api/hub/local", local_models)
+    route_json("**/api/hub/datasets/cached", {"cached": []})
+    route_json("**/api/hub/datasets/local", {"datasets": []})
+    route_json(
+        "**/api/hub/delete-impact",
+        {
+            "repo_id": cached_repo,
+            "reclaimed_bytes": 8 * 1024 * 1024,
+            "retained_companions": [],
+            "freeable_companions": [],
+            "delete_block": None,
+            "blocked_by": [],
+        },
+    )
+    hub_context.route("**/api/models/reveal-cached-model", reveal_cached_model)
+    hub_context.route("**/api/hub/delete-cached", delete_cached_model)
+
+    hub_page = hub_context.new_page()
+    hub_page.set_default_timeout(30_000)
+    hub_page_errors: list[str] = []
+    hub_page.on("pageerror", lambda error: hub_page_errors.append(str(error)))
+    try:
+        hub_page.goto(
+            f"{BASE}/hub?tab=downloaded",
+            wait_until = "domcontentloaded",
+            timeout = 60_000,
+        )
+        cached_row = hub_page.get_by_role(
+            "button", name = cached_title, exact = True
+        )
+        local_row = hub_page.get_by_role(
+            "button", name = local_title, exact = True
+        )
+        cached_row.wait_for(state = "visible")
+        local_row.wait_for(state = "visible")
+
+        with hub_page.expect_event(
+            "requestfailed",
+            predicate = lambda request: hugging_face_url.match(request.url) is not None,
+        ):
+            cached_row.click()
+        hub_page.wait_for_function(
+            "() => new URL(window.location.href).searchParams.has('model')"
+        )
+        hub_page.get_by_role(
+            "heading", name = cached_title, exact = True
+        ).wait_for(state = "visible")
+        if not blocked_hf_requests:
+            raise AssertionError("the selected cached row made no rejected Hugging Face request")
+
+        hub_page.get_by_role(
+            "button", name = "Back to Hub", exact = True
+        ).click()
+        cached_row.wait_for(state = "visible")
+        cached_row.hover()
+        hub_page.locator('[role="tooltip"]').filter(
+            has_text = "On device. Ready to use locally."
+        ).wait_for(state = "visible")
+        more_options = hub_page.get_by_role(
+            "button", name = f"More options for {cached_repo}", exact = True
+        )
+        more_options.click()
+        with hub_page.expect_response("**/api/models/reveal-cached-model"):
+            hub_page.get_by_role(
+                "menuitem", name = re.compile(r"^Reveal in (?:Finder|Folder)$")
+            ).click()
+        if reveal_payloads != [
+            {
+                "repo_id": cached_repo,
+                "cache_path": cache_path,
+            }
+        ]:
+            raise AssertionError(f"unexpected reveal payloads: {reveal_payloads!r}")
+
+        more_options.click()
+        hub_page.get_by_role(
+            "menuitem", name = "Delete", exact = True
+        ).click()
+        delete_dialog = hub_page.get_by_role("alertdialog")
+        delete_dialog.get_by_test_id("delete-impact-reclaimed").wait_for(
+            state = "visible"
+        )
+        with hub_page.expect_response("**/api/hub/delete-cached"):
+            delete_dialog.get_by_role(
+                "button", name = "Delete", exact = True
+            ).click()
+        if delete_payloads != [
+            {
+                "repo_id": cached_repo,
+                "cache_path": cache_path,
+            }
+        ]:
+            raise AssertionError(f"unexpected delete payloads: {delete_payloads!r}")
+        cached_row.wait_for(state = "detached")
+        local_row.wait_for(state = "visible")
+
+        hub_page.goto(
+            f"{BASE}/hub?tab=downloaded&kind=datasets",
+            wait_until = "domcontentloaded",
+            timeout = 60_000,
+        )
+        hub_page.get_by_text(
+            "Discover and download datasets from Hugging Face.", exact = True
+        ).wait_for(state = "visible")
+        if hub_page.get_by_text("train on datasets locally", exact = False).count():
+            raise AssertionError("the removed Hub Train action is still advertised")
+        if hub_page_errors:
+            raise AssertionError(f"Hub page errors: {hub_page_errors!r}")
+        info(
+            "OK offline Hub: inventory, selection, reveal, delete, and dataset copy"
+        )
+    finally:
+        hub_context.close()
 
 
 with sync_playwright() as p:
@@ -352,6 +557,11 @@ with sync_playwright() as p:
     if not token:
         fail("no access token after change-password")
         sys.exit(1)
+    step("Hub offline inventory: selection, reveal, and delete")
+    try:
+        exercise_offline_hub(browser, ctx.storage_state())
+    except Exception as exc:
+        fail(f"offline Hub flow failed: {exc!r}")
     load_resp = evaluate_fetch(
         page,
         f"{BASE}/api/inference/load",

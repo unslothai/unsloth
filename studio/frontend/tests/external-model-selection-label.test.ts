@@ -14,7 +14,6 @@ import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
-import { modelDisplayName } from "../src/features/hub/lib/model-identity.ts";
 import type {
   ExternalConnectionRef,
   ExternalModelRef,
@@ -24,6 +23,9 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 // Both helpers reach across the tree the way vite resolves it: the "@/" alias and an
 // extensionless relative import.
 registerBundlerResolver();
+const { modelDisplayName } = await import(
+  "../src/features/model-picker/model-config/model-identity.ts"
+);
 const { compareModelDisplayName, externalModelLabel } = await import(
   "../src/features/chat/lib/external-model-label.ts"
 );

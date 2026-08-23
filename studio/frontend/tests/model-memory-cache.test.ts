@@ -259,8 +259,8 @@ test("subscribers receive every published value", async () => {
 
 test("saving model memory drops the auto-switch cache", async () => {
   // idle_unload_active is vetoed by residency, so the other endpoint's cached
-  // copy is wrong the moment this one is written. hub-page reads it on every
-  // status poll, so a stale value survives for the life of the page.
+  // copy is wrong the moment this one is written. A stale value can otherwise
+  // survive for the life of a consumer.
   const first = await autoSwitch.loadOpenAIAutoSwitchSettings();
   assert.ok(first);
   calls = [];
@@ -274,8 +274,7 @@ test("saving model memory drops the auto-switch cache", async () => {
 });
 
 test("a read invalidated in flight returns the post-write value, not the stale one", async () => {
-  // hub-page puts this straight into idleUnloadArmed, so handing back a
-  // response that predates the write is as bad as caching it.
+  // Handing back a response that predates the write is as bad as caching it.
   autoSwitch.invalidateOpenAIAutoSwitchSettings();
   nextBody = { ...API, idle_unload_active: true };
   release = () => {};
@@ -305,8 +304,7 @@ test("a read invalidated in flight returns the post-write value, not the stale o
 test("a caller arriving after the invalidation does not adopt the pre-write read", async () => {
   // The retry above covers the caller that started before the write. One that
   // arrives after it must not share that same GET either: the reply predates the
-  // write, and the hub poll puts it straight into idleUnloadArmed, where
-  // "disarmed" clears the user's selected checkpoint.
+  // write, or it can incorrectly disarm a consumer using the new setting.
   autoSwitch.invalidateOpenAIAutoSwitchSettings();
   nextBody = { ...API, idle_unload_active: true };
   release = () => {};

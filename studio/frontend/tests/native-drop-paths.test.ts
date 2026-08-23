@@ -8,11 +8,9 @@ import test from "node:test";
 import {
   OPEN_DOCUMENT_ATTACHMENT_ACCEPT,
   OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS,
-} from "../src/features/chat/open-document-accept.ts";
-import {
   TEXT_ATTACHMENT_ACCEPT,
   TEXT_ATTACHMENT_EXTENSIONS,
-} from "../src/features/chat/text-attachment-accept.ts";
+} from "../src/lib/attachment-accept.ts";
 import {
   dequeueNativeAttachments,
   enqueueNativeAttachments,
@@ -740,6 +738,6 @@ test("the composer adapter reads the shared text accept list", () => {
   );
   assert.match(
     attachmentContentSource,
-    /import \{ TEXT_ATTACHMENT_ACCEPT \} from "\.\/text-attachment-accept";/,
+    /TEXT_ATTACHMENT_ACCEPT,[\s\S]*?from "@\/lib\/attachment-accept";/,
   );
 });

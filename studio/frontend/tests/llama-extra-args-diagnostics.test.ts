@@ -602,7 +602,7 @@ test("the box is filled from the stored flags, not left looking empty", () => {
   // Resolved by the backend, whose folding rules are the ones the load applies.
   assert.match(
     body,
-    /fetchLoadModelOverride\(loadId, configId, target\.ggufVariant, keys\)/,
+    /fetchLoadModelOverride\(loadId, \{ ggufVariant: target\.ggufVariant, fallbackKeys: keys, \}\)/,
   );
   // Through the resolver, not a literal lookup: the backend folds identities and
   // falls back from repo:QUANT to the bare repo before it reads a row.
@@ -656,7 +656,7 @@ test("the row does not withdraw its objection when it unmounts", () => {
   // The panel retires it on a model change instead.
   assert.match(
     pageSource.replace(/\s+/g, " "),
-    /setExtraArgsLoadable\(true\); setExtraArgsHydrating\(target\.isGguf && !isDiffusion\); \}, \[configId, target\.ggufVariant, target\.isGguf, isDiffusion\]\)/,
+    /setExtraArgsLoadable\(true\); setExtraArgsHydrating\(target\.isGguf && !isDiffusion\); \}, \[target\.id, target\.ggufVariant, target\.isGguf, isDiffusion\]\)/,
   );
 });
 
@@ -780,10 +780,9 @@ test("hydration asks under the keys the load path uses", () => {
     pageSource.indexOf("export function ModelConfigPage("),
   );
   const body = panel.replace(/\s+/g, " ");
-  // A cached GGUF outside the active HF cache loads by its snapshot path while
-  // configId is the repo id, and the auto-switch loader reads the path-qualified
-  // key first, so an override left there is the one API loads apply.
-  assert.match(body, /modelOverrideKey\(loadId, target\.ggufVariant\), modelOverrideKey\(configId, target\.ggufVariant\), loadId,/);
+  // The order override_lookup_candidates uses on the backend: the variant-qualified
+  // key before the bare one, so a per-quant row is never shadowed by a repo-wide one.
+  assert.match(body, /modelOverrideKey\(loadId, target\.ggufVariant\), loadId,/);
   // Including the filename-label key an early build wrote for a loose .gguf.
   assert.match(body, /fileVariant \? \[`\$\{loadId\}:\$\{fileVariant\}`\] : \[\]/);
 });
