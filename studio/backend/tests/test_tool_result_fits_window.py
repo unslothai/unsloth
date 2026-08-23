@@ -1451,6 +1451,7 @@ class TestTheContinuationChunkDecodes:
 
         shown = out.split("\n\n... (")[0]
         blob = (tmp_path / _spill_path(out)).read_bytes()
-        assert blob[offset - 1 : offset - 1 + span].decode("utf-8") == text[
-            len(shown) : len(shown) + len(shown)
-        ]
+        assert (
+            blob[offset - 1 : offset - 1 + span].decode("utf-8")
+            == text[len(shown) : len(shown) + len(shown)]
+        )
