@@ -106,9 +106,50 @@ test("compare hides the shared provider instead of unmounting it", () => {
     /<ActiveBranchRegistrar\s+enabled=\{[^}]*!backgrounded\s*\}/,
     /<ThreadContextUsageRecount\s+enabled=\{[^}]*!backgrounded\s*\}/,
     /<ThreadNewChatSwitch[\s\S]*?nonce=\{newThreadNonce\}[\s\S]*?paused=\{backgrounded\}[\s\S]*?\/>/,
+    // The saved-thread switch stands down too. Its first effect calls
+    // requestTemporaryPromptQueueStop(), which names every temporary queue on
+    // the page rather than this provider's, so a hidden pane reaching it would
+    // stop a queue the compare view on screen owns. syncActiveThreadId is one of
+    // its dependencies, so the effect re-runs on every compare open and close.
+    /<ThreadAutoSwitch[\s\S]*?paused=\{backgrounded\}[\s\S]*?\/>/,
   ]) {
     assert.match(provider, gated);
   }
+
+  const savedThreadSwitch = componentSource(
+    provider,
+    "function ThreadAutoSwitch({",
+  );
+  assert.match(savedThreadSwitch, /if \(isLoading \|\| paused\) \{/);
+});
+
+test("a switch that never opens releases its nonce", () => {
+  // switchToNewThread() marks the nonce served before it resolves, so a
+  // rejection would leave the guard reading it as already handled and the same
+  // New Chat could never be retried in place. Both arms are handled, so the
+  // rejection is never unhandled either.
+  const switchSource = componentSource(
+    provider,
+    "function ThreadNewChatSwitch({",
+  );
+  assert.match(
+    switchSource,
+    /void Promise\.resolve\(aui\.threads\(\)\.switchToNewThread\(\)\)\.then\(/,
+  );
+  // Keyed by attempt as well as nonce: leaving for a saved chat releases the
+  // nonce, so two switches for one nonce can overlap and the older one must not
+  // release a thread the newer one legitimately opened.
+  assert.match(
+    switchSource,
+    /if \(\s*switchStateNow\.attempt === attempt &&\s*switchStateNow\.activeNonce === nonce\s*\) \{\s*switchStateNow\.activeNonce = null;\s*\}/,
+  );
+  assert.match(switchSource, /const attempt = switchState\.attempt \+ 1;/);
+  // clearAttachments() removes each staged file through the attachment adapter,
+  // so the promise needs handling and not just the synchronous call.
+  assert.match(
+    switchSource,
+    /void Promise\.resolve\(aui\.composer\(\)\.clearAttachments\(\)\)\.catch\(\s*\(\) => undefined,\s*\);/,
+  );
 });
 
 test("compare preserves a materialized project chat", () => {
@@ -152,7 +193,7 @@ test("a staged attachment does not follow the user into the next view", () => {
   );
   assert.match(
     runtimeProvider,
-    /const newThreadSwitchStateRef = useRef<NewThreadSwitchState>\(\{\s*activeNonce: null,\s*hasSwitched: false,\s*\}\);/,
+    /const newThreadSwitchStateRef = useRef<NewThreadSwitchState>\(\{\s*activeNonce: null,\s*hasSwitched: false,\s*attempt: 0,\s*\}\);/,
   );
   assert.match(
     runtimeProvider,

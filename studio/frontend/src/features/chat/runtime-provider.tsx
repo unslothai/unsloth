@@ -1600,15 +1600,22 @@ function createRuntimeHook(modelType: ModelType, pairId?: string) {
 type NewThreadSwitchState = {
   activeNonce: string | null;
   hasSwitched: boolean;
+  // Bumped by every switch this provider starts. The nonce alone does not
+  // identify an attempt: leaving for a saved chat and coming back releases the
+  // nonce, so two switches for the SAME nonce can be in flight at once and the
+  // older one must not be able to speak for the newer.
+  attempt: number;
 };
 
 function ThreadAutoSwitch({
   threadId,
   syncActiveThreadId = true,
+  paused,
   newThreadSwitchStateRef,
 }: {
   threadId: string;
   syncActiveThreadId?: boolean;
+  paused: boolean;
   newThreadSwitchStateRef: { current: NewThreadSwitchState };
 }): ReactElement | null {
   const aui = useAui();
@@ -1616,7 +1623,13 @@ function ThreadAutoSwitch({
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
 
   useEffect(() => {
-    if (isLoading) {
+    // Paused as well as loading: requestTemporaryPromptQueueStop() names every
+    // temporary queue on the page, not this provider's, so a backgrounded pane
+    // reaching it would stop a queue the view on screen owns. The switch itself
+    // is equally off-screen work; `paused` is a dependency, so both are paid on
+    // resume. Reachable while `mainThreadId` is still wrong, because
+    // `syncActiveThreadId` re-runs this effect on every compare open and close.
+    if (isLoading || paused) {
       return;
     }
     newThreadSwitchStateRef.current.activeNonce = null;
@@ -1641,6 +1654,7 @@ function ThreadAutoSwitch({
     isLoading,
     mainThreadId,
     newThreadSwitchStateRef,
+    paused,
     syncActiveThreadId,
     threadId,
   ]);
@@ -1685,11 +1699,18 @@ function ThreadNewChatSwitch({
     const shouldClearAttachments = switchState.hasSwitched;
     const clearAfterSwitch =
       shouldClearAttachments && switchState.activeNonce === null;
+    const attempt = switchState.attempt + 1;
+    switchState.attempt = attempt;
     switchState.activeNonce = nonce;
     switchState.hasSwitched = true;
     const clearAttachments = () => {
       try {
-        void aui.composer().clearAttachments();
+        // Chained, not just called: clearAttachments() removes each staged file
+        // through the attachment adapter, and a rejecting remove() would leave
+        // an unhandled rejection behind rather than be caught below.
+        void Promise.resolve(aui.composer().clearAttachments()).catch(
+          () => undefined,
+        );
       } catch {
         // No thread mounted yet, so there is no composer to carry anything over.
       }
@@ -1703,15 +1724,29 @@ function ThreadNewChatSwitch({
     requestTemporaryPromptQueueStop();
     // Switch to a fresh local thread without persisting it yet; persistence
     // still happens on first message append.
-    const switchResult = aui.threads().switchToNewThread();
-    if (clearAfterSwitch) {
-      void Promise.resolve(switchResult)
-        .then(() => {
-          if (newThreadSwitchStateRef.current.activeNonce !== nonce) return;
-          clearAttachments();
-        })
-        .catch(() => undefined);
-    }
+    void Promise.resolve(aui.threads().switchToNewThread()).then(
+      () => {
+        if (!clearAfterSwitch) return;
+        if (newThreadSwitchStateRef.current.activeNonce !== nonce) return;
+        clearAttachments();
+      },
+      () => {
+        // The fresh thread never opened, so the view is still on the outgoing
+        // one. Release the nonce: the guard at the top of this effect otherwise
+        // reads it as already served and the same New Chat can never be retried
+        // in place. Handled on both arms, so a rejection is never unhandled.
+        const switchStateNow = newThreadSwitchStateRef.current;
+        // By attempt, not by nonce alone: a later switch for the same nonce owns
+        // the thread it opened, and releasing it here would switch away from a
+        // chat the user may already be typing in.
+        if (
+          switchStateNow.attempt === attempt &&
+          switchStateNow.activeNonce === nonce
+        ) {
+          switchStateNow.activeNonce = null;
+        }
+      },
+    );
     useChatRuntimeStore.getState().setActiveThreadId(null);
   }, [aui, isLoading, newThreadSwitchStateRef, nonce, paused]);
 
@@ -2256,6 +2291,7 @@ export function ChatRuntimeProvider({
   const newThreadSwitchStateRef = useRef<NewThreadSwitchState>({
     activeNonce: null,
     hasSwitched: false,
+    attempt: 0,
   });
   useEffect(() => {
     if (!initialThreadId && !newThreadNonce) {
@@ -2293,6 +2329,7 @@ export function ChatRuntimeProvider({
           <ThreadAutoSwitch
             threadId={initialThreadId}
             syncActiveThreadId={syncActiveThreadId && !backgrounded}
+            paused={backgrounded}
             newThreadSwitchStateRef={newThreadSwitchStateRef}
           />
         )}
