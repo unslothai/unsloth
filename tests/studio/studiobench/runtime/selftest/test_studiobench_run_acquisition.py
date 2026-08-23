@@ -485,6 +485,29 @@ def test_a_resume_that_drops_the_external_probe_is_refused(studio, probe, monkey
     assert "probe_init_script" in str(excinfo.value)
 
 
+def test_an_unreadable_probe_is_refused_before_the_payload_is_archived(studio, monkeypatch):
+    """REGRESSION. A refusal must not cost the previous run's payload its standard path.
+
+    Reusing an `--out` without `--resume` archives the payload already there, and that archive used
+    to run before `SBENCH_EXTRA_INIT_SCRIPT` was read. A path typo therefore exited 2 having
+    installed nothing, launched nothing and recorded nothing, while `payload.jsonl` was gone from
+    the one name every reader opens: `--report`, `--assert-liveness` and the next `--resume`.
+    """
+
+    monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT", raising = False)
+    paths = Paths.under(studio["out"])
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+    recorded = paths.payload_jsonl.read_text(encoding = "utf-8")
+
+    monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", str(studio["out"] / "typo_not_a_file.js"))
+    assert sb.run(_args(studio, "--branch", "main")) == 2
+
+    assert paths.payload_jsonl.read_text(encoding = "utf-8") == recorded
+    assert sorted(p.name for p in paths.out.glob("payload-*.jsonl")) == []
+    # The refusal is still ahead of everything it was ahead of before.
+    assert studio["installed"] == ["main"]
+
+
 def test_a_resume_under_the_same_probe_still_resumes(studio, probe):
     """The control. A potency ladder that died is meant to be resumable as the ladder it was."""
 
