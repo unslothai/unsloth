@@ -413,9 +413,9 @@ def _within_room(out: str, room: int) -> None:
     """
     body = out.split("\n\n... (")[0]
     assert len(body) // _CHARS_PER_TOKEN <= room, "the body alone overruns the room"
-    assert len(out) // _CHARS_PER_TOKEN <= room + _RESULT_NOTICE_RESERVE, (
-        "the notice costs more than the reserve held back for it"
-    )
+    assert (
+        len(out) // _CHARS_PER_TOKEN <= room + _RESULT_NOTICE_RESERVE
+    ), "the notice costs more than the reserve held back for it"
 
 
 class TestEveryToolIsHeldToTheRoom:
@@ -431,9 +431,7 @@ class TestEveryToolIsHeldToTheRoom:
         _window(monkeypatch, 4096)
         _tokenizer(monkeypatch)
         monkeypatch.setattr(tools, "_web_search", lambda *a, **k: _dense(40_000))
-        out = tools.execute_tool(
-            "web_search", {"query": "flappy bird"}, result_budget_tokens = 120
-        )
+        out = tools.execute_tool("web_search", {"query": "flappy bird"}, result_budget_tokens = 120)
 
         assert len(out) < 40_000
         _within_room(out, 120)
@@ -474,9 +472,10 @@ class TestEveryToolIsHeldToTheRoom:
         _tokenizer(monkeypatch)
         page = _dense(40_000)
         monkeypatch.setattr(tools, "_web_search", lambda *a, **k: page)
-        assert tools.execute_tool(
-            "web_search", {"query": "flappy bird"}, result_budget_tokens = None
-        ) == page
+        assert (
+            tools.execute_tool("web_search", {"query": "flappy bird"}, result_budget_tokens = None)
+            == page
+        )
 
     def test_a_short_result_survives_a_thread_with_no_room(self, monkeypatch):
         """At zero room the notice IS the message, but only while it is the cheaper of the
@@ -485,9 +484,7 @@ class TestEveryToolIsHeldToTheRoom:
         _window(monkeypatch, 4096)
         _tokenizer(monkeypatch)
         monkeypatch.setattr(tools, "_web_search", lambda *a, **k: "done")
-        assert tools.execute_tool(
-            "web_search", {"query": "x"}, result_budget_tokens = 0
-        ) == "done"
+        assert tools.execute_tool("web_search", {"query": "x"}, result_budget_tokens = 0) == "done"
 
 
 class TestPruningOnlyTouchesStudioSpills:

@@ -10081,27 +10081,31 @@ def execute_tool(
     _REQUEST_RESULT_BUDGET.set(result_budget_tokens)
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "search_knowledge_base":
-        return _fit_result_to_room(_search_knowledge_base_with_budget(
-            arguments,
-            rag_scope,
-            effective_timeout,
-            cancel_event,
-        ))
+        return _fit_result_to_room(
+            _search_knowledge_base_with_budget(
+                arguments,
+                rag_scope,
+                effective_timeout,
+                cancel_event,
+            )
+        )
     if name == "search_conversation":
         # Scoped by thread id alone: the archive is this chat's own evicted turns, so it
         # works with or without a document rag_scope.
-        return _fit_result_to_room(_search_knowledge_base_with_budget(
-            arguments,
-            {
-                "thread_id": thread_id,
-                "branch_messages": conversation_branch,
-                "budget_tokens": conversation_budget_tokens,
-                "token_counter": conversation_token_counter,
-            },
-            effective_timeout,
-            cancel_event,
-            search_fn = _search_conversation,
-        ))
+        return _fit_result_to_room(
+            _search_knowledge_base_with_budget(
+                arguments,
+                {
+                    "thread_id": thread_id,
+                    "branch_messages": conversation_branch,
+                    "budget_tokens": conversation_budget_tokens,
+                    "token_counter": conversation_token_counter,
+                },
+                effective_timeout,
+                cancel_event,
+                search_fn = _search_conversation,
+            )
+        )
     if name == "render_html":
         return _fit_result_to_room(_render_html_result(arguments))
     if name.startswith(MCP_TOOL_PREFIX):
@@ -10142,27 +10146,31 @@ def execute_tool(
                 and parse_server_headers(row) == headers
             )
 
-        return _fit_result_to_room(call_tool_sync(
-            url = url,
-            headers = headers,
-            name = tool_name,
-            args = arguments,
-            timeout = effective_timeout,
-            use_oauth = bool(server.get("use_oauth")),
-            cancel_event = cancel_event,
-            scope = mcp_scope,
-            config_check = _config_current,
-        ))
+        return _fit_result_to_room(
+            call_tool_sync(
+                url = url,
+                headers = headers,
+                name = tool_name,
+                args = arguments,
+                timeout = effective_timeout,
+                use_oauth = bool(server.get("use_oauth")),
+                cancel_event = cancel_event,
+                scope = mcp_scope,
+                config_check = _config_current,
+            )
+        )
     if name == "web_search":
-        return _fit_result_to_room(_web_search(
-            arguments.get("query", ""),
-            url = arguments.get("url"),
-            timeout = effective_timeout,
-            cancel_event = cancel_event,
-            website_policy = website_policy,
-            include_images = search_images,
-            image_queries = arguments.get("image_queries"),
-        ))
+        return _fit_result_to_room(
+            _web_search(
+                arguments.get("query", ""),
+                url = arguments.get("url"),
+                timeout = effective_timeout,
+                cancel_event = cancel_event,
+                website_policy = website_policy,
+                include_images = search_images,
+                image_queries = arguments.get("image_queries"),
+            )
+        )
     # Both run with the session's sandbox as cwd, so a chat deleted mid-call
     # must not unlink it from under them.
     if name == "python":
@@ -10189,11 +10197,13 @@ def execute_tool(
     # so a chat deleted mid-call must not unlink it underneath.
     if name == "edit_file":
         with _session_in_flight(session_id):
-            return _fit_result_to_room(_edit_file(
-                arguments,
-                session_id = session_id,
-                disable_sandbox = disable_sandbox,
-            ))
+            return _fit_result_to_room(
+                _edit_file(
+                    arguments,
+                    session_id = session_id,
+                    disable_sandbox = disable_sandbox,
+                )
+            )
     return f"Unknown tool: {name}"
 
 
