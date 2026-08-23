@@ -734,37 +734,101 @@ class TestAZeroCapStaysZero:
         assert "truncated to" not in out
 
 
-class TestAnonymousCallsRetainNothing:
-    """`_get_workdir(None)` is the shared `_default` sandbox. A spill there outlives the
-    call under a path the next anonymous conversation can list and read, where before this
-    change the output existed only in that call's own response."""
+class TestOneChatsOutputStaysItsOwn:
+    """`_get_workdir(None)` is the shared `_default` sandbox, and a project's chats share
+    one session by design (`project_session_id`). A spill in either outlives the call under
+    a path the next chat can list and read, and can be pruned out from under the chat that
+    was told to page through it. Before this change that output existed only in the
+    originating response."""
 
     @staticmethod
-    def _spilled_to(monkeypatch, tmp_path, session_id):
+    def _spill_args(monkeypatch, tmp_path, session_id, thread_id = None):
         seen = {}
         # A real directory: the command runs with it as cwd, and a path that is not there
         # fails the call long before anything is truncated.
         monkeypatch.setattr(tools, "_get_workdir", lambda _sid: str(tmp_path))
         real = tools._truncate
 
-        def _recording(
-            text,
-            limit = None,
-            workdir = None,
-        ):
-            seen["workdir"] = workdir
-            return real(text, limit if limit is not None else 200, workdir = None)
+        def _recording(text, limit = None, workdir = None, **kwargs):
+            seen.update(kwargs, workdir = workdir)
+            return real(text, limit if limit is not None else 200)
 
         monkeypatch.setattr(tools, "_truncate", _recording)
         # Builtin printf over a brace expansion: no command substitution, because the
         # sandbox caps processes and a fork fails the call before it ever truncates.
-        tools._bash_exec("printf 'x%.0s' {1..5000}", None, 30, session_id)
+        tools._bash_exec(
+            "printf 'x%.0s' {1..5000}", None, 30, session_id, thread_id = thread_id
+        )
         return seen
 
     def test_a_call_without_a_session_does_not_spill(self, monkeypatch, tmp_path):
-        assert self._spilled_to(monkeypatch, tmp_path, None)["workdir"] is None
+        assert self._spill_args(monkeypatch, tmp_path, None)["workdir"] is None
 
-    def test_a_call_with_a_session_still_does(self, monkeypatch, tmp_path):
-        """The control: the whole feature has to keep working where the sandbox is the
+    def test_a_project_chat_without_a_thread_does_not_spill(self, monkeypatch, tmp_path):
+        """Nothing identifies the chat, and the session is shared with every other chat in
+        the project, so there is nowhere to put it that is only this chat's."""
+        session = tools.project_session_id("proj-1")
+
+        assert self._spill_args(monkeypatch, tmp_path, session)["scope"] is None
+
+    def test_two_project_chats_get_different_scopes(self, monkeypatch, tmp_path):
+        session = tools.project_session_id("proj-1")
+
+        first = self._spill_args(monkeypatch, tmp_path, session, "chat-a")["scope"]
+        second = self._spill_args(monkeypatch, tmp_path, session, "chat-b")["scope"]
+
+        assert first and second and first != second
+
+    def test_a_private_session_still_spills(self, monkeypatch, tmp_path):
+        """The control: the feature has to keep working where the sandbox is the
         conversation's own."""
-        assert self._spilled_to(monkeypatch, tmp_path, "chat-1")["workdir"] == str(tmp_path)
+        seen = self._spill_args(monkeypatch, tmp_path, "chat-1")
+
+        assert seen["workdir"] == str(tmp_path)
+        assert seen["scope"] == ""
+
+    def test_a_scope_puts_the_spill_in_its_own_directory(self, tmp_path):
+        """And the notice names that path, so paging still works from the sandbox cwd."""
+        text = "\n".join(str(i) for i in range(5_000))
+
+        out = tools._truncate(text, 200, workdir = str(tmp_path), scope = "abc123abc123")
+
+        assert _spill_path(out).startswith(f"{tools._SPILL_DIR}/abc123abc123/")
+        assert (tmp_path / _spill_path(out)).read_text().startswith("0\n1\n")
+
+    def test_a_scope_of_none_retains_nothing(self, tmp_path):
+        out = tools._truncate(
+            "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path), scope = None
+        )
+
+        assert "saved to" not in out
+        assert not (tmp_path / tools._SPILL_DIR).exists()
+
+
+class TestTheRetryHintIsInsideTheCap:
+    """`_missing_path_hint` is appended to the result and goes to the model with it, so it
+    is part of what has to fit. Added after the cap it is unbudgeted, and a failing
+    absolute path is dense text: on a thread with no room left those characters are the
+    overflow the cap exists to prevent."""
+
+    _HINT = " " + "x" * 400
+
+    def test_the_hint_is_charged_to_the_limit(self):
+        text = "\n".join(str(i) for i in range(5_000))
+
+        capped = tools._truncate(text, 1_000, hint = self._HINT)
+
+        assert capped.endswith(self._HINT)
+        body = capped.split("\n\n... (")[0]
+        assert len(body) <= 1_000 - len(self._HINT), "the hint was added on top of the cap"
+
+    def test_a_hint_too_large_for_the_room_is_dropped(self):
+        """Past half the room the output is worth more than the advice about it."""
+        text = "\n".join(str(i) for i in range(5_000))
+
+        capped = tools._truncate(text, 500, hint = self._HINT)
+
+        assert self._HINT not in capped
+
+    def test_a_result_that_fits_still_carries_it(self):
+        assert tools._truncate("ok", 1_000, hint = self._HINT) == "ok" + self._HINT

@@ -10186,6 +10186,7 @@ def execute_tool(
                 session_id,
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
+                thread_id = thread_id,
             )
     if name == "terminal":
         with _session_in_flight(session_id):
@@ -10196,6 +10197,7 @@ def execute_tool(
                 session_id,
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
+                thread_id = thread_id,
             )
     # Same in-flight guard as the two above: it writes into the session workdir,
     # so a chat deleted mid-call must not unlink it underneath.
@@ -13959,6 +13961,8 @@ def _truncate(
     text: str,
     limit: int | None = None,
     workdir: str | None = None,
+    scope: "str | None" = "",
+    hint: str = "",
 ) -> str:
     # Resolved per call, not bound at import: the default would freeze the constant
     # before any model is loaded, which is exactly when the window is still unknown.
@@ -13968,18 +13972,28 @@ def _truncate(
     # only for English, and a command that prints CJK or percent-escaped text costs two to
     # three times what the cap assumed.
     limit = _dense_char_limit(text, limit)
+    # The hint is appended to whatever comes back and goes to the model with it, so it is
+    # part of what has to fit. Measured here rather than added afterwards: a failing path
+    # is dense, tokenises badly, and on a thread with no room left a few hundred unbudgeted
+    # characters are the overflow this whole change exists to prevent. It may take at most
+    # half the room; past that the output is worth more than the advice about it.
+    if hint:
+        if len(hint) * 2 <= limit:
+            limit -= len(hint)
+        else:
+            hint = ""
     # Mode-neutral notice: this result serves both the streaming UI and
     # non-streaming callers and must stay byte-identical with and without an
     # output_callback (a regression-tested invariant), so it can't claim the
     # user saw the full output.
     if len(text) <= limit:
-        return text
+        return text + hint
     if limit <= 0 and len(_zero_room_stub(len(text), None, True)) >= len(text):
         # Decided BEFORE the spill: a result this short is served whole below, and writing
         # a file (and creating the spill directory) for output that is never cut is a side
         # effect with nothing on the other side of it.
-        return text
-    spill, complete = _spill_full_output(text, workdir)
+        return text + hint
+    spill, complete = _spill_full_output(text, workdir, scope)
     if limit <= 0:
         # No room for a body, so no room for the usual notice either: at this point the
         # notice IS the message, and the full one costs ~90 tokens of a budget that just
@@ -13988,14 +14002,14 @@ def _truncate(
         stub = _zero_room_stub(len(text), spill, complete)
         # A short result costs less than the notice explaining it is gone, and replacing
         # "done" with a longer sentence saves nothing and loses the answer.
-        return stub if len(stub) < len(text) else text
+        return (stub if len(stub) < len(text) else text) + hint
     head, on_boundary = _head_whole_lines(text, limit)
     if spill is None:
         return head + (
             f"\n\n... (truncated to {limit} chars for the model; {len(text)} chars "
             "total. The full output is not retained here; any files the code wrote "
             "persist in the working directory.)"
-        )
+        ) + hint
     # The rest is not advice, it is reachable: the sandbox persists between calls and the
     # model already has the terminal, so naming the exact next command turns a dead end
     # into paging. Truncating without one is what makes a model re-run the same command
@@ -14029,8 +14043,8 @@ def _truncate(
         # A cmd-only Windows host has none of sed, tail or head, so the command would fail
         # and the model would most likely re-run the command that truncated. Name where
         # the output is and stop there, rather than promising paging that cannot happen.
-        return head + common + ".)"
-    return head + common + f" -- continue with:\n  {resume})"
+        return head + common + ".)" + hint
+    return head + common + f" -- continue with:\n  {resume})" + hint
 
 
 def _fit_result_to_room(text, name = None):
@@ -14139,6 +14153,23 @@ _SPILL_MAX_TOTAL_BYTES = 64 * 1024 * 1024
 _SPILL_NAME_RE = re.compile(r"[0-9a-f]{12}\.txt")
 
 
+def _spill_scope(session_id: "str | None", thread_id: "str | None") -> "str | None":
+    """The sub-directory this call's spills belong in, or None for "retain nothing".
+
+    A project's chats share one sandbox session by design (`project_session_id`), and a
+    call with no session at all lands in the shared `_default` one. Retaining a result
+    unscoped in either means another chat can list `.unsloth_tool_output`, read output
+    that existed only in the first chat's response, and prune the very files that chat was
+    told to page through. A per-thread sub-directory keeps them apart; a private session
+    with no thread id keeps today's flat layout.
+    """
+    if not session_id:
+        return None
+    if thread_id:
+        return hashlib.sha256(thread_id.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+    return None if session_id.startswith(_PROJECT_SESSION_PREFIX) else ""
+
+
 def _spill_phrase(spill: str, complete: bool) -> str:
     """How the notice names the spill, which depends on whether all of it got there.
 
@@ -14161,7 +14192,9 @@ def _zero_room_stub(size: int, spill: "str | None", complete: bool) -> str:
     return f"(output omitted: {size} chars, no context room left{located})"
 
 
-def _spill_full_output(text: str, workdir: str | None) -> "tuple[str | None, bool]":
+def _spill_full_output(
+    text: str, workdir: str | None, scope: "str | None" = ""
+) -> "tuple[str | None, bool]":
     """Write the result into the sandbox; return its relative path and whether it is whole.
 
     ``(None, True)`` whenever it cannot be done -- no workdir, a read-only mount, a full
@@ -14169,20 +14202,24 @@ def _spill_full_output(text: str, workdir: str | None) -> "tuple[str | None, boo
     notice, because a hint naming a file that is not there is worse than admitting the
     output is gone.
     """
-    if not workdir or not os.path.isdir(workdir):
+    if not workdir or not os.path.isdir(workdir) or scope is None:
         return None, True
     try:
-        target_dir = os.path.join(workdir, _SPILL_DIR)
+        relative = f"{_SPILL_DIR}/{scope}" if scope else _SPILL_DIR
+        target_dir = os.path.join(workdir, *relative.split("/"))
         # The sandbox is a directory the model runs commands in, so `.unsloth_tool_output`
         # may already be a symlink it made, or one that came with a project opened as the
         # workdir. makedirs(exist_ok=True) and a plain open() both follow it, which writes
         # this result outside the sandbox with the backend's own permissions and then lets
         # the prune delete files there. Refuse instead: no spill means a notice without a
         # continuation hint, which is a great deal better than a write out of bounds.
-        if os.path.islink(target_dir):
+        if any(
+            os.path.islink(os.path.join(workdir, *relative.split("/")[: n + 1]))
+            for n in range(len(relative.split("/")))
+        ):
             return None, True
         os.makedirs(target_dir, exist_ok = True)
-        expected = os.path.join(os.path.realpath(workdir), _SPILL_DIR)
+        expected = os.path.join(os.path.realpath(workdir), *relative.split("/"))
         if os.path.realpath(target_dir) != expected:
             return None, True
         # Named from the CONTENT, not at random. The result has to come back byte-identical
@@ -14228,7 +14265,7 @@ def _spill_full_output(text: str, workdir: str | None) -> "tuple[str | None, boo
         _prune_spills(target_dir)
         # Relative, so the command works from the cwd the tools already run in, and so
         # the absolute sandbox path never reaches the model.
-        return f"{_SPILL_DIR}/{name}", complete
+        return f"{relative}/{name}", complete
     except Exception:
         logger.debug("tool result spill failed", exc_info = True)
         return None, True
@@ -14743,6 +14780,7 @@ def _python_exec(
     session_id: str | None = None,
     disable_sandbox: bool = False,
     output_callback = None,
+    thread_id: str | None = None,
 ) -> str:
     """Execute Python code in a subprocess sandbox.
 
@@ -14775,9 +14813,11 @@ def _python_exec(
     tmp_path = None
     _scratch_name = None
     workdir = _get_workdir(session_id)
-    # `_get_workdir(None)` is the shared `_default` sandbox. Spilling there would leave one
-    # anonymous conversation's output on disk under a path the next one can list and read,
-    # where before this change it existed only in that call's own response.
+    # `_get_workdir(None)` is the shared `_default` sandbox, and a project's chats share
+    # one session by design. Retaining a result in either, under a path the next chat can
+    # list, would leave behind output that existed only in this call's own response. See
+    # `_spill_scope`, which returns None for exactly those cases.
+    spill_scope = _spill_scope(session_id, thread_id)
     spill_dir = workdir if session_id else None
     call_token = _call_started(workdir)
     # Snapshot mtimes to detect new and overwritten files.
@@ -14866,8 +14906,11 @@ def _python_exec(
         # paths are judged against the real workdir (project sessions live outside
         # the default sandbox root).
         hint = _missing_path_hint(result, workdir)
-        result = _truncate(result, workdir = spill_dir) if result.strip() else "(no output)"
-        result += hint
+        result = (
+            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
+            if result.strip()
+            else "(no output)" + hint
+        )
         # Before ours is appended, and whether or not one is: a program's own
         # marker line is not an envelope.
         result = _defuse_sentinels(result)
@@ -14902,6 +14945,7 @@ def _bash_exec(
     session_id: str | None = None,
     disable_sandbox: bool = False,
     output_callback = None,
+    thread_id: str | None = None,
 ) -> str:
     """Execute a bash command in a subprocess sandbox.
 
@@ -14933,11 +14977,12 @@ def _bash_exec(
 
     workdir = None
     spill_dir = None
+    spill_scope = None
     call_token = None
     try:
         workdir = _get_workdir(session_id)
-        # Same reason as _python_exec: the no-session workdir is shared, so nothing is
-        # retained there.
+        # Same scoping as _python_exec: nothing is retained in a sandbox that is shared.
+        spill_scope = _spill_scope(session_id, thread_id)
         spill_dir = workdir if session_id else None
         call_token = _call_started(workdir)
         # Same pre-run snapshot as _python_exec. A command that writes a file used
@@ -15000,8 +15045,11 @@ def _bash_exec(
             result = f"Exit code {proc.returncode}:\n{result}"
         # Same missing-path healing as _python_exec.
         hint = _missing_path_hint(result, workdir)
-        result = _truncate(result, workdir = spill_dir) if result.strip() else "(no output)"
-        result += hint
+        result = (
+            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
+            if result.strip()
+            else "(no output)" + hint
+        )
         result = _defuse_sentinels(result)  # see _python_exec
         # Only for a chat that has an id (see _python_exec).
         if session_id:
