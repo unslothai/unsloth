@@ -13916,7 +13916,11 @@ def _cancel_watcher(
         cancel_event.wait(poll_interval) if cancel_event else None
 
 
-def _truncate(text: str, limit: int | None = None, workdir: str | None = None) -> str:
+def _truncate(
+    text: str,
+    limit: int | None = None,
+    workdir: str | None = None,
+) -> str:
     # Resolved per call, not bound at import: the default would freeze the constant
     # before any model is loaded, which is exactly when the window is still unknown.
     if limit is None:
