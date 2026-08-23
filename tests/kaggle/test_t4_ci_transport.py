@@ -222,9 +222,7 @@ class _PackedStub(_Stub):
                     self.peak_card_gb.get(card, 0.0),
                     sum(self.vram.get(n, 1.0) for n in live),
                 )
-                self.peak_card_legs[card] = max(
-                    self.peak_card_legs.get(card, 0), len(live)
-                )
+                self.peak_card_legs[card] = max(self.peak_card_legs.get(card, 0), len(live))
                 if len(live) > 1:
                     self.same_card_overlaps.append((card, sorted(live)))
                 if self.venv_root is not None:
@@ -245,7 +243,11 @@ class _HubStub(types.ModuleType):
     every ordering question this file asks would answer itself trivially.
     """
 
-    def __init__(self, hold = 0.02, fail_for = ()):
+    def __init__(
+        self,
+        hold = 0.02,
+        fail_for = (),
+    ):
         super().__init__("huggingface_hub")
         self.calls: list = []
         self.hold = hold
@@ -253,7 +255,11 @@ class _HubStub(types.ModuleType):
         self.hf_home_at_call: list = []
         self._lock = threading.Lock()
 
-    def snapshot_download(self, repo_id = None, **kw):
+    def snapshot_download(
+        self,
+        repo_id = None,
+        **kw,
+    ):
         with self._lock:
             self.calls.append(repo_id)
             self.hf_home_at_call.append(os.environ.get("HF_HOME"))
@@ -448,9 +454,7 @@ def test_a_finished_leg_gives_its_virtualenv_back(tmp_path):
     assert (
         stub.max_live_venvs <= ceiling
     ), f"{stub.max_live_venvs} virtualenvs were alive at once, ceiling {ceiling}"
-    assert list((tmp_path / "venvs").glob("venv_*")) == [], (
-        "a payload left its virtualenv behind"
-    )
+    assert list((tmp_path / "venvs").glob("venv_*")) == [], "a payload left its virtualenv behind"
     # ...and none of them was ever created on the artifact volume.
     assert stub.venvs_created, "no virtualenv was built at all"
     for created in stub.venvs_created:
@@ -2267,9 +2271,7 @@ def test_the_prefetch_lane_never_takes_a_card(tmp_path):
     assumes exactly two lanes compete for two cards.
     """
     hub = _HubStub()
-    driven = _drive_packed(
-        tmp_path, ALL_FOUR, gpus = 2, prefetch_repos = ("a/big", "b/small"), hub = hub
-    )
+    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2, prefetch_repos = ("a/big", "b/small"), hub = hub)
     assert driven["stood_down"] is None
     assert hub.calls == ["a/big", "b/small"], hub.calls
     # Every papermill call is a LEG. The prefetch is not one of them, so it
@@ -2305,9 +2307,7 @@ def test_a_failing_prefetch_does_not_fail_the_kernel(tmp_path):
     is not under test -- on a payload that is not even the subject of the run.
     """
     hub = _HubStub(fail_for = ("a/big", "b/small"))
-    driven = _drive_packed(
-        tmp_path, ALL_FOUR, gpus = 2, prefetch_repos = ("a/big", "b/small"), hub = hub
-    )
+    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2, prefetch_repos = ("a/big", "b/small"), hub = hub)
     assert driven["stood_down"] is None
     assert len(driven["stub"].papermill) == len(ALL_FOUR), driven["stub"].papermill
     assert all(r.get("returncode") == 0 for r in driven["results"].values()), driven["results"]
@@ -2340,9 +2340,9 @@ def test_the_prefetch_list_matches_the_models_the_legs_actually_load():
         assert len(found) == 1, f"{script} declares {found}"
         defaults.add(found[0])
 
-    assert set(PREFETCH_REPOS) == defaults, (
-        f"prefetching {sorted(set(PREFETCH_REPOS))} but the legs load {sorted(defaults)}"
-    )
+    assert (
+        set(PREFETCH_REPOS) == defaults
+    ), f"prefetching {sorted(set(PREFETCH_REPOS))} but the legs load {sorted(defaults)}"
     # gpt-oss first: ~12 GB against ~1 GB, and it is the leg the whole start
     # order is arranged around, so it is the one that needs the head start.
     assert "gpt-oss" in PREFETCH_REPOS[0], PREFETCH_REPOS
@@ -2387,7 +2387,11 @@ def test_the_last_prefetch_attempt_falls_back_to_classic_http():
     seen: list = []
 
     class _Recording(_HubStub):
-        def snapshot_download(self, repo_id = None, **kw):
+        def snapshot_download(
+            self,
+            repo_id = None,
+            **kw,
+        ):
             seen.append(os.environ.get("HF_HUB_DISABLE_XET"))
             raise RuntimeError("always")
 
@@ -2423,7 +2427,9 @@ def test_the_studio_prefetch_lands_in_studios_own_cache():
     """
     studio = build_kernel._studio_builder()
     notebook = studio.build_payload_notebook(
-        unsloth_ref = "x", repo_url = "https://h/r", payload_args = "--max-steps 8",
+        unsloth_ref = "x",
+        repo_url = "https://h/r",
+        payload_args = "--max-steps 8",
         phase = "install",
     )
     sources = ["".join(cell["source"]) for cell in notebook["cells"]]
@@ -2436,7 +2442,7 @@ def test_the_studio_prefetch_lands_in_studios_own_cache():
         f"{min(prefetches)}, so it would warm the image default instead"
     )
     # And it must not hardcode a root of its own alongside the inherited one.
-    assert '_HF_HOME = None' in sources[min(prefetches)], sources[min(prefetches)][:400]
+    assert "_HF_HOME = None" in sources[min(prefetches)], sources[min(prefetches)][:400]
 
 
 def test_the_studio_prefetch_follows_the_dispatched_models():
@@ -2452,9 +2458,7 @@ def test_the_studio_prefetch_follows_the_dispatched_models():
     defaults = studio._models_from("--max-steps 8")
     payload = (SMOKE_DIR.parent / "studio_gpu" / "run_studio_gpu.py").read_text(encoding = "utf-8")
     for flag in ("--chat-model", "--train-model"):
-        declared = re.search(
-            rf'ap\.add_argument\("{flag}", default = "([^"]+)"\)', payload
-        )
+        declared = re.search(rf'ap\.add_argument\("{flag}", default = "([^"]+)"\)', payload)
         assert declared, f"{flag} default not found in run_studio_gpu.py"
         assert declared.group(1) in defaults, (declared.group(1), defaults)
 
@@ -2505,8 +2509,7 @@ def test_the_report_shows_what_the_prefetch_achieved(tmp_path):
     )
     summary = tmp_path / "summary.md"
     proc = subprocess.run(
-        [sys.executable, str(CI_DIR / "report.py"), "--evidence", str(evidence),
-         "--expect", "1"],
+        [sys.executable, str(CI_DIR / "report.py"), "--evidence", str(evidence), "--expect", "1"],
         capture_output = True,
         text = True,
         env = {**os.environ, "GITHUB_STEP_SUMMARY": str(summary)},
@@ -2542,17 +2545,17 @@ def test_two_small_legs_do_share_a_card(tmp_path):
     """
     durations = {f"t4_{n}.ipynb": 0.4 for n in ALL_FOUR}
     driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2, durations = durations)
-    assert driven["stub"].same_card_overlaps, (
-        "no card ever held two legs at once, so the VRAM budget bought nothing"
-    )
+    assert driven[
+        "stub"
+    ].same_card_overlaps, "no card ever held two legs at once, so the VRAM budget bought nothing"
     assert max(driven["stub"].peak_card_legs.values()) == 2
     # The admission ledger has to balance. A leg that reserves and never
     # releases leaks capacity, and with four legs and four worker slots nothing
     # ever waits, so the leak is invisible until the day a fifth leg is wired
     # and one card silently stops taking work.
-    assert driven["card_load"] and all(
-        abs(v) < 1e-9 for v in driven["card_load"].values()
-    ), driven["card_load"]
+    assert driven["card_load"] and all(abs(v) < 1e-9 for v in driven["card_load"].values()), driven[
+        "card_load"
+    ]
     assert all(v == 0 for v in driven["card_count"].values()), driven["card_count"]
 
 
