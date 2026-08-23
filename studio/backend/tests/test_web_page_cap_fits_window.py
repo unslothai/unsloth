@@ -34,7 +34,11 @@ def _unknown_window(monkeypatch):
     # The request-scoped window is module state that outlives a test, and execute_tool
     # sets it deliberately. Restore it so one test cannot decide another's budget.
     token = tools._REQUEST_CONTEXT_TOKENS.set(tools._UNSET_CONTEXT_TOKENS)
+    # Measured counts are cached per model for the life of the process, so one test's
+    # backend double must not answer the next one's questions.
+    tools._PROBE_COUNT_CACHE.clear()
     yield
+    tools._PROBE_COUNT_CACHE.clear()
     tools._REQUEST_CONTEXT_TOKENS.reset(token)
 
 
@@ -593,3 +597,209 @@ class TestAConfiguredCapIsNeverRaised:
 
         assert tools._tool_result_char_budget() == tools._MIN_PAGE_CHARS
         assert tools._page_char_budget() == tools._MIN_PAGE_CHARS
+
+
+class TestTheProbeIsNotPaidForTwice:
+    """The measurement is worth its round trips; paying for it again is not.
+
+    `count_chat_tokens` is two llama-server calls -- `/apply-template` then `/tokenize` --
+    over a fresh connection each time, so every counter call here is two HTTP round trips
+    on the path between a tool finishing and the model seeing its result. Measured on the
+    merge base, with a 5,120-token window: an English result cost 2 counter calls and a
+    dense one (base64, hexdump, sha256sum) cost 4, on every single result, forever.
+
+    Three things were being bought and thrown away. The framing baseline is the same
+    number for every result the process ever truncates, and it was priced per result. Its
+    value cannot change the answer for a result that fits on its first count, and it was
+    priced before that count was taken. And an estimate already at or below the readable
+    floor is the answer whatever the tokenizer says, and it was measured anyway.
+
+    Nothing here may change what is returned. Every test below asserts the number the
+    merge base returns alongside the round trips it no longer takes.
+    """
+
+    _RATE = 1.33
+
+    def _serving(
+        self,
+        monkeypatch,
+        ctx,
+        rate = None,
+        identified = True,
+    ):
+        """A loaded llama.cpp backend that counts the calls it is asked to make."""
+        rate = self._RATE if rate is None else rate
+        calls = []
+
+        def count_chat_tokens(messages, *a, **k):
+            body = "".join(m["content"] for m in messages)
+            calls.append(len(body))
+            return 8 + int(len(body) / rate)
+
+        backend = SimpleNamespace(
+            is_loaded = True, context_length = ctx, count_chat_tokens = count_chat_tokens
+        )
+        if identified:
+            # What a real backend exposes once a GGUF is resident.
+            backend.model_identifier = f"Qwen3-4B::{ctx}::{rate}"
+            backend._gguf_load_identity = (("/models/qwen3-4b.gguf", 66306, 4242, 1),)
+            backend._chat_template_override = None
+        monkeypatch.setattr("routes.inference.get_llama_cpp_backend", lambda: backend)
+        return calls, backend
+
+    def test_an_estimate_at_the_floor_is_not_measured_at_all(self, monkeypatch):
+        """A 1,024-token window leaves a 358-token share, so the estimate is already below
+        the 2,000-character floor and `_dense_char_limit` clamps up to it whatever comes
+        back. The merge base spent 2 counter calls (4 HTTP round trips) rediscovering it.
+        """
+        _window(monkeypatch, 1024)
+        calls, _ = self._serving(monkeypatch, 1024)
+
+        kept = tools._dense_char_limit("0123456789abcdef" * 2000, tools._MAX_PAGE_CHARS)
+
+        assert kept == tools._MIN_PAGE_CHARS  # the merge base's answer, unchanged
+        assert calls == []
+
+    def test_a_result_that_fits_does_not_price_the_framing_baseline(self, monkeypatch):
+        """English is the common case and it fits on its first count. The baseline only
+        ever decides whether a count that came in OVER budget is a real measurement, so
+        for this result it is bought and never read: 2 counter calls where 1 answers."""
+        _window(monkeypatch, 5120)
+        calls, _ = self._serving(monkeypatch, 5120, rate = 4.2)
+        text = ("The build finished and the archive was uploaded to the release bucket. ") * 400
+        budget = tools._tool_result_char_budget()
+
+        kept = tools._dense_char_limit(text, budget)
+
+        assert kept == budget  # English keeps every character it was allowed, as before
+        assert len(calls) == 1
+        assert calls == [budget], "the one call is the measurement, not the baseline"
+
+    def test_the_baseline_is_priced_once_per_model_not_once_per_result(self, monkeypatch):
+        """A dense result does need the baseline. It is the same number for the next one."""
+        _window(monkeypatch, 5120)
+        calls, _ = self._serving(monkeypatch, 5120)
+        first = "0123456789abcdef" * 2000
+        second = "fedcba9876543210" * 1500
+
+        cold = tools._dense_char_limit(first, tools._tool_result_char_budget())
+        cold_calls = list(calls)
+        calls.clear()
+        tools._dense_char_limit(second, tools._tool_result_char_budget())
+
+        # A chunk of length 0 IS the baseline: the empty probe the guard measures against.
+        assert 0 in cold_calls, "the first dense result pays for the baseline"
+        assert calls, "the second result is still measured"
+        assert 0 not in calls, "but the baseline is answered from the cache"
+        assert len(calls) == len(cold_calls) - 1
+        # And the answer is still the measured one.
+        assert cold / self._RATE <= 5120 * tools._PAGE_CONTEXT_SHARE
+
+    def test_the_same_result_twice_costs_nothing_the_second_time(self, monkeypatch):
+        """Retries, regenerations and a model that runs the same command again."""
+        _window(monkeypatch, 5120)
+        calls, _ = self._serving(monkeypatch, 5120)
+        text = "0123456789abcdef" * 2000
+        budget = tools._tool_result_char_budget()
+
+        first = tools._dense_char_limit(text, budget)
+        assert calls, "the first pass must actually measure"
+        calls.clear()
+        second = tools._dense_char_limit(text, budget)
+
+        assert second == first
+        assert calls == []
+
+    def test_a_different_model_never_reads_the_previous_one_s_counts(self, monkeypatch):
+        """Same window, different tokenizer. The cache key carries the model's identity,
+        so a reload cannot be answered from the model it replaced."""
+        _window(monkeypatch, 5120)
+        text = "0123456789abcdef" * 2000
+        budget = tools._tool_result_char_budget()
+
+        dense_calls, _ = self._serving(monkeypatch, 5120, rate = 1.33)
+        dense = tools._dense_char_limit(text, budget)
+
+        sparse_calls, _ = self._serving(monkeypatch, 5120, rate = 4.2)
+        sparse = tools._dense_char_limit(text, budget)
+
+        assert sparse_calls, "the new model must be measured, not looked up"
+        assert sparse > dense, "and priced by its own tokenizer"
+        assert sparse == budget and dense_calls
+
+    def test_a_backend_that_cannot_name_its_model_is_not_cached(self, monkeypatch):
+        """No identity means no key that would change when the model does, so the safe
+        answer is to keep paying. This is also every lightweight test double."""
+        _window(monkeypatch, 5120)
+        calls, _ = self._serving(monkeypatch, 5120, identified = False)
+        text = "0123456789abcdef" * 2000
+        budget = tools._tool_result_char_budget()
+
+        first = tools._dense_char_limit(text, budget)
+        spent = len(calls)
+        calls.clear()
+        second = tools._dense_char_limit(text, budget)
+
+        assert second == first
+        assert len(calls) == spent
+        assert not tools._PROBE_COUNT_CACHE
+
+    def test_a_count_that_failed_is_never_remembered_as_an_answer(self, monkeypatch):
+        """A busy server is a property of the moment, not of the text. Caching the failure
+        would turn one timeout into a permanent estimate for that result."""
+        _window(monkeypatch, 5120)
+        state = {"fail": True}
+
+        def count_chat_tokens(messages, *a, **k):
+            if state["fail"]:
+                raise RuntimeError("llama-server is busy")
+            return 8 + int(sum(len(m["content"]) for m in messages) / self._RATE)
+
+        monkeypatch.setattr(
+            "routes.inference.get_llama_cpp_backend",
+            lambda: SimpleNamespace(
+                is_loaded = True,
+                context_length = 5120,
+                count_chat_tokens = count_chat_tokens,
+                model_identifier = "Qwen3-4B",
+                _gguf_load_identity = (("/models/qwen3-4b.gguf", 66306, 4242, 1),),
+                _chat_template_override = None,
+            ),
+        )
+        text = "0123456789abcdef" * 2000
+        budget = tools._tool_result_char_budget()
+
+        assert tools._dense_char_limit(text, budget) == budget  # the estimate stands
+        state["fail"] = False
+
+        assert tools._dense_char_limit(text, budget) < budget  # and is measured next time
+
+    def test_the_cache_cannot_grow_without_bound(self, monkeypatch):
+        _window(monkeypatch, 5120)
+        self._serving(monkeypatch, 5120)
+        budget = tools._tool_result_char_budget()
+
+        for index in range(tools._PROBE_COUNT_CACHE_ENTRIES + 40):
+            tools._dense_char_limit(f"{index:04d}" + "0123456789abcdef" * 2000, budget)
+
+        held = sum(len(entry) for entry in tools._PROBE_COUNT_CACHE.values())
+        assert held <= tools._PROBE_COUNT_CACHE_ENTRIES
+
+    def test_the_guard_still_rejects_a_template_that_renders_no_content(self, monkeypatch):
+        """The baseline is deferred, not dropped. A count that does not move off it is
+        still not a measurement, and the caller still keeps its estimate."""
+        _window(monkeypatch, 5120)
+        monkeypatch.setattr(
+            "routes.inference.get_llama_cpp_backend",
+            lambda: SimpleNamespace(
+                is_loaded = True,
+                context_length = 5120,
+                count_chat_tokens = lambda messages, *a, **k: 11,
+                model_identifier = "Gemma-4",
+                _gguf_load_identity = (("/models/gemma-4.gguf", 66306, 7, 1),),
+                _chat_template_override = None,
+            ),
+        )
+
+        assert tools._loaded_token_counter(5120)("0123456789abcdef" * 250) is None
+        assert tools._dense_char_limit("0123456789abcdef" * 2000, 7168) == 7168
