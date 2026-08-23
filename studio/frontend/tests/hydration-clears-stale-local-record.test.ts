@@ -18,7 +18,7 @@ import test from "node:test";
 import { installLocalStorageFake, registerStoreStubResolver } from "./helpers/kit.ts";
 
 registerStoreStubResolver();
-installLocalStorageFake();
+const { storage } = installLocalStorageFake();
 
 const { fromApiOverride } = await import(
   "../src/features/model-picker/api/model-overrides.ts"
@@ -88,6 +88,57 @@ test("the hydration write is not gated on the merge being non-default", () => {
     src,
     /if \(!isDefaultConfig\(rememberedConfig\)\) \{ savePerModelConfig\(/,
     "a default merge is exactly the clear that has to be written",
+  );
+});
+
+test("a hydration write can fail, and says so in its return rather than throwing", () => {
+  // The failure the panel has to notice. savePerModelConfig returns false for a full
+  // or unavailable store and for a record from a newer build it must not replace; it
+  // does not throw, so an unchecked call is indistinguishable from a successful one.
+  savePerModelConfig(MODEL, VARIANT, {
+    ...DEFAULT_PER_MODEL_CONFIG,
+    llamaExtraArgs: ["--flash-attn"],
+  });
+  const original = storage.setItem;
+  storage.setItem = () => {
+    // What a browser raises at the quota, and Safari in private mode on any write.
+    throw new DOMException("QuotaExceededError", "QuotaExceededError");
+  };
+  try {
+    assert.equal(
+      savePerModelConfig(MODEL, VARIANT, {
+        ...DEFAULT_PER_MODEL_CONFIG,
+        llamaExtraArgs: ["--numa", "distribute"],
+      }),
+      false,
+      "a failed write has to be reported, not swallowed",
+    );
+  } finally {
+    storage.setItem = original;
+  }
+  // And the record the panel would be claiming to have replaced is still the old one.
+  assert.deepEqual(resolveInitialConfig(MODEL, VARIANT).config.llamaExtraArgs, [
+    "--flash-attn",
+  ]);
+});
+
+test("hydration does not mark itself saved when the write failed", () => {
+  // setRemember/setSavedRemember run before the write, so an ignored false left the
+  // panel claiming the server settings were remembered while quick select and
+  // background loads -- which read resolveInitialConfig and never open this panel --
+  // still saw the stale record or none at all. Feeding the result back in makes it a
+  // pending change instead, which is what puts Save (and its error toast) in reach.
+  const src = readFileSync(
+    new URL(
+      "../src/features/model-picker/components/model-config-page.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  ).replace(/\s+/g, " ");
+
+  assert.match(
+    src,
+    /const hydrationSaved = savePerModelConfig\( configId, target\.ggufVariant, rememberedConfig, hydrationEvicted, \); setSavedRemember\(hydrationSaved\);/,
   );
 });
 

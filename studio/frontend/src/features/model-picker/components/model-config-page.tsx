@@ -2262,12 +2262,21 @@ export function ModelConfigPage({
             modelId: string;
             ggufVariant: string | null;
           }[] = [];
-          savePerModelConfig(
+          // Checked for the same reason the Save path checks it: the write can fail
+          // outright (storage full or unavailable, or a record from a newer build that
+          // must not be replaced) and say so in the return rather than throwing. Marked
+          // saved regardless, the panel would claim the server settings are remembered
+          // here while quick select and background loads, which read resolveInitialConfig
+          // and never open this panel, still saw the stale record or none. Leaving it
+          // unsaved makes it a pending change instead, so Save is reachable and reports
+          // the failure the way every other write does.
+          const hydrationSaved = savePerModelConfig(
             configId,
             target.ggufVariant,
             rememberedConfig,
             hydrationEvicted,
           );
+          setSavedRemember(hydrationSaved);
           for (const dropped of hydrationEvicted) {
             syncModelOverride(dropped.modelId, dropped.ggufVariant, null, {
               keepLaunchFlags: true,

@@ -223,6 +223,38 @@ def test_carry_over_does_not_activate_tuning_from_a_row_no_load_reads(override_s
         assert settings.get_model_override(bare_id)[field] == value
 
 
+def test_carry_over_reads_the_cached_spelling_a_load_would_resolve_to(override_store):
+    # An upgraded cache holds both spellings of one quant: the snapshot path an older
+    # build keyed rows by, and the repo id a Settings save writes. A lookup tries the
+    # load path FIRST, so the snapshot row is the live one and the repo row is dormant.
+    # The carry-over walks its own list, and if that list leads with the sent id it
+    # takes the unit off the dormant row -- and then the retirement block clears the
+    # snapshot row, so the tuning that was actually applying is gone and tuning that
+    # never applied takes its place. Neither row is visibly wrong afterwards, which is
+    # what makes it worth pinning.
+    snapshot_id = "/cache/models--org--Repo-GGUF/snapshots/abc:Q4_K_M"
+    repo_id = "org/Repo-GGUF:Q4_K_M"
+    live_tuning = dict(TUNING_PAYLOAD, load_mode = "mmap", cache_ram = -1)
+    dormant_tuning = dict(TUNING_PAYLOAD, load_mode = "direct", cache_ram = 4096)
+
+    # Written straight to the store rather than through the route: a save under either
+    # spelling retires the other, which is the very cleanup this test is about, so the
+    # route cannot be used to build the two-row state an upgrade leaves behind.
+    settings.set_model_override(snapshot_id, **PRE_TUNING_PAYLOAD, **live_tuning)
+    settings.set_model_override(repo_id, **PRE_TUNING_PAYLOAD, **dormant_tuning)
+    # Precondition: the two really are the pair, and the path really is the winner.
+    assert snapshot_id in settings.cached_repo_alias_keys(repo_id)
+    assert settings.is_cache_load_path_key(snapshot_id)
+    assert not settings.is_cache_load_path_key(repo_id)
+
+    # The older client saves the repo-id spelling, sending none of the group.
+    _put(repo_id, **PRE_TUNING_PAYLOAD)
+
+    kept = settings.get_model_override(repo_id)
+    assert kept["load_mode"] == "mmap", "took the dormant row's tuning, not the live one"
+    assert kept["cache_ram"] == -1
+
+
 def test_a_fill_pass_adds_the_tuning_group_without_disturbing_the_row(override_store):
     # The one merge path there is, and the one the backfill uses. A fill must not be
     # able to cause the erasure above, or the upgrade pass itself would strip the row

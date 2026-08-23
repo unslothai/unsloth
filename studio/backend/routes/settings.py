@@ -79,6 +79,7 @@ from utils.openai_auto_switch_settings import (
     PARALLEL_SLOTS_MAX,
     PARALLEL_SLOTS_MIN,
     cached_repo_alias_keys,
+    is_cache_load_path_key,
     get_auto_unload_api_only,
     get_auto_unload_idle_seconds,
     get_auto_unload_keep_kv,
@@ -1567,6 +1568,13 @@ def update_openai_auto_switch_override(
             ):
                 if _candidate and _candidate not in _alias_ids:
                     _alias_ids.append(_candidate)
+            # Load order, not the order they were collected in. A lookup reads the
+            # concrete load path before the advertised repo id, so on a cache upgraded
+            # from a build that keyed rows by path, the snapshot row is the one that
+            # applies and the one the retirement block below clears. Reading the repo
+            # row first would adopt tuning no load has ever used and drop the tuning
+            # that was live. Stable, so every other spelling keeps its position.
+            _alias_ids.sort(key = lambda _key: not is_cache_load_path_key(_key))
             # Taken as a unit from the first row that exists, not field by field down
             # the list. A load stops at the first non-empty row (resolve_override_for_load)
             # rather than merging, so tuning in a row that never wins is dormant, and
