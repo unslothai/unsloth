@@ -515,12 +515,27 @@ def is_count_metric(metric: str) -> bool:
     return ".count." in metric
 
 
+def merged_meta(paths: list[Path]) -> tuple[dict | None, list[str]]:
+    """One `run_meta` describing every shard of one logical run, plus what forbids one.
+
+    EVERY SHARD AND EVERY HEADER, for the same reason `tiers_of` and `corpora_of` read every
+    header rather than the first: the recorder appends, so `--resume` writes a second header
+    behind the first, and a sharded run spreads its headers across files. A first-header-wins
+    reading describes the run that started the file rather than the cells now in it.
+    """
+    rows: list[dict] = []
+    for path in paths:
+        rows += read_rows(path)
+    return payload_rules.merged_run_meta(rows)
+
+
 def render(
     paths: list[Path],
     title: str,
     floors: dict | None = None,
     floor_tier: str | None = None,
     floor_corpus: str | None = None,
+    floor_meta: dict | None = None,
 ) -> int:
     stats = summarise(paths)
     rows = read_rows(paths[0])
@@ -538,6 +553,45 @@ def render(
             f"built on {floor_corpus[:16]}: a floor is the scatter of THIS film, and a "
             f"different corpus is a different film. Re-run the null control."
         )
+    # THE REST OF THE COMPARABILITY IDENTITY, which tier and corpus are only two axes of.
+    #
+    # `--compare` refuses two payloads whose `comparability_key`s differ, and this path -- the one
+    # that actually certifies a number -- checked two of the eleven fields that key covers. So an
+    # 0.1.0 floor could score an 0.2.0 payload on the same corpus and tier, and this commit is
+    # precisely why that matters: it redefines `reasoning_toggle.open_ms` to terminate on a settled
+    # DOM rather than on the `data-state` flip, so the older floor measures a different quantity
+    # under the same name. `host`, `engine`, `cadence`, `headed`, `rungs` and the injection and
+    # probe axes are the same class of difference, and `--compare` is a separate command nobody is
+    # obliged to run first.
+    #
+    # Checked through `explain_incomparable` rather than against a second list of fields, so a
+    # field added to `comparability_fields` is enforced here without being added here too. A guard
+    # kept in step by hand is the drift `payload_rules` exists to argue against.
+    if floor_meta is not None:
+        meta, conflicts = merged_meta(paths)
+        if meta is None:
+            raise SystemExit(
+                "refusing to score a payload that carries no run_meta row against a floor that "
+                "does: nothing in it says which film, which harness or which host produced it, "
+                "so there is no way to tell whether the floor describes the same quantity."
+            )
+        if conflicts:
+            raise SystemExit(
+                "refusing to score a payload that disagrees with ITSELF across its own run_meta "
+                "rows:\n  " + "\n  ".join(conflicts) + "\nThis payload holds more than one run "
+                "and they were not measuring the same thing, so no floor can be applied to it as "
+                "a whole. Score the runs apart."
+            )
+        differ = payload_rules.explain_incomparable(floor_meta, meta)
+        if differ:
+            raise SystemExit(
+                "refusing to score this payload against a floor that is not comparable with it. "
+                "These differ (floor != payload):\n  "
+                + "\n  ".join(differ)
+                + "\nA floor is the scatter of THIS measurement on THIS machine with THIS "
+                "harness. A field above changing means the two are not measuring the same "
+                "quantity, whatever the metric is called. Re-run the null control in band."
+            )
     if tier == "fast":
         print("\n  NOTE: fast tier. These are directions for iteration, not reportable numbers.")
     print(f"\n{title}")
@@ -553,7 +607,25 @@ def render(
         # the caveat cannot be separated from the number when somebody copies one row out of this
         # table into prose. That is the route every withdrawn figure in this harness travelled.
         partial = s.get("poolable") is False
-        shown = f"{metric} [*]" if partial else metric
+        # THE FLOOR IS A MEASUREMENT TOO, and it is censored by the same rule on its own cells.
+        #
+        # `summarise` marks the null control's entry `poolable = False` when the metric answered on
+        # some of its cells and was censored on others, and this loop then read only the RESULT's
+        # flag -- so a result measured in full was scored against a floor built from whichever
+        # repetitions of the null happened to survive. Censoring is decided against a fixed budget,
+        # so the repetitions it removes are the slow ones, and `spread_pct` is `max - min` over the
+        # survivors: removing pairs can only narrow it. Observed on a real null control at 100K
+        # plus 500K, `reasoning_toggle.close_ms` censored above 100K, the applied floor came out at
+        # 17.1% from the four surviving 100K pairs while the censored repetitions of that same null
+        # ran 1429-2149 ms against 498-681 ms and paired as far apart as 1.50 on identical builds.
+        # A real result of -24.8% printed `faster` against the 17.1% and is not distinguishable
+        # from the null's own scatter.
+        floor_stat = None if floors is None else floors.get(metric)
+        floor_partial = floor_stat is not None and floor_stat.get("poolable") is False
+        # MARKED APART FROM `[*]`, because the two say different things. `[*]` means this row's own
+        # number is not a ladder number; `[f]` means the number is fine and the null control cannot
+        # judge it. Collapsing them would tell a reader to distrust a figure that is sound.
+        shown = f"{metric} [*]" if partial else (f"{metric} [f]" if floor_partial else metric)
         line = (
             f"  {shown:<28}{s['n']:>3}{s['base']:>11.1f}{s['treat']:>11.1f}"
             f"{s['delta_pct']:>+10.1f}{s['spread_pct']:>10.1f}"
@@ -563,16 +635,26 @@ def render(
                 # DENIED A VERDICT. Passing three gates on the rungs that could answer is not
                 # passing them on the ladder the row is labelled with.
                 line += f"{'--':>13}  not pooled"
+            elif floor_partial:
+                # DENIED A VERDICT ON THE OTHER SIDE. The three gates are all measured against
+                # this floor, so a floor that is itself a survivor sample cannot certify anything,
+                # however clean the result is.
+                line += f"{'--':>13}  no poolable floor"
             else:
-                f, verdict = verdict_for(s, floors.get(metric), is_count_metric(metric))
+                f, verdict = verdict_for(s, floor_stat, is_count_metric(metric))
                 line += (f"{'--':>13}" if f is None else f"{f:>13.1f}") + f"  {verdict}"
                 if verdict in ("faster", "SLOWER", "LOST (invariant fell)", "gained"):
                     survivors += 1
         if partial:
-            censored_notes.append(s["censoring"])
+            censored_notes.append(f"[*] {s['censoring']}")
+        elif floor_partial:
+            censored_notes.append(
+                f"[f] the null control's own {floor_stat['censoring']} So it is a floor for the "
+                f"cells that survived, not for this row."
+            )
         print(line)
     if censored_notes:
-        print("\n  [*] NOT A LADDER NUMBER, and not scored:")
+        print("\n  NOT SCORED. [*] the row is NOT A LADDER NUMBER; [f] its floor is not one:")
         for note in censored_notes:
             print(f"      {note}")
     if floors is not None:
@@ -606,7 +688,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
-    floors, floor_tier, floor_corpus = None, None, None
+    floors, floor_tier, floor_corpus, floor_meta = None, None, None, None
     if args.floor:
         floor_paths = shards_of(args.floor)
         if not floor_paths:
@@ -616,6 +698,16 @@ def main(argv: list[str] | None = None) -> int:
         floor_rows = read_rows(floor_paths[0])
         floor_tier = tier_of(floor_rows)
         floor_corpus = corpus_of(floor_rows)
+        # The floor's own comparability identity, read across every shard and every header. A null
+        # whose shards disagree with each other is not one null control, so it gets the same
+        # refusal a result payload gets rather than a token averaged over the disagreement.
+        floor_meta, floor_conflicts = merged_meta(floor_paths)
+        if floor_conflicts:
+            print(
+                "refusing to use a null control that disagrees with ITSELF across its own "
+                "run_meta rows:\n  " + "\n  ".join(floor_conflicts)
+            )
+            return 2
 
     seen = 0
     for arg in args.payloads:
@@ -624,7 +716,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\nno payload found for {arg}")
             continue
         seen += 1
-        render(paths, f"PAIRED PER-METRIC TABLE: {arg}", floors, floor_tier, floor_corpus)
+        render(
+            paths,
+            f"PAIRED PER-METRIC TABLE: {arg}",
+            floors,
+            floor_tier,
+            floor_corpus,
+            floor_meta,
+        )
     if not seen:
         return 2
     if floors is None:
