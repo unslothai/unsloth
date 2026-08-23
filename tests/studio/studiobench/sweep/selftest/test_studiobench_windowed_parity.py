@@ -1569,7 +1569,14 @@ def test_the_declaration_still_decides_the_run_that_made_it(tmp_path):
 # ── a visible floor measured on another film tier is not this payload's floor ──
 
 
-def _tiered_visible_shard(tmp_path, name, tier, differ_actions, windowed, corpus = ""):
+def _tiered_visible_shard(
+    tmp_path,
+    name,
+    tier,
+    differ_actions,
+    windowed,
+    corpus = "",
+):
     """A visible-region payload that records the FILM TIER it was shot on, as `run_meta` does.
 
     `corpus` is the `corpus_hash` of the thread the film drove, written by the same row. Left out

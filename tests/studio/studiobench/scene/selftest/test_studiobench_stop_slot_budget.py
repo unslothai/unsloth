@@ -609,7 +609,11 @@ class _WindowedPage(_Page):
 
     WINDOW = 2
 
-    def evaluate(self, script, arg = None):
+    def evaluate(
+        self,
+        script,
+        arg = None,
+    ):
         if arg is None and "messageCount" in script:
             self.charge()
             return self.WINDOW

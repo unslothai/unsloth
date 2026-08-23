@@ -120,7 +120,11 @@ def test_a_clean_stream_is_scoreable_and_counts_every_character(page):
     _feed(page, _frame("hello") + _frame(" world"))
     assert page.evaluate("() => window.__sb.streamcost.replyChars()") == len("hello world")
     got = page.evaluate("() => window.__sb.streamcost.wireIntegrity()")
-    assert got == {"failures": 0, "pending_chars": 0, "carried_flushes": got["carried_flushes"]}, got
+    assert got == {
+        "failures": 0,
+        "pending_chars": 0,
+        "carried_flushes": got["carried_flushes"],
+    }, got
 
 
 def test_an_unparseable_frame_is_visible_at_the_window_boundary(page):
@@ -224,7 +228,11 @@ def test_the_counter_survives_a_split_inside_the_data_prefix(page):
     _feed(page, tail)
     assert page.evaluate("() => window.__sb.streamcost.replyChars()") == len("split marker")
     got = page.evaluate("() => window.__sb.streamcost.wireIntegrity()")
-    assert got == {"failures": 0, "pending_chars": 0, "carried_flushes": got["carried_flushes"]}, got
+    assert got == {
+        "failures": 0,
+        "pending_chars": 0,
+        "carried_flushes": got["carried_flushes"],
+    }, got
 
 
 def test_a_held_marker_fragment_is_reported_as_buffered_rather_than_lost(page):
@@ -257,7 +265,11 @@ def test_unrelated_text_ending_in_a_marker_letter_does_not_corrupt_the_next_fram
     _feed(page, _frame("counted anyway"))
     assert page.evaluate("() => window.__sb.streamcost.replyChars()") == len("counted anyway")
     got = page.evaluate("() => window.__sb.streamcost.wireIntegrity()")
-    assert got == {"failures": 0, "pending_chars": 0, "carried_flushes": got["carried_flushes"]}, got
+    assert got == {
+        "failures": 0,
+        "pending_chars": 0,
+        "carried_flushes": got["carried_flushes"],
+    }, got
 
 
 def test_the_speculative_buffer_cannot_grow_with_unrelated_traffic(page):
@@ -375,7 +387,11 @@ def test_an_aborted_frame_does_not_follow_the_stream_that_replaces_it(page):
     _feed(page, _frame("hello"))
     assert page.evaluate("() => window.__sb.streamcost.replyChars()") == len("hello")
     got = page.evaluate("() => window.__sb.streamcost.wireIntegrity()")
-    assert got == {"failures": 0, "pending_chars": 0, "carried_flushes": got["carried_flushes"]}, got
+    assert got == {
+        "failures": 0,
+        "pending_chars": 0,
+        "carried_flushes": got["carried_flushes"],
+    }, got
 
 
 def test_a_split_inside_one_response_still_reassembles_after_an_abort(page):
