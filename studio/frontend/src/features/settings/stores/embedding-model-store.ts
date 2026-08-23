@@ -18,7 +18,10 @@ interface EmbeddingModelState {
   loadError: string | null;
   /** Bumped by every committed mutation, so a slower read cannot undo it. */
   revision: number;
-  applySettings: (settings: EmbeddingModelSettings) => void;
+  /** Claim the next save. Its answer commits only while it is the latest. */
+  beginSave: () => number;
+  /** Commits unless a later save was claimed first. True when it stood. */
+  applySettings: (settings: EmbeddingModelSettings, save?: number) => boolean;
   load: () => Promise<void>;
 }
 
@@ -27,17 +30,26 @@ interface EmbeddingModelState {
 // and shows an error, or an older model, over what the newer one just read.
 let latestLoad = 0;
 
+// Saves need the same ordering, for the same reason: each surface keeps its own
+// pending flag, so the one the user switched to can start a second save while
+// the first is still out, and responses need not come back in request order.
+let latestSave = 0;
+
 export const useEmbeddingModelStore = create<EmbeddingModelState>(
   (set, get) => ({
     settings: null,
     loadError: null,
     revision: 0,
-    applySettings: (settings) =>
+    beginSave: () => ++latestSave,
+    applySettings: (settings, save) => {
+      if (save !== undefined && save !== latestSave) return false;
       set((state) => ({
         settings,
         loadError: null,
         revision: state.revision + 1,
-      })),
+      }));
+      return true;
+    },
     load: async () => {
       const revision = get().revision;
       const load = ++latestLoad;

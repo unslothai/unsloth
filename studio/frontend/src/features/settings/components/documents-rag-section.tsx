@@ -27,6 +27,7 @@ export function DocumentsRagSection(): ReactElement {
   const embeddingModel = useEmbeddingModelStore((s) => s.settings);
   const loadError = useEmbeddingModelStore((s) => s.loadError);
   const applySettings = useEmbeddingModelStore((s) => s.applySettings);
+  const beginSave = useEmbeddingModelStore((s) => s.beginSave);
   // Null until the user edits, so the field follows a save made on the other
   // surface instead of pinning whatever this mount first read.
   const [draftOverride, setDraftOverride] = useState<string | null>(null);
@@ -56,12 +57,14 @@ export function DocumentsRagSection(): ReactElement {
     }
     setIsSavingEmbeddingModel(true);
     setSaveError(null);
+    const save = beginSave();
     try {
       const settings = await updateEmbeddingModelSettings(trimmed, {
         hfToken: hfToken || undefined,
         force,
       });
-      applySettings(settings);
+      // A later save owns the field now, so this answer says nothing current.
+      if (!applySettings(settings, save)) return;
       setDraftOverride(null);
       setEmbeddingModelNeedsForce(false);
       toast.success(t("settings.general.rag.saved"), {
@@ -88,8 +91,9 @@ export function DocumentsRagSection(): ReactElement {
     setIsSavingEmbeddingModel(true);
     setSaveError(null);
     setEmbeddingModelNeedsForce(false);
+    const save = beginSave();
     try {
-      applySettings(await resetEmbeddingModelSettings());
+      if (!applySettings(await resetEmbeddingModelSettings(), save)) return;
       setDraftOverride(null);
     } catch (error) {
       setSaveError(

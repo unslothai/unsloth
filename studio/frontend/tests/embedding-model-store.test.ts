@@ -150,3 +150,35 @@ test("a failed read reports the backend's reason", async () => {
     "storage is offline",
   );
 });
+
+test("an older save cannot land on top of a newer one", async () => {
+  reset();
+  const store = useEmbeddingModelStore.getState();
+  // General submits, the user switches to Data, and Data submits its own: the
+  // second mount carries its own pending flag, so nothing stopped it.
+  const first = store.beginSave();
+  const second = store.beginSave();
+
+  assert.ok(store.applySettings(settings("unsloth/bge-m3"), second));
+  assert.equal(
+    store.applySettings(settings("unsloth/bge-small-en-v1.5"), first),
+    false,
+    "the superseded save reports that it did not stand",
+  );
+  assert.equal(
+    useEmbeddingModelStore.getState().settings?.embeddingModel,
+    "unsloth/bge-m3",
+  );
+});
+
+test("a save still bumps the revision the reads check", async () => {
+  reset();
+  const store = useEmbeddingModelStore.getState();
+  store.applySettings(settings("unsloth/bge-m3"), store.beginSave());
+  assert.equal(useEmbeddingModelStore.getState().revision, 1);
+  // A superseded save is not a mutation, so it must not move the revision.
+  const stale = store.beginSave();
+  store.beginSave();
+  store.applySettings(settings("unsloth/bge-small-en-v1.5"), stale);
+  assert.equal(useEmbeddingModelStore.getState().revision, 1);
+});
