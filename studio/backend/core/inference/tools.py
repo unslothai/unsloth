@@ -14449,9 +14449,7 @@ def _prune_spills(target_dir: str, root: "str | None" = None) -> None:
         for name in sorted(os.listdir(root)):
             scope = os.path.join(root, name)
             if os.path.isdir(scope) and not os.path.islink(scope):
-                everything.extend(
-                    p for p in _spill_files(root, scope, owned) if p not in removed
-                )
+                everything.extend(p for p in _spill_files(root, scope, owned) if p not in removed)
         kept, total = 0, 0
         for path in sorted(everything, key = os.path.getmtime, reverse = True):
             try:
@@ -14473,11 +14471,7 @@ def _prune_spills(target_dir: str, root: "str | None" = None) -> None:
         # keep being counted as something this owns.
         _write_spill_manifest(
             root,
-            {
-                name
-                for name in owned
-                if os.path.join(root, *name.split("/")) not in removed
-            },
+            {name for name in owned if os.path.join(root, *name.split("/")) not in removed},
         )
         # An emptied scope is a chat that stopped spilling, and leaving its directory
         # behind is what makes the sandbox look non-empty to the cleanup.

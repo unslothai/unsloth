@@ -1367,9 +1367,7 @@ def run_safetensors_tool_loop(
                         # the conversation hands the next call room that is occupied, and
                         # this loop has no exact count and no rolling fit to catch it.
                         results = [
-                            message
-                            for message in conversation
-                            if message.get("role") == "tool"
+                            message for message in conversation if message.get("role") == "tool"
                         ]
                         kwargs["result_budget_tokens"] = tool_result_budget(
                             int(context_length),
