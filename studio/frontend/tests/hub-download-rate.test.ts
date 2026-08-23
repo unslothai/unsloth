@@ -77,6 +77,19 @@ test("bursts too far apart to measure publish no rate at all", () => {
   assert.equal(burstyRates(90, 100 * MB, 600).length, 0);
 });
 
+// External job callbacks can fire back to back, so the first two increases may be
+// milliseconds apart while the buffer is still short. Dividing by that gap is how
+// the gate used to leak a "123 GB/s" first tick.
+test("increases arriving together during warm-up are not a rate", () => {
+  const samples: TransferSample[] = [];
+  publishedRate(samples, 0, 0);
+  publishedRate(samples, 3, 0);
+  publishedRate(samples, 3.01, 1_000 * MB);
+  const rate = publishedRate(samples, 3.02, 2_000 * MB);
+  // 2 GB over the 3.02s actually observed, not 1 GB over the 10ms between them.
+  assert.ok(rate < 1_000 * MB, `published ${(rate / MB).toFixed(0)} MB/s`);
+});
+
 // Recovering from a stall longer than the buffer leaves only the clump that just
 // landed. Its samples are a second apart, so measuring across them alone would
 // turn one xorb into the transfer speed.
