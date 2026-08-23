@@ -685,6 +685,15 @@ test("the composer reads the chord from the keydown and clears it", async () => 
   // keydown before it, on capture so inputProps keeps its own onKeyDown.
   assert.match(thread, /onKeyDownCapture=\{notePlainPasteChord\}/);
   assert.match(thread, /isPlainPasteChord\(event\)\n\s*\? performance\.now\(\)/);
+  // And it lasts only while the keys are down. The paste is the keydown's own
+  // default action, so it has already run by the time anything is released,
+  // while a menu cannot be reached without letting go first.
+  assert.match(thread, /onKeyUpCapture=\{endPlainPasteChord\}/);
+  assert.match(thread, /onBlurCapture=\{endPlainPasteChord\}/);
+  assert.match(
+    thread,
+    /const endPlainPasteChord = useCallback\(\(\) => \{\n\s*plainPasteAtRef\.current = 0;/,
+  );
   // Read once per paste, and only inside the gesture: a menu paste with no
   // chord before it, or long after one, is ordinary.
   const at = thread.indexOf("const handleFilePaste = useCallback(");

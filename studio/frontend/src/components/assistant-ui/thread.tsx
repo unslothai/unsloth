@@ -2340,9 +2340,10 @@ const Composer: FC<{
   const [youtubeLink, setYoutubeLink] = useState<string | null>(null);
   // Paste without formatting asks for the clipboard in the field, so the paste
   // it makes stays inline however long it is. A paste event carries no
-  // modifiers, so the chord is read from the keydown before it: every other
-  // keydown clears it, and so does time, since a chord that pasted nothing
-  // must not be inherited by the menu paste the user reaches for next.
+  // modifiers, so the chord is read from the keydown before it, and the flag
+  // lasts only as long as the keys are down: the paste is the keydown's own
+  // default action, while a menu the user might reach for instead cannot be
+  // opened without letting go first.
   const plainPasteAtRef = useRef(0);
   const notePlainPasteChord = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -2352,6 +2353,12 @@ const Composer: FC<{
     },
     [],
   );
+  // Any release ends it, whichever key of the chord goes first, as does losing
+  // the field. The time cap behind them is for a release that never lands,
+  // which is what tabbing away mid-chord used to leave behind.
+  const endPlainPasteChord = useCallback(() => {
+    plainPasteAtRef.current = 0;
+  }, []);
   const handleFilePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
       // Read once and cleared here, so a paste with no chord before it, from
@@ -4580,8 +4587,10 @@ const Composer: FC<{
               // no effect on Latin / CJK / Devanagari.
               dir="auto"
               {...inputProps}
-              // Capture, so inputProps keeps the onKeyDown it already owns.
+              // Capture, so inputProps keeps the handlers it already owns.
               onKeyDownCapture={notePlainPasteChord}
+              onKeyUpCapture={endPlainPasteChord}
+              onBlurCapture={endPlainPasteChord}
               addAttachmentOnPaste={false}
               onPaste={handleFilePaste}
             />
