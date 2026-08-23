@@ -2031,9 +2031,7 @@ class TestTheResultIsPricedAsItWillBeSent:
         backend = SimpleNamespace(
             is_loaded = True,
             context_length = ctx,
-            count_chat_tokens = lambda messages, *a, **k: sum(
-                len(m["content"]) for m in messages
-            ),
+            count_chat_tokens = lambda messages, *a, **k: sum(len(m["content"]) for m in messages),
         )
         monkeypatch.setattr("routes.inference.get_llama_cpp_backend", lambda: backend)
         return backend
