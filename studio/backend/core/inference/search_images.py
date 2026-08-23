@@ -559,9 +559,7 @@ def clear_cache(only_ids: set[str] | None = None) -> None:
                 # record still held, which the fetch timeout makes unreachable in practice.
                 keep_from = sorted(_reaped_at.values())[len(_reaped_at) // 2 :]
                 floor = keep_from[0] - 1 if keep_from else _cache_generation
-                for stale_id in [
-                    key for key, at in _reaped_at.items() if at <= floor
-                ]:
+                for stale_id in [key for key, at in _reaped_at.items() if at <= floor]:
                     _reaped_at.pop(stale_id, None)
                 _reaped_floor_generation = max(_reaped_floor_generation, floor)
             for image_id in only_ids:

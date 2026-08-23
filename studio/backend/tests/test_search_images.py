@@ -1169,18 +1169,16 @@ def test_an_overflowing_reap_record_drops_the_oldest_not_everything(monkeypatch,
     search_images.clear_cache({"000002000000", "000002000001"})
 
     assert search_images._reaped_at, "records must survive the overflow; clearing them was the bug"
-    assert search_images._reaped_at.get("000002000000") == search_images.cache_generation(), (
-        "the reap that overflowed is exactly the one that must still be remembered"
-    )
+    assert (
+        search_images._reaped_at.get("000002000000") == search_images.cache_generation()
+    ), "the reap that overflowed is exactly the one that must still be remembered"
 
     with search_images._registry_lock:
         # A fetch already running for an image no clear ever named. Promoting the overflow
         # to a full clear took this down with everything else.
         assert search_images._reaped_since_locked("ffffffffffff", in_flight_generation) is False
         # And the ids that clear really did take are still known to be reaped.
-        assert (
-            search_images._reaped_since_locked("000002000000", in_flight_generation) is True
-        )
+        assert search_images._reaped_since_locked("000002000000", in_flight_generation) is True
 
 
 def test_the_overflow_floor_still_refuses_a_fetch_older_than_every_record(monkeypatch):
