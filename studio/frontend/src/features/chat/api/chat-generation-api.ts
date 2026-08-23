@@ -106,7 +106,14 @@ export function isLegacyFallbackChatGenerationAdmissionError(
     isToolEnabledChatGenerationAdmissionError(error) ||
     (error instanceof ChatGenerationApiError &&
       error.status === 400 &&
-      error.message === "Credentials cannot be persisted")
+      error.message === "Credentials cannot be persisted") ||
+    (error instanceof ChatGenerationApiError &&
+      error.status === 404 &&
+      error.message === "Thread not found") ||
+    (error instanceof ChatGenerationApiError &&
+      error.status === 400 &&
+      error.message ===
+        "userMessageId must identify a user message in the thread")
   );
 }
 

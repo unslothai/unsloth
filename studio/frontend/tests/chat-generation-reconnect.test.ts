@@ -214,6 +214,23 @@ test("credential-safe durable admission errors select the legacy stream", async 
   );
 });
 
+test("missing history rows select the legacy stream", async () => {
+  for (const [status, detail] of [
+    [404, "Thread not found"],
+    [400, "userMessageId must identify a user message in the thread"],
+  ] as const) {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ detail }), {
+        status,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+    await assert.rejects(
+      createChatGenerationRun(createInput()),
+      (error: unknown) => isLegacyFallbackChatGenerationAdmissionError(error),
+    );
+  }
+});
+
 test("an ambiguous create retries the same run instead of starting generation twice", async () => {
   const bodies: string[] = [];
   globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
