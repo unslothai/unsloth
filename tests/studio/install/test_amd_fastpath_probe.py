@@ -182,6 +182,30 @@ def test_stacked_masks_that_all_select_are_not_a_hidden_host(monkeypatch):
     assert _needs_pass() is True
 
 
+@pytest.mark.parametrize("cuda", ["", "-1"])
+def test_a_set_hip_mask_shadows_the_cuda_alias(monkeypatch, cuda):
+    """CUDA_VISIBLE_DEVICES is HIP's alias, not a layer under it (_pick_visible_index).
+
+    Hiding NVIDIA with CUDA_VISIBLE_DEVICES=-1 while pinning HIP is a real mixed-host
+    pattern; the HIP mask wins, so the GPU is visible and the wheel is repairable.
+    """
+    _host(
+        monkeypatch,
+        torch = ("2.9.0+cpu", ""),
+        env = {"HIP_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": cuda},
+    )
+    assert _needs_pass() is True
+
+
+def test_a_hidden_hip_mask_wins_over_a_selecting_cuda_alias(monkeypatch):
+    _host(
+        monkeypatch,
+        torch = ("2.9.0+cpu", ""),
+        env = {"HIP_VISIBLE_DEVICES": "-1", "CUDA_VISIBLE_DEVICES": "0"},
+    )
+    assert _needs_pass() is False
+
+
 def test_an_nvidia_host_keeps_the_fast_path(monkeypatch):
     _host(monkeypatch, torch = ("2.9.0+cpu", ""), nvidia = True)
     assert _needs_pass() is False
