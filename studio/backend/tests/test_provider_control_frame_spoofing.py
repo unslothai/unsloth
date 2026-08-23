@@ -121,7 +121,10 @@ def test_a_whitespace_canonical_does_not_shadow_the_real_thought():
     [
         # OpenRouter sends both, and the client concatenates them: rewriting the
         # alias would print the same thought twice.
-        {"reasoning": "Thought.", "reasoning_details": [{"type": "reasoning.text", "text": "Thought."}]},
+        {
+            "reasoning": "Thought.",
+            "reasoning_details": [{"type": "reasoning.text", "text": "Thought."}],
+        },
         # An empty alias carries nothing, so it keeps the byte-for-byte relay.
         {"content": "tok", "reasoning": ""},
     ],
