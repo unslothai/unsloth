@@ -1121,9 +1121,7 @@ class TestTheOwnershipMarkerIsNotAWritePrimitive:
         (root / tools._SPILL_OWNER_MARKER).unlink()
         (root / tools._SPILL_OWNER_MARKER).symlink_to(victim)
 
-        out = tools._truncate(
-            "\n".join(str(i) for i in range(5_000)), 200, workdir = str(workdir)
-        )
+        out = tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir = str(workdir))
 
         assert victim.read_text() == "do not overwrite me"
         assert "saved to" not in out
@@ -1179,8 +1177,6 @@ class TestConcurrentSpillsKeepTheirRecords:
 
         root = tmp_path / tools._SPILL_DIR
         recorded = tools._spill_manifest(str(root))
-        on_disk = {
-            str(p.relative_to(root)) for p in root.rglob("*.txt") if p.name != "victim.txt"
-        }
+        on_disk = {str(p.relative_to(root)) for p in root.rglob("*.txt") if p.name != "victim.txt"}
         assert on_disk, results[:1]
         assert on_disk <= recorded, "a spill on disk that the manifest does not record"

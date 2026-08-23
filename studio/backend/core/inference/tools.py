@@ -14324,9 +14324,7 @@ def _record_spill(root: str, relative: str) -> None:
     flags = os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
     try:
         with _spill_lock(root):
-            with os.fdopen(
-                os.open(_own_marker_path(root), flags), "a", encoding = "utf-8"
-            ) as handle:
+            with os.fdopen(os.open(_own_marker_path(root), flags), "a", encoding = "utf-8") as handle:
                 handle.write(f"{relative}\n")
     except OSError:
         logger.debug("tool result spill manifest append failed", exc_info = True)
