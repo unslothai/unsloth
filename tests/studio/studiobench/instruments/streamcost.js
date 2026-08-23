@@ -378,7 +378,19 @@
       // it largest.
       const head = chunk.length <= MAX_SSE_CHUNK_CHARS ? chunk : chunk.slice(0, MAX_SSE_CHUNK_CHARS);
       const looksSse = head.indexOf(SSE_MARKER) >= 0;
-      if (looksSse) noteSse();
+      // A CONTINUATION IS STREAM TRAFFIC, AND IT STARTS A TASK CHAIN LIKE ANY OTHER CHUNK.
+      // `noteSse` was gated on the marker alone while the counter below was gated on
+      // `looksSse || pending`, so the tail of a frame the socket cut inside its JSON body was
+      // COUNTED in the denominator and charged to nothing. The three quantities it skipped are
+      // the three the batched-read note above names: `sseChunks`, `lastSseAt` and the
+      // `deltaTaskMs` numerator. When the suffix lands on a later task the first half rendered
+      // nothing and its chain has already closed, so the render the suffix does start is charged
+      // to no window at all, and `stream_delta_cost_ms_per_kchar` is biased DOWNWARD exactly as
+      // fragmentation rises -- the mirror of the denominator defect the comment below describes,
+      // and in the flattering direction. A stale `lastSseAt` also lets `replyChars` decide the
+      // stream has gone idle and return `null` for a window still carrying it.
+      const continuesFrame = st.pending.length > 0;
+      if (looksSse || continuesFrame) noteSse();
       // `looksSse || pending` and not just `looksSse`. THE SECOND HALF OF A SPLIT FRAME CONTAINS
       // NO "data:" -- it is the tail of a JSON body and a blank line -- so gating the counter on
       // that marker dropped the whole frame whenever the socket cut one in two. Found by
@@ -401,7 +413,7 @@
       // AND ONLY NOW IS THIS DECODER THE ONE A WINDOW IS MEASURING: it either carries the relay's
       // framing or is completing a frame of its own. A decoder that is neither cannot take
       // `active` away from one that is.
-      if (looksSse || st.pending.length > 0) {
+      if (looksSse || continuesFrame) {
         // A fragment held by a DIFFERENT decoder cannot be part of this stream, and this one is
         // the stream. Dropped rather than carried, so unrelated traffic that ended in "data"
         // cannot report an outstanding frame for the rest of the cell.

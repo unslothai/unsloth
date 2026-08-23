@@ -1588,6 +1588,99 @@ def test_a_gate_from_an_attempt_that_never_closed_still_refuses_its_cell(tmp_pat
     assert "lost 3 messages" in refused[cid]
 
 
+def gated_then_resumed(tmp_path: Path, name: str) -> Path:
+    """A pair whose treatment arm FAILED `thread_complete`, re-run by `--resume`, retry crashed.
+
+    `ab.skippable_cells` re-runs a pair WHOLE, so a resume with any work left re-attempts both
+    arms of a repetition that had already completed. `CellRunner.run` writes its `cell` row from a
+    `finally`, so a retry that raises still closes itself -- with `completed=False`.
+
+    The payload then holds, under one cell id, a completed attempt carrying a FAILED gate row and
+    a later, incomplete attempt carrying none.
+    """
+    rows = [
+        {"row_type": "run_meta", "tier": "standard", "session_id": "s1"},
+        {"row_type": "cell", "cell_id": "r100K.base.rep0", "session_id": "s1", "completed": True},
+        timed_action("r100K.base.rep0", "s1", 100.0),
+        # The treatment arm lost its thread's middle. It renders fewer rows, so its timing is
+        # CHEAPER than a correct cell's, in the direction that flatters the arm.
+        {
+            "row_type": "cell",
+            "cell_id": "r100K.treatment.rep0",
+            "session_id": "s1",
+            "completed": True,
+        },
+        timed_action("r100K.treatment.rep0", "s1", 50.0),
+        {
+            "row_type": "gate",
+            "name": "thread_complete",
+            "passed": False,
+            "cell_id": "r100K.treatment.rep0",
+            "session_id": "s1",
+            "detail": {"reason": "the thread lost 3 messages"},
+        },
+    ]
+    before = write(tmp_path, name + "_before", list(rows))
+    rows += [
+        {"row_type": "run_meta", "tier": "standard", "session_id": "s2"},
+        timed_action("r100K.base.rep0", "s2", 101.0),
+        {"row_type": "cell", "cell_id": "r100K.base.rep0", "session_id": "s2", "completed": False},
+        timed_action("r100K.treatment.rep0", "s2", 199.0),
+        {
+            "row_type": "cell",
+            "cell_id": "r100K.treatment.rep0",
+            "session_id": "s2",
+            "completed": False,
+        },
+    ]
+    # The refusal has to hold on the payload BEFORE the resume, or the test below passes on a
+    # payload that was never quotable for some other reason.
+    assert F.paired(F.read_rows(before), shard = "b") == {}
+    return write(tmp_path, name, rows)
+
+
+def test_a_superseded_cell_does_not_come_back_when_its_retry_crashes(tmp_path):
+    """A resume must not resurrect the reading its own retry replaced.
+
+    Two lenses on one cell id. `failed_invalidating_gates` names the winning attempt from the LAST
+    `cell` row whatever its completion state, so the crashed retry supersedes the dead attempt's
+    FAILED gate; `cell_metrics` kept the last COMPLETED cell row, which is that same dead
+    attempt's. The guard therefore answered about `s2` while the numbers it was guarding came from
+    `s1`, and a cell refused for losing its thread's middle before the resume was published after
+    it -- pairing 50 ms of a broken thread against a clean 100 ms base arm and printing `faster`,
+    which is the 28.2% failure `cell_metrics` documents, arriving through `--resume`.
+    """
+    path = gated_then_resumed(tmp_path, "gated_resume")
+    rows = F.read_rows(path)
+
+    assert F.cell_metrics(rows) == {}
+    assert F.paired(rows, shard = "gated_resume") == {}
+
+
+def test_a_resumed_cell_that_is_not_superseded_still_reports_its_reading(tmp_path):
+    """The control: superseding is keyed on a LATER attempt, not on the cell having a gate row.
+
+    Without this, dropping every gate-adjacent or every twice-written cell would pass the test
+    above by deleting readings the run legitimately earned.
+    """
+    rows = [
+        {"row_type": "run_meta", "tier": "standard", "session_id": "s1"},
+        {"row_type": "cell", "cell_id": "r100K.base.rep0", "session_id": "s1", "completed": True},
+        timed_action("r100K.base.rep0", "s1", 100.0),
+        {
+            "row_type": "cell",
+            "cell_id": "r100K.treatment.rep0",
+            "session_id": "s1",
+            "completed": True,
+        },
+        timed_action("r100K.treatment.rep0", "s1", 90.0),
+    ]
+    path = write(tmp_path, "unsuperseded", rows)
+    assert F.paired(F.read_rows(path), shard = "unsuperseded") == {
+        "message_menu.open_close_ms": [(100.0, 90.0)]
+    }
+
+
 def test_the_visible_floor_is_derived_from_finished_cells_only(tmp_path):
     """An unfinished null-control cell is not an observation of stability.
 

@@ -440,3 +440,49 @@ def test_a_window_opening_after_an_abort_keeps_the_next_response_scoreable(page)
     assert out["reply_chars_delta"] == len("a clean reply"), out
     assert out["wire_carried_frames_counted_in_window"] == 0, out
     assert out["reply_chars_scoreable"] is True, out
+
+
+# ── the tail of a split frame is stream traffic on the numerator too ─────────
+#
+# `noteSse` was gated on the marker while the character counter was gated on `looksSse ||
+# pending`, so the two halves of one frame were attributed to two different things: the tail's
+# characters went into the denominator and its render work went nowhere. The bias is downward on
+# `stream_delta_cost_ms_per_kchar` and it grows with fragmentation, which is the regime the
+# instrument exists to measure.
+
+
+def test_the_tail_of_a_split_frame_is_counted_as_stream_traffic(page):
+    """THE DEFECT, at the quantity the numerator is built from.
+
+    The frame is cut inside its JSON body, so the head carries `data:` and the tail carries no
+    marker at all -- it is the rest of the body and the blank line. The tail still completes the
+    frame and its characters are counted, so a chunk that the instrument scores the cost of has
+    to be a chunk the instrument charges the cost to."""
+    inst = _instrument(page)
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    inst.open(_Window())
+    frame = _frame("cut inside the body")
+    head, tail = _halves(frame, frame.index("cut") + 3)
+    assert "data:" in head and "data:" not in tail, (head, tail)
+    _feed(page, head)
+    _feed(page, tail)
+    out = inst.close(_Window())
+
+    # Both chunks carried this response's bytes, so both are stream chunks.
+    assert out["sse_chunks"] == 2, out
+    assert out["reply_chars_delta"] == len("cut inside the body"), out
+    assert out["reply_chars_scoreable"] is True, out
+
+
+def test_unrelated_traffic_is_still_not_stream_traffic(page):
+    """The control the widened condition must not break. A decoder carrying no marker and holding
+    no frame of its own is not the stream, and feeding it must not add a chunk."""
+    inst = _instrument(page)
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    inst.open(_Window())
+    _feed(page, _frame("real"))
+    _feed_other(page, "nothing to do with the relay")
+    out = inst.close(_Window())
+
+    assert out["sse_chunks"] == 1, out
+    assert out["reply_chars_delta"] == len("real"), out
