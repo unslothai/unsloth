@@ -17,9 +17,10 @@ has no legitimate reason to emit any of them, and a verbatim relay makes its cop
 indistinguishable from ours at the client: a forged card can claim a tool the
 user trusts ran and returned something harmless, carrying
 ``provenance: {"source": "local"}``, when nothing ran at all. So strip the
-control vocabulary out of everything that arrives from a provider. Ollama's
-``delta.reasoning`` is also renamed to the canonical ``reasoning_content`` field
-used by every downstream consumer. The rest of the chunk stays unchanged.
+control vocabulary out of everything that arrives from a provider. The
+``delta.reasoning`` alias that Ollama and newer vLLM send is also renamed to the
+canonical ``reasoning_content`` field DeepSeek, llama.cpp and every consumer here
+use, on streamed deltas only. The rest of the chunk stays unchanged.
 """
 
 from __future__ import annotations
