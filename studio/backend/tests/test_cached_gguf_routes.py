@@ -5784,9 +5784,7 @@ def test_the_listing_probe_hides_a_class_the_installed_diffusers_predates(monkey
 
 # ggml-org/sesame-csm-1b-GGUF ships its Mimi vocoder with a SENTENCE where the architecture
 # identifier belongs. Verified against the live repo, not invented.
-_VOCODER_ARCH = (
-    "this model cannot be used as LLM, use it via --model-vocoder in TTS examples"
-)
+_VOCODER_ARCH = "this model cannot be used as LLM, use it via --model-vocoder in TTS examples"
 
 
 def test_every_published_csm_spelling_classifies_as_speech():

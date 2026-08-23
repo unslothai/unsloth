@@ -1465,12 +1465,26 @@ class _HttpxLikeClient:
         self.body = body
         self.calls: list[tuple[str, str]] = []
 
-    def get(self, url, params = None, headers = None, timeout = None, **kwargs):
+    def get(
+        self,
+        url,
+        params = None,
+        headers = None,
+        timeout = None,
+        **kwargs,
+    ):
         if "stream" in kwargs:
             raise TypeError("Client.get() got an unexpected keyword argument 'stream'")
         raise AssertionError("a ranged header read must use the streaming API")
 
-    def stream(self, method, url, headers = None, timeout = None, follow_redirects = False):
+    def stream(
+        self,
+        method,
+        url,
+        headers = None,
+        timeout = None,
+        follow_redirects = False,
+    ):
         self.calls.append((method, (headers or {}).get("Range", "")))
         assert follow_redirects, "the Hub answers a resolve URL with a 302 to the CDN"
         return _HttpxLikeStream(self.body)
@@ -1606,4 +1620,3 @@ def test_every_published_csm_spelling_is_refused_by_the_media_preflight(monkeypa
     _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header(_VOCODER_ARCH)})
     reason = diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE)
     assert reason is not None and "--model-vocoder" not in reason
-
