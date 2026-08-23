@@ -189,6 +189,14 @@ export function useSystemInfo({
     let cancelled = false;
     let timeoutId: number | null = null;
 
+    // Every successful read is published here. A placeholder has nothing to retry it
+    // once its own request settled, so it takes the shared snapshot; a reading already
+    // on screen is left to this hook's poll, which the live-updates switch governs.
+    const unsubscribe = subscribeSystemInfo((info) => {
+      if (cancelled) return;
+      setSystemInfo((previous) => (previous.status === "ready" ? previous : info));
+    });
+
     const update = (force: boolean) => {
       void fetchSystemInfo({ force })
         .then((info) => {
@@ -213,6 +221,7 @@ export function useSystemInfo({
     update(Boolean(pollMs));
     return () => {
       cancelled = true;
+      unsubscribe();
       if (timeoutId !== null) window.clearTimeout(timeoutId);
     };
   }, [enabled, pollMs]);
