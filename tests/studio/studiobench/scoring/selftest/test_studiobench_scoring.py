@@ -535,3 +535,159 @@ def test_bootstrap_ci_brackets_the_geometric_mean():
     metric = result.metrics[0]
     assert metric.ci_low is not None
     assert metric.ci_low <= metric.ratio_geomean <= metric.ci_high
+
+
+# ---------------------------------------------------------------------------------------
+# A measured zero is a reading: sub-floor arms bound the ratio rather than voiding the pair
+# ---------------------------------------------------------------------------------------
+#
+# `Pair.usable` required both values to be strictly positive. `time_in_jank_pct` and `jank_index`
+# are 0.0 on any arm smooth enough to have no over-budget frames, which is the ordinary state of a
+# healthy base, so a treatment that introduced jank over a zero-jank base had its pair dropped:
+# the table said `no reading` about two arms that had both read, the regression was absent from
+# `regressions` and from the headline, and as a null control it neither voided nor reached the
+# noise floor derived from it.
+#
+# The rule applied here is the one `score.py` has always applied to the same reading: a sub-floor
+# value is at least as good as the floor, so the floor is what enters the ratio. What that must
+# NOT do is admit a reading that was never taken, which is the distinction `frames.py` protects
+# when it refuses to score an unscheduled rAF loop as zero jank.
+
+JANK_FLOOR = 0.1
+SMOOTH = Measure.read(0.0, "%", floor = JANK_FLOOR)
+JANKY = Measure.read(5.0, "%", floor = JANK_FLOOR)
+
+
+def _jank_pair(base: Measure, treatment: Measure) -> Pair:
+    return Pair(rung_tokens = 100_000, metric_key = "time_in_jank_pct", base = base, treatment = treatment)
+
+
+def test_a_zero_jank_base_still_pairs_against_a_treatment_that_introduced_jank():
+    pair = _jank_pair(SMOOTH, JANKY)
+
+    assert pair.base.has_reading and pair.treatment.has_reading
+    assert pair.usable is True
+    # The floor stands in for the sub-floor arm, so the ratio is a LOWER bound: the true
+    # magnitude is larger, never smaller.
+    assert pair.ratio == 50.0
+    assert pair.bounded is True
+    assert pair.to_json()["bounded"] is True
+
+
+def test_the_regression_over_a_zero_base_reaches_the_table_and_the_headline():
+    result = compare("main -> fix", [_jank_pair(SMOOTH, JANKY)], _identity(), _identity())
+    metric = result.metrics[0]
+
+    assert metric.n_pairs == 1
+    assert metric.verdict == "regressed"
+    assert metric.bounded is True
+    assert any("time_in_jank_pct" in r for r in result.regressions)
+
+
+def test_an_improvement_to_zero_jank_is_bounded_the_other_way():
+    pair = _jank_pair(JANKY, SMOOTH)
+
+    assert pair.usable is True
+    assert pair.ratio == JANK_FLOOR / 5.0
+    assert pair.bounded is True
+
+
+def test_two_arms_below_the_floor_are_not_a_difference():
+    """score.py's reason, at the ratio layer: instrument noise on a fast machine must not invent
+    a difference between two perfect builds."""
+
+    pair = _jank_pair(SMOOTH, Measure.read(0.02, "%", floor = JANK_FLOOR))
+
+    assert pair.usable is True
+    assert pair.ratio == 1.0
+    result = compare("main -> fix", [pair], _identity(), _identity())
+    assert result.metrics[0].verdict == "within noise"
+
+
+def test_a_reading_that_was_never_taken_is_still_not_a_zero():
+    """THE LINE THIS MUST NOT CROSS. Both of these carry `value is None`, which is a different
+    thing from a measured zero, and neither may enter a ratio."""
+
+    never = Measure.not_attempted("%", "no window had the frame recorder installed")
+    failed = Measure.failed("%", "the recorder ran but exported no per-frame deltas")
+
+    assert _jank_pair(never, JANKY).usable is False
+    assert _jank_pair(failed, JANKY).usable is False
+    assert _jank_pair(JANKY, never).usable is False
+    assert _jank_pair(JANKY, failed).usable is False
+    assert (
+        compare("x", [_jank_pair(never, JANKY)], _identity(), _identity()).metrics[0].verdict
+        == "no_reading"
+    )
+
+
+def test_a_zero_with_no_declared_floor_stays_unusable():
+    """Nothing bounds it, so there is no honest ratio to form."""
+
+    pair = Pair(
+        rung_tokens = 100_000,
+        metric_key = "keystroke_p95_ms",
+        base = Measure.read(0.0, "ms"),
+        treatment = Measure.read(40.0, "ms"),
+    )
+
+    assert pair.base.has_reading is True
+    assert pair.usable is False
+
+
+def test_a_null_control_voids_on_jank_it_introduced_over_a_zero_base():
+    """The coupling. The null control decides whether this machine can tell two identical builds
+    apart; blind to the jank transition, it passed and published a floor derived from what was
+    left."""
+
+    result = compare(
+        "null control: main vs itself",
+        [_jank_pair(SMOOTH, JANKY)],
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+        is_null_control = True,
+    )
+
+    assert result.void is True
+    assert "time_in_jank_pct" in (result.void_reason or "")
+
+
+def test_a_bounded_ratio_is_not_published_as_this_machines_noise_floor():
+    """A bound is not a spread. Left in, the 50x ratio above would publish a 4,900% noise floor
+    and swallow every real effect measured on that machine afterwards."""
+
+    result = compare(
+        "null control: main vs itself",
+        [
+            _jank_pair(SMOOTH, JANKY),
+            Pair(
+                rung_tokens = 100_000,
+                metric_key = "max_frame_ms",
+                base = Measure.read(30.0, "ms"),
+                treatment = Measure.read(31.0, "ms"),
+            ),
+        ],
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+        is_null_control = True,
+    )
+    floor, source = noise_floor_from_null_control(result)
+
+    assert floor < 10.0
+    assert "1 bounded metric(s) excluded" in source
+
+
+def test_a_null_control_of_only_bounded_ratios_falls_back_to_the_declared_default():
+    result = compare(
+        "null control: main vs itself",
+        [_jank_pair(SMOOTH, JANKY)],
+        _identity(),
+        _identity(),
+        is_null_control = True,
+    )
+    floor, source = noise_floor_from_null_control(result)
+
+    assert "declared default" in source
+    assert "under an instrument floor" in source

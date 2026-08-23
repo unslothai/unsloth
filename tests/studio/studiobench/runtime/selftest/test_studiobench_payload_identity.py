@@ -38,7 +38,7 @@ from studiobench.__main__ import (  # noqa: E402
     prepare_payload,
     requested_identity,
 )
-from studiobench.report.build import build_report  # noqa: E402
+from studiobench.report.build import build_report, score_payload  # noqa: E402
 from studiobench.runtime.types import Paths, Recorder  # noqa: E402
 from studiobench.scoring.from_payload import (  # noqa: E402
     latest_attempt_rows,
@@ -304,20 +304,21 @@ def test_a_payload_that_never_recorded_an_axis_still_resumes(tmp_path):
     assert _resume_set(paths) == {"r10K.A0.rep0"}
 
 
-def test_an_attached_ab_payload_still_resumes_under_a_run_that_is_not_an_ab(tmp_path):
-    """The other direction of the same control. A payload recorded as an A/B against a URL, and a
-    single-sided run over the same output: the arm in the cell id keeps `A0` off `base` and
-    `treatment` without either treatment axis inventing a refusal."""
+def test_resuming_an_ab_payload_as_a_single_build_run_is_refused(tmp_path):
+    """The other direction of the mode transition, refused for the same reason.
+
+    The A/B's `base` cells stay in the payload and stay first at their rung, so the ladder keeps
+    reporting them and never the `A0` cells this run is about to measure."""
 
     paths = _finished_ab(tmp_path, treatment_url = "http://127.0.0.1:5311")
     args = parse_args(["--tier", "standard", "--branch", "main", "--resume"])
 
-    assert (
+    with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
             paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
         )
-        is None
-    )
+
+    assert "mode" in str(excinfo.value)
 
 
 def test_an_ab_payload_that_never_recorded_a_treatment_url_still_resumes(tmp_path):
@@ -353,9 +354,18 @@ def test_an_ab_payload_that_never_recorded_a_treatment_url_still_resumes(tmp_pat
     )
 
 
-def test_a_non_ab_payload_and_an_ab_run_do_not_collide(tmp_path):
-    """`A0` against `base`/`treatment`: the arm in the cell id already keeps these apart, so the
-    identity check must not invent a refusal on top of it."""
+def test_resuming_a_single_build_payload_as_an_ab_is_refused(tmp_path):
+    """`A0` against `base`/`treatment` keeps the new cells from being SKIPPED. It does not keep
+    them out of the REPORT, which is a different question and the one that decides this.
+
+    `score_payload` hands every cell to `measures_from_records`, which keys by rung and keeps the
+    first reading, and `_completion_by_rung` keeps a failure over a success at the same rung. So
+    the payload below -- a single-build run that died at 10K, then an A/B that measured both arms
+    of 10K without a fault -- reports `INCOMPLETE: timeout: the base died at 10K`, scores the rung
+    0 and prints ONSET RUNG: none, over a rung two arms had just measured. The same crash resumed
+    WITHOUT `--ab` reuses the cell id, `latest_attempt_rows` supersedes the dead attempt, and the
+    rung scores. The mode is part of what the payload measured; changing it is not a resume.
+    """
 
     paths = Paths.under(tmp_path / "out")
     _record(
@@ -365,12 +375,190 @@ def test_a_non_ab_payload_and_an_ab_run_do_not_collide(tmp_path):
     )
     args = parse_args(["--tier", "standard", "--branch", "main", "--ab", "fix", "--resume"])
 
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths, requested_identity(args, "fix", CORPUS), resume = True, log = lambda *_a: None
+        )
+
+    assert "mode" in str(excinfo.value)
+
+
+def test_a_session_that_died_before_its_first_cell_declares_no_mode(tmp_path):
+    """The control for the refusal above: it may not fire on a run that measured nothing.
+
+    `run_meta` is written after both installs and `ab_plan` after the corpus and the gates, so an
+    A/B killed in between leaves a header and no cells. There is nothing there for a later report
+    to keep in preference to this one's readings, so resuming it is a resume.
+    """
+
+    paths = Paths.under(tmp_path / "out")
+    _record(paths, "sess-1", [_run_meta("standard", "main", ["10K"])])
+    args = parse_args(["--tier", "standard", "--branch", "main", "--ab", "fix", "--resume"])
+
     assert (
         prepare_payload(
             paths, requested_identity(args, "fix", CORPUS), resume = True, log = lambda *_a: None
         )
         is None
     )
+
+
+def _one_engine_rung(
+    tmp_path,
+    engine,
+    name = "out",
+) -> Paths:
+    """A payload holding one measured rung, recorded by a session that launched `engine`."""
+
+    paths = Paths.under(tmp_path / name)
+    _record(
+        paths,
+        "sess-1",
+        [
+            _run_meta(
+                "standard",
+                "main",
+                ["1K", "10K"],
+                platform = {"system": "Linux", "engine": engine, "engine_note": "for this test"},
+            ),
+            _cell("r1K.A0.rep0", 1_000),
+            _keystroke("r1K.A0.rep0", 40.0),
+        ],
+    )
+    return paths
+
+
+def test_resuming_under_a_different_browser_engine_is_refused(tmp_path):
+    """The engine RENDERED every number in the payload, and the cell id does not name it.
+
+    A run that measured 1K under Chromium, resumed under WebKit to add 10K, skips the completed
+    Chromium cell and measures the new rung under a different renderer -- and the two land in one
+    ladder, which `score_payload` reads as one build getting slower with context. The engine is
+    part of what a payload measured, exactly like the tier and the cadence.
+    """
+
+    paths = _one_engine_rung(tmp_path, "chromium")
+    args = parse_args(
+        ["--tier", "standard", "--branch", "main", "--engine", "webkit"]
+        + ["--rungs", "1K,10K", "--resume"]
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+        )
+
+    message = str(excinfo.value)
+    assert "engine" in message
+    assert "'chromium'" in message and "'webkit'" in message
+
+
+def test_the_engine_compared_is_the_one_that_will_launch_not_the_flag(tmp_path):
+    """`--engine` defaults to nothing and `browser.launch` resolves the platform's webview family.
+
+    So the commonest engine change of all is the one where the second invocation names no engine
+    at all, and comparing the flags rather than the resolved engines would wave it through.
+    """
+
+    from studiobench.runtime.browser import default_engine
+
+    other = "chromium" if default_engine()[0] != "chromium" else "webkit"
+    paths = _one_engine_rung(tmp_path, other)
+    args = parse_args(["--tier", "standard", "--branch", "main", "--rungs", "1K,10K", "--resume"])
+
+    assert requested_identity(args, None, CORPUS)["engine"] == default_engine()[0]
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+        )
+
+    assert "engine" in str(excinfo.value)
+
+
+def test_the_same_engine_still_resumes(tmp_path):
+    """The control: naming the engine the payload was recorded under is a resume."""
+
+    paths = _one_engine_rung(tmp_path, "chromium")
+    args = parse_args(
+        ["--tier", "standard", "--branch", "main", "--engine", "chromium"]
+        + ["--rungs", "1K,10K", "--resume"]
+    )
+
+    assert (
+        prepare_payload(
+            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+        )
+        is None
+    )
+    assert _resume_set(paths) == {"r1K.A0.rep0"}
+
+
+def test_a_payload_that_never_recorded_an_engine_still_resumes(tmp_path):
+    """The legacy control for this axis, and the one for a session that never got a browser up.
+
+    `run_meta` is emitted after `browser.launch` returns, so a session with no engine in its
+    header either predates the field or never launched anything. Neither declares an engine, and
+    an axis a row never declared cannot be a difference.
+    """
+
+    paths = Paths.under(tmp_path / "out")
+    _record(
+        paths,
+        "sess-old",
+        [
+            _run_meta("standard", "main", ["1K", "10K"], platform = {"system": "Linux"}),
+            _cell("r1K.A0.rep0", 1_000),
+            _keystroke("r1K.A0.rep0", 40.0),
+        ],
+    )
+    args = parse_args(
+        ["--tier", "standard", "--branch", "main", "--engine", "firefox"]
+        + ["--rungs", "1K,10K", "--resume"]
+    )
+
+    assert (
+        prepare_payload(
+            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+        )
+        is None
+    )
+    assert _resume_set(paths) == {"r1K.A0.rep0"}
+
+
+def test_the_report_a_mode_change_would_have_produced(tmp_path):
+    """WHY the refusal above exists, as a number rather than as an argument.
+
+    Both payloads hold the same facts: 10K died under one run and was measured clean under the
+    next. The only difference is whether the repair ran under `--ab`, which changes the arm and
+    so the cell id -- and with it whether the dead attempt is superseded or kept.
+    """
+
+    def _payload(name, repair_arm):
+        paths = Paths.under(tmp_path / name)
+        dead = _cell("r10K.A0.rep0", 10_000)
+        dead["completed"] = False
+        dead["failure"] = {"kind": "timeout", "message": "the base died at 10K"}
+        _record(paths, "sess-1", [_run_meta("standard", "main", ["10K"]), dead])
+        cell_id = f"r10K.{repair_arm}.rep0"
+        _record(
+            paths,
+            "sess-2",
+            [
+                _run_meta("standard", "main", ["10K"]),
+                _cell(cell_id, 10_000, arm = repair_arm),
+                _keystroke(cell_id, 100.0),
+            ],
+        )
+        return paths
+
+    same_mode = score_payload(_payload("same", "A0").payload_jsonl, [10_000])
+    changed_mode = score_payload(_payload("changed", "base").payload_jsonl, [10_000])
+
+    # Same mode: the retry reuses the cell id, so the crash is superseded and never reaches the
+    # ladder. Change the mode and the same crash is a cell of its own, first at its rung, and it
+    # is what the report prints -- over a rung the run being reported measured cleanly.
+    assert "died at 10K" not in (same_mode.rungs[0].incomplete_reason or "")
+    assert "died at 10K" in (changed_mode.rungs[0].incomplete_reason or "")
 
 
 # ── a fresh run does not append to the run before it ─────────────────────────────────────────

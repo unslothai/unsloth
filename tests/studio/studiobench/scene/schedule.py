@@ -193,11 +193,19 @@ FAST = Scene(
     name = "fast",
     slots = _slots(
         [
-            # 18.2 s, not 8 s. `stop_generation` starts and stops its OWN turn, so opening it while the
+            # 18.4 s, not 8 s. `stop_generation` starts and stops its OWN turn, so opening it while the
             # opening tail is still draining starts a second turn on top of the first and truncates the
             # reply being measured -- which is the defect that made the seeded-vs-streamed equivalence
-            # check read a false 20% drift earlier in this project. The worst-case drain across the ladder
-            # is 17.8 s, and the packing test in fixture/selftest holds every film to it.
+            # check read a false 20% drift earlier in this project.
+            #
+            # KEYED TO THE DECLARED TAIL, NOT TO WHAT THE CORPUS HAPPENS TO STREAM. This said 17.8 s
+            # and sat at 18.2 s, which was under the ladder's own ceiling the whole time and only
+            # passed because the 1M rung was streaming recycled text: the manifest was sized at
+            # exactly the top rung's seeded target, so all three streamed turns clamped onto the last
+            # unit. Sizing the manifest from the ladder gave 1M its own material and the drain went
+            # to 18.23 s, which is what a corpus this tier can be pointed at was always allowed to
+            # do. STREAM_TAIL_CHARS (6,000) at field cadence is 18.25 s and every rung is held under
+            # it, so that ceiling is the bound to clear, and clearing it costs 200 ms here.
             #
             # THE SECOND PACKING CONSTRAINT, learned the expensive way. `send_turn` starts a FOLLOW-UP
             # turn, and a follow-up is FOLLOW_UP_CHARS (1,500) at field cadence, so it streams for 4.6 s.
@@ -211,7 +219,7 @@ FAST = Scene(
             ("scroll_during_generation", 1_500, 1_200),
             ("keystroke", 3_000, 1_800),
             ("scroll_during_generation", 6_000, 1_200),
-            ("stop_generation", 18_200, 3_000),
+            ("stop_generation", 18_400, 3_000),
             ("scroll_after", 21_500, 1_200),
             ("reasoning_toggle", 23_000, 3_500),
             ("send_turn", 26_700, 1_500),

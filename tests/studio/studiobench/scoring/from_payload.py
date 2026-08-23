@@ -82,10 +82,23 @@ def latest_attempt_rows(records: Sequence[Mapping[str, Any]]) -> list[Mapping[st
     An attempt is `(cell_id, session_id)` and the LAST one in file order wins, which is the one
     the resumed run just wrote. Rows without a session id are kept: a payload from before the
     recorder stamped them cannot be split into attempts, and dropping it would lose the run.
+
+    THE LATEST ATTEMPT IS THE LAST ONE THAT WROTE ANYTHING, not the last one that FINISHED. Keying
+    this on cell rows alone made an attempt invisible unless it reached its terminal row, and
+    `CellRunner.run` writes that in a `finally` -- which a SIGKILL, an OOM kill or a lost machine
+    never reaches, while the Recorder has already flushed and fsynced every action and window row
+    before it. So a resume hard-killed inside a cell left the older, completed attempt named as
+    the latest, and `__main__._resume_set` skipped it. Combined with a resume that had already
+    repaired an earlier pair, every cell then read as complete across two sessions, the next
+    `--resume` ran nothing at all and exited 0 over a stale table.
+
+    Any attempt-keyed row is evidence that an attempt happened, so all three types set it. This is
+    the same set the filter below applies to, which is the point: a row type that can leak from a
+    superseded attempt is a row type that can prove a newer one exists.
     """
     latest: dict[str, Any] = {}
     for row in records:
-        if row.get("row_type") == "cell" and row.get("cell_id") is not None:
+        if row.get("row_type") in ATTEMPT_ROW_TYPES and row.get("cell_id") is not None:
             latest[str(row.get("cell_id"))] = row.get("session_id")
 
     out: list[Mapping[str, Any]] = []
@@ -159,6 +172,7 @@ def _frame_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]:
     deltas: list[float] = []
     window_ms = 0.0
     truncated = 0
+    frameless = 0
     attempted_any = False
     max_frame: float | None = None
 
@@ -177,6 +191,7 @@ def _frame_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]:
             continue
         gaps = frames.get("frame_gaps_ms")
         if not gaps:
+            frameless += 1
             continue
         deltas.extend(float(g) for g in gaps)
         window_ms += float(w.get("duration_ms") or 0.0)
@@ -184,6 +199,25 @@ def _frame_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]:
     if not attempted_any:
         reason = "no window in this cell had the frame recorder installed"
         return {k: Measure.not_attempted(unit_by_key[k], reason) for k in FRAME_METRICS}
+
+    if frameless:
+        # ONE WINDOW THAT SAW NOTHING POISONS THE POOL, IT DOES NOT DROP OUT OF IT.
+        #
+        # A window whose recorder was installed and exported no deltas at all is the rAF-
+        # unscheduled trap, and `compute_frame_stats` already refuses to score it: a single such
+        # window reads `Measure.failed` on every metric with `no_frames_recorded` set, never zero
+        # jank. Pooled, the same window was skipped by the `continue` above -- it contributed no
+        # deltas, no wall time and (its `max_frame_ms` being null) no worst frame -- so the
+        # REMAINING windows answered for the whole cell and a complete freeze during one action
+        # came back as clean numbers: a 4 s frozen window beside a smooth one scored 0.0% time in
+        # jank and a 40 ms worst frame, byte-identical to the cell without the freeze in it.
+        # An unmeasured window is not an absent one, so the cell's frame metrics fail here for
+        # the same reason and in the same shape as the single-window path.
+        reason = (
+            f"{frameless} window(s) recorded no frames at all (rAF may be unscheduled), so the "
+            "pooled frame metrics would describe only the windows that were measured"
+        )
+        return {k: Measure.failed(unit_by_key[k], reason) for k in FRAME_METRICS}
 
     out: dict[str, Measure] = {}
     out["max_frame_ms"] = (
