@@ -28,12 +28,6 @@ import { consumeNativePathToken } from "@/features/native-intents/api";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
-import {
-  notifyNative,
-  primeNativeNotificationPermission,
-  safeNotificationLabel,
-  sanitizeNotificationBody,
-} from "@/lib/native-notifications";
 import { ModelLoadDescription } from "../components/model-load-status";
 import {
   getDownloadProgress,
@@ -550,7 +544,6 @@ export function useChatModelRuntime() {
   const loadAbortRef = useRef<AbortController | null>(null);
   const loadingModelRef = useRef<typeof loadingModel>(null);
   const loadToastIdRef = useRef<string | number | null>(null);
-  const loadAttemptRef = useRef(0);
   const loadToastDismissedRef = useRef(false);
   const cancelUnloadPendingRef = useRef(false);
   const loadLifecycleLeaseRef = useRef<ModelLifecycleLease | null>(null);
@@ -1010,10 +1003,6 @@ export function useChatModelRuntime() {
         explicitIsLora ?? model?.isLora ?? loraIsAdapter ?? false;
       const displayName = model?.name || lora?.name || modelId;
       const toastDisplayName = shortModelLabel(displayName);
-      const loadAttemptId = ++loadAttemptRef.current;
-      primeNativeNotificationPermission().catch(() => undefined);
-      const notificationModelKey = `${modelId}:${ggufVariant ?? ""}:${loadAttemptId}`;
-      const safeModelName = safeNotificationLabel(toastDisplayName, "The model");
       const currentCheckpoint =
         useChatRuntimeStore.getState().params.checkpoint;
       const previousCheckpoint = currentCheckpoint;
@@ -2246,12 +2235,6 @@ export function useChatModelRuntime() {
                   ),
                 });
               }
-              notifyNative({
-                key: `model-downloaded:${notificationModelKey}`,
-                title: "Model downloaded",
-                body: `${safeModelName} finished downloading and is loading into memory.`,
-                requestPermission: false,
-              }).catch(() => undefined);
               // Keep polling: the mmap branch below takes over from here.
             }
           } catch {
@@ -2356,12 +2339,6 @@ export function useChatModelRuntime() {
               onDismiss: undefined,
             });
           }
-          notifyNative({
-            key: `model-loaded:${notificationModelKey}`,
-            title: "Model ready",
-            body: `${safeModelName} is loaded and ready to chat.`,
-            requestPermission: false,
-          }).catch(() => undefined);
         } catch (err) {
           if (!abortCtrl.signal.aborted) {
             const message =
@@ -2379,12 +2356,6 @@ export function useChatModelRuntime() {
                 onDismiss: undefined,
               });
             }
-            notifyNative({
-              key: `model-load-failed:${notificationModelKey}`,
-              title: "Model failed to load",
-              body: sanitizeNotificationBody(message, "The model failed to load."),
-              requestPermission: false,
-            }).catch(() => undefined);
           }
           throw err;
         } finally {

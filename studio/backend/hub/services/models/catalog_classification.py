@@ -16,6 +16,7 @@ from hub.services.models.common import (
     _iter_gguf_paths,
     _local_path_can_chat,
 )
+from utils.gguf_archs import SPEECH_GGUF_ARCHS, is_speech_gguf_architecture
 
 
 _DIFFUSION_GGUF_ARCHS = frozenset({"flux", "flux2", "qwen_image", "qwenimage", "z_image", "zimage"})
@@ -26,6 +27,12 @@ _AMBIGUOUS_DIFFUSION_GGUF_ARCHS = frozenset({"lumina2"})
 _PLACEHOLDER_DIFFUSION_GGUF_ARCHS = frozenset({"pig", "cow"})
 _VIDEO_GGUF_ARCHS = frozenset({"ltxv", "wan"})
 _VIDEO_GEN_TASK = "text-to-video"
+
+# TTS-only GGUF archs llama.cpp cannot load, tagged speech so the chat picker keeps them out of
+# llama-server. One shared definition rather than a copy per layer: the chat gate, this classifier
+# and the media preflight all have to agree.
+_SPEECH_GGUF_ARCHS = SPEECH_GGUF_ARCHS
+_SPEECH_TASK = "text-to-speech"
 _UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
 _H3_DENOISER_GGUF_PREFIXES = ("minimax_h3_fl2va", "minimax_h3_ref2va")
 _LOADABLE_MEDIA_GGUF_TASKS = frozenset({"text-to-image", _VIDEO_GEN_TASK})
@@ -107,6 +114,8 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
                 else _UNSUPPORTED_DIFFUSION_TASK
             )
         return _UNSUPPORTED_DIFFUSION_TASK
+    if is_speech_gguf_architecture(normalized):
+        return _SPEECH_TASK
     if normalized in _DIFFUSION_GGUF_ARCHS:
         return (
             "text-to-image" if _gguf_family_buildable(name_hints) else _UNSUPPORTED_DIFFUSION_TASK
@@ -174,6 +183,9 @@ def _gguf_folder_task(
     fallback: Optional[str] = None
     try:
         scored: list[tuple[tuple[str, str], Path]] = []
+        # Recorded as the tail is dropped, never inferred from `scored` afterwards: trimming cuts
+        # back to the cap, so an overflowing folder is indistinguishable from one that fit.
+        overflowed = False
         for path in _iter_gguf_paths(root, deadline):
             name = path.name
             if _is_mmproj_filename(name) or _is_trailing_split_shard(name):
@@ -182,26 +194,48 @@ def _gguf_folder_task(
             if len(scored) > _MAX_TASK_CLASSIFY_GGUFS * 2:
                 scored.sort(key = lambda item: item[0])
                 del scored[_MAX_TASK_CLASSIFY_GGUFS:]
+                overflowed = True
         scored.sort(key = lambda item: item[0])
         paths = [path for _, path in scored[:_MAX_TASK_CLASSIFY_GGUFS]]
+        # Whether every candidate made it into `paths`: the walk gives up at its own deadline and
+        # the cap drops the tail, so either can leave a sibling unseen.
+        complete = (
+            not overflowed
+            and len(scored) <= _MAX_TASK_CLASSIFY_GGUFS
+            and time.monotonic() < deadline
+        )
     except Exception:
         return None
     unsupported: Optional[str] = None
+    speech: Optional[str] = None
     read_deadline = time.monotonic() + _TASK_CLASSIFY_READ_SECONDS
     for index, path in enumerate(paths):
         if index and time.monotonic() >= read_deadline:
+            complete = False
             break
         try:
             task = _arch_to_task(_gguf_architecture(str(path)), name_hints = id_hints + (path.name,))
         except Exception:
+            # Unread, so unranked: this file might have been the runnable sibling.
+            complete = False
+            continue
+        if task is None:
+            # A truncated header gives no architecture, and _arch_to_task answers None.
+            complete = False
             continue
         if task in _LOADABLE_MEDIA_GGUF_TASKS:
             return task
-        if task == _UNSUPPORTED_DIFFUSION_TASK:
+        # Speech is last resort: nothing here runs a llama-csm GGUF, so answering speech while a
+        # sibling is loadable hides that sibling. A speech-only folder still tags speech.
+        if task == _SPEECH_TASK:
+            if speech is None:
+                speech = task
+        elif task == _UNSUPPORTED_DIFFUSION_TASK:
             unsupported = unsupported or task
         elif task is not None and fallback is None:
             fallback = task
-    return unsupported or fallback
+    # Speech only on a whole folder: it is the one answer that HIDES a row rather than filing it.
+    return unsupported or fallback or (speech if complete else None)
 
 
 def _repo_gguf_task(repo_info, selected: Optional[Path] = None) -> Optional[str]:

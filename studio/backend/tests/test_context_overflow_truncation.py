@@ -481,6 +481,165 @@ def test_rolling_fit_keeps_original_when_protected_messages_still_do_not_fit():
     assert info["prompt_tokens_after"] == info["prompt_tokens_before"]
 
 
+def test_an_irreducible_fit_serves_the_eviction_when_the_original_is_past_the_window():
+    """Use an eviction that fits the window when the original does not."""
+    # 450 chars: past the 400-token target, inside the 500-token window.
+    latest = {"role": "user", "content": "latest" * 75}
+    messages = [
+        {"role": "user", "content": "old" * 100},
+        {"role": "assistant", "content": "answer" * 100},
+        latest,
+    ]
+    counter = lambda candidate: sum(  # noqa: E731
+        len(str(message.get("content", ""))) for message in candidate
+    )
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = counter,
+    )
+
+    assert counter(messages) > 500 >= counter(fitted)
+    assert fitted == [latest]
+    # Still a refusal: the diagnosis is what the client explains the short reply with.
+    assert info is not None and info["fits"] is False
+    assert info["dropped_messages"] == 2
+    assert info["prompt_tokens_after"] == counter(fitted) < info["prompt_tokens_before"]
+    assert info["irreducible_tokens"] == counter(fitted)
+
+
+def test_an_irreducible_fit_keeps_the_original_while_it_still_fits_the_window():
+    """Keep full history when only the reply reserve is exhausted."""
+    messages = [
+        {"role": "user", "content": "old" * 10},
+        {"role": "assistant", "content": "answer" * 5},
+        # 480 chars on its own, so evicting the pair still misses the 450-token target.
+        {"role": "user", "content": "latest" * 80},
+    ]
+    counter = lambda candidate: sum(  # noqa: E731
+        len(str(message.get("content", ""))) for message in candidate
+    )
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 600,
+        max_tokens = 150,
+        count_tokens = counter,
+    )
+
+    assert 450 < counter(messages) <= 600
+    assert fitted is messages
+    assert info is not None and info["fits"] is False
+    assert info["dropped_messages"] == 0
+    assert info["prompt_tokens_after"] == info["prompt_tokens_before"]
+
+
+def test_an_irreducible_fit_refuses_an_eviction_that_fills_the_window():
+    """An eviction landing on `n_ctx` exactly is refused, so it is not a rescue."""
+    # 500 chars in a 500-token window: serving this would drop turns and still fail.
+    messages = [
+        {"role": "user", "content": "o" * 300},
+        {"role": "assistant", "content": "a" * 600},
+        {"role": "user", "content": "x" * 500},
+    ]
+    counter = lambda candidate: sum(  # noqa: E731
+        len(str(message.get("content", ""))) for message in candidate
+    )
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = counter,
+    )
+
+    assert fitted is messages
+    assert info is not None and info["fits"] is False
+    assert info["dropped_messages"] == 0
+    assert info["prompt_tokens_after"] == info["prompt_tokens_before"]
+    assert info["irreducible_tokens"] == 500
+
+
+def test_an_irreducible_fit_serves_the_eviction_when_the_original_fills_the_window():
+    """An original of exactly `n_ctx` is refused too, so an eviction under it wins."""
+    latest = {"role": "user", "content": "x" * 450}
+    messages = [
+        {"role": "user", "content": "o" * 20},
+        {"role": "assistant", "content": "a" * 30},
+        latest,
+    ]
+    counter = lambda candidate: sum(  # noqa: E731
+        len(str(message.get("content", ""))) for message in candidate
+    )
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = counter,
+    )
+
+    assert counter(messages) == 500 > counter(fitted)
+    assert fitted == [latest]
+    assert info is not None and info["fits"] is False
+    assert info["dropped_messages"] == 2
+    assert info["prompt_tokens_after"] == 450
+
+
+def test_an_irreducible_fit_refuses_a_rescue_that_leaves_no_room_to_answer():
+    """A rescue has to buy an ANSWER, not just an accepted request.
+
+    Serving a prompt one token under the window evicts the history and comes back with a
+    one-token reply stopped on `length`: the turns are gone and the user has nothing. The
+    refusal it replaces at least kept them and named the turn that was too big, so below a
+    floor of reply room the old behaviour wins.
+    """
+    latest = {"role": "user", "content": "x" * 495}
+    messages = [
+        {"role": "user", "content": "o" * 300},
+        {"role": "assistant", "content": "a" * 300},
+        latest,
+    ]
+    counter = lambda candidate: sum(  # noqa: E731
+        len(str(message.get("content", ""))) for message in candidate
+    )
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = counter,
+    )
+
+    # The eviction it reached is under the window, so the old gate would have served it
+    # with five tokens to answer in. `irreducible_tokens` is that floor.
+    assert counter(messages) > 500
+    assert info is not None and info["irreducible_tokens"] == 495
+    # Refused instead, with the history intact.
+    assert fitted is messages
+    assert info is not None and info["fits"] is False
+    assert info["dropped_messages"] == 0
+    assert info["prompt_tokens_after"] == info["prompt_tokens_before"]
+
+    # And one that DOES leave room is still rescued: the floor is 500 // 16 = 31.
+    roomy = [
+        {"role": "user", "content": "o" * 300},
+        {"role": "assistant", "content": "a" * 300},
+        {"role": "user", "content": "x" * 460},
+    ]
+    fitted_roomy, info_roomy = fit_rolling_context(
+        roomy,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = counter,
+    )
+    assert fitted_roomy == roomy[-1:]
+    assert info_roomy["dropped_messages"] == 2
+    assert info_roomy["prompt_tokens_after"] == 460
+
+
 def test_an_irreducible_fit_says_WHOSE_turn_does_not_fit():
     """A tool loop refits with the tool result appended.
 
@@ -1215,6 +1374,69 @@ def test_a_pin_is_charged_for_everything_it_holds():
     assert instruction_pin.pinned_instruction_ids(modest, groups = 2, max_tokens = 1024) == {
         id(instruction)
     }
+
+
+def test_a_pinned_fit_that_only_missed_the_reserve_keeps_its_pins():
+    """The pinless retry fires on a REFUSAL, not on a prompt that was merely reduced.
+
+    `_fit_with_instruction_pins` drops the pins and refits when the pinned attempt does
+    not fit, since pinning turning a servable request into a refusal is worse than losing
+    the instruction. A rescued fit reports `fits` false too, but it is servable and is
+    what gets sent, so retrying there loses the instruction for nothing.
+    """
+    from core.inference import instruction_pin, llama_cpp
+
+    instruction = _instruction("A" * 300)
+    messages = [
+        {"role": "system", "content": "S" * 40},
+        instruction,
+        # Rides along with the pin: the evictor protects by GROUP.
+        {"role": "assistant", "content": "B" * 160},
+        {"role": "user", "content": "C" * 280},
+        {"role": "assistant", "content": "D" * 280},
+        {"role": "user", "content": "L" * 420},
+    ]
+    counter = lambda candidate: sum(  # noqa: E731
+        len(str(message.get("content", ""))) for message in candidate
+    )
+    # ctx 1000 -> prompt_target 872, reply floor 62. Pinned floor is 40+300+160+420 =
+    # 920: past the target, and 920+62 is inside the window, so a rescue. Pinless floor
+    # is 40+420 = 460, which fits outright -- which is exactly why the retry is tempting
+    # and exactly why it must not fire.
+    assert counter(messages) == 1480
+
+    calls = []
+    # Captured before the patch, or the spy calls itself.
+    original = llama_cpp._fit_context
+
+    def _spy(msgs, **kwargs):
+        calls.append(kwargs.get("protected_message_ids"))
+        return original(msgs, **kwargs)
+
+    original_pins = instruction_pin.pinned_instruction_ids
+    llama_cpp._fit_context = _spy
+    # Stubbed: which turns get pinned is the pin heuristic's own business and has its own
+    # tests. What is under test here is what the fitter does once something IS pinned.
+    instruction_pin.pinned_instruction_ids = lambda *_a, **_k: {id(instruction)}
+    try:
+        fitted, info = llama_cpp._fit_with_instruction_pins(
+            messages,
+            anchor_ids = None,
+            context_length = 1000,
+            max_tokens = 128,
+            count_tokens = counter,
+        )
+    finally:
+        llama_cpp._fit_context = original
+        instruction_pin.pinned_instruction_ids = original_pins
+
+    # A rescue, not a refusal: shorter than the original and inside the window.
+    assert info is not None and info["fits"] is False
+    assert info["dropped_messages"] > 0
+    assert counter(fitted) < 1000 <= counter(messages)
+    # Fitted once. No pinless retry, so the standing instruction survived.
+    assert len(calls) == 1
+    assert any(message is instruction for message in fitted)
 
 
 def test_a_pin_charges_token_dense_text_at_its_real_rate():
