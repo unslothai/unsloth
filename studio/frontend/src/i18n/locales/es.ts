@@ -533,7 +533,7 @@ export const es = {
           "Guarda la caché KV antes de liberar el modelo por inactividad para que los chats reanudados no vuelvan a leer el historial. Hasta 10 GB en disco.",
         apiOnly: "Liberar solo los modelos cargados por la API",
         apiOnlyDescription:
-          "La liberación por inactividad mantiene en memoria el modelo que cargaste desde Unsloth Studio y solo libera los que cargó una solicitud a la API.",
+          "La liberación por inactividad mantiene en memoria el modelo que cargaste desde Unsloth y solo libera los que cargó una solicitud a la API.",
       },
       previewSharing: {
         sectionTitle: "Compartir vista previa",

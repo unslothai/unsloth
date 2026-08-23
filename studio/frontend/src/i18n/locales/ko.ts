@@ -518,7 +518,7 @@ export const ko = {
           "유휴 해제 전에 KV 캐시를 저장해, 이어서 하는 채팅이 기록을 다시 읽지 않도록 합니다. 디스크를 최대 10GB 사용합니다.",
         apiOnly: "API가 불러온 모델만 해제",
         apiOnlyDescription:
-          "유휴 해제 시 Unsloth Studio에서 직접 불러온 모델은 메모리에 남기고, API 요청이 불러온 모델만 해제합니다.",
+          "유휴 해제 시 Unsloth에서 직접 불러온 모델은 메모리에 남기고, API 요청이 불러온 모델만 해제합니다.",
       },
       previewSharing: {
         sectionTitle: "미리보기 공유",

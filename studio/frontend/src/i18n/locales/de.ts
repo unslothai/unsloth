@@ -537,7 +537,7 @@ export const de = {
           "Speichert den KV-Cache vor dem Entladen bei Inaktivität, damit der Verlauf bei fortgesetzten Chats nicht erneut eingelesen werden muss. Bis zu 10 GB auf der Festplatte.",
         apiOnly: "Nur über die API geladene Modelle entladen",
         apiOnlyDescription:
-          "Das automatische Entladen bei Inaktivität lässt ein von dir in Unsloth Studio geladenes Modell im Speicher und gibt nur solche frei, die eine API-Anfrage geladen hat.",
+          "Das automatische Entladen bei Inaktivität lässt ein von dir in Unsloth geladenes Modell im Speicher und gibt nur solche frei, die eine API-Anfrage geladen hat.",
       },
       previewSharing: {
         sectionTitle: "Vorschau-Freigabe",

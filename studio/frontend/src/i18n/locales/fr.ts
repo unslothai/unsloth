@@ -536,7 +536,7 @@ export const fr = {
           "Enregistrer le cache KV avant un déchargement en cas d'inactivité, afin qu'une discussion reprise n'ait pas à relire l'historique. Jusqu'à 10 Go sur le disque.",
         apiOnly: "Décharger uniquement les modèles chargés par l'API",
         apiOnlyDescription:
-          "Le déchargement en cas d'inactivité laisse en mémoire un modèle que vous avez chargé depuis Unsloth Studio et ne libère que ceux chargés par une requête API.",
+          "Le déchargement en cas d'inactivité laisse en mémoire un modèle que vous avez chargé depuis Unsloth et ne libère que ceux chargés par une requête API.",
       },
       previewSharing: {
         sectionTitle: "Partage de l'aperçu",

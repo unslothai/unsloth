@@ -526,7 +526,7 @@ export const ptBR = {
           "Salva o cache KV antes de um descarregamento por inatividade, para que chats retomados não releiam o histórico. Até 10 GB em disco.",
         apiOnly: "Descarregar apenas modelos carregados pela API",
         apiOnlyDescription:
-          "O descarregamento por inatividade mantém na memória o modelo que você carregou pelo Unsloth Studio e libera apenas os que uma requisição da API carregou.",
+          "O descarregamento por inatividade mantém na memória o modelo que você carregou pelo Unsloth e libera apenas os que uma requisição da API carregou.",
       },
       previewSharing: {
         sectionTitle: "Compartilhamento de pré-visualização",
