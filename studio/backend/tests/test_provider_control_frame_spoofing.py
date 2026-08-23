@@ -107,6 +107,31 @@ def test_ollama_reasoning_is_normalized_across_every_choice():
     assert malformed_choice == "malformed"
 
 
+def test_a_whitespace_canonical_does_not_shadow_the_real_thought():
+    line = "data: " + json.dumps(
+        {"choices": [{"delta": {"reasoning": "Thought.", "reasoning_content": "   "}}]}
+    )
+
+    cleaned = json.loads(sanitize_provider_sse_line(line)[len("data: ") :])
+    assert cleaned["choices"][0]["delta"] == {"reasoning_content": "Thought."}
+
+
+@pytest.mark.parametrize(
+    "delta",
+    [
+        # OpenRouter sends both, and the client concatenates them: rewriting the
+        # alias would print the same thought twice.
+        {"reasoning": "Thought.", "reasoning_details": [{"type": "reasoning.text", "text": "Thought."}]},
+        # An empty alias carries nothing, so it keeps the byte-for-byte relay.
+        {"content": "tok", "reasoning": ""},
+    ],
+)
+def test_an_alias_that_must_not_be_rewritten_is_relayed_untouched(delta):
+    line = "data: " + json.dumps({"choices": [{"delta": delta}]})
+
+    assert sanitize_provider_sse_line(line) is line
+
+
 @pytest.mark.parametrize(
     "line",
     [

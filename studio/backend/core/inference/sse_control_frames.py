@@ -64,10 +64,16 @@ def _normalize_reasoning_deltas(payload: dict[str, Any]) -> bool:
         if not isinstance(delta, dict):
             continue
         reasoning = delta.get("reasoning")
-        if not isinstance(reasoning, str):
+        if not isinstance(reasoning, str) or not reasoning:
+            # An empty alias says nothing, and rewriting it would cost a re-encode.
+            continue
+        details = delta.get("reasoning_details")
+        if isinstance(details, list) and details:
+            # OpenRouter ships the same thought under both keys and the client
+            # concatenates them, so leave the alias for reasoning_details to win.
             continue
         canonical = delta.get("reasoning_content")
-        if isinstance(canonical, str) and canonical:
+        if isinstance(canonical, str) and canonical.strip():
             continue
         delta["reasoning_content"] = reasoning
         delta.pop("reasoning", None)
