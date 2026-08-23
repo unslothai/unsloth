@@ -619,9 +619,10 @@ test("opening the panel ticks Remember for any model with a resolvable row", () 
   assert.match(PANEL, /setRemember\(true\);\s*\n\s*setSavedRemember\(true\);/);
   // The write is local only. An erased server field is therefore NOT restored by
   // opening the panel, even though this browser still holds it: that takes a save.
+  // Unconditional, because savePerModelConfig expresses "no settings" by deleting
+  // the entry, so a merge that comes out default is a clear that has to travel.
   const adoptWrite = [
     "savePerModelConfig\\(configId, target\\.ggufVariant, rememberedConfig\\);",
-    "\\}",
     "return;",
   ].join("\\s*\\n\\s*");
   assert.match(PANEL, new RegExp(adoptWrite));

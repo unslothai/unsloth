@@ -2245,10 +2245,16 @@ export function ModelConfigPage({
           // Onto the stored record, not the shown one: see storedAtStart. The row
           // outranks both, so the shared settings still land in local storage for
           // the load paths that never open this panel.
+          //
+          // Unconditionally, because savePerModelConfig says "no settings" by
+          // DELETING the entry: a merge that comes out default is a clear that has
+          // to travel, not a write to skip. Clearing a model's only remembered
+          // flag leaves the row as an explicit empty list, which is exactly that
+          // case, and skipping it stranded the old flag here for model-selector's
+          // quick select to reload without ever opening this panel. Writing when
+          // no record exists is already a no-op.
           const rememberedConfig = fromApiOverride(resolvedRow, storedAtStart);
-          if (!isDefaultConfig(rememberedConfig)) {
-            savePerModelConfig(configId, target.ggufVariant, rememberedConfig);
-          }
+          savePerModelConfig(configId, target.ggufVariant, rememberedConfig);
           return;
         }
         if (stored.length === 0) {
