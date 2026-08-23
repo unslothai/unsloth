@@ -123,9 +123,9 @@ def test_returning_from_compare_reattaches_the_materialized_thread() -> None:
         report({});
         """
     )
-    assert out["activeThreadId"] == "thread-42", (
-        "a chat that comes back visible must be attached to the thread it is showing"
-    )
+    assert (
+        out["activeThreadId"] == "thread-42"
+    ), "a chat that comes back visible must be attached to the thread it is showing"
     assert out["sets"] == ["thread-42"], "exactly one restore, on the resume"
 
 
