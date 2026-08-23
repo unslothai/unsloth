@@ -506,3 +506,64 @@ class TestPruningOnlyTouchesStudioSpills:
         assert len([p for p in target.iterdir() if p.name.endswith(".txt")]) == (
             tools._SPILL_KEEP + len(theirs)
         )
+
+
+class TestTheFrontendEnvelopeSurvivesTheCap:
+    """Only what the model is shown is measured, and only it is cut.
+
+    An MCP screenshot comes back as a trailing `__MCP_IMAGES__` JSON array that can run to
+    megabytes of base64. `strip_result_for_model` removes it before the result is replayed,
+    so it costs the window nothing, and every consumer needs the whole valid array: a cut
+    inside it does not lose the image quietly, it hands the model the broken fragment.
+    """
+
+    @staticmethod
+    def _envelope(pixels: int) -> str:
+        return '\n__MCP_IMAGES__:[{"data": "%s", "mimeType": "image/png"}]' % ("A" * pixels)
+
+    def _mcp(self, monkeypatch, result):
+        monkeypatch.setattr(
+            tools.mcp_servers_db,
+            "get_server",
+            lambda _id: {"url": "https://example.invalid/mcp", "is_enabled": True},
+        )
+        monkeypatch.setattr(tools, "parse_server_headers", lambda _s: {})
+        monkeypatch.setattr(tools, "is_stdio", lambda _u: False)
+        monkeypatch.setattr(tools, "call_tool_sync", lambda **k: result)
+        return tools.execute_tool(
+            f"{tools.MCP_TOOL_PREFIX}srv__screenshot", {}, result_budget_tokens = 120
+        )
+
+    def test_an_image_envelope_comes_back_whole(self, monkeypatch):
+        from core.inference.tool_loop_controller import strip_result_for_model
+
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        envelope = self._envelope(60_000)
+
+        out = self._mcp(monkeypatch, _dense(40_000) + envelope)
+
+        assert out.endswith(envelope), "the image envelope was cut"
+        # And the part that is replayed to the model is the capped one.
+        _within_room(strip_result_for_model(out, "mcp"), 120)
+
+    def test_the_envelope_is_not_charged_to_the_room(self, monkeypatch):
+        """Its size cannot shrink the body: the model never sees those bytes."""
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        page = _dense(40_000)
+
+        small = self._mcp(monkeypatch, page + self._envelope(100))
+        large = self._mcp(monkeypatch, page + self._envelope(500_000))
+
+        assert small.split("\n__MCP_IMAGES__")[0] == large.split("\n__MCP_IMAGES__")[0]
+
+    def test_text_that_merely_mentions_the_marker_is_still_capped(self, monkeypatch):
+        """The conservative half, and the same rule the replay path applies: no valid JSON
+        array, no envelope, so it is ordinary output and is measured like any other."""
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+
+        out = self._mcp(monkeypatch, _dense(40_000) + "\n__MCP_IMAGES__: see the docs")
+
+        _within_room(out, 120)

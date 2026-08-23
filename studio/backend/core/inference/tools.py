@@ -10087,7 +10087,8 @@ def execute_tool(
                 rag_scope,
                 effective_timeout,
                 cancel_event,
-            )
+            ),
+            name,
         )
     if name == "search_conversation":
         # Scoped by thread id alone: the archive is this chat's own evicted turns, so it
@@ -10104,10 +10105,11 @@ def execute_tool(
                 effective_timeout,
                 cancel_event,
                 search_fn = _search_conversation,
-            )
+            ),
+            name,
         )
     if name == "render_html":
-        return _fit_result_to_room(_render_html_result(arguments))
+        return _fit_result_to_room(_render_html_result(arguments), name)
     if name.startswith(MCP_TOOL_PREFIX):
         try:
             _, server_id, tool_name = name.split("__", 2)
@@ -10157,7 +10159,8 @@ def execute_tool(
                 cancel_event = cancel_event,
                 scope = mcp_scope,
                 config_check = _config_current,
-            )
+            ),
+            name,
         )
     if name == "web_search":
         return _fit_result_to_room(
@@ -10169,7 +10172,8 @@ def execute_tool(
                 website_policy = website_policy,
                 include_images = search_images,
                 image_queries = arguments.get("image_queries"),
-            )
+            ),
+            name,
         )
     # Both run with the session's sandbox as cwd, so a chat deleted mid-call
     # must not unlink it from under them.
@@ -10202,7 +10206,8 @@ def execute_tool(
                     arguments,
                     session_id = session_id,
                     disable_sandbox = disable_sandbox,
-                )
+                ),
+                name,
             )
     return f"Unknown tool: {name}"
 
@@ -14013,7 +14018,7 @@ def _truncate(
     return head + common + f" -- continue with:\n  {resume})"
 
 
-def _fit_result_to_room(text):
+def _fit_result_to_room(text, name = None):
     """Cap a tool that does not cap its own output, when this request priced its room.
 
     `python` and `terminal` truncate against this same budget before they return, so this
@@ -14033,7 +14038,39 @@ def _fit_result_to_room(text):
     """
     if _request_result_room() is None or not isinstance(text, str) or not text:
         return text
-    return _truncate(text)
+    # Only the part the model will actually be shown is measured and cut. The rest is a
+    # frontend-only envelope -- an MCP image array, web_search thumbnails, RAG sources --
+    # which `strip_result_for_model` removes before the result is replayed, so it costs
+    # the window nothing and must come back byte-identical: every consumer of the
+    # __MCP_IMAGES__ envelope requires the whole valid JSON array, and a cut anywhere
+    # inside a megabyte of base64 does not lose the image quietly, it replays the broken
+    # fragment to the model instead.
+    body, suffix = _split_frontend_suffix(text, name)
+    if not body:
+        return text
+    fitted = _truncate(body)
+    return fitted + suffix if fitted is not body else text
+
+
+def _split_frontend_suffix(text: str, name: "str | None") -> "tuple[str, str]":
+    """``text`` split into what the model sees and the trailing frontend-only envelope.
+
+    `strip_result_for_model` is the same function the replay path uses, so the split
+    follows its validation exactly -- a result that merely mentions a sentinel keeps it in
+    the body and is capped with it, which is the conservative half.
+    """
+    from .tool_loop_controller import strip_result_for_model
+
+    try:
+        body = strip_result_for_model(text, name)
+    except Exception:
+        logger.debug("frontend suffix split failed", exc_info = True)
+        return text, ""
+    # It only ever strips a suffix, so the remainder is the exact bytes that were removed
+    # (including whatever whitespace the strip rstripped away).
+    if not isinstance(body, str) or not text.startswith(body):
+        return text, ""
+    return body, text[len(body):]
 
 
 def _head_whole_lines(text: str, limit: int) -> "tuple[str, bool]":
