@@ -823,6 +823,29 @@ def run(args, ab_ref = None) -> int:
             ladder_ratio = cells[0][0].meta["ladder_chars_per_token"]
             rec.gate("ladder_ratio_measured", not ladder_ratio["provisional"], ladder_ratio)
 
+            # THE RATIO IS PART OF WHAT THE PAYLOAD MEASURED, and this is the first moment it is
+            # known -- the same shape as the commit check above, and for the same reason: the
+            # rungs already in the file were built at the ratio they record, the rungs still owed
+            # would be built at the one measured now, and one report prints both as one ladder.
+            if args.resume:
+                ratio_issues: list = []
+                for recorded in recorded_identities(paths.payload_jsonl):
+                    for problem in ladder_ratio_problems(
+                        recorded, ladder_ratio["chars_per_token"]
+                    ):
+                        if problem not in ratio_issues:
+                            ratio_issues.append(problem)
+                if ratio_issues:
+                    raise SystemExit(
+                        f"refusing to resume {paths.payload_jsonl}: the ladder is sized by a "
+                        "different chars-per-token ratio than the cells already in it.\n  "
+                        + "\n  ".join(ratio_issues)
+                        + "\nA rung is named in tokens and built in characters, so the same rung "
+                        "label would stand over two different character loads in one table. "
+                        "Resume where the tokeniser answers as it did, or re-run into a fresh "
+                        "--out."
+                    )
+
         done = _resume_set(paths) if args.resume else set()
 
         if ab_ref:
@@ -1059,6 +1082,21 @@ IDENTITY_AXES = (
 #: `identity_problems`: an A/B judged against a run that is not one may not differ on them.
 TREATMENT_AXES = ("treatment_ref", "treatment_url")
 
+#: THE RATIO THE LADDER WAS SIZED BY, carried on every cell's `meta` by `session.build_cells`.
+#: Not in `IDENTITY_AXES`: those are checked by `prepare_payload` before anything is installed,
+#: and this one is not known until `build_cells` has measured the corpus. Checked instead by
+#: `ladder_ratio_problems`, on the same footing as `COMMIT_AXES` -- late enough to have the answer,
+#: early enough that nothing has been measured under it.
+LADDER_RATIO_AXIS = "ladder_chars_per_token"
+
+#: How close two ratios must be to be the same ratio. `measure_chars_per_token` rounds its answer
+#: to three decimals and `PROVISIONAL_CHARS_PER_TOKEN` is exact, so every value that reaches a
+#: payload sits on a 0.001 grid: half a grid step separates "the same measurement, re-read through
+#: JSON" from "a different one". Wide enough that 5.0 never refuses 5.0 for a float's sake, narrow
+#: enough that the case this exists for -- a provisional 4.0 against tiktoken's 3.336 on this
+#: corpus, a fifth of the character load of every rung -- can never be inside it.
+LADDER_RATIO_TOLERANCE = 5e-4
+
 #: The arm a run without `--ab` records every cell under. `Cell.arm` in `runtime.types`; an A/B
 #: overwrites it with the target's label, `base` or `treatment`. Named here because it is what
 #: tells `recorded_identities` which of the two a session already in the payload was.
@@ -1147,6 +1185,14 @@ def recorded_identities(payload_path) -> list:
                 arm = str((row.get("cell") or {}).get("arm") or row.get("arm") or "")
                 if arm:
                     by_session[session].setdefault("mode", "single" if arm == SINGLE_ARM else "ab")
+                # THE RATIO THE SESSION'S RUNGS WERE SIZED BY, on the same rule as the mode: read
+                # off a cell the session actually wrote, so a session that recorded none declares
+                # none. See `ladder_ratio_problems`.
+                sized = ((row.get("cell") or {}).get("meta") or {}).get("ladder_chars_per_token")
+                if isinstance(sized, dict) and sized.get("chars_per_token") is not None:
+                    by_session[session].setdefault(
+                        LADDER_RATIO_AXIS, float(sized["chars_per_token"])
+                    )
                 continue
             for axis in IDENTITY_AXES + COMMIT_AXES:
                 if axis in row:
@@ -1249,6 +1295,41 @@ def commit_problems(recorded: dict, resolved: dict) -> list:
             f"{axis}: {side} was recorded at commit {got[:12]}, this run installed {want[:12]}"
         )
     return problems
+
+
+def ladder_ratio_problems(recorded: dict, measured: float) -> list:
+    """Whether the rungs this run is about to build carry the character load the payload's do.
+
+    A rung is NAMED in tokens and BUILT in characters, and the chars-per-token ratio is the only
+    thing that makes those the same claim. It is measured afresh on every invocation, `--resume`
+    included, and it is not fixed by anything the identity check already pins: `corpus_hash` is the
+    frozen fixture's own hash and says nothing about how many tokens a tokeniser reads out of it,
+    and `session.ladder_chars_per_token` falls back to `PROVISIONAL_CHARS_PER_TOKEN` whenever no
+    real tokeniser answers. tiktoken is not a dependency of this harness, and even where it is
+    installed `get_encoding` fetches `cl100k_base` over the network on first use, so "no tokeniser
+    answered" is one absent package or one unlucky minute, not a hypothetical.
+
+    So: a run on a machine with no tokeniser sizes every rung at 4.0 and dies at 100K; the resume
+    finds tiktoken and sizes at 3.336. `_resume_set` skips the completed cells by `cell_id`, which
+    is `r{rung}.{arm}.rep{rep}` and carries no ratio, so 1K and 10K stay at 4,000 and 40,000
+    characters while 100K and 1M are built at 333,600 and 3,336,000 -- a sixth less load per rung
+    on the second half of the ladder. Nothing downstream can see the mixture: `score_payload` keys
+    by rung, the report prints one ladder, and ONSET RUNG names a token label that means two
+    different amounts of work in the same table.
+
+    A ratio the payload never recorded is not a difference, the rule `recorded_identities` applies
+    to every other axis: a payload written before the ratio travelled on `meta` still resumes. See
+    `LADDER_RATIO_TOLERANCE` for what counts as the same ratio.
+    """
+    got = recorded.get(LADDER_RATIO_AXIS)
+    if got is None or measured is None:
+        return []
+    if abs(float(got) - float(measured)) <= LADDER_RATIO_TOLERANCE:
+        return []
+    return [
+        f"{LADDER_RATIO_AXIS}: the payload's rungs were sized at {float(got)!r} characters per "
+        f"token, this run measures {float(measured)!r}"
+    ]
 
 
 def archive_payload(paths, log = _log):
