@@ -138,7 +138,10 @@ import {
   ResearchActivitySheet,
 } from "./components/research-activity-panel";
 import { ChatModelNotice } from "./components/chat-model-notice";
-import { chatModelSwitchMeta } from "./components/chat-model-notice-switch";
+import {
+  chatModelSwitchMeta,
+  type ChatModelSwitchTarget,
+} from "./components/chat-model-notice-switch";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
@@ -3665,10 +3668,10 @@ export function ChatPage({
   // `/api/models/list` nor the external ids, so without it the switch loads on
   // different arguments than the menu would.
   const handleSwitchBackToChatModel = useCallback(
-    (modelId: string) => {
+    (target: ChatModelSwitchTarget) => {
       handleCheckpointChange(
-        modelId,
-        chatModelSwitchMeta(modelId, loraModels),
+        target.modelId,
+        chatModelSwitchMeta(target, loraModels),
       );
     },
     [handleCheckpointChange, loraModels],
@@ -4135,6 +4138,7 @@ export function ChatPage({
           <ChatModelNotice
             threadId={view.threadId ?? newChatThreadId ?? undefined}
             checkpoint={inferenceParams.checkpoint}
+            activeGgufVariant={activeGgufVariant}
             selectableModelIds={selectableModelIds}
             onSwitch={handleSwitchBackToChatModel}
           />

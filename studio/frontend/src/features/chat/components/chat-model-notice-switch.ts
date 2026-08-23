@@ -5,40 +5,113 @@ import type {
   LoraModelOption,
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
+import {
+  ggufQuantLabel,
+  normalizeGgufVariantIdentity,
+} from "../../model-picker/model-config/model-identity";
+import {
+  resolveInitialConfig,
+  resolveOnlyRememberedGgufVariant,
+} from "../../model-picker/model-config/per-model-config";
 
-/**
- * The picker metadata a "Switch back" has to carry, or undefined when the id
- * needs none.
- *
- * `handleCheckpointChange` is the picker's handler, and the picker never calls
- * it with the id alone. For a Hub row or an external model the id is enough:
- * `selectModel` finds the row in `/api/models/list` (which carries `isGguf`) or
- * `isExternalModelId` routes it. A local / fine-tuned row is in neither, so
- * with no metadata `isGguf` resolves false and the /load request drops
- * `n_parallel`, `n_batch`, `n_ubatch` and `llama_extra_args` and sizes the
- * context down the transformers path -- a different load from the one the same
- * model gets when picked from the menu.
- *
- * Mirrors what the picker itself supplies for these rows, field for field:
- * `localDirectGgufMeta` for a single .gguf file, and the fine-tuned list's own
- * `selectionMeta` for everything else.
- */
+export type ChatModelSwitchTarget = {
+  modelId: string;
+  ggufVariant?: string | null;
+};
+
+type ChatModelThreadSnapshot = {
+  id: string;
+  modelId?: string | null;
+  modelGgufVariant?: string | null;
+};
+
+export function resolveChatModelSwitchTarget(
+  target: ChatModelSwitchTarget,
+): ChatModelSwitchTarget {
+  if (target.ggufVariant) {
+    return target;
+  }
+  const remembered = resolveOnlyRememberedGgufVariant(target.modelId);
+  const basename = target.modelId.replace(/\\/g, "/").split("/").pop() ?? "";
+  if (
+    !remembered ||
+    normalizeGgufVariantIdentity(ggufQuantLabel(`${basename}.gguf`)) !==
+      normalizeGgufVariantIdentity(remembered.ggufVariant)
+  ) {
+    return target;
+  }
+  return { ...target, ggufVariant: remembered.ggufVariant };
+}
+
+function chatModelSwitchTargetFromThread(
+  thread: ChatModelThreadSnapshot | null | undefined,
+): ChatModelSwitchTarget | null {
+  return thread?.modelId
+    ? resolveChatModelSwitchTarget({
+        modelId: thread.modelId,
+        ggufVariant: thread.modelGgufVariant ?? null,
+      })
+    : null;
+}
+
+export function createChatModelHistoryReader(
+  threadId: string,
+  onModel: (model: ChatModelSwitchTarget | null) => void,
+) {
+  let disposed = false;
+  let updateSeen = false;
+  return {
+    applyInitial(thread: ChatModelThreadSnapshot | null | undefined): void {
+      if (disposed || updateSeen) {
+        return;
+      }
+      onModel(chatModelSwitchTargetFromThread(thread));
+    },
+    applyUpdate(thread: ChatModelThreadSnapshot): void {
+      if (disposed || thread.id !== threadId) {
+        return;
+      }
+      updateSeen = true;
+      onModel(chatModelSwitchTargetFromThread(thread));
+    },
+    dispose(): void {
+      disposed = true;
+    },
+  };
+}
+
 export function chatModelSwitchMeta(
-  modelId: string,
+  target: ChatModelSwitchTarget,
   loraModels: readonly LoraModelOption[],
 ): ModelSelectorChangeMeta | undefined {
-  const row = loraModels.find((model) => model.id === modelId);
-  if (!row) return undefined;
+  const resolvedTarget = resolveChatModelSwitchTarget(target);
+  const row = loraModels.find((model) => model.id === resolvedTarget.modelId);
+  const ggufVariant = resolvedTarget.ggufVariant || undefined;
+  const resolvedConfig = resolveInitialConfig(
+    resolvedTarget.modelId,
+    ggufVariant,
+  );
+  const config = resolvedConfig.remembered ? resolvedConfig.config : null;
+  if (!row) {
+    if (!ggufVariant) return undefined;
+    return {
+      source: "hub",
+      isLora: false,
+      ggufVariant,
+      isGguf: true,
+      ...(config ? { config } : {}),
+    };
+  }
   const isLocal = row.source === "local";
   return {
     source: isLocal ? "local" : row.source === "exported" ? "exported" : "lora",
-    // A local folder is not an adapter, and neither is a merged or GGUF export.
+    // local folders and merged or gguf exports are not adapters.
     isLora:
       !isLocal && row.exportType !== "merged" && row.exportType !== "gguf",
-    // Already on disk: without this the load shows a download progress bar for
-    // a model that has nothing to download.
+    // every row here is already on disk.
     isDownloaded: true,
-    // Set only by chatLocalModelOptions, and only for a single .gguf file.
-    isGguf: row.isGguf === true,
+    isGguf: row.isDirectGguf === true || Boolean(ggufVariant),
+    ...(ggufVariant ? { ggufVariant } : {}),
+    ...(config ? { config } : {}),
   };
 }

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import type { useChatRuntimeStore } from "../stores/chat-runtime-store";
 
 const QUEUED_SETTING_KEYS = [
+  "activeGgufVariant",
   "supportsTools",
   "supportsReasoning",
   "reasoningAlwaysOn",
@@ -67,6 +68,13 @@ export function snapshotQueuedChatRunSettings(
     Object.assign(snapshot, { [key]: state[key] });
   }
   return snapshot;
+}
+
+export function shouldPersistResolvedQueuedModel(
+  queuedCheckpoint: string | null | undefined,
+  storedThread: { modelId?: string | null } | null | undefined,
+): boolean {
+  return !queuedCheckpoint && Boolean(storedThread && !storedThread.modelId);
 }
 
 export function registerQueuedChatRunSettings(
