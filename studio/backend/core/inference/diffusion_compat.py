@@ -484,10 +484,9 @@ def speech_pick_refusal(
 ) -> Optional[str]:
     """Why this diffusion pick cannot load, when it names a speech GGUF, else None.
 
-    The variant listing drops the speech quants whose bytes are on disk, but an UNDOWNLOADED one
-    has none to read and stays offered -- and ``detect_family_for_pick`` resolves its family from
-    the folder name, so a csm file beside a FLUX denoiser answers flux.1, and the pick pulls the
-    checkpoint and tears the resident pipeline down before the loader finds out.
+    A media pick names its file, and ``detect_family_for_pick`` resolves the family from the FOLDER
+    rather than that name, so a csm quant sitting beside a FLUX denoiser answers flux.1: the pick
+    pulls the checkpoint and tears the resident pipeline down before the loader finds out.
 
     Metadata only, like the FLUX.2 pairing above: a cached copy answers with no request, else one
     range request. Fails open on everything -- no filename, an unreadable header, an offline host,

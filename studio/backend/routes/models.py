@@ -4334,6 +4334,9 @@ def _gguf_folder_task(
                 del scored[_MAX_TASK_CLASSIFY_GGUFS:]
         scored.sort(key = lambda item: item[0])
         paths = [path for _, path in scored[:_MAX_TASK_CLASSIFY_GGUFS]]
+        # Whether every candidate in the folder made it into `paths`. The walk gives up at its own
+        # deadline and the cap drops the tail, so either can leave a sibling unseen.
+        complete = len(scored) <= _MAX_TASK_CLASSIFY_GGUFS and time.monotonic() < deadline
     except Exception:
         return None
     unsupported: Optional[str] = None
@@ -4343,6 +4346,7 @@ def _gguf_folder_task(
         # The first read always happens, so a folder still classifies from its first ordered file
         # even where the budget was gone before this loop started.
         if index and time.monotonic() >= read_deadline:
+            complete = False
             break
         try:
             task = _arch_to_task(_gguf_architecture(str(path)), name_hints = id_hints + (path.name,))
@@ -4364,7 +4368,12 @@ def _gguf_folder_task(
                 unsupported = task
         elif task is not None and fallback is None:
             fallback = task
-    return unsupported or fallback or speech
+    # Speech only when the ranking above actually saw the whole folder. It is the one answer that
+    # HIDES a row rather than filing it, so a walk that gave up at its deadline, a folder past the
+    # cap, or a read budget that ran out after the csm quant sorted first would otherwise hide the
+    # runnable sibling it never got to. Every other verdict is safe to give on a partial read: the
+    # worst case is a row filed on the wrong page, not one the user cannot find at all.
+    return unsupported or fallback or (speech if complete else None)
 
 
 def _repo_gguf_task(repo_info) -> Optional[str]:

@@ -5241,6 +5241,62 @@ def test_a_runnable_chat_checkpoint_outranks_a_speech_gguf(tmp_path):
     )
 
 
+def test_a_truncated_classification_never_answers_speech(tmp_path, monkeypatch):
+    """Speech is the one verdict that HIDES a row, so it may only be given after the whole folder
+    was seen. Each of the three ways this walk gives up early -- the walk deadline, the 64-file
+    cap, and the read budget -- could otherwise stop right after the csm quant that sorts first and
+    hide the runnable sibling it never reached, which is worse than the mis-filing it prevents."""
+    folder = tmp_path / "mixed-chat-speech"
+    _arch_gguf(folder / "csm-1b-Q4_0.gguf", "llama-csm")
+    _arch_gguf(folder / "qwen3-8b-Q4_K_M.gguf", "llama")
+    assert models_route._gguf_folder_task(folder, ("someone/mixed-GGUF",)) == "text-generation"
+
+    # The read budget gone before the second file: the first read always happens, so the csm quant
+    # is the only verdict in hand.
+    monkeypatch.setattr(models_route, "_TASK_CLASSIFY_READ_SECONDS", -1.0)
+    assert models_route._gguf_folder_task(folder, ("someone/mixed-GGUF",)) is None
+    monkeypatch.undo()
+
+    # The walk giving up at its deadline with only the csm quant yielded.
+    def truncating(root, deadline = None):
+        yield folder / "csm-1b-Q4_0.gguf"
+        while deadline is not None and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    monkeypatch.setattr(models_route, "_iter_gguf_paths", truncating)
+    assert models_route._gguf_folder_task(folder, ("someone/mixed-GGUF",)) is None
+    monkeypatch.undo()
+
+    # The cap dropping the tail the runnable sibling sorts into.
+    capped = tmp_path / "capped"
+    for index in range(models_route._MAX_TASK_CLASSIFY_GGUFS + 4):
+        _arch_gguf(capped / f"aaa-{index:03d}-csm.gguf", "llama-csm")
+    _arch_gguf(capped / "zzz-qwen3-Q4_K_M.gguf", "llama")
+    assert models_route._gguf_folder_task(capped, ("someone/capped-GGUF",)) is None
+
+    # A speech-only folder read in full still tags speech, so the picker keeps leaving it out.
+    speech = tmp_path / "speech-only"
+    _arch_gguf(speech / "csm-1b-Q4_0.gguf", "llama-csm")
+    assert (
+        models_route._gguf_folder_task(speech, ("someone/csm-GGUF",)) == models_route._SPEECH_TASK
+    )
+
+
+def test_only_a_read_architecture_ever_answers_speech():
+    """The frontend gate is fail-CLOSED on a text-to-speech tag while every backend probe fails
+    open, and that is only safe because the tag can come from nothing but ``general.architecture``.
+    A name hint reaching this verdict would hide the runnable TTS GGUFs (Orpheus, OuteTTS) whose
+    files are named for a family but declare a plain ``llama`` arch."""
+    hints = ("unsloth/csm-1b-GGUF", "csm-1b-Q4_0.gguf", "sesame-csm", "text-to-speech")
+    assert models_route._arch_to_task("llama-csm") == models_route._SPEECH_TASK
+    for arch in (None, "", "llama", "qwen3", "flux"):
+        assert models_route._arch_to_task(arch, name_hints = hints) != models_route._SPEECH_TASK
+    # Orpheus ships as a llama GGUF, so it must stay a chat row for the gate to leave it alone.
+    assert models_route._arch_to_task("llama", name_hints = ("unsloth/orpheus-3b-0.1-ft-GGUF",)) == (
+        "text-generation"
+    )
+
+
 def test_a_buildable_denoiser_outranks_an_arch_the_backend_cannot_assemble(tmp_path):
     """``_UNSUPPORTED_DIFFUSION_TASK`` hides a row from the chat picker AND from the Images and
     Video ones, so a folder holding both a checkpoint this backend can build and one it cannot has
