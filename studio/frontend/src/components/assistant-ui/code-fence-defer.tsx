@@ -47,9 +47,27 @@ import { type FenceMode, resolveFenceMode } from "./code-fence-mode";
  * renders rather than what a settled thread costs.
  */
 
-// How far outside the viewport a fence counts as "reached". One viewport of
-// slack in each direction, so the upgrade has a frame or two to land before the
-// block is actually on screen and the reader never sees the swap.
+/*
+ * How far outside the viewport a fence counts as "reached". One viewport of slack in each
+ * direction, so the upgrade has a frame or two to land before the block is actually on screen and
+ * the reader never sees the swap.
+ *
+ * THE PERCENTAGE RESOLVES AGAINST THE ROOT'S HEIGHT, and the spec says otherwise. Intersection
+ * Observer 2.2 says percentages "are resolved relative to the width of the undilated rectangle",
+ * for all four sides; no engine does that for top and bottom, and w3c/IntersectionObserver#391 is
+ * open on exactly that discrepancy. Measured on a synthetic scroller of known size, with `0px 0px`
+ * and `300px 0px` run alongside as controls that must come back 0 and 300:
+ *
+ *   root 300x800 -> 800 px    root 1600x600 -> 600 px    root 600x1400 -> 1400 px
+ *
+ * on Chromium, Firefox and WebKit alike, nine rows, every control reproduced. So it is the HEIGHT,
+ * which is what `inBand` and the jump test below both assume.
+ *
+ * That is a measurement of today's engines against a spec that says something else, so it is
+ * guarded rather than trusted: `pf9462_parity.py` re-measures it on two geometries on every run
+ * and fails the run if the observer's lookahead and the pre-paint band stop agreeing, which is
+ * what an engine moving to the spec's reading would look like.
+ */
 const REACH_MARGIN = "100% 0px";
 
 /*
