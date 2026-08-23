@@ -65,6 +65,46 @@ export function communityAudioRowIsRunnable({
   return !(isGguf && /(?:^|[-_./])csm(?:$|[-_./])/.test(family));
 }
 
+/** A GGUF llama.cpp cannot decode, however it was found: CSM is Transformers-only, so it
+ * never loads in llama-server. Beside communityAudioRowIsRunnable's list to stay in step. */
+export function speechGgufIsUndecodable({
+  isGguf,
+  id,
+  baseModel,
+  tags,
+}: {
+  isGguf: boolean;
+  id: string;
+  baseModel?: string | null;
+  tags?: readonly string[] | null;
+}): boolean {
+  if (!isGguf) return false;
+  return [id, baseModel ?? "", ...(tags ?? [])]
+    .map((value) => value.toLowerCase())
+    .some((value) => CSM_PATH_SEGMENT.test(value));
+}
+
+/** `csm` as its own path or name segment. The separator class carries a BACKSLASH as well as a
+ * slash: this is handed local checkpoint paths, and on Windows `C:\models\csm-1b\model.gguf`
+ * reads as one long segment to a posix-only class, and clears. */
+const CSM_PATH_SEGMENT = /(?:^|[-_./\\])csm(?:$|[-_./\\])/;
+
+/** Whether a fine-tuned or exported row is a CSM checkpoint in a GGUF container, which no
+ * runtime here decodes. `audioType` is read off the checkpoint by the backend, so it holds
+ * even where nothing in the path says "csm". */
+export function localAudioRowIsUndecodableGguf({
+  audioType,
+  exportType,
+  isDirectGguf = false,
+}: {
+  audioType?: string | null;
+  exportType?: string | null;
+  isDirectGguf?: boolean;
+}): boolean {
+  const isGguf = exportType === "gguf" || isDirectGguf;
+  return isGguf && (audioType ?? "").toLowerCase() === "csm";
+}
+
 /** Whether an audio pick from the chat picker may be routed to the Audio page.
  *
  * The page's own lists apply `communityAudioRowIsRunnable`, so routing a repo that fails
@@ -77,6 +117,7 @@ export function audioPickIsRoutable({
   isGguf,
   isCurated,
   isLocalCheckpoint = false,
+  taskFromGgufArch = false,
   baseModel,
   tags,
   libraryName,
@@ -87,16 +128,27 @@ export function audioPickIsRoutable({
   isCurated: boolean;
   /** Trained or exported here, so its codec was read off the checkpoint itself. */
   isLocalCheckpoint?: boolean;
+  /** Filesystem inventory row: its task came from reading the GGUF's own architecture. */
+  taskFromGgufArch?: boolean;
   baseModel?: string | null;
   tags?: readonly string[] | null;
   libraryName?: string | null;
 }): boolean {
+  // The backend tags text-to-speech ONLY for llama-csm (_SPEECH_GGUF_ARCHS), the one arch
+  // llama.cpp has no decoder for, so that read outranks both the curated match and the
+  // PATH-based heuristic below -- which clears a CSM file at /models/orpheus/custom.gguf
+  // and routes it to Audio after the handoff already evicted the chat model.
+  if (taskFromGgufArch && isGguf && task === "text-to-speech") return false;
   if (isCurated) return true;
   // A checkpoint from outputs/ has no Hub identity for communityAudioRowIsRunnable to
   // judge, and the family-name heuristic it applies would reject it on its directory
   // name. Its task came from the backend reading the checkpoint, which is the stronger
   // signal, and the Audio page lists it off that same tag.
   if (isLocalCheckpoint) {
+    // Provenance says nothing about the decoder: a CSM GGUF found on disk is as
+    // unrunnable as a cached one, and routing it hands Audio a row it cannot show after
+    // the ?model= handoff already evicted the chat model.
+    if (speechGgufIsUndecodable({ isGguf, id, baseModel, tags })) return false;
     return (
       task === "text-to-speech" || task === "automatic-speech-recognition"
     );

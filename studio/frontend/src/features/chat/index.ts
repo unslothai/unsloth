@@ -193,6 +193,12 @@ export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export { extractYoutubeVideoId } from "./utils/youtube-url";
+export {
+  isSearchImagesToolResult,
+  searchImagePath,
+  stripSearchImageTokens,
+  type SearchImageEntry,
+} from "./search-images/search-images";
 export { YoutubeTranscriptPrompt } from "./components/youtube-transcript-prompt";
 export {
   formatMcpToolName,
