@@ -936,3 +936,95 @@ def test_clear_history_does_not_read_the_replay_ledger_outside_the_transaction()
     assert (
         "chat_clear_operation_is_recorded" not in source
     ), "a pre-transaction ledger read cannot tell a replay from a concurrent clear"
+
+
+def test_a_chat_created_in_the_gap_after_the_clear_keeps_its_images(monkeypatch, tmp_path):
+    """The snapshot has to be taken at the clear boundary, not one await later.
+
+    `await run_in_threadpool(...)` is a yield point. With the clear and the snapshot in
+    separate calls, the event loop can run another request in between: a chat created there
+    survives the transaction (the clear only deletes what it saw), but its images register
+    before the snapshot, so the reap that follows takes them and its cards 404 out of
+    thumbnail_bytes. One threadpool call for both leaves no gap to interleave into.
+
+    The interleave is forced rather than raced: `run_in_threadpool` is wrapped so the other
+    tab registers its image immediately after the FIRST hop returns, which is exactly the
+    window in question.
+    """
+    from core.inference import search_images
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(search_images, "_registry", {})
+    monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path / "thumbs")
+    (tmp_path / "thumbs").mkdir(parents = True, exist_ok = True)
+
+    reaped: list = []
+    monkeypatch.setattr(search_images, "clear_cache", lambda only_ids = None: reaped.append(only_ids))
+
+    async def remove_sandboxes(_thread_ids, _delete_files):
+        return 0, []
+
+    monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
+    monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
+    monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
+    monkeypatch.setattr(
+        chat_history, "_remove_conversation_archives", lambda _ids, cutoff = None: None
+    )
+
+    # The other tab's image, registered in the gap. Straight into the registry: this is about
+    # WHEN the id becomes visible to the snapshot, not about how it got there.
+    late_image_id = "beefbeefbeef"
+    hops = {"n": 0}
+    # The route imports it inside the handler, so the patch has to land on the module it
+    # imports FROM, not on routes.chat_history.
+    import starlette.concurrency
+
+    real_run_in_threadpool = starlette.concurrency.run_in_threadpool
+
+    async def interleaving_run_in_threadpool(func, *args, **kwargs):
+        result = await real_run_in_threadpool(func, *args, **kwargs)
+        hops["n"] += 1
+        if hops["n"] == 1:
+            search_images._registry[late_image_id] = {
+                "thumbnail": "https://example.invalid/x.jpg",
+                "source": "https://example.invalid/",
+                "created": 0.0,
+                "policy": None,
+            }
+        return result
+
+    monkeypatch.setattr(
+        starlette.concurrency, "run_in_threadpool", interleaving_run_in_threadpool
+    )
+    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+
+    studio_db.upsert_chat_thread(_clear_thread_row("before-clear"))
+    asyncio.run(
+        chat_history.clear_history(
+            request,
+            chat_history.ChatClearRequest(ids = [], operationId = "clear-operation-gap"),
+            current_subject = "test-user",
+        )
+    )
+
+    assert reaped, "the clear still has to reap what it was responsible for"
+    snapshot = reaped[0]
+    assert snapshot is not None, "a real clear reaps a bounded set, not everything"
+    assert late_image_id not in snapshot, (
+        "an image registered after the clear committed belongs to a chat the clear kept, "
+        "so the reap must not be allowed to take it"
+    )
+
+
+def test_the_clear_and_its_image_snapshot_share_one_threadpool_hop():
+    """The structural half of the race above, which no test scheduling can hide."""
+    source = inspect.getsource(chat_history.clear_history)
+    assert source.count("run_in_threadpool(_clear_rows)") == 1
+    assert "run_in_threadpool(registered_image_ids)" not in source, (
+        "a second hop for the snapshot reopens the gap the first one closed"
+    )
+    body = source.split("def _clear_rows(", 1)[1].split("\n    # The clear reports", 1)[0]
+    assert "registered_image_ids()" in body, "the snapshot belongs inside the clear's hop"

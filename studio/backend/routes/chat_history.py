@@ -1349,31 +1349,35 @@ async def clear_history(
         else [thread["id"] for thread in await run_in_threadpool(list_chat_threads)]
     )
 
-    def _clear_rows() -> tuple[list[str], list[str], bool]:
+    def _clear_rows() -> tuple[list[str], list[str], bool, Optional[set]]:
+        """The clear, and the image snapshot the reap will be bounded to.
+
+        Both in ONE threadpool call, so there is no await between them. Split across two,
+        the event loop can run another request in the gap: a chat created there survives
+        the transaction, but its images register before the snapshot and the reap takes
+        them, leaving its cards 404ing out of thumbnail_bytes. This is the clear boundary
+        the snapshot has to be taken at, and the only way to be at it is to not yield.
+        """
+        from core.inference.search_images import registered_image_ids
+
         if payload is None:
             cleared, cleared_runs = clear_chat_history()
-            return cleared, cleared_runs, False
+            return cleared, cleared_runs, False, registered_image_ids()
         # Answered by the transaction itself. Read separately beforehand it is a guess:
         # a concurrent retry of the same operation id sees the same unrecorded ledger,
         # and the one BEGIN IMMEDIATE puts second replays while still believing it
         # cleared. `replayed` here is whichever the transaction actually did.
-        return clear_chat_history_with_replay_status(
+        cleared, cleared_runs, replayed = clear_chat_history_with_replay_status(
             payload.ids,
             operation_id = payload.operationId,
         )
+        # A replay reaps nothing, so it does not pay for the snapshot either.
+        return cleared, cleared_runs, replayed, None if replayed else registered_image_ids()
 
     # The clear reports what it deleted, which is what gets cleaned up: a thread
     # added between the listing above and the delete is gone too, and its
     # sandbox would otherwise be stranded.
-    cleared, cleared_runs, replayed = await run_in_threadpool(_clear_rows)
-    # Taken HERE, not at the reap below: the archive and sandbox cleanup in between can
-    # run for seconds, and an image registered during it belongs to a chat created after
-    # the transaction, which the clear is therefore keeping. Reaping it would 404 that
-    # chat's cards. Snapshotting before the slow work bounds the reap to what this clear
-    # is actually responsible for.
-    from core.inference.search_images import registered_image_ids
-
-    reapable_image_ids = None if replayed else await run_in_threadpool(registered_image_ids)
+    cleared, cleared_runs, replayed, reapable_image_ids = await run_in_threadpool(_clear_rows)
     # A chat started between the listing and the transaction is in `cleared`
     # but was never cancelled, and a generation still running would dispatch a
     # tool and rebuild the sandbox this call is about to remove.
