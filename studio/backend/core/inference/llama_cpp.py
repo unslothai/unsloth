@@ -17252,9 +17252,6 @@ class LlamaCppBackend:
                                     + _shared_pool_mmproj
                                 )
 
-                    # Slot reduction also runs when native-context metadata is absent.
-                    native_ctx_for_cap = self._context_length or effective_ctx
-
                     if tensor_parallel and tp_gpus:
                         # Tensor-parallel allocation; see _plan_tensor_parallel.
                         target_ctx = (
@@ -17742,13 +17739,7 @@ class LlamaCppBackend:
                             ctx_checkpoints = _effective_ctx_checkpoints,
                         )
                         if not _uf_slots:
-                            logger.info(
-                                "Serving slots reduced %d -> %d to keep the model on GPU "
-                                "(avoid --fit offload) at context %d.",
-                                n_parallel,
-                                _slots,
-                                effective_ctx,
-                            )
+                            _slots_asked = n_parallel
                             gpu_indices, use_fit, n_parallel = _gi_slots, False, _slots
                             # Fewer slots means a lower batch floor, so the launch runs a
                             # smaller micro-batch than the one this was sized at. Re-derive
@@ -17791,9 +17782,16 @@ class LlamaCppBackend:
                                 devices: list[tuple[int, int]],
                             ) -> Optional[tuple[int, list[int]]]:
                                 """Largest 256-aligned context these cards hold. The
-                                footprint grows monotonically with context."""
-                                _lo = max(1, min(4096, native_ctx_for_cap) // 256)
-                                _hi = native_ctx_for_cap // 256
+                                footprint grows monotonically with context.
+
+                                Bound at the read site like the two sweeps above, rather
+                                than off a value an earlier arm may not have set: the arm
+                                that reaches here is not always the one that binds it, and
+                                a GGUF with no native length reaches this with the 0
+                                sentinel still in effective_ctx, which searched nothing."""
+                                _native = self._context_length or effective_ctx
+                                _lo = max(1, min(4096, _native) // 256)
+                                _hi = _native // 256
                                 _best = None
                                 while _lo <= _hi:
                                     _mid = (_lo + _hi) // 2
@@ -17826,9 +17824,23 @@ class LlamaCppBackend:
                                     n_parallel,
                                 )
                                 effective_ctx, gpu_indices = _refit
-                            # The ceiling stays a hardware bound like the sweep above, so
-                            # measure it across every card at the final slot count: an
-                            # explicit request that large re-selects GPUs and does load.
+                            # Logged after the re-fit, against the context that launches:
+                            # the pre-re-fit value was sized for slots this load no longer
+                            # uses, so naming it here described a plan that never ran.
+                            logger.info(
+                                "Serving slots reduced %d -> %d to keep the model on GPU "
+                                "(avoid --fit offload) at context %d.",
+                                _slots_asked,
+                                n_parallel,
+                                effective_ctx,
+                            )
+                            # Measured across every card at the final slot count, so it is
+                            # the same bound the best_cap sweep above reports and an
+                            # explicit request that large does re-select GPUs and load.
+                            # Not a hardware maximum: it is the largest context attainable
+                            # AT THE SLOT COUNT THIS LOAD SETTLED ON, and a larger request
+                            # can drive a deeper reduction that frees the KV for more.
+                            # effective_parallel_slots is what makes it interpretable.
                             _ceiling = (
                                 _refit if len(_plan_gpus) == len(gpus) else _largest_ctx(gpus)
                             )
