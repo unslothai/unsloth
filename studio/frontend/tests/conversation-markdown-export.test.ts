@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildNamedConversationsMarkdown,
+  createConversationMarkdownBuilder,
   createConversationMarkdownExporter,
 } from "../src/features/chat/utils/conversation-markdown-export.ts";
 
@@ -130,4 +131,34 @@ test("a title carrying a line break stays on its heading", async () => {
     async () => "## User\n\nhi",
   );
   assert.match(markdown, /^# Two lines - base\n\n## User/);
+});
+
+// Search results render their images from tokens the answer text carries. Both
+// ways out of a thread go through the one builder, so neither can start
+// shipping them as prose.
+test("renderer tokens never leave a thread, downloaded or copied", async () => {
+  const answer = "Golden Retriever\n\n[[img:0123456789ab]]\n\nDone.";
+  const stripped = "Golden Retriever\n\nDone.";
+  const messages: TestMessage[] = [{ role: "assistant", text: answer }];
+
+  const downloads: Array<{
+    content: string;
+    filename: string;
+    mimeType: string;
+  }> = [];
+  await exporterFor(messages, downloads, [])("thread-1");
+  assert.equal(downloads.length, 1);
+  assert.ok(!downloads[0].content.includes("[[img:"));
+  assert.ok(downloads[0].content.includes(stripped));
+
+  const build = createConversationMarkdownBuilder<TestMessage>({
+    loadMessages: async () => messages,
+    renderMessage: (message) => message.text,
+  });
+  const copied = await buildNamedConversationsMarkdown(
+    [{ id: "thread-1", title: "Dogs" }],
+    build,
+  );
+  assert.ok(!copied.includes("[[img:"));
+  assert.ok(copied.includes(stripped));
 });

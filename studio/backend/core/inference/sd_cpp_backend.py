@@ -43,7 +43,10 @@ from core.inference.diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
     DiffusionFamily,
+    DiffusionModelReplacedError,
+    LoadIdentity,
     detect_family_for_pick,
+    load_identity,
     family_sd_cpp_supported,
     mirror_repo,
     legacy_source_repo,
@@ -1015,6 +1018,17 @@ def _with_mirrors(repo_ids) -> tuple[str, ...]:
     return tuple(dict.fromkeys(out))
 
 
+def _assert_pick_is_not_speech(
+    repo_id: str,
+    gguf_filename: Optional[str],
+    hf_token: Optional[str] = None,
+    allow_network: bool = True,
+) -> None:
+    """The shared speech refusal, imported lazily so this module keeps its import cost."""
+    from .diffusion_compat import assert_pick_is_not_speech
+    assert_pick_is_not_speech(repo_id, gguf_filename, hf_token, allow_network)
+
+
 class SdCppDiffusionBackend:
     """Native sd.cpp backend with the diffusers ``DiffusionBackend`` method surface."""
 
@@ -1374,6 +1388,11 @@ class SdCppDiffusionBackend:
             # offline load asks it the way begin_load does: memo or local header or nothing. A
             # None here only falls back to the filename heuristic for the encoder pick, and a
             # cache-only load can fetch nothing the heuristic did not already have.
+            # The speech verdict lands here rather than in begin_load, which is offline-only by
+            # contract; before _asset_specs, so the refusal precedes any fetch.
+            _assert_pick_is_not_speech(
+                repo_id, gguf_filename, hf_token, allow_network = not local_files_only
+            )
             inner_dim = self._flux2_inner_dim(
                 repo_id, gguf_filename, fam, hf_token, allow_network = not local_files_only
             )
@@ -1749,6 +1768,8 @@ class SdCppDiffusionBackend:
         if fam is None or not family_sd_cpp_supported(fam):
             # Unreachable through the route, but a direct caller gets the same message begin_load would raise.
             raise ValueError(f"'{repo_id}' has no native sd.cpp asset mapping.")
+        # Same reason as the diffusers plan: this is what stages the download.
+        _assert_pick_is_not_speech(repo_id, gguf_filename, hf_token)
 
         specs = self._asset_specs(
             repo_id,
@@ -1882,6 +1903,7 @@ class SdCppDiffusionBackend:
         model_kind: Optional[str] = None,
         base_repo: Optional[str] = None,
         hf_token: Optional[str] = None,
+        allow_network: bool = True,  # noqa: ARG002 -- signature parity; no speech probe here
     ) -> None:
         """The companion refusal ``_run_load`` makes, run by the route BEFORE it takes the GPU.
 
@@ -2137,6 +2159,8 @@ class SdCppDiffusionBackend:
         loras: Optional[list[tuple[str, float]]] = None,
         # ControlNet is diffusers-only; rejected by the guard below (accepted for parity).
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
+        # load_identity() of the caller's status() read; refuse rather than run a different load (#9448).
+        expected_load: Optional[LoadIdentity] = None,
     ) -> dict[str, Any]:
         import tempfile
 
@@ -2183,6 +2207,10 @@ class SdCppDiffusionBackend:
                 ):
                     self._state = None
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
+                # Same window as the diffusers engine: a replacement can commit while this waits (#9448).
+                loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
+                if expected_load is not None and expected_load != loaded_id:
+                    raise DiffusionModelReplacedError(expected_load, loaded_id)
                 self._active_generate_cancel = cancel
                 # Publish an active (step 0) state before the slow pre-generate setup so a reload probe does not read idle while this holds _generate_lock.
                 self._gen = _SdGen(total_steps = int(steps))
