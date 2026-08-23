@@ -165,9 +165,7 @@ def _policy(monkeypatch, keep_resident, no_ram_reserve, extras, *, host_resident
 
     monkeypatch.setattr(mm, "get_keep_resident", lambda: keep_resident)
     monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_ram_reserve)
-    monkeypatch.setattr(
-        mm, "get_model_memory_settings", lambda: (keep_resident, no_ram_reserve)
-    )
+    monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (keep_resident, no_ram_reserve))
     monkeypatch.setattr(mm, "should_mlock", lambda: keep_resident and not no_ram_reserve)
     return apply_model_memory_policy(
         extras,
@@ -193,9 +191,7 @@ def test_keep_resident_emits_no_lock_on_the_reporters_host(reporter_host, monkey
     flag whatsoever, because the weights are on the cards.
     """
     host_resident = _gate()
-    managed, extras = _policy(
-        monkeypatch, True, False, [], host_resident = host_resident
-    )
+    managed, extras = _policy(monkeypatch, True, False, [], host_resident = host_resident)
     assert managed == []
     assert extras == []
     assert "--mlock" not in managed
@@ -224,9 +220,7 @@ def test_no_ram_reserve_still_strips_a_user_supplied_mlock(reporter_host, monkey
     removed. Without a user extra to strip there is nothing to see, which is why a
     bare 2x2 looks like a no-op."""
     host_resident = _gate()
-    managed, extras = _policy(
-        monkeypatch, False, True, ["--mlock"], host_resident = host_resident
-    )
+    managed, extras = _policy(monkeypatch, False, True, ["--mlock"], host_resident = host_resident)
     assert managed == []
     assert "--mlock" not in extras
 
@@ -237,7 +231,6 @@ def test_the_settings_api_reports_satisfied_while_the_toggle_reads_on(reporter_h
     ever tells the user the toggle did not apply. ``mlock_applicable`` False is the
     deliberate excuse (llama_server_args.memory_state_satisfies_settings)."""
     import utils.model_memory_settings as mm
-
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(mm, "get_keep_resident", lambda: True)
         patch.setattr(mm, "get_no_ram_reserve", lambda: False)
@@ -260,9 +253,7 @@ def test_a_unified_memory_apu_does_lock(apu_host, monkeypatch):
     corroborates; a divergence between the two is informative."""
     host_resident = _gate()
     assert host_resident is True
-    managed, _extras = _policy(
-        monkeypatch, True, False, [], host_resident = host_resident
-    )
+    managed, _extras = _policy(monkeypatch, True, False, [], host_resident = host_resident)
     assert managed == ["--load-mode", "mmap+mlock"]
 
 
@@ -287,8 +278,8 @@ def test_the_displayed_total_is_the_driver_total_untouched(reporter_host):
     assert devices, "the Windows ROCm per-device probe returned nothing"
     totals = {int(dev["index"]): dev["total_gb"] for dev in devices}
     # The only transform is bytes -> GiB, rounded to 2 dp for display.
-    assert totals[0] == round(W7900["total"] / (1024 ** 3), 2)
-    assert totals[1] == round(W7500["total"] / (1024 ** 3), 2)
+    assert totals[0] == round(W7900["total"] / (1024**3), 2)
+    assert totals[1] == round(W7500["total"] / (1024**3), 2)
     # 45.0 and 7.98 -- the two figures in the reporter's screenshots.
     assert totals[0] == pytest.approx(45.0, abs = 0.01)
     assert totals[1] == pytest.approx(7.98, abs = 0.01)
