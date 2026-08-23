@@ -1352,6 +1352,7 @@ def run_safetensors_tool_loop(
                             estimate_messages_tokens_dense as _dense_tokens,
                             tool_result_budget,
                         )
+
                         # The window itself as well, not only the room: nothing in the
                         # tools layer can see a native model's context length (its probe
                         # answers for a resident GGUF), and a cap with no window to size
