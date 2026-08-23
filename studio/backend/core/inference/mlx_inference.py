@@ -414,9 +414,8 @@ def _mlx_rng_key_words():
     """The MLX PRNG key as its two 32-bit words, or None if it cannot be read.
 
     Deciding it here is what lets the rewind below stay unconditional. A key
-    that reads but is not two words is different from an unreadable one: the
-    rewind no longer works on the installed mlx, and a bare None would leave the
-    probe silently not restoring, so say so once and then decline.
+    that reads but is not two words is not the same as an unreadable one: the
+    rewind no longer works on the installed mlx, so say so before declining.
     """
     import mlx.core as mx
 

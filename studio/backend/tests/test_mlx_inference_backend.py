@@ -2942,12 +2942,10 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
 def test_rng_capture_masks_words_that_would_make_seed_raise(monkeypatch, words, expected):
     """mx.random.seed takes a uint64 and raises outside [0, 2**64).
 
-    The rewind is unguarded on purpose, since a blanket except there would be a
-    failure indistinguishable from an intentional no-op. That only holds if the
-    words cannot put it out of range, and capture does not type-check the state,
-    so the masking is what makes "cannot raise" true. A raise would land in the
-    probe's finally and replace the probe's own outcome, which is the failure
-    shape #9478 set out to remove.
+    The rewind is deliberately unguarded, which only holds if the words cannot
+    put it out of range; capture does not type-check the state, so the masking is
+    what makes that true. A raise would land in the probe's finally and replace
+    the probe's own outcome, the failure shape #9478 set out to remove.
     """
     from core.inference import mlx_inference
 
