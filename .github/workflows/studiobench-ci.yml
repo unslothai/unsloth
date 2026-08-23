@@ -262,8 +262,14 @@ jobs:
             --out outputs/studiobench-ci
 
       # THE GATE. Exits non-zero unless every scheduled action reports ran=true
-      # with no missed slot, and refuses a payload with no cell rows rather than
-      # passing over it vacuously.
+      # with no missed slot and a passing expect_ok, and refuses a payload with no
+      # cell rows rather than passing over it vacuously.
+      #
+      # expect_ok is in that list because ran is not did-what-it-claimed: an action
+      # whose own assertion failed keeps its timings, and the report already drops
+      # them as "must not be quoted". If the gate did not read it, a selector
+      # regression that fails every cell's assertion would leave this job green with
+      # the surface no longer functional, since --report exits 0 after excluding it.
       #
       # `image_upload` is excused, and it is the only one. It reports NOT RUN on
       # every cell of every 100K run measured, always with the same evidence: the

@@ -9935,16 +9935,25 @@ class LlamaCppBackend:
         split_extra_bytes: int = 0,
         ubatch_for_slots: Optional[Callable[[int], Optional[int]]] = None,
         mtp_bytes_for_slots: Optional[Callable[[int, Optional[int]], int]] = None,
+        ctx_checkpoints: int = 0,
+        include_requested: bool = False,
+        exact: bool = False,
     ) -> tuple[Optional[list[int]], bool, int]:
-        """Largest serving-slot count in [1, n_parallel) whose fully-on-GPU footprint fits,
-        so Unsloth keeps the model on GPU (-ngl -1) instead of --fit on, which offloads layers
-        to host and collapses decode ~3x (oobabooga #6718). ``base_footprint_bytes`` is the
+        """Largest serving-slot count that fits fully on GPU, so Unsloth keeps the model on
+        GPU (-ngl -1) instead of --fit on, which offloads layers to host and collapses decode
+        ~3x (oobabooga #6718). The search runs over [1, n_parallel) by default, or over
+        [1, n_parallel] when ``include_requested`` is set. ``base_footprint_bytes`` is the
         slot-independent footprint (weights + soft overhead + context-linear compute,
         minus the folded compute buffer); each candidate re-adds the slot-sized compute buffer
         and KV, then re-selects GPUs like the explicit-context path -- ``split_extra_bytes``
         included, so a multi-GPU candidate is re-checked at the split rate. Returns
         (gpu_indices, use_fit=False, slots) for the largest fitting count, else (None, True,
-        n_parallel). Only ever reduces; unit-testable with synthetic VRAM maps.
+        n_parallel). Unit-testable with synthetic VRAM maps.
+        ``exact`` stops after the first candidate, for a caller that accepts only
+        ``n_parallel`` itself and would re-price every lower count just to discard it.
+        ``ctx_checkpoints`` mirrors --ctx-checkpoints, which allocates N SWA/recurrent
+        snapshots PER SLOT; omitting it under-prices every candidate, so the caller that
+        re-fits context off this predicate would spend bytes already promised to them.
         ``ubatch_for_slots`` re-derives the micro-batch per candidate: the emitted
         --batch-size is raised to max(slots, 2), and llama.cpp caps the micro-batch
         against it, so a batch below the requested slot count shrinks as the candidates
@@ -9957,7 +9966,7 @@ class LlamaCppBackend:
         count, since a reduced candidate lowers the batch floor and so the ubatch too;
         pricing the reserve at the requested pair over-charged every candidate, so one that
         fits could be rejected and the load kept --fit."""
-        for slots in range(n_parallel - 1, 0, -1):
+        for slots in range(n_parallel if include_requested else n_parallel - 1, 0, -1):
             _ub = ubatch_for_slots(slots) if ubatch_for_slots else n_ubatch
             cb = self._estimate_compute_buffer_bytes(
                 n_ubatch = _ub, n_parallel = slots, per_device_tensor = False
@@ -9975,6 +9984,7 @@ class LlamaCppBackend:
                     swa_full = swa_full,
                     kv_unified = kv_unified,
                     n_ubatch = _ub,
+                    ctx_checkpoints = ctx_checkpoints,
                     flash_attn = flash_attn,
                 )
             )
@@ -9989,6 +9999,8 @@ class LlamaCppBackend:
             )
             if not use_fit:
                 return gpu_indices, False, slots
+            if exact:
+                break
         return None, True, n_parallel
 
     def _fit_context_to_vram(
@@ -15700,8 +15712,14 @@ class LlamaCppBackend:
                 # typed --ctx-checkpoints is what the child allocates. Only an
                 # explicit request counts at all: the estimator has always charged 0,
                 # and adopting llama.cpp's default of 32 would move the fit for every
-                # model.
-                _effective_ctx_checkpoints = resolve_ctx_checkpoints(extra_args, ctx_checkpoints)
+                # model. Gated on the capability the argv builder emits the flag on:
+                # a build with neither alias allocates nothing, so pricing it costs
+                # slots and context for bytes no child holds.
+                _effective_ctx_checkpoints = (
+                    resolve_ctx_checkpoints(extra_args, ctx_checkpoints)
+                    if server_caps.get("ctx_checkpoints_flag")
+                    else 0
+                )
                 # --embedding forces n_batch = n_ubatch, which aborts a load below the slots.
                 if (
                     self.is_embedding_gguf
@@ -17781,23 +17799,114 @@ class LlamaCppBackend:
                             split_extra_bytes = _cc_split_extra(effective_ctx),
                             ubatch_for_slots = _ubatch_for_slots,
                             mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(effective_ctx, s, ub),
+                            ctx_checkpoints = _effective_ctx_checkpoints,
                         )
                         if not _uf_slots:
-                            logger.info(
-                                "Serving slots reduced %d -> %d to keep the model on GPU "
-                                "(avoid --fit offload) at context %d.",
-                                n_parallel,
-                                _slots,
-                                effective_ctx,
-                            )
+                            _slots_asked = n_parallel
                             gpu_indices, use_fit, n_parallel = _gi_slots, False, _slots
                             # Fewer slots means a lower batch floor, so the launch runs a
                             # smaller micro-batch than the one this was sized at. Re-derive
                             # it, or the recorded _n_ubatch describes a graph never built.
                             _effective_ubatch = _ubatch_for_slots(n_parallel)
+                            # Re-fit at the final slot count; the KV and compute closures
+                            # read the values just rebound above.
 
-                    # MTP reserve at the final context, for the logs below.
-                    _mtp_reserve_bytes = _mtp_bytes(effective_ctx) if _mtp_will_engage else 0
+                            def _slots_hold(
+                                ctx: int, devices: list[tuple[int, int]]
+                            ) -> Optional[list[int]]:
+                                """Return the GPU subset if the final slot count fits."""
+                                _gi, _uf, _got = self._slots_that_fit_on_gpu(
+                                    n_parallel,
+                                    ctx,
+                                    devices,
+                                    total_by_idx,
+                                    model_size_fit - _compute_buffer_pipeline + _cc_bytes(ctx),
+                                    cache_type_kv,
+                                    _pin_fraction,
+                                    _pipeline_overhead_bytes + _cc_bytes(ctx),
+                                    _layer_min_gpus,
+                                    _effective_ubatch,
+                                    swa_full = swa_full,
+                                    kv_unified = planned_kv_unified,
+                                    flash_attn = planned_flash_attn,
+                                    split_extra_bytes = _cc_split_extra(ctx),
+                                    ubatch_for_slots = _ubatch_for_slots,
+                                    mtp_bytes_for_slots = (lambda s, ub, c = ctx: _mtp_bytes(c, s, ub)),
+                                    ctx_checkpoints = _effective_ctx_checkpoints,
+                                    include_requested = True,
+                                    exact = True,  # only n_parallel is accepted below
+                                )
+                                return _gi if not _uf and _got == n_parallel else None
+
+                            def _largest_ctx(
+                                devices: list[tuple[int, int]],
+                            ) -> Optional[tuple[int, list[int]]]:
+                                """Largest 256-aligned context these cards hold; the
+                                footprint grows monotonically with context.
+
+                                Bound here, not by the arm above: the arm that reaches this
+                                is not always the one that binds it, and a GGUF with no
+                                native length would arrive with the 0 sentinel and search
+                                nothing."""
+                                _native = self._context_length or effective_ctx
+                                _lo = max(1, min(4096, _native) // 256)
+                                _hi = _native // 256
+                                _best = None
+                                while _lo <= _hi:
+                                    _mid = (_lo + _hi) // 2
+                                    _held = _slots_hold(_mid * 256, devices)
+                                    if _held is None:
+                                        _hi = _mid - 1
+                                    else:
+                                        _best = (_mid * 256, _held)
+                                        _lo = _mid + 1
+                                return _best
+
+                            # Only the cards the reduction chose. Searching every GPU
+                            # again buys context by pulling in another device -- the layer
+                            # split this path avoids, and one a direct request never makes.
+                            _kept = set(_gi_slots or ())
+                            _plan_gpus = [g for g in gpus if g[0] in _kept]
+                            _refit = _largest_ctx(_plan_gpus)
+                            # Explicit contexts are never rewritten.
+                            if (
+                                _refit is not None
+                                and not explicit_ctx
+                                and _refit[0] > effective_ctx
+                            ):
+                                logger.info(
+                                    "Context re-fitted %d -> %d for %d serving slot(s).",
+                                    effective_ctx,
+                                    _refit[0],
+                                    n_parallel,
+                                )
+                                effective_ctx, gpu_indices = _refit
+                            # After the re-fit, so it names the context that launches
+                            # rather than one sized for slots this load dropped.
+                            logger.info(
+                                "Serving slots reduced %d -> %d to keep the model on GPU "
+                                "(avoid --fit offload) at context %d.",
+                                _slots_asked,
+                                n_parallel,
+                                effective_ctx,
+                            )
+                            # Across every card at the final slot count, matching the
+                            # best_cap sweep above; an explicit request that large does
+                            # re-select GPUs and load. Not a hardware maximum -- a larger
+                            # request can reduce slots further and free KV for more.
+                            _ceiling = (
+                                _refit if len(_plan_gpus) == len(gpus) else _largest_ctx(gpus)
+                            )
+                            if _ceiling is not None:
+                                max_available_ctx = max(max_available_ctx, _ceiling[0])
+
+                    # Pass the final slot and micro-batch values instead of the defaults
+                    # captured before slot reduction.
+                    _mtp_reserve_bytes = (
+                        _mtp_bytes(effective_ctx, n_parallel, _effective_ubatch)
+                        if _mtp_will_engage
+                        else 0
+                    )
                     if _mtp_will_engage:
                         _mtp_note = (
                             f"MTP reserve: {_mtp_reserve_bytes / (1024**3):.2f} GB "
@@ -18504,8 +18613,7 @@ class LlamaCppBackend:
                         logger.info("Draft KV cache dtype: %s", _draft_cache_type)
                     else:
                         logger.info(
-                            "llama-server has no draft KV cache flags; skipping the "
-                            "requested %s.",
+                            "llama-server has no draft KV cache flags; skipping the requested %s.",
                             _draft_cache_type,
                         )
                 # Remember where the spec block sits so a drafter-load failure
@@ -23643,6 +23751,7 @@ class LlamaCppBackend:
         from core.inference.tool_stream_exec import (
             accepts_kwarg,
             accepts_output_callback,
+            search_images_kwargs,
             stream_tool_execution,
         )
         from core.inference.tools import (
@@ -25358,6 +25467,7 @@ class LlamaCppBackend:
                                 )
                             if accepts_output_callback(execute_tool):
                                 kwargs["output_callback"] = _output_callback
+                            kwargs.update(search_images_kwargs(execute_tool, _decision.tool_name))
                             return execute_tool(
                                 _decision.tool_name,
                                 _decision.arguments,

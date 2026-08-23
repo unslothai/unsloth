@@ -1098,6 +1098,12 @@ export const ja = {
         collapseByDefaultDescription:
           "モデルの思考中も自動で展開せず、折りたたんだままにします。読みたいときはブロックを展開してください。",
       },
+      webSearch: {
+        title: "ウェブ検索",
+        images: "ウェブ検索の画像を表示",
+        imagesDescription:
+          "ウェブ検索で画像も取得し、回答に列挙された項目ごとに1枚ずつ探します。サムネイルは Studio が取得して縮小するため、ブラウザが画像ホストに接続することはありません。",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "HTMLブロックを折りたたむ",

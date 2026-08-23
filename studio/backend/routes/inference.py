@@ -2401,6 +2401,7 @@ from models.inference import (
     _InferenceRuntimeFields,
     LoadRequest,
     UnloadRequest,
+    SearchImagesLookupRequest,
     TranscribeRequest,
     SttLoadRequest,
     GenerateRequest,
@@ -3694,6 +3695,15 @@ _TOOL_BASE_NUDGE = (
     "format."
 )
 _TOOL_WEB_COMPACT_TIP = "When using web_search, do not repeat the same search query."
+# Only with the Search images setting on. Small models call the tool before they know
+# their list, so the answer-first path is spelled out.
+_TOOL_IMAGES_TIP = (
+    "When your answer names specific things worth seeing (breeds, products, places, "
+    "dishes, people), call web_search with image_queries listing those exact names, one "
+    "per entry, never a list title. If you only know the names after writing the list, "
+    "write the answer first, then call web_search with image_queries alone. Put each "
+    "returned [[img:...]] token on its own line directly under its item."
+)
 _TOOL_WEB_EXPANDED_TIP = (
     "When using web_search and a result URL is relevant, fetch its full content "
     "by calling web_search with the url parameter. Do not repeat the same search "
@@ -3759,6 +3769,12 @@ def _build_tool_action_nudge(
         if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
     }
     has_web = "web_search" in tool_names
+    has_images = any(
+        "image_queries"
+        in ((tool.get("function") or {}).get("parameters") or {}).get("properties", {})
+        for tool in tools
+        if isinstance(tool, dict) and (tool.get("function") or {}).get("name") == "web_search"
+    )
     code_tools = [name for name in _LOCAL_CODE_TOOLS if name in tool_names]
     has_code = bool(code_tools)
     has_artifact = "render_html" in tool_names
@@ -3772,6 +3788,8 @@ def _build_tool_action_nudge(
     tool_tip_parts: list[str] = []
     if has_web:
         tool_tip_parts.append(_TOOL_WEB_COMPACT_TIP if compact_web_tip else _TOOL_WEB_EXPANDED_TIP)
+    if has_images:
+        tool_tip_parts.append(_TOOL_IMAGES_TIP)
     if has_code:
         tool_tip_parts.append(_TOOL_CODE_TIP)
         if full_access:
@@ -3976,6 +3994,7 @@ async def _select_request_tools(
             # meeting a large catalogue at a compaction boundary have been seen calling a
             # guessed tool name. Read-only and always-safe, so it prompts for nothing.
             tools = [t for t in tools if t["function"]["name"] == "search_conversation"]
+    tools = _tools_for_search_images(tools)
     # Built-ins only, so this runs before the MCP append: an MCP tool's
     # description is the server's to write, and Full access says nothing about
     # how that server runs.
@@ -3984,6 +4003,25 @@ async def _select_request_tools(
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()
     return tools
+
+
+def _search_images_enabled() -> bool:
+    from core.inference.search_images import search_images_enabled
+    return search_images_enabled()
+
+
+def _tools_for_search_images(tools: list[dict]) -> list[dict]:
+    # web_search also takes image_queries while the setting is on; every path that
+    # hands the model a schema swaps it here. Name check first: the setting hits SQLite.
+    if not any(t["function"]["name"] == "web_search" for t in tools):
+        return tools
+    if not _search_images_enabled():
+        return tools
+    from core.inference.tools import web_search_tool_with_images
+
+    return [
+        web_search_tool_with_images() if t["function"]["name"] == "web_search" else t for t in tools
+    ]
 
 
 _COMPACTED_SESSION_NUDGE = (
@@ -21713,8 +21751,10 @@ async def anthropic_messages(
     if _server_tools_requested_pre:
         from core.inference.tools import ALL_TOOLS as _ALL_TOOLS_PRE
 
-        _selected_pre = _select_anthropic_server_tools(
-            _ALL_TOOLS_PRE, requested_studio_tools, payload.enabled_tools
+        _selected_pre = _tools_for_search_images(
+            _select_anthropic_server_tools(
+                _ALL_TOOLS_PRE, requested_studio_tools, payload.enabled_tools
+            )
         )
         _perm_mode_pre = getattr(payload, "permission_mode", None)
         _confirm_opt_out_pre = getattr(payload, "confirm_tool_calls", None) is False
@@ -22197,10 +22237,12 @@ async def anthropic_messages(
         # tool) were already rejected before the auto-switch above, so an invalid
         # confirm-gated request never evicts the resident model; the selection
         # here just picks the tools for the actual server-tool loop.
-        openai_tools = _select_anthropic_server_tools(
-            ALL_TOOLS,
-            requested_studio_tools,
-            payload.enabled_tools,
+        openai_tools = _tools_for_search_images(
+            _select_anthropic_server_tools(
+                ALL_TOOLS,
+                requested_studio_tools,
+                payload.enabled_tools,
+            )
         )
         # Mirrors _select_request_tools: this path builds its own selection, so
         # the Full access swap has to be repeated rather than inherited.
@@ -26320,6 +26362,45 @@ async def get_gallery_image_file(
     )
 
 
+@studio_router.post("/search-images/lookup")
+async def lookup_search_images(
+    payload: SearchImagesLookupRequest, current_subject: str = Depends(get_current_subject)
+):
+    # Illustrates a finished answer whose model never asked; same lookup as the tool.
+    from core.inference import search_images
+    from core.inference.tools import IMAGE_SEARCH_DISABLED, _image_search
+
+    if not search_images.search_images_enabled():
+        raise HTTPException(status_code = 403, detail = IMAGE_SEARCH_DISABLED)
+    raw = await asyncio.to_thread(_image_search, payload.subjects, 20)
+    text, images = search_images.split_images_envelope(raw)
+    return {"text": text, "images": images}
+
+
+@studio_router.get("/search-images/{image_id}")
+async def get_search_image_thumbnail(
+    image_id: str, current_subject: str = Depends(get_current_subject)
+):
+    # Id-only on purpose: no URL parameter, so this cannot become a generic image proxy.
+    from core.inference import search_images
+
+    # fullmatch, as the store does: `$` also matches before a trailing newline.
+    if not search_images.IMAGE_ID_RE.fullmatch(image_id or ""):
+        raise HTTPException(status_code = 404, detail = "Image not found.")
+    data = await asyncio.to_thread(search_images.thumbnail_bytes, image_id)
+    if data is None:
+        raise HTTPException(status_code = 404, detail = "Image not found.")
+    return Response(
+        content = data,
+        media_type = "image/jpeg",
+        headers = {
+            "Cache-Control": "private, max-age=86400",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": f'inline; filename="{image_id}.jpg"',
+        },
+    )
+
+
 @studio_router.patch("/images/gallery/{image_id}", response_model = GalleryImage)
 async def update_gallery_image_flags(
     image_id: str,
@@ -26692,53 +26773,74 @@ async def _generate_openai_images(
 
     # Use the active engine (diffusers OR native sd.cpp), the same accessor /images/generate uses.
     backend = get_active_diffusion_engine()
-    status = backend.status()
-    if not status.get("loaded"):
-        # Mirror /v1/completions and /v1/embeddings, which 503 when their backend is not loaded.
-        raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
+    from core.inference.diffusion_memory import ImageActivationShortfallError
+    from core.inference.diffusion_families import DiffusionModelReplacedError, load_identity
 
-    # An edit-only model needs an input image this API cannot supply; refuse with a 400 rather than a backend 500.
-    workflows = status.get("workflows") or []
-    if workflows and "txt2img" not in workflows:
-        raise HTTPException(
-            status_code = 400,
-            detail = openai_error_body(
-                "The loaded image model is edit-only (it requires an input image); "
-                "load a text-to-image model to use this endpoint.",
-                status = 400,
-                param = "model",
-            ),
-        )
-
-    # Fall back to the resolved base repo so a local-path load still gets the right per-model steps/guidance.
-    steps, guidance = default_generation_params(status.get("repo_id"), status.get("base_repo"))
-    try:
-        result = await asyncio.to_thread(
-            backend.generate,
-            prompt = body.prompt,
-            width = width,
-            height = height,
-            steps = steps,
-            guidance = guidance,
-            batch_size = body.n,
-        )
-    except Exception as exc:  # noqa: BLE001 (single boundary, sanitized envelope)
-        # A RuntimeError with the model now unloaded means it was evicted mid-call (a race): 503. Every other failure is a real 500 whose raw message must not reach the client.
-        if isinstance(exc, RuntimeError) and not backend.is_loaded:
+    # A replacement can commit between this status() read and generate() taking its lock, running the
+    # new model with the old one's steps/guidance and edit-only verdict (#9448). Pin the read to the
+    # generation, then re-decide from fresh state once.
+    result = None
+    for attempt in range(2):
+        status = backend.status()
+        if not status.get("loaded"):
+            # Mirror /v1/completions and /v1/embeddings, which 503 when their backend is not loaded.
             raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
-        # The activation refusal is the one message here written FOR the caller: it names the
-        # resolution, the budget and the remedies. Sanitising it into "Image generation failed."
-        # left an OpenAI client with a 500 for a request only they can fix, while the Studio
-        # route showed the reason. Typed, so no other ValueError's raw text escapes.
-        from core.inference.diffusion_memory import ImageActivationShortfallError
 
-        if isinstance(exc, ImageActivationShortfallError):
+        # An edit-only model needs an input image this API cannot supply; refuse with a 400 rather than a backend 500.
+        workflows = status.get("workflows") or []
+        if workflows and "txt2img" not in workflows:
             raise HTTPException(
                 status_code = 400,
-                detail = openai_error_body(str(exc), status = 400, param = "size"),
+                detail = openai_error_body(
+                    "The loaded image model is edit-only (it requires an input image); "
+                    "load a text-to-image model to use this endpoint.",
+                    status = 400,
+                    param = "model",
+                ),
             )
-        logger.error("openai_images.generate_failed: %s", exc)
-        raise HTTPException(status_code = 500, detail = "Image generation failed.")
+
+        # Fall back to the resolved base repo so a local-path load still gets the right per-model steps/guidance.
+        steps, guidance = default_generation_params(status.get("repo_id"), status.get("base_repo"))
+        try:
+            result = await asyncio.to_thread(
+                backend.generate,
+                prompt = body.prompt,
+                width = width,
+                height = height,
+                steps = steps,
+                guidance = guidance,
+                batch_size = body.n,
+                expected_load = load_identity(
+                    status.get("repo_id"), status.get("base_repo"), status.get("family")
+                ),
+            )
+            break
+        except DiffusionModelReplacedError:
+            if attempt > 0:
+                raise HTTPException(
+                    status_code = 503,
+                    detail = openai_error_body(
+                        "The image model was replaced while this request waited; retry with fresh parameters.",
+                        status = 503,
+                        param = "model",
+                    ),
+                )
+            continue
+        except Exception as exc:  # noqa: BLE001 (single boundary, sanitized envelope)
+            # A RuntimeError with the model now unloaded means it was evicted mid-call (a race): 503. Every other failure is a real 500 whose raw message must not reach the client.
+            if isinstance(exc, RuntimeError) and not backend.is_loaded:
+                raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
+            # The activation refusal is the one message here written FOR the caller: it names the
+            # resolution, the budget and the remedies. Sanitising it into "Image generation failed."
+            # left an OpenAI client with a 500 for a request only they can fix, while the Studio
+            # route showed the reason. Typed, so no other ValueError's raw text escapes.
+            if isinstance(exc, ImageActivationShortfallError):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(str(exc), status = 400, param = "size"),
+                )
+            logger.error("openai_images.generate_failed: %s", exc)
+            raise HTTPException(status_code = 500, detail = "Image generation failed.")
 
     # A local-directory load puts the host path in repo_id and the monitor row goes out over
     # the tunnel, so the label gets the same path-free treatment as active_model.

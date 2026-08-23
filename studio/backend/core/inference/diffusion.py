@@ -44,6 +44,9 @@ from .diffusion_families import (
     IDEOGRAM4_FAMILY_NAME,
     LUMINA2_FAMILY_NAME,
     DiffusionFamily,
+    DiffusionModelReplacedError,  # re-exported: callers import it from either module
+    LoadIdentity,
+    load_identity,
     assert_flux2_gguf_matches_base,
     assert_pipeline_class_available,
     _is_local_path,
@@ -5586,6 +5589,8 @@ class DiffusionBackend:
         loras: Optional[list[tuple[str, float]]] = None,
         # ControlNet (id, control_image_b64, control_type, strength, guidance_start, guidance_end). None = off.
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
+        # load_identity() of the caller's status() read; refuse rather than run a different load (#9448).
+        expected_load: Optional[LoadIdentity] = None,
     ) -> dict[str, Any]:
         import torch
         from PIL import Image
@@ -5599,6 +5604,10 @@ class DiffusionBackend:
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
                 if cancel.is_set():
                     raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                # The slot admits on a zero fence, which a COMMITTED replacement also satisfies (#9448).
+                loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
+                if expected_load is not None and expected_load != loaded_id:
+                    raise DiffusionModelReplacedError(expected_load, loaded_id)
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not read idle.
                 self._gen = _GenState(total_steps = steps)
             try:

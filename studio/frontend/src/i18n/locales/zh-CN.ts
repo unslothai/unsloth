@@ -1085,6 +1085,12 @@ export const zhCN = {
         collapseByDefaultDescription:
           "模型思考时保持折叠，而不是自动展开。需要阅读时展开对应区块。",
       },
+      webSearch: {
+        title: "网页搜索",
+        images: "显示网页搜索图片",
+        imagesDescription:
+          "让网页搜索返回图片，并为回答中列出的每一项各获取一张。缩略图由 Studio 获取并缩放，浏览器不会直接访问图片来源。",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "折叠 HTML 块",
