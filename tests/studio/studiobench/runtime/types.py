@@ -425,7 +425,7 @@ class Recorder:
         try:
             self._lock_fd_exclusive(fd)
         except OSError:
-            held = self._read_marker(self._live_marker)
+            held = self._read_marker_once_written(self._live_marker)
             os.close(fd)
             who = (
                 f"session {held[0]} is still running as pid {held[1]}"
@@ -484,6 +484,35 @@ class Recorder:
             )
         except (OSError, ValueError, IndexError):
             return None
+
+    @classmethod
+    def _read_marker_once_written(
+        cls,
+        path: Path,
+        budget_s: float = 0.5,
+    ) -> "Optional[tuple[str, int]]":
+        """`_read_marker`, waiting out the gap between taking the lock and writing into it.
+
+        THE HOLDER LOCKS FIRST AND WRITES SECOND, and it has to: the write is what makes the marker
+        say anything, and writing before the lock would let a loser publish itself as the holder. So
+        there is a window in which the marker exists, is locked, and is still empty, and a contender
+        that reads it there gets nothing and refuses without naming anybody -- which is exactly what
+        the refusal is not allowed to do, because a reader then goes looking for a phantom.
+
+        The window is microseconds wide and closes on its own, so it is waited out rather than
+        designed around. Bounded, because a holder that died between the lock and the write leaves
+        an empty marker that never fills, and the generic wording is right for that one. Measured:
+        the gap is `ftruncate` + `write` + `fsync`; half a second is three orders of magnitude of
+        headroom on a path that is about to exit anyway. Two-core CI is where this was observed --
+        the same test passes on an unloaded machine, which is what made it look flaky rather than
+        like a hole in the message.
+        """
+        deadline = time.monotonic() + budget_s
+        while True:
+            got = cls._read_marker(path)
+            if got is not None or time.monotonic() >= deadline:
+                return got
+            time.sleep(0.01)
 
     @staticmethod
     def _alive(pid: int) -> bool:
