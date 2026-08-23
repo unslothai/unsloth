@@ -3,6 +3,8 @@
 
 """Discovery, recommendation, and preflight policy for MLX speculative decoding."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from functools import lru_cache
 import hashlib

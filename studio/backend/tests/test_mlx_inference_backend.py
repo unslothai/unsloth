@@ -5482,7 +5482,6 @@ def _drafter_snapshot(tmp_path, name, config):
 @pytest.mark.parametrize(
     "config, hidden",
     [
-        ({"model_type": "qwen3_5_mtp"}, True),
         ({"model_type": "qwen3", "dflash_config": {"num_layers": 6}}, True),
         ({"speculators_config": {"algorithm": "eagle3"}}, True),
         ({"model_type": "qwen3", "num_hidden_layers": 40}, False),
@@ -5490,12 +5489,23 @@ def _drafter_snapshot(tmp_path, name, config):
 )
 def test_drafter_checkpoints_are_hidden_from_the_cached_model_listing(tmp_path, config, hidden):
     """The speculative picker downloads drafters into the cache the chat picker lists, and none of
-    them runs as a chat model."""
+    them runs as a chat model. A DFlash drafter carries the target's own ``model_type``, so it is
+    the config key that separates it from a real chat model."""
     from hub.services.models import cache_inventory
 
     repo = _drafter_snapshot(tmp_path, "models--org--repo", config)
     metadata = cache_inventory._cached_model_local_metadata(repo)
     assert bool(metadata.get("_hidden_drafter")) is hidden
+
+
+def test_a_drafter_named_only_by_model_type_is_hidden(tmp_path):
+    """MTP drafters declare no sidecar config, so they are recognized through the drafter registry
+    of the installed runtime rather than from the file alone."""
+    pytest.importorskip("mlx_vlm.speculative.drafters")
+    from hub.services.models import cache_inventory
+
+    repo = _drafter_snapshot(tmp_path, "models--org--repo", {"model_type": "qwen3_5_mtp"})
+    assert cache_inventory._cached_model_local_metadata(repo).get("_hidden_drafter") is True
 
 
 def test_an_unreadable_config_never_hides_a_cached_row(tmp_path):

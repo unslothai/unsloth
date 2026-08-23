@@ -2020,8 +2020,7 @@ function GgufAdvancedSettings({
           </div>
           {batchBelowFloor && (
             <p id={batchAdviceId} className="text-ui-12 text-muted-foreground">
-              Too small for llama-server, so the load will raise it to{" "}
-              {batchFloor}.
+              Too small for llama-server, so the load will raise it to {batchFloor}.
               {config.nParallel != null && config.nParallel > 2
                 ? " It needs one output slot per parallel slot."
                 : " It cannot run a batch below 2."}
@@ -2069,8 +2068,8 @@ function GgufAdvancedSettings({
           </div>
           {ubatchExceedsBatch && (
             <p id={ubatchAdviceId} className="text-ui-12 text-muted-foreground">
-              Micro-batch is larger than the batch size, so llama.cpp will run
-              at {effectiveBatch}. Raise the batch size to use {config.nUbatch}.
+              Micro-batch is larger than the batch size, so llama.cpp will run at{" "}
+              {effectiveBatch}. Raise the batch size to use {config.nUbatch}.
             </p>
           )}
         </div>
