@@ -441,17 +441,14 @@ class TestTheReportedScenario:
 
 
 def _within_room(out: str, room: int) -> None:
-    """The body fits the room, and the notice fits the reserve held back for it.
+    """The body and the notice explaining the cut both fit inside the room.
 
-    `tool_result_budget` subtracts `_RESULT_NOTICE_RESERVE` before reporting the room, so
-    the notice explaining the cut is already paid for and only the body is measured
-    against the number itself.
+    `_RESULT_NOTICE_RESERVE` is charged by `_truncate` at the point the cut is decided, so
+    the number the caller was given covers the whole result rather than the body alone.
     """
     body = out.split("\n\n... (")[0]
     assert len(body) // _CHARS_PER_TOKEN <= room, "the body alone overruns the room"
-    assert (
-        len(out) // _CHARS_PER_TOKEN <= room + _RESULT_NOTICE_RESERVE
-    ), "the notice costs more than the reserve held back for it"
+    assert len(out) // _CHARS_PER_TOKEN <= room, "the notice is not inside the room"
 
 
 class TestEveryToolIsHeldToTheRoom:
@@ -1055,22 +1052,6 @@ class TestTheSafetensorsLoopPricesItToo:
         first_of_three = self._run(4096, calls = 3)["result_budget_tokens"]
 
         assert first_of_three <= alone // 3
-
-    def test_every_result_in_a_batch_gets_its_own_notice_reserve(self):
-        """Each truncated result carries its own notice, so an N-call batch spends N of
-        them. Reserved once and divided, the batch pays for one and spends N."""
-        from core.inference.context_window import _RESULT_NOTICE_RESERVE
-
-        assert (
-            tool_result_budget(4096, 512, 500) - tool_result_budget(4096, 512, 500, results = 3)
-            == 2 * _RESULT_NOTICE_RESERVE
-        )
-        # And the loop asks for one per call rather than one per turn. Measured against
-        # its own single-call room, since the spend is whatever that thread costs.
-        alone = self._run(4096)["result_budget_tokens"]
-        first_of_three = self._run(4096, calls = 3)["result_budget_tokens"]
-
-        assert first_of_three <= (alone - 2 * _RESULT_NOTICE_RESERVE) // 3
 
     def test_an_unknown_window_prices_nothing(self):
         """The same leg the GGUF loop takes: no window, no budget, today's behaviour."""
@@ -1744,20 +1725,20 @@ class TestARejectedToolCallIsHeldToTheRoomToo:
         uncapped = tools._check_code_safety(self._tampering(400))
         assert uncapped and len(uncapped) > 10_000, "the analyzer stopped amplifying"
 
-        out = tools.execute_tool("python", {"code": self._tampering(400)}, result_budget_tokens = 120)
+        out = tools.execute_tool("python", {"code": self._tampering(400)}, result_budget_tokens = 400)
 
         assert out.startswith("Error: unsafe code detected")
-        _within_room(out, 120)
+        _within_room(out, 400)
 
     def test_a_blocked_command_is_capped(self, monkeypatch):
         _window(monkeypatch, 4096)
         _tokenizer(monkeypatch)
         monkeypatch.setattr(tools, "_find_blocked_commands", lambda command: {_dense(40_000)})
 
-        out = tools.execute_tool("terminal", {"command": "ls"}, result_budget_tokens = 120)
+        out = tools.execute_tool("terminal", {"command": "ls"}, result_budget_tokens = 400)
 
         assert out.startswith("Blocked command(s) for safety:")
-        _within_room(out, 120)
+        _within_room(out, 400)
 
     def test_a_short_rejection_is_returned_whole(self, monkeypatch):
         """The control: a cap that rewrote every rejection would hide what was wrong."""
@@ -1767,3 +1748,112 @@ class TestARejectedToolCallIsHeldToTheRoomToo:
         out = tools.execute_tool("python", {"code": self._tampering(1)}, result_budget_tokens = 120)
 
         assert out == tools._check_code_safety(self._tampering(1))
+
+
+class TestTheNoticeIsChargedWhereTheCutIsDecided:
+    """A result that fits carries no notice, so reserving for one before the size is known
+    cuts results that would have fitted, and spends more of the window doing it: 200 tokens
+    of room and a 100-token result leaves 72 for the body and appends ~70 tokens of notice
+    to explain the 28 that were dropped. The reserve belongs at the point the cut is
+    decided, not in the number the caller is handed."""
+
+    @staticmethod
+    def _room_for(text: str, spare: int) -> int:
+        """The room `tool_result_budget` reports for a thread that leaves `text` fitting
+        with `spare` tokens to go. Through the budget, because that is where the reserve
+        used to come off."""
+        target = int(prompt_budget(4096, None) * 0.99)
+        cost = len(text) // _CHARS_PER_TOKEN
+        return tool_result_budget(4096, None, target - cost - spare)
+
+    def test_a_result_that_fits_is_not_cut_to_pay_for_a_notice(self, monkeypatch):
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        text = _dense(3_000)
+        # Comfortably inside the room and well inside the reserve, which is the band where
+        # holding the reserve back turns a whole result into a truncated one.
+        room = self._room_for(text, _RESULT_NOTICE_RESERVE // 2)
+        _room(room)
+
+        out = tools._truncate(text, 1_000_000)
+
+        assert out == text, out[-200:]
+
+    def test_the_notice_is_still_inside_the_room_when_it_is_needed(self, monkeypatch):
+        """The other half: charged late, it still has to be charged."""
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        text = _dense(200_000)
+        room = self._room_for(_dense(3_000), _RESULT_NOTICE_RESERVE // 2)
+        _room(room)
+
+        out = tools._truncate(text, 1_000_000)
+
+        assert "... (truncated" in out
+        _within_room(out, room)
+
+    def test_a_caller_with_no_priced_room_is_unchanged(self, monkeypatch):
+        """The legacy leg: with no room the caller's character cap is the whole budget and
+        the notice has always been appended past it. Charging a token reserve against a
+        character cap there would cut every one of those callers to nothing."""
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+
+        out = tools._truncate("\n".join(f"line {i}" for i in range(1, 501)), 200)
+
+        assert out.startswith("line 1\n")
+        assert "... (truncated to 200 chars" in out
+
+
+class TestACounterThatCannotAnswerIsNotACounter:
+    """`_loaded_token_counter` hands back a callable that returns None whenever the probe
+    does not come back with a number: `/apply-template` failing, or a template that drops
+    the probe role. `_exact_prefix_chars` then keeps the caller's estimate, which charges
+    ASCII the English four characters per token, and the margin that exists for exactly
+    this case was skipped because a counter was, technically, present."""
+
+    @staticmethod
+    def _mute(monkeypatch):
+        """A backend that exposes a counter and can never price anything with it."""
+        monkeypatch.setattr(tools, "_loaded_token_counter", lambda ctx: (lambda chunk: None))
+
+    def test_a_counter_that_measures_nothing_gets_the_conservative_margin(
+        self, monkeypatch
+    ):
+        _window(monkeypatch, 4096)
+        _room(200)
+        text = _dense(100_000)
+
+        self._mute(monkeypatch)
+        mute = tools._dense_char_limit(text, 1_000_000)
+        monkeypatch.setattr(tools, "_loaded_token_counter", lambda ctx: None)
+        absent = tools._dense_char_limit(text, 1_000_000)
+
+        assert mute == absent, "a counter that cannot measure was trusted anyway"
+        # 200 tokens at the estimate's four ASCII characters per token, halved.
+        assert mute <= 200 * 4 * tools._UNMEASURED_ROOM_MARGIN
+
+    def test_a_hint_is_priced_conservatively_too(self, monkeypatch):
+        """`_text_token_cost` reads the same counter, and a hint priced at the English
+        rate is spent at the dense one."""
+        _window(monkeypatch, 4096)
+        hint = "\n\n(" + _dense(400) + ")"
+
+        self._mute(monkeypatch)
+        mute = tools._text_token_cost(hint, 4096)
+        monkeypatch.setattr(tools, "_loaded_token_counter", lambda ctx: None)
+        absent = tools._text_token_cost(hint, 4096)
+
+        assert mute == absent
+        assert mute >= len(hint) * 0.25 / tools._UNMEASURED_ROOM_MARGIN
+
+    def test_a_counter_that_answers_is_still_believed(self, monkeypatch):
+        """The control: the margin is for measurement that failed, not for measurement."""
+        _window(monkeypatch, 4096)
+        _room(200)
+        text = _dense(100_000)
+        _tokenizer(monkeypatch)
+
+        measured = tools._dense_char_limit(text, 1_000_000)
+
+        assert measured > 200 * 4 * tools._UNMEASURED_ROOM_MARGIN

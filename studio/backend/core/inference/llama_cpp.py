@@ -25501,7 +25501,6 @@ class LlamaCppBackend:
                                         self._effective_context_length,
                                         max_tokens,
                                         _spent + _pending_args,
-                                        results = len(_pending) + 1,
                                     ) // (len(_pending) + 1)
                                 if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
                                     if accepts_kwarg(execute_tool, "conversation_token_counter"):

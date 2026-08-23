@@ -254,6 +254,12 @@ _TOOL_RESULT_BUDGET_BUFFER = 0.99
 # Reserved rather than ignored because the body is sized and the notice appended after,
 # so a budget spent entirely on the body overshoots by the notice every time, and at zero
 # room, where the notice IS the message, by the whole of it.
+#
+# Charged by `tools._truncate`, at the point it knows the result really is being cut, and
+# NOT subtracted from the room below. A result that fits carries no notice, so holding
+# this back up front would cut a result that would have fitted whole and then spend more
+# than it saved: 200 tokens of room, a 100-token result, and reserving first leaves 72 for
+# the body and appends ~70 tokens of notice explaining the 28 that were dropped.
 _RESULT_NOTICE_RESERVE = 128
 
 
@@ -263,7 +269,6 @@ def tool_result_budget(
     prompt_tokens: int,
     *,
     buffer: float = _TOOL_RESULT_BUDGET_BUFFER,
-    results: int = 1,
 ) -> int:
     """Tokens a tool result may add without pushing the next prompt past its budget.
 
@@ -274,19 +279,13 @@ def tool_result_budget(
 
     Against ``prompt_budget`` rather than ``context_length``: a result sized to fill the
     physical window leaves the prompt fitting and nothing to answer in. Room for the reply
-    is not room for the result. The figure covers the whole tool message, notice included.
-
-    ``results`` is how many results will share this room: one assistant turn can call
-    several tools, and each truncated result carries its own notice, so the reserve is per
-    result rather than per turn. The caller divides what comes back between them.
+    is not room for the result. The figure covers the whole tool message, notice included:
+    see `_RESULT_NOTICE_RESERVE`, which the truncation charges against this room when it
+    turns out to need one. A caller with several tool calls to serve divides what comes
+    back between them.
     """
     target = prompt_budget(context_length, max_tokens)
-    room = (
-        int(target * buffer)
-        - int(prompt_tokens or 0)
-        - _RESULT_NOTICE_RESERVE * max(1, int(results))
-    )
-    return max(0, room)
+    return max(0, int(target * buffer) - int(prompt_tokens or 0))
 
 
 def _latest_turn_count(

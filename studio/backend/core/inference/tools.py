@@ -33,6 +33,10 @@ import contextlib
 import threading
 from contextvars import ContextVar
 
+# What a truncated result costs besides its body, charged where the cut is decided rather
+# than held back from the room in advance. See its definition for why that matters.
+from .context_window import _RESULT_NOTICE_RESERVE
+
 # The window of the model THIS request is served by, set by execute_tool for the call's
 # duration. Left unset, the budget falls back to the process-global probe, which is right
 # for the local loops and wrong for anything else: an external-provider request runs
@@ -12254,6 +12258,31 @@ def _exact_prefix_chars(
     return floor
 
 
+def _can_measure_tokens(ctx: int, text: str) -> bool:
+    """Whether this request's tokens can really be counted, not merely whether a counter
+    is exposed.
+
+    `_loaded_token_counter` returns a callable that answers None whenever the probe does
+    not come back with a number: `/apply-template` failing, or a chat template that drops
+    the probe role, or a backend that stopped serving between the check and the call.
+    `_exact_prefix_chars` then hands back the caller's estimate untouched, which charges
+    plain ASCII the English four characters per token; base64, minified JSON and hashes
+    run nearer two, so a room that was never halved is spent about twice over. A counter
+    that cannot measure has to be treated exactly like a counter that is not there.
+
+    Probed on this text's own opening rather than a constant, so a template that refuses
+    some content and not other content is judged on what is actually being sized.
+    """
+    counter = _loaded_token_counter(ctx)
+    if counter is None:
+        return False
+    return counter(text[:_MEASURABILITY_PROBE_CHARS] or "x") is not None
+
+
+# Enough to render as a real message and cheap enough to price on every call.
+_MEASURABILITY_PROBE_CHARS = 64
+
+
 def _text_token_cost(text: str, ctx: int) -> float:
     """What ``text`` really costs, measured when the serving model can measure it.
 
@@ -12262,13 +12291,19 @@ def _text_token_cost(text: str, ctx: int) -> float:
     the same reason `_UNMEASURED_ROOM_MARGIN` halves a room that cannot be measured.
     """
     counter = _loaded_token_counter(ctx) if ctx else None
+    measured = None
     if counter is not None:
         try:
-            return float(counter(text))
+            spent = counter(text)
+            measured = None if spent is None else float(spent)
         except Exception:
             logger.debug("token count failed", exc_info = True)
+    if measured is not None:
+        return measured
+    # A counter that could not answer is a counter that is not there: taking its presence
+    # as proof the estimate is safe is what leaves dense ASCII priced at the English rate.
     estimate = sum(0.25 if character.isascii() else 1.0 for character in text)
-    return estimate if counter is not None else estimate / _UNMEASURED_ROOM_MARGIN
+    return estimate / _UNMEASURED_ROOM_MARGIN
 
 
 def _dense_char_limit(
@@ -12291,10 +12326,11 @@ def _dense_char_limit(
         # reserve comes off it at the same four characters per token used everywhere else
         # the real rate is unknown.
         return max(0, max_chars - int(reserve_tokens * 4))
-    if room is not None and _loaded_token_counter(ctx or 0) is None:
-        # Nothing here can measure this model's tokens: `_loaded_token_counter` answers
-        # only for a resident GGUF, and a native safetensors model is served through a
-        # loop with no rolling fit to recover if the estimate is wrong. The estimate below
+    if room is not None and not _can_measure_tokens(ctx or 0, text):
+        # Nothing here can measure this model's tokens: `_can_measure_tokens` answers only
+        # for a resident GGUF that just proved it can price a string, and a native
+        # safetensors model is served through a loop with no rolling fit to recover if the
+        # estimate is wrong. The estimate below
         # charges plain ASCII four characters per token, which is an English rate; base64,
         # minified JSON and hashes run nearer two, so the room could be spent twice over.
         # Halved so the optimistic rate becomes a pessimistic one. It costs a shorter
@@ -14059,6 +14095,7 @@ def _truncate(
     # Same correction as a fetched page: a character cap reserves its share of the window
     # only for English, and a command that prints CJK or percent-escaped text costs two to
     # three times what the cap assumed.
+    cap, cost = limit, 0.0
     if hint:
         # Priced in tokens, not characters, and taken off the budget before it is converted
         # (see `_dense_char_limit`). A failing absolute path is dense: subtracting its
@@ -14074,7 +14111,7 @@ def _truncate(
             # Nothing to spend on advice: at zero room the stub IS the message, and when
             # paying for it would cut the output in half the output is worth more than the
             # advice about it. Nothing is dropped while the result fits anyway.
-            limit, hint = plain, ""
+            limit, hint, cost = plain, "", 0.0
     else:
         limit = _dense_char_limit(text, limit)
     # Mode-neutral notice: this result serves both the streaming UI and
@@ -14083,6 +14120,16 @@ def _truncate(
     # user saw the full output.
     if len(text) <= limit:
         return text + hint
+    # Only now is a notice certain, and only now is it charged. Held back before the
+    # measurement above, it would cut results that fit: a 100-token result with 200 tokens
+    # of room would be sized against 72 and come back as 72 tokens of body plus ~70 of
+    # notice, which is more of the window spent to say less. See `_RESULT_NOTICE_RESERVE`.
+    #
+    # Against a priced room only. With none, the caller's character cap is the whole
+    # budget and the notice has always been appended past it; taking a token reserve off a
+    # character cap there would cut every legacy caller's output to nothing.
+    if _request_result_room() is not None:
+        limit = _dense_char_limit(text, cap, cost + _RESULT_NOTICE_RESERVE)
     if limit <= 0 and len(_zero_room_stub(len(text), None, True)) >= len(text):
         # Decided BEFORE the spill: a result this short is served whole below, and writing
         # a file (and creating the spill directory) for output that is never cut is a side
