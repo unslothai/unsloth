@@ -752,7 +752,15 @@ export function ProjectsPage() {
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
             Choose where to import{" "}
-            <span className="font-medium text-foreground">{importFile?.name}</span>:
+            {/* A picked local file, and the dialog portals out of any marked
+                ancestor, so the name needs its own marker. */}
+            <span
+              data-reload-snapshot-sensitive
+              className="font-medium text-foreground"
+            >
+              {importFile?.name}
+            </span>
+            :
           </p>
           <Select
             value={importTargetId ?? "__recents__"}

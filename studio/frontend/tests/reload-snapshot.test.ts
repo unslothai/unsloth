@@ -66,6 +66,19 @@ const hubPageSource = readFileSync(
   new URL("../src/features/hub/hub-page.tsx", import.meta.url),
   "utf8",
 );
+const referencePickerSource = readFileSync(
+  new URL("../src/features/video/reference-picker.tsx", import.meta.url),
+  "utf8",
+);
+
+const unstructuredDropZoneSource = readFileSync(
+  new URL(
+    "../src/features/recipe-studio/dialogs/seed/unstructured-drop-zone.tsx",
+    import.meta.url,
+  ),
+  "utf8",
+);
+
 const projectsPageSource = readFileSync(
   new URL("../src/features/chat/projects-page.tsx", import.meta.url),
   "utf8",
@@ -1385,6 +1398,21 @@ test("carries live form state, except what sensitive fields hide", () => {
   assert.match(
     imageDropzoneSource,
     /if \(value\)[\s\S]*?data-reload-snapshot-sensitive/,
+  );
+  // A picked file's NAME is rendered outside the file input in several places,
+  // where neither type=file nor a marked ancestor reaches it: the dialogs
+  // portal out of the app root.
+  assert.match(
+    referencePickerSource,
+    /if \(value\)[\s\S]*?data-reload-snapshot-sensitive[\s\S]*?value\.name/,
+  );
+  assert.match(
+    projectsPageSource,
+    /data-reload-snapshot-sensitive[\s\S]*?importFile\?\.name/,
+  );
+  assert.match(
+    unstructuredDropZoneSource,
+    /data-reload-snapshot-sensitive[\s\S]*?entry\.name/,
   );
   assert.match(
     attachmentSource,
