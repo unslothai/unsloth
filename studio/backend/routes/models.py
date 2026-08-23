@@ -12,7 +12,6 @@ import sys
 import threading
 import time
 import uuid
-import weakref
 from pathlib import Path
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
@@ -1132,8 +1131,8 @@ async def _shared_compat_local_inventory_scan(
 
     def classify(models: List[LocalModelInfo]) -> List[LocalModelInfo]:
         # Tag each model with its task so the Images picker can filter to diffusion.
-        # Inside the shared flight so overlapping callers reuse one classified result
-        # instead of each repeating the GGUF header reads.
+        # Keep classification inside the shared flight so overlapping callers reuse
+        # one classified result.
         return [m.model_copy(update = {"task": _local_model_task(m)}) for m in models]
 
     async def collect(
@@ -3369,122 +3368,6 @@ async def check_embedding_model(
         )
 
 
-# Budget for the walk below: a slow volume or large tree can outlast the listing.
-_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS = 5.0
-# Backstop the walk's own budget cannot cover: a single syscall that never returns. Longer
-# than the walk budget, so a responding filesystem always ends the walk itself.
-_NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS = 8.0
-# Concurrent reads. A read stranded on a hung mount holds its slot, so retries wait.
-_NATIVE_CONTEXT_MAX_CONCURRENT_READS = 4
-_NATIVE_CONTEXT_SLOTS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
-
-
-def _native_context_slots() -> asyncio.Semaphore:
-    """Per running loop, since an asyncio primitive cannot be shared across loops."""
-    loop = asyncio.get_running_loop()
-    slots = _NATIVE_CONTEXT_SLOTS.get(loop)
-    if slots is None:
-        slots = asyncio.Semaphore(_NATIVE_CONTEXT_MAX_CONCURRENT_READS)
-        _NATIVE_CONTEXT_SLOTS[loop] = slots
-    return slots
-
-
-def _settle_native_context(
-    slots: asyncio.Semaphore, future: "asyncio.Future", value: Optional[int]
-) -> None:
-    slots.release()
-    if not future.done():
-        future.set_result(value)
-
-
-async def _read_native_context_length_bounded(model: str, is_local: bool) -> Optional[int]:
-    """``_read_native_context_length`` off the event loop, with a hard bound.
-
-    Reporting None costs a pre-filled context field; waiting costs the whole variant
-    listing, which is what left the picker on "Loading variants…". Runs on a daemon
-    thread, not a pool: a stranded read must not join at interpreter exit, which would
-    hang shutdown for as long as the mount stays hung. Waiting for a slot is awaited
-    rather than skipped, so ordinary concurrent reads queue instead of losing their
-    length; the wait and the read share one budget.
-    """
-    slots = _native_context_slots()
-    began = time.monotonic()
-    try:
-        await asyncio.wait_for(slots.acquire(), timeout = _NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError:
-        logger.debug("native context read for '%s' waited out its slot; reporting none", model)
-        return None
-
-    remaining = _NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS - (time.monotonic() - began)
-    loop = asyncio.get_running_loop()
-    future: "asyncio.Future" = loop.create_future()
-
-    def worker() -> None:
-        try:
-            value = _read_native_context_length(model, is_local = is_local)
-        except Exception:
-            value = None
-        try:
-            loop.call_soon_threadsafe(_settle_native_context, slots, future, value)
-        except RuntimeError:
-            pass  # loop already closed; nothing is waiting on this
-
-    if remaining <= 0:
-        slots.release()
-        return None
-    try:
-        threading.Thread(target = worker, name = "native-ctx", daemon = True).start()
-    except RuntimeError:
-        slots.release()  # thread never ran, so it will never release
-        return None
-
-    try:
-        return await asyncio.wait_for(future, timeout = remaining)
-    except asyncio.TimeoutError:
-        logger.debug("native context read for '%s' did not return; reporting none", model)
-        return None
-
-
-def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
-    """Native max context from a downloaded GGUF for this repo, or None.
-
-    The value is identical across quants, so reading one non-mmproj shard's
-    header is enough. Only resolves once a file is on disk. Never raises.
-
-    Bounded by ``_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS``: this only pre-fills a
-    context field on an already selectable row, so a dragging walk reports None
-    rather than holding the variant listing open. Checked between files, and
-    files already read stay cached, so a later request resumes.
-    """
-    try:
-        from utils.models.gguf_metadata import read_gguf_context_length
-
-        # Before cache discovery (also filesystem I/O): started after, a slow enumeration would hand the walk a fresh budget.
-        deadline = time.monotonic() + _NATIVE_CONTEXT_READ_TIMEOUT_SECONDS
-        if is_local:
-            roots = [Path(repo_id)]
-        else:
-            from hub.utils.hf_cache_state import iter_repo_cache_dirs
-            if not _is_valid_repo_id(repo_id):
-                return None
-            roots = list(iter_repo_cache_dirs("model", repo_id))
-
-        for root in roots:
-            if time.monotonic() >= deadline:
-                logger.debug("native context read for '%s' out of budget", repo_id)
-                return None
-            for f in _iter_gguf_paths(root, deadline):
-                if time.monotonic() >= deadline:
-                    logger.debug("native context read for '%s' out of budget", repo_id)
-                    return None
-                if _is_mmproj_filename(f.name):
-                    continue
-                n = read_gguf_context_length(str(f))
-                if n:
-                    return n
-    except Exception:
-        pass
-    return None
 
 
 def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optional[str], int]:
@@ -3641,13 +3524,6 @@ async def get_gguf_variants(
             hf_token = hf_token,
         )
         response = answer.response
-        # The copy the listing answered from, else the pin; both beat a repo-wide walk.
-        context_model = (
-            answer.context_source
-            or hub_gguf_variants.pinned_snapshot_for_request(repo_id, local_path)
-            or repo_id
-        )
-        local = is_local_path(context_model)
 
         return GgufVariantsResponse(
             repo_id = response.repo_id,
@@ -3671,7 +3547,9 @@ async def get_gguf_variants(
             ],
             has_vision = response.has_vision,
             default_variant = response.default_variant,
-            context_length = await _read_native_context_length_bounded(context_model, local),
+            # Variant discovery must not open online-only GGUFs. The load/KV
+            # preflight reads metadata only after the user chooses a variant.
+            context_length = None,
             resolved_locally = bool(getattr(response, "resolved_locally", False)),
             loadable_variants = getattr(response, "loadable_variants", None),
             loadable = getattr(response, "loadable", None),
@@ -4157,6 +4035,46 @@ def _video_family_buildable(fam) -> bool:
         return True
 
 
+def _task_from_name_hints(name_hints: tuple[Optional[str], ...]) -> Optional[str]:
+    """Classify a GGUF task from names alone, without reading model contents.
+
+    Listing uses this path so opening Studio does not hydrate online-only files
+    managed by Synology Drive, Dropbox, Google Drive, or similar providers.
+    Ambiguous names remain untagged and load-time classification reads the GGUF.
+    """
+    # MiniMax-H3 bundles carry no arch metadata; name is the only signal.
+    if any(_is_h3_bundle_gguf_hint(hint) for hint in name_hints):
+        return _VIDEO_GEN_TASK
+
+    try:
+        from core.inference.video_families import detect_video_family
+
+        for hint in name_hints:
+            if not hint:
+                continue
+            fam = detect_video_family(hint)
+            if fam is not None:
+                if not getattr(fam, "is_moe", False) and _video_family_buildable(fam):
+                    return _VIDEO_GEN_TASK
+                return _UNSUPPORTED_DIFFUSION_TASK
+    except Exception:
+        pass
+
+    try:
+        from core.inference.diffusion_families import detect_family_for_pick
+
+        for hint in name_hints:
+            if hint and detect_family_for_pick(hint) is not None:
+                return (
+                    "text-to-image"
+                    if _gguf_family_buildable(name_hints)
+                    else _UNSUPPORTED_DIFFUSION_TASK
+                )
+    except Exception:
+        pass
+    return None
+
+
 def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = ()) -> Optional[str]:
     # MiniMax-H3's GGUFs carry NO metadata keys at all -- every file in the bundle, denoisers and
     # the Qwen conditioner alike, has kv_count 0, so general.architecture is absent where LTX-2 and
@@ -4246,10 +4164,10 @@ _LOADABLE_MEDIA_GGUF_TASKS = frozenset({"text-to-image", _VIDEO_GEN_TASK})
 # Enough to reach the denoiser past a bundle's encoders, VAE and LoRAs. The guarantee is "the first
 # 64 in order decide", the same 64 on every host. A folder deep enough to hit this is a dump.
 _MAX_TASK_CLASSIFY_GGUFS = 64
-# Ordering costs first-wins' early exit, so bound the walk as _dir_has_downloaded_model and
-# _read_native_context_length already do. A scan folder is arbitrary (a network mount, or weights
-# beside a huge unrelated subtree rglob counts every entry of) and this runs once per listed row.
-# Past the budget the answer comes from what was reached, still at least what first-wins saw.
+# Ordering costs first-wins' early exit, so bound the walk. A scan folder is
+# arbitrary (a network mount, or weights beside a huge unrelated subtree whose
+# ``rglob`` counts every entry) and this can still run for cached-repo classification.
+# Past the budget the answer comes from what was reached.
 _TASK_CLASSIFY_WALK_SECONDS = 0.75
 # The header reads get their own budget, started after the walk, so a slow walk cannot cut them
 # short at the encoder and hand back the answer this function exists to avoid.
@@ -4389,9 +4307,9 @@ def _local_family_needles(model: "LocalModelInfo") -> tuple[str, ...]:
 
     A checkpoint still in HF cache layout carries its repo id in the ``models--org--name``
     directory, while every other needle degrades to the snapshot basename, a commit hash. That is
-    a moved Models folder registered as a scan folder (#8407): a GGUF still classifies from its
-    architecture, but a diffusers pipeline, proven to be one by its ``model_index.json``, had no
-    name left and dropped out of the Images picker as task=null. The decode answers only for a real
+    a moved Models folder (#8407): a GGUF can still classify when its repo or file name survives,
+    but a diffusers pipeline, proven to be one by its ``model_index.json``, had no name left and
+    dropped out of the Images picker as task=null. The decode answers only for a real
     ``models--*/snapshots/*`` path AND only for the row that IS the snapshot, so it recovers the id
     that row lost without letting arbitrary parent-dir tokens match or component dirs inherit it.
     Last of the name needles, so the basenames still win."""
@@ -4413,21 +4331,20 @@ def _local_family_needles(model: "LocalModelInfo") -> tuple[str, ...]:
 
 
 def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
-    """Classify a local model into an HF pipeline task so the Images picker can filter.
+    """Classify a local model into an HF pipeline task so media pickers can filter.
 
-    For a GGUF, read its architecture (the path may be the .gguf file itself or a folder
-    containing one). For a local non-GGUF image checkpoint (a diffusers pipeline dir or a
-    single-file safetensors), fall through to the diffusers detection so on-device image
-    models get the 'text-to-image' tag instead of being dropped as task=null; the load
-    path accepts these as a local pipeline."""
+    GGUF listing is deliberately name-only: opening an online-only weight just to
+    read its architecture can hydrate the entire file. Ambiguous GGUF names stay
+    untagged until load time. Non-GGUF image and video checkpoints retain their
+    existing local pipeline detection.
+    """
     path = model.path
     _id_hints = (model.model_id, model.display_name, model.id)
     if model.model_format == "gguf":
         try:
             p = Path(path)
-            if p.suffix.lower() == ".gguf" and p.is_file():
-                return _arch_to_task(_gguf_architecture(str(p)), name_hints = _id_hints + (p.name,))
-            return _gguf_folder_task(p, _id_hints)
+            all_hints = _id_hints + (p.name,)
+            return _task_from_name_hints(all_hints)
         except Exception:
             pass
         return None

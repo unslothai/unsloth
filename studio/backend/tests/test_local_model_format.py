@@ -231,7 +231,8 @@ def test_scan_models_dir_root_weights_do_not_hide_child_models(tmp_path):
     assert [Path(r.path).name for r in models_route._scan_models_dir(root)] == ["llama"]
 
 
-# ── Images picker task tag for local (non-GGUF) diffusers models ──────────────
+
+# ── GGUF picker task tags without opening model weights ─────────────────────
 from models.models import LocalModelInfo  # noqa: E402
 
 
@@ -251,6 +252,46 @@ def _local(
         model_id = model_id,
         model_format = model_format,
     )
+
+
+def test_local_gguf_task_never_reads_headers_or_walks_folders(tmp_path, monkeypatch):
+    """Listing cloud placeholders must classify from names without touching GGUF contents."""
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("local GGUF listing touched model contents")
+
+    monkeypatch.setattr(models_route, "_gguf_architecture", forbidden)
+    monkeypatch.setattr(models_route, "_gguf_folder_task", forbidden)
+
+    single = _touch(tmp_path / "flux1-dev-Q4_K_M.gguf")
+    single_model = _local(
+        single,
+        model_format = "gguf",
+        display_name = "generic",
+        id = "generic-file-id",
+    )
+    assert models_route._local_model_task(single_model) == "text-to-image"
+
+    folder = tmp_path / "ltx-2-bundle"
+    _touch(folder / "model-Q4_K_M.gguf")
+    folder_model = _local(
+        folder,
+        model_format = "gguf",
+        display_name = "generic",
+        id = "generic-folder-id",
+    )
+    assert models_route._local_model_task(folder_model) == models_route._VIDEO_GEN_TASK
+
+    ambiguous = _touch(tmp_path / "model-Q4_K_M.gguf")
+    assert (
+        models_route._local_model_task(
+            _local(ambiguous, model_format = "gguf", display_name = "generic", id = "generic-id")
+        )
+        is None
+    )
+
+
+# ── Images picker task tag for local (non-GGUF) diffusers models ──────────────
 
 
 def test_local_task_tags_family_named_pipeline_dir(tmp_path):

@@ -17,7 +17,6 @@ from utils.paths.path_utils import (
     has_appledouble_magic,
     is_appledouble_metadata,
 )
-from utils.models.gguf_metadata import mmproj_accepts_image
 
 logger = get_logger(__name__)
 _GGUF_MODEL_INFO_TIMEOUT_SECONDS = 5.0
@@ -1050,6 +1049,16 @@ def _resolve_gguf_dir(path: Path) -> Optional[Path]:
     return None
 
 
+_AUDIO_ONLY_MMPROJ_NAME_HINTS = ("asr", "audio", "ultravox", "voxtral", "whisper")
+
+
+def _mmproj_name_is_audio_only(root: Path, file: Path) -> bool:
+    """Best-effort audio-only signal that never opens an online-only projector."""
+    hint = f"{root.as_posix()}/{file.name}".lower()
+    tokens = frozenset(part for part in re.split(r"[^a-z0-9]+", hint) if part)
+    return any(name in tokens for name in _AUDIO_ONLY_MMPROJ_NAME_HINTS)
+
+
 def list_local_gguf_variants(
     directory: str, model_root: Optional[str] = None
 ) -> tuple[list[GgufVariantInfo], bool]:
@@ -1082,10 +1091,13 @@ def list_local_gguf_variants(
         if is_imatrix_filename(file.name):
             continue
         if is_mmproj_filename(file.name):
-            # An empty projector is an interrupted download; an audio-only one is not vision.
+            # Opening an online-only projector hydrates it. Filename + nonzero
+            # metadata is intentionally permissive; recognizable audio-only
+            # families stay off the vision path, and load-time inspection makes
+            # the authoritative decision after selection.
             try:
                 has_vision = has_vision or (
-                    file.stat().st_size > 0 and mmproj_accepts_image(str(file))
+                    file.stat().st_size > 0 and not _mmproj_name_is_audio_only(root, file)
                 )
             except OSError:
                 pass

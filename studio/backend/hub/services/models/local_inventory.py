@@ -965,10 +965,9 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
     """Coalesce overlapping local inventory requests for the same models root."""
 
     def classify(response: LocalModelListResponse) -> LocalModelListResponse:
-        # These rows feed the same pickers as /api/models/local. Classified inside the
-        # shared worker so retrying waiters do not repeat GGUF metadata reads, and only
-        # for a response that is actually about to be served.
-        # Classification reads GGUF headers, so keep it off the event loop too.
+        # These rows feed the same pickers as /api/models/local. Classify inside
+        # the shared worker so retrying waiters reuse one result. GGUF rows are
+        # name-only here; load-time architecture inspection remains separate.
         try:
             from routes.models import _local_model_task
             models = [

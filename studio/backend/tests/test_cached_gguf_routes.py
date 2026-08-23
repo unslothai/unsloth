@@ -246,8 +246,8 @@ def _compat_inventory_sources(tmp_path):
 def test_compat_local_inventory_classifies_inside_the_shared_scan(monkeypatch, tmp_path):
     """Classification belongs to the coalesced flight, and runs off the event loop.
 
-    Producing classified rows inside the flight is what lets overlapping callers reuse one
-    result instead of each repeating the GGUF header reads on the shared executor."""
+    Producing classified rows inside the flight lets overlapping callers reuse one result.
+    """
     from hub.utils import inventory_scan as hf_cache_scan
 
     classifier_threads: list[int] = []
@@ -1245,28 +1245,15 @@ def test_a_projector_at_the_snapshot_root_serves_a_quant_in_a_subdirectory(monke
     assert row["has_vision"] is True
 
 
-def test_an_audio_only_projector_in_the_cache_is_not_vision(monkeypatch, tmp_path):
-    """ultravox, Voxtral and Qwen3-ASR ship a projector for audio input, so reading the row's
-    badge off the projector's presence claims an image button the model cannot honour."""
-    import struct
-
-    def _projector(path: Path, *keys: str) -> None:
-        """A minimal GGUF declaring the given ``clip.has_*_encoder`` bools, no tensors."""
-        kvs = b"".join(
-            struct.pack("<Q", len(key))
-            + key.encode()
-            + struct.pack("<I", 7)
-            + struct.pack("<?", True)
-            for key in keys
-        )
-        path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, len(keys)) + kvs)
-
+def test_audio_named_projector_is_not_opened_or_claimed_as_vision(monkeypatch, tmp_path):
+    """Listing defers projector contents and uses an audio-family name hint."""
     active = tmp_path / "active"
     repo_dir = active / "models--Org--Audio"
     snapshot = repo_dir / "snapshots" / ("d" * 40)
     snapshot.mkdir(parents = True)
     (snapshot / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
-    _projector(snapshot / "mmproj-F16.gguf", "clip.has_audio_encoder")
+    projector = snapshot / "mmproj-F16.gguf"
+    projector.write_bytes(b"online-only placeholder")
     (repo_dir / "refs").mkdir(parents = True)
     (repo_dir / "refs" / "main").write_text("d" * 40, encoding = "utf-8")
 
@@ -1291,25 +1278,27 @@ def test_an_audio_only_projector_in_the_cache_is_not_vision(monkeypatch, tmp_pat
     monkeypatch.setattr(
         "hub.utils.gguf.iter_hf_cache_snapshots", lambda repo_id, root = None: [snapshot]
     )
+    opened = []
+    real_open = open
 
-    def _row():
-        return {
-            c["repo_id"]: c
-            for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))[
-                "cached"
-            ]
-        }["Org/Audio"]
+    def guarded_open(path, *args, **kwargs):
+        try:
+            if Path(path) == projector:
+                opened.append(str(path))
+        except TypeError:
+            pass
+        return real_open(path, *args, **kwargs)
 
-    assert _row()["has_vision"] is False
+    monkeypatch.setattr("builtins.open", guarded_open)
+    row = {
+        cached["repo_id"]: cached
+        for cached in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))[
+            "cached"
+        ]
+    }["Org/Audio"]
 
-    # Control: the same snapshot, with a vision tower declared, is vision support.
-    _projector(snapshot / "mmproj-F16.gguf", "clip.has_vision_encoder")
-    assert _row()["has_vision"] is True
-
-    # A projector serving both modalities declares both (Qwen2.5-Omni), so the row cannot be
-    # read off the audio claim alone.
-    _projector(snapshot / "mmproj-F16.gguf", "clip.has_audio_encoder", "clip.has_vision_encoder")
-    assert _row()["has_vision"] is True
+    assert row["has_vision"] is False
+    assert opened == []
 
 
 def test_vision_is_read_from_the_cache_root_holding_the_row(monkeypatch, tmp_path):
@@ -2216,21 +2205,28 @@ def test_gguf_variants_mmproj_does_not_mark_quant_downloaded(monkeypatch, tmp_pa
     assert flags["F16"] is False
 
 
-def test_gguf_variants_route_scopes_local_probe_to_selected_cache(monkeypatch, tmp_path):
-    snapshot = tmp_path / "inactive" / "models--org--repo" / "snapshots" / "rev"
+def test_gguf_variants_route_does_not_read_headers_before_variant_selection(
+    monkeypatch, tmp_path
+):
+    """Opening the variant menu must not hydrate an online-only GGUF."""
+    snapshot = tmp_path / "models--org--repo" / "snapshots" / "rev"
     snapshot.mkdir(parents = True)
-    calls = []
+    (snapshot / "model-Q4_K_M.gguf").write_bytes(b"placeholder")
+    variant = SimpleNamespace(
+        filename = "model-Q4_K_M.gguf",
+        quant = "Q4_K_M",
+        size_bytes = 11,
+        downloaded = True,
+    )
 
     async def scoped_variants(repo_id, **kwargs):
-        calls.append((repo_id, kwargs))
-        return _answer(repo_id)
+        return _answer(repo_id, [variant], source = str(snapshot))
 
-    context_calls = []
+    header_reads = []
     monkeypatch.setattr(GV, "get_gguf_variants_answer", scoped_variants)
     monkeypatch.setattr(
-        models_route,
-        "_read_native_context_length",
-        lambda model, *, is_local: context_calls.append((model, is_local)) or 8192,
+        "utils.models.gguf_metadata.read_gguf_context_length",
+        lambda path: header_reads.append(path) or 8192,
     )
 
     result = asyncio.run(
@@ -2243,79 +2239,11 @@ def test_gguf_variants_route_scopes_local_probe_to_selected_cache(monkeypatch, t
         )
     )
 
-    assert calls == [
-        (
-            "org/repo",
-            {
-                "prefer_local_cache": True,
-                "offline": False,
-                "local_path": str(snapshot),
-                "hf_token": None,
-            },
-        )
-    ]
-    assert context_calls == [(str(snapshot), True)]
-    assert result.context_length == 8192
+    assert [v.quant for v in result.variants] == ["Q4_K_M"]
+    assert result.context_length is None
+    assert header_reads == []
 
 
-def test_gguf_variants_route_reads_context_from_the_pinned_snapshot(monkeypatch, tmp_path):
-    """Enumeration may be repo wide, but the native context must come from the pinned snapshot
-    or the dialog offers a length the model cannot serve."""
-    snapshot = tmp_path / "active" / "models--org--repo" / "snapshots" / "rev"
-    snapshot.mkdir(parents = True)
-
-    async def scoped_variants(repo_id, **kwargs):
-        return _answer(repo_id)
-
-    context_calls = []
-    monkeypatch.setattr(GV, "get_gguf_variants_answer", scoped_variants)
-    monkeypatch.setattr(
-        models_route,
-        "_read_native_context_length",
-        lambda model, *, is_local: context_calls.append((model, is_local)) or 4096,
-    )
-
-    asyncio.run(
-        models_route.get_gguf_variants(
-            repo_id = "org/repo",
-            prefer_local_cache = False,
-            local_path = str(snapshot),
-            hf_token = None,
-            current_subject = "test-user",
-        )
-    )
-
-    assert context_calls == [(str(snapshot.resolve()), True)]
-
-
-def test_gguf_variants_route_ignores_a_pin_naming_another_repo(monkeypatch, tmp_path):
-    """Control: a pin naming another repo falls back to the repo id rather than reporting a
-    stranger's metadata."""
-    other = tmp_path / "active" / "models--org--other" / "snapshots" / "rev"
-    other.mkdir(parents = True)
-
-    async def scoped_variants(repo_id, **kwargs):
-        return _answer(repo_id)
-
-    context_calls = []
-    monkeypatch.setattr(GV, "get_gguf_variants_answer", scoped_variants)
-    monkeypatch.setattr(
-        models_route,
-        "_read_native_context_length",
-        lambda model, *, is_local: context_calls.append((model, is_local)) or 4096,
-    )
-
-    asyncio.run(
-        models_route.get_gguf_variants(
-            repo_id = "org/repo",
-            prefer_local_cache = False,
-            local_path = str(other),
-            hf_token = None,
-            current_subject = "test-user",
-        )
-    )
-
-    assert context_calls == [("org/repo", False)]
 
 
 def test_gguf_variants_route_forwards_offline(monkeypatch):
@@ -2328,9 +2256,6 @@ def test_gguf_variants_route_forwards_offline(monkeypatch):
         return _answer(repo_id)
 
     monkeypatch.setattr(GV, "get_gguf_variants_answer", scoped_variants)
-    monkeypatch.setattr(
-        models_route, "_read_native_context_length", lambda model, *, is_local: None
-    )
 
     asyncio.run(
         models_route.get_gguf_variants(
@@ -2346,264 +2271,6 @@ def test_gguf_variants_route_forwards_offline(monkeypatch):
     ]
 
 
-def test_native_context_read_gives_up_when_the_cache_walk_drags(monkeypatch, tmp_path):
-    """Unbounded, this walk held the variant listing open, leaving the picker on
-    "Loading variants…" with no quant to click. It reports None and stops walking instead."""
-    visited = []
-
-    def dragging_walk(root, deadline = None):
-        for index in range(200):
-            time.sleep(0.01)
-            visited.append(index)
-            yield Path(root) / f"model-{index}.gguf"
-
-    monkeypatch.setattr(models_route, "_iter_gguf_paths", dragging_walk)
-    monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS", 0.1)
-
-    started = time.monotonic()
-    result = models_route._read_native_context_length(str(tmp_path), is_local = True)
-    elapsed = time.monotonic() - started
-
-    assert result is None
-    # A signature drift here raises inside the broad except and returns instantly, which
-    # would pass every other assertion without walking anything.
-    assert visited, "the walk never ran, so this proves nothing"
-    assert elapsed < 2
-    assert len(visited) < 200
-
-
-def test_native_context_read_budget_binds_on_a_walk_that_yields_nothing(monkeypatch, tmp_path):
-    """_iter_gguf_paths yields only .gguf files, so a large cache can walk a long time
-    yielding nothing. Checking the budget per yield alone would never check it at all."""
-    handed = []
-
-    def walk(root, deadline = None):
-        handed.append(deadline)
-        for _ in range(200):
-            time.sleep(0.005)
-            if deadline is not None and time.monotonic() >= deadline:
-                return
-        return
-        yield  # pragma: no cover
-
-    monkeypatch.setattr(models_route, "_iter_gguf_paths", walk)
-    monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS", 0.05)
-
-    started = time.monotonic()
-    assert models_route._read_native_context_length(str(tmp_path), is_local = True) is None
-    assert handed and handed[0] is not None, "the walker was given no deadline"
-    assert time.monotonic() - started < 1
-
-
-def test_native_context_read_budget_is_checked_between_caches(monkeypatch, tmp_path):
-    """A repo present in several caches must not restart the budget per cache."""
-    walked = []
-
-    def walk(root, deadline = None):
-        walked.append(str(root))
-        time.sleep(0.2)
-        return iter(())
-
-    monkeypatch.setattr(models_route, "_iter_gguf_paths", walk)
-    monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS", 0.05)
-    monkeypatch.setattr(models_route, "_is_valid_repo_id", lambda _r: True)
-    monkeypatch.setattr(
-        "hub.utils.hf_cache_state.iter_repo_cache_dirs",
-        lambda _kind, _repo: [tmp_path / "a", tmp_path / "b", tmp_path / "c"],
-    )
-
-    models_route._read_native_context_length("org/repo", is_local = False)
-    assert len(walked) < 3, f"every cache was walked despite the budget: {walked}"
-
-
-def test_native_context_read_budget_covers_cache_discovery(monkeypatch, tmp_path):
-    """Cache enumeration touches the filesystem too. Started after it, the budget would hand
-    the walk a full fresh allowance on top of whatever discovery already cost."""
-
-    def slow_discovery(_kind, _repo):
-        time.sleep(0.4)
-        return [tmp_path / "a", tmp_path / "b", tmp_path / "c"]
-
-    def slow_walk(root, deadline = None):
-        time.sleep(0.3)
-        return iter(())
-
-    monkeypatch.setattr(models_route, "_is_valid_repo_id", lambda _r: True)
-    monkeypatch.setattr("hub.utils.hf_cache_state.iter_repo_cache_dirs", slow_discovery)
-    monkeypatch.setattr(models_route, "_iter_gguf_paths", slow_walk)
-    monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS", 0.05)
-
-    started = time.monotonic()
-    assert models_route._read_native_context_length("org/repo", is_local = False) is None
-    # Discovery itself is not interruptible; a walk on top of it means the budget restarted.
-    assert time.monotonic() - started < 0.55
-
-
-def test_gguf_variants_route_answers_when_a_header_read_never_returns(monkeypatch, tmp_path):
-    """One syscall that never returns cannot be interrupted from inside the walk, so the
-    route bounds it. Without that the listing waits on it and the picker has nothing to click."""
-    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x")
-
-    def hung_read(_path):
-        time.sleep(5)
-        return 8192
-
-    monkeypatch.setattr("utils.models.gguf_metadata.read_gguf_context_length", hung_read)
-    monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS", 0.05)
-    monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS", 0.2)
-
-    async def scoped_variants(repo_id, **kwargs):
-        return _answer(
-            repo_id,
-            [
-                SimpleNamespace(
-                    filename = "model-Q4_K_M.gguf",
-                    quant = "Q4_K_M",
-                    size_bytes = 10,
-                    download_size_bytes = 10,
-                    downloaded = True,
-                )
-            ],
-            default_variant = "Q4_K_M",
-        )
-
-    monkeypatch.setattr(GV, "get_gguf_variants_answer", scoped_variants)
-
-    async def drive():
-        began = time.monotonic()
-        answer = await models_route.get_gguf_variants(
-            repo_id = str(tmp_path), hf_token = None, current_subject = "test-user"
-        )
-        return answer, time.monotonic() - began
-
-    result, elapsed = asyncio.run(drive())
-    assert [v.quant for v in result.variants] == ["Q4_K_M"]
-    assert result.context_length is None
-    assert elapsed < 3
-
-
-def test_native_context_read_runs_on_a_daemon_thread(monkeypatch):
-    """A thread pool's workers are joined at interpreter exit, so a read abandoned on a hung
-    mount would hold up shutdown for as long as the mount stays hung (measured: the full
-    length of the read). A daemon thread does not."""
-    observed = {}
-    entered = threading.Event()
-
-    def stalled(model, *, is_local):
-        observed["daemon"] = threading.current_thread().daemon
-        entered.set()
-        time.sleep(0.5)
-        return 8192
-
-    monkeypatch.setattr(models_route, "_read_native_context_length", stalled)
-    monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS", 0.1)
-
-    async def drive():
-        return await models_route._read_native_context_length_bounded("/tmp", True)
-
-    assert asyncio.run(drive()) is None
-    assert entered.wait(3)
-    assert observed["daemon"] is True
-
-
-def _live_context_threads() -> int:
-    return sum(1 for thread in threading.enumerate() if thread.name == "native-ctx")
-
-
-def _drain_context_threads(timeout: float = 5.0) -> None:
-    """Reads abandoned by an earlier test outlive it, so wait them out before counting."""
-    end = time.monotonic() + timeout
-    while _live_context_threads() and time.monotonic() < end:
-        time.sleep(0.02)
-
-
-def test_native_context_reads_stop_starting_once_every_slot_is_stranded(monkeypatch):
-    """Retries against a hung mount must not start a thread apiece; they wait for a slot
-    and give up inside the bound."""
-    release = threading.Event()
-
-    def stalled(model, *, is_local):
-        release.wait(5)
-        return 8192
-
-    monkeypatch.setattr(models_route, "_read_native_context_length", stalled)
-    monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS", 0.1)
-    monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_MAX_CONCURRENT_READS", 2)
-    _drain_context_threads()
-
-    async def drive():
-        for _ in range(2):  # strand every slot
-            assert await models_route._read_native_context_length_bounded("/tmp", True) is None
-        live_before = _live_context_threads()
-        began = time.monotonic()
-        answer = await models_route._read_native_context_length_bounded("/tmp", True)
-        return answer, time.monotonic() - began, live_before, _live_context_threads()
-
-    try:
-        answer, elapsed, before, after = asyncio.run(drive())
-        assert answer is None
-        assert elapsed < 1  # gave up inside the bound rather than waiting on the mount
-        assert before == 2  # the cap held
-        assert after <= before  # and nothing new was started
-    finally:
-        release.set()
-
-
-def test_concurrent_native_context_reads_all_keep_their_length(monkeypatch):
-    """Ordinary concurrency must queue for a slot, not skip the read. Giving up when no slot
-    was free on the spot dropped most lengths on a healthy cache (measured 4 of 64)."""
-    monkeypatch.setattr(
-        models_route,
-        "_read_native_context_length",
-        lambda model, *, is_local: (time.sleep(0.002), 8192)[1],
-    )
-
-    async def drive():
-        return await asyncio.gather(
-            *[models_route._read_native_context_length_bounded("/tmp", True) for _ in range(64)]
-        )
-
-    assert asyncio.run(drive()) == [8192] * 64
-
-
-def test_offline_reads_context_from_the_copy_the_variants_came_from(monkeypatch, tmp_path):
-    """The length has to come from the copy the listing came from. Which copy that is cannot
-    be read off the request: the HF cache answers before local_path, so the service reports
-    it and the route follows."""
-    context_calls = []
-
-    async def scoped_variants(repo_id, **kwargs):
-        return _answer(repo_id, source = kwargs["local_path"])
-
-    monkeypatch.setattr(GV, "get_gguf_variants_answer", scoped_variants)
-    monkeypatch.setattr(
-        models_route,
-        "_read_native_context_length",
-        lambda model, *, is_local: context_calls.append((model, is_local)) or 4096,
-    )
-
-    asyncio.run(
-        models_route.get_gguf_variants(
-            repo_id = "org/repo",
-            offline = True,
-            prefer_local_cache = False,
-            local_path = str(tmp_path),
-            hf_token = None,
-            current_subject = "test-user",
-        )
-    )
-    assert context_calls == [(str(tmp_path), True)]
-
-
-def test_native_context_read_still_reports_a_length_within_budget(monkeypatch, tmp_path):
-    """Control: the bound only trims a walk that drags; a header reached in time still answers."""
-    gguf = tmp_path / "model-Q4_K_M.gguf"
-    gguf.write_bytes(b"x")
-
-    monkeypatch.setattr(models_route, "_iter_gguf_paths", lambda root, deadline = None: iter([gguf]))
-    monkeypatch.setattr("utils.models.gguf_metadata.read_gguf_context_length", lambda _path: 8192)
-
-    assert models_route._read_native_context_length(str(tmp_path), is_local = True) == 8192
 
 
 def test_gguf_variants_ignore_big_endian_siblings(monkeypatch, tmp_path):
@@ -4011,141 +3678,6 @@ def test_one_caller_giving_up_leaves_the_scan_for_the_others(monkeypatch):
     assert len(scans) == 1
 
 
-def test_offline_context_follows_the_hf_cache_when_it_answers(monkeypatch, tmp_path):
-    """The HF cache answers before local_path, so with both present the length must come
-    from the cache. Picking local_path on the offline flag alone attached another copy's
-    context to the cache's variants. Real service, no stub."""
-    cache_snapshot = tmp_path / "hub" / "models--org--repo" / "snapshots" / "rev"
-    cache_snapshot.mkdir(parents = True)
-    context_calls = []
-
-    monkeypatch.setattr(
-        GV,
-        "select_gguf_cache_snapshot",
-        lambda repo_id, root = None: (
-            [
-                SimpleNamespace(
-                    filename = "m-Q4_K_M.gguf",
-                    quant = "Q4_K_M",
-                    display_label = None,
-                    size_bytes = 10,
-                )
-            ],
-            False,
-            {"q4_k_m"},
-            cache_snapshot,
-        ),
-    )
-    monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
-    monkeypatch.setattr(
-        models_route,
-        "_read_native_context_length",
-        lambda model, *, is_local: context_calls.append((model, is_local)) or 4096,
-    )
-
-    asyncio.run(
-        models_route.get_gguf_variants(
-            repo_id = "org/repo",
-            offline = True,
-            local_path = str(tmp_path),  # an ordinary directory, not this repo's cache
-            hf_token = None,
-            current_subject = "test-user",
-        )
-    )
-    assert context_calls == [(str(cache_snapshot), True)]
-
-
-def test_offline_context_follows_the_cache_the_variants_were_read_from(monkeypatch, tmp_path):
-    """A local_path under a non-active cache scopes the listing to that cache, so the length
-    has to come from there too. Falling back to the repo id walks every cache, active one
-    first, and can attach another copy's context to these variants. Real service, no stub."""
-    legacy_repo = tmp_path / "legacy" / "hub" / "models--org--repo"
-    legacy_snapshot = legacy_repo / "snapshots" / "rev"
-    legacy_snapshot.mkdir(parents = True)
-    context_calls = []
-
-    monkeypatch.setattr(
-        GV,
-        "select_gguf_cache_snapshot",
-        lambda repo_id, root = None: (
-            [
-                SimpleNamespace(
-                    filename = "m-Q4_K_M.gguf",
-                    quant = "Q4_K_M",
-                    display_label = None,
-                    size_bytes = 10,
-                )
-            ],
-            False,
-            {"q4_k_m"},
-            legacy_snapshot,
-        ),
-    )
-    monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
-    monkeypatch.setattr(
-        models_route,
-        "_read_native_context_length",
-        lambda model, *, is_local: context_calls.append((model, is_local)) or 4096,
-    )
-
-    asyncio.run(
-        models_route.get_gguf_variants(
-            repo_id = "org/repo",
-            offline = True,
-            local_path = str(legacy_repo),
-            hf_token = None,
-            current_subject = "test-user",
-        )
-    )
-    assert context_calls == [(str(legacy_snapshot), True)]
-
-
-def test_failed_hub_context_follows_the_cache_the_variants_were_read_from(monkeypatch, tmp_path):
-    """When the Hub request fails, the fallback cache that supplied the variants must also
-    supply their context metadata. Otherwise the route searches by repo id and can read a
-    different cache copy first."""
-    legacy_repo = tmp_path / "legacy" / "hub" / "models--org--repo"
-    legacy_snapshot = legacy_repo / "snapshots" / "rev"
-    legacy_snapshot.mkdir(parents = True)
-    context_calls = []
-
-    def _unreachable(*args, **kwargs):
-        raise RuntimeError("hub unreachable")
-
-    monkeypatch.setattr(GV, "list_gguf_variants", _unreachable)
-    monkeypatch.setattr(
-        GV,
-        "select_gguf_cache_snapshot",
-        lambda repo_id, root = None: (
-            [
-                SimpleNamespace(
-                    filename = "m-Q4_K_M.gguf",
-                    quant = "Q4_K_M",
-                    display_label = None,
-                    size_bytes = 10,
-                )
-            ],
-            False,
-            {"q4_k_m"},
-            legacy_snapshot,
-        ),
-    )
-    monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
-    monkeypatch.setattr(
-        models_route,
-        "_read_native_context_length",
-        lambda model, *, is_local: context_calls.append((model, is_local)) or 4096,
-    )
-
-    asyncio.run(
-        models_route.get_gguf_variants(
-            repo_id = "org/repo",
-            local_path = str(legacy_repo),
-            hf_token = None,
-            current_subject = "test-user",
-        )
-    )
-    assert context_calls == [(str(legacy_snapshot), True)]
 
 
 def test_switching_cache_storage_does_not_join_a_stuck_scan(monkeypatch, tmp_path):
@@ -4281,12 +3813,6 @@ def test_failed_hub_lists_the_selected_cache_not_another_one(monkeypatch, tmp_pa
     _unreachable_hub(monkeypatch)
     monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
 
-    context_calls = []
-    monkeypatch.setattr(
-        models_route,
-        "_read_native_context_length",
-        lambda model, *, is_local: context_calls.append((str(model), is_local)) or 4096,
-    )
 
     response = asyncio.run(
         models_route.get_gguf_variants(
@@ -4297,8 +3823,6 @@ def test_failed_hub_lists_the_selected_cache_not_another_one(monkeypatch, tmp_pa
         )
     )
     assert sorted(v.quant for v in response.variants) == ["Q8_0"]
-    # The context length has to come off that same copy, down to the snapshot.
-    assert context_calls == [(str(selected_repo / "snapshots" / "rev"), True)]
 
 
 def test_an_unreadable_cache_root_is_skipped_not_fatal(tmp_path):
@@ -4356,9 +3880,6 @@ def test_another_caches_quant_is_offered_as_a_download_not_as_downloaded(monkeyp
     _pin_caches(monkeypatch, pinned_root, [pinned_root, other_root])
     _unreachable_hub(monkeypatch)
     monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
-    monkeypatch.setattr(
-        models_route, "_read_native_context_length", lambda model, *, is_local: None
-    )
 
     response = asyncio.run(
         models_route.get_gguf_variants(
@@ -4372,40 +3893,6 @@ def test_another_caches_quant_is_offered_as_a_download_not_as_downloaded(monkeyp
     assert [v.downloaded for v in response.variants] == [False]
 
 
-def test_context_follows_the_answering_revision_not_a_sibling(monkeypatch, tmp_path):
-    """The context read is pinned to the snapshot that answered, not the repo dir.
-
-    The read walks the whole dir, so naming the dir let a skipped revision supply the length.
-    """
-    hub_cache = tmp_path / "hub"
-    hub_cache.mkdir(parents = True)
-    # Only the newer snapshot holds a whole quant, so it is the one that answers.
-    repo_dir = _write_cached_gguf(
-        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
-    )
-    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
-
-    _pin_caches(monkeypatch, hub_cache, [hub_cache])
-    _unreachable_hub(monkeypatch)
-    monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
-
-    context_calls = []
-    monkeypatch.setattr(
-        models_route,
-        "_read_native_context_length",
-        lambda model, *, is_local: context_calls.append((str(model), is_local)) or 4096,
-    )
-
-    response = asyncio.run(
-        models_route.get_gguf_variants(
-            repo_id = "org/repo",
-            local_path = str(repo_dir),
-            hf_token = None,
-            current_subject = "test-user",
-        )
-    )
-    assert [v.quant for v in response.variants] == ["Q8_0"]
-    assert context_calls == [(str(repo_dir / "snapshots" / "newer"), True)]
 
 
 def _point_ref_at(repo_dir: Path, revision: str) -> None:
@@ -4427,9 +3914,6 @@ def _cached_repo_variants(
     _pin_caches(monkeypatch, active or hub_cache, [active, hub_cache] if active else [hub_cache])
     _unreachable_hub(monkeypatch)
     monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
-    monkeypatch.setattr(
-        models_route, "_read_native_context_length", lambda model, *, is_local: None
-    )
     return asyncio.run(
         models_route.get_gguf_variants(
             repo_id = "org/repo",
@@ -4678,11 +4162,7 @@ def test_a_row_pinned_to_one_revision_gains_no_siblings(monkeypatch, tmp_path):
 
 
 def test_a_case_variant_repo_dir_still_names_its_snapshot(monkeypatch, tmp_path):
-    """Provenance survives a repo_id whose case differs from the cached dir's.
-
-    The lister folds case, but the repo dir was rebuilt from repo_id, so it failed ``is_dir()``
-    on a case-sensitive filesystem and the length fell back to a repo-wide walk.
-    """
+    """A repo id whose case differs from its cache directory still resolves that copy."""
     hub_cache = tmp_path / "hub"
     hub_cache.mkdir(parents = True)
     repo_dir = _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf")
@@ -4691,12 +4171,6 @@ def test_a_case_variant_repo_dir_still_names_its_snapshot(monkeypatch, tmp_path)
     _unreachable_hub(monkeypatch)
     monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
 
-    context_calls = []
-    monkeypatch.setattr(
-        models_route,
-        "_read_native_context_length",
-        lambda model, *, is_local: context_calls.append((str(model), is_local)) or 4096,
-    )
 
     response = asyncio.run(
         models_route.get_gguf_variants(
@@ -4706,7 +4180,6 @@ def test_a_case_variant_repo_dir_still_names_its_snapshot(monkeypatch, tmp_path)
         )
     )
     assert [v.quant for v in response.variants] == ["Q8_0"]
-    assert context_calls == [(str(repo_dir / "snapshots" / "rev"), True)]
 
 
 def test_a_download_scope_is_not_listed_as_a_quant(monkeypatch, tmp_path):
@@ -4758,9 +4231,6 @@ def test_a_download_scope_is_not_listed_as_a_quant(monkeypatch, tmp_path):
             False,
         ),
     )
-    monkeypatch.setattr(
-        models_route, "_read_native_context_length", lambda model, *, is_local: None
-    )
 
     response = asyncio.run(
         models_route.get_gguf_variants(
@@ -4802,9 +4272,6 @@ def test_a_scope_alone_in_state_is_not_an_answer(monkeypatch, tmp_path):
             ],
             False,
         ),
-    )
-    monkeypatch.setattr(
-        models_route, "_read_native_context_length", lambda model, *, is_local: None
     )
 
     response = asyncio.run(
@@ -4849,9 +4316,6 @@ def test_a_cancelled_quant_beside_a_scope_still_answers_from_state(monkeypatch, 
             False,
         ),
     )
-    monkeypatch.setattr(
-        models_route, "_read_native_context_length", lambda model, *, is_local: None
-    )
 
     response = asyncio.run(
         models_route.get_gguf_variants(
@@ -4866,21 +4330,24 @@ def test_a_cancelled_quant_beside_a_scope_still_answers_from_state(monkeypatch, 
 
 
 def test_a_standalone_h3_denoiser_gguf_is_recognised_by_its_filename():
-    """H3's GGUFs carry no metadata keys at all (kv_count 0), so ``general.architecture`` is
-    absent and the NAME is the only evidence there is. Keying only on the two bundle repo ids
-    meant a denoiser copied into a custom local directory returned a null task and was dropped
-    from the Video On Device picker, even though the loader validates exactly these prefixes.
-    """
+    """H3 has no architecture metadata, so both listing and load-time classifiers use its name."""
     for name in (
         "minimax_h3_fl2va-Q4_K_M.gguf",
         "minimax_h3_ref2va-Q8_0.gguf",
         "/home/me/models/h3/minimax_h3_fl2va-Q4_K_M.gguf",
     ):
-        assert models_route._arch_to_task(None, (name,)) == models_route._VIDEO_GEN_TASK, name
+        hints = (name,)
+        assert models_route._task_from_name_hints(hints) == models_route._VIDEO_GEN_TASK, name
+        assert models_route._arch_to_task(None, hints) == models_route._VIDEO_GEN_TASK, name
 
-    # The conditioner and unrelated GGUFs in the same folder must NOT be claimed as video.
-    for name in ("qwen3vl-Q8_0.gguf", "minimax_h3_notes.txt", "llama-Q4_K_M.gguf"):
-        assert models_route._arch_to_task(None, (name,)) is None, name
+    # Conditioners and unrelated GGUFs must not be claimed as video.
+    for name in ("qwen3vl-Q8_0.gguf", "llama-Q4_K_M.gguf"):
+        hints = (name,)
+        assert models_route._task_from_name_hints(hints) is None, name
+        assert models_route._arch_to_task(None, hints) is None, name
+
+    # The narrow H3 filename prefix itself still rejects non-GGUF artifacts.
+    assert models_route._arch_to_task(None, ("minimax_h3_notes.txt",)) is None
 
 
 # ── #8406 / #8407: GGUF folder classification must not depend on directory order ──
@@ -4932,23 +4399,6 @@ def test_a_mixed_gguf_repo_classifies_the_same_in_either_walk_order(tmp_path, mo
     assert answers == ["text-to-image", "text-to-image"], answers
 
 
-def test_a_mixed_local_gguf_folder_classifies_the_same_in_either_walk_order(tmp_path, monkeypatch):
-    """The local twin, and the half that made an image model unfindable: with the encoder answering
-    first the folder is tagged ``text-generation``, which drops it out of the Images picker
-    (``taskMatchesFilter``) and offers a diffusion DiT in the chat one."""
-    folder = tmp_path / "AI Models" / "flux-bundle"
-    _arch_gguf(folder / "t5xxl-Q8_0.gguf", "t5encoder")
-    _arch_gguf(folder / "flux1-dev-Q4_K_M.gguf", "flux")
-    model = SimpleNamespace(
-        path = str(folder),
-        id = str(folder),
-        model_id = None,
-        display_name = "flux-bundle",
-        model_format = "gguf",
-    )
-
-    answers = _both_walk_orders(folder, monkeypatch, lambda: models_route._local_model_task(model))
-    assert answers == ["text-to-image", "text-to-image"], answers
 
 
 def test_a_pure_text_gguf_folder_is_never_promoted_to_a_media_task(tmp_path, monkeypatch):
@@ -4983,10 +4433,10 @@ def _saved_pipeline(root: Path, class_name: str) -> Path:
 
 def test_a_moved_image_pipeline_is_classified_from_its_saved_pipeline_class(tmp_path):
     """#8407. The reporter moved the Models folder and image models were then not found, while chat
-    models still were. The asymmetry is structural: a GGUF is classified from
-    ``general.architecture`` read out of the file, but a diffusers pipeline was classified from
-    names, and an HF snapshot directory is named for a commit hash, so a model the listing had just
-    PROVEN to be a pipeline came back task=null. The index is evidence out of the checkpoint."""
+    models still were. A copied diffusers pipeline can lose every useful family hint when its HF
+    snapshot directory is named for a commit hash. Its small ``model_index.json`` remains safe
+    classification evidence, unlike multi-gigabyte model weights.
+    """
     snapshot = _saved_pipeline(
         tmp_path / "N-AI-Models" / "0f3d1a2b4c5d6e7f8091a2b3c4d5e6f708192a3b", "FluxPipeline"
     )
