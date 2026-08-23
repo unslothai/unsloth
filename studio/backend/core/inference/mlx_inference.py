@@ -413,7 +413,10 @@ def _normalize_mlx_kv_bits(value):
 def _mlx_rng_key_words():
     """The MLX PRNG key as its two 32-bit words, or None if it cannot be read.
 
-    Deciding it here is what lets the rewind below stay unconditional.
+    Deciding it here is what lets the rewind below stay unconditional. A key
+    that reads but is not two words is different from an unreadable one: the
+    rewind no longer works on the installed mlx, and a bare None would leave the
+    probe silently not restoring, so say so once and then decline.
     """
     import mlx.core as mx
 
@@ -421,7 +424,18 @@ def _mlx_rng_key_words():
         words = mx.random.state[0].tolist()
     except Exception:
         return None
-    return (int(words[0]), int(words[1])) if len(words) == 2 else None
+    if len(words) != 2:
+        logger.warning(
+            "MLX exposes a %d-word random key; Unsloth can only rewind the "
+            "two-word form, so the KV quantization probe will not restore the "
+            "PRNG and sampling after a load may differ from an unprobed run.",
+            len(words),
+        )
+        return None
+    # Masked, not just converted: mx.random.seed takes a uint64 and raises
+    # outside [0, 2**64), and that raise would land in the probe's finally and
+    # replace the probe's own outcome. A no-op for real uint32 keys.
+    return (int(words[0]) & 0xFFFFFFFF, int(words[1]) & 0xFFFFFFFF)
 
 
 def _restore_mlx_rng_key(words):
@@ -430,12 +444,18 @@ def _restore_mlx_rng_key(words):
     mlx 0.32.1 made mx.random.state a sentinel that refuses item assignment.
     mx.random.key packs a seed as its two 32-bit halves, so reseeding with a
     key's own words restores it exactly, over the whole unsigned 64-bit range.
+
+    Unguarded on purpose: the masking above removes the only way this can raise,
+    so there is no failure to swallow, and a blanket except here would be a
+    failure indistinguishable from an intentional no-op.
     """
     import mlx.core as mx
 
     if words is None:
         return
-    mx.random.seed((words[0] << 32) | words[1])
+    high = int(words[0]) & 0xFFFFFFFF
+    low = int(words[1]) & 0xFFFFFFFF
+    mx.random.seed((high << 32) | low)
 
 
 def _kv_quant_probe(language_model, entries, bits):

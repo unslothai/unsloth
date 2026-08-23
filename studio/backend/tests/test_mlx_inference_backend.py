@@ -2927,3 +2927,83 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
     assert backend._template_override["applied"] is None
     assert backend._template_override["reason"] == mlx_inference.MLX_TEMPLATE_DROPS_IMAGE
     assert backend._processor.chat_template == "{{ native }}"
+
+
+@pytest.mark.parametrize("words,expected", [
+    ((-1, -2), (0xFFFFFFFF, 0xFFFFFFFE)),
+    ((-2147483648, 5), (0x80000000, 5)),
+    ((0, -1), (0, 0xFFFFFFFF)),
+    ((2 ** 32, 0), (0, 0)),
+    ((0, 2 ** 32), (0, 0)),
+])
+def test_rng_capture_masks_words_that_would_make_seed_raise(monkeypatch, words, expected):
+    """mx.random.seed takes a uint64 and raises outside [0, 2**64).
+
+    The rewind is unguarded on purpose, since a blanket except there would be a
+    failure indistinguishable from an intentional no-op. That only holds if the
+    words cannot put it out of range, and capture does not type-check the state,
+    so the masking is what makes "cannot raise" true. A raise would land in the
+    probe's finally and replace the probe's own outcome, which is the failure
+    shape #9478 set out to remove.
+    """
+    from core.inference import mlx_inference
+
+    _install_fake_mlx(monkeypatch)
+    mx = sys.modules["mlx.core"]
+    seeded = []
+    mx.random = SimpleNamespace(
+        state = _SentinelRandomState(words),
+        seed = lambda value: seeded.append(value),
+    )
+
+    captured = mlx_inference._mlx_rng_key_words()
+    assert captured == expected
+
+    mlx_inference._restore_mlx_rng_key(captured)
+    assert seeded == [(expected[0] << 32) | expected[1]]
+    assert 0 <= seeded[0] < 2 ** 64
+
+
+def _capture_rng_warnings(monkeypatch, mlx_inference):
+    """Collect this module's warnings. It logs through structlog, which caplog
+    does not see."""
+    warnings = []
+    monkeypatch.setattr(
+        mlx_inference.logger,
+        "warning",
+        lambda msg, *args, **kwargs: warnings.append(msg % args if args else msg),
+    )
+    return warnings
+
+
+@pytest.mark.parametrize("n", [1, 3, 4])
+def test_rng_capture_reports_a_key_that_is_not_two_words(monkeypatch, n):
+    """Returning a bare None would leave the probe silently not restoring, which
+    is the same shape of silent divergence the item assignment used to cause,
+    just moved from the write to the read."""
+    from core.inference import mlx_inference
+
+    _install_fake_mlx(monkeypatch)
+    mx = sys.modules["mlx.core"]
+    mx.random = SimpleNamespace(
+        state = _SentinelRandomState(tuple(range(n))),
+        seed = lambda value: None,
+    )
+    warnings = _capture_rng_warnings(monkeypatch, mlx_inference)
+
+    assert mlx_inference._mlx_rng_key_words() is None
+    assert any("random key" in w for w in warnings), warnings
+
+
+def test_rng_capture_stays_quiet_when_the_state_cannot_be_read(monkeypatch):
+    """An unreadable state is an intentional no-op, not a surprise. Warning on it
+    every call would train operators to ignore the warning that matters."""
+    from core.inference import mlx_inference
+
+    _install_fake_mlx(monkeypatch)
+    mx = sys.modules["mlx.core"]
+    mx.random = SimpleNamespace(state = lambda: {"counter": 0}, seed = lambda value: None)
+    warnings = _capture_rng_warnings(monkeypatch, mlx_inference)
+
+    assert mlx_inference._mlx_rng_key_words() is None
+    assert warnings == []
