@@ -126,6 +126,20 @@ _STRFTIME_TPL = (
     "{{ strftime_now('%Y') }}"
     "{% if add_generation_prompt %}<|im_start|>assistant\n<think>\n\n</think>\n\n{% endif %}"
 )
+# Nemotron shape: thinking is off until a message opts in with ``/think``.
+_MESSAGE_SHAPE_TPL = (
+    "{% set ns = namespace(think = false) %}"
+    "{% for m in messages %}{% if '/think' in m['content'] %}{% set ns.think = true %}{% endif %}"
+    "<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
+    "{% if add_generation_prompt %}<|im_start|>assistant\n"
+    "{% if ns.think %}<think>\n{% else %}<think></think>{% endif %}{% endif %}"
+)
+# Closes its block, and raises on a tool turn the way a strict template does.
+_STRICT_HISTORY_TPL = (
+    "{% for m in messages %}{% if m['role'] == 'tool' %}{{ raise_exception('no tool turns') }}"
+    "{% endif %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
+    "{% if add_generation_prompt %}<|im_start|>assistant\n<think>\n\n</think>\n\n{% endif %}"
+)
 _ETHINK = {"reasoning_style": "enable_thinking", "supports_reasoning": True}
 _ETHINK_EFFORT = {"reasoning_style": "enable_thinking_effort", "supports_reasoning": True}
 
@@ -171,6 +185,31 @@ def test_a_template_that_stamps_a_date_still_renders():
 
 def test_prefill_mode_off_without_think_markers():
     assert _sf_reasoning_prefill_mode(_ETHINK, None, "no markers here") is False
+
+
+def test_prefill_mode_renders_the_request_messages():
+    # The template reads the shape off the conversation, so a fixed stand-in classifies a
+    # request nobody made and the answer to the opted-in one lands in visible content.
+    plain = [{"role": "user", "content": "what is 2+2"}]
+    opted_in = [{"role": "user", "content": "/think what is 2+2"}]
+    assert _sf_reasoning_prefill_mode(_ETHINK, None, _MESSAGE_SHAPE_TPL, None, plain) is False
+    assert _sf_reasoning_prefill_mode(_ETHINK, None, _MESSAGE_SHAPE_TPL, None, opted_in) is True
+
+
+def test_messages_the_template_refuses_fall_back_to_the_single_user_probe():
+    # A history the template raises on must not itself read as a prefill: fall back to the
+    # stand-in, which is what every caller got before the messages were threaded through.
+    refused = [{"role": "user", "content": "hi"}, {"role": "tool", "content": "42"}]
+    assert _sf_reasoning_prefill_mode(_ETHINK, None, _STRICT_HISTORY_TPL, None, refused) is False
+    assert _sf_reasoning_prefill_mode(_ETHINK, None, _STRICT_HISTORY_TPL) is False
+
+
+def test_prefill_mode_without_messages_matches_the_single_user_probe():
+    # Omitting the argument keeps the pre-existing signature and verdict.
+    for tpl in (_THINK_TPL, _TEMPLATE_DEFAULT_OFF_TPL, _MESSAGE_SHAPE_TPL):
+        assert _sf_reasoning_prefill_mode(_ETHINK, None, tpl) == _sf_reasoning_prefill_mode(
+            _ETHINK, None, tpl, None, [{"role": "user", "content": "hi"}]
+        )
 
 
 def _replay_sf_reasoning_stream(events: list[dict], *, prefilled: bool) -> dict:

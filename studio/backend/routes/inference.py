@@ -2660,24 +2660,26 @@ def _detect_safetensors_features(
     return flags
 
 
+_PROBE_MESSAGES = ({"role": "user", "content": "hi"},)
+
+
 @functools.lru_cache(maxsize = 64)
-def _render_generation_prompt_probe(
-    template: str, enable_thinking: Optional[bool], reasoning_effort: Optional[str]
-) -> Optional[str]:
-    """Render the probe generation prompt, or None when the template cannot be rendered.
+def _compile_generation_prompt_probe(template: str):
+    """Compile the probe template, or None when it cannot be compiled.
 
-    Memoised because the render costs ~10ms and runs more than once per request; only the
-    ``<think>`` shape is read back, which no known template varies by date, so a date-stamping
-    template safely keeps its first render.
+    Compilation is the expensive half (~60ms on a production-sized template) and rendering is
+    not (~0.1ms). Memoising this half rather than the rendered string keeps that saving while
+    letting the messages vary per request, which a template that decides its ``<think>`` shape
+    from the conversation requires.
     """
-    from datetime import datetime
-
-    from jinja2.sandbox import ImmutableSandboxedEnvironment
-
-    def _raise_exception(message: str):
-        raise RuntimeError(message)
-
     try:
+        from datetime import datetime
+
+        from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+        def _raise_exception(message: str):
+            raise RuntimeError(message)
+
         env = ImmutableSandboxedEnvironment(
             trim_blocks = True,
             lstrip_blocks = True,
@@ -2688,13 +2690,30 @@ def _render_generation_prompt_probe(
         # transformers exposes this to every template; without it a date-stamping one raises
         # here and the failure reads as a prefill.
         env.globals["strftime_now"] = lambda fmt: datetime.now().strftime(fmt)
-        reasoning_kwargs: dict = {}
-        if enable_thinking is not None:
-            reasoning_kwargs["enable_thinking"] = enable_thinking
-        if reasoning_effort is not None:
-            reasoning_kwargs["reasoning_effort"] = reasoning_effort
-        return env.from_string(template).render(
-            messages = [{"role": "user", "content": "hi"}],
+        return env.from_string(template)
+    except Exception:
+        return None
+
+
+def _render_generation_prompt_probe(
+    template: str,
+    enable_thinking: Optional[bool],
+    reasoning_effort: Optional[str],
+    messages: Optional[Collection] = None,
+) -> Optional[str]:
+    """Render the probe generation prompt, or None when it cannot be rendered."""
+    reasoning_kwargs: dict = {}
+    if enable_thinking is not None:
+        reasoning_kwargs["enable_thinking"] = enable_thinking
+    if reasoning_effort is not None:
+        reasoning_kwargs["reasoning_effort"] = reasoning_effort
+    try:
+        # Inside the guard: an unhashable template would raise out of the memo key otherwise.
+        compiled = _compile_generation_prompt_probe(template)
+        if compiled is None:
+            return None
+        return compiled.render(
+            messages = list(messages if messages is not None else _PROBE_MESSAGES),
             add_generation_prompt = True,
             bos_token = "",
             eos_token = "",
@@ -2708,6 +2727,7 @@ def _generation_prompt_opens_think(
     template: Optional[str],
     enable_thinking: Optional[bool] = None,
     reasoning_effort: Optional[str] = None,
+    messages: Optional[Collection] = None,
 ) -> bool:
     """True when rendering the template's generation prompt ends INSIDE an unclosed ``<think>``.
 
@@ -2717,12 +2737,21 @@ def _generation_prompt_opens_think(
     lets a template state its own default. The sandbox omits transformers' ``{% generation %}``
     extension, so a template using it joins the unrenderable ones in returning True, preserving
     the historical always-on prefill.
+
+    The request's own messages are rendered when given, because a template may decide the shape
+    from them (Nemotron opens the block only once a message says ``/think``). A history the
+    template refuses falls back to the single-user probe rather than to True, so a message the
+    probe cannot render is never itself a reason to prefill.
     """
     if not template:
         return False
     if not isinstance(template, str):
         return True
-    rendered = _render_generation_prompt_probe(template, enable_thinking, reasoning_effort)
+    rendered = _render_generation_prompt_probe(
+        template, enable_thinking, reasoning_effort, messages
+    )
+    if rendered is None and messages is not None:
+        rendered = _render_generation_prompt_probe(template, enable_thinking, reasoning_effort)
     if rendered is None:
         return True
     # ``<think>`` is not a substring of ``</think>``, so a later open tag means it stays open.
@@ -2734,6 +2763,7 @@ def _sf_reasoning_prefill_mode(
     enable_thinking: Optional[bool],
     template: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
+    messages: Optional[Collection] = None,
 ) -> bool:
     """Whether a safetensors/MLX generation begins INSIDE an unclosed ``<think>``.
 
@@ -2741,7 +2771,8 @@ def _sf_reasoning_prefill_mode(
     ``<|think|>``) never emit ``</think>`` and would swallow the answer, so they, gpt-oss and
     thinking-disabled requests return False. Past the gates the generation prompt's shape
     decides rather than the capability flags, since a template free to state its own default
-    states it.
+    states it, and ``messages`` is rendered with it because a template may read the shape
+    off them.
     """
     if features.get("reasoning_style") not in ("enable_thinking", "enable_thinking_effort"):
         return False
@@ -2757,7 +2788,7 @@ def _sf_reasoning_prefill_mode(
         # template, including markup that only renders PAST assistant history (Kimi-K2-Thinking)
         # while the generation prompt opens none. Prefill only when the generation prompt opens
         # one, else the extractor captures a normal answer as reasoning_content and returns blank.
-        return _generation_prompt_opens_think(tpl)
+        return _generation_prompt_opens_think(tpl, messages = messages)
     if not features.get("supports_reasoning"):
         return False
     if enable_thinking is False:
@@ -2766,7 +2797,7 @@ def _sf_reasoning_prefill_mode(
     # so we don't prefill and capture the answer. Plain enable_thinking models ignore effort.
     if features.get("reasoning_style") == "enable_thinking_effort" and reasoning_effort == "none":
         return False
-    return _generation_prompt_opens_think(tpl, enable_thinking, reasoning_effort)
+    return _generation_prompt_opens_think(tpl, enable_thinking, reasoning_effort, messages)
 
 
 def _effective_enable_tools(payload) -> Optional[bool]:
@@ -15368,6 +15399,14 @@ async def openai_chat_completions(
     if not _sf_template_tools and _sf_server_tool_intent:
         _sf_template_tools = ({},)
 
+    # The prefill probe renders these: a template may read the shape off the conversation
+    # (Nemotron opens <think> only once a message says ``/think``), and a fixed stand-in
+    # would classify a request nobody made. Encoded once, not per protocol call.
+    try:
+        _sf_probe_messages = jsonable_encoder(getattr(payload, "messages", None)) or None
+    except Exception:
+        _sf_probe_messages = None
+
     def _sf_response_protocol(tools = None):
         features = _detect_safetensors_features(backend, _sf_tpl, tools = tools)
         parse_think = bool(
@@ -15378,6 +15417,7 @@ async def openai_chat_completions(
             payload.enable_thinking,
             _sf_tpl,
             reasoning_effort = payload.reasoning_effort,
+            messages = _sf_probe_messages,
         )
         return features, parse_think, reasoning_prefilled
 
