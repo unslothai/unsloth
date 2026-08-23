@@ -99,6 +99,12 @@ on:
       # which is what --min-compared exists to catch after the fact. Better to
       # run the gate.
       - 'studio/backend/routes/chat_history.py'
+      # What that route is a thin skin over: it imports sync_chat_messages and
+      # list_chat_messages from here, and those are what actually persist and
+      # return the seeded transcript. Listing the route and not its storage
+      # leaves the same gap one file down, and this is the layer that can
+      # truncate or empty the thread rather than merely reorder it.
+      - 'studio/backend/storage/studio_db.py'
       # The rows the `model_change` action clicks. runtime/lifecycle.py creates
       # the test provider over POST /api/providers/ because localStorage seeding
       # alone renders the model as "No longer offered", and the frontend reads

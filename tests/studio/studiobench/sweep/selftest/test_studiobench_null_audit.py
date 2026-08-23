@@ -463,18 +463,19 @@ def test_a_run_that_compared_almost_nothing_does_not_pass(tmp_path, capsys):
 
 
 def test_the_audit_ignores_an_action_the_result_never_compared(tmp_path):
-    # `copy_markdown` is undecided in the null AND not exercised on the result, so nothing
-    # anywhere needs its verdict. Demanding it turns machine speed into a red build.
+    # `copy_markdown` is undecided in the null and nothing on the result turns on its verdict, so
+    # demanding one turns machine speed into a red build. The result DOES need an excuse for
+    # `settings`, so the scope is not empty and the audit is not passing vacuously.
     null = null_run(
         tmp_path,
         "n",
         two_reps("settings", "SAME", "SAME") + [("r100K", "rep0", "copy_markdown", "A", "B")],
     )
-    result = null_run(tmp_path, "r", two_reps("settings", "SAME", "SAME"))
+    result = null_run(tmp_path, "r", two_reps("settings", "AAA", "BBB"))
 
     assert U.audit_null([null], frozenset())[0] == 1  # unscoped: copy_markdown undecided
-    scope = U.compared_actions([result])
-    assert "copy_markdown" not in scope
+    scope = U.actions_needing_an_excuse([result], min_reps = 2)
+    assert scope == {("r100K", "settings")}
     assert U.audit_null([null], frozenset(), scope)[0] == 0  # scoped: nobody needed it
 
 
@@ -642,7 +643,7 @@ def test_the_audit_still_fails_on_an_undecided_action_the_result_kept_differing_
     result = null_run(tmp_path, "result", two_reps("settings", "AAA", "BBB"))
     null = null_run(tmp_path, "null", [("r100K", "rep0", "settings", "SAME", "SAME")])
     scope = U.actions_needing_an_excuse([result], min_reps = 2)
-    assert scope == {"settings"}
+    assert scope == {("r100K", "settings")}
     rc, report_ = U.audit_null([null], frozenset(), scope)
     assert rc == 1
     assert ("r100K", "settings") in report_["undecided"]
@@ -669,7 +670,7 @@ def test_a_corroborated_one_arm_only_action_still_needs_the_null_to_decide_it(tm
     result = one_sided_payload(tmp_path, "result", "settings", ("rep0", "rep1"))
     null = null_run(tmp_path, "null", [("r100K", "rep0", "settings", "SAME", "SAME")])
     scope = U.actions_needing_an_excuse([result], min_reps = 2)
-    assert "settings" in scope
+    assert ("r100K", "settings") in scope
     rc, _ = U.audit_null([null], frozenset(), scope)
     assert rc == 1
 
@@ -724,3 +725,29 @@ def test_a_control_that_cannot_open_is_still_caught_when_a_slot_is_also_missed_e
     # fails even though the same run also lost slots.
     path = one_sided_payload(tmp_path, "broken", "settings", ("rep0", "rep1"))
     assert U.report([path], "t", frozenset(), min_reps = 2, min_compared = 16) == 1
+
+
+def test_a_difference_at_one_rung_does_not_demand_the_null_decide_another(tmp_path):
+    # The scope is keyed by (rung, action) and not by action alone. Reduced to bare names it
+    # re-widened across the ladder: a corroborated difference at 1K pulled the action into scope
+    # at EVERY rung, so one missed observation at 100K -- where the result matched and no excuse
+    # was ever consulted -- failed the audit again. Instability is a property of the rung, which
+    # is why `derive_unstable` decides per rung and `unstable_set` measures per rung.
+    result = null_run(
+        tmp_path,
+        "result",
+        [("r1K", "rep0", "keystroke", "A", "B"), ("r1K", "rep1", "keystroke", "A", "B")]
+        + [("r100K", "rep0", "keystroke", "S", "S"), ("r100K", "rep1", "keystroke", "S", "S")],
+    )
+    null = null_run(
+        tmp_path,
+        "null",
+        [("r1K", "rep0", "keystroke", "A", "B"), ("r1K", "rep1", "keystroke", "A", "B")]
+        # One observation only at 100K, so the null cannot decide it there.
+        + [("r100K", "rep0", "keystroke", "S", "S")],
+    )
+    scope = U.actions_needing_an_excuse([result], min_reps = 2)
+    assert scope == {("r1K", "keystroke")}
+    rc, report_ = U.audit_null([null], frozenset(), scope)
+    assert rc == 0, report_["undecided"]
+    assert ("r100K", "keystroke") in report_["out_of_scope"]

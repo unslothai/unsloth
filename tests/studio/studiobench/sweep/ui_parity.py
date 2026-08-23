@@ -247,8 +247,8 @@ def compared_actions(paths: list[Path]) -> set[str]:
     return {a for a, _s, _c, r in results if r["verdict"] in (P.MATCH, P.DIFFER)}
 
 
-def actions_needing_an_excuse(paths: list[Path], min_reps: int) -> set[str]:
-    """Actions of the result whose verdict the unstable set actually decides.
+def actions_needing_an_excuse(paths: list[Path], min_reps: int) -> set[tuple[str, str]]:
+    """(rung, action) entries of the result whose verdict the unstable set actually decides.
 
     SCOPED TO WHAT THE EXCUSE CHANGES, which is narrower than what the result compared, and the
     difference between a gate that is satisfiable and one that is not. Requiring the null to
@@ -274,13 +274,20 @@ def actions_needing_an_excuse(paths: list[Path], min_reps: int) -> set[str]:
     MEASURED before it excuses it, so an undecided action that would have been waved through on
     the declared list still fails the audit. What no longer fails it is an action nothing was
     going to ask the null about.
+
+    KEYED BY (RUNG, ACTION), because that is what `derive_unstable` decides and what
+    `unstable_set` measures. Reducing the scope to bare action names re-widened it across the
+    ladder: a result differing at 1K would demand the null decide that action at 100K too, where
+    the result matched and no excuse was ever consulted, so one missed observation at an
+    unrelated rung failed the audit again. The rung is part of the identity here for the same
+    reason it is part of it there -- instability is a property of the rung, not only the action.
     """
     results, _ = compare_all(paths)
     differing = [e for e in results if e[3]["verdict"] == P.DIFFER]
     one_sided = [e for e in results if e[3]["verdict"] == P.NOT_EXERCISED and e[3].get("one_sided")]
     firm_differing, _ = corroborated(differing, min_reps)
     firm_one_sided, _ = corroborated(one_sided, min_reps)
-    return {e[0] for e in firm_differing} | {e[0] for e in firm_one_sided}
+    return {(rung_of_cell(e[2]), e[0]) for e in firm_differing + firm_one_sided}
 
 
 def audit_null(
@@ -338,7 +345,7 @@ def audit_null(
             # read as a vacuous audit below. An excused action is one the fixture cannot perform
             # and it is a HOLE in a question that was asked. An out-of-scope action is a question
             # nobody asked, because no excuse could have changed the result's verdict for it.
-            if scope is not None and action not in scope:
+            if scope is not None and entry not in scope:
                 out_of_scope.append(entry)
                 continue
             if row["undetermined"]:
@@ -883,10 +890,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"--compared-in matched no payload: {args.compared_in}")
                 return 2
             scope = actions_needing_an_excuse(scope_paths, args.min_reps)
+            named = ", ".join(f"{action}@{rung}" for rung, action in sorted(scope))
             print(
-                f"auditing against the {len(scope)} action(s) whose verdict the unstable set "
-                f"decides, of the {len(compared_actions(scope_paths))} the result compared: "
-                f"{', '.join(sorted(scope)) or '(none -- nothing needs an excuse)'}"
+                f"auditing against the {len(scope)} (rung, action) pair(s) whose verdict the "
+                f"unstable set decides, of the {len(compared_actions(scope_paths))} action(s) "
+                f"the result compared: {named or '(none -- nothing needs an excuse)'}"
             )
         worst = 0
         for pattern in args.payloads:
