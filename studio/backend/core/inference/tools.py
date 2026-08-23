@@ -14298,6 +14298,33 @@ _SPILL_KEEP = 20
 # so the model can page through what it was shown, and 8 MB is already far more of that
 # than any window can consume.
 _SPILL_MAX_BYTES = 8 * 1024 * 1024
+
+# How much of a result is encoded at a time when it is hashed. UTF-8 encodes one code
+# point at a time, so a stream built from slices of the string is byte for byte the stream
+# built from the whole of it, whatever the chunk size.
+_SPILL_HASH_CHUNK_CHARS = 1 << 20
+
+
+def _digest_and_head(text: str, max_bytes: int) -> "tuple[str, int, bytes]":
+    """``(digest, encoded length, the first max_bytes of it)``, in one bounded pass.
+
+    Encoding the whole result to hash it and again to cut it puts two more copies of it
+    through memory, and at most `max_bytes` of the second is ever written. The output this
+    runs on is by definition the output that did not fit: `cat` of a file the model just
+    wrote can be hundreds of megabytes, and spending it twice more inside the backend, at
+    the point the result is already in hand, risks the stall or the OOM instead of the
+    bounded answer this whole path exists to return.
+    """
+    digest = hashlib.sha256()
+    head = bytearray()
+    total = 0
+    for start in range(0, len(text), _SPILL_HASH_CHUNK_CHARS):
+        chunk = text[start : start + _SPILL_HASH_CHUNK_CHARS].encode("utf-8", "surrogatepass")
+        digest.update(chunk)
+        total += len(chunk)
+        if len(head) < max_bytes:
+            head += chunk[: max_bytes - len(head)]
+    return digest.hexdigest()[:12], total, bytes(head)
 _SPILL_MAX_TOTAL_BYTES = 64 * 1024 * 1024
 # Exactly the names `_spill_full_output` generates: twelve hex characters of a content
 # digest. The prune below deletes what it matches, and the sandbox is the user's own
@@ -14736,14 +14763,13 @@ def _spill_full_output(
         # addressing also means asking for the same file twice reuses one spill instead of
         # filling the sandbox with copies, which is the repeat case this whole change is
         # about.
-        digest = hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:12]
-        name = f"{digest}.txt"
         # Bounded before it is written rather than after: pruning by count alone still
         # lets one enormous result through, and by then it is already on the disk.
-        blob = text.encode("utf-8", "surrogatepass")
-        complete = len(blob) <= _SPILL_MAX_BYTES
+        digest, spilled_bytes, head = _digest_and_head(text, _SPILL_MAX_BYTES)
+        name = f"{digest}.txt"
+        complete = spilled_bytes <= _SPILL_MAX_BYTES
         # Cut on a character boundary, so what lands is still decodable text.
-        body = text if complete else blob[:_SPILL_MAX_BYTES].decode("utf-8", "ignore")
+        body = text if complete else head.decode("utf-8", "ignore")
         # newline="" so the bytes on disk are the bytes measured. The default translates
         # "\n" to os.linesep, which on Windows writes an extra byte per line, and the
         # byte offset in the continuation hint is counted from the untranslated text --

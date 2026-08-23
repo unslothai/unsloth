@@ -1913,3 +1913,59 @@ class TestADenseNativeTurnIsPricedAsOne:
         )["result_budget_tokens"]
 
         assert blob < prose
+
+
+class TestSpillingDoesNotCopyTheResultAgain:
+    """The output this path runs on is by definition the output that did not fit. Encoding
+    all of it to hash it and all of it again to cut it puts two more copies of a `cat` of a
+    file the model just wrote through memory, at the point the result is already in hand,
+    when at most `_SPILL_MAX_BYTES` of the second is ever written."""
+
+    def test_the_pass_is_bounded_by_the_cap_rather_than_the_result(self, tmp_path, monkeypatch):
+        import tracemalloc
+
+        monkeypatch.setattr(tools, "_SPILL_MAX_BYTES", 4_096)
+        text = _dense(8_000_000)
+
+        tracemalloc.start()
+        try:
+            tools._spill_full_output(text, str(tmp_path), "")
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        assert peak < len(text) // 2, f"{peak} bytes for a {len(text)} character result"
+
+    def test_the_name_is_still_the_digest_of_the_whole_text(self, tmp_path):
+        text = "\n".join(f"line {i}" for i in range(20_000))
+
+        spilled, complete = tools._spill_full_output(text, str(tmp_path), "")
+
+        assert complete
+        whole = hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+        assert spilled.endswith(f"{whole}.txt"), spilled
+
+    def test_a_chunk_boundary_does_not_change_the_bytes(self, tmp_path, monkeypatch):
+        """UTF-8 encodes a code point at a time, so slicing the string cannot split one.
+        Forced small, so every multi-byte character in this text straddles a boundary."""
+        monkeypatch.setattr(tools, "_SPILL_HASH_CHUNK_CHARS", 3)
+        text = "aé漢🙂" * 2_000
+
+        spilled, complete = tools._spill_full_output(text, str(tmp_path), "")
+
+        whole = hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+        assert complete and spilled.endswith(f"{whole}.txt")
+        assert (tmp_path / _spill_path(f"saved to {spilled} ")).read_text(
+            encoding = "utf-8"
+        ) == text
+
+    def test_an_oversized_result_is_still_cut_at_the_cap(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(tools, "_SPILL_MAX_BYTES", 4_096)
+        text = _dense(200_000)
+
+        spilled, complete = tools._spill_full_output(text, str(tmp_path), "")
+
+        assert not complete
+        written = (tmp_path / _spill_path(f"saved to {spilled} ")).read_bytes()
+        assert len(written) <= 4_096
+        assert written == text.encode("utf-8")[: len(written)]
