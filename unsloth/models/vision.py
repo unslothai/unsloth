@@ -1938,6 +1938,7 @@ class FastBaseModel:
             target_modules,
             modules_to_save,
             allow_redirect = finetune_language_layers,
+            skip = _vllm_unmovable_embedding_modules(model, target_modules),
         )
         _raise_if_no_lora_targets_left(target_modules, _moved, target_parameters)
         ensure_weight_tying = _resolve_ensure_weight_tying(

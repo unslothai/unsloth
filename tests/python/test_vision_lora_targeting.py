@@ -259,3 +259,47 @@ def test_empty_target_parameters_still_raises(target_parameters):
     from unsloth.models._utils import _raise_if_no_lora_targets_left
     with pytest.raises(RuntimeError, match = "target_modules` is now empty"):
         _raise_if_no_lora_targets_left([], ("embed_tokens",), target_parameters)
+
+
+CORE = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+
+class _VllmModel:
+    """A model loaded with fast_inference = True carries a live engine."""
+    vllm_engine = object()
+
+
+def test_fast_inference_leaves_lm_head_alone():
+    """Redirecting it would newly raise on GRPO scripts that run today: the pre-existing
+    guard refuses any modules_to_save, and LoRA on lm_head never trained here anyway."""
+    from unsloth.models._utils import (
+        _redirect_embedding_targets,
+        _vllm_unmovable_embedding_modules,
+    )
+
+    skip = _vllm_unmovable_embedding_modules(_VllmModel(), CORE + ["lm_head"])
+    assert skip == ("lm_head",)
+
+    targets, saved, moved = _redirect_embedding_targets(CORE + ["lm_head"], None, skip = skip)
+    assert targets == CORE + ["lm_head"], "lm_head must stay a LoRA target under vLLM"
+    assert saved is None, "an empty modules_to_save is what keeps the guard quiet"
+    assert moved == ()
+
+    # embed_tokens still redirects, so fast inference still refuses it exactly as before.
+    targets, saved, moved = _redirect_embedding_targets(
+        CORE + ["embed_tokens", "lm_head"], None, skip = skip,
+    )
+    assert saved == ["embed_tokens"] and moved == ("embed_tokens",)
+    assert targets == CORE + ["lm_head"], "the spared name is kept, not silently dropped"
+
+
+def test_without_fast_inference_nothing_is_skipped():
+    from unsloth.models._utils import _vllm_unmovable_embedding_modules
+
+    class Plain:
+        pass
+
+    assert _vllm_unmovable_embedding_modules(Plain(), CORE + ["lm_head"]) == ()
+    # A regex/None target list must not crash the lm_head membership test.
+    assert _vllm_unmovable_embedding_modules(_VllmModel(), None) == ("lm_head",)
+    assert _vllm_unmovable_embedding_modules(_VllmModel(), "all-linear") == ("lm_head",)

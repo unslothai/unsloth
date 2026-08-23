@@ -96,6 +96,7 @@ __all__ = [
     "_redirect_embedding_targets",
     "_raise_if_no_lora_targets_left",
     "_resolve_ensure_weight_tying",
+    "_vllm_unmovable_embedding_modules",
     "_drop_tied_output_module",
     "_raise_if_fast_inference_modules_to_save",
     "make_fast_generate_wrapper",
@@ -4478,11 +4479,30 @@ def warn_if_zoo_cannot_merge_moe_experts():
 EMBEDDING_MODULES = frozenset(("embed_tokens", "lm_head"))
 
 
+def _vllm_unmovable_embedding_modules(model, target_modules):
+    """Names to leave in `target_modules` under fast inference.
+
+    vLLM cannot sync a trainable embedding, so `modules_to_save` is refused below. Only
+    lm_head is spared: LoRA on it never trained under vLLM either, so redirecting it
+    would newly raise on scripts that run today. embed_tokens still redirects, and so
+    still raises, exactly as before.
+    """
+    if getattr(model, "vllm_engine", None) is None:
+        return ()
+    if type(target_modules) in (list, tuple) and "lm_head" in target_modules:
+        logger.warning_once(
+            "Unsloth: Fast inference cannot train `lm_head`, so it is left as an "
+            "untrained LoRA target.\nUse `fast_inference = False` to train it."
+        )
+    return ("lm_head",)
+
+
 def _redirect_embedding_targets(
     target_modules,
     modules_to_save,
     *,
     allow_redirect = True,
+    skip = (),
 ):
     """Move embed_tokens/lm_head into modules_to_save. Returns (targets, saved, moved).
 
@@ -4493,11 +4513,11 @@ def _redirect_embedding_targets(
         return target_modules, modules_to_save, ()
 
     target_modules = list(dict.fromkeys(target_modules))
-    moved = [x for x in target_modules if x in EMBEDDING_MODULES]
+    moved = [x for x in target_modules if x in EMBEDDING_MODULES and x not in skip]
     if not moved:
         return target_modules, modules_to_save, ()
 
-    remaining = [x for x in target_modules if x not in EMBEDDING_MODULES]
+    remaining = [x for x in target_modules if x not in EMBEDDING_MODULES or x in skip]
     # list() on a str would shred it into single characters.
     if modules_to_save is None:
         saved = []

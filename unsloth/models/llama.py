@@ -3330,6 +3330,7 @@ class FastLlamaModel:
         target_modules, modules_to_save, _moved_embedding_modules = _redirect_embedding_targets(
             target_modules,
             modules_to_save,
+            skip = _vllm_unmovable_embedding_modules(model, target_modules),
         )
         _raise_if_no_lora_targets_left(
             target_modules,
