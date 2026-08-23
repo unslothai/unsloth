@@ -875,6 +875,8 @@ export const fr = {
         title: "Périphériques GPU",
         ggufInference: "Inférence GGUF",
         unavailable: "indisponible",
+        detecting: "Recherche de GPU...",
+        unreadable: "Impossible de lire le matériel de ce serveur.",
         noGpu:
           "Aucun GPU visible n'a été détecté. Seules les ressources du CPU sont affichées ci-dessus.",
         unknownDevice: "GPU inconnu",

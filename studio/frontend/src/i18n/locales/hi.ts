@@ -854,6 +854,8 @@ export const hi = {
         title: "GPU डिवाइस",
         ggufInference: "GGUF इन्फ़रेंस",
         unavailable: "उपलब्ध नहीं",
+        detecting: "GPU खोजे जा रहे हैं...",
+        unreadable: "इस सर्वर का हार्डवेयर नहीं पढ़ा जा सका।",
         noGpu: "कोई दृश्यमान GPU नहीं मिला। केवल-CPU संसाधन ऊपर दिखाए गए हैं।",
         unknownDevice: "अज्ञात GPU",
         deviceWithIndex: "GPU {index}",

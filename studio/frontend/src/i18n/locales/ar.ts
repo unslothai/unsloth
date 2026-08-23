@@ -850,6 +850,8 @@ export const ar = {
         title: "أجهزة GPU",
         ggufInference: "استدلال GGUF",
         unavailable: "غير متاح",
+        detecting: "جارٍ البحث عن وحدات GPU...",
+        unreadable: "تعذّرت قراءة عتاد هذا الخادم.",
         noGpu: "لم يُكتشف أي GPU مرئي. تُعرض موارد CPU فقط أعلاه.",
         unknownDevice: "GPU غير معروف",
         deviceWithIndex: "GPU {index}",

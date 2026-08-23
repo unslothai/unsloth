@@ -855,6 +855,8 @@ export const ru = {
         title: "Устройства GPU",
         ggufInference: "Инференс GGUF",
         unavailable: "недоступно",
+        detecting: "Поиск GPU...",
+        unreadable: "Не удалось прочитать оборудование этого сервера.",
         noGpu:
           "Доступные GPU не обнаружены. Выше показаны ресурсы только для CPU.",
         unknownDevice: "Неизвестный GPU",

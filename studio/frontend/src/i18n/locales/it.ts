@@ -842,6 +842,8 @@ export const it = {
         title: "Dispositivi GPU",
         ggufInference: "Inferenza GGUF",
         unavailable: "non disponibile",
+        detecting: "Ricerca di GPU...",
+        unreadable: "Impossibile leggere l'hardware di questo server.",
         noGpu:
           "Nessuna GPU visibile rilevata. Sopra sono mostrate le risorse della sola CPU.",
         unknownDevice: "GPU sconosciuta",

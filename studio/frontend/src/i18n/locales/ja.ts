@@ -833,6 +833,8 @@ export const ja = {
         title: "GPU デバイス",
         ggufInference: "GGUF 推論",
         unavailable: "利用不可",
+        detecting: "GPU を確認しています...",
+        unreadable: "このサーバーのハードウェアを読み取れませんでした。",
         noGpu:
           "利用可能な GPU が検出されませんでした。CPU のみの環境向けのリソース情報は上に表示されています。",
         unknownDevice: "不明な GPU",
