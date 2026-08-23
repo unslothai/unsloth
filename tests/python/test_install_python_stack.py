@@ -828,9 +828,7 @@ class TestDuplicateCoreMetadataRepair:
         monkeypatch.setattr(
             ips.install_manifest, "installed_versions", lambda _n: ["", "2026.8.15"]
         )
-        monkeypatch.setattr(
-            ips.install_manifest, "invalid_metadata_paths", lambda _n: [unreadable]
-        )
+        monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _n: [unreadable])
         monkeypatch.setattr(ips.install_manifest, "pip_backup_metadata_paths", lambda _n: [])
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
 

@@ -4285,9 +4285,7 @@ def _repair_duplicate_core_metadata(
             # success: whatever the older release owned alone stays importable, and the
             # directory that was the evidence is gone for good.
             unrecorded = [
-                path
-                for path in unrewritable
-                if not os.path.isfile(os.path.join(path, "RECORD"))
+                path for path in unrewritable if not os.path.isfile(os.path.join(path, "RECORD"))
             ]
             if unrecorded:
                 _safe_print(
