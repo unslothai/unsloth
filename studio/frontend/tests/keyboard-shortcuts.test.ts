@@ -295,6 +295,28 @@ test("the tab-search chord counts as browser-owned on both platforms", () => {
   assert.ok(isBrowserReservedBinding("Mod+Shift+KeyA", false));
 });
 
+// The walk is the one chord whose end is a key coming up rather than going
+// down, so it is the one that a window losing focus can strand.
+test("the recent walk ends on losing the window, not just on keyup", async () => {
+  const sidebar = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  const at = sidebar.indexOf("const end = () =>");
+  assert.ok(at !== -1, "the traversal listener moved");
+  const body = sidebar.slice(at, sidebar.indexOf("}, []);", at));
+  // Both signals reach the same end, and both are torn down again.
+  assert.match(body, /window\.addEventListener\("keyup", onKeyUp\);/);
+  assert.match(body, /window\.addEventListener\("blur", end\);/);
+  assert.match(body, /window\.removeEventListener\("blur", end\);/);
+  // Still only once every modifier is up: a walk is held, so a Tab release
+  // with Ctrl still down is mid-walk, not the end of it.
+  assert.match(
+    body,
+    /if \(event\.ctrlKey \|\| event\.metaKey \|\| event\.altKey \|\| event\.shiftKey\)/,
+  );
+});
+
 // Firefox's new private window, which no page can cancel. Chrome's incognito
 // on ⇧⌘N was already reserved; this is the other half of the same pair.
 test("the private-window chord is reserved and carries no default", () => {

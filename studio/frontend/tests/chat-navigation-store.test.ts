@@ -77,6 +77,25 @@ test("tapping the chord toggles the two most recent chats", () => {
   assert.deepEqual(taps, ["B", "A", "B"]);
 });
 
+// A walk holds the stack still until it ends. If the release never arrives,
+// because the window went away with the modifier still down, the walk is
+// still running and the next press carries on from where it stopped.
+test("a walk left running sends the next press onward, not back", () => {
+  seed();
+  assert.equal(press(1), "B");
+  // The release lands in another app, so nothing ends the walk.
+  assert.deepEqual(store().recentlyViewedIds, ["A", "B", "C", "D"]);
+  assert.notEqual(store().traversal, null);
+  assert.equal(press(1), "C");
+
+  // Ending it on the way out is what makes the next press a toggle again.
+  seed();
+  assert.equal(press(1), "B");
+  store().endTraversal();
+  assert.deepEqual(store().recentlyViewedIds, ["B", "A", "C", "D"]);
+  assert.equal(press(1), "A");
+});
+
 test("a chat outside the stack walks onto the end it started from", () => {
   seed();
   // A brand new chat is in no stack, so the first press has to reach the most

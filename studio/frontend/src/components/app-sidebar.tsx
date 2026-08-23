@@ -1196,14 +1196,23 @@ export function AppSidebar() {
   // A walk through the stack ends when its modifiers come up, as an app
   // switcher's does. A no-op when no walk is running.
   useEffect(() => {
+    const end = () => useChatNavigationStore.getState().endTraversal();
     const onKeyUp = (event: KeyboardEvent) => {
       if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
         return;
       }
-      useChatNavigationStore.getState().endTraversal();
+      end();
     };
     window.addEventListener("keyup", onKeyUp);
-    return () => window.removeEventListener("keyup", onKeyUp);
+    // Losing the window ends it too, or the release lands somewhere else and
+    // the walk stays frozen: ⌘Tab away mid-walk is the ordinary way to do
+    // that. The next press would carry on from where this one stopped instead
+    // of toggling back, and the stack would never take the chat it landed on.
+    window.addEventListener("blur", end);
+    return () => {
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", end);
+    };
   }, []);
 
   const sortedChatsByProjectId = useMemo(() => {
