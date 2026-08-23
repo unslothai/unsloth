@@ -5,7 +5,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import jwt
 from starlette.concurrency import run_in_threadpool
@@ -26,6 +26,10 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 security = HTTPBearer()  # Reads Authorization: Bearer <token>
+optional_security = HTTPBearer(auto_error = False)
+
+LAN_API_GUEST_SUBJECT = "__lan_api_guest__"
+_LAN_API_GUEST_STATE_KEY = "lan_api_guest"
 
 
 def _get_secret_for_subject(subject: str) -> str:
@@ -153,13 +157,70 @@ def reload_secret() -> None:
     load_jwt_secret()
 
 
-async def get_current_subject(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
-    """Validate JWT and require the password-change flow to be completed."""
-    subject, _generation = await _get_current_credential(
-        credentials,
-        allow_password_change = False,
-    )
-    return subject
+async def get_current_subject(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(optional_security),
+    request: Request = None,
+) -> str:
+    """Authenticate normally, with an explicit exception for the private LAN /v1 API.
+
+    Valid credentials always take precedence and invalid supplied credentials never
+    fall through to guest access. The exception is deliberately narrower than the
+    router: it requires the persisted opt-in, an OpenAI-compatible path, a configured
+    LAN accepting socket, and a non-public listener address.
+    """
+    if credentials is not None:
+        subject, _generation = await _get_current_credential(
+            credentials,
+            allow_password_change = False,
+        )
+        return subject
+
+    if request is None:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "Not authenticated",
+        )
+
+    if request.headers.get("authorization") is not None:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "Invalid authentication credentials",
+        )
+
+    path = request.scope.get("path", "")
+    if not isinstance(path, str) or not (path == "/v1" or path.startswith("/v1/")):
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "Not authenticated",
+        )
+
+    try:
+        from utils.lan_access_settings import (
+            get_lan_access_unauthenticated_api,
+            request_on_lan_access,
+        )
+
+        allowed = (
+            request_on_lan_access(request)
+            and await run_in_threadpool(get_lan_access_unauthenticated_api)
+        )
+    except Exception:
+        allowed = False
+
+    if not allowed:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "Not authenticated",
+        )
+
+    setattr(request.state, _LAN_API_GUEST_STATE_KEY, True)
+    return LAN_API_GUEST_SUBJECT
+
+
+def is_lan_api_guest(request: Request) -> bool:
+    """Whether the LAN-only OpenAI exception admitted this request."""
+    state = getattr(request, "state", None)
+    return bool(getattr(state, _LAN_API_GUEST_STATE_KEY, False))
 
 
 async def get_current_credential(

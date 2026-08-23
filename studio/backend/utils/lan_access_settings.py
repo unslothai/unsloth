@@ -18,6 +18,8 @@ logger = get_logger(__name__)
 
 LAN_ACCESS_AUTO_START_KEY = "lan_access_auto_start"
 DEFAULT_LAN_ACCESS_AUTO_START = False
+LAN_ACCESS_UNAUTHENTICATED_API_KEY = "lan_access_unauthenticated_api"
+DEFAULT_LAN_ACCESS_UNAUTHENTICATED_API = False
 
 
 def _coerce_bool(value: Any) -> Optional[bool]:
@@ -42,6 +44,67 @@ def set_lan_access_auto_start(enabled: bool) -> bool:
 
     upsert_app_settings({LAN_ACCESS_AUTO_START_KEY: enabled})
     return enabled
+
+
+def get_lan_access_unauthenticated_api() -> bool:
+    """Whether the dedicated LAN listener may admit unauthenticated /v1 calls."""
+    try:
+        from storage.studio_db import get_app_setting
+
+        stored = get_app_setting(LAN_ACCESS_UNAUTHENTICATED_API_KEY, None)
+    except Exception:
+        return False
+    parsed = _coerce_bool(stored)
+    return parsed if parsed is not None else DEFAULT_LAN_ACCESS_UNAUTHENTICATED_API
+
+
+def set_lan_access_unauthenticated_api(enabled: bool) -> bool:
+    if not isinstance(enabled, bool):
+        raise ValueError("LAN unauthenticated API access must be true or false.")
+    from storage.studio_db import upsert_app_settings
+
+    upsert_app_settings({LAN_ACCESS_UNAUTHENTICATED_API_KEY: enabled})
+    return enabled
+
+
+def request_on_lan_access(request) -> bool:
+    """True for a private address served by either supported LAN launch mode.
+
+    The accepting socket in the ASGI scope is authoritative. No forwarded,
+    origin, host, or client address header participates in this decision.
+    """
+    from urllib.parse import urlparse
+
+    from lan_access import is_public_address, request_on_lan_listener
+
+    scope = getattr(request, "scope", {})
+    server = scope.get("server")
+    if not server or len(server) < 2:
+        return False
+    server_host, server_port = server[0], server[1]
+    if not isinstance(server_host, str) or is_public_address(server_host):
+        return False
+
+    if request_on_lan_listener(scope):
+        return True
+
+    try:
+        app_state = request.app.state
+    except Exception:
+        return False
+    if not bool(getattr(app_state, "lan_access_launch_managed", False)):
+        return False
+    if server_port != getattr(app_state, "lan_access_port", None):
+        return False
+
+    for url in _launch_urls(app_state):
+        try:
+            parsed = urlparse(url)
+        except ValueError:
+            continue
+        if parsed.hostname == server_host and parsed.port == server_port:
+            return True
+    return False
 
 
 def _admin_password_ready() -> bool:
@@ -148,6 +211,7 @@ def lan_access_status(app) -> dict:
         "public_urls": _public_urls(urls),
         "error": listener["error"],
         "auto_start": get_lan_access_auto_start(),
+        "unauthenticated_api": get_lan_access_unauthenticated_api(),
         "managed_by": managed_by,
         "can_start": controllable and not running,
         "can_stop": controllable and running,

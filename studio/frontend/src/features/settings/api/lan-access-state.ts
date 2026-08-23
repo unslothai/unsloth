@@ -10,6 +10,7 @@ export type LanAccessStatus = {
   publicUrls: string[];
   error: string | null;
   autoStart: boolean;
+  unauthenticatedApi: boolean;
   managedBy: LanAccessOwner;
   canStart: boolean;
   canStop: boolean;
@@ -25,6 +26,8 @@ export type ApiLanAccessStatus = {
   error?: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   auto_start: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  unauthenticated_api?: boolean | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   managed_by?: LanAccessOwner;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -46,6 +49,7 @@ export function normalizeLanAccessStatus(
     publicUrls: Array.isArray(status.public_urls) ? status.public_urls : [],
     error: status.error ?? null,
     autoStart: status.auto_start,
+    unauthenticatedApi: status.unauthenticated_api === true,
     managedBy: status.managed_by ?? null,
     canStart: status.can_start,
     canStop: status.can_stop,
@@ -59,6 +63,12 @@ export function normalizeLanAccessStatus(
 export const LAN_ACCESS_POLL_MS = 5000;
 
 export function lanAccessAutoStartReadOnly(
+  status: LanAccessStatus | null,
+): boolean {
+  return status === null || status.blockReason === "colab";
+}
+
+export function lanAccessUnauthenticatedApiReadOnly(
   status: LanAccessStatus | null,
 ): boolean {
   return status === null || status.blockReason === "colab";

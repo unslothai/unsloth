@@ -2491,7 +2491,11 @@ from core.inference.anthropic_compat import (
     AnthropicPassthroughEmitter,
 )
 from auth import storage as auth_storage
-from auth.authentication import API_KEY_PREFIX, get_current_subject
+from auth.authentication import (
+    API_KEY_PREFIX,
+    get_current_subject,
+    is_lan_api_guest,
+)
 from state import active_generations
 
 
@@ -2510,8 +2514,8 @@ def _request_api_key_token(request: Any) -> Optional[str]:
 
 
 def _request_has_api_key(request: Any) -> bool:
-    """Whether the request used any API key rather than an interactive session JWT."""
-    return _request_api_key_token(request) is not None
+    """Whether the request is an external API caller rather than a UI session."""
+    return is_lan_api_guest(request) or _request_api_key_token(request) is not None
 
 
 def _request_is_internal_workflow(request: Any) -> bool:
@@ -2563,7 +2567,7 @@ def _request_is_saved_credential_workflow(request: Any) -> bool:
 
 
 def _request_used_api_key(request: Any) -> bool:
-    """True when this request authenticated with a third party's sk-unsloth key.
+    """True for external API traffic: a third-party key or an allowed LAN guest.
 
     Studio's own chat hits these same endpoints with a session JWT, so this is
     what separates "someone is using Unsloth as an API server" from "someone is
@@ -2573,6 +2577,8 @@ def _request_used_api_key(request: Any) -> bool:
     # Total by construction: this only decides a monitor label and must never fail a
     # load. Saved-secret authorization uses _request_has_api_key instead, narrowed by
     # _request_is_internal_workflow where a Studio workflow needs its own connection.
+    if is_lan_api_guest(request):
+        return True
     token = _request_api_key_token(request)
     if token is None:
         return False

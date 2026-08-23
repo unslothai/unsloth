@@ -16,6 +16,7 @@ import {
   startLanAccess,
   stopLanAccess,
   updateLanAccessAutoStart,
+  updateLanAccessUnauthenticatedApi,
 } from "@/features/settings/api/lan-access";
 import {
   LAN_ACCESS_POLL_MS,
@@ -24,18 +25,24 @@ import {
   lanAccessBlockMessage,
   lanAccessErrorMessage,
   lanAccessStopDisconnectsOrigin,
+  lanAccessUnauthenticatedApiReadOnly,
 } from "@/features/settings/api/lan-access-state";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import { Copy01Icon, QrCodeIcon, Wifi01Icon } from "@hugeicons/core-free-icons";
+import {
+  Alert02Icon,
+  Copy01Icon,
+  QrCodeIcon,
+  Wifi01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "react-qr-code";
 import { SettingsRow } from "./settings-row";
 
-type LanAccessOperation = "start" | "stop" | "auto";
+type LanAccessOperation = "start" | "stop" | "auto" | "authentication";
 
 const STATE_LABEL: Record<LanAccessStatus["state"], string> = {
   off: "Off",
@@ -160,6 +167,17 @@ function StatusMessage({
   );
 }
 
+function privateLanAccessMessage(status: LanAccessStatus): string {
+  if (status.unauthenticatedApi) {
+    return status.servesWebUi
+      ? "Private-network agents can call /v1 without authentication. Signing in to the Studio UI still requires the password or an API key."
+      : "Private-network agents can call /v1 without authentication. This launch does not serve the web UI.";
+  }
+  return status.servesWebUi
+    ? "Anyone on this network who has the password or an API key can sign in and run code on this machine."
+    : "This launch serves the API only, so devices on the network can call the API but not open the web UI.";
+}
+
 function LanUrlPanel({ status }: { status: LanAccessStatus | null }) {
   if (!status || status.urls.length === 0) {
     return null;
@@ -186,15 +204,64 @@ function LanUrlPanel({ status }: { status: LanAccessStatus | null }) {
           {status.publicUrls[0]} is a public internet address, so this reaches
           beyond your local network. Anyone who has the password or an API key
           can sign in and run code on this machine.
+          {status.unauthenticatedApi
+            ? " Unauthenticated API access stays disabled on public addresses."
+            : null}
         </span>
       ) : (
         <span className="text-xs text-muted-foreground leading-snug">
-          {status.servesWebUi
-            ? "Anyone on this network who has the password or an API key can sign in and run code on this machine."
-            : "This launch serves the API only, so devices on the network can call the API but not open the web UI."}
+          {privateLanAccessMessage(status)}
         </span>
       )}
     </div>
+  );
+}
+
+function UnauthenticatedApiWarning({ enabled }: { enabled: boolean }) {
+  if (!enabled) {
+    return null;
+  }
+  return (
+    <output className="mb-3 flex items-start gap-2 rounded-md border border-bypass/30 bg-bypass/10 px-3 py-3 text-xs leading-snug text-foreground">
+      <HugeiconsIcon
+        icon={Alert02Icon}
+        className="size-4 shrink-0 text-bypass"
+      />
+      <span>
+        Trusted networks only. While LAN access is online, anyone on the private
+        network can use loaded models and agent tools on this machine.
+      </span>
+    </output>
+  );
+}
+
+function UnauthenticatedApiControl({
+  status,
+  busy,
+  onCheckedChange,
+}: {
+  status: LanAccessStatus | null;
+  busy: LanAccessOperation | null;
+  onCheckedChange: (enabled: boolean) => void;
+}) {
+  const enabled = status?.unauthenticatedApi ?? false;
+  return (
+    <>
+      <SettingsRow
+        label="Allow API access without authentication"
+        description="Let agents on this Wi-Fi or wired network call the OpenAI-compatible /v1 API without a password or API key. The Studio UI and other routes stay protected."
+      >
+        <Switch
+          checked={enabled}
+          disabled={
+            busy !== null || lanAccessUnauthenticatedApiReadOnly(status)
+          }
+          onCheckedChange={onCheckedChange}
+          aria-label="Allow API access without authentication"
+        />
+      </SettingsRow>
+      <UnauthenticatedApiWarning enabled={enabled} />
+    </>
   );
 }
 
@@ -296,6 +363,8 @@ export function LanAccessSection() {
     );
   const setAutoStart = (enabled: boolean) =>
     perform("auto", () => updateLanAccessAutoStart(enabled));
+  const setUnauthenticatedApi = (enabled: boolean) =>
+    perform("authentication", () => updateLanAccessUnauthenticatedApi(enabled));
 
   const blockMessage = lanAccessBlockMessage(
     status?.blockReason ?? null,
@@ -370,6 +439,12 @@ export function LanAccessSection() {
             aria-label="Start automatically"
           />
         </SettingsRow>
+
+        <UnauthenticatedApiControl
+          status={status}
+          busy={busy}
+          onCheckedChange={setUnauthenticatedApi}
+        />
       </div>
     </section>
   );

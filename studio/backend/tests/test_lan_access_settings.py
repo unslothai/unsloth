@@ -18,13 +18,15 @@ from types import SimpleNamespace
 import pytest
 
 # module scope, not the fixture: postponed annotations resolve against module globals
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.security import HTTPAuthorizationCredentials
 
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 import lan_access  # noqa: E402
+import auth.authentication as authentication  # noqa: E402
 import routes.settings as routes  # noqa: E402
 import utils.host_policy as host_policy  # noqa: E402
 import utils.lan_access_settings as lan_settings  # noqa: E402
@@ -85,6 +87,24 @@ def test_auto_start_persistence_is_strict_and_fail_closed(monkeypatch, stored_se
     assert lan_settings.get_lan_access_auto_start() is False
 
 
+def test_unauthenticated_api_persistence_is_strict_and_fail_closed(
+    monkeypatch, stored_settings
+):
+    assert lan_settings.get_lan_access_unauthenticated_api() is False
+    stored_settings[lan_settings.LAN_ACCESS_UNAUTHENTICATED_API_KEY] = "yes"
+    assert lan_settings.get_lan_access_unauthenticated_api() is False
+    assert lan_settings.set_lan_access_unauthenticated_api(True) is True
+    assert lan_settings.get_lan_access_unauthenticated_api() is True
+    with pytest.raises(ValueError):
+        routes.LanAccessUnauthenticatedApiPayload(enabled = "true")
+    with pytest.raises(ValueError):
+        lan_settings.set_lan_access_unauthenticated_api("true")
+    monkeypatch.setattr(
+        studio_db, "get_app_setting", lambda *args: (_ for _ in ()).throw(OSError())
+    )
+    assert lan_settings.get_lan_access_unauthenticated_api() is False
+
+
 # ── launch policy ──
 
 
@@ -122,6 +142,7 @@ def test_a_loopback_launch_offers_a_startable_off_state():
     assert status["block_reason"] is None
     assert status["can_start"] is True and status["can_stop"] is False
     assert status["urls"] == []
+    assert status["unauthenticated_api"] is False
 
 
 @pytest.mark.parametrize(
@@ -899,6 +920,27 @@ def test_colab_auto_start_setting_is_read_only(monkeypatch):
     assert exc.value.status_code == 409
 
 
+def test_colab_unauthenticated_api_setting_is_read_only(monkeypatch):
+    monkeypatch.setattr(
+        routes, "set_lan_access_unauthenticated_api", lambda *_: pytest.fail("persisted")
+    )
+    request = SimpleNamespace(app = _app(lan_access_is_colab = True))
+    payload = routes.LanAccessUnauthenticatedApiPayload(enabled = True)
+    with pytest.raises(HTTPException) as exc:
+        routes.update_lan_access_unauthenticated_api(request, payload, "admin", None)
+    assert exc.value.status_code == 409
+
+
+def test_ui_session_can_update_unauthenticated_api_setting(stored_settings):
+    request = SimpleNamespace(app = _app())
+    payload = routes.LanAccessUnauthenticatedApiPayload(enabled = True)
+    response = routes.update_lan_access_unauthenticated_api(
+        request, payload, "admin", None
+    )
+    assert stored_settings[lan_settings.LAN_ACCESS_UNAUTHENTICATED_API_KEY] is True
+    assert response.unauthenticated_api is True
+
+
 def test_a_blocked_start_answers_409_rather_than_500(monkeypatch):
     monkeypatch.setattr(
         routes, "start_lan_access", lambda _app: (_ for _ in ()).throw(RuntimeError("colab"))
@@ -923,10 +965,214 @@ def test_management_rejects_api_keys():
             continue
         args = node.args.args + node.args.kwonlyargs
         gated[node.name] = any(a.arg == "_ui_session" for a in args)
-    assert len(gated) == 4, f"expected 4 lan-access handlers, found {sorted(gated)}"
+    assert len(gated) == 5, f"expected 5 lan-access handlers, found {sorted(gated)}"
     assert all(
         gated.values()
     ), f"ungated lan-access handlers: {sorted(k for k, v in gated.items() if not v)}"
+
+
+def _api_request(
+    path: str,
+    *,
+    server: tuple[str, int] = ("192.168.1.24", 8888),
+    authorization: str | None = None,
+    app = None,
+) -> Request:
+    headers = []
+    if authorization is not None:
+        headers.append((b"authorization", authorization.encode("latin-1")))
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode("ascii"),
+        "query_string": b"",
+        "headers": headers,
+        "client": ("192.168.1.90", 54321),
+        "server": server,
+    }
+    if app is not None:
+        scope["app"] = app
+    return Request(scope)
+
+
+def test_unauthenticated_openai_api_is_limited_to_the_live_lan_listener(
+    monkeypatch, stored_settings
+):
+    stored_settings[lan_settings.LAN_ACCESS_UNAUTHENTICATED_API_KEY] = True
+    monkeypatch.setattr(lan_access, "_bound_addresses", ("192.168.1.24",))
+
+    allowed = _api_request("/v1/models")
+    subject = asyncio.run(
+        authentication.get_current_subject(credentials = None, request = allowed)
+    )
+    assert subject == authentication.LAN_API_GUEST_SUBJECT
+    assert authentication.is_lan_api_guest(allowed) is True
+
+    for refused in (
+        _api_request("/api/inference/models"),
+        _api_request("/api/settings/lan-access"),
+        _api_request("/v1/models", server = ("127.0.0.1", 8888)),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(
+                authentication.get_current_subject(
+                    credentials = None, request = refused
+                )
+            )
+        assert exc.value.status_code == 403
+
+    monkeypatch.setattr(lan_access, "_bound_addresses", ("64.227.100.5",))
+    with pytest.raises(HTTPException) as public_listener:
+        asyncio.run(
+            authentication.get_current_subject(
+                credentials = None,
+                request = _api_request(
+                    "/v1/models", server = ("64.227.100.5", 8888)
+                ),
+            )
+        )
+    assert public_listener.value.status_code == 403
+
+    lan_access._bound_addresses = ()
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            authentication.get_current_subject(
+                credentials = None, request = _api_request("/v1/models")
+            )
+        )
+
+
+def test_unauthenticated_openai_api_fails_closed_and_never_ignores_credentials(
+    monkeypatch, stored_settings
+):
+    request = _api_request("/v1/models")
+    monkeypatch.setattr(lan_access, "_bound_addresses", ("192.168.1.24",))
+
+    with pytest.raises(HTTPException) as disabled:
+        asyncio.run(
+            authentication.get_current_subject(credentials = None, request = request)
+        )
+    assert disabled.value.status_code == 403
+
+    stored_settings[lan_settings.LAN_ACCESS_UNAUTHENTICATED_API_KEY] = True
+    malformed = _api_request("/v1/models", authorization = "Basic not-bearer")
+    with pytest.raises(HTTPException) as wrong_scheme:
+        asyncio.run(
+            authentication.get_current_subject(
+                credentials = None, request = malformed
+            )
+        )
+    assert wrong_scheme.value.status_code == 403
+
+    async def _reject(_credentials, *, allow_password_change):
+        assert allow_password_change is False
+        raise HTTPException(status_code = 401, detail = "Invalid or expired token")
+
+    monkeypatch.setattr(authentication, "_get_current_credential", _reject)
+    invalid = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = "bad")
+    with pytest.raises(HTTPException) as invalid_bearer:
+        asyncio.run(
+            authentication.get_current_subject(invalid, request = request)
+        )
+    assert invalid_bearer.value.status_code == 401
+    assert authentication.is_lan_api_guest(request) is False
+
+
+def test_unauthenticated_openai_api_accepts_a_private_launch_managed_bind(
+    stored_settings
+):
+    stored_settings[lan_settings.LAN_ACCESS_UNAUTHENTICATED_API_KEY] = True
+    app = _app(lan_access_launch_managed = True)
+    request = _api_request("/v1/models", app = app)
+
+    assert (
+        asyncio.run(
+            authentication.get_current_subject(credentials = None, request = request)
+        )
+        == authentication.LAN_API_GUEST_SUBJECT
+    )
+
+
+def test_unauthenticated_openai_api_accepts_a_private_wildcard_bind(
+    monkeypatch, stored_settings
+):
+    stored_settings[lan_settings.LAN_ACCESS_UNAUTHENTICATED_API_KEY] = True
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda: ["192.168.1.24"])
+    app = _app(
+        lan_access_launch_managed = True,
+        lan_access_wildcard_bind = True,
+        server_url = "http://64.227.100.5:8888",
+    )
+    request = _api_request("/v1/chat/completions", app = app)
+
+    assert (
+        asyncio.run(
+            authentication.get_current_subject(credentials = None, request = request)
+        )
+        == authentication.LAN_API_GUEST_SUBJECT
+    )
+
+
+def test_unauthenticated_openai_api_rejects_a_public_launch_managed_bind(
+    stored_settings
+):
+    stored_settings[lan_settings.LAN_ACCESS_UNAUTHENTICATED_API_KEY] = True
+    app = _app(
+        lan_access_launch_managed = True,
+        server_url = "http://64.227.100.5:8888",
+    )
+    request = _api_request(
+        "/v1/models", server = ("64.227.100.5", 8888), app = app
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            authentication.get_current_subject(credentials = None, request = request)
+        )
+    assert exc.value.status_code == 403
+
+
+def test_lan_guest_is_treated_as_external_api_traffic(
+    monkeypatch, stored_settings
+):
+    from routes import inference
+
+    stored_settings[lan_settings.LAN_ACCESS_UNAUTHENTICATED_API_KEY] = True
+    monkeypatch.setattr(lan_access, "_bound_addresses", ("192.168.1.24",))
+    request = _api_request("/v1/chat/completions")
+    asyncio.run(authentication.get_current_subject(credentials = None, request = request))
+
+    assert inference._request_has_api_key(request) is True
+    assert inference._request_used_api_key(request) is True
+    assert inference._request_is_internal_workflow(request) is False
+    assert inference._request_is_saved_credential_workflow(request) is False
+
+
+def test_fastapi_injects_the_lan_guest_and_keeps_dependency_overrides_working(
+    monkeypatch, stored_settings
+):
+    from fastapi.testclient import TestClient
+
+    stored_settings[lan_settings.LAN_ACCESS_UNAUTHENTICATED_API_KEY] = True
+    monkeypatch.setattr(lan_access, "_bound_addresses", ("testserver",))
+    app = FastAPI()
+
+    @app.get("/v1/probe")
+    @app.get("/api/probe")
+    def probe(subject: str = Depends(authentication.get_current_subject)):
+        return {"subject": subject}
+
+    with TestClient(app) as client:
+        guest = client.get("/v1/probe")
+        assert guest.status_code == 200
+        assert guest.json() == {"subject": authentication.LAN_API_GUEST_SUBJECT}
+        assert client.get("/api/probe").status_code == 403
+
+        app.dependency_overrides[authentication.get_current_subject] = lambda: "override"
+        assert client.get("/api/probe").json() == {"subject": "override"}
 
 
 def test_the_desktop_frontend_gate_admits_the_lan_listener():

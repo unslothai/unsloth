@@ -104,6 +104,7 @@ from utils.preview_sharing_settings import (
 from utils.lan_access_settings import (
     lan_access_status,
     set_lan_access_auto_start,
+    set_lan_access_unauthenticated_api,
     start_lan_access,
     stop_lan_access,
 )
@@ -2080,12 +2081,17 @@ class LanAccessAutoStartPayload(BaseModel):
     enabled: StrictBool
 
 
+class LanAccessUnauthenticatedApiPayload(BaseModel):
+    enabled: StrictBool
+
+
 class LanAccessResponse(BaseModel):
     state: Literal["off", "online", "error"]
     urls: list[str] = []
     public_urls: list[str] = []
     error: Optional[str] = None
     auto_start: bool
+    unauthenticated_api: bool = False
     managed_by: Optional[Literal["launch", "settings"]] = None
     can_start: bool
     can_stop: bool
@@ -2146,6 +2152,24 @@ def update_lan_access_auto_start(
     set_lan_access_auto_start(payload.enabled)
     logger.info(
         "settings.lan_access_auto_start_updated subject=%s enabled=%s",
+        current_subject,
+        payload.enabled,
+    )
+    return _lan_access_response(request)
+
+
+@router.put("/lan-access/unauthenticated-api", response_model = LanAccessResponse)
+def update_lan_access_unauthenticated_api(
+    request: Request,
+    payload: LanAccessUnauthenticatedApiPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    if bool(getattr(request.app.state, "lan_access_is_colab", False)):
+        raise HTTPException(status_code = 409, detail = "colab")
+    set_lan_access_unauthenticated_api(payload.enabled)
+    logger.info(
+        "settings.lan_access_unauthenticated_api_updated subject=%s enabled=%s",
         current_subject,
         payload.enabled,
     )

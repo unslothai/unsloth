@@ -11,6 +11,7 @@ import {
   lanAccessBlockMessage,
   lanAccessErrorMessage,
   lanAccessStopDisconnectsOrigin,
+  lanAccessUnauthenticatedApiReadOnly,
   normalizeLanAccessStatus,
 } from "../src/features/settings/api/lan-access-state.ts";
 
@@ -51,6 +52,8 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
       block_reason: null,
       // biome-ignore lint/style/useNamingConvention: API schema
       serves_web_ui: true,
+      // biome-ignore lint/style/useNamingConvention: API schema
+      unauthenticated_api: true,
     }),
   );
   assert.deepEqual(s, {
@@ -64,6 +67,7 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
     canStop: true,
     blockReason: null,
     servesWebUi: true,
+    unauthenticatedApi: true,
   });
 });
 
@@ -75,6 +79,7 @@ test("normalize defaults the optional fields an older backend may omit", () => {
   assert.equal(s.managedBy, null);
   assert.equal(s.blockReason, null);
   assert.equal(s.servesWebUi, true);
+  assert.equal(s.unauthenticatedApi, false);
 });
 
 test("urls survives a null or non-array payload without throwing", () => {
@@ -110,6 +115,29 @@ test("servesWebUi is only false for an explicit false", () => {
   );
 });
 
+test("unauthenticated API access fails closed for omitted or non-boolean values", () => {
+  for (const raw of [undefined, null, false, "true", 1]) {
+    assert.equal(
+      normalizeLanAccessStatus(
+        apiStatus({
+          // biome-ignore lint/style/useNamingConvention: API schema
+          unauthenticated_api: raw as never,
+        }),
+      ).unauthenticatedApi,
+      false,
+    );
+  }
+  assert.equal(
+    normalizeLanAccessStatus(
+      apiStatus({
+        // biome-ignore lint/style/useNamingConvention: API schema
+        unauthenticated_api: true,
+      }),
+    ).unauthenticatedApi,
+    true,
+  );
+});
+
 // ── lanAccessAutoStartReadOnly ──
 
 test("auto-start is read-only with no status, or under Colab", () => {
@@ -131,6 +159,23 @@ test("auto-start is read-only with no status, or under Colab", () => {
   );
   assert.equal(
     lanAccessAutoStartReadOnly(normalizeLanAccessStatus(apiStatus())),
+    false,
+  );
+});
+
+test("unauthenticated API access is read-only with no status, or under Colab", () => {
+  assert.equal(lanAccessUnauthenticatedApiReadOnly(null), true);
+  assert.equal(
+    lanAccessUnauthenticatedApiReadOnly(
+      normalizeLanAccessStatus(
+        // biome-ignore lint/style/useNamingConvention: API schema
+        apiStatus({ block_reason: "colab" }),
+      ),
+    ),
+    true,
+  );
+  assert.equal(
+    lanAccessUnauthenticatedApiReadOnly(normalizeLanAccessStatus(apiStatus())),
     false,
   );
 });

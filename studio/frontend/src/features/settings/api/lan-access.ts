@@ -34,3 +34,9 @@ export const updateLanAccessAutoStart = (enabled: boolean) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
   });
+export const updateLanAccessUnauthenticatedApi = (enabled: boolean) =>
+  requestLanAccess("/unauthenticated-api", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
