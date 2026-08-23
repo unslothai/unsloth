@@ -9,6 +9,17 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 FRONTEND = REPO / "studio/frontend/src"
+
+
+def flat(source):
+    """Source with every run of whitespace collapsed to one space.
+
+    An assertion that spells out where the formatter happened to wrap an
+    expression pins the formatter, not the contract, and goes red on a reflow
+    that changed no token. Compare through this instead when the property is
+    the expression rather than its layout.
+    """
+    return re.sub(r"\s+", " ", source)
 THREAD = (FRONTEND / "components/assistant-ui/thread.tsx").read_text(encoding = "utf-8")
 APP_SIDEBAR = (FRONTEND / "components/app-sidebar.tsx").read_text(encoding = "utf-8")
 CHAT_ADAPTER = (FRONTEND / "features/chat/api/chat-adapter.ts").read_text(encoding = "utf-8")
@@ -684,8 +695,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     assert "force_cancel_active:" in SHARED_COMPOSER
     assert (
-        "resolvedThreadId ===\n              useChatRuntimeStore.getState().activeThreadId"
-        in CHAT_ADAPTER
+        "resolvedThreadId === useChatRuntimeStore.getState().activeThreadId"
+        in flat(CHAT_ADAPTER)
     )
     assert (
         "findLatestUserAudioBase64(\n        survivingMessages,\n        !queuedRunSettings"
@@ -694,9 +705,9 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "if (audioBase64 && !queuedRunSettings)" in CHAT_ADAPTER
     assert ".setThreadContextUsage(usageThreadKey, usage)" in CHAT_ADAPTER
     assert (
-        "usageThreadIsVisible &&\n"
-        "            useChatRuntimeStore.getState().params.checkpoint === params.checkpoint"
-        in CHAT_ADAPTER
+        "usageThreadIsVisible && "
+        "useChatRuntimeStore.getState().params.checkpoint === params.checkpoint"
+        in flat(CHAT_ADAPTER)
     )
 
 

@@ -61,6 +61,8 @@ TAURI_CAPABILITIES = REPO / "studio/src-tauri/capabilities/default.json"
 CHAT_PAGE = FRONTEND / "features/chat/chat-page.tsx"
 TRAINING_CONFIG_ACTIONS = FRONTEND / "features/studio/wizard/config-actions.tsx"
 MARKDOWN_TEXT = FRONTEND / "components/assistant-ui/markdown-text.tsx"
+# The code fence filename map, which markdown-text imports rather than declares.
+CODE_FENCE_FILENAME = FRONTEND / "components/assistant-ui/streaming-code-policy.ts"
 IMAGE = FRONTEND / "components/assistant-ui/image.tsx"
 AUDIO_PLAYER = FRONTEND / "components/assistant-ui/audio-player.tsx"
 
@@ -290,8 +292,12 @@ def test_generated_download_buttons_use_the_native_save_boundary():
     assert "if (!isTauri)" in helper
     assert "downloadFile(yaml, filename" in training
     assert "downloadFile(text, filename" in markdown
-    assert "fallbackExt" in markdown
-    assert 'rust: "rs"' in markdown
+    # The extension map lives in the module markdown-text imports it from, so
+    # assert it there and assert that the save button still routes through it.
+    fence_filename = CODE_FENCE_FILENAME.read_text(encoding = "utf-8")
+    assert "fallbackExt" in fence_filename
+    assert 'rust: "rs"' in fence_filename
+    assert "downloadTextFile(getCodeFenceFilename(language), source)" in markdown
     assert "downloadUrl(part.image, filename)" in image
     assert "urlToBlob(part.image)" in image
     assert "downloadUrl(src, filename)" in audio

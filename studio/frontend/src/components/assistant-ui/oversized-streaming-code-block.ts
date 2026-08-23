@@ -30,7 +30,7 @@ type PreparedHighlight = {
 };
 
 const LINE_NUMBER_CLASS =
-  "block before:content-[counter(line)] before:inline-block before:[counter-increment:line] before:w-6 before:mr-4 before:text-[13px] before:text-right before:text-muted-foreground/50 before:font-mono before:select-none";
+  "block before:content-[counter(line)] before:inline-block before:[counter-increment:line] before:w-6 before:mr-4 before:text-ui-13 before:text-right before:text-muted-foreground/50 before:font-mono before:select-none";
 
 function parseRootStyle(rootStyle: HighlightResult["rootStyle"]): CSSProperties {
   if (!rootStyle) return {};
