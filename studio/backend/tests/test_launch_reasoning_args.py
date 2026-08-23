@@ -2,6 +2,8 @@ import struct
 import subprocess
 from unittest.mock import patch
 
+import pytest
+
 from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 
 
@@ -25,10 +27,12 @@ _REASONING_STYLE = "enable_thinking"
 _REASONING_CAPABILITY = "supports_reasoning_flag"
 _PROBE_INCONCLUSIVE_CAPABILITY = "mtp_probe_inconclusive"
 _REASONING_FLAG = "--reasoning"
+_LLAMA_REASONING_ENV = "LLAMA_ARG_REASONING"
 _NO_REASONING_PRESERVE_FLAG = "--no-reasoning-preserve"
 _CHAT_TEMPLATE_KWARGS_FLAG = "--chat-template-kwargs"
 _ENABLE_THINKING_KWARG = "enable_thinking"
 _REASONING_ON = "on"
+_REASONING_OFF = "off"
 _SERVER_COMMAND = "llama-server"
 _MODERN_HELP = "--reasoning VALUE\n"
 _MISSING_BINARY_FILENAME = "missing"
@@ -117,7 +121,29 @@ def _backend(style = _REASONING_STYLE, supports_preserve = False):
     backend._reasoning_style = style
     backend._architecture = None
     backend._supports_preserve_thinking = supports_preserve
+    backend._preserve_thinking_default = False
     return backend
+
+
+@pytest.mark.parametrize(
+    ("thinking_default", "reasoning_override"),
+    ((True, _REASONING_OFF), (False, _REASONING_ON)),
+)
+def test_modern_launch_honors_reasoning_env_override(
+    monkeypatch,
+    thinking_default,
+    reasoning_override,
+):
+    monkeypatch.setenv(_LLAMA_REASONING_ENV, reasoning_override)
+    command = [_SERVER_COMMAND]
+
+    _backend()._append_launch_reasoning_args(
+        command,
+        thinking_default,
+        {_REASONING_CAPABILITY: True},
+    )
+
+    assert _REASONING_FLAG not in command
 
 
 def test_launch_reasoning_args_use_modern_flag_with_old_binary_fallback(tmp_path, monkeypatch):
