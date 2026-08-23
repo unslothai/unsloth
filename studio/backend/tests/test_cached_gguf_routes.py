@@ -5864,7 +5864,7 @@ def test_a_speech_arch_is_the_same_answer_in_every_layer():
     listing classifier, the chat refusal and the media preflight now read one definition."""
     from core.inference.diffusion_compat import _SPEECH_GGUF_ARCHS as compat_archs
     from core.inference.llama_cpp import LlamaCppBackend
-    from utils.models.gguf_metadata import SPEECH_GGUF_ARCHS
+    from utils.gguf_archs import SPEECH_GGUF_ARCHS
 
     assert models_route._SPEECH_GGUF_ARCHS is SPEECH_GGUF_ARCHS
     assert compat_archs is SPEECH_GGUF_ARCHS

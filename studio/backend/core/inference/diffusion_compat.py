@@ -411,7 +411,7 @@ def flux2_pick_mismatch(
 # GGUF ``general.architecture`` values nothing in Studio can decode. Beside the FLUX.2 check
 # because both ask whether the pick is loadable, off the same prefix. The set itself lives with
 # the header reader, shared with the chat gate and the listing classifier so they cannot drift.
-from utils.models.gguf_metadata import (  # noqa: E402 -- beside the constant it defines
+from utils.gguf_archs import (  # noqa: E402 -- beside the cache it keys
     SPEECH_GGUF_ARCHS as _SPEECH_GGUF_ARCHS,
     is_speech_gguf_architecture,
 )

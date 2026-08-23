@@ -1698,8 +1698,11 @@ def test_the_chat_backend_does_not_import_pyyaml_to_learn_the_speech_verdict():
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
 
-    # And the re-export really is the same object, so no caller sees a second copy.
+    # And nothing re-exports them from inside the heavy package: a re-export there would let
+    # an importer reach them by the very path this test exists to keep out of the chain, and
+    # scripts/verify_import_hoist.py blocks one outside a package __init__ anyway.
     gguf_metadata = importlib.import_module("utils.models.gguf_metadata")
-    leaf = importlib.import_module("utils.gguf_archs")
-    assert gguf_metadata.SPEECH_GGUF_ARCHS is leaf.SPEECH_GGUF_ARCHS
-    assert gguf_metadata.is_speech_gguf_architecture is leaf.is_speech_gguf_architecture
+    for name in ("SPEECH_GGUF_ARCHS", "is_speech_gguf_architecture"):
+        assert not hasattr(gguf_metadata, name), (
+            f"{name} must be imported from utils.gguf_archs, not through utils.models"
+        )

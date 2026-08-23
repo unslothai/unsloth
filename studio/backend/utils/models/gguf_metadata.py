@@ -575,11 +575,7 @@ def pairing_score(
 
 # ── speech / codec architectures ────────────────────────────────────────────
 
-# Defined in the leaf module beside this package, not here: ``utils.models.__init__`` pulls in
-# ``model_config`` and therefore PyYAML, and ``core.inference.llama_cpp`` needs this verdict at
-# import time. Re-exported so every existing caller keeps its import and there is still one
-# definition.
-from utils.gguf_archs import (  # noqa: E402 -- the section it belongs to, not the import block
-    SPEECH_GGUF_ARCHS,
-    is_speech_gguf_architecture,
-)
+# Not defined here, and deliberately not re-exported from here either: they live in the leaf
+# module ``utils.gguf_archs``, because importing anything from THIS package runs
+# ``utils.models.__init__``, which pulls in ``model_config`` and therefore PyYAML, and
+# ``core.inference.llama_cpp`` needs the verdict at import time. Import it from there.

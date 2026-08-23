@@ -220,7 +220,7 @@ from models.responses import (
     EmbeddingCheckResponse,
 )
 from utils.paths.path_utils import is_appledouble_metadata
-from utils.models.gguf_metadata import (
+from utils.gguf_archs import (
     SPEECH_GGUF_ARCHS,
     is_speech_gguf_architecture,
 )
