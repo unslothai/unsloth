@@ -660,6 +660,46 @@ def one_corpus(paths: list[Path], label: str) -> set[str]:
     return corpora
 
 
+def cross_side_mismatch(
+    tiers: set[str], null_tiers: set[str], corpora: set[str], null_corpora: set[str]
+) -> str:
+    """Why the null control cannot be applied to this payload, or "" if it can.
+
+    `one_tier` and `one_corpus` each refuse a pool INSIDE one side. This refuses a mismatch ACROSS
+    the two sides, which is the same harm arriving by a different door: both sides can be perfectly
+    single-tier and single-corpus and still have measured different things.
+
+    The tier axis used to print a warning and then score anyway, which is the worst of the two
+    options. The warning's own words were that the set does not transfer, and a set that does not
+    transfer is not a weaker excuse than a real one, it is an arbitrary one. `fast` and `standard`
+    both walk 100K, so a race measured on the fast film lands on exactly the rung key a standard
+    film's regression would be scored under, prints beneath "expected to vary", and the command
+    exits 0.
+
+    The corpus axis has never been checked across sides at all, and it is the more likely of the
+    two to happen quietly: a corpus revision lands, the result is re-recorded against it, and an
+    older null control is still sitting in the directory the workflow globs. Which actions race is
+    a property of the thread the film drove, so that null's set describes a thread the payload
+    never rendered.
+
+    An empty set on either side means the recorder predates that field; there is nothing to
+    disagree about, so it is not refused. The caller exits 2 on a non-empty return: this is the
+    tool declining to answer, not a parity failure.
+    """
+    for axis, mine, theirs in (
+        ("tier", tiers, null_tiers),
+        ("corpus", corpora, null_corpora),
+    ):
+        if mine and theirs and mine != theirs:
+            return (
+                f"the null control was recorded at {axis} {sorted(theirs)} and this payload at "
+                f"{sorted(mine)}. Which actions are unstable depends on the film's slot spacing "
+                f"and on the thread the film drove, so this unstable set does not transfer. "
+                f"Re-record the null control alongside the payload."
+            )
+    return ""
+
+
 def shards_of(pattern: str) -> list[Path]:
     root = Path(pattern).parent if "/" in pattern else Path(".")
     stem = Path(pattern).name
@@ -760,7 +800,7 @@ def main(argv: list[str] | None = None) -> int:
     for pattern in args.null:
         null_paths.extend(shards_of(pattern))
     null_tiers = one_tier(null_paths, "null control")
-    one_corpus(null_paths, "null control")
+    null_corpora = one_corpus(null_paths, "null control")
     unstable, derived, checks = unstable_set(null_paths or None)
     if derived:
         print(f"UNSTABLE SET DERIVED from {len(null_paths)} null-control shard(s)")
@@ -786,13 +826,12 @@ def main(argv: list[str] | None = None) -> int:
             worst = max(worst, 2)
             continue
         tiers = one_tier(paths, "payload")
-        one_corpus(paths, "payload")
-        if null_tiers and tiers and null_tiers != tiers:
-            print(
-                f"\n  WARNING: the null control was recorded at tier {sorted(null_tiers)} and "
-                f"this payload at {sorted(tiers)}. Which actions are unstable depends on the "
-                f"film's slot spacing, so this unstable set does not transfer."
-            )
+        corpora = one_corpus(paths, "payload")
+        mismatch = cross_side_mismatch(tiers, null_tiers, corpora, null_corpora)
+        if mismatch:
+            print(f"\n  REFUSING to score {pattern}: {mismatch}")
+            worst = max(worst, 2)
+            continue
         worst = max(
             worst,
             report(paths, f"UI PARITY: {pattern}", unstable, args.min_reps, args.min_compared),

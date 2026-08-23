@@ -60,9 +60,18 @@ def action_row(cid: str, action: str, digest: str | None) -> dict:
     }
 
 
-def null_run(tmp_path: Path, name: str, cells: list[tuple[str, str, str, str | None, str | None]]):
+def null_run(
+    tmp_path: Path,
+    name: str,
+    cells: list[tuple[str, str, str, str | None, str | None]],
+    tier: str = "fast",
+    corpus: str | None = None,
+):
     """`cells` is (rung, rep, action, base digest, treatment digest)."""
-    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    meta = {"row_type": "run_meta", "tier": tier}
+    if corpus is not None:
+        meta["corpus_hash"] = corpus
+    rows: list[dict] = [meta]
     for rung, rep, action, base, treat in cells:
         rows.append(action_row(f"{rung}.base.{rep}", action, base))
         rows.append(action_row(f"{rung}.treatment.{rep}", action, treat))
@@ -485,3 +494,43 @@ def test_the_audit_still_fails_on_an_action_the_result_did_compare(tmp_path):
     scope = U.compared_actions([result])
     assert "thread_reopen" in scope
     assert U.audit_null([null], frozenset(), scope)[0] == 1
+
+
+# ── a null control from another film or another thread is not an excuse ──
+
+
+def test_a_null_from_another_tier_is_refused_rather_than_applied(tmp_path):
+    # fast and standard both walk 100K, so a fast-film race lands on exactly the rung key a
+    # standard-film regression would be scored under. The old code warned and scored anyway.
+    assert U.cross_side_mismatch({"standard"}, {"fast"}, {"c1"}, {"c1"}).startswith(
+        "the null control was recorded at tier"
+    )
+
+
+def test_a_null_from_another_corpus_is_refused_rather_than_applied(tmp_path):
+    # The likelier of the two in practice: a corpus revision lands, the result is re-recorded,
+    # and last week's null control is still sitting in the directory the workflow globs.
+    got = U.cross_side_mismatch({"fast"}, {"fast"}, {"c2"}, {"c1"})
+    assert got.startswith("the null control was recorded at corpus")
+
+
+def test_matching_sides_and_unrecorded_sides_are_both_allowed():
+    # Equal is comparable, and an empty set means the recorder predates the field, so there is
+    # nothing to disagree about. Refusing those would reject every legacy payload.
+    assert U.cross_side_mismatch({"fast"}, {"fast"}, {"c1"}, {"c1"}) == ""
+    assert U.cross_side_mismatch({"fast"}, set(), {"c1"}, set()) == ""
+    assert U.cross_side_mismatch(set(), {"fast"}, set(), {"c1"}) == ""
+
+
+def test_the_refusal_exits_two_not_one_through_the_cli(tmp_path, monkeypatch, capsys):
+    # Exit 2 is the tool declining to answer. Exit 1 would read as a parity failure and send
+    # somebody hunting for a UI change that was never measured.
+    null = null_run(tmp_path, "tier_null", two_reps("settings", "SAME", "SAME"), tier = "fast")
+    result = null_run(tmp_path, "tier_res", two_reps("settings", "SAME", "SAME"), tier = "standard")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ui_parity", "--min-reps", "2", "--null", str(null.parent), str(result.parent)],
+    )
+    assert U.main() == 2
+    assert "REFUSING to score" in capsys.readouterr().out

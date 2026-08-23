@@ -89,6 +89,16 @@ on:
       - 'studio/backend/routes/models.py'
       - 'studio/backend/routes/settings.py'
       - 'studio/backend/models/models.py'
+      # Every message the digest reads is put there by runtime/seeder.py through
+      # POST/PUT /api/chat/threads, and read back by the reopen action through
+      # the same file. So its message serialisation IS the measured surface: a
+      # change to how a stored message comes back changes what the transcript
+      # renders, on a PR that touches no frontend file at all. It is also the
+      # one route that can empty the surface entirely rather than alter it, and
+      # a job whose scenes render nothing is the easiest possible false green,
+      # which is what --min-compared exists to catch after the fact. Better to
+      # run the gate.
+      - 'studio/backend/routes/chat_history.py'
       # Decides WHICH dist is served and rewrites the HTML on the way out.
       - 'studio/backend/main.py'
       - 'studio/backend/run.py'
