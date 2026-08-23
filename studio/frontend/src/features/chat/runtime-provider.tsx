@@ -1596,6 +1596,11 @@ function createRuntimeHook(modelType: ModelType, pairId?: string) {
   };
 }
 
+// Outstanding saved-thread switches worth remembering. Reaching this needs that many
+// clicks on saved chats with not one switch settling, which is not a real session; the cap
+// is only here so a never-settling switch cannot grow the list for the life of the tab.
+const MAX_PENDING_SAVED_THREAD_SWITCHES = 16;
+
 type NewThreadSwitchState = {
   activeNonce: string | null;
   hasSwitched: boolean;
@@ -1603,11 +1608,15 @@ type NewThreadSwitchState = {
   // attempt: leaving for a saved chat and coming back releases it, so two switches for
   // the SAME nonce can be in flight and the older must not speak for the newer.
   attempt: number;
-  // The saved thread a switch is currently trying to open, so a nonce view can recognise
-  // that exact id landing after the route moved on. Named rather than inferred from the
+  // Every saved thread a switch is currently trying to open, so a nonce view can recognise
+  // any of those ids landing after the route moved on. Named rather than inferred from the
   // id's shape: a shape test cannot tell a stale arrival from the thread a fresh switch
   // just opened, and correcting the latter switches for ever.
-  pendingSavedThreadId: string | null;
+  //
+  // A list, not the most recent id: opening two saved chats faster than either settles
+  // leaves two switches out, and whichever lands second would find a claim already spent
+  // by the first and be left as the main thread under a project composer.
+  pendingSavedThreadIds: string[];
 };
 
 function ThreadAutoSwitch({
@@ -1641,7 +1650,16 @@ function ThreadAutoSwitch({
     // tell they have been superseded.
     const attemptAtStart = newThreadSwitchStateRef.current.attempt;
     if (mainThreadId !== threadId) {
-      newThreadSwitchStateRef.current.pendingSavedThreadId = threadId;
+      const claims = newThreadSwitchStateRef.current.pendingSavedThreadIds;
+      if (!claims.includes(threadId)) {
+        claims.push(threadId);
+        // Bounded because a claim is only spent when its id arrives, and a switch that
+        // never settles never spends one. Oldest first: the longest-outstanding switch is
+        // the least likely to still be able to take a view.
+        if (claims.length > MAX_PENDING_SAVED_THREAD_SWITCHES) {
+          claims.splice(0, claims.length - MAX_PENDING_SAVED_THREAD_SWITCHES);
+        }
+      }
       // Saved chats keep running in the background, but a temporary chat is
       // unreachable after this switch and must not retain an active queue.
       requestTemporaryPromptQueueStop();
@@ -1678,8 +1696,10 @@ function ThreadAutoSwitch({
     // The switch landed while this view is still mounted, so it was not stale and the
     // nonce view has nothing to correct. Released here rather than in the promise: this
     // effect only runs while the saved chat is on screen, which is exactly the condition.
-    if (newThreadSwitchStateRef.current.pendingSavedThreadId === threadId) {
-      newThreadSwitchStateRef.current.pendingSavedThreadId = null;
+    const claims = newThreadSwitchStateRef.current.pendingSavedThreadIds;
+    const claimed = claims.indexOf(threadId);
+    if (claimed !== -1) {
+      claims.splice(claimed, 1);
     }
     if (!syncActiveThreadId) {
       return;
@@ -1803,10 +1823,11 @@ function ThreadNewChatSwitch({
     if (switchState.activeNonce !== nonce) {
       return;
     }
-    if (!mainThreadId || switchState.pendingSavedThreadId !== mainThreadId) {
+    const claimed = mainThreadId ? switchState.pendingSavedThreadIds.indexOf(mainThreadId) : -1;
+    if (claimed === -1) {
       return;
     }
-    switchState.pendingSavedThreadId = null;
+    switchState.pendingSavedThreadIds.splice(claimed, 1);
     void Promise.resolve(aui.threads().switchToNewThread()).catch(() => undefined);
   }, [aui, isLoading, mainThreadId, newThreadSwitchStateRef, nonce, paused]);
 
@@ -2382,7 +2403,7 @@ export function ChatRuntimeProvider({
     activeNonce: null,
     hasSwitched: false,
     attempt: 0,
-    pendingSavedThreadId: null,
+    pendingSavedThreadIds: [],
   });
   useEffect(() => {
     if (!initialThreadId && !newThreadNonce) {

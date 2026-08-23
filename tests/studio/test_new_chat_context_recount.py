@@ -422,7 +422,7 @@ const renderedDeps: any[] = [];
 const newThreadSwitchStateRef: any = {
   // attempt mirrors the real ref: the effect reads `attempt + 1`, so omitting it makes
   // every attempt NaN and NaN !== NaN skips the deferred clear the switch armed.
-  current: { activeNonce: null, hasSwitched: false, attempt: 0 },
+  current: { activeNonce: null, hasSwitched: false, attempt: 0, pendingSavedThreadIds: [] },
 };
 
 export function leaveNewChatForSavedThread(): void {

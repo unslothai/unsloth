@@ -187,7 +187,7 @@ test("a staged attachment does not follow the user into the next view", () => {
   );
   assert.match(
     runtimeProvider,
-    /const newThreadSwitchStateRef = useRef<NewThreadSwitchState>\(\{\s*activeNonce: null,\s*hasSwitched: false,\s*attempt: 0,\s*pendingSavedThreadId: null,\s*\}\);/,
+    /const newThreadSwitchStateRef = useRef<NewThreadSwitchState>\(\{\s*activeNonce: null,\s*hasSwitched: false,\s*attempt: 0,\s*pendingSavedThreadIds: \[\],\s*\}\);/,
   );
   assert.match(
     runtimeProvider,

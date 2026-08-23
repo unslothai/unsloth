@@ -117,6 +117,14 @@ def _provider_ref_initial_value() -> str:
     return match.group(1)
 
 
+def _pending_switch_cap() -> str:
+    """The bound on outstanding saved-thread claims, verbatim, so the emulator enforces the
+    number the source actually uses rather than a copy that can drift."""
+    match = re.search(r"^const MAX_PENDING_SAVED_THREAD_SWITCHES = \d+;$", read(PROVIDER), re.M)
+    assert match, "the pending-switch cap is no longer a module-level const"
+    return match.group(0)
+
+
 def _provider_jsx() -> str:
     """The provider subtree that wires the two children, for the wiring guard."""
     return slice_between(
@@ -341,6 +349,8 @@ function replayEffects(effects: any[], scope: any, memo: any[]): void {
   });
 }
 
+__PENDING_SWITCH_CAP__
+
 const newThreadSwitchStateRef: any = { current: __REF_INITIAL_VALUE__ };
 
 export function switchState(): any {
@@ -486,7 +496,8 @@ def _rendered_effects(effects: list[tuple[list[str], str]]) -> str:
 def _harness_source() -> str:
     prelude = HARNESS_PRELUDE.replace("__SET_ACTIVE_THREAD_ID__", _set_active_thread_id_reducer())
     render = (
-        HARNESS_RENDER.replace("__REF_INITIAL_VALUE__", _provider_ref_initial_value())
+        HARNESS_RENDER.replace("__PENDING_SWITCH_CAP__", _pending_switch_cap())
+        .replace("__REF_INITIAL_VALUE__", _provider_ref_initial_value())
         .replace(
             "__PROVIDER_EFFECTS__",
             _rendered_effects(_effects(_provider_switch_state_source(), "ChatRuntimeProvider")),
@@ -611,7 +622,7 @@ def test_a_first_new_chat_switches_once_and_clears_nothing():
         "activeNonce": "n1",
         "hasSwitched": True,
         "attempt": 1,
-        "pendingSavedThreadId": None,
+        "pendingSavedThreadIds": [],
     }
     assert out["unhandled"] == 0
 
@@ -739,7 +750,7 @@ def test_resuming_at_the_same_nonce_does_not_switch_again():
         "activeNonce": "n1",
         "hasSwitched": True,
         "attempt": 1,
-        "pendingSavedThreadId": None,
+        "pendingSavedThreadIds": [],
     }
     assert out["activeThreadId"] is None
 
@@ -836,7 +847,7 @@ def test_an_implicit_new_chat_defers_the_clear_until_the_new_thread_arrives():
         "activeNonce": None,
         "hasSwitched": True,
         "attempt": 0,
-        "pendingSavedThreadId": None,
+        "pendingSavedThreadIds": [],
     }
     assert out["midSwitch"]["switched"] == 1
     assert out["midSwitch"]["cleared"] == 0, "the deferred clear must wait for the switch"
@@ -916,7 +927,7 @@ def test_an_attachment_remove_that_fails_is_not_an_unhandled_rejection(setup, pa
         "activeNonce": nonce,
         "hasSwitched": True,
         "attempt": attempts,
-        "pendingSavedThreadId": None,
+        "pendingSavedThreadIds": [],
     }
     assert out["activeThreadId"] is None, "and the switch below it still ran"
 
@@ -949,7 +960,7 @@ def test_opening_a_saved_thread_releases_the_nonce_so_the_same_one_switches_agai
         "activeNonce": None,
         "hasSwitched": True,
         "attempt": 1,
-        "pendingSavedThreadId": None,
+        "pendingSavedThreadIds": [],
     }
     assert out["opened"]["switchedTo"] == ["thread-a"]
     assert out["switched"] == 2, "back to the same nonce must restore the new thread"
@@ -957,7 +968,7 @@ def test_opening_a_saved_thread_releases_the_nonce_so_the_same_one_switches_agai
         "activeNonce": "n1",
         "hasSwitched": True,
         "attempt": 2,
-        "pendingSavedThreadId": None,
+        "pendingSavedThreadIds": [],
     }
 
 
@@ -1025,7 +1036,7 @@ def test_a_saved_thread_that_is_already_the_main_one_still_releases_the_nonce():
         "activeNonce": None,
         "hasSwitched": True,
         "attempt": 1,
-        "pendingSavedThreadId": None,
+        "pendingSavedThreadIds": [],
     }, "the nonce reset must not sit behind the mainThreadId guard"
     assert out["switched"] == 2, "the returning New Chat must still open a fresh thread"
     assert out["cleared"] == 1
@@ -1083,7 +1094,7 @@ def test_a_deferred_clear_for_a_nonce_that_moved_on_is_dropped():
         "activeNonce": "n2",
         "hasSwitched": True,
         "attempt": 2,
-        "pendingSavedThreadId": None,
+        "pendingSavedThreadIds": [],
     }
     assert out["pending"] == 0, "no switch callback may be left waiting"
     assert out["unhandled"] == 0
@@ -1129,7 +1140,7 @@ def test_three_nonces_faster_than_the_switch_resolves_clear_once_each_at_most():
         "activeNonce": "n3",
         "hasSwitched": True,
         "attempt": 3,
-        "pendingSavedThreadId": None,
+        "pendingSavedThreadIds": [],
     }
     assert out["pending"] == 0
 
@@ -1186,7 +1197,7 @@ def test_a_rejected_switch_releases_the_nonce_so_the_same_one_can_be_retried():
         "activeNonce": None,
         "hasSwitched": True,
         "attempt": 2,
-        "pendingSavedThreadId": None,
+        "pendingSavedThreadIds": [],
     }, "a nonce whose switch failed must not stay recorded as the live one"
     assert state["activeThreadId"] is None
     assert state["mainThreadId"] == "local-1", "the user is still on the previous thread"
@@ -1203,7 +1214,7 @@ def test_a_rejected_switch_releases_the_nonce_so_the_same_one_can_be_retried():
         "activeNonce": "n2",
         "hasSwitched": True,
         "attempt": 3,
-        "pendingSavedThreadId": None,
+        "pendingSavedThreadIds": [],
     }
     assert out["mainThreadId"] == "local-3", "and the retry is the thread the user ends on"
     assert out["unhandled"] == 0
@@ -1250,7 +1261,7 @@ def test_a_rejected_switch_on_the_deferred_path_keeps_the_draft_and_releases_the
         "activeNonce": None,
         "hasSwitched": True,
         "attempt": 1,
-        "pendingSavedThreadId": None,
+        "pendingSavedThreadIds": [],
     }, "the nonce is released on the deferred path too"
     assert out["switched"] == 2, "the same nonce is retried once the effect re-runs"
     assert out["cleared"] == 1, "and the retry that does open a thread clears as it should"
@@ -1258,7 +1269,7 @@ def test_a_rejected_switch_on_the_deferred_path_keeps_the_draft_and_releases_the
         "activeNonce": "n1",
         "hasSwitched": True,
         "attempt": 2,
-        "pendingSavedThreadId": None,
+        "pendingSavedThreadIds": [],
     }
     assert out["unhandled"] == 0
 
@@ -1301,14 +1312,14 @@ def test_a_late_rejection_cannot_disturb_a_nonce_that_has_since_moved_on():
         "activeNonce": "n2",
         "hasSwitched": True,
         "attempt": 2,
-        "pendingSavedThreadId": None,
+        "pendingSavedThreadIds": [],
     }
     assert out["beforeFailure"]["switched"] == 2
     assert out["state"] == {
         "activeNonce": "n2",
         "hasSwitched": True,
         "attempt": 2,
-        "pendingSavedThreadId": None,
+        "pendingSavedThreadIds": [],
     }, "n1's late failure must not release the nonce n2 opened a thread for"
     assert out["switched"] == 2, "and must not trigger a switch of its own"
     assert out["pending"] == 0
@@ -1394,7 +1405,7 @@ def test_a_late_failure_cannot_release_a_nonce_a_newer_attempt_owns():
             "activeNonce": "n1",
             "hasSwitched": True,
             "attempt": 2,
-            "pendingSavedThreadId": None,
+            "pendingSavedThreadIds": [],
         },
         "switched": 2,
         "mainThreadId": "local-2",
@@ -1403,7 +1414,7 @@ def test_a_late_failure_cannot_release_a_nonce_a_newer_attempt_owns():
         "activeNonce": "n1",
         "hasSwitched": True,
         "attempt": 2,
-        "pendingSavedThreadId": None,
+        "pendingSavedThreadIds": [],
     }, "attempt 1's failure must not release a nonce attempt 2 owns"
     assert (
         out["afterFailure"]["mainThreadId"] == "local-2"
@@ -1414,7 +1425,7 @@ def test_a_late_failure_cannot_release_a_nonce_a_newer_attempt_owns():
             "activeNonce": "n1",
             "hasSwitched": True,
             "attempt": 2,
-            "pendingSavedThreadId": None,
+            "pendingSavedThreadIds": [],
         },
         "switched": 2,
         "mainThreadId": "local-2",
@@ -1424,7 +1435,7 @@ def test_a_late_failure_cannot_release_a_nonce_a_newer_attempt_owns():
             "activeNonce": None,
             "hasSwitched": True,
             "attempt": 3,
-            "pendingSavedThreadId": None,
+            "pendingSavedThreadIds": [],
         },
         "switched": 3,
     }, "with nothing overlapping, a failed attempt must still release its nonce"
@@ -1485,7 +1496,7 @@ def test_a_late_deferred_clear_cannot_wipe_an_attachment_a_newer_attempt_staged(
         "activeNonce": "n1",
         "hasSwitched": True,
         "attempt": 2,
-        "pendingSavedThreadId": None,
+        "pendingSavedThreadIds": [],
     }, "the detour must leave the nonce released so this switch arms the deferred clear"
     assert (
         out["beforeLate"]["state"]["attempt"] == 3
@@ -1528,7 +1539,7 @@ def test_every_switch_the_effect_starts_bumps_the_attempt_exactly_once():
         "activeNonce": "n3",
         "hasSwitched": True,
         "attempt": 4,
-        "pendingSavedThreadId": None,
+        "pendingSavedThreadIds": [],
     }
 
 
@@ -1642,7 +1653,7 @@ def test_a_backgrounded_saved_thread_switch_stops_nothing_and_pays_on_resume():
         "activeNonce": None,
         "hasSwitched": False,
         "attempt": 0,
-        "pendingSavedThreadId": None,
+        "pendingSavedThreadIds": [],
     }, "the nonce reset is deferred with the rest of the effect"
 
 
@@ -1737,7 +1748,7 @@ def test_a_hundred_and_twenty_view_switches_stay_bounded():
         "activeNonce": None,
         "hasSwitched": True,
         "attempt": 60,
-        "pendingSavedThreadId": None,
+        "pendingSavedThreadIds": [],
     }
     assert out["unhandled"] == 0
 
@@ -1819,7 +1830,7 @@ def test_a_saved_switch_that_lands_after_the_route_moved_does_not_take_the_view(
         "landing pointed at the saved chat, or the next message goes to the wrong thread"
     )
     assert out["state"]["activeNonce"] == "n1", "and the landing still owns the nonce"
-    assert out["state"]["pendingSavedThreadId"] is None, "the claim is spent, not left armed"
+    assert out["state"]["pendingSavedThreadIds"] == [], "the claim is spent, not left armed"
     assert out["unhandled"] == 0
 
 
@@ -1841,7 +1852,7 @@ def test_a_saved_switch_that_lands_in_time_is_left_alone():
     )
     assert out["mainThreadId"] == "thread-a", "the saved chat is the one on screen"
     assert out["switchedToNew"] == 1, "only the landing's own switch, no correction"
-    assert out["state"]["pendingSavedThreadId"] is None, "the claim is released on arrival"
+    assert out["state"]["pendingSavedThreadIds"] == [], "the claim is released on arrival"
     assert out["unhandled"] == 0
 
 
@@ -1881,4 +1892,97 @@ def test_a_saved_switch_that_fails_late_does_not_detach_the_view_that_replaced_i
     assert (
         out["activeThreadId"] == "owned-by-the-landing"
     ), "a superseded failure must not clear an active id a newer view owns"
+    assert out["unhandled"] == 0
+
+
+def test_two_saved_switches_in_flight_are_both_corrected():
+    """One scalar claim cannot speak for two outstanding switches.
+
+    Open A, open B before A settles, then return to the project landing. If B lands first
+    the correction spends the claim, and A landing afterwards finds nothing recorded: the
+    nonce view leaves assistant-ui pointed at A and the next project-composer message is
+    appended to a chat the user is not looking at. Every switch this view starts has to be
+    tracked, not just the most recent one.
+    """
+    out = _run(
+        "renderProvider, renderSettled, switchState, world",
+        """
+        await renderSettled({ newThreadNonce: "n1" });
+
+        // A opens first and is held.
+        let releaseA: any;
+        world.switchToThreadGate = new Promise((resolve) => { releaseA = resolve; });
+        renderProvider({ initialThreadId: "thread-a" });
+        await tick();
+
+        // B opens before A settles, on its own gate.
+        let releaseB: any;
+        world.switchToThreadGate = new Promise((resolve) => { releaseB = resolve; });
+        renderProvider({ initialThreadId: "thread-b" });
+        await tick();
+
+        // Back to the project landing while both are still out.
+        world.switchToThreadGate = null;
+        renderProvider({ newThreadNonce: "n1" });
+        await tick();
+
+        // B lands first and is corrected.
+        releaseB();
+        await tick();
+        await tick();
+        renderProvider({ newThreadNonce: "n1" });
+        await tick();
+        await tick();
+        const afterB = world.mainThreadId;
+
+        // Then A lands, with the claim already spent on B.
+        releaseA();
+        await tick();
+        await tick();
+        renderProvider({ newThreadNonce: "n1" });
+        await tick();
+        await tick();
+
+        console.log(JSON.stringify({
+          afterB,
+          mainThreadId: world.mainThreadId,
+          switchedTo: world.switchedToThread,
+          state: switchState(),
+          unhandled: unhandled.length,
+        }));
+        """,
+    )
+    assert out["switchedTo"] == ["thread-a", "thread-b"], "both saved switches really started"
+    assert out["afterB"] != "thread-b", "the first arrival is corrected, as before"
+    assert out["mainThreadId"] != "thread-a", (
+        "the second stale arrival must be corrected too, or the visible project landing is "
+        "left pointed at a saved chat and the next message goes to it"
+    )
+    assert out["state"]["activeNonce"] == "n1", "and the landing still owns the nonce"
+    assert out["unhandled"] == 0
+
+
+def test_outstanding_claims_stay_bounded():
+    """A claim is only spent when its id arrives, so a switch that never settles never
+    spends one. Nothing here is a real session -- it takes that many saved-chat clicks with
+    not one switch resolving -- but the list must not grow for the life of the tab."""
+    out = _run(
+        "renderProvider, renderSettled, switchState, world",
+        """
+        await renderSettled({ newThreadNonce: "n1" });
+        world.switchToThreadGate = new Promise(() => {});
+        for (let i = 0; i < 40; i += 1) {
+          renderProvider({ initialThreadId: `thread-${i}` });
+          await tick();
+        }
+        console.log(JSON.stringify({
+          claims: switchState().pendingSavedThreadIds,
+          started: world.switchedToThread.length,
+          unhandled: unhandled.length,
+        }));
+        """,
+    )
+    assert out["started"] == 40, "every switch really was started"
+    assert len(out["claims"]) == 16, "the claim list is capped"
+    assert out["claims"][-1] == "thread-39", "and it keeps the newest, dropping the oldest"
     assert out["unhandled"] == 0
