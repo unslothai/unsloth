@@ -99,15 +99,23 @@ def _page(
     overlay: str = "",
 ) -> str:
     """A thread, a composer, and one composer control. `statuses` is per assistant message, and
-    None renames the hook the probe walks -- which is what going blind looks like."""
+    None renames the hook the probe walks -- which is what going blind looks like.
+
+    THE HOOK IS ON ASSISTANT ROWS ONLY, and the rename is too, because that is where it lives:
+    only assistant parts are rendered through `MarkdownText`, which is the single component that
+    emits `<div data-status={status.type}>` (thread.tsx `ASSISTANT_PART_COMPONENTS`), and
+    `dom.statusHookPresent` is scoped to assistant messages for exactly that reason. A fixture that
+    also moved the attribute on the USER rows would make going blind change a surface the real
+    rename cannot touch, and any rule that reads settled user rows would score the fixture's own
+    artefact rather than the build.
+    """
     messages = []
     for i, status in enumerate(statuses):
         role = "user" if i % 2 == 0 else "assistant"
-        body = (
-            "the prompt"
-            if role == "user"
-            else f"reply {i} {tail if i == len(statuses) - 1 else ''}"
-        )
+        if role == "user":
+            messages.append('<div data-role="user"><div>the prompt</div></div>')
+            continue
+        body = f"reply {i} {tail if i == len(statuses) - 1 else ''}"
         attr = 'data-state="running"' if status is None else f'data-status="{status}"'
         messages.append(f'<div data-role="{role}"><div {attr}>{body}</div></div>')
     return f"""<!doctype html><meta charset="utf-8">
@@ -317,6 +325,31 @@ def test_an_overlay_difference_survives_the_blind_probe_refusal(page):
     assert got["verdict"] == P.DIFFER, got
     assert len(got["moved"]) == 1 and got["moved"][0].startswith('overlay0[[role="menu"]]'), got
     assert "walked outside the thread root" in got["reason"]
+
+
+def test_a_settled_user_row_survives_the_blind_probe_refusal(page):
+    """A user row cannot be the reply being written, so the refusal may not take it out either.
+
+    Read off the real DOM rather than a fixture dict, and on the state the control is actually for:
+    both arms generating with the hook renamed. Only assistant parts publish `data-status`, so the
+    rename does not touch this row -- what moved it is the build.
+
+    Without this it left as NOT COMPARABLE with an empty `moved`, and `report` buckets a refusal as
+    blind and never consults it for the exit code, so the run went green on it.
+    """
+    base = _capture_html(page, _page(tail = "same", **BLIND))
+    treat = _capture_html(
+        page,
+        _page(tail = "same", **BLIND).replace(
+            "<div>the prompt</div>",
+            "<div>the prompt, rendered differently</div>",
+            1,
+        ),
+    )
+    assert base["in_flight_unplaced"] is True and treat["in_flight_unplaced"] is True
+    got = P.compare(base, treat)
+    assert got["verdict"] == P.DIFFER, got
+    assert any(m.startswith("msg0(user)") for m in got["moved"]), got["moved"]
 
 
 def test_matching_overlays_still_leave_the_blind_pair_refused(page):

@@ -621,6 +621,124 @@ def test_a_running_reply_the_probe_could_not_place_refuses_the_pair():
     assert P.compare(blind, a)["verdict"] == P.NOT_COMPARABLE
 
 
+def _blind_arm(chars: int, *, prompt: str = "the prompt") -> dict:
+    """A streaming arm whose `data-status` hook went quiet, so it could not place its own stream.
+
+    The shape the treatment side of a hook-renaming build has: the app says a reply is running and
+    not one message published a streaming state.
+    """
+    arm = capture(
+        thread(
+            [
+                message(0, role = "user", body = prompt),
+                message(1, body = "settled text"),
+                message(2, streaming = True, body = "reply so far", extra = streamed_body(chars)),
+            ]
+        )
+    )
+    return dict(arm, in_flight = [], in_flight_unplaced = True)
+
+
+def test_a_settled_user_row_survives_the_blind_probe_refusal():
+    """A USER ROW IS NEVER THE REPLY BEING WRITTEN, so the refusal may not take it out.
+
+    The reachable pair is one build against another that renamed the `data-status` hook -- an
+    assistant-ui bump does exactly that -- and the same bump can restyle the user bubble. The
+    stream cannot be placed, so every assistant row is withheld correctly; the USER row is not,
+    because a stream writes into an assistant message and both arms agree this row is the user's.
+
+    Without this it left as NOT COMPARABLE with an empty `moved`, and `report` buckets a refusal as
+    blind and never consults it for the exit code, so a real rendering regression exited 0 with no
+    row on screen naming it. `compare_visible` already applies this rule to its own rows.
+    """
+    base = _blind_arm(24)
+    treat = _blind_arm(24, prompt = "the prompt, rendered differently")
+    assert treat["in_flight_unplaced"] is True
+    got = P.compare(base, treat)
+    assert got["verdict"] == P.DIFFER, got
+    assert got["moved"] == [
+        "msg0(user):%d->%dc" % (base["messages"][0]["chars"], treat["messages"][0]["chars"])
+    ], got["moved"]
+    assert "could not be identified" in got["reason"]
+    # And it is symmetric: which arm went blind cannot decide whether the finding is reported.
+    assert P.compare(treat, base)["verdict"] == P.DIFFER
+
+
+def test_a_role_that_changed_survives_the_blind_probe_refusal():
+    """The role is captured BESIDE the digest, so how far a reply has arrived cannot explain it.
+
+    A treatment that renders the live assistant row as `data-role="user"` is a structural
+    regression, and it is exactly the row the refusal is otherwise about.
+    """
+    base = _blind_arm(24)
+    treat = dict(
+        capture(
+            thread(
+                [
+                    message(0, role = "user", body = "the prompt"),
+                    message(1, body = "settled text"),
+                    message(
+                        2,
+                        role = "user",
+                        streaming = True,
+                        body = "reply so far",
+                        extra = streamed_body(24),
+                    ),
+                ]
+            )
+        ),
+        in_flight = [],
+        in_flight_unplaced = True,
+    )
+    got = P.compare(base, treat)
+    assert got["verdict"] == P.DIFFER, got
+    # The scaffold carries the role marker too, and both arms agree about generation here, so the
+    # existing scaffold rule quotes it as well. The row itself is what must not be lost.
+    assert "msg2:role assistant->user" in got["moved"], got["moved"]
+
+
+def test_the_streamed_row_itself_is_still_withheld_when_the_probe_is_blind():
+    """The narrowing is not a hole in the other direction.
+
+    An assistant row that differs is precisely the reading with no defined moment, and it stays
+    refused. Only rows that provably cannot be the reply being written are reported.
+    """
+    got = P.compare(_blind_arm(24), _blind_arm(48))
+    assert got["verdict"] == P.NOT_COMPARABLE, got
+    assert got["moved"] == []
+    # A SETTLED ASSISTANT row is withheld too: with the stream unplaceable, this instrument cannot
+    # prove which assistant row the reply is being written into.
+    base = _blind_arm(24)
+    treat = dict(
+        capture(
+            thread(
+                [
+                    message(0, role = "user", body = "the prompt"),
+                    message(1, body = "a different settled text"),
+                    message(
+                        2, streaming = True, body = "reply so far", extra = streamed_body(24)
+                    ),
+                ]
+            )
+        ),
+        in_flight = [],
+        in_flight_unplaced = True,
+    )
+    assert P.compare(base, treat)["verdict"] == P.NOT_COMPARABLE
+
+
+def test_a_user_row_flagged_in_flight_by_the_other_arm_is_still_withheld():
+    """The arm that COULD place its stream is believed about which rows have no defined moment."""
+    base = _blind_arm(24)
+    # The non-blind arm names index 0 as in flight. Whatever role it carries, its digest is a point
+    # in a stream on that arm, so it is not a settled row.
+    treat = dict(_blind_arm(24, prompt = "a different prompt"), in_flight = [0])
+    treat["in_flight_unplaced"] = True
+    got = P.compare(base, treat)
+    assert got["verdict"] == P.NOT_COMPARABLE, got
+    assert got["moved"] == []
+
+
 def test_an_old_payload_without_the_streaming_fields_is_scored_as_it_always_was():
     # Not silently refused, and not silently excused: a capture recorded before the fields existed
     # carries no claim about a stream, and falls back to the digest it does carry.

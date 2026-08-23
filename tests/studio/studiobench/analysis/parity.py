@@ -426,6 +426,43 @@ def scaffold_moved(base: dict, treat: dict) -> bool:
     return _scaffold(base)[0] != _scaffold(treat)[0]
 
 
+def settled_messages_moved(base: dict, treat: dict) -> list[str]:
+    """The per-message rows that differ and PROVABLY cannot be the reply being written.
+
+    THE SAME RULE `compare_visible` APPLIES TO ITS OWN ROWS, and it has to be the same rule: the
+    two modes must not disagree about which readings have a defined moment. Two shapes qualify.
+
+    A ROW BOTH ARMS CALL THE USER'S. A stream writes into an assistant message -- assistant-ui's
+    `status` (`running` / `complete` / ...) is defined on assistant messages only, and the
+    `data-status` hook `scene/dom.js` walks is on the assistant text part -- so a user row is never
+    the message being written, whether or not the probe could place that message. The two arms
+    AGREEING about the role is what makes it provable; a row whose role disagrees is reported as a
+    role change instead of being trusted as either.
+
+    A ROW WHOSE ROLE CHANGED. The role is captured beside the digest rather than inside it, and how
+    far a reply has arrived says nothing about whose message it is, so this is reported even for a
+    row that is in flight -- where the digest itself is still withheld.
+
+    Reached only past `mount_count_mismatch`, so the two arms mounted the same number of messages
+    and index `i` names the same position on both sides.
+    """
+    bm, tm = _messages(base), _messages(treat)
+    streaming = in_flight(base, treat)
+    out: list[str] = []
+    for i in sorted(set(bm) & set(tm)):
+        b, t = bm[i], tm[i]
+        if b.get("role") != t.get("role"):
+            out.append(f"msg{i}:role {b.get('role')}->{t.get('role')}")
+            continue
+        # Flagged in flight by the arm that COULD place its stream. Its digest is a point in a
+        # stream on that arm whatever role it carries, so it is withheld like any other.
+        if i in streaming:
+            continue
+        if b.get("role") == "user" and b.get("digest") != t.get("digest"):
+            out.append(f"msg{i}(user):{b.get('chars')}->{t.get('chars')}c")
+    return out
+
+
 def _any_moved(
     base: dict,
     treat: dict,
@@ -515,6 +552,15 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
         # generating, and reporting that as a rendering difference would manufacture the wall-clock
         # false alarm this whole file exists to remove.
         independent = overlays_moved(base, treat)
+        # AND THE SETTLED MESSAGE ROWS, which are the other half of what this refusal must not
+        # swallow. A row both arms call the user's, and a row whose role itself changed, cannot be
+        # the reply being written -- so their meaning does not depend on where the stream had got
+        # to, and discarding them costs exactly the finding this instrument exists to make. Without
+        # this a user message rendered differently by the treatment left here as NOT COMPARABLE
+        # with an empty `moved`, and `structural_report` buckets a refusal as blind and never
+        # consults it for the exit code, so the run went green on it. `compare_visible` already
+        # applies this rule to its own rows and says it is the same rule as this one; it has to be.
+        independent = independent + settled_messages_moved(base, treat)
         # AND THE SCAFFOLD, but only when the two arms agree about whether a reply was running.
         # The composer is inside the scaffold and is a function of exactly that, so the scaffold is
         # readable here when they agree and meaningless when they do not. That is the correct form
@@ -526,9 +572,11 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
             return {
                 "verdict": DIFFER,
                 "reason": (
-                    "the streamed message could not be identified on one arm, but the OVERLAYS "
-                    "differ, and an overlay is walked outside the thread root: its digest carries "
-                    f"neither the stream nor the composer. {blind}"
+                    "the streamed message could not be identified on one arm, but surfaces that "
+                    "CANNOT be the reply being written differ: an overlay is walked outside the "
+                    "thread root, so its digest carries neither the stream nor the composer, and a "
+                    "row both arms call the user's, or a row whose role changed, is not the "
+                    f"message a stream writes into. {blind}"
                 ),
                 "moved": independent,
                 "style_verdict": style_verdict,
