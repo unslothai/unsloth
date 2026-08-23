@@ -110,6 +110,29 @@ def test_embed_lm_head_target_redirect(new_model_path: bool, target_modules):
 
 
 @pytest.mark.slow
+def test_a_repeat_call_with_the_same_targets_still_passes_through():
+    """On a tied model PEFT moves lm_head to modules_to_tie, so the stored config no longer
+    names it while the caller's list still does; the equality check has to count it."""
+    from unsloth import FastLanguageModel
+
+    model, _ = FastLanguageModel.from_pretrained(
+        model_name = MODEL_NAME,
+        load_in_4bit = True,
+        max_seq_length = 512,
+    )
+    try:
+        kwargs = dict(r = 8, lora_alpha = 16, target_modules = list(TARGET_MODULES))
+        model = FastLanguageModel.get_peft_model(model, **kwargs)
+        assert getattr(model.peft_config["default"], "modules_to_tie", None), (
+            "tied model did not redirect lm_head; this guard would check nothing"
+        )
+        model = FastLanguageModel.get_peft_model(model, **kwargs)
+    finally:
+        del model
+        torch.cuda.empty_cache()
+
+
+@pytest.mark.slow
 def test_embedding_only_target_list_raises_instead_of_training_nothing():
     """Redirecting every target would leave an adapter with no trainable LoRA."""
     from unsloth import FastLanguageModel
