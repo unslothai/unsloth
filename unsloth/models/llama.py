@@ -3313,8 +3313,8 @@ class FastLlamaModel:
         train_lm_head = False
         train_embed_tokens = False
         final_modules = []
-        # LoRA on embed_tokens/lm_head never trains (see _redirect_embedding_targets),
-        # so route them to modules_to_save, which also makes embedding_learning_rate work.
+        # LoRA on these never trains (see _redirect_embedding_targets); modules_to_save
+        # does, and is what embedding_learning_rate matches.
         target_modules, modules_to_save, _moved_embedding_modules = _redirect_embedding_targets(
             target_modules,
             modules_to_save,

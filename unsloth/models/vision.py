@@ -1928,9 +1928,8 @@ class FastBaseModel:
         # block is the sole remaining MLP-intent signal on fused-expert models.
         _moe_detect_target = target_modules if type(target_modules) in (list, tuple) else None
 
-        # embed_tokens/lm_head have no attention/MLP ancestor, so get_peft_regex drops
-        # them, and LoRA on them never trains anyway (see _redirect_embedding_targets).
-        # Move them to modules_to_save before scoping, matching FastLanguageModel.
+        # get_peft_regex drops these (no attention/MLP ancestor) and LoRA on them never
+        # trains, so redirect before scoping, matching FastLanguageModel.
         target_modules, modules_to_save, _moved = _redirect_embedding_targets(
             target_modules,
             modules_to_save,

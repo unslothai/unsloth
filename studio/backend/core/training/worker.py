@@ -4490,10 +4490,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         # ── 4d. Prepare model (LoRA, full finetuning, or CPT) ──
         if is_cpt:
             _send_status(event_queue, "Configuring LoRA for continued pretraining...")
-            # embed_tokens/lm_head go to modules_to_save -- trained full-precision at
-            # embedding_learning_rate. LoRA on either never trains: the fused CE loss
-            # reads lm_head.weight directly, and PEFT's lora_embedding_A/B are never
-            # unfrozen. Leaving them in target_modules would also empty it out.
+            # Both go to modules_to_save: trained full-precision at
+            # embedding_learning_rate, since LoRA on either never trains.
             _embedding_modules = ("embed_tokens", "lm_head")
             _user_modules = config.get("target_modules") or []
             _wants = [m for m in _embedding_modules if m in _user_modules]

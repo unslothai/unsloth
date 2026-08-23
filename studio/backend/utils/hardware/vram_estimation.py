@@ -910,9 +910,8 @@ def _lora_mlp_elements(
 def _full_weight_embedding_elements(arch: ModelArchConfig, target_modules) -> int:
     """embed_tokens/lm_head cost a full matrix each, not a low-rank pair.
 
-    Unsloth redirects them out of target_modules into modules_to_save, and PEFT's
-    ModulesToSaveWrapper keeps an independent trainable copy per module, so tied
-    models pay for both (measured on Qwen2.5-0.5B: 136M + 136M trainable).
+    Unsloth redirects them into modules_to_save, which keeps one trainable copy per
+    module, so an untied pair pays twice.
     """
     if isinstance(target_modules, str):
         return 0

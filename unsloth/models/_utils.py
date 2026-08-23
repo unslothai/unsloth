@@ -4458,15 +4458,10 @@ def _redirect_embedding_targets(
     *,
     allow_redirect = True,
 ):
-    """Move embed_tokens/lm_head from target_modules into modules_to_save.
+    """Move embed_tokens/lm_head into modules_to_save. Returns (targets, saved, moved).
 
-    LoRA on either module is silently dead in Unsloth: the fused CE loss reads
-    `lm_head.weight` directly instead of calling the module, and PEFT's embedding
-    factors are named `lora_embedding_A/B` so the freeze loop never unfreezes them.
-    `modules_to_save` is the only representation that actually trains, so redirect
-    unconditionally rather than preserving a LoRA target that cannot learn.
-
-    Returns (target_modules, modules_to_save, moved).
+    LoRA on either is silently dead here: the fused CE loss reads `lm_head.weight`
+    instead of calling the module, and PEFT's `lora_embedding_A/B` are never unfrozen.
     """
     if type(target_modules) not in (list, tuple) or not allow_redirect:
         return target_modules, modules_to_save, ()
@@ -4477,7 +4472,7 @@ def _redirect_embedding_targets(
         return target_modules, modules_to_save, ()
 
     remaining = [x for x in target_modules if x not in EMBEDDING_MODULES]
-    # A str is a sequence of characters, so list() would shred it into letters.
+    # list() on a str would shred it into single characters.
     if modules_to_save is None:
         saved = []
     elif isinstance(modules_to_save, str):
@@ -4489,10 +4484,9 @@ def _redirect_embedding_targets(
 
 
 def _raise_if_no_lora_targets_left(target_modules, moved, target_parameters = None):
-    """embed_tokens/lm_head train via modules_to_save, so they cannot be the only targets.
+    """embed_tokens/lm_head go to modules_to_save, so they cannot be the only targets.
 
-    `target_parameters` (fused MoE expert weights) is a LoRA target in its own right;
-    PEFT accepts it with no `target_modules` at all, so an empty list is fine there.
+    PEFT accepts `target_parameters` (fused MoE experts) with no target_modules at all.
     """
     if moved and type(target_modules) in (list, tuple) and not target_modules and not target_parameters:
         raise RuntimeError(
@@ -4505,15 +4499,11 @@ def _raise_if_no_lora_targets_left(target_modules, moved, target_parameters = No
 
 
 def _resolve_ensure_weight_tying(model, modules_to_save, requested):
-    """Default `ensure_weight_tying` to True when a tied pair lands in modules_to_save.
+    """Default `ensure_weight_tying` on when a tied pair lands in modules_to_save.
 
-    PEFT gives each entry its own copy, so on a tied model the two copies diverge
-    during training and the merged checkpoint keeps only one (measured: the trained
-    lm_head is dropped). PEFT warns about this and documents `ensure_weight_tying`
-    as the fix, which moves the counterpart into `modules_to_tie` instead.
-
-    Keyed on the final `modules_to_save`, not on what we moved, so callers that pass
-    both names themselves (Studio's CPT path) are covered too. Caller wins if set.
+    PEFT copies each entry, so tied copies diverge and a merge keeps only one; tying
+    moves the counterpart to `modules_to_tie`. Keyed on the final modules_to_save so
+    callers that pass both names themselves are covered. Caller wins if set.
     """
     if requested is not None:
         return bool(requested)

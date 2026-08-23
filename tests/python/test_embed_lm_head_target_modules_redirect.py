@@ -76,8 +76,7 @@ def _run_redirect_check(new_model_path: bool, target_modules):
             for k, v in state.items()
         )
         if tied:
-            # ensure_weight_tying keeps ONE trainable matrix: PEFT holds lm_head in
-            # tied_weights_keys instead of giving it a second, divergent copy.
+            # Tying keeps ONE trainable matrix instead of a second, divergent copy.
             assert "lm_head" not in saved_modules, saved_modules
             assert model.get_output_embeddings().weight.requires_grad
         else:
