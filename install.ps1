@@ -3946,16 +3946,15 @@ exit 0
         }
     }
 
-    # uv refuses to create a venv in an occupied directory. The .NET API counts
-    # hidden entries and treats wildcard characters in the path literally.
+    # uv creates only into a path that is absent or an empty directory. The .NET
+    # API counts hidden entries and reads wildcards in the path literally.
     function Test-DirectoryHasEntries {
         param([Parameter(Mandatory = $true)][string]$Path)
         if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
-            # Not a directory, but still something: a file, a link to one, or a
-            # link whose target is gone. CreateDirectory answers
-            # ERROR_ALREADY_EXISTS for all three, so uv cannot create here either
-            # and the path has to be moved aside. -PathType Container follows the
-            # link and reports false, so ask Get-Item, which sees the link itself.
+            # Still an existing path to CreateDirectory, which answers
+            # ERROR_ALREADY_EXISTS for a file or a link whose target is gone, so
+            # uv refuses it too. -PathType Container follows the link and cannot
+            # see a dangling one; Get-Item sees the link itself.
             return ($null -ne (Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue))
         }
         try {
@@ -3969,12 +3968,10 @@ exit 0
         return $false
     }
 
-    # Move-Item into a directory that already exists nests the source inside it
-    # rather than renaming it, and uv then refuses the occupied target with the
-    # same error as #9479. Reaching a migration branch already means $VenvDir is
-    # absent or empty, so clear it first. Directory.Delete is non-recursive, so it
-    # cannot take a directory that gained an entry since the check, and on a
-    # reparse point it removes the link without following it to the target.
+    # Move-Item into an existing directory nests the source inside it rather than
+    # renaming it, and uv then refuses that target as in #9479. A migration branch
+    # already means $VenvDir is absent or empty, so clear it: Directory.Delete is
+    # non-recursive, and on a reparse point it unlinks without following.
     function Clear-MigrationTargetDirectory {
         param([Parameter(Mandatory = $true)][string]$Path)
         if (-not (Test-Path -LiteralPath $Path)) { return }
@@ -3982,9 +3979,8 @@ exit 0
         if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
             # Not Remove-Item: on Windows PowerShell 5.1 it trips a reparse-tag
             # mismatch on a directory symlink (PowerShell/PowerShell#621).
-            # Directory.Delete unlinks without following the link, but throws
-            # DirectoryNotFoundException when the link points at a file or is
-            # dangling, so fall back to File.Delete for those two shapes.
+            # Directory.Delete throws on a link to a file or a dangling one,
+            # hence the File.Delete fallback.
             try { [System.IO.Directory]::Delete($Path) }
             catch {
                 try { [System.IO.File]::Delete($Path) }

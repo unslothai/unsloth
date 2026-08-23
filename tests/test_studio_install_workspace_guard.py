@@ -1123,10 +1123,10 @@ def test_install_ps1_replacement_branch_covers_an_occupied_venv_dir():
 
 
 def _extract_install_sh_venv_chain() -> str:
-    """Extract the whole venv if/elif chain, past the legacy migration to its closing `fi`.
+    """Extract the venv if/elif chain past the legacy migration to its closing `fi`.
 
-    _extract_install_sh_guard_block stops at the first elif, so it cannot see how the
-    widened first branch and the legacy $STUDIO_HOME/.venv migration interact.
+    _extract_install_sh_guard_block stops at the first elif, so it cannot see the two
+    interacting.
     """
     src = INSTALL_SH.read_text(encoding = "utf-8")
     m = re.search(
@@ -1309,8 +1309,7 @@ def test_dir_has_entries_restores_the_callers_noglob_setting(tmp_path):
 def test_dir_has_entries_treats_an_unenumerable_directory_as_occupied(tmp_path, mode):
     """uv refuses these targets, so reporting them empty would wedge the repair.
 
-    0o444 is readable but not searchable: the globs expand to names, then every
-    -e test fails. 0o111 is the mirror. Both need the same answer as 0o000.
+    0o444 is readable but not searchable, 0o111 the mirror; both must answer as 0o000.
     """
     if os.geteuid() == 0:
         pytest.skip("root ignores directory permissions")
@@ -1319,8 +1318,7 @@ def test_dir_has_entries_treats_an_unenumerable_directory_as_occupied(tmp_path, 
     (blocked / "file.txt").write_text("x")
     blocked.chmod(mode)
     try:
-        # install.ps1's Test-DirectoryHasEntries returns $true from its catch for the
-        # same case; the two installers must not disagree here.
+        # install.ps1's catch returns $true here; the two must not disagree.
         assert _dir_has_entries_says(tmp_path, blocked) == "yes"
     finally:
         blocked.chmod(0o700)
@@ -1337,10 +1335,9 @@ def test_dir_has_entries_still_answers_no_for_a_searchable_empty_dir(tmp_path):
         empty.chmod(0o700)
 
 
-# uv creates a venv only into a path that is absent or an empty directory; every
-# other shape is EEXIST/ERROR_ALREADY_EXISTS. Measured against uv 0.12.1, the
-# version install.sh pins. _dir_has_entries has to agree, or the repair loop the
-# widened branch is meant to end simply continues for the shapes it misses.
+# Measured against uv 0.12.1, the version install.sh pins: uv creates only into a
+# path that is absent or an empty directory, every other shape is EEXIST. The
+# predicate has to agree, or the repair loop continues for the shapes it misses.
 _UV_REFUSES = [
     ("occupied real dir", "fulldir", True),
     ("regular file", "plainfile", True),

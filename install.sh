@@ -681,28 +681,22 @@ _start_studio_venv_replacement() {
     substep "previous environment preserved for rollback"
 }
 
-# uv refuses to create a venv in an occupied directory. Include hidden entries
-# and dangling symlinks in that check.
+# uv creates only into a path that is absent or an empty directory. Everything
+# else is occupied, hidden entries and non-resolving symlinks included.
 _dir_has_entries() {  # dir
     if [ ! -d "$1" ]; then
-        # Not a directory, but still something: a regular file, a symlink to one,
-        # or a symlink whose target is gone. mkdir(2) answers EEXIST for all three
-        # -- "pathname already exists (not necessarily as a directory)", which the
-        # man page states covers a symbolic link "dangling or not" -- so uv cannot
-        # create here either and the path has to be moved aside. -d follows the
-        # link, and -e alone misses a dangling one, hence the -L.
+        # Still an existing path to mkdir(2), which answers EEXIST for a file or
+        # for a symlink "dangling or not", so uv refuses it too. -d follows the
+        # link and -e misses a dangling one, hence the -L.
         { [ -e "$1" ] || [ -L "$1" ]; } && return 0
         return 1
     fi
-    # Not enumerable: without read the globs cannot expand, and without search
-    # the -e/-L tests below fail on every name, so either way the directory would
-    # be reported empty and handed to uv to fail on. Call it occupied instead,
-    # which is what install.ps1's enumeration catch does, and let the move repair
-    # it: rename needs write on the parent, not on the directory itself.
+    # Not enumerable: the globs cannot expand without read, and the tests below
+    # fail on every name without search, so it would read as empty. Fail closed
+    # like install.ps1's catch; the rename only needs write on the parent.
     { [ -r "$1" ] && [ -x "$1" ]; } || return 0
-    # The globs below are the whole check, so pathname expansion has to be on for
-    # them; a caller that set -f would otherwise make every directory look empty.
-    # Mirrors _path_has_dir, which saves and restores the flag the other way.
+    # The globs are the whole check, so a caller's set -f would make every
+    # directory look empty. Mirrors _path_has_dir, which saves the flag too.
     _dhe_glob=on
     case $- in *f*) _dhe_glob=off ;; esac
     set +f
@@ -2818,10 +2812,8 @@ if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
         "import torch; print(torch.__version__)" 2>/dev/null | tail -n 1 || true)
     # New layout already exists — replace only after preserving rollback copy.
     substep "preserving existing environment for rollback..."
-    # why: the bare call would still abort under `set -e`, but with nothing on
-    # screen except mv's own stderr. install.ps1 already reports this failure
-    # (Exit-InstallFailure "Could not prepare existing environment for reinstall");
-    # say the same thing here, and name the directory that has to be writable.
+    # A bare call still aborts under `set -e`, but shows only mv's own stderr.
+    # install.ps1 reports this step; say the same here and name the directory.
     if ! _start_studio_venv_replacement "$VENV_DIR"; then
         echo "ERROR: could not move $VENV_DIR aside to reinstall." >&2
         echo "       Check that $STUDIO_HOME is writable, or move $VENV_DIR yourself and re-run." >&2
@@ -2852,12 +2844,11 @@ torch.testing.assert_close(torch.unique(E), torch.tensor((20,), device=E.device,
     fi
     if [ "$_legacy_ok" = true ]; then
         echo "✅ Legacy environment is healthy — migrating..."
-        # `mv` into a directory that already exists nests the environment inside
-        # it ($VENV_DIR/.venv) instead of renaming it, and `uv venv` then refuses
-        # the occupied target with the same error as #9479. Reaching this branch
-        # already means $VENV_DIR is absent or empty, so clear it first.
-        # rmdir, never rm -rf: it cannot take a directory that gained an entry
-        # since the check. Unlinking a symlink never touches its target.
+        # `mv` into an existing directory nests the environment inside it
+        # ($VENV_DIR/.venv) rather than renaming it, and uv then refuses that
+        # target as in #9479. This branch already means $VENV_DIR is absent or
+        # empty, so clear it: rmdir cannot take one that gained an entry since
+        # the check, and unlinking a symlink never touches its target.
         if [ -L "$VENV_DIR" ]; then
             rm -f "$VENV_DIR"
         elif [ -d "$VENV_DIR" ] && ! rmdir "$VENV_DIR" 2>/dev/null; then
