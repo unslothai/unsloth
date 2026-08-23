@@ -123,8 +123,13 @@ def run_without_native_path_secret(
     # multiprocessing children cannot be given a preexec_fn by the parent. Shared
     # entrypoint for the inference/export/training/data-recipe workers.
     try:
-        from utils.process_lifetime import bind_current_process_to_parent_lifetime
+        from utils.process_lifetime import (
+            allow_child_processes,
+            bind_current_process_to_parent_lifetime,
+        )
         bind_current_process_to_parent_lifetime()
+        # Clear the worker's daemon policy so HF prefetch can spawn (#9094).
+        allow_child_processes()
     except Exception:
         pass
 

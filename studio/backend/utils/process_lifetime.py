@@ -334,6 +334,19 @@ def bind_current_process_to_parent_lifetime() -> None:
         pass
 
 
+def allow_child_processes() -> None:
+    """Allow the current multiprocessing worker to spawn children."""
+    try:
+        from multiprocessing import process as multiprocessing_process
+
+        # This config is child-local; the parent's Process handle stays daemonic.
+        config = getattr(multiprocessing_process.current_process(), "_config", None)
+        if isinstance(config, dict):
+            config["daemon"] = False
+    except Exception:
+        pass
+
+
 def compose_preexec(
     existing: Optional[Callable[[], None]], owner_pid: Optional[int] = None
 ) -> Optional[Callable[[], None]]:
