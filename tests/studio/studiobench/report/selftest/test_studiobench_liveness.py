@@ -67,6 +67,54 @@ def test_a_missed_slot_fails_even_though_the_action_ran(tmp_path):
     assert main(["--assert-liveness", str(path)]) == 1
 
 
+def test_an_action_whose_own_assertion_failed_fails(tmp_path):
+    """RAN IS NOT DID WHAT IT CLAIMED, and this gate is the machine that checks it.
+
+    `scoring/from_payload.py` refuses to score a timing whose `expect_ok` is False and
+    `report/payload.py` lists the cell under EXCLUDED CELLS saying its timings "must not be
+    quoted". Read raw, this gate agreed with neither: `ran = True, expect_ok = False` reached
+    neither the NOT RUN branch nor the missed-slot branch, so the CI liveness job exited 0 and
+    the report that dropped every excluded number exited 0 as well. A selector regression that
+    fails EVERY cell's assertion is precisely the "absent read as no effect" failure this gate
+    exists for.
+    """
+
+    path = write_payload(
+        tmp_path,
+        [
+            cell(
+                [
+                    ran("keystroke"),
+                    ran(
+                        "message_menu",
+                        expect_ok = False,
+                        reason = "the menu opened with no items",
+                        timings = {"open_ms": 31.0},
+                    ),
+                ]
+            )
+        ],
+    )
+    assert main(["--assert-liveness", str(path)]) == 1
+
+
+def test_an_action_that_passed_its_assertion_still_passes(tmp_path):
+    # The pair for the test above: `expect_ok = True` is the healthy recording, and a gate that
+    # failed on it would be unusable rather than strict.
+    path = write_payload(tmp_path, [cell([ran("keystroke", expect_ok = True)])])
+    assert main(["--assert-liveness", str(path)]) == 0
+
+
+def test_an_unattempted_action_reports_not_run_rather_than_its_assertion(tmp_path):
+    # `ActionResult.__post_init__` forces `expect_ok = None` when `ran` is False, so the two
+    # failures never blur: the reader is told the action never happened, not that it misbehaved.
+    path = write_payload(
+        tmp_path,
+        [cell([{"action": "message_menu", "ran": False, "expect_ok": None, "reason": "no slot"}])],
+    )
+    assert main(["--assert-liveness", str(path)]) == 1
+
+
 def test_an_incomplete_cell_fails(tmp_path):
     path = write_payload(tmp_path, [cell([ran("keystroke")], completed = False)])
     assert main(["--assert-liveness", str(path)]) == 1

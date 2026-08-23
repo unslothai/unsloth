@@ -1698,7 +1698,7 @@ def report_only(args) -> int:
 
 
 def assert_liveness(args) -> int:
-    """Fail unless every scheduled action in a payload actually ran.
+    """Fail unless every scheduled action in a payload ran, kept its slot and proved its effect.
 
     THE FAILURE THIS CATCHES. The most expensive wrong answers this harness has produced were not
     wrong numbers, they were absent ones reported as "no effect": four scene actions recorded NOT
@@ -1774,6 +1774,17 @@ def assert_liveness(args) -> int:
                 problems.append(f"{where}: {name} NOT RUN ({action.get('reason') or 'no reason'})")
             elif action.get("slot_missed"):
                 problems.append(f"{where}: {name} missed its slot")
+            elif action.get("expect_ok") is False:
+                # RAN IS NOT DID WHAT IT CLAIMED. `scoring/from_payload.py` and
+                # `report/payload.py` both already refuse a timing whose own assertion failed;
+                # this loop did not, so `ran = True` with `expect_ok = False` fell past both
+                # branches above and the gate exited 0. A selector regression that fails EVERY
+                # cell's assertion left the workflow green with the surface non-functional --
+                # the same "absent reported as no effect" this gate exists for, one branch over.
+                problems.append(
+                    f"{where}: {name} ran but its own assertion failed "
+                    f"({action.get('reason') or 'no reason'})"
+                )
 
     if cells == 0:
         # An empty payload passing every check is the same false negative in a different costume.
@@ -1841,8 +1852,9 @@ def parse_args(argv: list):
         metavar = "PAYLOAD",
         dest = "assert_liveness",
         help = "exit non-zero unless every scheduled action in an existing "
-        "payload.jsonl actually ran. Offline. This is the gate that catches an "
-        "action which never fired reporting as 'no effect'",
+        "payload.jsonl actually ran, kept its slot and passed its own assertion. "
+        "Offline. This is the gate that catches an action which never fired, or "
+        "never did what it claimed, reporting as 'no effect'",
     )
     ap.add_argument(
         "--allow-not-run",
