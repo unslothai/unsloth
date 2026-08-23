@@ -167,6 +167,10 @@ export function ChatTab() {
   const setAllowArtifactNetworkAccess = useChatRuntimeStore(
     (state) => state.setAllowArtifactNetworkAccess,
   );
+  const searchImages = useChatRuntimeStore((state) => state.searchImages);
+  const setSearchImages = useChatRuntimeStore(
+    (state) => state.setSearchImages,
+  );
   const hydratePersistedSettings = useChatRuntimeStore(
     (state) => state.hydratePersistedSettings,
   );
@@ -394,6 +398,15 @@ export function ChatTab() {
             checked={allowArtifactNetworkAccess}
             onCheckedChange={setAllowArtifactNetworkAccess}
           />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.chat.webSearch.title")}>
+        <SettingsRow
+          label={t("settings.chat.webSearch.images")}
+          description={t("settings.chat.webSearch.imagesDescription")}
+        >
+          <Switch checked={searchImages} onCheckedChange={setSearchImages} />
         </SettingsRow>
       </SettingsSection>
     </div>

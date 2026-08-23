@@ -1110,6 +1110,12 @@ export const it = {
         collapseByDefaultDescription:
           "Mantieni il ragionamento compresso mentre il modello pensa, invece di aprirlo automaticamente. Espandi un blocco per leggerlo.",
       },
+      webSearch: {
+        title: "Ricerca web",
+        images: "Mostra immagini dalla ricerca web",
+        imagesDescription:
+          "Consente alla ricerca web di restituire immagini e ne recupera una per ogni elemento elencato in una risposta. Le miniature vengono scaricate e ridimensionate da Studio, quindi il browser non contatta mai gli host delle immagini.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Comprimi i blocchi HTML",

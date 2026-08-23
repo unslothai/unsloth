@@ -1289,6 +1289,38 @@ def test_a_checkpoint_boundary_is_not_replayed_once_the_policy_is_rolling(monkey
     assert llama_cpp._sticky_compaction_boundary("t1") == 6
 
 
+def test_a_rescued_boundary_is_recorded_but_never_replayed(monkeypatch):
+    """Recording a rescue's depth must not make it sticky.
+
+    Two different questions. "What did this fit evict?" places the compaction notice, and
+    a rescue has a real answer worth persisting. "Which boundary should the next request
+    re-apply?" is the one a missed reply reserve makes unsafe, and it is decided here, on
+    `fits` alone -- so the depth can be honest without the replay becoming wrong.
+    """
+    from core.inference import checkpoint, llama_cpp
+
+    stored = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "a",
+            "metadata": {"custom": {"contextTruncation": {"fits": True, "boundary_messages": 6}}},
+        },
+    ]
+    _stub_studio_db(monkeypatch, stored)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
+
+    assert llama_cpp._sticky_compaction_boundary("t1") == 6
+
+    # The same depth, from a fit that missed the reply reserve: not replayed.
+    stored[1]["metadata"]["custom"]["contextTruncation"] = {
+        "fits": False,
+        "dropped_messages": 6,
+        "boundary_messages": 6,
+    }
+    assert llama_cpp._sticky_compaction_boundary("t1") == 0
+
+
 def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch):
     """An archive is not a checkpoint, and only one of them justifies the override.
 

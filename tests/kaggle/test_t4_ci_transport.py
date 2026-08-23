@@ -17,6 +17,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import types
 from pathlib import Path
 
@@ -145,6 +147,187 @@ def test_two_gpus_still_run_both_payloads_one_per_card(tmp_path):
     driven = _drive(tmp_path, ["control", "canary"], gpus = 2)
     assert driven["stood_down"] is None
     assert sorted(p["cuda"] for p in driven["papermill"]) == ["0", "1"]
+
+
+class _PackedStub(_Stub):
+    """`_Stub`, but observable in the two ways a PACKED kernel can go wrong.
+
+    A kernel now carries more legs than it has cards, so the legs queue. Two
+    things that used to be structurally impossible become possible and have to
+    be watched:
+
+    * two legs on the SAME card at the same time, which is the contended OOM
+      the shortfall guard was written for, reached by a route it cannot see;
+    * every leg's virtualenv alive at once, each carrying its own torch, on a
+      `/kaggle/working` that is not sized for it.
+
+    So papermill HOLDS for a moment (instant calls cannot overlap, and a test
+    that cannot observe the failure is not a test), `uv venv` really creates
+    its directory, and both the live-payload and live-venv counts are sampled
+    while the run is in flight.
+    """
+
+    def __init__(
+        self,
+        *,
+        gpus,
+        durations = None,
+        hold = 0.05,
+    ):
+        super().__init__(gpus = gpus)
+        self.durations = durations or {}
+        self.hold = hold
+        self._live_on_card: dict = {}
+        self._lock = threading.Lock()
+        self.same_card_overlaps: list = []
+        self.max_live_venvs = 0
+        self.root: Path | None = None
+
+    def run(self, cmd, **kw):
+        cmd = [str(c) for c in cmd]
+        if len(cmd) > 2 and cmd[1] == "venv":
+            Path(cmd[2]).mkdir(parents = True, exist_ok = True)
+        if "papermill" in cmd:
+            notebook = Path(cmd[cmd.index("papermill") + 1]).name
+            card = (kw.get("env") or {}).get("CUDA_VISIBLE_DEVICES")
+            with self._lock:
+                if self._live_on_card.get(card):
+                    self.same_card_overlaps.append((card, self._live_on_card[card], notebook))
+                self._live_on_card[card] = notebook
+                if self.root is not None:
+                    live = len(list(self.root.glob("venv_*")))
+                    self.max_live_venvs = max(self.max_live_venvs, live)
+            time.sleep(self.durations.get(notebook, self.hold))
+            with self._lock:
+                self._live_on_card[card] = None
+        return super().run(cmd, **kw)
+
+
+def _drive_packed(
+    tmp_path,
+    leg_names,
+    *,
+    gpus,
+    durations = None,
+):
+    driver = build_kernel.build_kernel(
+        SMOKE_DIR,
+        leg_names,
+        unsloth_ref = "main",
+        zoo_ref = "main",
+        extra_args = (),
+        per_run_timeout = 60,
+        skip_reference = True,
+    )
+    stub = _PackedStub(gpus = gpus, durations = durations)
+    stub.root = tmp_path
+    saved = sys.modules["subprocess"]
+    sys.modules["subprocess"] = stub
+    namespace: dict = {}
+    raised = None
+    try:
+        for cell in driver["cells"][:2]:
+            source = "".join(cell["source"]).replace("/kaggle/working", str(tmp_path))
+            try:
+                exec(compile(source, "<driver-cell>", "exec"), namespace)
+            except SystemExit as exc:
+                raised = exc
+                break
+    finally:
+        sys.modules["subprocess"] = saved
+    return {"stood_down": raised, "stub": stub, "results": namespace.get("results") or {}}
+
+
+ALL_FOUR = ["gptoss", "frontier", "canary", "control"]
+
+
+def test_four_legs_on_two_cards_never_put_two_legs_on_one_card_at_once(tmp_path):
+    """The property that makes packing safe at all.
+
+    Four payloads across two T4s is only sound because a card takes its next
+    leg when the previous one has EXITED. If they overlapped, each child would
+    still pass its own `device_count() == 1` assertion and then fight for 15GB,
+    which is exactly the failure the shortfall guard was added to prevent and
+    exactly the one it cannot see from where it stands.
+    """
+    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2)
+    assert driven["stood_down"] is None
+    stub = driven["stub"]
+    assert stub.same_card_overlaps == [], stub.same_card_overlaps
+    assert len(stub.papermill) == 4, stub.papermill
+    # Both cards are used, and every leg ran. The SPLIT is deliberately not
+    # asserted: how many legs each card ends up with is a function of how long
+    # the legs take relative to the 5s venv stagger, not something the
+    # scheduler promises. Under the measured durations (gptoss 384.1s,
+    # frontier 312.2s, canary 265.3s, control 262.2s) the stagger is under 2%
+    # and the split is 2/2; under the sub-second stubs here the first card
+    # legitimately drains most of the queue before the second clears its
+    # stagger. Pinning 2/2 would be pinning the stub's timing.
+    assert set(p["cuda"] for p in stub.papermill) == {"0", "1"}, stub.papermill
+
+
+def test_the_longest_leg_starts_first_so_the_schedule_can_balance_around_it(tmp_path):
+    """Start order is longest-first, and it is load bearing rather than tidy.
+
+    Measured on run 32607621452: gptoss 384.1s, frontier 312.2s, canary 265.3s,
+    control 262.2s. Longest-first packs those as 646.3s, which is the optimal
+    split of the four; `sorted(PAYLOADS)` would start gptoss LAST, and a greedy
+    scheduler cannot balance around the leg that sets the makespan if it picks
+    it up at the end.
+    """
+    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2)
+    started = [p["notebook"] for p in driven["stub"].papermill]
+    assert started[0] == "t4_gptoss.ipynb", started
+    assert started != sorted(
+        started
+    ), "payloads are running in alphabetical order, so the longest leg is last"
+
+
+def test_each_leg_keeps_its_own_venv_compile_cache_and_ipykernel(tmp_path):
+    """Packing must not let two legs share an interpreter.
+
+    The legs exist to install DIFFERENT library sets. They are separated by a
+    per-payload virtualenv, a per-payload ipykernel spec and a per-payload
+    `UNSLOTH_COMPILE_LOCATION`; all three are keyed by the payload's index, so
+    an index reused across a wave would silently merge two legs' trees and the
+    last writer would win.
+    """
+    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2)
+    calls = driven["stub"].papermill
+    for field in ("kernel", "compile_location", "notebook"):
+        values = [c[field] for c in calls]
+        assert len(set(values)) == len(calls), (field, values)
+
+
+def test_a_finished_leg_gives_its_virtualenv_back(tmp_path):
+    """Otherwise four torch trees sit on /kaggle/working at once.
+
+    The tail cell prunes `venv_*`, but only after every payload has finished,
+    which was sufficient when a kernel held one payload per card. Packed, the
+    peak is what matters, and it has to stay at one venv per CARD rather than
+    one per LEG.
+    """
+    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2)
+    stub = driven["stub"]
+    assert (
+        stub.max_live_venvs <= 2
+    ), f"{stub.max_live_venvs} virtualenvs were alive at once on a 2-card kernel"
+    assert list(tmp_path.glob("venv_*")) == [], "a payload left its virtualenv behind"
+
+
+def test_a_one_card_allocation_still_stands_a_packed_kernel_down(tmp_path):
+    """The shortfall guard survives the change that made it stop counting legs.
+
+    It used to compare GPUs against the payload count. There are deliberately
+    more payloads than cards now, so that comparison would stand every healthy
+    run down; it compares against the width the packing was built for instead.
+    What must NOT change is that a genuinely short allocation is still called
+    infrastructure, because one card silently serialises the whole kernel and
+    doubles its wall clock while looking like a slow but healthy run.
+    """
+    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 1)
+    assert driven["stood_down"] is not None, "a 1-GPU allocation ran the packed kernel anyway"
+    assert driven["stub"].papermill == []
 
 
 def test_a_payload_whose_venv_failed_is_not_run_in_the_system_kernel(tmp_path):

@@ -1136,6 +1136,12 @@ export const es = {
         collapseByDefaultDescription:
           "Mantén el razonamiento contraído mientras el modelo piensa, en lugar de abrirlo automáticamente. Expande cualquier bloque para leerlo.",
       },
+      webSearch: {
+        title: "Búsqueda web",
+        images: "Mostrar imágenes de la búsqueda web",
+        imagesDescription:
+          "Permite que la búsqueda web devuelva imágenes y obtiene una por cada elemento que enumera una respuesta. Studio descarga y redimensiona las miniaturas, así que el navegador nunca contacta con los servidores de imágenes.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Contraer bloques HTML",

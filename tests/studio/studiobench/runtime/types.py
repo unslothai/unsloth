@@ -168,12 +168,34 @@ class ActionResult:
     expect_ok: Optional[bool] = None
     expect: dict = field(default_factory = dict)
     timings: dict = field(default_factory = dict)
+    # CORRECTNESS INVARIANTS, not timings, and kept apart from them on purpose.
+    #
+    # A count here answers "did the action still do the whole job", where a timing answers "how
+    # long did it take". They are scored the same way and they mean opposite things when they
+    # move: a timing falling is the result, a count falling is a regression.
+    #
+    # This exists because `select_all_copy` asserted only `chars > 0`. Its selection is taken over
+    # the viewport's DOM, so any change that stops mounting the whole thread -- windowing,
+    # virtualization, a progressive mount that never widens -- truncates the clipboard silently
+    # and still passes. From a user's point of view a copy that drops most of the conversation is
+    # data loss, and it is the classic regression of every list that starts unmounting rows.
+    #
+    # The reference is the OTHER ARM rather than an absolute threshold. Both arms of an A/B seed a
+    # byte-identical thread, so a treatment that truncates reads as a large negative delta scored
+    # against the null control's own spread, and nothing has to be calibrated per rung or per
+    # platform. A count is therefore only meaningful in a paired comparison, which is the only
+    # place it is read.
+    counts: dict = field(default_factory = dict)
     reason: Optional[str] = None
     slot_missed: bool = False
 
     def __post_init__(self) -> None:
         if not self.ran:
             self.timings = {}
+            # Same rule as `timings`, for the same reason: an action that did not happen has no
+            # invariant to report, and a zero left here would read as "the whole job was done, and
+            # it did nothing", which is the exact inversion of what happened.
+            self.counts = {}
             self.expect_ok = None
             if not self.reason:
                 self.reason = "action did not run and gave no reason"
@@ -190,6 +212,7 @@ class ActionResult:
             "expect_ok": self.expect_ok,
             "expect": self.expect,
             "timings": self.timings,
+            "counts": self.counts,
             "reason": self.reason,
             "slot_missed": self.slot_missed,
         }

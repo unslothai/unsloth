@@ -1108,6 +1108,12 @@ export const ko = {
         collapseByDefaultDescription:
           "모델이 생각하는 동안 사고 과정을 자동으로 펼치지 않고 접어 둡니다. 읽으려면 블록을 펼치세요.",
       },
+      webSearch: {
+        title: "웹 검색",
+        images: "웹 검색 이미지 표시",
+        imagesDescription:
+          "웹 검색이 이미지를 반환하고, 답변에 나열된 항목마다 하나씩 가져옵니다. 썸네일은 Studio가 가져와 축소하므로 브라우저가 이미지 호스트에 접속하지 않습니다.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "HTML 블록 접기",
