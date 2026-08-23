@@ -54,9 +54,13 @@ def test_uv_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
     # Pinned, not floored: see _MLX_INSTALL_SPECS.
     assert "mlx==0.32.1" in cmd
     assert "mlx-lm==0.31.3" in cmd
-    assert not [
-        spec for spec in mr.MLX_PACKAGES if spec.startswith("mlx==") and ">=" in spec
-    ], "mlx must not be resolved against a floor"
+    # Look the requirement up by name rather than by prefix. Asserting on
+    # startswith("mlx==") could only ever be checked on a spec that already
+    # pins, so it passed vacuously the moment the pin was relaxed, which is the
+    # one case worth catching.
+    for name in ("mlx", "mlx-lm"):
+        spec = mr._MLX_INSTALL_SPECS[name]
+        assert spec.startswith("=="), f"{name} must be pinned, not floored: got {spec}"
 
 
 def test_uv_executable_finds_installer_location_when_path_is_minimal(monkeypatch, tmp_path):

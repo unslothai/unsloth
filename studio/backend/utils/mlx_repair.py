@@ -65,6 +65,14 @@ _MLX_RUNTIME_IMPORTS = ("mlx.core", "mlx_lm", "mlx_lm.sample_utils", "mlx_vlm")
 # Keep in sync with unsloth-zoo's pyproject darwin deps. mlx-vlm stays a range so
 # the resolver can pick 0.6.15 here, where the installer overrides mlx-vlm's
 # transformers requirement, and 0.6.4 under the plain cap.
+#
+# 0.32.1 is chosen with its known defect, not in ignorance of it: it segfaults at
+# interpreter finalization when a fused Metal custom kernel is the last work a
+# process did, which unsloth-zoo measured and works around in
+# tests/_run_then_exit_hard.py. Staying on 0.32.0 to dodge that would give back
+# mlx#3833, where two fast.metal_kernel instances sharing a name but not a source
+# silently run the first kernel's code for the second. A noisy exit after the work
+# is finished beats wrong numbers from the fused kernels this stack is built on.
 _MLX_INSTALL_SPECS = {
     "mlx": "==0.32.1",
     "mlx-lm": "==0.31.3",
