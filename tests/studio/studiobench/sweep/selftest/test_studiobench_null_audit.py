@@ -653,7 +653,10 @@ def test_a_difference_in_one_repetition_only_needs_no_excuse(tmp_path):
     result = null_run(
         tmp_path,
         "result",
-        [("r100K", "rep0", "settings", "AAA", "BBB"), ("r100K", "rep1", "settings", "SAME", "SAME")],
+        [
+            ("r100K", "rep0", "settings", "AAA", "BBB"),
+            ("r100K", "rep1", "settings", "SAME", "SAME"),
+        ],
     )
     assert U.actions_needing_an_excuse([result], min_reps = 2) == set()
 

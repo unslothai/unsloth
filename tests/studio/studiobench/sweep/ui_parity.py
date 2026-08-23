@@ -277,9 +277,7 @@ def actions_needing_an_excuse(paths: list[Path], min_reps: int) -> set[str]:
     """
     results, _ = compare_all(paths)
     differing = [e for e in results if e[3]["verdict"] == P.DIFFER]
-    one_sided = [
-        e for e in results if e[3]["verdict"] == P.NOT_EXERCISED and e[3].get("one_sided")
-    ]
+    one_sided = [e for e in results if e[3]["verdict"] == P.NOT_EXERCISED and e[3].get("one_sided")]
     firm_differing, _ = corroborated(differing, min_reps)
     firm_one_sided, _ = corroborated(one_sided, min_reps)
     return {e[0] for e in firm_differing} | {e[0] for e in firm_one_sided}
