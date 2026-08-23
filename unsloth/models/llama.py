@@ -3192,9 +3192,11 @@ class FastLlamaModel:
             old_target_modules += modules_to_tie
 
             # Combine all
-            new_target_modules = list(target_modules) + list(
-                modules_to_save if modules_to_save is not None else []
-            ) + modules_to_tie
+            new_target_modules = (
+                list(target_modules)
+                + list(modules_to_save if modules_to_save is not None else [])
+                + modules_to_tie
+            )
             # Per-expert Linear MoE experts (e.g. gpt-oss bnb-4bit) were auto-added to the
             # saved target_modules when the adapter was first created. Recompute them so a
             # repeat get_peft_model call with the same args stays idempotent instead of
