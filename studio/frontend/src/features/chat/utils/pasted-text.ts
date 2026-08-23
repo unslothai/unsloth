@@ -57,19 +57,25 @@ function isMacPlatform(): boolean {
 }
 
 /**
- * The paste-without-formatting chord, ⇧⌘V on macOS and Ctrl+Shift+V elsewhere.
- * It asks for the clipboard in the field, so a paste made with it stays inline
- * however long it is. `code` before `key`, since Shift can rewrite `key`.
+ * The paste-without-formatting chord: ⌥⇧⌘V on macOS, which is what its Edit
+ * menu carries and so the only one that actually pastes there, and Ctrl+Shift+V
+ * elsewhere. It asks for the clipboard in the field, so a paste made with it
+ * stays inline however long it is.
  */
 export function isPlainPasteChord(
   event: PlainPasteKeyEvent,
   mac: boolean = isMacPlatform(),
 ): boolean {
-  if (!event.shiftKey || event.altKey) return false;
+  if (!event.shiftKey) return false;
   // The other platform's modifier is a different chord, not this one.
   if (mac ? !event.metaKey || event.ctrlKey : !event.ctrlKey || event.metaKey) {
     return false;
   }
+  // Option belongs to the chord on macOS and to nothing off it. ⇧⌘V is taken
+  // on macOS too: web apps bind it, so a host that maps it should reach the
+  // field rather than the attachment path.
+  if (event.altKey && !mac) return false;
+  // `code` before `key`: Option rewrites `key` on macOS, ⌥V being "√".
   if (event.code) return event.code === "KeyV";
   return (event.key ?? "").toLowerCase() === "v";
 }
