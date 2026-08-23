@@ -20,6 +20,7 @@ standing over two different amounts of work in the same table.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -32,7 +33,10 @@ from studiobench.__main__ import (  # noqa: E402
     LADDER_RATIO_TOLERANCE,
     _resume_set,
     ladder_ratio_problems,
+    payload_mark,
     recorded_identities,
+    recorded_ladder,
+    rollback_session_rows,
 )
 from studiobench.runtime.types import Paths, Recorder  # noqa: E402
 
@@ -88,6 +92,15 @@ def _cell(rung: str, meta: dict) -> dict:
         "completed": True,
         "fidelity": "ok",
     }
+
+
+def _rows(paths: Paths) -> list:
+    """Every row in the payload, as JSON."""
+    return [
+        json.loads(line)
+        for line in paths.payload_jsonl.read_text(encoding = "utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 def _problems(paths: Paths, measured: float) -> list:
@@ -192,3 +205,90 @@ def test_an_unmeasurable_ratio_is_not_a_refusal(tmp_path, measured):
         [_cell("1K", {"ladder_chars_per_token": _ratio(4.0, "whitespace estimate", True)})],
     )
     assert _problems(paths, measured) == []
+
+
+# ── A REFUSAL LEAVES THE PAYLOAD IT REFUSED EXACTLY AS IT FOUND IT ──────────────
+
+
+def test_a_refused_resume_rolls_back_every_row_it_wrote(tmp_path):
+    """The refusal arrives after the `Recorder` has opened the file, so it has to undo itself.
+
+    `prepare_payload` and `commit_problems` refuse before the `Recorder` exists. This check cannot:
+    the ratio is not known until `build_cells` has measured the corpus, which is after `run_meta`,
+    after the gates and after an optional `--surfaces` sweep. Without the rollback a refused
+    `--resume --rungs 1K,10K` over a finished 1K payload leaves 10K promised in a file it never
+    touched, and `recorded_ladder` folds every `run_meta` in the file on purpose.
+    """
+
+    paths = _payload(
+        tmp_path,
+        [_cell("1K", {"ladder_chars_per_token": _ratio(3.336, "tiktoken/cl100k", False)})],
+    )
+    before = paths.payload_jsonl.read_bytes()
+    assert recorded_ladder(paths.payload_jsonl) == ["1K", "10K", "100K"]
+
+    # Exactly what `run` writes between opening the payload and asking the ratio question.
+    mark = payload_mark(paths.payload_jsonl)
+    refused = Recorder(paths.payload_jsonl, "sess-2")
+    refused.gate("instrument_unavailable:rss", False, {"error": "psutil is not installed"})
+    refused.emit(
+        {
+            "row_type": "run_meta",
+            "tier": "standard",
+            "tool_version": "0.1.0",
+            "corpus_hash": CORPUS,
+            "studio_ref": "main",
+            "bundle": {"production": True},
+            "platform": {"system": "Linux"},
+            "started_at": "2026-01-02T00:00:00",
+            "cadence": "field",
+            "rungs": ["1K", "10K", "1M"],
+            "reps": 1,
+            "instrument_level": 0,
+        }
+    )
+    refused.gate("ladder_ratio_measured", False, _ratio(4.0, "whitespace estimate", True))
+    assert paths.payload_jsonl.read_bytes() != before
+    assert "1M" in recorded_ladder(paths.payload_jsonl)
+
+    assert _problems(paths, 4.0) != []
+    refused.close()
+    dropped = rollback_session_rows(paths.payload_jsonl, mark, log = lambda _m: None)
+
+    assert dropped > 0
+    assert paths.payload_jsonl.read_bytes() == before
+    # The two ways the leftovers were visible: a rung the payload never owed, and a failed gate
+    # charged to somebody else's evidence.
+    assert recorded_ladder(paths.payload_jsonl) == ["1K", "10K", "100K"]
+    assert [
+        r for r in _rows(paths) if r.get("row_type") == "gate" and r.get("passed") is False
+    ] == []
+    assert {r.get("session_id") for r in _rows(paths)} == {"sess-1"}
+    # And the payload still resumes at the ratio it was recorded at.
+    assert _problems(paths, 3.336) == []
+    assert _resume_set(paths) == {"r1K.A0.rep0"}
+
+
+def test_a_rollback_never_cuts_into_what_it_was_given(tmp_path):
+    """The mark is a floor. A session that wrote nothing drops nothing, and a mark at or beyond the
+    end of the file is a no-op rather than a truncation of somebody else's rows."""
+
+    paths = _payload(
+        tmp_path,
+        [_cell("1K", {"ladder_chars_per_token": _ratio(3.336, "tiktoken/cl100k", False)})],
+    )
+    before = paths.payload_jsonl.read_bytes()
+    mark = payload_mark(paths.payload_jsonl)
+    assert mark == len(before)
+
+    assert rollback_session_rows(paths.payload_jsonl, mark, log = lambda _m: None) == 0
+    assert rollback_session_rows(paths.payload_jsonl, mark + 4096, log = lambda _m: None) == 0
+    assert paths.payload_jsonl.read_bytes() == before
+
+
+def test_the_mark_of_a_payload_that_does_not_exist_yet_is_its_length(tmp_path):
+    """`--resume` onto a missing file: the mark is 0, which is how long that file is."""
+
+    paths = Paths.under(tmp_path / "out")
+    assert payload_mark(paths.payload_jsonl) == 0
+    assert rollback_session_rows(paths.payload_jsonl, 0, log = lambda _m: None) == 0
