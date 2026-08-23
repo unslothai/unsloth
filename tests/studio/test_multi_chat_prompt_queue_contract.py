@@ -20,6 +20,8 @@ def flat(source):
     the expression rather than its layout.
     """
     return re.sub(r"\s+", " ", source)
+
+
 THREAD = (FRONTEND / "components/assistant-ui/thread.tsx").read_text(encoding = "utf-8")
 APP_SIDEBAR = (FRONTEND / "components/app-sidebar.tsx").read_text(encoding = "utf-8")
 CHAT_ADAPTER = (FRONTEND / "features/chat/api/chat-adapter.ts").read_text(encoding = "utf-8")
@@ -694,9 +696,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         < ensure_compare_model.index("const resp = await loadModel(")
     )
     assert "force_cancel_active:" in SHARED_COMPOSER
-    assert (
-        "resolvedThreadId === useChatRuntimeStore.getState().activeThreadId"
-        in flat(CHAT_ADAPTER)
+    assert "resolvedThreadId === useChatRuntimeStore.getState().activeThreadId" in flat(
+        CHAT_ADAPTER
     )
     assert (
         "findLatestUserAudioBase64(\n        survivingMessages,\n        !queuedRunSettings"
