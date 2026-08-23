@@ -295,6 +295,34 @@ test("the tab-search chord counts as browser-owned on both platforms", () => {
   assert.ok(isBrowserReservedBinding("Mod+Shift+KeyA", false));
 });
 
+// A chord behind a hidden developer menu is not one the browser took from the
+// user, and these sets drive a warning the user reads. Safari has both of
+// these, but only once the Develop menu is switched on, so reserving them
+// would tell every macOS user something untrue about their own keyboard.
+test("an opt-in developer chord is not treated as taken", () => {
+  for (const value of ["Mod+Alt+KeyE", "Mod+Alt+KeyR"]) {
+    for (const mac of [true, false]) {
+      assert.equal(
+        isBrowserReservedBinding(value, mac),
+        false,
+        `${value} warns about a menu most users never turn on`,
+      );
+    }
+  }
+  // So they stay usable as defaults, which is where the chat chords sit.
+  for (const [id, value] of [
+    ["archiveChat", "Mod+Alt+KeyE"],
+    ["renameChat", "Mod+Alt+KeyR"],
+  ] as const) {
+    const def = SHORTCUT_DEFS.find((d) => d.id === id);
+    assert.ok(def);
+    assert.equal(defaultBindingFor(def, "primary", true), value);
+  }
+  // The bar is what the browser takes out of the box, which ⌥⌘U is: Chrome
+  // ships view source on it with nothing to enable.
+  assert.ok(isBrowserReservedBinding("Mod+Alt+KeyU", true));
+});
+
 test("the browsers' own run on macOS is reserved there and only there", () => {
   // ⌥⌘ is where Chrome keeps view source, dev tools, the console, bookmarks,
   // split view, web search and tab switching, and Firefox its element picker

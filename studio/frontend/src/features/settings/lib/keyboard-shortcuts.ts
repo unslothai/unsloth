@@ -274,6 +274,17 @@ export function defaultBindingFor(
  * all; the rest is cancellable, but taking it breaks the browser's own action.
  * Both work in the desktop build, so they still ship as defaults and the tab
  * flags them on the web.
+ *
+ * What gets in, here and in the two platform sets below: a chord the browser
+ * takes from every user out of the box. These sets drive a warning the user
+ * reads and a test no default may fail, and both are only worth anything if
+ * the chord really is gone on the machine in front of them. A chord that only
+ * binds once a hidden developer menu is switched on does not qualify -- Safari
+ * puts Empty Caches on ⌥⌘E and reloads from origin on ⌥⌘R, but only for
+ * someone who went and enabled the Develop menu, so warning every macOS user
+ * about them would be telling almost all of them something untrue. Where a
+ * default and an opt-in chord do collide, the tab that raised the menu is also
+ * the tab that rebinds.
  */
 const BROWSER_RESERVED_VALUES = new Set<string>([
   "Mod+KeyN",
