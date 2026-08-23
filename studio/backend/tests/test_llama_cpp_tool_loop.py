@@ -3797,12 +3797,19 @@ def test_a_respawn_refit_that_misses_its_target_still_archives_and_reports(monke
         notices = [event for event in events if event.get("type") == "context_truncated"]
         assert [notice["context_length"] for notice in notices] == [2000, 1000]
         refit = notices[1]
-        # The rescued refusal is reported without a sticky boundary.
+        # The rescued refusal reports what it evicted, boundary included: the client reads
+        # that depth to decide which turn shows the compaction notice, so a rescue that
+        # recorded nothing would compact silently and stay silent after a reload. It is
+        # still not REPLAYED -- `_sticky_compaction_boundary` declines any `fits` false
+        # record before it reads the depth, which is where that distinction belongs.
         assert refit["fits"] is False
         assert refit["dropped_messages"] == 2
         assert refit["prompt_tokens_after"] == 900 < refit["prompt_tokens_before"]
-        assert "boundary_messages" not in refit
-        assert "boundary_anchor" not in refit
+        # 4, not the 2 of `dropped_messages`: the boundary is counted against the
+        # REQUEST's own leading messages, which is what the next request replays it
+        # against, while the drop count is what this one fit removed.
+        assert refit["boundary_messages"] == 4
+        assert "boundary_anchor" in refit
         assert archived[-1] == (3, 1)
         assert len(payloads[1]["messages"]) == 1
 

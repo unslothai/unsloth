@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   compactionBoundary,
+  lastFitShortened,
   mergeContextTruncation,
   promptWasShortened,
 } from "../src/features/chat/utils/context-truncation.ts";
@@ -57,10 +58,30 @@ test("a shortened prompt still counts as a compaction, whatever fits says", () =
   assert.equal(promptWasShortened(undefined), false);
 });
 
-test("a shortened refusal announces itself but never sets the boundary", () => {
-  // It records no boundary_messages on purpose, and its dropped count is a per-refit
-  // SUM, not a position. Reading the sum as a position would set a high-water mark that
-  // `showsNotice` cannot see exceeded again.
+test("a shortened refusal records its boundary, so the notice survives a reload", () => {
+  // A rescue evicts for real, so it reports its depth like any other compaction and the
+  // persisted notice can find it. Saving the depth is not the same as replaying it:
+  // `_sticky_compaction_boundary` still declines any record whose `fits` is false.
+  const rescued = { fits: false, dropped_messages: 6, boundary_messages: 6 };
+  assert.equal(compactionBoundary(rescued), 6);
+  assert.equal(promptWasShortened(rescued), true);
+
+  // A boundary is absolute, so refitting three times does not inflate it.
+  let refits = { fits: false, dropped_messages: 4, boundary_messages: 4 };
+  for (const chunk of [
+    { fits: false, dropped_messages: 6, boundary_messages: 6 },
+    { fits: false, dropped_messages: 6, boundary_messages: 6 },
+  ]) {
+    refits = mergeContextTruncation(refits, chunk);
+  }
+  assert.equal(refits.dropped_messages, 16);
+  assert.equal(compactionBoundary(refits), 6);
+});
+
+test("a record with no boundary never guesses one from a summed drop count", () => {
+  // The legacy fallback exists for turns saved before boundary_messages was recorded, and
+  // those all fit. On anything else the count is a per-refit SUM, not a position, and
+  // reading it as one sets a high-water mark `showsNotice` cannot see exceeded again.
   const oneRefit = { dropped_messages: 2, fits: false };
   let toolLoop = { fits: false, dropped_messages: 4 };
   for (const chunk of [
@@ -82,6 +103,38 @@ test("a shortened refusal announces itself but never sets the boundary", () => {
     compactionBoundary({ dropped_messages: 16, fits: false, boundary_messages: 4 }),
     4,
   );
+});
+
+test("the last fit's drops are kept apart from the turn's running total", () => {
+  // `dropped_messages` accumulates per refit and `fits` is last-wins, so the pair cannot
+  // answer "was the prompt we actually SENT shortened?". A turn that rescued early and
+  // then refused, sending the originals, reads as a rescue if you ask the total.
+  const merged = mergeContextTruncation(
+    { fits: true, dropped_messages: 4, boundary_messages: 4 },
+    { fits: false, dropped_messages: 0 },
+  );
+
+  assert.equal(merged.fits, false);
+  assert.equal(merged.dropped_messages, 4);
+  // The turn DID compact, so the notice still fires.
+  assert.equal(promptWasShortened(merged), true);
+  // But the last fit sent the originals, and that is what a resume has to know.
+  assert.equal(lastFitShortened(merged), false);
+
+  // A genuinely rescued final fit still reads as shortened.
+  assert.equal(
+    lastFitShortened(
+      mergeContextTruncation(
+        { fits: true, dropped_messages: 4 },
+        { fits: false, dropped_messages: 6 },
+      ),
+    ),
+    true,
+  );
+  // And an unmerged single-event turn has no separate count, so the total IS the last fit.
+  assert.equal(lastFitShortened({ fits: false, dropped_messages: 2 }), true);
+  assert.equal(lastFitShortened({ fits: false, dropped_messages: 0 }), false);
+  assert.equal(lastFitShortened(undefined), false);
 });
 
 test("a rescued turn cannot silence the compactions that follow it", () => {
@@ -158,6 +211,9 @@ test("tool-loop truncation metadata accumulates across stream events", () => {
 
   assert.deepEqual(combined, {
     dropped_messages: 5,
+    // Alongside the total, never instead of it: `fits` is last-wins while the total
+    // accumulates, so the pair cannot say whether the prompt SENT was shortened.
+    last_fit_dropped_messages: 3,
     prompt_tokens_before: 1200,
     prompt_tokens_after: 700,
     context_length: 1400,

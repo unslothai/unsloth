@@ -809,6 +809,22 @@ def _branch_boundary(conversation: list[dict], branch: Optional[list[dict]]) -> 
     return count
 
 
+def _records_boundary(truncation: dict) -> bool:
+    """Whether a fit removed turns from the prompt it sent, so its depth is worth saving.
+
+    Not ``fits``. A rescued fit misses the reply reserve and reports false, but it really
+    did evict, and the client reads the recorded depth to decide which turn shows the
+    "this conversation was compacted" notice -- so a rescue that records nothing is a
+    compaction the user is never told about, and never told about again after a reload.
+
+    Saving it does not make it REPLAYABLE: `_sticky_compaction_boundary` returns 0 for any
+    record whose `fits` is false, before it ever reads the depth. That is the right place
+    for the distinction, because replaying is what a missed reserve makes unsafe -- being
+    honest about what was dropped is not.
+    """
+    return bool(truncation.get("fits")) or bool(truncation.get("dropped_messages"))
+
+
 def _branch_non_system(branch: Optional[list[dict]]) -> list[dict]:
     """The branch as ``_branch_boundary`` counts it: system and developer turns removed."""
     return [
@@ -23110,7 +23126,7 @@ class LlamaCppBackend:
                     )
                     openai_messages = _recalled["conversation"]
                     truncation = {**truncation, **_recalled["counts"]}
-                if truncation and truncation.get("fits"):
+                if truncation and _records_boundary(truncation):
                     truncation = {
                         **truncation,
                         "boundary_messages": _branch_boundary(openai_messages, _before_fit),
@@ -23808,7 +23824,7 @@ class LlamaCppBackend:
                                 _rolling_anchor_ids.add(id(_message))
                             for _ev in _recalled["events"]:
                                 yield _ev
-                    if truncation and truncation.get("fits"):
+                    if truncation and _records_boundary(truncation):
                         truncation = {
                             **truncation,
                             "boundary_messages": _branch_boundary(conversation, _request_branch),
@@ -23923,8 +23939,7 @@ class LlamaCppBackend:
                         conversation, _markup_cache, self.markup_profile
                     )
                     if truncation:
-                        if truncation["fits"]:
-                            # Only a successful fit defines a boundary worth replaying.
+                        if _records_boundary(truncation):
                             truncation["boundary_messages"] = _branch_boundary(
                                 conversation, _request_branch
                             )
@@ -25345,7 +25360,7 @@ class LlamaCppBackend:
                             _rolling_anchor_ids.add(id(_message))
                         for _ev in _recalled["events"]:
                             yield _ev
-                if truncation and truncation.get("fits"):
+                if truncation and _records_boundary(truncation):
                     truncation = {
                         **truncation,
                         "boundary_messages": _branch_boundary(conversation, _request_branch),
@@ -25440,7 +25455,7 @@ class LlamaCppBackend:
                     conversation, None, self.markup_profile
                 )
                 if truncation:
-                    if truncation["fits"]:
+                    if _records_boundary(truncation):
                         truncation["boundary_messages"] = _branch_boundary(
                             conversation, _request_branch
                         )

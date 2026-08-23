@@ -30,6 +30,26 @@ export function promptWasShortened(
   return (truncation?.dropped_messages ?? 0) > 0;
 }
 
+/**
+ * Whether the LAST fit of a turn shortened the prompt it sent.
+ *
+ * Distinct from `promptWasShortened`, which asks whether the turn compacted at all and is
+ * right for the notice. A turn refits once per tool iteration: `dropped_messages` sums
+ * every fit while `fits` takes the last one, so an early rescue followed by a final
+ * refusal that sent the originals reads as "shortened AND not fitting" -- the signature of
+ * a rescue, from a turn that had none. Anything deciding what to do with the prompt that
+ * was actually sent has to ask the last fit.
+ */
+export function lastFitShortened(
+  truncation: ContextTruncation | undefined,
+): boolean {
+  if (!truncation) return false;
+  // Absent on an unmerged single-event turn, where the running total IS the last fit.
+  return (
+    (truncation.last_fit_dropped_messages ?? truncation.dropped_messages ?? 0) > 0
+  );
+}
+
 export function compactionBoundary(
   truncation: ContextTruncation | undefined,
 ): number {
@@ -59,6 +79,8 @@ export function mergeContextTruncation(
     ...current,
     ...incoming,
     dropped_messages: current.dropped_messages + incoming.dropped_messages,
+    // Kept apart from that total: see `lastFitShortened`.
+    last_fit_dropped_messages: incoming.dropped_messages ?? 0,
     prompt_tokens_before:
       current.prompt_tokens_before ?? incoming.prompt_tokens_before,
     prompt_tokens_after:

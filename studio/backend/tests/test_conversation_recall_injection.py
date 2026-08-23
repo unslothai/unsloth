@@ -841,6 +841,27 @@ def test_a_retrieval_budget_is_only_capped_where_it_would_take_most_of_the_turn(
     assert llama_cpp._retrieval_budget(3000, 3000, 9000, reply_returns = True) == 0
 
 
+def test_a_recorded_boundary_is_still_not_a_replayable_one():
+    """Recording a rescue's depth must not make it sticky.
+
+    The two questions are different. "What did this fit evict?" is what the client needs
+    to place the compaction notice, and a rescue has a real answer. "Which boundary should
+    the next request re-apply?" is what a missed reply reserve makes unsafe, and that gate
+    lives in `_sticky_compaction_boundary`, where it is decided on `fits` alone.
+    """
+    from core.inference import llama_cpp
+
+    rescued = {"fits": False, "dropped_messages": 6, "boundary_messages": 6}
+    fitted = {"fits": True, "dropped_messages": 6, "boundary_messages": 6}
+    refused = {"fits": False, "dropped_messages": 0}
+
+    # Recorded on anything that actually evicted...
+    assert llama_cpp._records_boundary(rescued) is True
+    assert llama_cpp._records_boundary(fitted) is True
+    # ...and not on a refusal that returned the originals, which evicted nothing.
+    assert llama_cpp._records_boundary(refused) is False
+
+
 def test_both_local_tool_loops_size_retrieval_with_the_same_policy():
     """One implementation, not a copy per backend.
 
