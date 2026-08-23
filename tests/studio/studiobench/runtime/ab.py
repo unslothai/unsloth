@@ -277,7 +277,9 @@ def failed_invalidating_gates(records: Sequence[Mapping[str, Any]]) -> dict[str,
         # the film measures, which is a defect about the build, and waiving it let a real failure
         # ride the instrument allowance. Readiness now refuses that cell outright, so this is the
         # second of two doors on the same hole.
-        unmeasured = detail.get("follow_attempted") is False or detail.get("probe_attempted") is False
+        unmeasured = (
+            detail.get("follow_attempted") is False or detail.get("probe_attempted") is False
+        )
         if unmeasured and "viewport" not in str(detail.get("reason") or "").lower():
             continue
         why = detail.get("reason") or detail.get("coverage_reason") or "the cell's own self-check"
