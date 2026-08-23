@@ -36,10 +36,8 @@ cat > "$WORK/roc/rocminfo" <<'STUB'
 [ -s "$STUB_ROCMINFO" ] || exit 1
 cat "$STUB_ROCMINFO"
 STUB
-# `amd-smi list` prints BDF / UUID / KFD_ID / NODE_ID / PARTITION_ID and no gfx
-# token, so the arch always has to come from `static --asic`. The stub used to leak
-# TARGET_GRAPHICS_VERSION into `list`, which meant the fallthrough between the two
-# subcommands was never exercised.
+# `amd-smi list` prints BDF / UUID / KFD_ID and no gfx token, so the arch has to come
+# from `static --asic`. A stub that leaks it into `list` never tests the fallthrough.
 cat > "$WORK/smi/amd-smi" <<'STUB'
 #!/bin/sh
 [ -s "$STUB_AMDSMI" ] || exit 1
@@ -65,8 +63,7 @@ summary() {
     _path="$WORK/base"
     [ "$1" != "-" ] && _path="$WORK/roc:$_path"
     [ "$2" != "-" ] && _path="$WORK/smi:$_path"
-    # install.sh runs this block under `set -e`; match it so a guard that aborts the
-    # installer cannot pass here.
+    # install.sh runs this block under `set -e`; match it.
     env -i PATH="$_path" \
         STUB_ROCMINFO="$1" STUB_AMDSMI="$2" \
         ${3:+HIP_VISIBLE_DEVICES="$3"} \
@@ -127,9 +124,8 @@ Agent 3
   Marketing Name:          AMD Radeon RX 7900 XTX
   Device Type:             GPU
 EOF
-# amd-smi upper-cases every key in its human-readable output, so MARKET_NAME is what
-# a real host prints. The old fixture spelled it "Market Name" -- the one spelling the
-# parser happened to match -- so the naming path was green here and dead in production.
+# MARKET_NAME is what a real host prints. Spelling it "Market Name" -- the one form the
+# old parser matched -- kept this green while the naming path was dead in production.
 cat > "$WORK/smi_fixture" <<'EOF'
 GPU: 0
     ASIC:
@@ -150,8 +146,7 @@ GPU: 0
         MARKET_NAME: AMD Instinct MI300X OAM: 750W SKU
         TARGET_GRAPHICS_VERSION: gfx942
 EOF
-# Three adapters. The arch was indexed by the visible-device mask while the name was
-# always the first adapter's, so selecting a later card announced another card's name.
+# Three adapters: the arch followed the mask, the name was always adapter 0's.
 cat > "$WORK/smi_three" <<'EOF'
 GPU: 0
     ASIC:
@@ -169,8 +164,7 @@ GPU: 2
         VENDOR_ID: 0x1002
         TARGET_GRAPHICS_VERSION: gfx1201
 EOF
-# amd-smi 6.1.1 ships MARKET_NAME with no TARGET_GRAPHICS_VERSION, so the arch is
-# inferred from the name, which makes the name the thing that picks the wheel.
+# amd-smi 6.1.1 has MARKET_NAME and no TARGET_GRAPHICS_VERSION, so the name picks the wheel.
 cat > "$WORK/smi_two_nogfx" <<'EOF'
 GPU: 0
     ASIC:
@@ -181,9 +175,8 @@ GPU: 1
         MARKET_NAME: AMD Radeon AI PRO R9700
         VENDOR_ID: 0x1002
 EOF
-# The #7307 reporter's shape: a Ryzen iGPU plus two IDENTICAL R9700s. The two dGPU
-# records are byte-identical, so a selector that folds duplicate lines away resolves
-# device 2 back to ordinal 0 -- the iGPU.
+# The #7307 shape: a Ryzen iGPU plus two IDENTICAL R9700s. The two dGPU records are
+# byte-identical, so a selector that folds duplicates resolves device 2 to the iGPU.
 cat > "$WORK/roc_twins" <<'EOF'
 Agent 1
 *******
@@ -289,8 +282,7 @@ assert_eq "an ordinal past a duplicated arch still selects its own device" \
     "gfx1100|AMD Radeon PRO W7900" "$(summary "$WORK/roc_three_dup" "$WORK/empty" 2)"
 assert_eq "and the duplicate before it keeps its own name" \
     "gfx1100|AMD Radeon RX 7900 XTX" "$(summary "$WORK/roc_three_dup" "$WORK/empty" 1)"
-# Two of the same card produce two byte-identical records; the second one must still
-# be a device, not a duplicate line to be folded away.
+# The second identical card must still be a device, not a line to fold away.
 assert_eq "two identical cards are still two devices" \
     "gfx1201|AMD Radeon AI PRO R9700" "$(summary "$WORK/roc_twins" "$WORK/empty" 2)"
 

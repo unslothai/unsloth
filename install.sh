@@ -4766,12 +4766,10 @@ _rocminfo_gpu_records() {
     '
 }
 
-# Same record shape for amd-smi: one `gfx|marketing name` per adapter, in `GPU: N` order.
-# Without this the arch was indexed by the visible-device mask while the name was always
-# the first adapter's, so selecting a later card paired its arch with another card's name
-# -- and on amd-smi builds predating TARGET_GRAPHICS_VERSION (present in 6.1.1's docs
-# without it) the name is what the arch is inferred from, so the wrong arch reached
-# --rocm-gfx. Keep in sync with studio/setup.sh.
+# One `gfx|marketing name` per adapter, in `GPU: N` order, so the mask picks both halves
+# of one device. Was: arch indexed, name always adapter 0's -- and on amd-smi 6.1.1, which
+# has no TARGET_GRAPHICS_VERSION, that name is what --rocm-gfx is inferred from.
+# Keep in sync with studio/setup.sh.
 _amd_smi_gpu_records() {
     awk '
         function value(line,   v) {
@@ -4784,8 +4782,8 @@ _amd_smi_gpu_records() {
             if (started) print gfx "|" mkt
             gfx = ""; mkt = ""
         }
-        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys), so the real
-        # fields are MARKET_NAME and TARGET_GRAPHICS_VERSION; matched case-folded anyway.
+        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys): MARKET_NAME,
+        # TARGET_GRAPHICS_VERSION. Matched case-folded so older spellings work too.
         /^[[:space:]]*GPU:[[:space:]]*[0-9]/ { flush(); started = 1; next }
         !started { next }
         tolower($0) ~ /market.?name/ { if (mkt == "") mkt = value($0); next }
@@ -4817,8 +4815,7 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
         _gpu_disp_gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         [ -z "$_gpu_disp_gfx_all" ] && \
             _gpu_disp_gfx_all=$(printf '%s\n' "$_gpu_disp_smi_records" | awk -F'|' '$1 != "" { print $1 }')
-        # Only once amd-smi actually enumerated something does it own the device list;
-        # a silent amd-smi must leave rocminfo's APU fallback record alone.
+        # A silent amd-smi does not own the device list: keep rocminfo's APU fallback.
         [ -n "$_gpu_disp_smi_records" ] && _gpu_disp_records="$_gpu_disp_smi_records"
     fi
     _gpu_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
@@ -4834,8 +4831,7 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
         _gpu_disp_gfx=${_gpu_disp_record%%|*}
         _gpu_disp_mkt=${_gpu_disp_record#*|}
     fi
-    # Only amd-smi builds old enough to predate TARGET_GRAPHICS_VERSION reach this: their
-    # records carry names but no arch, so the arch comes from the separate list probe.
+    # Only pre-TARGET_GRAPHICS_VERSION amd-smi lands here: names but no arch in the record.
     if [ -z "$_gpu_disp_gfx" ]; then
         _gpu_disp_gfx=$(printf '%s\n' "$_gpu_disp_gfx_all" | awk -v idx="$_gpu_vis_idx" \
             'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')

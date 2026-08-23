@@ -20,10 +20,8 @@ _FUNC_FILE=$(mktemp)
 . "$_FUNC_FILE"
 rm -f "$_FUNC_FILE"
 
-# The visible-device pick both scripts apply to the record list, read OUT OF the
-# scripts rather than restated here: a restated copy cannot fail when the real one
-# changes, and re-adding the old `!seen[$0]++` dedup to production used to leave
-# this file green while collapsing duplicate-arch ordinals.
+# The visible-device pick, read OUT OF the scripts: a restated copy cannot fail when
+# the real one changes (re-adding `!seen[$0]++` to production left this file green).
 _extract_pick() { awk '/_[a-z_]*record=\$\(printf/ {
                            getline
                            sub(/^[[:space:]]*'"'"'/, "")
@@ -48,8 +46,7 @@ assert_eq() {
 _body_install=$(sed -n '/^_rocminfo_gpu_records()/,/^}/p' "$INSTALL_SH" | tail -n +2)
 _body_setup=$(sed -n '/^_setup_rocminfo_gpu_records()/,/^}/p' "$SETUP_SH" | tail -n +2)
 assert_eq "install.sh and setup.sh parsers are identical" "$_body_install" "$_body_setup"
-# The parser is only half the contract: the two scripts must also select the same
-# record from it, or one names the card the other does not.
+# The scripts must also select the same record, or one names a card the other does not.
 assert_eq "install.sh and setup.sh record selectors are identical" \
     "$_PICK_PROG" "$_PICK_PROG_SETUP"
 # The amd-smi side emits the same record shape and must not drift either.
@@ -216,10 +213,9 @@ Agent 1
   Device Type:             CPU
 EOF
 )
-# The ISA section repeats the agent's target id verbatim. Rejecting it is what the
-# leading ^ in the gfx match does; without the anchor, `match` would find gfx90a at
-# offset 20 of "amdgcn-amd-amdhsa--gfx90a:sramecc+:xnack-" while substr() still cuts
-# from RLENGTH+1, emitting a bogus "amdgcn" device and shifting every later ordinal.
+# The ISA section repeats the target id verbatim; the leading ^ is what rejects it.
+# Unanchored, match() finds gfx90a at offset 20 while substr() still cuts from
+# RLENGTH+1, emitting a bogus "amdgcn" device and shifting every later ordinal.
 ISA_TARGET_ID=$(cat <<'EOF'
 Agent 1
 *******
@@ -257,11 +253,8 @@ assert_eq "so device 1 is still the second card" \
     "gfx1100|AMD Radeon RX 7900 XTX" \
     "$(printf '%s\n' "$ISA_TARGET_ID" | _rocminfo_gpu_records | _pick 1)"
 
-# Every ISA ROCr can report today has at most four characters after "gfx"
-# (ROCR-Runtime's processor table tops out at gfx1201 / gfx1310), so the width cap
-# costs nothing now. If AMD ever ships a longer one, the trailing-character guard
-# must drop the device rather than report a silently truncated arch that would route
-# the wrong wheel.
+# ROCr's processor table tops out at four characters after "gfx", so the cap costs
+# nothing today. A longer one must drop the device, not report a truncated arch.
 WIDE=$(cat <<'EOF'
 Agent 1
 *******

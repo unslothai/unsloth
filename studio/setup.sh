@@ -2080,12 +2080,10 @@ _setup_rocminfo_gpu_records() {
     '
 }
 
-# Same record shape for amd-smi: one `gfx|marketing name` per adapter, in `GPU: N` order.
-# Without this the arch was indexed by the visible-device mask while the name was always
-# the first adapter's, so selecting a later card paired its arch with another card's name
-# -- and on amd-smi builds predating TARGET_GRAPHICS_VERSION (present in 6.1.1's docs
-# without it) the name is what the arch is inferred from, so the wrong arch reached
-# --rocm-gfx. Keep in sync with install.sh.
+# One `gfx|marketing name` per adapter, in `GPU: N` order, so the mask picks both halves
+# of one device. Was: arch indexed, name always adapter 0's -- and on amd-smi 6.1.1, which
+# has no TARGET_GRAPHICS_VERSION, that name is what --rocm-gfx is inferred from.
+# Keep in sync with install.sh.
 _setup_amd_smi_gpu_records() {
     awk '
         function value(line,   v) {
@@ -2098,8 +2096,8 @@ _setup_amd_smi_gpu_records() {
             if (started) print gfx "|" mkt
             gfx = ""; mkt = ""
         }
-        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys), so the real
-        # fields are MARKET_NAME and TARGET_GRAPHICS_VERSION; matched case-folded anyway.
+        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys): MARKET_NAME,
+        # TARGET_GRAPHICS_VERSION. Matched case-folded so older spellings work too.
         /^[[:space:]]*GPU:[[:space:]]*[0-9]/ { flush(); started = 1; next }
         !started { next }
         tolower($0) ~ /market.?name/ { if (mkt == "") mkt = value($0); next }
@@ -2187,8 +2185,7 @@ if [ "$_setup_nvidia_usable" != true ]; then
     elif command -v amd-smi >/dev/null 2>&1 && \
          _setup_run_smi amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
         _setup_amd_detected=true
-        # amd-smi owns the device list from here, so rocminfo's fallback name is replaced
-        # by amd-smi's own indexed records rather than left to win the selection.
+        # amd-smi owns the device list here, so its indexed records replace rocminfo's.
         _setup_amd_records=$(_setup_run_smi amd-smi static --asic 2>/dev/null | _setup_amd_smi_gpu_records || true)
         _setup_gfx_all=$(_setup_run_smi amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         [ -z "$_setup_gfx_all" ] && \
@@ -2223,8 +2220,7 @@ elif [ "$_setup_amd_detected" = true ]; then
         _setup_gfx=${_setup_amd_record%%|*}
         _setup_mkt=${_setup_amd_record#*|}
     fi
-    # Only amd-smi builds old enough to predate TARGET_GRAPHICS_VERSION reach this: their
-    # records carry names but no arch, so the arch comes from the separate list probe.
+    # Only pre-TARGET_GRAPHICS_VERSION amd-smi lands here: names but no arch in the record.
     if [ -z "$_setup_gfx" ]; then
         _setup_gfx=$(printf '%s\n' "$_setup_gfx_all" | awk -v idx="$_setup_vis_idx" \
             'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
