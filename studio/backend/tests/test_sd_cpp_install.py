@@ -871,11 +871,14 @@ def test_safe_extractall_refuses_to_flatten_when_a_unix_host_rejects_symlinks(
 ):
     # Off Windows a refusal means this filesystem cannot hold the layout sd-cli needs. Writing
     # the link text back as a file would rebuild the "file too short" install #9268 reports,
-    # which the runtime probe then discards and reinstalls on every load.
+    # which the runtime probe then discards and reinstalls on every load. Caught before
+    # extractall, so an upgrade that cannot finish still leaves the previous install runnable.
     target = tmp_path / "install"
     target.mkdir()
+    (target / "sd-cli").write_bytes(b"\x7fELF old working")
     archive = tmp_path / "libs.zip"
     with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("sd-cli", b"\x7fELF replacement")
         zf.writestr("libwebp.so.7.2.0", b"ELFpayload")
         _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0")
 
@@ -885,9 +888,25 @@ def test_safe_extractall_refuses_to_flatten_when_a_unix_host_rejects_symlinks(
     monkeypatch.setattr(Path, "symlink_to", _no_symlinks)
     monkeypatch.setattr(sdmod.sys, "platform", "linux")
     with zipfile.ZipFile(archive) as zf:
-        with pytest.raises(RuntimeError, match = "could not restore the symlink"):
+        with pytest.raises(RuntimeError, match = "cannot store symlinks"):
             _safe_extractall(zf, target)
     assert not (target / "libwebp.so.7").exists()
+    assert not (target / "libwebp.so.7.2.0").exists()
+    assert (target / "sd-cli").read_bytes() == b"\x7fELF old working"
+
+
+def test_safe_extractall_rejects_a_link_that_descends_through_itself(tmp_path):
+    # a -> a/x never reaches a second node, so exact-node repetition misses it, but resolving
+    # a walks a again and every load would fail with ELOOP and reinstall.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "loop.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        _link_member(zf, "libz.so", "libz.so/inner")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "symlink cycle"):
+            _safe_extractall(zf, target)
+    assert not any(target.iterdir())
 
 
 def test_safe_extractall_extracts_normal_members(tmp_path):

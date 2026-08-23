@@ -663,9 +663,26 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
             else:
                 break
             nxt = Path(os.path.normpath(os.path.join(os.path.dirname(cur), nxt)))
+            # a -> a/x never reaches a second node, so exact-node repetition never catches it:
+            # every attempt to resolve a walks a again. Anything under the link is a loop.
+            if Path(cur) in nxt.parents:
+                raise RuntimeError(f"symlink cycle in archive: {member.filename!r}")
             cur = str(_plan_key(nxt, base, replaced))
         else:
             raise RuntimeError(f"symlink cycle in archive: {member.filename!r}")
+    # Last thing decided before the first write: whether this filesystem can hold links at all.
+    # Some mounts (exFAT, SMB without unix extensions) refuse with EPERM, and finding out at
+    # creation time means extractall has already put the new binary over the working one.
+    if links:
+        probe = base / f".unsloth-symlink-probe-{os.getpid()}"
+        try:
+            probe.symlink_to(".")
+        except OSError as exc:
+            # Windows outside developer mode is the one place flattening is right; see below.
+            if sys.platform != "win32":
+                raise RuntimeError(f"this filesystem cannot store symlinks: {exc}") from exc
+        else:
+            probe.unlink()
     # Validated before the first write, so a rejected archive leaves the install untouched.
     #
     # extractall opens each destination "wb", which FOLLOWS a link a previous bundle left there
