@@ -555,6 +555,51 @@ def test_a_fresh_probe_run_replaces_the_summary_it_inherited(studio, monkeypatch
     assert len(list(Paths.under(studio["out"]).out.glob("payload-*.jsonl"))) == 1
 
 
+def test_a_fresh_single_arm_probe_run_replaces_the_ab_table_it_inherited(
+    studio, monkeypatch, tmp_path
+):
+    """REGRESSION. `_render_ab`'s own probe refusal cannot reach this case.
+
+    That function runs only under `if ab_ref`, so a fresh SINGLE-ARM probe run into a directory
+    an earlier `--ab` run left behind never calls it, and the clean table survives beside the new
+    unscorable payload. `archive_payload` moves only `payload.jsonl`, so nothing else touches it
+    either. Distinct from the resumed-A/B hole fixed in 52fc3e848, where `_render_ab` did run and
+    an early return jumped over its refusal.
+    """
+
+    monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT", raising = False)
+    table = Paths.under(studio["out"]).out / "ab.md"
+    table.write_text(
+        "studiobench A/B\n===============\n\n  headline_ratio 0.923 (7.7% faster)\n",
+        encoding = "utf-8",
+    )
+    clean = table.read_text(encoding = "utf-8")
+
+    script = tmp_path / "paint_counter.js"
+    script.write_text("window.__probe_ticks = 0;\n", encoding = "utf-8")
+    monkeypatch.setattr(browser_mod, "launch", lambda *a, **k: _ProbedBundle())
+    monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", str(script))
+    # No --ab, so _render_ab is never called and only this refusal can reach the file.
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+
+    text = table.read_text(encoding = "utf-8")
+    assert text != clean
+    assert "NO TABLE" in text
+    assert script.name in text
+    assert "headline_ratio" not in text, "the clean A/B table survived a probe run"
+
+
+def test_a_probe_run_invents_no_ab_table_where_there_was_none(studio, monkeypatch, tmp_path):
+    """The control, matching the summary one: replace a stale table, never invent one."""
+
+    script = tmp_path / "paint_counter.js"
+    script.write_text("window.__probe_ticks = 0;\n", encoding = "utf-8")
+    monkeypatch.setattr(browser_mod, "launch", lambda *a, **k: _ProbedBundle())
+    monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", str(script))
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+    assert not (Paths.under(studio["out"]).out / "ab.md").exists()
+
+
 def test_a_probe_run_invents_no_summary_where_there_was_none(studio, monkeypatch, tmp_path):
     """The control. The refusal replaces a stale report; it does not create a report-shaped file
     in a directory whose reader was never given one to misread."""

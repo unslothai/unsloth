@@ -619,8 +619,9 @@ def run(args, ab_ref = None) -> int:
     # the payload underneath it is replaced by a probed one. Nothing later puts that right: a
     # probe run is read through the probe's own output, not through a score, so the `--report`
     # whose `SystemExit` clause would have overwritten the file is the one command nobody has a
-    # reason to run. Without `--ab` there is no `ab.md` either, so the summary is then the only
-    # report-shaped file in the directory and it describes the payload that was moved aside.
+    # reason to run. Without `--ab` this run writes no `ab.md` of its own either, so the summary
+    # is the only report-shaped file it produces, and it describes the payload that was moved
+    # aside.
     #
     # OVERWRITTEN, not deleted, for the reason `_render_ab` gives: whoever opens the path gets the
     # reason rather than a missing file. HERE, not at the probe banner further down, for the
@@ -628,18 +629,31 @@ def run(args, ab_ref = None) -> int:
     # point and the banner can `return`, raise or be killed by the wall-clock watchdog, and every
     # one of those paths has already archived the payload the summary belongs to. After
     # `prepare_payload`, though, because a `--resume` it refuses touched nothing.
+    #
+    # BOTH ARTIFACTS, and `ab.md` is not already covered by the refusal inside `_render_ab`. That
+    # function runs only under `if ab_ref`, so a FRESH SINGLE-ARM probe run into a directory left
+    # by an earlier `--ab` run never reaches it, and the old table survives beside the new
+    # unscorable payload for as long as the directory lasts. Handled here rather than there
+    # because here is the one point every probe run passes through, whether or not it has a
+    # second arm and whether or not it lives long enough to render.
     if extra_init:
-        stale_summary = paths.out / "summary.md"
-        if stale_summary.exists():
-            stale_summary.write_text(
-                "# No summary\n\n"
-                f"NO SUMMARY: this output directory was reused by a run carrying an external "
-                f"init script ({extra_init}), so its timings measure the page and the instrument "
-                f"together. The payload this summary described was archived; the payload beside "
-                f"it now is not scorable. Re-run with SBENCH_EXTRA_INIT_SCRIPT unset.\n",
+        for name, heading, what in (
+            ("summary.md", "# No summary", "summary"),
+            ("ab.md", "# No A/B table", "table"),
+        ):
+            stale = paths.out / name
+            if not stale.exists():
+                continue
+            stale.write_text(
+                f"{heading}\n\n"
+                f"NO {what.upper()}: this output directory was reused by a run carrying an "
+                f"external init script ({extra_init}), so its timings measure the page and the "
+                f"instrument together. The payload this {what} described was archived; the "
+                f"payload beside it now is not scorable. Re-run with SBENCH_EXTRA_INIT_SCRIPT "
+                f"unset.\n",
                 encoding = "utf-8",
             )
-            _log(f"  a previous {stale_summary} was replaced by this refusal")
+            _log(f"  a previous {stale} was replaced by this refusal")
 
     # One spec per side, with its own home and password. Without --ab there is exactly one.
     specs = side_specs(args, ab_ref)
