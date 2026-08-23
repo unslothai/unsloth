@@ -25221,7 +25221,7 @@ class LlamaCppBackend:
                 # the card's id for the first matching call (same tool name) to reconcile.
                 _text_provisional_id = _text_args_id if not has_structured_tc else ""
 
-                for tc in tool_calls or []:
+                for _call_index, tc in enumerate(tool_calls or []):
                     func = tc.get("function", {})
                     tool_name = func.get("name", "")
                     if (
@@ -25462,11 +25462,33 @@ class LlamaCppBackend:
                                 # claimed as much as the first, and nothing downstream
                                 # recovers: the fit protects the newest turn.
                                 if accepts_kwarg(execute_tool, "result_budget_tokens"):
+                                    # Split across the calls still to run in this batch,
+                                    # and after their arguments. One assistant turn can
+                                    # call several tools, and the loop appends each call
+                                    # only as it runs it, so `_spent` here knows nothing
+                                    # about the rest of the batch: sized as if it were
+                                    # alone, the first result can take all the room the
+                                    # other calls and their results still need, and the
+                                    # finished exchange is protected as the newest turn.
+                                    _pending = list(tool_calls or [])[_call_index + 1 :]
+                                    _pending_args = (
+                                        estimate_messages_tokens_dense(
+                                            [
+                                                {
+                                                    "role": "assistant",
+                                                    "content": json.dumps(_call, default = str),
+                                                }
+                                                for _call in _pending
+                                            ]
+                                        )
+                                        if _pending
+                                        else 0
+                                    )
                                     kwargs["result_budget_tokens"] = tool_result_budget(
                                         self._effective_context_length,
                                         max_tokens,
-                                        _spent,
-                                    )
+                                        _spent + _pending_args,
+                                    ) // (len(_pending) + 1)
                                 if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
                                     if accepts_kwarg(execute_tool, "conversation_token_counter"):
                                         # The admission check estimates a result's size by

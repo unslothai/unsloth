@@ -964,7 +964,7 @@ class TestTheSafetensorsLoopPricesItToo:
     nothing downstream able to evict it."""
 
     @staticmethod
-    def _run(context_length, messages = None):
+    def _run(context_length, messages = None, calls = 1):
         """One `terminal` call through the real loop, returning the kwargs it was given."""
         import threading
 
@@ -975,8 +975,10 @@ class TestTheSafetensorsLoopPricesItToo:
             if state["turns"] > 1:
                 yield "done"
                 return
-            call = (
-                '<tool_call>{"name":"terminal","arguments":{"command":"cat game.html"}}</tool_call>'
+            call = "".join(
+                '<tool_call>{"name":"terminal","arguments":{"command":"cat game%d.html"}}'
+                "</tool_call>" % n
+                for n in range(calls)
             )
             for n in range(1, len(call) + 1):
                 yield call[:n]
@@ -1037,6 +1039,16 @@ class TestTheSafetensorsLoopPricesItToo:
         )["result_budget_tokens"]
 
         assert as_result < as_prose
+
+    def test_a_parallel_batch_splits_the_room(self):
+        """One turn can call several tools, and each call is appended only as it runs, so
+        the spend knows nothing about the rest of the batch. Sized as if it were alone, the
+        first result takes the room the other calls and their results still need, and the
+        finished exchange is protected as the newest turn."""
+        alone = self._run(4096)["result_budget_tokens"]
+        first_of_three = self._run(4096, calls = 3)["result_budget_tokens"]
+
+        assert first_of_three <= alone // 3
 
     def test_an_unknown_window_prices_nothing(self):
         """The same leg the GGUF loop takes: no window, no budget, today's behaviour."""

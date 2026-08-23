@@ -16,6 +16,7 @@ parses tool calls from the cumulative text and dispatches via
 
 import bisect
 import inspect
+import json
 import re
 import threading
 from typing import Callable, Generator, Optional
@@ -1175,7 +1176,7 @@ def run_safetensors_tool_loop(
         # abort it and drop the parallel calls that follow.
         deferred_noop_msgs: list = []
 
-        for tc in tool_calls or []:
+        for _call_index, tc in enumerate(tool_calls or []):
             func = tc.get("function", {}) or {}
             tool_name = func.get("name", "") or ""
             provisional_match = (
@@ -1369,13 +1370,24 @@ def run_safetensors_tool_loop(
                         results = [
                             message for message in conversation if message.get("role") == "tool"
                         ]
+                        # Split across the calls still to run in this batch, and after
+                        # their arguments, exactly as the GGUF loop does: one turn can
+                        # call several tools and each call is appended only as it runs,
+                        # so sizing a result as if it were alone lets the first take the
+                        # room the rest of the batch still needs.
+                        pending = list(tool_calls or [])[_call_index + 1 :]
+                        pending_args = [
+                            {"role": "assistant", "content": json.dumps(call, default = str)}
+                            for call in pending
+                        ]
                         kwargs["result_budget_tokens"] = tool_result_budget(
                             int(context_length),
                             max_tokens,
                             _dense_tokens(conversation)
                             + _dense_tokens(tools or [])
-                            + _dense_tokens(results),
-                        )
+                            + _dense_tokens(results)
+                            + _dense_tokens(pending_args),
+                        ) // (len(pending) + 1)
                     if _accepts_output_callback(execute_tool):
                         kwargs["output_callback"] = _output_callback
                     kwargs.update(_search_images_kwargs(execute_tool, _decision.tool_name))
