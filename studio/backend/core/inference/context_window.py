@@ -244,6 +244,50 @@ def retrieval_budget(
     return room
 
 
+# Headroom against the tokenizer disagreeing with the estimate that sized a result. A
+# result is measured in characters and spent in tokens, so the conversion is the thing
+# that can be wrong; 1% of the budget absorbs that without noticeably shortening output.
+_TOOL_RESULT_BUDGET_BUFFER = 0.99
+
+# What a truncated result costs BESIDES its body: the notice naming the cut, the spill
+# path and the command that resumes it. Measured at 60-85 tokens, held clear of that.
+#
+# Reserved rather than ignored because the body is what gets sized and the notice is what
+# gets appended afterwards, so a budget spent entirely on the body overshoots by the
+# notice every single time -- and at zero room, where the reply is nothing but the notice,
+# it overshoots by the whole of it. That is the difference between a thread that survives
+# repeated large results and one that creeps over the budget a notice at a time.
+_RESULT_NOTICE_RESERVE = 128
+
+
+def tool_result_budget(
+    context_length: int,
+    max_tokens: Optional[int],
+    prompt_tokens: int,
+    *,
+    buffer: float = _TOOL_RESULT_BUDGET_BUFFER,
+) -> int:
+    """Tokens a tool result may add without pushing the next prompt past its budget.
+
+    The cap tool results carried before this was a share of the WINDOW, so it never fell as
+    the conversation filled: on a small window one result could take half the context no
+    matter how little was left, and the next fit could not recover because it protects the
+    newest turn -- the very result that does not fit. This prices the same result against
+    the room actually remaining.
+
+    Against ``prompt_budget`` rather than ``context_length``: a result sized to fill the
+    physical window leaves the prompt fitting and nothing to answer in, which is the
+    reserve-missing case that already has its own rescue path. Room for the reply is not
+    room for the result.
+
+    The figure covers the WHOLE tool message, its truncation notice included, so a caller
+    that sizes a body against it and then appends the notice still lands inside.
+    """
+    target = prompt_budget(context_length, max_tokens)
+    room = int(target * buffer) - int(prompt_tokens or 0) - _RESULT_NOTICE_RESERVE
+    return max(0, room)
+
+
 def _latest_turn_count(
     messages: list[dict], count_tokens: Callable[[list[dict]], int]
 ) -> tuple[int, bool]:

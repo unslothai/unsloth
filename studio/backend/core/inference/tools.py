@@ -44,6 +44,15 @@ _REQUEST_CONTEXT_TOKENS: ContextVar = ContextVar(
     default = _UNSET_CONTEXT_TOKENS,
 )
 
+# What the CONVERSATION has left, as opposed to how big the window is. The window alone
+# cannot size a result: it does not fall as the thread fills, so the last result before an
+# overflow is allowed exactly as much room as the first. None means the caller could not
+# say, and every cap then behaves exactly as it did before this existed.
+_REQUEST_RESULT_BUDGET: ContextVar = ContextVar(
+    "unsloth_request_result_budget_tokens",
+    default = None,
+)
+
 import uuid
 import time
 import urllib.parse
@@ -10043,6 +10052,7 @@ def execute_tool(
     conversation_token_counter = None,
     context_tokens = _UNSET_CONTEXT_TOKENS,
     search_images: bool = False,
+    result_budget_tokens: int | None = None,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -10065,6 +10075,10 @@ def execute_tool(
     # Set unconditionally, so a value from an earlier call on this thread can never be
     # read by a later one. That is what makes a try/finally reset unnecessary here.
     _REQUEST_CONTEXT_TOKENS.set(context_tokens)
+    # Same rule, and it matters more here: a stale budget is a budget measured before this
+    # turn's own tool exchanges existed, which is precisely the undercount that lets the
+    # last result overflow.
+    _REQUEST_RESULT_BUDGET.set(result_budget_tokens)
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "search_knowledge_base":
         return _search_knowledge_base_with_budget(
@@ -11776,6 +11790,22 @@ def _page_char_budget() -> int:
     return max(_MIN_PAGE_CHARS, min(_MAX_PAGE_CHARS, int(ctx * 4 * _PAGE_CONTEXT_SHARE)))
 
 
+def _request_result_room() -> int | None:
+    """Tokens this result may add before the NEXT prompt is over budget.
+
+    None when the caller could not say, and every cap then behaves exactly as it did
+    before this existed: external providers, the hosted path and any tool loop that does
+    not price its own conversation all take that leg.
+    """
+    room = _REQUEST_RESULT_BUDGET.get()
+    if room is None:
+        return None
+    try:
+        return max(0, int(room))
+    except (TypeError, ValueError):
+        return None
+
+
 def _window_context_tokens() -> int | None:
     """The window this request is served by, or None when it cannot be read."""
     scoped = _REQUEST_CONTEXT_TOKENS.get()
@@ -12162,18 +12192,33 @@ def _dense_char_limit(text: str, max_chars: int) -> int:
     That is the same irreducible refusal the budget exists to prevent.
     """
     ctx = _window_context_tokens()
-    if not ctx or len(text) <= _MIN_PAGE_CHARS:
+    room = _request_result_room()
+    if not ctx or (len(text) <= _MIN_PAGE_CHARS and room is None):
         return max_chars
     # Kept a float, so English text lands on exactly the character budget rather than
     # one character short of it.
     share = ctx * _PAGE_CONTEXT_SHARE
+    if room is not None:
+        # The share is a fraction of the WINDOW and does not fall as the thread fills, so
+        # on its own it lets the last result before an overflow claim as much as the
+        # first. Whichever of the two is smaller is the one that has to hold.
+        share = min(share, float(room))
     fitted = _dense_prefix_chars(text, share)
     # And measured rather than estimated when the serving model can measure it: the rule
     # above is honest about non-ASCII and still optimistic about dense ASCII.
     fitted = _exact_prefix_chars(text, min(fitted, max_chars), share, ctx)
-    # Never above what the caller allowed, and never below the floor that keeps a page
+    # Never above what the caller allowed, and never below the floor that keeps a result
     # worth reading. An explicit cap smaller than the floor still wins.
-    return min(max_chars, max(_MIN_PAGE_CHARS, fitted))
+    floor = _MIN_PAGE_CHARS
+    if room is not None:
+        # ...but the floor is a comfort, not a right. Holding 2,000 characters of a dense
+        # result when the thread has room for 100 tokens reinstates exactly the overflow
+        # this budget exists to prevent, and the caller cannot recover: the fit protects
+        # the newest turn. Lowered to what the room really holds, which in the extreme
+        # leaves the stub alone -- small enough that the next fit can evict older turns
+        # and carry on.
+        floor = min(floor, _dense_prefix_chars(text, float(room)))
+    return min(max_chars, max(floor, fitted))
 
 
 def _truncate_page_text(text: str, max_chars: int) -> str:
@@ -13871,7 +13916,7 @@ def _cancel_watcher(
         cancel_event.wait(poll_interval) if cancel_event else None
 
 
-def _truncate(text: str, limit: int | None = None) -> str:
+def _truncate(text: str, limit: int | None = None, workdir: str | None = None) -> str:
     # Resolved per call, not bound at import: the default would freeze the constant
     # before any model is loaded, which is exactly when the window is still unknown.
     if limit is None:
@@ -13884,13 +13929,107 @@ def _truncate(text: str, limit: int | None = None) -> str:
     # non-streaming callers and must stay byte-identical with and without an
     # output_callback (a regression-tested invariant), so it can't claim the
     # user saw the full output.
-    if len(text) > limit:
-        return text[:limit] + (
+    if len(text) <= limit:
+        return text
+    spill = _spill_full_output(text, workdir)
+    if limit <= 0:
+        # No room for a body, so no room for the usual notice either: at this point the
+        # notice IS the message, and the full one costs ~90 tokens of a budget that just
+        # reported none. Kept to a line so the thread stays servable and the next fit can
+        # evict older turns and recover, which is the whole reason a stub beats a refusal.
+        located = f", saved to {spill}" if spill else ""
+        return f"(output omitted: {len(text)} chars, no context room left{located})"
+    head = _head_whole_lines(text, limit)
+    if spill is None:
+        return head + (
             f"\n\n... (truncated to {limit} chars for the model; {len(text)} chars "
             "total. The full output is not retained here; any files the code wrote "
             "persist in the working directory.)"
         )
-    return text
+    # The rest is not advice, it is reachable: the sandbox persists between calls and the
+    # model already has the terminal, so naming the exact next command turns a dead end
+    # into paging. Truncating without one is what makes a model re-run the same command
+    # and truncate identically.
+    shown = head.count("\n") + 1 if head else 0
+    total = text.count("\n") + 1
+    return head + (
+        f"\n\n... (truncated to {limit} chars for the model; showing lines 1-{shown} of "
+        f"{total}, {len(text)} chars total. Full output saved to {spill} -- continue with:"
+        f"\n  sed -n '{shown + 1},{shown + max(1, shown)}p' {spill})"
+    )
+
+
+def _head_whole_lines(text: str, limit: int) -> str:
+    """``text`` cut to at most ``limit`` characters, on a line boundary where one is near.
+
+    Whole lines so the continuation hint can name a line number that resumes exactly where
+    this stopped. A cut mid-line would either repeat that line or lose it, and on the
+    output these tools produce most -- a file printed verbatim -- losing one is losing a
+    line of the user's own code.
+    """
+    head = text[:limit]
+    cut = head.rfind("\n")
+    # Only when a boundary is actually near the end: one enormous line (minified JS, a
+    # base64 blob) has no newline at all, and rewinding to the previous one would throw
+    # away the whole result to keep the hint tidy.
+    if cut > 0 and cut >= limit // 2:
+        return head[:cut]
+    return head
+
+
+# Dot-directory on purpose: `_snapshot_workdir_files` skips those, so the spill never
+# appears as a file the model created and never earns a download card in the UI. A plain
+# name here would put a phantom artifact beside every truncated result.
+_SPILL_DIR = ".unsloth_tool_output"
+_SPILL_KEEP = 20
+
+
+def _spill_full_output(text: str, workdir: str | None) -> "str | None":
+    """Write the untruncated result into the sandbox; return its relative path.
+
+    None whenever it cannot be done -- no workdir, a read-only mount, a full disk. The
+    caller then falls back to the plain notice, because a hint naming a file that is not
+    there is worse than admitting the output is gone.
+    """
+    if not workdir or not os.path.isdir(workdir):
+        return None
+    try:
+        target_dir = os.path.join(workdir, _SPILL_DIR)
+        os.makedirs(target_dir, exist_ok = True)
+        name = f"{uuid.uuid4().hex[:8]}.txt"
+        with open(os.path.join(target_dir, name), "w", encoding = "utf-8") as handle:
+            handle.write(text)
+        _prune_spills(target_dir)
+        # Relative, so the command works from the cwd the tools already run in, and so
+        # the absolute sandbox path never reaches the model.
+        return f"{_SPILL_DIR}/{name}"
+    except Exception:
+        logger.debug("tool result spill failed", exc_info = True)
+        return None
+
+
+def _prune_spills(target_dir: str) -> None:
+    """Keep only the newest ``_SPILL_KEEP`` spills.
+
+    A long session prints many large results and each one is retained in full; without
+    this the sandbox grows without bound for output the model has almost certainly
+    finished paging through.
+    """
+    try:
+        entries = [
+            os.path.join(target_dir, name)
+            for name in os.listdir(target_dir)
+            if name.endswith(".txt")
+        ]
+        if len(entries) <= _SPILL_KEEP:
+            return
+        for path in sorted(entries, key = os.path.getmtime)[: len(entries) - _SPILL_KEEP]:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    except Exception:
+        logger.debug("tool result spill prune failed", exc_info = True)
 
 
 # ChatGPT code-interpreter path conventions models write out of habit; none
@@ -14481,7 +14620,7 @@ def _python_exec(
         # paths are judged against the real workdir (project sessions live outside
         # the default sandbox root).
         hint = _missing_path_hint(result, workdir)
-        result = _truncate(result) if result.strip() else "(no output)"
+        result = _truncate(result, workdir = workdir) if result.strip() else "(no output)"
         result += hint
         # Before ours is appended, and whether or not one is: a program's own
         # marker line is not an envelope.
@@ -14611,7 +14750,7 @@ def _bash_exec(
             result = f"Exit code {proc.returncode}:\n{result}"
         # Same missing-path healing as _python_exec.
         hint = _missing_path_hint(result, workdir)
-        result = _truncate(result) if result.strip() else "(no output)"
+        result = _truncate(result, workdir = workdir) if result.strip() else "(no output)"
         result += hint
         result = _defuse_sentinels(result)  # see _python_exec
         # Only for a chat that has an id (see _python_exec).
