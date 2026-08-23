@@ -6999,7 +6999,7 @@ class LlamaCppBackend:
             unified: set[int] = set()
             for ordinal in range(torch.cuda.device_count()):
                 try:
-                    _arch, is_unified = _rocm_classify_unified_memory(
+                    _arch, is_unified, _ = _rocm_classify_unified_memory(
                         torch.cuda.get_device_properties(ordinal)
                     )
                 except Exception:
@@ -7039,7 +7039,7 @@ class LlamaCppBackend:
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
             for ordinal in range(torch.cuda.device_count()):
                 try:
-                    _arch, _is_unified = _rocm_classify_unified_memory(
+                    _arch, _is_unified, _ = _rocm_classify_unified_memory(
                         torch.cuda.get_device_properties(ordinal)
                     )
                 except Exception:
