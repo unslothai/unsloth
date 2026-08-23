@@ -474,7 +474,11 @@ class Recorder:
                 pass
 
     @classmethod
-    def _await_marker(cls, path: Path, timeout_s: float = 2.0) -> "Optional[tuple[str, int]]":
+    def _await_marker(
+        cls,
+        path: Path,
+        timeout_s: float = 2.0,
+    ) -> "Optional[tuple[str, int]]":
         """(session, pid) of the holder, waiting out the gap between its lock and its write.
 
         THE LOCK IS TAKEN BEFORE THE IDENTITY IS WRITTEN, and it has to be: a run does not know
