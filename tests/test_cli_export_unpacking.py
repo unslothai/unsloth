@@ -17,6 +17,8 @@ from typer.testing import CliRunner
 class _FakeExportBackend:
     """Stand-in for ExportBackend: export_* return the 3-tuple, load_checkpoint stays a 2-tuple."""
 
+    last_call: dict = {}
+
     def __init__(self) -> None:
         self.loaded: str | None = None
 
@@ -28,15 +30,19 @@ class _FakeExportBackend:
         return []
 
     def export_merged_model(self, **kwargs):
+        _FakeExportBackend.last_call = {"method": "export_merged_model", "kwargs": kwargs}
         return True, "merged ok", str(Path(kwargs["save_directory"]).resolve())
 
     def export_base_model(self, **kwargs):
+        _FakeExportBackend.last_call = {"method": "export_base_model", "kwargs": kwargs}
         return True, "base ok", str(Path(kwargs["save_directory"]).resolve())
 
     def export_gguf(self, **kwargs):
+        _FakeExportBackend.last_call = {"method": "export_gguf", "kwargs": kwargs}
         return True, "gguf ok", str(Path(kwargs["save_directory"]).resolve())
 
     def export_lora_adapter(self, **kwargs):
+        _FakeExportBackend.last_call = {"method": "export_lora_adapter", "kwargs": kwargs}
         return True, "lora ok", str(Path(kwargs["save_directory"]).resolve())
 
 
@@ -56,6 +62,7 @@ def _install_fake_studio_backend(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def cli_app(monkeypatch: pytest.MonkeyPatch) -> typer.Typer:
     """Typer app wrapping unsloth_cli.commands.export.export."""
+    _FakeExportBackend.last_call = {}
     _install_fake_studio_backend(monkeypatch)
     from unsloth_cli.commands import export as export_cmd
 
@@ -111,3 +118,46 @@ def test_cli_export_unpacks_three_tuple(
     # Fake backend's success message should reach stdout.
     expected_prefix = format_flag.split("-")[0]
     assert f"{expected_prefix} ok" in result.output
+
+
+@pytest.mark.parametrize(
+    "format_flag,quant_flag,expected_method",
+    [
+        ("merged-16bit", None, "export_merged_model"),
+        ("merged-4bit", None, "export_merged_model"),
+        ("gguf", "q4_k_m", "export_gguf"),
+        ("lora", None, "export_lora_adapter"),
+    ],
+)
+def test_cli_export_forwards_private_flag(
+    cli_app: typer.Typer,
+    runner: CliRunner,
+    tmp_path: Path,
+    format_flag: str,
+    quant_flag: str | None,
+    expected_method: str,
+) -> None:
+    """--private flag is forwarded as private=True to backend.export_* for every format."""
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    out = tmp_path / "out"
+
+    cli_args = [
+        "export",
+        str(ckpt),
+        str(out),
+        "--format",
+        format_flag,
+        "--push-to-hub",
+        "--repo-id",
+        "test/repo",
+        "--private",
+    ]
+    if quant_flag is not None:
+        cli_args += ["--quantization", quant_flag]
+
+    result = runner.invoke(cli_app, cli_args)
+
+    assert result.exit_code == 0, f"CLI error:\n{result.output}"
+    assert _FakeExportBackend.last_call.get("method") == expected_method
+    assert _FakeExportBackend.last_call.get("kwargs", {}).get("private") is True

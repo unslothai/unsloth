@@ -6,6 +6,7 @@
 
 import ast
 import codecs
+import copy
 import fnmatch
 import functools
 import hashlib
@@ -9390,6 +9391,25 @@ WEB_SEARCH_TOOL = {
 }
 
 
+def web_search_tool_with_images() -> dict:
+    # web_search plus image_queries, offered while the Search images setting is on.
+    tool = copy.deepcopy(WEB_SEARCH_TOOL)
+    fn = tool["function"]
+    fn["description"] += (
+        " To show pictures, pass image_queries: the exact names of the specific things you "
+        'will mention, one per entry (e.g. ["German Shepherd", "Labrador"]), never a list '
+        "title. Each returns an [[img:...]] token; put it on its own line under that item. "
+        "image_queries may also be sent alone after the answer."
+    )
+    fn["parameters"]["properties"]["image_queries"] = {
+        "type": "array",
+        "items": {"type": "string"},
+        "maxItems": 5,
+        "description": "Specific things to fetch one picture each for, named exactly as in your answer.",
+    }
+    return tool
+
+
 def _build_sandbox_paths_note() -> str:
     """Platform and working-directory note, on BOTH tool descriptions.
 
@@ -10022,6 +10042,7 @@ def execute_tool(
     conversation_budget_tokens: int | None = None,
     conversation_token_counter = None,
     context_tokens = _UNSET_CONTEXT_TOKENS,
+    search_images: bool = False,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -10125,6 +10146,8 @@ def execute_tool(
             timeout = effective_timeout,
             cancel_event = cancel_event,
             website_policy = website_policy,
+            include_images = search_images,
+            image_queries = arguments.get("image_queries"),
         )
     # Both run with the session's sandbox as cwd, so a chat deleted mid-call
     # must not unlink it from under them.
@@ -11355,8 +11378,13 @@ def _fetch_url_raw(
     deadline: float | None = None,
     cancel_event = None,
     website_policy: dict | None = None,
-) -> tuple[str | None, str, str]:
+    raw_bytes_max: int | None = None,
+) -> tuple[str | None, "str | bytes", str]:
     """Fetch a URL with SSRF protection; return ``(error, body_text, content_type)``.
+
+    ``raw_bytes_max`` switches to binary mode: the body is returned as ``bytes``
+    untouched (no PDF or text handling) and refused past that many bytes. The
+    same scheme, host, redirect and budget gates apply either way.
 
     ``error`` is a user-facing message string when the fetch failed (the
     existing "Blocked:" / "Failed to fetch URL:" wording), else ``None``.
@@ -11478,8 +11506,13 @@ def _fetch_url_raw(
             # Success: read the capped body enforcing the budget between chunks
             # (see _read_capped_body), so a slow-drip server can't stretch a
             # single resp.read past the deadline.
-            declared_pdf = content_type == "application/pdf"
-            read_limit = _MAX_PDF_FETCH_BYTES + 1 if declared_pdf else max_bytes
+            declared_pdf = raw_bytes_max is None and content_type == "application/pdf"
+            if raw_bytes_max is not None:
+                read_limit = raw_bytes_max + 1
+            elif declared_pdf:
+                read_limit = _MAX_PDF_FETCH_BYTES + 1
+            else:
+                read_limit = max_bytes
             body_error, raw_bytes = _read_capped_body(
                 resp,
                 read_limit,
@@ -11492,6 +11525,10 @@ def _fetch_url_raw(
 
             # A missing or wrong PDF MIME type is common: once the initial text-sized
             # read identifies PDF magic, finish the bounded download to reach the EOF xref.
+            if raw_bytes_max is not None:
+                if len(raw_bytes) > raw_bytes_max:
+                    return f"(content exceeds the {raw_bytes_max} byte limit)", "", content_type
+                return None, raw_bytes, content_type
             if not declared_pdf and len(raw_bytes) == max_bytes and _has_pdf_magic(raw_bytes):
                 tail_error, tail = _read_capped_body(
                     resp,
@@ -11702,7 +11739,13 @@ def _result_char_budget(cap: int) -> int:
     ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
     if not ctx:
         return cap
-    return max(_MIN_PAGE_CHARS, min(cap, int(ctx * 4 * _PAGE_CONTEXT_SHARE)))
+    # Clamped to `cap` on the way out, not only on the way in. The floor keeps a result
+    # worth reading when the WINDOW is the thing making it small; it is not a licence to
+    # hand the model more than the install configured. Unclamped, an install running
+    # `UNSLOTH_TOOL_RESULT_MAX_CHARS=500` got 500 characters from the hosted path and
+    # 2,000 from this one, the moment a local window became readable -- the one function
+    # whose job is to LOWER the cap raising it fourfold instead.
+    return min(cap, max(_MIN_PAGE_CHARS, int(ctx * 4 * _PAGE_CONTEXT_SHARE)))
 
 
 def _tool_result_char_budget() -> int:
@@ -11772,6 +11815,145 @@ def _dense_prefix_chars(text: str, token_budget: float) -> int:
     return length
 
 
+# `count_chat_tokens` prices a chunk by rendering it through the model's chat template
+# (/apply-template) and tokenizing the result, so the probe can only measure text the
+# template actually RENDERS. A standalone tool message is not that text: the Gemma-4
+# templates shipped in `assets/chat_templates` skip it outright -- `gemma-4.jinja:232` is
+# `{%- if message['role'] != 'tool' -%}`, and a tool result is only emitted while scanning
+# forward from an assistant tool call -- so a 600-character payload rendered to 46
+# characters with the payload absent, and 7,168 characters of base64 priced as ~12 tokens
+# of framing sailed under any budget on the first pass. A user turn is rendered by every
+# template checked: both bundled Gemma-4 templates, Qwen3, Llama-3.2, Mistral and
+# Hermes-3. The assistant-tool-call pair is not a safe alternative -- Mistral's template
+# raises on any tool call id that is not nine alphanumeric characters.
+_PROBE_ROLE = "user"
+
+# The guard below: how few tokens a rendered chunk may cost before the count is treated as
+# not having measured it. Deliberately far past anything real text reaches -- the densest
+# packing measured with Qwen3 is 128 characters per token, for a chunk of nothing but
+# spaces, and ordinary output runs 1-8. A template that drops the content lands at
+# hundreds, or at infinity as the chunk grows, because its count does not move at all.
+_MAX_PROBE_CHARS_PER_TOKEN = 256
+
+
+def _loaded_token_counter(ctx: int):
+    """The tokenizer of the model serving this request, or None when there is not one.
+
+    Same probe as `_loaded_context_tokens`: whatever can answer for the window can also
+    price a string exactly, and `llama_cpp` already hands this same counter to the RAG
+    admission check for exactly this reason. Gated on the backend's own window matching
+    the one the budget was sized against, so a resident GGUF never prices a request that
+    a different model (native, or an external endpoint) is actually answering.
+    """
+    try:
+        from routes.inference import get_llama_cpp_backend  # noqa: PLC0415
+
+        llama = get_llama_cpp_backend()
+        if not getattr(llama, "is_loaded", False):
+            return None
+        if getattr(llama, "context_length", None) != ctx:
+            return None
+        counter = getattr(llama, "count_chat_tokens", None)
+        if not callable(counter):
+            return None
+    except Exception:  # noqa: BLE001 -- no tokenizer is "unknown", never an error
+        return None
+
+    def _rendered(chunk: str):
+        try:
+            spent = counter([{"role": _PROBE_ROLE, "content": chunk}], None, None, strict = False)
+        except Exception:  # noqa: BLE001 -- same rule: fall back to the estimate
+            logger.debug("result budget: exact count failed", exc_info = True)
+            return None
+        return int(spent) if isinstance(spent, (int, float)) and spent > 0 else None
+
+    # What the turn costs with nothing in it, priced once. Two jobs: it is the baseline the
+    # guard measures growth against, so a template that renders no content is caught by its
+    # count not moving rather than by a guess about density; and it is the only part of the
+    # count that is not the chunk. Left IN the total rather than subtracted -- 8 tokens on
+    # Qwen3 and 11 on the Gemma-4 templates, under 1% of a 1,792-token share, and the real
+    # tool turn pays its own framing anyway, so counting it errs toward a smaller result.
+    framing = _rendered("") or 0
+
+    def _count(chunk: str):
+        spent = _rendered(chunk)
+        if spent is None:
+            return None
+        # A count that barely moves off the framing measured nothing, whatever it reports.
+        if spent - framing < len(chunk) / _MAX_PROBE_CHARS_PER_TOKEN:
+            logger.debug(
+                "result budget: template priced %d chars at %d tokens over %d of framing; "
+                "not a measurement, keeping the estimate",
+                len(chunk),
+                spent,
+                framing,
+            )
+            return None
+        return spent
+
+    return _count
+
+
+# Measured: English costs one pass (it fits on the first count), base64 two, and a mixed
+# result -- dense output followed by prose -- three, with the last as slack. Bounded
+# rather than a binary search because each pass is a llama-server round trip.
+_EXACT_FIT_PASSES = 5
+
+
+def _exact_prefix_chars(text: str, chars: int, token_budget: float, ctx: int) -> int:
+    """`chars`, shrunk until the prefix really costs `token_budget`. Never grown.
+
+    The estimate below charges every ASCII character a flat 0.25 tokens, which is an
+    English rate and wrong in the same direction for the ASCII the code tools print most:
+    measured with Qwen3-4B and Llama-3.2 on a 5,120-token window, where the character cap
+    admits 7,168 characters against a 1,792-token share, `base64 payload.bin` came back at
+    5,361 tokens, `hexdump -C` at 5,540 and `sha256sum *` at 5,109 -- 105-108% of the
+    WHOLE window, in the newest turn, which the fit protects. A four-message thread (one
+    8-token question and one such result) was refused irreducible at 5,475 tokens against
+    a 3,840-token prompt budget. No character rule closes that: the same rule that charges
+    a 76-character base64 line its real 57 tokens charges English prose 40% more than it
+    costs and shrinks every page that was already fine. So when a tokenizer is serving the
+    request, ask it; when none is, keep the estimate exactly as it was.
+    """
+    counter = _loaded_token_counter(ctx)
+    if counter is None:
+        return chars
+    # Every value this returns is either a MEASURED fit, the caller's own estimate (when
+    # nothing could be measured), or the floor. A proportional shrink assumes the retained
+    # prefix keeps the average density of the whole, which is false for the shape the code
+    # tools produce most: dense output followed by prose. Cutting prose off a
+    # base64-then-English result raises the density of what is left, so each pass gains
+    # less than it asked for and a fixed pass count used to hand back the last shrink
+    # unmeasured -- 3,497 characters costing 1,978 tokens against a 1,792-token share
+    # (110%), measured with Qwen3-4B, which is the irreducible overflow this budget exists
+    # to prevent.
+    previous = None  # the last (chars, tokens) pair, for the secant step below
+    for _ in range(_EXACT_FIT_PASSES):
+        spent = counter(text[:chars])
+        if spent is None:
+            return chars  # nothing to measure with; the estimate stands, as before
+        if spent <= token_budget:
+            return chars  # measured, not assumed
+        fitted = int(chars * token_budget / spent)
+        if previous is not None:
+            # Two measurements price the TAIL that was cut rather than the whole prefix,
+            # which is what the proportional step gets wrong. Take whichever is smaller:
+            # this only ever shrinks faster, never grows.
+            prior_chars, prior_spent = previous
+            per_char = (prior_spent - spent) / (prior_chars - chars)
+            if per_char > 0:
+                fitted = min(fitted, chars - int((spent - token_budget) / per_char))
+        previous = (chars, spent)
+        # The floor still applies, and stopping here saves a round trip that cannot
+        # change the answer.
+        if fitted <= _MIN_PAGE_CHARS:
+            return _MIN_PAGE_CHARS
+        chars = min(fitted, chars - 1)  # always progress, so the loop cannot stall
+    # Out of passes with the last shrink still unmeasured. Returning it would be the
+    # unchecked prefix above, so fall back to the floor the caller guarantees anyway.
+    return _MIN_PAGE_CHARS
+
+
 def _dense_char_limit(text: str, max_chars: int) -> int:
     """`max_chars`, lowered when `text` tokenises denser than four characters per token.
 
@@ -11786,7 +11968,11 @@ def _dense_char_limit(text: str, max_chars: int) -> int:
         return max_chars
     # Kept a float, so English text lands on exactly the character budget rather than
     # one character short of it.
-    fitted = _dense_prefix_chars(text, ctx * _PAGE_CONTEXT_SHARE)
+    share = ctx * _PAGE_CONTEXT_SHARE
+    fitted = _dense_prefix_chars(text, share)
+    # And measured rather than estimated when the serving model can measure it: the rule
+    # above is honest about non-ASCII and still optimistic about dense ASCII.
+    fitted = _exact_prefix_chars(text, min(fitted, max_chars), share, ctx)
     # Never above what the caller allowed, and never below the floor that keeps a page
     # worth reading. An explicit cap smaller than the floor still wins.
     return min(max_chars, max(_MIN_PAGE_CHARS, fitted))
@@ -11916,6 +12102,48 @@ def _search_failure_message(exc: BaseException, timeout: int) -> str:
     return f"Search failed: {exc}"
 
 
+def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy) -> "str | None":
+    """``_image_search`` that reports a failure as None instead of raising.
+
+    Every caller sits inside ``_web_search``'s own ``except``, which would turn a
+    raise into "Search failed: ..." and throw away the text results the search had
+    already found. A picture is a garnish: it must not become the answer.
+    """
+    try:
+        return _image_search(
+            subjects,
+            timeout = timeout,
+            cancel_event = cancel_event,
+            website_policy = website_policy,
+        )
+    except Exception as exc:  # noqa: BLE001 - a garnish must not become the answer
+        logger.debug("image lookup failed (%s)", type(exc).__name__)
+        return None
+
+
+def _empty_result_with_requested_images(
+    empty_text: str, subjects: list, include_images: bool, timeout, cancel_event, website_policy
+) -> str:
+    """``empty_text`` plus the pictures the model asked for by name, if any.
+
+    An ``image_queries`` call is an explicit request, and it succeeds on its own when
+    sent without a query -- so returning the bare "No results found." because the TEXT
+    sweep came back empty dropped images that were there to be had. Only the named
+    subjects are looked up here; the per-query image pile has no answer to garnish.
+    """
+    if not subjects:
+        return empty_text
+    if not include_images:
+        # Replayed history keeps teaching the parameter; say so, don't drop it.
+        return empty_text + "\n\n---\n\n" + IMAGE_SEARCH_DISABLED
+    if cancel_event is not None and cancel_event.is_set():
+        return empty_text
+    found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
+    if found is None:
+        return empty_text
+    return empty_text + "\n\n---\n\n" + found
+
+
 def _web_search(
     query: str,
     max_results: int = 5,
@@ -11923,11 +12151,17 @@ def _web_search(
     url: str | None = None,
     cancel_event = None,
     website_policy: dict | None = None,
+    include_images: bool = False,
+    image_queries = None,
 ) -> str:
     """Search the web and return formatted results.
 
     ddgs fans the query out across its search engines, so a single engine refusing is already
     covered. If ``url`` is provided, fetches that page directly instead of searching.
+    ``include_images`` adds image results registered server-side and offered to the model
+    as ``[[img:<id>]]`` tokens, with a frontend-only envelope appended: one picture per
+    ``image_queries`` subject when the model named them, else a handful for the query.
+    ``image_queries`` alone (no query) is a pure image lookup.
     """
     # Direct URL fetch mode.
     if url and url.strip():
@@ -11938,6 +12172,17 @@ def _web_search(
             cancel_event = cancel_event,
             website_policy = website_policy,
         )
+
+    subjects = _clean_image_queries(image_queries)
+    if subjects and not (query and query.strip()):
+        if not include_images:
+            return IMAGE_SEARCH_DISABLED
+        # Ahead of the try below, so this one has to carry its own guard: execute_tool
+        # returns a string for every input, and a raise here would escape _web_search.
+        found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
+        if found is None:
+            return "No images found for: " + ", ".join(subjects)
+        return found
 
     if not query or not query.strip():
         return "No query provided."
@@ -11960,11 +12205,19 @@ def _web_search(
             (website_policy or {}).get(key) for key in ("allowedDomains", "blockedDomains")
         )
         wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
-        results = DDGS(timeout = timeout).text(effective_query, max_results = wanted)
+        client = DDGS(timeout = timeout)
+        results = client.text(effective_query, max_results = wanted)
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
-            return EMPTY_SEARCH_RESULTS[0]
+            return _empty_result_with_requested_images(
+                EMPTY_SEARCH_RESULTS[0],
+                subjects,
+                include_images,
+                timeout,
+                cancel_event,
+                website_policy,
+            )
         parts = []
         for r in results:
             if len(parts) >= max_results:
@@ -11977,16 +12230,186 @@ def _web_search(
             snippet = " ".join(str(r.get("body") or "").split())
             parts.append(f"Title: {title}\nURL: {href}\nSnippet: {snippet}")
         if not parts:
-            return EMPTY_SEARCH_RESULTS[1]
+            return _empty_result_with_requested_images(
+                EMPTY_SEARCH_RESULTS[1],
+                subjects,
+                include_images,
+                timeout,
+                cancel_event,
+                website_policy,
+            )
         text = "\n\n---\n\n".join(parts)
         text += (
             "\n\n---\n\nIMPORTANT: These are only short snippets. "
             "To get the full page content, call web_search with "
             'the url parameter (e.g. {"url": "<URL>"}).'
         )
+        if include_images and subjects:
+            # The model named what it will show: one picture per subject, no generic pile.
+            found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
+            if found is not None:
+                text += "\n\n---\n\n" + found
+        elif include_images:
+            text += _web_search_images_suffix(
+                client,
+                effective_query,
+                wanted,
+                cancel_event,
+                website_policy,
+            )
+        elif subjects:
+            # Replayed history keeps teaching the parameter; say so, don't drop it.
+            text += "\n\n---\n\n" + IMAGE_SEARCH_DISABLED
         return text
     except Exception as e:
+        failure = _search_failure_message(e, timeout)
+        # ddgs signals an empty sweep by RAISING, so that exit is an empty result too
+        # and owes the named subjects their pictures. A genuine failure keeps its
+        # message alone: pictures under an error read as a partial answer.
+        if failure == EMPTY_SEARCH_RESULTS[0]:
+            return _empty_result_with_requested_images(
+                failure,
+                subjects,
+                include_images,
+                timeout,
+                cancel_event,
+                website_policy,
+            )
+        return failure
+
+
+IMAGE_SEARCH_MAX_QUERIES = 5
+IMAGE_SEARCH_PER_QUERY = 2
+IMAGE_SEARCH_DISABLED = (
+    "Image search is turned off. It can be enabled under Settings > Chat > Web search."
+)
+
+
+def _clean_image_queries(queries) -> list[str]:
+    # Strings only, trimmed, deduped case-insensitively, capped; anything else is [].
+    if isinstance(queries, str):
+        queries = [queries]
+    if not isinstance(queries, list):
+        return []
+    cleaned: list[str] = []
+    for raw in queries:
+        if not isinstance(raw, (str, int, float)):
+            continue
+        subject = " ".join(str(raw).split())[:80]
+        if subject and subject.lower() not in {c.lower() for c in cleaned}:
+            cleaned.append(subject)
+        if len(cleaned) >= IMAGE_SEARCH_MAX_QUERIES:
+            break
+    return cleaned
+
+
+def _image_search(
+    queries,
+    timeout: int = _EXEC_TIMEOUT,
+    cancel_event = None,
+    website_policy: dict | None = None,
+) -> str:
+    # One lookup per subject, concurrently; same registry and tokens as web_search.
+    from concurrent.futures import ThreadPoolExecutor
+
+    from .search_images import cache_generation, images_envelope, register_images
+
+    cleaned = _clean_image_queries(queries)
+    if not cleaned:
+        return "No subjects provided."
+    if cancel_event is not None and cancel_event.is_set():
+        return "Search cancelled."
+    expected_generation = cache_generation()
+    try:
+        from ddgs import DDGS
+
+        from .web_access_policy import scope_search_query
+    except Exception as e:
         return _search_failure_message(e, timeout)
+    if not callable(getattr(DDGS, "images", None)):
+        return "Image search is unavailable in this install."
+
+    def lookup(subject: str) -> list:
+        # A client per call: ddgs instances are not documented thread-safe.
+        try:
+            return list(
+                DDGS(timeout = timeout).images(
+                    scope_search_query(subject, website_policy),
+                    max_results = IMAGE_SEARCH_PER_QUERY * 4,
+                    safesearch = "moderate",
+                )
+                or []
+            )
+        except Exception as exc:  # noqa: BLE001 - one subject failing must not lose the rest
+            logger.debug("image lookup skipped %r (%s)", subject, type(exc).__name__)
+            return []
+
+    with ThreadPoolExecutor(max_workers = len(cleaned)) as pool:
+        raw_by_subject = list(pool.map(lookup, cleaned))
+    if cancel_event is not None and cancel_event.is_set():
+        return "Search cancelled."
+
+    sections: list[str] = []
+    entries_all: list[dict[str, str]] = []
+    for subject, raw in zip(cleaned, raw_by_subject):
+        entries = register_images(
+            raw,
+            website_policy,
+            max_images = IMAGE_SEARCH_PER_QUERY,
+            subject = subject,
+            expected_generation = expected_generation,
+        )
+        if not entries:
+            sections.append(f"{subject}: no image found")
+            continue
+        entries_all.extend(entries)
+        # One token per subject; spares ride along in the envelope as fallbacks.
+        first = entries[0]
+        domain = f" — {first['domain']}" if first["domain"] else ""
+        sections.append(
+            f"{subject}:\n- [[img:{first['id']}]] {first['title'] or '(untitled)'}{domain}"
+        )
+    if not entries_all:
+        return "No images found for: " + ", ".join(cleaned)
+    header = (
+        "Images by subject. To show one, write its token exactly as given, e.g. "
+        f"[[img:{entries_all[0]['id']}]], on its own line directly under the text about that "
+        "subject. Use only these tokens; one per subject is enough."
+    )
+    return header + "\n\n" + "\n\n".join(sections) + images_envelope(entries_all)
+
+
+def _web_search_images_suffix(client, query, wanted, cancel_event, website_policy) -> str:
+    # "" when images are unavailable; never raises, the text results stand on their own.
+    from .search_images import (
+        MAX_IMAGES_PER_SEARCH,
+        cache_generation,
+        format_images_for_model,
+        images_envelope,
+        register_images,
+    )
+
+    images_fn = getattr(client, "images", None)
+    if not callable(images_fn):
+        return ""
+    # Before the sweep, like _image_search: clear-all is what bumps this, and an
+    # entry registered after one would keep serving a picture the user cleared.
+    expected_generation = cache_generation()
+    try:
+        raw = images_fn(
+            query, max_results = max(wanted, MAX_IMAGES_PER_SEARCH * 2), safesearch = "moderate"
+        )
+    except Exception as exc:  # noqa: BLE001 - optional extra; the text results stand on their own
+        logger.debug("web_search image lookup skipped (%s)", type(exc).__name__)
+        return ""
+    if cancel_event is not None and cancel_event.is_set():
+        return ""
+    entries = register_images(
+        list(raw or []), website_policy, expected_generation = expected_generation
+    )
+    if not entries:
+        return ""
+    return "\n\n---\n\n" + format_images_for_model(entries) + images_envelope(entries)
 
 
 def _check_signal_escape_patterns(code: str):
