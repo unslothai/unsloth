@@ -1457,6 +1457,21 @@ test("carries live form state, except what sensitive fields hide", () => {
     seedDialogSource,
     /data-reload-snapshot-sensitive[\s\S]*?localFile\?\.name/,
   );
+  // The monitor puts prompt and reply text in three places, not just the
+  // expanded payload: every visible row carries a two-line excerpt, and a
+  // lifecycle row carries backend error text.
+  assert.match(
+    apiMonitorPageSource,
+    /function PayloadBlock[\s\S]*?data-reload-snapshot-sensitive/,
+  );
+  assert.match(
+    apiMonitorPageSource,
+    /data-reload-snapshot-sensitive[\s\S]*?\{entry\.error\}/,
+  );
+  assert.match(
+    apiMonitorPageSource,
+    /data-reload-snapshot-sensitive[\s\S]*?\{preview\}/,
+  );
   assert.match(
     sharedComposerSource,
     /data-reload-snapshot-sensitive[\s\S]*?pendingAudio\.name/,

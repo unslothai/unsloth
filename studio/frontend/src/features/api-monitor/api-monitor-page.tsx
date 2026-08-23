@@ -269,7 +269,11 @@ function RequestRow({
           {entry.model}
         </div>
         {entry.error ? (
-          <div className="min-w-0 break-words pl-4 text-ui-11 text-red-600 dark:text-red-400">
+          // Backend error text can quote the request, so keep it out too.
+          <div
+            data-reload-snapshot-sensitive
+            className="min-w-0 break-words pl-4 text-ui-11 text-red-600 dark:text-red-400"
+          >
             {entry.error}
           </div>
         ) : null}
@@ -312,7 +316,9 @@ function RequestRow({
           <span>{formatTime(entry.started_at)}</span>
         </span>
       </div>
+      {/* A prompt or reply excerpt, same as the expanded payload below it. */}
       <p
+        data-reload-snapshot-sensitive
         className={cn(
           "line-clamp-2 pl-4 text-ui-11 leading-[1.45]",
           entry.error
