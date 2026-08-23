@@ -584,6 +584,52 @@ def stop_owned_sides(
 
 
 def run(args, ab_ref = None) -> int:
+    """Take the output directory FIRST, then run inside it.
+
+    THE LOCK IS THE FIRST THING THE RUN DOES, and it used to be almost the last. It was taken where
+    the `Recorder` opens `payload.jsonl`, which is after `prepare_payload` has archived what was
+    already in the directory and after every clone, build and launch. So a second invocation into a
+    busy `--out` without `--resume` was refused only once it had:
+
+      * RENAMED THE LIVE PAYLOAD of the run it was about to be refused in favour of. `rename` does
+        not disturb a writer -- the first run's descriptor names the inode, not the path -- so that
+        run went on recording into `payload-<stamp>.jsonl` while `payload.jsonl`, the one name
+        `--report`, `--assert-liveness` and the next `--resume` all open, was gone. The rule
+        `prepare_payload` states for itself is that a refusal leaves the payload exactly as it
+        found it, and this broke it in the one case the guard exists for.
+      * CLONED, BUILT AND LAUNCHED A STUDIO ON A MACHINE THAT WAS MEASURING. Contention between two
+        runs sharing one `--out` is the whole reason for the guard, so it may not be the price of
+        the refusal.
+
+    Held through setup and the cells, and handed to the `Recorder` rather than taken twice. The
+    `finally` releases it on every path, including the refusals that leave by returning, so a
+    second `run()` in one process -- which is how the tests drive this -- still gets the directory.
+    """
+    from .runtime.types import OutDirLock, Paths
+
+    # THE ARM NAMES, BEFORE A SINGLE PROCESS EXISTS AND BEFORE A SINGLE DIRECTORY. Nothing below
+    # this line can be undone without the cleanup `finally`, and that block is a long way down; see
+    # `_windowed_arms`. The labels are READ OFF THE SPECS rather than spelled a second time, so the
+    # check and the sides cannot drift into disagreeing about what an arm is called -- and
+    # `side_specs` is a pure list build, so asking it this early starts nothing.
+    #
+    # AHEAD OF THE OUTPUT DIRECTORY as well as ahead of the processes. A mistyped `--windowed-arm`
+    # must cost nothing at all, and a directory tree with a lock file in it is not nothing. See
+    # test_studiobench_windowed_arm_names.
+    specs = side_specs(args, ab_ref)
+    arm_labels = [label for label, _ref, _attach, _port, _password in specs]
+    windowed = _windowed_arms(getattr(args, "windowed_arm", ""), arm_labels)
+
+    out = Path(args.out or f"studiobench-{args.tier}-{int(time.time())}").resolve()
+    paths = Paths.under(out)
+    out_lock = OutDirLock.take(paths.out)
+    try:
+        return _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_lock)
+    finally:
+        out_lock.release()
+
+
+def _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_lock) -> int:
     from .fixture.corpus import Corpus
     from .instruments import build as build_instruments  # noqa: F401
     from .pacer import Pacer
@@ -604,19 +650,7 @@ def run(args, ab_ref = None) -> int:
     from .runtime.readiness import MODE_FULL, MODE_WINDOWED
     from .runtime.session import CellRunner, build_cells, ensure_probe_image, make_context
     from .runtime import resources
-    from .runtime.types import Paths
 
-    # THE ARM NAMES, BEFORE A SINGLE PROCESS EXISTS. Nothing below this line can be undone without
-    # the cleanup `finally`, and that block is a long way down; see `_windowed_arms`. The labels are
-    # READ OFF THE SPECS rather than spelled a second time, so the check and the sides cannot drift
-    # into disagreeing about what an arm is called -- and `side_specs` is a pure list build, so
-    # asking it this early starts nothing.
-    specs = side_specs(args, ab_ref)
-    arm_labels = [label for label, _ref, _attach, _port, _password in specs]
-    windowed = _windowed_arms(getattr(args, "windowed_arm", ""), arm_labels)
-
-    out = Path(args.out or f"studiobench-{args.tier}-{int(time.time())}").resolve()
-    paths = Paths.under(out)
     _log(f"studiobench {TOOL_VERSION}  tier={args.tier}  out={paths.out}")
 
     corpus = Corpus.load()
@@ -729,10 +763,10 @@ def run(args, ab_ref = None) -> int:
                 side_install, owns = None, False
                 _log(f"  {label}: attaching to {side_url}")
             else:
-                home = side_home(args.home, out, label, ab = bool(ab_ref))
+                home = side_home(args.home, paths.out, label, ab = bool(ab_ref))
                 _log(f"  {label}: installing Studio from {ref} into {home} (this takes a while)")
                 side_install = install_studio(ref, home)
-                launch_studio(side_install, port, out / "logs" / f"studio_{label}.log")
+                launch_studio(side_install, port, paths.out / "logs" / f"studio_{label}.log")
                 side_url, owns = side_install.base_url, True
                 _log(f"  {label}: Studio up at {side_url}")
             installs.append((side_install, owns))
@@ -990,7 +1024,16 @@ def run(args, ab_ref = None) -> int:
         # back the way it found it. See `rollback_session_rows`.
         mark = payload_mark(paths.payload_jsonl)
         ctx, session = make_context(
-            bundle, base_url, args.tier, args.instrument_level, paths, _log, procs
+            bundle,
+            base_url,
+            args.tier,
+            args.instrument_level,
+            paths,
+            _log,
+            procs,
+            # ADOPTED, NOT TAKEN AGAIN. `run()` has held this directory since before the payload
+            # was archived; the `Recorder` writes its session id into the marker it already holds.
+            out_lock = out_lock,
         )
         rec = ctx.recorder
         # The ladder this run PROMISED, resolved before it is announced. Recorded rather than
@@ -1011,6 +1054,15 @@ def run(args, ab_ref = None) -> int:
             "platform": {
                 "system": platform.system(),
                 "machine": platform.machine(),
+                # WHICH PHYSICAL MACHINE, which `system` and `machine` do not answer between
+                # them. `platform.machine()` is the ARCHITECTURE -- "the machine type, e.g.
+                # 'AMD64'" -- so two ordinary Linux x86_64 boxes report `Linux` and `x86_64`
+                # alike, and every number this tool produces is machine-local: `report/render.py`
+                # says so in its own words, "machine-local; does not travel between machines".
+                # `platform.node()` is the computer's network name, which is the only thing
+                # recorded here that differs between two such hosts. Empty when it cannot be
+                # determined, exactly as the other two are.
+                "node": platform.node(),
                 "python": sys.version.split()[0],
                 "engine": bundle.engine,
                 "engine_note": bundle.engine_note,
@@ -1631,6 +1683,17 @@ IDENTITY_AXES = (
     "tier",
     "cadence",
     "engine",
+    # THE INSTRUMENTS THEMSELVES. `TOOL_VERSION` is bumped when what an instrument MEASURES
+    # changes and for no other reason -- this commit bumped it to 0.2.0 because
+    # `reasoning_toggle.open_ms` now terminates on a settled mount rather than on the `data-state`
+    # flip, which makes it a different quantity under the same name. None of that moves a cell id,
+    # so `--resume` into a half-finished 0.1.0 payload from an upgraded tree skipped the completed
+    # cells and appended the rest measured by 0.2.0: one ladder built from two instruments, which
+    # is the same failure the tier and the corpus are on this list for. `merged_run_meta` names the
+    # mixture afterwards, but only `--compare` and a floor-gated `floor_table.render` call it --
+    # plain `--report` takes the FIRST header and pools the two quantities without a word. Refused
+    # here instead, before anything is installed and before anything is measured.
+    "tool_version",
     "instrument_level",
     "corpus_hash",
     "studio_ref",
@@ -1753,6 +1816,9 @@ def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
     return {
         "tier": args.tier,
         "cadence": args.cadence,
+        # THE INSTRUMENTS THIS TREE CARRIES, as a module constant rather than anything the caller
+        # can ask for. A payload recorded by another version was measured by other instruments.
+        "tool_version": TOOL_VERSION,
         # THE ENGINE THAT WILL RENDER, not the flag that asked for it. `--engine` defaults to
         # nothing and `browser.launch` resolves the platform's desktop webview family, so the
         # requested value has to be resolved the same way `launch` resolves it -- otherwise the
@@ -2305,6 +2371,7 @@ def compare_payloads(args) -> int:
     is how a withdrawn number nearly propagated twice in one campaign. Quoting the comparability
     key beside a number turns that check from an act of memory into one command.
     """
+    from .report.payload import read_records
     from .scoring import payload_rules
 
     metas = []
@@ -2320,11 +2387,20 @@ def compare_payloads(args) -> int:
         # the file has since outgrown, and declares a resumed payload comparable with the one-rung
         # run it started as. `floor_table.tiers_of` and `corpora_of` were both fixed for exactly
         # this; `--compare` was the reader left behind.
-        records = []
-        for line in path.read_text(errors = "ignore").splitlines():
-            if not line.strip():
-                continue
-            records.append(json.loads(line))
+        #
+        # READ THE WAY EVERY OTHER READER IN THIS TOOL READS. The payload is append-only and every
+        # row is flushed as it is written, so a run killed during its last append leaves valid rows
+        # followed by a torn one -- the failure this format is chosen to survive, and the reason
+        # `report.read_records` counts a malformed line instead of raising. `recorded_identities`
+        # and `_resume_set` skip one too. Parsing it here with a bare `json.loads` made `--compare`
+        # the only reader that answered an interrupted payload with a JSONDecodeError traceback
+        # rather than with the check it was asked for.
+        records, discarded = read_records(path)
+        if discarded:
+            print(
+                f"  {path}: {discarded} malformed line(s) skipped, which is what a run killed "
+                f"mid-append leaves. The check below reads the intact records."
+            )
         meta, conflicts = payload_rules.merged_run_meta(records)
         if meta is None:
             print(f"{path} carries no run_meta row, so it cannot be checked at all")

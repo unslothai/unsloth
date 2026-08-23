@@ -67,7 +67,17 @@ const PAINT_MS = 16;
 let phaseStart = 0;
 const f = () => frame - phaseStart;
 
+let closing = false;
+let triggerReads = 0;
+
+// THE CLOSE PHASE HAS THE SAME SEPARATION, RUNNING THE OTHER WAY. `data-state` flips on the click;
+// the children stay in the document until the exit animation ends, so the census does not move at
+// all for `closeUnmountFrame` frames and then drops in one step. `closeUnmountFrame = 0` is the
+// page the shim used to model, where the teardown is instantaneous.
 const spanCount = () => {
+  if (closing) {
+    return f() >= cfg.closeUnmountFrame ? cfg.spansBefore : cfg.spansSettled;
+  }
   if (cfg.spansStatic) return cfg.spansBefore;
   if (f() < cfg.flipFrame) return cfg.spansBefore;           // STATIC before the flip
   if (f() >= cfg.mountDoneFrame) return cfg.spansSettled;
@@ -75,7 +85,13 @@ const spanCount = () => {
   return Math.round(cfg.spansBefore + t * (cfg.spansSettled - cfg.spansBefore));
 };
 
-let closing = false;
+// How many reasoning panes still have their content in the document. Open panes are mounted; a
+// closed one stays mounted until its exit animation finishes.
+const mountedCount = () => {
+  if (closing) return f() >= cfg.closeUnmountFrame ? 0 : cfg.panes;
+  return f() >= cfg.flipFrame ? cfg.panes : 0;
+};
+
 const openCount = () => {
   if (closing) return 0;
   if (f() < cfg.flipFrame) return 0;
@@ -97,23 +113,24 @@ globalThis.window = {
   __sb: { dom: {
     // The click handler costs real time, because it is the app's own handler running
     // synchronously and it is the first half of what "opening the panes" means.
-    reasoningTriggers: () => Array.from({ length: cfg.panes }, () => ({
-      click: () => { now += cfg.clickMs; },
-    })),
+    // THE SECOND CALL IS THE CLOSE. `REASONING_JS` reads the triggers once to open and once more
+    // to collapse, so asking for them again is the shim's signal to enter its close phase and
+    // restart the per-phase frame clock. It used to be a flag that nothing ever set, which left
+    // every close settle waiting for an open count that never fell and censoring itself -- so the
+    // close direction was, in effect, not exercised at all.
+    reasoningTriggers: () => {
+      triggerReads += 1;
+      if (triggerReads === 2) { closing = true; phaseStart = frame; }
+      return Array.from({ length: cfg.panes }, () => ({
+        click: () => { now += cfg.clickMs; },
+      }));
+    },
     reasoningOpenCount: () => openCount(),
+    reasoningContentMounted: () => mountedCount(),
   } },
 };
 
 const fn = eval("(" + src.trim() + ")");
-
-// The action opens, then closes. Flip the shim into its close phase when the open settle returns,
-// and restart the per-phase frame clock, so the second settle is not reading the first one's page.
-const origPaint = globalThis.window.__sbNextPaint;
-let opened = false;
-globalThis.window.__sbNextPaint = async () => {
-  await origPaint();
-  if (opened && !closing) { closing = true; phaseStart = frame; }
-};
 
 fn([cfg.timeoutMs, cfg.quietFrames]).then((out) => {
   console.log(JSON.stringify(out));
@@ -142,6 +159,7 @@ def run_settle(
     lose_state_after: int = 0,
     lose_state_for: int = 0,
     click_ms: float = 0.0,
+    close_unmount_frame: int = 0,
 ) -> dict:
     """Run the SHIPPED `REASONING_JS` against a page with a late flip and a later mount."""
     exe = _node()
@@ -155,6 +173,7 @@ def run_settle(
         "spansStatic": spans_static,
         "loseStateAfter": lose_state_after,
         "loseStateFor": lose_state_for,
+        "closeUnmountFrame": close_unmount_frame,
         "timeoutMs": timeout_ms,
         "quietFrames": quiet_frames,
     }
@@ -286,3 +305,67 @@ def test_the_state_reached_mark_shares_the_timing_origin():
         "from before the clicks, so subtracting one from the other yields a phantom interval"
     )
     assert out["openStateReachedMs"] <= out["openMs"]
+
+
+# ── the close direction ─────────────────────────────────────────────────────────────────────────
+#
+# The same defect the quiet streak fixes for the open direction, arriving from the other side.
+# `data-state` flips on the click, and BOTH collapse mechanisms keep the children in the document
+# until the exit animation ends: Radix's `Presence` until `animationend`, the grid arm's
+# `UnmeasuredCollapsibleContent` until the `grid-template-rows` `transitionend` or its 250 ms
+# backstop. So `pre span` is frozen at its open value for that whole window, and a streak that only
+# asks whether the census has stopped moving is satisfied by a census that has not started.
+
+
+def test_a_collapse_is_not_settled_while_its_panes_are_still_mounted():
+    """THE REGRESSION. `close_ms` must not name the state flip plus four frames.
+
+    Twelve frames of exit animation is 192 ms at this shim's 16 ms paint, which is the duration
+    both arms actually run. Four quiet frames fit inside it with room to spare, so the unfixed loop
+    returns while every span it would have counted is still in the document -- a pre-settled point,
+    reported as a measurement of the collapse.
+    """
+    out = run_settle(flip_frame = 1, mount_done_frame = 2, close_unmount_frame = 12)
+    assert out["closeCensored"] is False
+    assert out["closeFrames"] >= 12 + SETTLE_QUIET_FRAMES, (
+        f"the close settle returned after {out['closeFrames']} frames, before the panes it had "
+        f"just collapsed unmounted at frame 12. close_ms then measures the state flip plus a "
+        f"quiet streak the teardown had not begun to disturb."
+    )
+
+
+def test_the_close_bias_does_not_depend_on_the_paint_interval():
+    """WHY IT IS A COMPARISON PROBLEM RATHER THAN AN OFFSET.
+
+    Whether the old streak ended before or after the teardown depended on the paint interval
+    against the animation duration -- and the paint interval is exactly what differs between the
+    arms and the rungs this instrument compares. A slow page whose teardown lands inside the streak
+    was measured to the unmount; a fast one was not. Both must now be measured to the unmount, so
+    the two readings mean the same thing.
+    """
+    fast_page = run_settle(flip_frame = 1, mount_done_frame = 2, close_unmount_frame = 20)
+    slow_page = run_settle(flip_frame = 1, mount_done_frame = 2, close_unmount_frame = 2)
+    assert fast_page["closeFrames"] >= 20 + SETTLE_QUIET_FRAMES
+    assert slow_page["closeFrames"] >= 2 + SETTLE_QUIET_FRAMES
+    # Both readings are the same quantity: the teardown, plus the streak that proves it is over.
+    assert fast_page["closeFrames"] - 20 == slow_page["closeFrames"] - 2
+
+
+def test_a_collapse_that_never_tears_down_is_censored_and_says_which_half_failed():
+    """Silence beats a confident wrong answer here too, and the reason has to be usable.
+
+    A pane that reports closed and never unmounts is a different finding from one that never
+    closed. Reported as "the open count never reached 0" it would send a reader to the wrong half
+    of the app.
+    """
+    out = run_settle(flip_frame = 1, mount_done_frame = 2, close_unmount_frame = 100_000)
+    assert out["closeCensored"] is True
+    assert out["closeMs"] is None
+    assert "still mounted" in out["closeCensoredReason"]
+
+
+def test_an_instant_teardown_still_returns_promptly():
+    """The control. The fix must not turn the cheap case into a censored one."""
+    out = run_settle(flip_frame = 1, mount_done_frame = 2, close_unmount_frame = 0)
+    assert out["closeCensored"] is False
+    assert out["closeFrames"] <= 1 + SETTLE_QUIET_FRAMES + 1

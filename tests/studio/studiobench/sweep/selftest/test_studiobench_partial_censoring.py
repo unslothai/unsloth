@@ -407,3 +407,69 @@ def test_a_ladder_split_across_shards_is_judged_as_one_result(tmp_path):
     assert (
         floor_table.summarise([measured, censored])["reasoning_toggle.open_ms"]["poolable"] is False
     )
+
+
+def test_one_shards_failed_cell_does_not_censor_another_shards_good_one(tmp_path):
+    """Sharding restarts the repetition counter, so the same `cell_id` names two different cells.
+
+    `CONTRIBUTING-perf.md` prescribes 2 shards of 2 repetitions, and both shards then walk the
+    same ladder writing the same deterministic ids. One ordinary failed cell -- `CellRunner.run`
+    writes `completed: False` and leaves the action row it had already flushed, whose `expect_ok`
+    is False -- is enough: merged on the bare id, that cell is censored in one shard and completed
+    in the other, so the completed-cell filter that exists to discard it stops discarding it. A
+    metric that nothing censored anywhere is then refused as partially censored, and a whole
+    valid row loses its verdict over a cell that contributed nothing to any mean.
+    """
+
+    def shard(name: str, sess: str, failed: set[str]) -> Path:
+        rows: list[dict] = [
+            {
+                "row_type": "run_meta",
+                "tier": "standard",
+                "session_id": sess,
+                "corpus_hash": "abc",
+                "rungs": ["100K", "500K"],
+            }
+        ]
+        for rung in (MEASURED_RUNG, CENSORED_RUNG):
+            for arm, mult in (("base", 1.0), ("treatment", 1.05)):
+                for rep in (0, 1):
+                    cid = f"{rung}.{arm}.rep{rep}"
+                    bad = cid in failed
+                    rows.append(
+                        {
+                            "row_type": "cell",
+                            "cell_id": cid,
+                            "session_id": sess,
+                            "completed": not bad,
+                        }
+                    )
+                    rows.append(
+                        {
+                            "row_type": "action",
+                            "cell_id": cid,
+                            "session_id": sess,
+                            "action": "reasoning_toggle",
+                            "ran": True,
+                            "expect_ok": not bad,
+                            "timings": {"open_ms": 1000.0 * mult + rep},
+                            "counts": {},
+                            "expect": {"open_censored": False},
+                        }
+                    )
+        out = tmp_path / name
+        out.mkdir()
+        path = out / "payload.jsonl"
+        path.write_text("\n".join(json.dumps(r) for r in rows), encoding = "utf-8")
+        return path
+
+    dead = shard("sbench_mine.shard0", "sessA", {f"{CENSORED_RUNG}.treatment.rep1"})
+    good = shard("sbench_mine.shard1", "sessB", set())
+    assert floor_table.partial_censoring([dead]) == {}
+    assert floor_table.partial_censoring([good]) == {}
+    assert floor_table.partial_censoring([dead, good]) == {}, (
+        "shard0's failed cell borrowed shard1's completion under the same repetition number, so "
+        "a metric censored nowhere was refused as partially censored."
+    )
+    stats = floor_table.summarise([dead, good])["reasoning_toggle.open_ms"]
+    assert stats.get("poolable") is not False

@@ -1313,9 +1313,14 @@ def make_context(
     paths: Paths,
     log: Callable[[str], None],
     browser_procs: Optional[list] = None,
+    out_lock = None,
 ) -> tuple[BenchContext, Session]:
     session_id = new_session_id()
-    recorder = Recorder(paths.payload_jsonl, session_id)
+    # THE LOCK THE CALLER IS ALREADY HOLDING. `run()` takes the output directory before it archives
+    # a payload or installs a Studio, so the `Recorder` adopts that lock rather than opening a
+    # second one against the same path. Without a caller's lock it takes its own, which is what
+    # every test and every other consumer of a payload does.
+    recorder = Recorder(paths.payload_jsonl, session_id, lock = out_lock)
     ctx = BenchContext(
         browser = browser_bundle.browser,
         context = browser_bundle.context,

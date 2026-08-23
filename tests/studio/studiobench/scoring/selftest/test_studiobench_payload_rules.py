@@ -13,6 +13,8 @@ being compared.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from tests.studio.studiobench.scoring import payload_rules
 
 
@@ -289,7 +291,7 @@ def test_the_key_is_computed_over_the_fields_it_explains():
     #: Written as a set rather than a single special case, because the single special case is what
     #: had to be edited when `system` and `machine` were added -- and a test that needs editing to
     #: keep passing when a field is added is a test that can be edited into silence instead.
-    nested = {"engine", "system", "machine"}
+    nested = {"engine", "system", "machine", "node"}
     for field in payload_rules.comparability_fields(a):
         b = _meta(corpus)
         if field in nested:
@@ -318,6 +320,86 @@ def test_a_payload_from_another_host_is_not_comparable():
     differ = payload_rules.explain_incomparable(linux, macos)
     assert any(line.startswith("system:") for line in differ)
     assert any(line.startswith("machine:") for line in differ)
+
+
+def test_two_linux_boxes_are_not_one_host():
+    """The case `system` and `machine` cannot see, which is the commonest one there is.
+
+    `platform.machine()` returns the machine TYPE -- the architecture -- and `platform.system()`
+    the OS name, so two ordinary Linux x86_64 hosts report `Linux` and `x86_64` alike and hashed
+    to one key. The cross-OS pair above was caught and the dev-box-against-CI-runner pair, which
+    is what a team actually compares, was not: `--compare` printed "comparable: every field the
+    key covers matches" over two payloads from two machines, and `floor_table.render` computes its
+    own floor refusal from this same dict, so one machine's null control certified another
+    machine's result on a metric set whose report text reads "machine-local; does not travel
+    between machines".
+    """
+    corpus = "ac9d5d8e37be2a3844deed559fde6070247ad2322377295fb383b60b5eec5a0c"
+    here, there = _meta(corpus), _meta(corpus)
+    here["platform"] = {
+        "engine": "webkit",
+        "system": "Linux",
+        "machine": "x86_64",
+        "node": "devbox-a",
+    }
+    there["platform"] = {
+        "engine": "webkit",
+        "system": "Linux",
+        "machine": "x86_64",
+        "node": "ci-runner-7",
+    }
+    assert payload_rules.comparability_key(here) != payload_rules.comparability_key(there), (
+        "two different Linux x86_64 machines carry the same comparability key, so `--compare` "
+        "certifies one machine's numbers against the other's"
+    )
+    assert any(line.startswith("node:") for line in payload_rules.explain_incomparable(here, there))
+
+    same = _meta(corpus)
+    same["platform"] = dict(here["platform"])
+    assert payload_rules.comparability_key(here) == payload_rules.comparability_key(
+        same
+    ), "the same host on the same settings must still be comparable with itself"
+
+
+def test_two_payloads_from_before_the_host_was_recorded_still_match_each_other():
+    """Absence is not a wildcard, but it is consistent: two legacy payloads still share a key.
+
+    A payload recorded before `node` was written carries None, so it is not comparable with one
+    that names a host -- it cannot show which machine produced it, and that refusal is the honest
+    answer rather than a cost. What it must not do is stop matching other payloads of its own age.
+    """
+    corpus = "ac9d5d8e37be2a3844deed559fde6070247ad2322377295fb383b60b5eec5a0c"
+    a, b = _meta(corpus), _meta(corpus)
+    for row in (a, b):
+        row["platform"] = {"engine": "webkit", "system": "Linux", "machine": "x86_64"}
+    assert payload_rules.comparability_key(a) == payload_rules.comparability_key(b)
+    named = _meta(corpus)
+    named["platform"] = {
+        "engine": "webkit",
+        "system": "Linux",
+        "machine": "x86_64",
+        "node": "devbox-a",
+    }
+    assert payload_rules.comparability_key(a) != payload_rules.comparability_key(named)
+
+
+def test_the_harness_records_the_host_it_ran_on():
+    """The key can only cover a field the producer writes, and this one is written.
+
+    `comparability_fields` reading `platform.node` is inert unless `run_meta` carries it, which is
+    the shape of the defect this fixes: a field named in the key and absent from the payload is
+    None on both sides and separates nothing.
+    """
+    import platform as _platform
+
+    from tests.studio.studiobench import __main__ as sb_main
+
+    source = Path(sb_main.__file__).read_text(encoding = "utf-8")
+    assert "platform.node()" in source, (
+        "run_meta does not record the host, so the `node` field of the comparability key is None "
+        "on every payload and cannot separate two machines"
+    )
+    assert isinstance(_platform.node(), str)
 
 
 def test_a_run_from_before_the_settling_fix_is_not_comparable_with_one_from_after():
@@ -506,3 +588,52 @@ def test_the_launch_mode_is_an_identity_axis_a_resume_cannot_toggle():
 
     assert "headed" in IDENTITY_AXES
     assert HISTORICAL_DEFAULTS["headed"] is False
+
+
+def test_the_instrument_version_is_an_identity_axis_a_resume_cannot_cross():
+    """Detecting the mixture afterwards is not the same as refusing to create it.
+
+    `merged_run_meta` names a `tool_version` disagreement, but only `--compare` and a floor-gated
+    `floor_table.render` ever call it: plain `--report` reads the FIRST header and pools whatever
+    is in the file. So a half-finished 0.1.0 payload resumed from this tree kept its old cells and
+    appended new ones measured by instruments this commit redefined -- `reasoning_toggle.open_ms`
+    now terminates on a settled mount rather than on the `data-state` flip -- under cell ids that
+    cannot tell the two apart. The refusal has to arrive before anything is measured.
+    """
+    from tests.studio.studiobench.__main__ import IDENTITY_AXES, TOOL_VERSION, identity_problems
+
+    assert "tool_version" in IDENTITY_AXES
+    recorded = _meta("ac9d5d8e")
+    recorded["tool_version"] = "0.1.0"
+    requested = {"tool_version": TOOL_VERSION}
+    problems = identity_problems(recorded, requested)
+    assert any(p.startswith("tool_version:") for p in problems), problems
+
+
+def test_compare_reads_an_interrupted_payload_instead_of_raising(tmp_path, capsys):
+    """A payload killed during its last append ends in a torn record, by design.
+
+    The format is append-only and every row is flushed as it is written precisely so the rows
+    before the interruption survive; `report.read_records` counts a malformed line, and
+    `recorded_identities` and `_resume_set` skip one. `--compare` parsed with a bare `json.loads`
+    and answered an interrupted payload with a JSONDecodeError traceback instead of the check it
+    was asked for.
+    """
+    import json
+
+    from tests.studio.studiobench.__main__ import main
+
+    corpus = "ac9d5d8e37be2a3844deed559fde6070247ad2322377295fb383b60b5eec5a0c"
+    rows = [json.dumps(_meta(corpus)), json.dumps({"row_type": "cell", "cell_id": "r100K.A0.rep0"})]
+    whole = tmp_path / "whole.jsonl"
+    whole.write_text("\n".join(rows) + "\n", encoding = "utf-8")
+    torn = tmp_path / "torn.jsonl"
+    torn.write_text(
+        "\n".join(rows) + "\n" + json.dumps({"row_type": "cell", "cell_id": "r100K"})[:18],
+        encoding = "utf-8",
+    )
+
+    assert main(["--compare", str(torn), str(whole)]) == 0
+    out = capsys.readouterr().out
+    assert "malformed line" in out, out
+    assert "comparable: every field the key covers matches." in out, out

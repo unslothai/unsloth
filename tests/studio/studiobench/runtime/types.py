@@ -331,63 +331,65 @@ class BenchContext:
     browser_procs: list = field(default_factory = list)
 
 
-# ── the recorder ────────────────────────────────────────────────────
+# ── the output directory lock ───────────────────────────────────────
 
 
-class Recorder:
-    """Append-only JSONL. Every line is flushed and fsynced, so a renderer crash at rung 4 still
-    ships rungs 1 to 3 plus the crash record."""
+class OutDirLock:
+    """One output directory, held by one run, FROM BEFORE THE FIRST THING THAT MOVES OR STARTS.
 
-    def __init__(
-        self,
-        path: Path,
-        session_id: str,
-        t0: Optional[float] = None,
-    ) -> None:
-        self.path = Path(path)
-        self.path.parent.mkdir(parents = True, exist_ok = True)
-        self.session_id = session_id
-        self.t0 = t0 if t0 is not None else time.monotonic()
-        # REFUSE A SECOND LIVE SESSION IN ONE OUTPUT DIRECTORY.
-        #
-        # Appending is correct across SHARDS, which are deliberate and sequential. It is never
-        # correct for two runs going at once: they contend with each other, so neither measures
-        # the machine the other thought it had, and they write the same `cell_id`s into one file
-        # where a reader keyed on `cell_id` sees only the last writer.
-        #
-        # Observed: a launcher started twice produced three `run_meta` rows and every `cell_id`
-        # twice, both marked completed, with `r1M.treatment.rep1` keystroke `p50_ms` reading
-        # 73.4 ms in one session and 144.5 ms in the other. Scored last-wins that payload showed a
-        # 149.8% regression that does not exist at that size.
-        #
-        # The marker carries the pid, so a crashed run leaves a marker that names a dead process
-        # and the next run says so rather than refusing forever.
-        #
-        # ONE FIXED NAME, CREATED EXCLUSIVELY. The name used to be `.running.{session_id}`, and a
-        # per-session name cannot be a mutex however carefully it is written: the two contenders
-        # race on DIFFERENT paths, so each scanned the directory, each found only the other's
-        # absence, and each then created its own marker. Scan-then-write is two syscalls with a
-        # window between them, and the window is wide enough to lose. Measured on this guard
-        # before the change, two processes released from a barrier against one output directory:
-        # 123 of 200 trials admitted BOTH recorders, reproducing the defect-9 signature the guard
-        # exists to prevent -- two `run_meta` rows, one `cell_id` completed twice, 73.4 ms against
-        # 144.5 ms. Two processes merely launched back to back, with no barrier at all, still
-        # collided about 3% of the time.
-        #
-        # `os.open(..., O_CREAT | O_EXCL)` makes the check and the creation one atomic operation
-        # against other opens of the same name, which is the documented lock-file idiom and is
-        # available on Unix and Windows alike. `fcntl.flock` is deliberately NOT used: the `fcntl`
-        # module does not exist on Windows, and this tool is run by external testers there.
-        self._live_marker = self.path.parent / ".running.lock"
+    SEPARATE FROM THE `Recorder` BECAUSE OF WHEN IT HAS TO BE TAKEN. The guard used to be taken
+    where the payload is opened, which is after `prepare_payload` has archived whatever was in the
+    directory and after both Studios have been cloned, built and launched. A second launcher
+    pointed at a busy `--out` without `--resume` therefore did all of that before being refused,
+    and both halves of it hurt the run it was refused in favour of:
+
+      * `archive_payload` RENAMES the live `payload.jsonl` the first run is still writing. A rename
+        does not disturb the writer -- its descriptor names the inode, not the path -- so the first
+        run goes on recording into a file that is no longer at the name every reader opens.
+        `--report`, `--assert-liveness` and the next `--resume` all open `payload.jsonl`, and the
+        run that was never refused anything has silently lost its evidence from that name. That is
+        exactly the rule `prepare_payload` states for itself: a refusal has to leave the payload it
+        refused exactly as it found it.
+      * A clone, a build and a launch are not free. The first run is MEASURING, and the refusal
+        that arrives after all of that has already put a compiler and a second Studio on the
+        machine the first run thought it had. Contention between two runs sharing one `--out` is
+        the whole reason this guard exists; it must not be the guard's own cost of saying no.
+
+    So the lock is taken by `run()` in the first millisecond, held across setup and the cells, and
+    handed to the `Recorder`, which adopts it rather than taking a second one.
+    """
+
+    def __init__(self, out: Path) -> None:
+        self.out = Path(out)
+        self.path = self.out / ".running.lock"
+        self._fd: Optional[int] = None
+
+    @classmethod
+    def take(cls, out: Path, session_id: str = "starting") -> "OutDirLock":
+        """Hold `out`, or raise `SystemExit` naming the run that already holds it.
+
+        `session_id` is written into the marker so a refusal can name a holder. A run takes the
+        directory BEFORE it has a session, so the default stands in until `claim` replaces it.
+        """
+        lock = cls(out)
+        lock.out.mkdir(parents = True, exist_ok = True)
         # The legacy per-session names, swept once. A directory left by an older build still has to
         # be read, or the guard would quietly switch itself off on exactly the runs it was added
-        # for. Only the fixed name below is ever a mutex.
-        self._refuse_if_legacy_marker_is_live()
-        self._take_run_lock(session_id)
-        self._fh = self.path.open("a", encoding = "utf-8")
-        self._count = 0
+        # for. Only the fixed name is ever a mutex.
+        lock._refuse_if_legacy_marker_is_live()
+        lock._acquire(session_id)
+        return lock
 
-    def _take_run_lock(self, session_id: str) -> None:
+    def claim(self, session_id: str) -> None:
+        """Name the session in the marker, now that the run has one.
+
+        The refusal a contender prints reads the marker, so leaving it saying `starting` for the
+        life of the run would make every refusal anonymous.
+        """
+        if self._fd is not None:
+            self._write(session_id)
+
+    def _acquire(self, session_id: str) -> None:
         """Hold this output directory for the life of the process, or refuse and say who has it.
 
         A KERNEL LOCK, NOT A FILE THAT STANDS FOR ONE. The previous design created the marker with
@@ -421,11 +423,11 @@ class Recorder:
         holding a lock on an inode with no name, while the next run creates a fresh file and locks
         that. The file left behind carries no authority, so a stale one is harmless.
         """
-        fd = os.open(self._live_marker, os.O_CREAT | os.O_RDWR, 0o644)
+        fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o644)
         try:
             self._lock_fd_exclusive(fd)
         except OSError:
-            held = self._read_marker_once_written(self._live_marker)
+            held = self._read_marker_once_written(self.path)
             os.close(fd)
             who = (
                 f"session {held[0]} is still running as pid {held[1]}"
@@ -433,10 +435,17 @@ class Recorder:
                 else "another run is still holding it"
             )
             raise SystemExit(
-                f"refusing to append to {self.path.parent}: {who}. Two concurrent runs sharing "
+                f"refusing to append to {self.out}: {who}. Two concurrent runs sharing "
                 f"one --out contend with each other and write the same cell ids into one file. "
                 f"Give this run its own --out."
             ) from None
+        self._fd = fd
+        self._write(session_id)
+
+    def _write(self, session_id: str) -> None:
+        fd = self._fd
+        if fd is None:
+            return
         os.ftruncate(fd, 0)
         os.lseek(fd, 0, os.SEEK_SET)
         os.write(fd, f"{os.getpid()} {session_id}\n".encode())
@@ -444,7 +453,34 @@ class Recorder:
             os.fsync(fd)
         except OSError:
             pass
-        self._lock_fd = fd
+
+    def release(self) -> None:
+        """Drop the lock. IDEMPOTENT, because both `run()` and `Recorder.close` release it.
+
+        RELEASED, NOT DELETED. Dropping the lock is what frees the directory; unlinking the file
+        as well would let a launcher that has already opened the path end up holding a lock on an
+        inode with no name while the next run creates a fresh file and locks that, which is the
+        reclaim race in reverse. The file left behind carries no authority.
+        """
+        fd = self._fd
+        if fd is None:
+            return
+        self._fd = None
+        # BLANKED BEFORE IT IS RELEASED, and only while this process still holds the lock, so
+        # nothing can be reading it as authoritative. The file stays (see above); what goes is
+        # its CONTENT, because a retained `pid session` line outlives the run that wrote it and
+        # the next contender to lose a race would otherwise be handed it as the holder. Not a
+        # substitute for the liveness test in `_read_marker_once_written`: a killed run never
+        # reaches this line.
+        try:
+            os.ftruncate(fd, 0)
+        except OSError:
+            pass
+        self._unlock_fd(fd)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
     @staticmethod
     def _lock_fd_exclusive(fd: int) -> None:
@@ -543,19 +579,83 @@ class Recorder:
 
     def _refuse_if_legacy_marker_is_live(self) -> None:
         """Honour `.running.<session>` markers from older builds, and clear the dead ones."""
-        for other in sorted(self.path.parent.glob(".running.*")):
-            if other == self._live_marker:
+        for other in sorted(self.out.glob(".running.*")):
+            if other == self.path:
                 continue
             got = self._read_marker(other)
             if got is not None and self._alive(got[1]):
                 session, pid = got
                 raise SystemExit(
-                    f"refusing to append to {self.path.parent}: session {session} is still "
+                    f"refusing to append to {self.out}: session {session} is still "
                     f"running as pid {pid}. Two concurrent runs sharing one --out contend with "
                     f"each other and write the same cell ids into one file. Give this run its "
                     f"own --out."
                 )
             other.unlink(missing_ok = True)
+
+
+# ── the recorder ────────────────────────────────────────────────────
+
+
+class Recorder:
+    """Append-only JSONL. Every line is flushed and fsynced, so a renderer crash at rung 4 still
+    ships rungs 1 to 3 plus the crash record."""
+
+    def __init__(
+        self,
+        path: Path,
+        session_id: str,
+        t0: Optional[float] = None,
+        lock: Optional[OutDirLock] = None,
+    ) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents = True, exist_ok = True)
+        self.session_id = session_id
+        self.t0 = t0 if t0 is not None else time.monotonic()
+        # REFUSE A SECOND LIVE SESSION IN ONE OUTPUT DIRECTORY.
+        #
+        # Appending is correct across SHARDS, which are deliberate and sequential. It is never
+        # correct for two runs going at once: they contend with each other, so neither measures
+        # the machine the other thought it had, and they write the same `cell_id`s into one file
+        # where a reader keyed on `cell_id` sees only the last writer.
+        #
+        # Observed: a launcher started twice produced three `run_meta` rows and every `cell_id`
+        # twice, both marked completed, with `r1M.treatment.rep1` keystroke `p50_ms` reading
+        # 73.4 ms in one session and 144.5 ms in the other. Scored last-wins that payload showed a
+        # 149.8% regression that does not exist at that size.
+        #
+        # The marker carries the pid, so a crashed run leaves a marker that names a dead process
+        # and the next run says so rather than refusing forever.
+        #
+        # ONE FIXED NAME, CREATED EXCLUSIVELY. The name used to be `.running.{session_id}`, and a
+        # per-session name cannot be a mutex however carefully it is written: the two contenders
+        # race on DIFFERENT paths, so each scanned the directory, each found only the other's
+        # absence, and each then created its own marker. Scan-then-write is two syscalls with a
+        # window between them, and the window is wide enough to lose. Measured on this guard
+        # before the change, two processes released from a barrier against one output directory:
+        # 123 of 200 trials admitted BOTH recorders, reproducing the defect-9 signature the guard
+        # exists to prevent -- two `run_meta` rows, one `cell_id` completed twice, 73.4 ms against
+        # 144.5 ms. Two processes merely launched back to back, with no barrier at all, still
+        # collided about 3% of the time.
+        #
+        # `os.open(..., O_CREAT | O_EXCL)` makes the check and the creation one atomic operation
+        # against other opens of the same name, which is the documented lock-file idiom and is
+        # available on Unix and Windows alike. `fcntl.flock` is deliberately NOT used: the `fcntl`
+        # module does not exist on Windows, and this tool is run by external testers there.
+        #
+        # TAKEN BEFORE THIS POINT WHEN THE CALLER HAS ONE, AND THAT IS THE NORMAL PATH. `run()`
+        # holds the directory from its first millisecond, because by the time the payload is opened
+        # a duplicate has already archived the live payload and installed two Studios on top of the
+        # run it is about to be refused in favour of. See `OutDirLock`. A `Recorder` built without
+        # one -- the tests, and any caller that only wants a payload -- still takes its own, so the
+        # guard cannot be switched off by forgetting to pass it.
+        if lock is None:
+            lock = OutDirLock.take(self.path.parent, session_id)
+        else:
+            lock.claim(session_id)
+        self._lock = lock
+        self._fh = self.path.open("a", encoding = "utf-8")
+        self._count = 0
 
     def now_ms(self) -> float:
         return round((time.monotonic() - self.t0) * 1000, 2)
@@ -628,28 +728,11 @@ class Recorder:
             self._fh.close()
         except OSError:
             pass
-        # RELEASED, NOT DELETED. Dropping the lock is what frees the directory; unlinking the file
-        # as well would let a launcher that has already opened the path end up holding a lock on an
-        # inode with no name while the next run creates a fresh file and locks that, which is the
-        # reclaim race in reverse. The file left behind carries no authority.
-        fd = getattr(self, "_lock_fd", None)
-        if fd is not None:
-            # BLANKED BEFORE IT IS RELEASED, and only while this process still holds the lock, so
-            # nothing can be reading it as authoritative. The file stays (see below); what goes is
-            # its CONTENT, because a retained `pid session` line outlives the run that wrote it and
-            # the next contender to lose a race would otherwise be handed it as the holder. Not a
-            # substitute for the liveness test in `_read_marker_once_written`: a killed run never
-            # reaches this line.
-            try:
-                os.ftruncate(fd, 0)
-            except OSError:
-                pass
-            self._unlock_fd(fd)
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-            self._lock_fd = None
+        # RELEASED, NOT DELETED, and the release lives on the lock itself. `run()` releases the
+        # same object in its own `finally`, so both paths are covered and neither double-frees.
+        lock = getattr(self, "_lock", None)
+        if lock is not None:
+            lock.release()
 
 
 def new_session_id() -> str:
