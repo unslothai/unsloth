@@ -751,3 +751,67 @@ def test_a_difference_at_one_rung_does_not_demand_the_null_decide_another(tmp_pa
     rc, report_ = U.audit_null([null], frozenset(), scope)
     assert rc == 0, report_["undecided"]
     assert ("r100K", "keystroke") in report_["out_of_scope"]
+
+
+# ── the completion guard has to answer about the attempt it is guarding ──
+
+
+def test_an_interrupted_retry_does_not_inherit_the_completion_it_superseded(tmp_path):
+    """A superseded attempt's `cell` row must not admit the dead retry's action rows.
+
+    `_resume_set` names the path that gets here without anybody doing anything unusual: an A/B
+    pair is re-run WHOLE (`ab.skippable_cells`), so a resume re-runs an arm that had already
+    succeeded. If that retry is interrupted, the payload holds a completed `cell` row and a LATER,
+    unfinished set of action rows under the same deterministic `cell_id`. `latest_attempt_rows`
+    correctly names the retry as the latest, so its rows are the ones scored -- but `completed`
+    was read from the RAW stream, so the guard cleared them on the strength of the completion the
+    attempt before them earned.
+
+    On the null that is the worst direction. One valid repetition plus this half-written one is
+    exactly `min_observations`, so the action is declared unstable at that rung on a reading the
+    run itself threw away, and a real difference in the result then prints under "expected to
+    vary" while the command exits 0.
+    """
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    # rep0 is a clean, uncontested observation and it MATCHES.
+    for arm in ("base", "treatment"):
+        cid = f"r100K.{arm}.rep0"
+        row = action_row(cid, "settings", "SAME")
+        row["session_id"] = "s1"
+        rows.append(row)
+        rows.append({"row_type": "cell", "cell_id": cid, "completed": True, "session_id": "s1"})
+    # rep1 completed in session s1 ...
+    for arm in ("base", "treatment"):
+        cid = f"r100K.{arm}.rep1"
+        row = action_row(cid, "settings", "SAME")
+        row["session_id"] = "s1"
+        rows.append(row)
+        rows.append({"row_type": "cell", "cell_id": cid, "completed": True, "session_id": "s1"})
+    # ... and was re-run whole in s2, where the treatment arm died before its cell row. Its
+    # digests DIFFER, which is what would make the action look unstable.
+    for arm, digest in (("base", "SAME"), ("treatment", "OTHER")):
+        row = action_row(f"r100K.{arm}.rep1", "settings", digest)
+        row["session_id"] = "s2"
+        rows.append(row)
+    rows.append(
+        {"row_type": "cell", "cell_id": "r100K.base.rep1", "completed": True, "session_id": "s2"}
+    )
+
+    out = tmp_path / "resumed"
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+
+    got = U.collect([path], require_complete = True)
+    assert got["incomplete"] == 1, got
+    keys = {(k[2], k[4]) for k in got["pairs"]}
+    assert ("rep0", "settings") in keys
+    # The dead retry left an unpaired base row; it must not have become an observation.
+    assert not any(
+        "base" in sides and "treatment" in sides
+        for k, sides in got["pairs"].items()
+        if k[2] == "rep1" and k[3] == "s2"
+    ), got["pairs"]
+
+    unstable, _derived, _checks = U.unstable_set([path])
+    assert ("r100K", "settings") not in unstable, unstable

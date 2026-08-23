@@ -113,6 +113,21 @@ on:
       # (`.unsloth-model-selector-menu`). So this route both shapes the measured
       # picker and can stop the scripted chat from sending at all.
       - 'studio/backend/routes/providers.py'
+      # Where the scripted turn actually goes. chat-api.ts sends the composer's
+      # message to POST /api/inference/chat/completions, which is this file, and
+      # the `send` action's success condition is that the turn started streaming
+      # AND the thread grew. A change to how that stream is transformed alters or
+      # empties the transcript the digest reads. It is also the corpus sizing
+      # fallback: seeder.py counts through /api/inference/chat/count_tokens when
+      # tiktoken is unavailable, and that ratio decides how much text a rung gets.
+      - 'studio/backend/routes/inference.py'
+      # The precondition for reaching any of the above. runtime/lifecycle.py logs
+      # each side in over POST /api/auth/login and clears must_change_password
+      # over POST /api/auth/change-password before the browser starts, so a change
+      # here can stop ONE arm from ever rendering the measured scene. Asymmetric
+      # execution is now fatal rather than coverage, which is precisely why the
+      # gate should run on the route that can cause it.
+      - 'studio/backend/routes/auth.py'
       # Decides WHICH dist is served and rewrites the HTML on the way out.
       - 'studio/backend/main.py'
       - 'studio/backend/run.py'
