@@ -23,8 +23,10 @@ import pytest
 
 TEMPLATE = Path(__file__).resolve().parents[2] / ".github" / "PULL_REQUEST_TEMPLATE.md"
 
-# [text](target), ignoring images.
-LINK = re.compile(r"(?<!!)\[[^\]]*\]\(([^)\s]+)")
+# [text](target), ignoring images. The inline destination carries the same optional <> wrapper a
+# reference definition does, and the wrapper is not part of the URI, so a guard that kept the
+# angle brackets would read `<https://...>` as relative and fail CI on a link that is absolute.
+LINK = re.compile(r"(?<!!)\[[^\]]*\]\(<?([^)<>\s]+)>?")
 # [label]: target -- the reference-style definition. It carries a target exactly as an inline link
 # does, and resolves against the same wrong base, so a guard that reads only the inline form would
 # pass a template whose links all 404. The optional <> wrapper and the trailing title are both
@@ -90,6 +92,26 @@ def test_the_guard_classifies_targets_the_way_github_resolves_them(
     found = _targets(f"See [CONTRIBUTING.md]({target}) for the full rule.")
     assert found == [target]
     assert _resolves_off_the_pr_path(target) is relative
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "https://github.com/unslothai/unsloth/blob/main/CONTRIBUTING.md",
+        "/unslothai/unsloth/blob/main/CONTRIBUTING.md",
+        "../CONTRIBUTING.md",
+    ],
+)
+def test_the_scan_unwraps_angle_bracketed_inline_destinations(target: str) -> None:
+    """`[text](<target>)` is the same link as `[text](target)`.
+
+    The pointy brackets are a wrapper around the destination, not part of the URI, so a guard
+    that kept them would read an absolute `<https://...>` as relative and fail CI on a link
+    that resolves correctly from any PR path.
+    """
+    found = _targets(f"See [CONTRIBUTING.md](<{target}>) for the full rule.")
+    assert found == [target]
+    assert _resolves_off_the_pr_path(target) is _resolves_off_the_pr_path(found[0])
 
 
 @pytest.mark.parametrize(
