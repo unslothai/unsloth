@@ -133,6 +133,26 @@ def test_configure_reads_launch_ownership_from_the_bind_host(bind_host, launch_m
     assert state.lan_access_ready is False
 
 
+def test_configure_resolves_a_hostname_to_its_accepting_socket_address(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, port, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.1.24", port))
+        ],
+    )
+    state = SimpleNamespace()
+    lan_settings.configure_lan_access(
+        state,
+        port = 8888,
+        bind_host = "studio.lan",
+        secure = False,
+        is_colab = False,
+        frontend_served = True,
+    )
+    assert state.lan_access_launch_addresses == ("192.168.1.24",)
+
+
 # ── status ──
 
 
@@ -975,6 +995,7 @@ def _api_request(
     path: str,
     *,
     server: tuple[str, int] = ("192.168.1.24", 8888),
+    client: tuple[str, int] | None = ("192.168.1.90", 54321),
     authorization: str | None = None,
     app = None,
 ) -> Request:
@@ -990,9 +1011,10 @@ def _api_request(
         "raw_path": path.encode("ascii"),
         "query_string": b"",
         "headers": headers,
-        "client": ("192.168.1.90", 54321),
         "server": server,
     }
+    if client is not None:
+        scope["client"] = client
     if app is not None:
         scope["app"] = app
     return Request(scope)
@@ -1015,6 +1037,8 @@ def test_unauthenticated_openai_api_is_limited_to_the_live_lan_listener(
         _api_request("/api/inference/models"),
         _api_request("/api/settings/lan-access"),
         _api_request("/v1/models", server = ("127.0.0.1", 8888)),
+        _api_request("/v1/models", client = ("8.8.8.8", 54321)),
+        _api_request("/v1/models", client = None),
     ):
         with pytest.raises(HTTPException) as exc:
             asyncio.run(
@@ -1096,6 +1120,36 @@ def test_unauthenticated_openai_api_accepts_a_private_launch_managed_bind(
     )
 
 
+def test_unauthenticated_openai_api_accepts_a_resolved_hostname_bind(
+    monkeypatch, stored_settings,
+):
+    stored_settings[lan_settings.LAN_ACCESS_UNAUTHENTICATED_API_KEY] = True
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, port, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.1.24", port))
+        ],
+    )
+    app = _app(server_url = "http://studio.lan:8888")
+    lan_settings.configure_lan_access(
+        app.state,
+        port = 8888,
+        bind_host = "studio.lan",
+        secure = False,
+        is_colab = False,
+        frontend_served = True,
+    )
+    request = _api_request("/v1/models", app = app)
+
+    assert (
+        asyncio.run(
+            authentication.get_current_subject(credentials = None, request = request)
+        )
+        == authentication.LAN_API_GUEST_SUBJECT
+    )
+
+
 def test_unauthenticated_openai_api_accepts_a_private_wildcard_bind(
     monkeypatch, stored_settings
 ):
@@ -1165,7 +1219,7 @@ def test_fastapi_injects_the_lan_guest_and_keeps_dependency_overrides_working(
     def probe(subject: str = Depends(authentication.get_current_subject)):
         return {"subject": subject}
 
-    with TestClient(app) as client:
+    with TestClient(app, client = ("192.168.1.90", 54321)) as client:
         guest = client.get("/v1/probe")
         assert guest.status_code == 200
         assert guest.json() == {"subject": authentication.LAN_API_GUEST_SUBJECT}

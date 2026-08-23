@@ -220,7 +220,7 @@ async def get_current_subject(
 def is_lan_api_guest(request: Request) -> bool:
     """Whether the LAN-only OpenAI exception admitted this request."""
     state = getattr(request, "state", None)
-    return bool(getattr(state, _LAN_API_GUEST_STATE_KEY, False))
+    return getattr(state, _LAN_API_GUEST_STATE_KEY, False) is True
 
 
 async def get_current_credential(

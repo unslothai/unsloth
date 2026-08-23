@@ -10,6 +10,7 @@ answer across restarts.
 
 from __future__ import annotations
 
+import socket
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -68,10 +69,10 @@ def set_lan_access_unauthenticated_api(enabled: bool) -> bool:
 
 
 def request_on_lan_access(request) -> bool:
-    """True for a private address served by either supported LAN launch mode.
+    """True for a private peer served by either supported LAN launch mode.
 
-    The accepting socket in the ASGI scope is authoritative. No forwarded,
-    origin, host, or client address header participates in this decision.
+    The accepting socket and transport peer in the ASGI scope are authoritative.
+    No forwarded, origin, host, or client address header participates.
     """
     from urllib.parse import urlparse
 
@@ -83,6 +84,12 @@ def request_on_lan_access(request) -> bool:
         return False
     server_host, server_port = server[0], server[1]
     if not isinstance(server_host, str) or is_public_address(server_host):
+        return False
+    client = scope.get("client")
+    if not isinstance(client, (tuple, list)) or len(client) < 1:
+        return False
+    client_host = client[0]
+    if not isinstance(client_host, str) or is_public_address(client_host):
         return False
 
     if request_on_lan_listener(scope):
@@ -96,6 +103,8 @@ def request_on_lan_access(request) -> bool:
         return False
     if server_port != getattr(app_state, "lan_access_port", None):
         return False
+    if server_host in getattr(app_state, "lan_access_launch_addresses", ()):
+        return True
 
     for url in _launch_urls(app_state):
         try:
@@ -105,6 +114,24 @@ def request_on_lan_access(request) -> bool:
         if parsed.hostname == server_host and parsed.port == server_port:
             return True
     return False
+
+
+def _resolve_launch_addresses(bind_host: str, port: int) -> tuple[str, ...]:
+    """Resolve the exact addresses Uvicorn can expose for a named bind host."""
+    if bind_host in ("0.0.0.0", "::"):
+        return ()
+    try:
+        infos = socket.getaddrinfo(bind_host, port, type = socket.SOCK_STREAM)
+    except OSError:
+        return ()
+    addresses: list[str] = []
+    for _family, _kind, _protocol, _name, sockaddr in infos:
+        if not sockaddr or not isinstance(sockaddr[0], str):
+            continue
+        address = sockaddr[0]
+        if address not in addresses:
+            addresses.append(address)
+    return tuple(addresses)
 
 
 def _admin_password_ready() -> bool:
@@ -123,6 +150,7 @@ def configure_lan_access(
 
     app_state.lan_access_port = port
     app_state.lan_access_wildcard_bind = bind_host in ("0.0.0.0", "::")
+    app_state.lan_access_launch_addresses = _resolve_launch_addresses(bind_host, port)
     app_state.lan_access_launch_managed = app_state.lan_access_wildcard_bind or is_external_host(
         bind_host
     )
