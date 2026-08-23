@@ -230,9 +230,7 @@ def test_clear_history_reaps_search_thumbnails_with_a_body(monkeypatch):
     from core.inference import search_images
 
     reaped: list[bool] = []
-    monkeypatch.setattr(
-            search_images, "clear_cache", lambda only_ids = None: reaped.append(True)
-        )
+    monkeypatch.setattr(search_images, "clear_cache", lambda only_ids = None: reaped.append(True))
 
     async def remove_sandboxes(_thread_ids, _delete_files):
         return 0, []
@@ -737,9 +735,15 @@ def test_a_clear_does_not_reap_an_image_registered_while_it_was_running(tmp_path
     (tmp_path / "thumbs").mkdir(parents = True, exist_ok = True)
 
     old = search_images.register_images(
-        [{"title": "before", "image": "https://img.example.com/a.jpg",
-          "thumbnail": "https://tse1.mm.bing.net/th?id=a",
-          "url": "https://example.com/a", "source": "Bing"}]
+        [
+            {
+                "title": "before",
+                "image": "https://img.example.com/a.jpg",
+                "thumbnail": "https://tse1.mm.bing.net/th?id=a",
+                "url": "https://example.com/a",
+                "source": "Bing",
+            }
+        ]
     )
     assert old, "fixture must register: the whole test turns on this id being reapable"
     old_id = old[0]["id"]
@@ -750,9 +754,15 @@ def test_a_clear_does_not_reap_an_image_registered_while_it_was_running(tmp_path
         # Stands in for the concurrent client: another tab registers an image for a chat
         # created after the transaction, while this slow cleanup is still running.
         entries = search_images.register_images(
-            [{"title": "during", "image": "https://img.example.com/b.jpg",
-              "thumbnail": "https://tse1.mm.bing.net/th?id=b",
-              "url": "https://example.com/b", "source": "Bing"}]
+            [
+                {
+                    "title": "during",
+                    "image": "https://img.example.com/b.jpg",
+                    "thumbnail": "https://tse1.mm.bing.net/th?id=b",
+                    "url": "https://example.com/b",
+                    "source": "Bing",
+                }
+            ]
         )
         late["id"] = entries[0]["id"]
         return 0, []
@@ -779,9 +789,9 @@ def test_a_clear_does_not_reap_an_image_registered_while_it_was_running(tmp_path
         "an image registered while the clear was running belongs to a chat the clear "
         "kept, so reaping it 404s that chat's cards"
     )
-    assert search_images.lookup_image(old_id) is None, (
-        "the clear still has to reap what it was responsible for"
-    )
+    assert (
+        search_images.lookup_image(old_id) is None
+    ), "the clear still has to reap what it was responsible for"
 
 
 def test_replayed_clear_keeps_the_thumbnails_of_a_chat_it_did_not_delete(tmp_path, monkeypatch):
@@ -802,9 +812,7 @@ def test_replayed_clear_keeps_the_thumbnails_of_a_chat_it_did_not_delete(tmp_pat
     monkeypatch.setattr(studio_db, "_schema_ready", False)
 
     reaped: list[str] = []
-    monkeypatch.setattr(
-        search_images, "clear_cache", lambda only_ids = None: reaped.append("reaped")
-    )
+    monkeypatch.setattr(search_images, "clear_cache", lambda only_ids = None: reaped.append("reaped"))
 
     async def remove_sandboxes(_thread_ids, _delete_files):
         return 0, []

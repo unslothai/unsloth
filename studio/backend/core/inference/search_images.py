@@ -516,11 +516,7 @@ def clear_cache(only_ids: set[str] | None = None) -> None:
                 # `.tmp` stems carry a writer suffix, so they never match a snapshot id
                 # and are always swept: one was never servable, and a torn write left
                 # behind by a crashed fetch has no owner to spare it for.
-                if (
-                    only_ids is not None
-                    and pattern != "*.tmp"
-                    and path.stem not in only_ids
-                ):
+                if only_ids is not None and pattern != "*.tmp" and path.stem not in only_ids:
                     continue
                 # Per file, as _evict_cache does: one that cannot be unlinked --
                 # a JPEG another process holds open on Windows -- must not leave

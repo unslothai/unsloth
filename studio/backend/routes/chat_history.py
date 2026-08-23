@@ -1374,9 +1374,7 @@ async def clear_history(
     # is actually responsible for.
     from core.inference.search_images import registered_image_ids
 
-    reapable_image_ids = (
-        None if replayed else await run_in_threadpool(registered_image_ids)
-    )
+    reapable_image_ids = None if replayed else await run_in_threadpool(registered_image_ids)
     # A chat started between the listing and the transaction is in `cleared`
     # but was never cancelled, and a generation still running would dispatch a
     # tool and rebuild the sandbox this call is about to remove.
