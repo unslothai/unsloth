@@ -1548,13 +1548,34 @@ def update_openai_auto_switch_override(
         # A client that declares it mirrors these clears by omission as usual; an
         # older one keeps whatever is stored. On a remove the whole entry goes, so
         # there is nothing to preserve.
+        # Gated on is_removal, not on payload.remove: the documented legacy contract is a
+        # payload carrying only model_id, which leaves remove None while is_removal is
+        # true. Carrying anything over there would rebuild a non-empty row and the clear
+        # would silently do nothing.
         _tuning_fields = ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram")
         _kept_tuning = {name: getattr(payload, name) for name in _tuning_fields}
-        if not payload.mirrors_server_tuning and payload.remove is not True:
-            _stored_tuning = get_model_override(payload.model_id)
-            for name in _tuning_fields:
-                if _kept_tuning[name] is None:
-                    _kept_tuning[name] = _stored_tuning.get(name)
+        if not payload.mirrors_server_tuning and not is_removal:
+            # The same spellings the extra-args carry-over walks, and in the same order.
+            # A cached repo is not an ordinary folded match, so a save under the repo id
+            # while the row sits under the snapshot path finds nothing here and then
+            # retires that alias below, taking the tuning with it.
+            _alias_ids = [payload.model_id]
+            for _candidate in (
+                _bare_model_id(payload.model_id),
+                _legacy_standalone_gguf_key(payload.model_id),
+                *cached_repo_alias_keys(payload.model_id),
+            ):
+                if _candidate and _candidate not in _alias_ids:
+                    _alias_ids.append(_candidate)
+            for _alias_id in _alias_ids:
+                if all(_kept_tuning[name] is not None for name in _tuning_fields):
+                    break
+                _stored_tuning = get_model_override(_alias_id)
+                if not _stored_tuning:
+                    continue
+                for name in _tuning_fields:
+                    if _kept_tuning[name] is None:
+                        _kept_tuning[name] = _stored_tuning.get(name)
         if payload.remove is True:
             # An explicit remove wins over any other field. Remove the key a load resolves to,
             # not the literal one sent (the browser normalizes casing), and every spelling:

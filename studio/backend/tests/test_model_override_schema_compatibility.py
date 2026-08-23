@@ -167,6 +167,36 @@ def test_the_preservation_flag_is_not_itself_a_saved_field(override_store):
     assert settings.get_model_override(MODEL) == {}
 
 
+def test_a_legacy_model_id_only_clear_is_not_undone_by_preservation(override_store):
+    # The documented pre-`remove` contract: a payload carrying only model_id clears the
+    # override. That leaves payload.remove None while is_removal is true, so a gate on
+    # the field rather than the verdict would carry the tuning forward and rebuild a
+    # non-empty row -- the request succeeds and the settings keep applying.
+    _put(MODEL, **PRE_TUNING_PAYLOAD, **TUNING_PAYLOAD, mirrors_server_tuning = True)
+    assert settings.get_model_override(MODEL)
+
+    _put(MODEL)
+    assert settings.get_model_override(MODEL) == {}
+
+
+def test_tuning_carries_over_from_the_bare_repo_entry(override_store):
+    # A save under repo:QUANT reads flags off a bare `repo` row and retires it, so the
+    # preservation has to reach the same spellings the extra-args carry-over does. A
+    # lookup on the sent id alone finds nothing here and the tuning goes down with the
+    # row. Same shape for the snapshot-path and cached-alias spellings that walk beside
+    # it, which need HF cache state to reach and are covered by the alias sweep tests.
+    bare_id = "unsloth/Repo-GGUF"
+    _put(bare_id, **PRE_TUNING_PAYLOAD, **TUNING_PAYLOAD, mirrors_server_tuning = True)
+    assert settings.get_model_override(bare_id)["load_mode"] == TUNING_PAYLOAD["load_mode"]
+
+    # The older client saving the qualified key: it never sends the group, and its row
+    # does not exist yet, so everything it keeps has to come off the bare entry.
+    _put(MODEL, **PRE_TUNING_PAYLOAD)
+    kept = settings.get_model_override(MODEL)
+    for field, value in TUNING_PAYLOAD.items():
+        assert kept[field] == value, f"{field} was lost saving under the qualified key"
+
+
 def test_a_fill_pass_adds_the_tuning_group_without_disturbing_the_row(override_store):
     # The one merge path there is, and the one the backfill uses. A fill must not be
     # able to cause the erasure above, or the upgrade pass itself would strip the row
