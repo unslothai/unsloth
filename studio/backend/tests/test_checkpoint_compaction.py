@@ -2199,3 +2199,155 @@ def test_a_nudge_is_still_excluded_without_the_length_floor():
     items = carried_forward_items(messages, max_tokens = 4096)
 
     assert items == [INSTRUCTION]
+
+
+def test_the_carried_opening_pair_survives_the_next_compaction():
+    """The pair rule has to hold on the MERGED path, not only on the fresh walk.
+
+    The block arrives in the system turn (the ordinary case in a tool loop, and on every
+    request of an epoch already in force) holding the opening request and the correction
+    to it. The turns that produced them are long gone, so the merge is the only copy. The
+    plain newest-first re-cap then spent the budget on the increments evicted since,
+    skipped the long correction for cost, and STILL afforded the short opening: measured
+    at a 4096-token context, the block came back as "Build Flappy Bird" plus four Tetris
+    increments, which is the abandoned-request-plus-increments output the pair exists to
+    prevent, reached one compaction later.
+    """
+    opening = "Build Flappy Bird in one HTML file."
+    correction = (
+        "Actually scrap Flappy Bird and build Tetris instead: same single HTML file, no "
+        "libraries at all, keyboard controls for rotate and drop, a next-piece preview, a "
+        "score counter that scales with the number of lines cleared at once, and a pause key. "
+        "Keep the whole thing under three hundred lines and comment the collision routine. "
+        "Use a ten by twenty well, the standard seven tetrominoes with the standard colours, "
+        "wall kicks on rotation, a hold slot that can only be used once per piece, a ghost "
+        "piece showing where the current one will land, gravity that speeds up every ten "
+        "lines, and a game over overlay with the final score and a restart button. Draw "
+        "everything on a canvas element, no DOM nodes for the board, and keep the render loop "
+        "on requestAnimationFrame rather than a timer."
+    )
+    increments = [
+        "Add background music and a mute toggle in the corner, and make the score font bigger "
+        "so it can be read from across the room during a demo.",
+        "Give the well a subtle grid so the columns are easy to count, and dim the ghost piece "
+        "a little more than it is now, it reads as a real piece.",
+        "Add a short sound for a line clear and a different one for a tetris, generated with "
+        "the WebAudio oscillator so there are no asset files to ship.",
+        "Remember the high score in localStorage and show it beside the current score, and "
+        "make the restart button focusable so the keyboard alone can replay.",
+    ]
+    block = checkpoint.render_checkpoint([opening, correction])
+    assert checkpoint._block_items(block) == [opening, correction]
+
+    messages = [{"role": "system", "content": "you are helpful\n\n" + block}]
+    for text in increments:
+        messages += [
+            {"role": "user", "content": text},
+            {"role": "assistant", "content": "Done. " + "d " * 1400},
+        ]
+    messages += [{"role": "user", "content": "Here is the console trace. " + "z " * 2000}]
+
+    fitted, truncation = _fit(messages, context_length = 4096, max_tokens = 512)
+    items = checkpoint._block_items(fitted[0]["content"])
+
+    assert truncation["fits"] is True
+    assert correction in items, "the correction must not be dropped while the opening stays"
+    assert items.index(opening) < items.index(correction)
+    # Paid by the OLDEST increment, exactly as the fresh walk pays for the pair, so the
+    # newest direction the user gave is still there.
+    assert items[-1] == increments[-1]
+    assert increments[0] not in items
+
+
+def test_the_merged_recap_abandons_the_pair_the_same_way_the_fresh_walk_does():
+    """When the merged budget cannot hold the pair, half of it is still the bug.
+
+    Same shape as `test_abandoning_the_reservation_does_not_reselect_the_opening_on_its
+    _own`, one compaction later: a 10-token "Build Tetris", its 27-token correction and a
+    17-token increment under a 40-token budget re-capped to ["Build Tetris", the
+    increment], the abandoned game with its correction dropped. The merge must reach the
+    same answer the fresh walk does, which is to drop the opening and keep the newest.
+    """
+    opening = "Build Tetris"
+    correction = "Actually scrap that and build Flappy Bird instead, same single HTML file please."
+    newest = "Add music and a score counter to it now."
+
+    merged = checkpoint._recap(
+        [opening, correction, newest], max_tokens = 40, max_items = 8, reserve_pair = True
+    )
+
+    assert merged == [newest], "the abandoned opening must not outlive the correction"
+    assert merged == carried_forward_items(_user_turns(opening, correction, newest), max_tokens = 40)
+    # Never empty, and never at the cost of the newest direction: the pair is reserved
+    # BEHIND the newest affordable item, so the newest is taken before the pair is priced.
+    assert newest in merged
+
+
+def test_the_merged_recap_never_empties_a_block_it_could_have_filled():
+    """The both-or-neither rule must not answer "neither" with nothing left to say.
+
+    A block holding only the pair, re-capped under a budget that no longer holds both (the
+    user switched to a shorter context mid-thread), still goes out with one of them: the
+    correction where the correction is affordable, and the opening where it is not, which
+    is the `_takeable` escape hatch the fresh walk already had.
+    """
+    opening = "Build Tetris"
+    correction = "Actually scrap that and build Flappy Bird instead, same single HTML file please."
+
+    assert checkpoint._recap(
+        [opening, correction], max_tokens = 30, max_items = 8, reserve_pair = True
+    ) == [correction]
+    assert checkpoint._recap(
+        [opening, correction], max_tokens = 20, max_items = 8, reserve_pair = True
+    ) == [opening]
+
+
+def test_a_one_bullet_block_is_not_paired_with_a_turn_it_never_preceded():
+    """The merge claims a pair only where the block actually holds one.
+
+    A block with a single bullet says nothing about what followed that instruction, so
+    pairing it with the oldest freshly evicted turn would invent a relationship the
+    transcript never had, and then drop the bullet whenever the invented partner did not
+    fit. That bullet is the only copy of it left anywhere in the request.
+    """
+    carried = (
+        "Build Tetris as a single HTML file with canvas rendering, keyboard controls for "
+        "rotate, drop and hold, a next piece preview, a ghost piece, a pause key and a "
+        "score counter, and keep the whole thing under three hundred lines so it stays "
+        "readable in one screen of a review."
+    )
+    spec = (
+        "Here is the spec for the scoring rules, please follow it exactly and do not round "
+        "anything off. A single line is one hundred points, a double is three hundred, a "
+        "triple is five hundred and a tetris is eight hundred, all multiplied by the "
+        "current level. A soft drop adds one point per cell travelled and a hard drop adds "
+        "two points per cell. Back to back tetrises get a fifty percent bonus on the second "
+        "and every one after it, and a combo adds fifty points per chained clear on top of "
+        "that. The level goes up every ten lines cleared and the gravity interval shortens "
+        "by ten percent each level, down to a floor of fifty milliseconds, and the level "
+        "number is shown beside the score at all times so the player can see when the next "
+        "speed up is due to arrive. A perfect clear is worth two thousand points at level "
+        "one and scales with the level like everything else, a t spin single is eight "
+        "hundred, a t spin double is twelve hundred and a t spin triple is sixteen hundred, "
+        "and every one of those is announced in the corner for one second so the player "
+        "learns which move earned which score."
+    )
+    newest = (
+        "Add background music with a mute toggle in the corner, a short sound for a line "
+        "clear and a different one for a tetris, all generated with the WebAudio oscillator "
+        "so there are no asset files to ship with the page. The music should start muted on "
+        "first load, remember the mute state in localStorage and fade rather than cut when "
+        "it is toggled off."
+    )
+    block = checkpoint.render_checkpoint([carried])
+    messages = [{"role": "system", "content": "you are helpful\n\n" + block}]
+    messages += _user_turns(spec, newest)
+    messages += [{"role": "user", "content": "Here is the console trace. " + "z " * 6000}]
+
+    fitted, truncation = _fit(messages, context_length = 4096, max_tokens = 512)
+    items = checkpoint._block_items(fitted[0]["content"])
+
+    assert truncation["fits"] is True
+    # 358 tokens: the newest turn (94) and the carried bullet (75), never the 279-token
+    # spec. Pairing the bullet with the spec would drop the bullet along with it.
+    assert items == [carried, newest]

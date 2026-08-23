@@ -111,17 +111,24 @@ def _neutralise(text: str) -> str:
     return _DELIMITERS.sub(lambda match: match.group(0).replace("<", "‹"), text)
 
 
-def _select_items(
-    evicted: list[dict],
+def _pick(
+    entries: list[Optional[tuple[str, int]]],
     *,
     max_tokens: int,
     max_items: int,
-    min_chars: int,
     reserve_oldest: bool = False,
 ) -> list[str]:
-    """The instruction turns out of `evicted`, oldest first, under both caps.
+    """The selection itself, over positions that are either (text, cost) or not an item.
 
-    `reserve_oldest` takes the opening turn before the newest-first walk. It is for the
+    Shared by the two paths that select, so the pair rule cannot hold on one and not the
+    other: the fresh walk over evicted TURNS (`_select_items`) and the re-cap of a merged
+    list of already-rendered STRINGS (`_recap`). It was written against turns only, and
+    the merged path then re-capped with a plain newest-first walk that could take the
+    opening and drop the successor the fresh walk had paired it with -- the abandoned
+    request carried with its correction dropped, reached through the second compaction
+    instead of the first.
+
+    `reserve_oldest` takes the opening item before the newest-first walk. It is for the
     thread of short prompts, where the FIRST turn is the one that says what is being
     built: newest-first alone would spend all eight slots on the increments nearest the
     end ("add music", "now the score", "fix the pipes") and evict the statement of the
@@ -129,20 +136,12 @@ def _select_items(
     newest-first afterwards, so a later change of direction is kept too, and rendering is
     oldest-first either way.
 
-    The opening turn is reserved TOGETHER WITH the next evicted instruction turn, both or
-    neither. See `_reserved_order` for why.
+    The opening item is reserved TOGETHER WITH the next one, both or neither. See
+    `_reserved_order` for why.
     """
-    groups = list(group_turns(evicted))
 
     def _item(index: int) -> Optional[tuple[str, int]]:
-        """`groups[index]` as (text, cost) if it is an instruction, else None."""
-        head = groups[index][0]
-        if not is_substantive(head, min_chars = min_chars):
-            return None
-        text = _text_of(head).strip()
-        if not text:
-            return None
-        return _neutralise(text), estimate_message_tokens(head)
+        return entries[index]
 
     # Where each instruction is rendered: the position of its NEWEST copy in the
     # transcript, whether or not the walk ever reaches that copy. Users restate a standing
@@ -155,7 +154,7 @@ def _select_items(
     # telling the model imperial was current at the moment the user had just restored
     # metric.
     newest_position: dict[str, int] = {}
-    for index in range(len(groups)):
+    for index in range(len(entries)):
         found = _item(index)
         if found is not None:
             newest_position[found[0]] = index
@@ -191,17 +190,17 @@ def _select_items(
             spent += cost
         return [item for _, item in sorted(picked)]
 
-    plain = list(reversed(range(len(groups))))
+    plain = list(reversed(range(len(entries))))
     if not reserve_oldest:
         return _walk(plain)
 
-    oldest = next((i for i in range(len(groups)) if _item(i)), None)
+    oldest = next((i for i in range(len(entries)) if _item(i)), None)
     if oldest is None:
         return _walk(plain)
     # The turn the user sent RIGHT AFTER the opening one. It is reserved with the opening
     # turn, because it is the turn that can contradict it without any newer turn showing
     # that it did.
-    successor = next((i for i in range(oldest + 1, len(groups)) if _item(i)), None)
+    successor = next((i for i in range(oldest + 1, len(entries)) if _item(i)), None)
 
     def _takeable(index: int) -> bool:
         found = _item(index)
@@ -275,6 +274,34 @@ def _select_items(
     # opening request later has not abandoned it, and that newer copy is still free to be
     # selected.
     return _walk([index for index in plain if index != oldest])
+
+
+def _select_items(
+    evicted: list[dict],
+    *,
+    max_tokens: int,
+    max_items: int,
+    min_chars: int,
+    reserve_oldest: bool = False,
+) -> list[str]:
+    """The instruction turns out of `evicted`, oldest first, under both caps."""
+
+    def _entry(group: list[dict]) -> Optional[tuple[str, int]]:
+        """`group` as (text, cost) if its head is an instruction, else None."""
+        head = group[0]
+        if not is_substantive(head, min_chars = min_chars):
+            return None
+        text = _text_of(head).strip()
+        if not text:
+            return None
+        return _neutralise(text), estimate_message_tokens(head)
+
+    return _pick(
+        [_entry(group) for group in group_turns(evicted)],
+        max_tokens = max_tokens,
+        max_items = max_items,
+        reserve_oldest = reserve_oldest,
+    )
 
 
 def carried_forward_items(
@@ -378,25 +405,34 @@ def _block_items(text: str) -> list[str]:
     return [item for item in (item.strip() for item in items) if item]
 
 
-def _recap(items: list[str], *, max_tokens: int, max_items: int) -> list[str]:
-    """Re-apply the caps to a merged list. Newest-first selection, oldest-first render."""
-    chosen: list[str] = []
-    seen: set[str] = set()
-    spent = 0
-    for item in reversed(items):
-        if len(chosen) >= max_items:
-            break
-        if item in seen:
-            # An instruction can be carried, evicted, and re-selected; newest wins, which
-            # is the order this loop already walks.
-            continue
-        cost = estimate_message_tokens({"role": "user", "content": item})
-        if spent + cost > max_tokens:
-            continue
-        chosen.append(item)
-        seen.add(item)
-        spent += cost
-    return list(reversed(chosen))
+def _recap(
+    items: list[str],
+    *,
+    max_tokens: int,
+    max_items: int,
+    reserve_pair: bool = False,
+) -> list[str]:
+    """Re-apply the caps to a merged list. Newest-first selection, oldest-first render.
+
+    Repeats collapse to their newest copy: an instruction can be carried, evicted and
+    re-selected, and newest wins, which is the order the walk already runs in.
+
+    `reserve_pair` says the two OLDEST entries are the opening pair a previous pass
+    reserved, so this walk owes them the same both-or-neither rule. Without it the merge
+    re-created the exact output the pair exists to prevent, one compaction later: a block
+    holding "Build Flappy Bird" and its "actually build Tetris" correction, merged with
+    the increments evicted since, spends the budget newest-first, skips the long
+    correction and then still affords the short opening, so the block tells the model to
+    build the game the user cancelled and to apply every later increment to it. The pair
+    was only ever enforced over evicted turns; the merged list is strings, and the caller
+    knows which of them arrived as the prior block.
+    """
+    return _pick(
+        [(item, estimate_message_tokens({"role": "user", "content": item})) for item in items],
+        max_tokens = max_tokens,
+        max_items = max_items,
+        reserve_oldest = reserve_pair,
+    )
 
 
 def _without_block(messages: list[dict]) -> list[dict]:
@@ -498,7 +534,18 @@ def fit_checkpoint_context(
             )
         )
         if prior:
-            items = _recap(prior + items, max_tokens = budget, max_items = MAX_ITEMS)
+            # The pair rule travels with the merge. The prior block's own two oldest
+            # bullets are the pair the pass that rendered it reserved, and re-capping them
+            # with a plain newest-first walk could take the opening and drop the successor
+            # that qualifies it. Claimed only when the block actually holds two bullets:
+            # with one there is no pair, and pairing it with a freshly evicted turn would
+            # invent a relationship the transcript never had.
+            items = _recap(
+                prior + items,
+                max_tokens = budget,
+                max_items = MAX_ITEMS,
+                reserve_pair = len(prior) >= 2,
+            )
         if not items:
             # Nothing to carry, so nothing to claim: do not pay for the probe. The old
             # block still has to GO, though: `_append_to_system` returns early on an empty
