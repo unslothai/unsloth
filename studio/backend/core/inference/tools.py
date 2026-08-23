@@ -14376,7 +14376,11 @@ def _spill_manifest(root: str) -> "dict[str, str]":
     return _spill_record(root)[1]
 
 
-def _write_spill_manifest(root: str, entries, identity: "str | None" = None) -> None:
+def _write_spill_manifest(
+    root: str,
+    entries,
+    identity: "str | None" = None,
+) -> None:
     """Rewrite the record with ``entries`` (relative name to stamp), atomically."""
     if identity is None:
         identity = _spill_record(root)[0]

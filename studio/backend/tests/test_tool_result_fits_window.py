@@ -531,9 +531,7 @@ class TestPruningOnlyTouchesStudioSpills:
         mine = [target / f"{i:012x}.txt" for i in range(tools._SPILL_KEEP + 5)]
         for path in mine:
             path.write_text("spill")
-        tools._write_spill_manifest(
-            str(target), {p.name: tools._spill_stamp(str(p)) for p in mine}
-        )
+        tools._write_spill_manifest(str(target), {p.name: tools._spill_stamp(str(p)) for p in mine})
         theirs = [target / "notes.txt", target / "receipts-2026.txt"]
         for path in theirs:
             path.write_text("keep me")
@@ -1190,7 +1188,6 @@ class TestOwnershipIsNotKeptWhereToolCodeCanWriteIt:
 
         assert theirs.read_text() == "mine"
         assert not tools._is_spill_artifact(str(tmp_path), str(root), name)
-
 
     def test_a_spill_written_over_stops_being_ours(self, tmp_path):
         """A recorded path is not the file. Tool code can write its own content over a
