@@ -583,13 +583,22 @@ export function VoiceTab() {
             downloadSamplesRef.current.length = 0;
           }
           watchedDownloadRef.current = download.model;
-          appendSample(downloadSamplesRef.current, Date.now() / 1000, bytes);
-          const stats = computeTransferStats(
-            downloadSamplesRef.current,
-            download.bytes_total ?? 0,
-          );
-          setDownloadBytesPerSec(stats.stable ? stats.rateBytesPerSecond : 0);
-          setDownloadEtaSeconds(stats.stable ? stats.etaSeconds : 0);
+          if (typeof document !== "undefined" && document.hidden) {
+            // Browsers clamp a hidden tab's timers to about once a minute, so
+            // these gaps time the poller, not the transfer, and would be read
+            // as the burst cadence. The hub poll loop drops them the same way.
+            downloadSamplesRef.current.length = 0;
+            setDownloadBytesPerSec(0);
+            setDownloadEtaSeconds(0);
+          } else {
+            appendSample(downloadSamplesRef.current, Date.now() / 1000, bytes);
+            const stats = computeTransferStats(
+              downloadSamplesRef.current,
+              download.bytes_total ?? 0,
+            );
+            setDownloadBytesPerSec(stats.stable ? stats.rateBytesPerSecond : 0);
+            setDownloadEtaSeconds(stats.stable ? stats.etaSeconds : 0);
+          }
           // Keep the download progress fresh.
           window.setTimeout(() => {
             if (!cancelled) setStatusNonce((n) => n + 1);
