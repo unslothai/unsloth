@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { registerBundlerResolver } from "./helpers/kit.ts";
@@ -1326,5 +1327,113 @@ test("a malformed lease record is ignored rather than blocking", async () => {
   assert.equal(
     await createAutoContinueTab({ storage: other }).claim("m1"),
     "started",
+  );
+});
+
+test("a hold whose run never starts holds its lease for the life of the tab", async () => {
+  // Not a defect on its own: a hold that has not seen its run yet is deliberately renewed
+  // rather than timed out, because preflight has no upper bound and a deadline that fired
+  // during one lapsed the lease under a run that had since started streaming.
+  //
+  // It is the reason the bar must not take a hold for a run it never issued. This is what
+  // that mistake costs, so the guard in `ContinueMessageBarForLastMessage` below has
+  // something concrete to be measured against.
+  const { storage } = storageFake();
+  const locks = lockManagerFake();
+  const tab = createAutoContinueTab({ storage, locks });
+  const otherTab = createAutoContinueTab({ storage, locks });
+  const running = new Set<string>();
+  const pending: Promise<unknown>[] = [];
+  const start = 1_000;
+  let clock = start;
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: {
+      isRunning: (threadId: string) => running.has(threadId),
+      subscribe: () => () => {},
+    },
+    renew: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.release(messageId, holder, { now }));
+    },
+    now: () => clock,
+  });
+
+  assert.equal(
+    await tab.claim("m1", { now: start, holder: "thread-A" }),
+    "started",
+  );
+  keeper.hold("m1", "thread-A");
+  // `thread-A` never runs: the run this hold is waiting for was never issued.
+  for (
+    let day = 1;
+    day <= (3 * 86_400_000) / AUTO_CONTINUE_LEASE_RENEW_MS;
+    day += 1
+  ) {
+    clock = start + day * AUTO_CONTINUE_LEASE_RENEW_MS;
+    keeper.tick();
+  }
+  await Promise.all(pending);
+
+  assert.equal(keeper.held(), 1, "nothing drops a pending hold, by design");
+  assert.equal(
+    await otherTab.claim("m1", { now: clock + AUTO_CONTINUE_LEASE_TTL_MS - 1 }),
+    "held-elsewhere",
+    "three days on, every other tab is still refused this message",
+  );
+});
+
+test("a claim whose run was never issued is left to lapse, not held", async () => {
+  // The bar claims under a Web Lock, so the answer lands a tick or more after the render
+  // that asked for it, and `aui.thread()` follows the SELECTION rather than the thread the
+  // bar belongs to (`runningByThreadId` exists precisely because "detection survives
+  // navigation" and `aui.thread()` does not). Switch chats or branches inside that window
+  // and `startContinuation` searches a different thread's messages, finds nothing, and
+  // returns without calling `startRun`.
+  //
+  // Taking the hold anyway is the case above: renewed forever, and every other tab refused
+  // the message until this one closes. So the message has to still be there before anything
+  // is held. Pinned at the source, since there is no renderer here -- the same way
+  // composer-keystroke-subscription-budget.test.ts pins its seams.
+  const thread = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  const claimed = thread.indexOf(
+    'claimAutoContinue(messageId, runThreadId ?? "")',
+  );
+  assert.notEqual(claimed, -1, "the claim moved; this test needs rewriting");
+  const branch = thread.slice(
+    claimed,
+    thread.indexOf("held-elsewhere", claimed),
+  );
+
+  const guard = branch.search(/messages\.some\(/);
+  const hold = branch.indexOf("holdAutoContinueRun(");
+  const record = branch.indexOf("recordAutoContinue(");
+  const run = branch.indexOf("startContinuation()");
+  assert.notEqual(
+    guard,
+    -1,
+    "nothing checks the message is still there before holding",
+  );
+  assert.notEqual(hold, -1, "the hold is gone; this test needs rewriting");
+  assert.ok(
+    guard < hold && guard < record && guard < run,
+    "the message has to be confirmed present before the lease is held or the round spent",
+  );
+  // And the guard must leave the claim alone rather than reach for a timer: the lease
+  // lapsing on its own TTL is what a tab that closed mid-claim already produces.
+  const between = branch.slice(guard, hold);
+  assert.match(
+    between,
+    /\breturn;/,
+    "the guard has to stop before the hold, not fall through",
+  );
+  assert.doesNotMatch(
+    between,
+    /setTimeout|setInterval/,
+    "a deadline here is the arming timeout coming back, which lapses live continuations",
   );
 });

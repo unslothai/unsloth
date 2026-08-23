@@ -6751,6 +6751,31 @@ const ContinueMessageBarForLastMessage: FC = () => {
     // and its own empty claim; the lease behind this one is shared and settles that.
     void claimAutoContinue(messageId, runThreadId ?? "").then((claim) => {
       if (claim === "started") {
+        // Is there still a message to resume? `aui.thread()` follows the SELECTION, not
+        // the thread this bar belongs to, so a chat or branch switch inside the window the
+        // Web Lock is pending leaves `startContinuation` looking at a different list, where
+        // it finds nothing and issues no run at all.
+        //
+        // Asked BEFORE anything is held, because a hold whose run never appears is renewed
+        // forever on purpose -- preflight has no upper bound, so no deadline can separate
+        // "never coming" from "still on its way". A hold taken for a run that was never
+        // issued therefore renews its lease for the life of the tab, and every other tab
+        // reads that lease as live and refuses the message for just as long.
+        //
+        // Not the preflight case, and it cannot become it: this is `startRun` never having
+        // been called, decided synchronously off the same store `startContinuation` reads a
+        // line later in the same tick. A run that HAS been issued and is merely slow to
+        // begin passes here and keeps its hold and its renewals.
+        const stillThere = aui
+          .thread()
+          .getState()
+          .messages.some((message) => message.id === messageId);
+        if (!stillThere) {
+          // Nothing held and nothing recorded, so the lease this claim took runs out its
+          // own TTL -- the same thing a tab that closed mid-claim leaves behind -- and the
+          // turn keeps the round no request was ever made for.
+          return;
+        }
         // Held for as long as THIS thread's run generates, wherever the user navigates
         // to meanwhile. The bar cannot hold it itself: the continuation's sibling becomes
         // the selected branch and unmounts this component almost at once.
@@ -6775,6 +6800,7 @@ const ContinueMessageBarForLastMessage: FC = () => {
       mounted = false;
     };
   }, [
+    aui,
     autoContinuing,
     parentId,
     messageId,
