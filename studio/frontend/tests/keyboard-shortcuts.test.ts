@@ -1105,6 +1105,38 @@ test("the published chat lists stop where the sidebar stops", async () => {
   }
 });
 
+// The bulk chords take the selection over the open chat, and a selection has
+// no presence outside the rows, so one carried off screen is invisible and
+// still live.
+test("a selection does not outlive the rows it was made on", async () => {
+  const sidebar = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    sidebar,
+    /useEffect\(\(\) => \{\n\s*if \(!chatListsOnScreen\) clearSelection\(\);\n\s*\}, \[chatListsOnScreen, clearSelection\]\);/,
+  );
+  // Which is what makes the four bulk branches safe to leave as they are.
+  for (const id of [
+    "archiveChat",
+    "markChatUnread",
+    "togglePinChat",
+    "deleteSelectedChats",
+  ]) {
+    const at = sidebar.indexOf(`useShortcut("${id}"`);
+    assert.ok(at !== -1, `${id} lost its call site`);
+    assert.match(
+      sidebar.slice(at, sidebar.indexOf("\n  });", at)),
+      /selectionCount > 0/,
+      `${id} no longer prefers the selection`,
+    );
+  }
+  // The clear drops the anchor too, so a later shift-click cannot reach back
+  // to a row that went away with it.
+  assert.match(sidebar, /selectionAnchorRef\.current = null;\n\s*setSelectedChatIds/);
+});
+
 // Two parked requests must count as two, or both cards claim Enter and mount
 // order picks the winner. Compare panes make that easy to get wrong: the
 // backend reuses "call_0" per response, so the store key cannot be it.

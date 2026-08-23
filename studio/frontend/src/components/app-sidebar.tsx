@@ -1389,6 +1389,16 @@ export function AppSidebar() {
     dropProjectSelection();
   }, [dropChatSelection, dropProjectSelection]);
 
+  // Emptying the published lists is not enough on its own: Archive, Pin, Mark
+  // unread and Delete all take the selection over the open chat whenever there
+  // is one, and a selection has no on-screen presence outside the rows -- its
+  // count lives in their context menus. So a selection carried onto Train or
+  // behind the icon rail would be invisible and still be what the chords hit.
+  // Same reason opening a row drops it.
+  useEffect(() => {
+    if (!chatListsOnScreen) clearSelection();
+  }, [chatListsOnScreen, clearSelection]);
+
   /** Select every chat row on screen, pinned block included. */
   const selectAllChats = useCallback(() => {
     const ids = [
