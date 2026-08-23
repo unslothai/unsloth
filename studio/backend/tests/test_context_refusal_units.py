@@ -101,9 +101,7 @@ def test_a_dominant_tool_result_still_gets_the_tool_advice():
     is left. Gating the dominance test on `latest_turn_exact` would send this back to the
     generic wording, which is the loss the estimate branch exists to prevent.
     """
-    messages = [
-        message for message in _sparse_tool_conversation() if message["role"] != "system"
-    ]
+    messages = [message for message in _sparse_tool_conversation() if message["role"] != "system"]
     context_length = 512
 
     _fitted, truncation = fit_rolling_context(
@@ -175,9 +173,7 @@ def test_a_respawn_refit_that_refuses_is_not_lost_when_the_retry_is_refused():
     context_refusal.open_slot()
     try:
         with pytest.raises(RuntimeError, match = "exceed_context_size_error"):
-            with backend._open_chat_stream_with_respawn_retry(
-                {}, None, on_respawn = _on_respawn
-            ):
+            with backend._open_chat_stream_with_respawn_retry({}, None, on_respawn = _on_respawn):
                 forwarded["value"] = True
 
         assert attempts["n"] == 2
@@ -205,6 +201,6 @@ def test_the_respawn_refits_record_the_refusal_rather_than_only_forwarding_it():
     for callback in ("_refit_iteration_after_respawn", "_refit_final_after_respawn"):
         start = body.index(f"def {callback}(")
         chunk = body[start : start + 4000]
-        assert "context_refusal.record_fit(truncation)" in chunk, (
-            f"{callback} must record the fit itself; forwarding is gated on `fits`"
-        )
+        assert (
+            "context_refusal.record_fit(truncation)" in chunk
+        ), f"{callback} must record the fit itself; forwarding is gated on `fits`"
