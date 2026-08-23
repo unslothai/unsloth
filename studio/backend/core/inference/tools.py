@@ -10081,16 +10081,16 @@ def execute_tool(
     _REQUEST_RESULT_BUDGET.set(result_budget_tokens)
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "search_knowledge_base":
-        return _search_knowledge_base_with_budget(
+        return _fit_result_to_room(_search_knowledge_base_with_budget(
             arguments,
             rag_scope,
             effective_timeout,
             cancel_event,
-        )
+        ))
     if name == "search_conversation":
         # Scoped by thread id alone: the archive is this chat's own evicted turns, so it
         # works with or without a document rag_scope.
-        return _search_knowledge_base_with_budget(
+        return _fit_result_to_room(_search_knowledge_base_with_budget(
             arguments,
             {
                 "thread_id": thread_id,
@@ -10101,9 +10101,9 @@ def execute_tool(
             effective_timeout,
             cancel_event,
             search_fn = _search_conversation,
-        )
+        ))
     if name == "render_html":
-        return _render_html_result(arguments)
+        return _fit_result_to_room(_render_html_result(arguments))
     if name.startswith(MCP_TOOL_PREFIX):
         try:
             _, server_id, tool_name = name.split("__", 2)
@@ -10142,7 +10142,7 @@ def execute_tool(
                 and parse_server_headers(row) == headers
             )
 
-        return call_tool_sync(
+        return _fit_result_to_room(call_tool_sync(
             url = url,
             headers = headers,
             name = tool_name,
@@ -10152,9 +10152,9 @@ def execute_tool(
             cancel_event = cancel_event,
             scope = mcp_scope,
             config_check = _config_current,
-        )
+        ))
     if name == "web_search":
-        return _web_search(
+        return _fit_result_to_room(_web_search(
             arguments.get("query", ""),
             url = arguments.get("url"),
             timeout = effective_timeout,
@@ -10162,7 +10162,7 @@ def execute_tool(
             website_policy = website_policy,
             include_images = search_images,
             image_queries = arguments.get("image_queries"),
-        )
+        ))
     # Both run with the session's sandbox as cwd, so a chat deleted mid-call
     # must not unlink it from under them.
     if name == "python":
@@ -10189,11 +10189,11 @@ def execute_tool(
     # so a chat deleted mid-call must not unlink it underneath.
     if name == "edit_file":
         with _session_in_flight(session_id):
-            return _edit_file(
+            return _fit_result_to_room(_edit_file(
                 arguments,
                 session_id = session_id,
                 disable_sandbox = disable_sandbox,
-            )
+            ))
     return f"Unknown tool: {name}"
 
 
@@ -13960,7 +13960,10 @@ def _truncate(
         # reported none. Kept to a line so the thread stays servable and the next fit can
         # evict older turns and recover, which is the whole reason a stub beats a refusal.
         located = f", saved to {spill}" if spill else ""
-        return f"(output omitted: {len(text)} chars, no context room left{located})"
+        stub = f"(output omitted: {len(text)} chars, no context room left{located})"
+        # A short result costs less than the notice explaining it is gone, and replacing
+        # "done" with a longer sentence saves nothing and loses the answer.
+        return stub if len(stub) < len(text) else text
     head, on_boundary = _head_whole_lines(text, limit)
     if spill is None:
         return head + (
@@ -14000,6 +14003,29 @@ def _truncate(
     return head + common + f" -- continue with:\n  {resume})"
 
 
+def _fit_result_to_room(text):
+    """Cap a tool that does not cap its own output, when this request priced its room.
+
+    `python` and `terminal` truncate against this same budget before they return, so this
+    is a no-op for them. The other tools hand their string back whole: an MCP response is
+    unbounded, a fetched page or an edit receipt runs to a few thousand characters, and
+    any of them can overflow a nearly full local thread and then be protected as its
+    newest exchange, which is the failure the budget exists to prevent.
+
+    No spill file: these tools have no sandbox of their own, and `edit_file` must not have
+    a workdir created underneath a caller running with code execution off. So the cap
+    comes with the plain notice and no paging hint, which is the scope limit this change
+    states rather than hides.
+
+    With no priced room -- external providers, the hosted path, any loop that does not
+    measure its own conversation -- the text is returned untouched, so nothing outside a
+    local tool loop changes.
+    """
+    if _request_result_room() is None or not isinstance(text, str) or not text:
+        return text
+    return _truncate(text)
+
+
 def _head_whole_lines(text: str, limit: int) -> "tuple[str, bool]":
     """``text`` cut to at most ``limit`` characters, and whether it ended on a line break.
 
@@ -14037,6 +14063,11 @@ def _posix_tools_available() -> bool:
 # name here would put a phantom artifact beside every truncated result.
 _SPILL_DIR = ".unsloth_tool_output"
 _SPILL_KEEP = 20
+# Exactly the names `_spill_full_output` generates: twelve hex characters of a content
+# digest. The prune below deletes what it matches, and the sandbox is the user's own
+# directory -- a session may open on one that already holds a folder of this name, and
+# anything in it that Studio did not write is not Studio's to remove.
+_SPILL_NAME_RE = re.compile(r"[0-9a-f]{12}\.txt")
 
 
 def _spill_full_output(text: str, workdir: str | None) -> "str | None":
@@ -14076,17 +14107,21 @@ def _spill_full_output(text: str, workdir: str | None) -> "str | None":
 
 
 def _prune_spills(target_dir: str) -> None:
-    """Keep only the newest ``_SPILL_KEEP`` spills.
+    """Keep only the newest ``_SPILL_KEEP`` spills, and delete nothing else.
 
     A long session prints many large results and each one is retained in full; without
     this the sandbox grows without bound for output the model has almost certainly
     finished paging through.
+
+    Matched by ``_SPILL_NAME_RE`` rather than by extension, because the sandbox can be a
+    directory the user already had: a `.unsloth_tool_output/notes.txt` that Studio did not
+    write is not Studio's to prune.
     """
     try:
         entries = [
             os.path.join(target_dir, name)
             for name in os.listdir(target_dir)
-            if name.endswith(".txt")
+            if _SPILL_NAME_RE.fullmatch(name)
         ]
         if len(entries) <= _SPILL_KEEP:
             return

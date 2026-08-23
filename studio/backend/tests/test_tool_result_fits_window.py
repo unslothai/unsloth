@@ -24,7 +24,11 @@ import os
 import pytest
 
 from core.inference import tools
-from core.inference.context_window import prompt_budget, tool_result_budget
+from core.inference.context_window import (
+    _RESULT_NOTICE_RESERVE,
+    prompt_budget,
+    tool_result_budget,
+)
 
 
 @pytest.fixture(autouse = True)
@@ -398,3 +402,110 @@ class TestTheReportedScenario:
         spent = _cat_game_html(monkeypatch, _dense(40_000), price_the_room = True)
 
         assert spent > target
+
+
+def _within_room(out: str, room: int) -> None:
+    """The body fits the room, and the notice fits the reserve held back for it.
+
+    `tool_result_budget` subtracts `_RESULT_NOTICE_RESERVE` before reporting the room, so
+    the notice explaining the cut is already paid for and only the body is measured
+    against the number itself.
+    """
+    body = out.split("\n\n... (")[0]
+    assert len(body) // _CHARS_PER_TOKEN <= room, "the body alone overruns the room"
+    assert len(out) // _CHARS_PER_TOKEN <= room + _RESULT_NOTICE_RESERVE, (
+        "the notice costs more than the reserve held back for it"
+    )
+
+
+class TestEveryToolIsHeldToTheRoom:
+    """`python` and `terminal` truncate themselves; the rest hand their string back whole.
+
+    An MCP response is unbounded and an edit receipt or a search result runs to thousands
+    of characters, so a tool that is not the code sandbox can overflow the same nearly full
+    thread and land in the newest turn, which the next fit protects. Whatever the tool, the
+    result has to be held to the room.
+    """
+
+    def test_a_web_search_result_is_capped_by_the_room(self, monkeypatch):
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        monkeypatch.setattr(tools, "_web_search", lambda *a, **k: _dense(40_000))
+        out = tools.execute_tool(
+            "web_search", {"query": "flappy bird"}, result_budget_tokens = 120
+        )
+
+        assert len(out) < 40_000
+        _within_room(out, 120)
+
+    def test_an_mcp_response_is_capped_by_the_room(self, monkeypatch):
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        monkeypatch.setattr(
+            tools.mcp_servers_db,
+            "get_server",
+            lambda _id: {"url": "https://example.invalid/mcp", "is_enabled": True},
+        )
+        monkeypatch.setattr(tools, "parse_server_headers", lambda _s: {})
+        monkeypatch.setattr(tools, "is_stdio", lambda _u: False)
+        monkeypatch.setattr(tools, "call_tool_sync", lambda **k: _dense(40_000))
+        out = tools.execute_tool(
+            f"{tools.MCP_TOOL_PREFIX}srv__read_file", {}, result_budget_tokens = 120
+        )
+
+        assert len(out) < 40_000
+        _within_room(out, 120)
+
+    def test_an_edit_receipt_is_capped_by_the_room(self, monkeypatch):
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        monkeypatch.setattr(tools, "_edit_file", lambda *a, **k: _dense(8_000))
+        out = tools.execute_tool(
+            "edit_file", {"path": "game.html"}, session_id = None, result_budget_tokens = 120
+        )
+
+        assert len(out) < 8_000
+        _within_room(out, 120)
+
+    def test_an_unpriced_thread_keeps_todays_result_exactly(self, monkeypatch):
+        """The hosted path and every external provider: no room measured, nothing capped.
+        Without this leg the change would start truncating results it cannot price."""
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        page = _dense(40_000)
+        monkeypatch.setattr(tools, "_web_search", lambda *a, **k: page)
+        assert tools.execute_tool(
+            "web_search", {"query": "flappy bird"}, result_budget_tokens = None
+        ) == page
+
+    def test_a_short_result_survives_a_thread_with_no_room(self, monkeypatch):
+        """At zero room the notice IS the message, but only while it is the cheaper of the
+        two. Replacing "done" with a longer sentence about "done" being gone spends more
+        tokens and loses the answer."""
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        monkeypatch.setattr(tools, "_web_search", lambda *a, **k: "done")
+        assert tools.execute_tool(
+            "web_search", {"query": "x"}, result_budget_tokens = 0
+        ) == "done"
+
+
+class TestPruningOnlyTouchesStudioSpills:
+    def test_files_studio_did_not_write_are_left_alone(self, tmp_path):
+        """The sandbox can be a directory the user already had, including one that already
+        holds a `.unsloth_tool_output`. Pruning by extension deletes their files."""
+        target = tmp_path / tools._SPILL_DIR
+        target.mkdir()
+        mine = [target / f"{i:012x}.txt" for i in range(tools._SPILL_KEEP + 5)]
+        for path in mine:
+            path.write_text("spill")
+        theirs = [target / "notes.txt", target / "receipts-2026.txt"]
+        for path in theirs:
+            path.write_text("keep me")
+
+        tools._prune_spills(str(target))
+
+        assert all(path.exists() for path in theirs)
+        assert len([p for p in target.iterdir() if p.name.endswith(".txt")]) == (
+            tools._SPILL_KEEP + len(theirs)
+        )
