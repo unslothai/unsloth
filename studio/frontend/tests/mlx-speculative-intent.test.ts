@@ -340,22 +340,20 @@ test("the draft row names the pin, and offers to fetch only what would run", () 
 });
 
 
-test("the control reads back what was asked for, not what the runtime settled on", async () => {
+test("the control reads back the request, not the runtime's own pick", async () => {
   const { mlxRuntimeStateFrom } = await import(
     "../src/features/chat/lib/mlx-runtime-state.ts"
   );
-  // Auto that resolved to MTP: the control still shows Auto, or every read-back rewrites the
-  // request as the pick it produced and the user can never leave it on Auto.
+  // The requested half of the response populates the control. Reading the effective half back
+  // would rewrite an Auto request as the pick it produced, and the user could never leave Auto;
+  // the response type withholds those fields from this function so it cannot.
   const state = mlxRuntimeStateFrom({
     is_mlx: true,
-    mlx_speculative_mode_requested: "auto",
-    mlx_draft_model_requested: null,
-    mlx_draft_block_size_requested: null,
-    mlx_speculative_mode: "mtp",
-    mlx_draft_model: "org/resolved",
-    mlx_draft_block_size: 4,
+    mlx_speculative_mode_requested: "mtp",
+    mlx_draft_model_requested: "org/asked",
+    mlx_draft_block_size_requested: 2,
   });
-  assert.equal(state.mlxSpeculativeMode, "auto");
-  assert.equal(state.mlxDraftModel, null);
-  assert.equal(state.mlxDraftBlockSize, null);
+  assert.equal(state.mlxSpeculativeMode, "mtp");
+  assert.equal(state.mlxDraftModel, "org/asked");
+  assert.equal(state.mlxDraftBlockSize, 2);
 });
