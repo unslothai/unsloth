@@ -730,7 +730,11 @@ _discard_venv_for_recreate() {  # venv dir
 
 _restore_studio_venv_replacement() {
     [ "$_VENV_ROLLBACK_ACTIVE" = true ] || return 0
-    [ -n "$_VENV_ROLLBACK_DIR" ] && [ -d "$_VENV_ROLLBACK_DIR" ] || {
+    # -e/-L, not -d: what was moved aside is whatever _dir_has_entries called
+    # occupied, which includes a regular file and a symlink with no target. -d
+    # would drop those, deactivate the rollback, and strand the original.
+    [ -n "$_VENV_ROLLBACK_DIR" ] \
+        && { [ -e "$_VENV_ROLLBACK_DIR" ] || [ -L "$_VENV_ROLLBACK_DIR" ]; } || {
         _VENV_ROLLBACK_ACTIVE=false
         return 0
     }
@@ -793,7 +797,10 @@ _commit_studio_venv_replacement() {
         # before deletion so an interrupt cannot replace it with a half-deleted backup.
         _VENV_ROLLBACK_ACTIVE=false
         _VENV_ROLLBACK_DIR=""
-        if [ -n "$_rollback_to_remove" ] && [ -d "$_rollback_to_remove" ]; then
+        # Same shapes as the restore above, or a file/dangling-link backup is
+        # never cleaned up and litters $STUDIO_HOME after a successful install.
+        if [ -n "$_rollback_to_remove" ] \
+           && { [ -e "$_rollback_to_remove" ] || [ -L "$_rollback_to_remove" ]; }; then
             if ! rm -rf "$_rollback_to_remove"; then
                 echo "⚠️  Could not remove environment rollback $_rollback_to_remove" >&2
             fi

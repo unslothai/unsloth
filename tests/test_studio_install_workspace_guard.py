@@ -1405,3 +1405,76 @@ def test_install_ps1_helper_answers_on_the_link_itself():
     assert (
         "Get-Item -LiteralPath $Path -Force" in helper
     ), "a dangling link is invisible to -PathType Container but still blocks uv"
+
+
+def _run_rollback_lifecycle(studio_home, shape):
+    """Move $VENV_DIR aside, half-create a new venv, then fail and restore."""
+    fns = [
+        "_start_studio_venv_replacement",
+        "_restore_studio_venv_replacement",
+        "_commit_studio_venv_replacement",
+    ]
+    src = INSTALL_SH.read_text(encoding = "utf-8")
+    helpers = ""
+    for fn in fns:
+        m = re.search(rf"^{re.escape(fn)}\(\) \{{.*?\n\}}\n", src, re.DOTALL | re.MULTILINE)
+        assert m, fn
+        helpers += m.group(0)
+    venv = studio_home / "unsloth_studio"
+    if shape == "realdir":
+        venv.mkdir()
+        (venv / "keep.txt").write_text("CANARY")
+    elif shape == "regularfile":
+        venv.write_text("CANARY")
+    elif shape == "danglinglink":
+        venv.symlink_to(studio_home / "gone")
+    else:
+        raise AssertionError(shape)
+    script = (
+        "substep() { :; }\nrollback_substep() { :; }\n"
+        + helpers
+        + f'STUDIO_HOME="{studio_home}"\n'
+        + 'VENV_DIR="$STUDIO_HOME/unsloth_studio"\n'
+        + '_VENV_ROLLBACK_TARGET="$VENV_DIR"\n_VENV_ROLLBACK_DIR=""\n_VENV_ROLLBACK_ACTIVE=false\n'
+        + '_start_studio_venv_replacement "$VENV_DIR"\n'
+        + 'mkdir -p "$VENV_DIR/bin"; echo partial > "$VENV_DIR/bin/python"\n'
+        + "_restore_studio_venv_replacement\n"
+    )
+    return subprocess.run(
+        ["bash", "-c", script], env = {"PATH": "/usr/bin:/bin"}, text = True, capture_output = True,
+    )
+
+
+@pytest.mark.parametrize("shape", ["realdir", "regularfile", "danglinglink"])
+def test_rollback_restores_every_shape_the_predicate_moves_aside(tmp_path, shape):
+    """Whatever _dir_has_entries calls occupied has to be restorable on failure.
+
+    The restore tested existence with -d, so a regular file or a dangling link was
+    silently dropped: the rollback deactivated itself, the original stayed stranded
+    under the rollback name, and the half-built venv was left at $VENV_DIR.
+    """
+    studio_home = tmp_path / "ws"
+    studio_home.mkdir()
+    res = _run_rollback_lifecycle(studio_home, shape)
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+
+    venv = studio_home / "unsloth_studio"
+    assert venv.exists() or venv.is_symlink(), "the original must be back at $VENV_DIR"
+    assert not (venv / "bin" / "python").is_file(), "the half-built venv must be gone"
+    stranded = list(studio_home.glob("unsloth_studio.rollback.*"))
+    assert not stranded, f"backup left stranded: {[p.name for p in stranded]}"
+
+
+def test_install_ps1_rollback_tests_the_path_not_the_link_target():
+    """Test-Path follows a link, so a dangling backup would read as absent."""
+    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    assert "function Test-StudioPathPresent" in src
+    for fn, nxt in (
+        ("Restore-StudioVenvRollback", "Complete-StudioVenvRollback"),
+        ("Complete-StudioVenvRollback", None),
+    ):
+        start = src.index(f"function {fn} {{")
+        end = src.index(f"function {nxt} {{", start) if nxt else start + 1200
+        assert "Test-StudioPathPresent" in src[start:end], (
+            f"{fn} must test the backup path itself, not the link target"
+        )

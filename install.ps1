@@ -4013,6 +4013,15 @@ exit 0
         return $null
     }
 
+    # Test-Path follows a link, so a dangling one reads as absent. A rollback can
+    # hold any shape Test-DirectoryHasEntries called occupied, a dangling link and
+    # a plain file included, so existence has to be asked of the path itself.
+    function Test-StudioPathPresent {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+        if (-not $Path) { return $false }
+        return ($null -ne (Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue))
+    }
+
     function Start-StudioVenvRollback {
         param([Parameter(Mandatory = $true)][string]$ExistingDir)
         $stamp = Get-Date -Format "yyyyMMddHHmmss"
@@ -4172,7 +4181,7 @@ exit 0
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
         $target = $script:StudioVenvRollbackTarget
-        if (-not $backup -or -not (Test-Path -LiteralPath $backup)) {
+        if (-not (Test-StudioPathPresent -Path $backup)) {
             $script:StudioVenvRollbackActive = $false
             $script:StudioVenvRollbackPartial = $false
             return
@@ -4227,7 +4236,7 @@ exit 0
         $script:StudioVenvRollbackActive = $false
         $script:StudioVenvRollbackDir = $null
         $script:StudioVenvRollbackPartial = $false
-        if ($backup -and (Test-Path -LiteralPath $backup)) {
+        if (Test-StudioPathPresent -Path $backup) {
             Remove-StudioVenvTreeWithRetry -Path $backup -Label "environment rollback" | Out-Null
         }
     }
