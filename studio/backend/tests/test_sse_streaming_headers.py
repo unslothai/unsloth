@@ -3,10 +3,9 @@
 
 """Regression tests for the shared SSE streaming-response helper.
 
-Streaming endpoints must disable nginx buffering (``X-Accel-Buffering: no``).
-Cloudflare Quick Tunnels also require first-party clients to use POST because
-they buffer streamed GET responses. The native ``/generate/stream`` and legacy
-``/v1/completions`` streams route through this shared header helper.
+Streaming endpoints must disable nginx buffering (``X-Accel-Buffering: no``); Cloudflare
+Quick Tunnels additionally need first-party clients on POST, since they hold a streamed
+GET. ``/generate/stream`` and legacy ``/v1/completions`` route through this helper.
 """
 
 import routes.inference as inference_route

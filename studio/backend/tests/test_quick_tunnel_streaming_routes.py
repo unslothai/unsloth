@@ -3,13 +3,10 @@
 
 """Keep first-party event streams usable through Cloudflare Quick Tunnels.
 
-Measured on three fresh quick tunnels, one generator registered for both verbs so
-only the method differs: GET delivers its first byte when the stream closes (~12s),
-POST delivers it in under 300ms. No response header recovers GET (no-store,
-no-transform and identity encoding all still buffer), so the method is the fix.
-
-Registration, not source text: a route that stopped resolving, lost a dependency or
-leaked a second public operation would still spell "post" in the file.
+Measured on three fresh quick tunnels, one generator on both verbs so only the method
+differs: GET delivers its first byte when the stream closes (~12s), POST in under 300ms,
+and no response header recovers GET. Checks registration rather than source text, since a
+route that stopped resolving or lost a dependency would still spell "post" in the file.
 """
 
 import importlib

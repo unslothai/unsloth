@@ -9,18 +9,16 @@ import { openStreamResponse } from "../src/lib/open-stream-response.ts";
 const GET_METHOD_RE = /method:\s*"GET"/;
 const OPEN_STREAM_RE = /openStreamResponse\s*\(/;
 
-/** Comments are dropped first: a stale "// method: GET" note next to the call would
- * otherwise fail the test, and a commented-out call would pass it. Line comments only
- * when they own the line, so a "https://" inside a string survives. */
+/** Drop comments first: a stale "// method: GET" note would fail the test and a
+ * commented-out call would pass it. Own-the-line only, so "https://" in a string lives. */
 function stripComments(source: string): string {
   return source
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/^[ \t]*\/\/[^\n]*/gm, "");
 }
 
-/** Brace-balanced, so a nested object literal closing at column 0 cannot end the body
- * early and hide the request that follows it. The parameter list is skipped first,
- * because an inline options type opens a brace before the body does. */
+/** Brace-balanced, so an object literal closing at column 0 cannot end the body early.
+ * Skips the parameter list first: an inline options type opens a brace before the body. */
 function functionBody(source: string, name: string): string {
   const start = source.search(
     new RegExp(`(async )?function\\*?\\s+${name}\\b`),
@@ -61,7 +59,6 @@ for (const [relativePath, functionName] of [
   });
 }
 
-/** A stub fetcher recording every (url, method) it is asked for. */
 function recorder(statuses: number[]) {
   const calls: Array<{ url: string; method?: string; init: RequestInit }> = [];
   const fetcher = (url: string, init: RequestInit) => {

@@ -2067,8 +2067,7 @@ async def get_training_metrics(
         )
 
 
-# POST too: quick tunnels hold a streamed GET until it closes. A separate GET
-# registration (not one api_route) keeps old clients without sharing an operationId.
+# POST too: quick tunnels hold a streamed GET until it closes. The hidden GET keeps old clients.
 @router.post("/progress")
 @router.get("/progress", include_in_schema = False)
 async def stream_training_progress(

@@ -508,8 +508,7 @@ def _format_sse(
     return "\n".join(lines)
 
 
-# POST too: quick tunnels hold a streamed GET until it closes. A separate GET
-# registration (not one api_route) keeps old clients without sharing an operationId.
+# POST too: quick tunnels hold a streamed GET until it closes. The hidden GET keeps old clients.
 @router.post("/logs/stream")
 @router.get("/logs/stream", include_in_schema = False)
 async def stream_export_logs(
