@@ -3883,10 +3883,15 @@ def setup(
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
     with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
         _studio_runtime_gate.ensure_managed_environment_is_idle(STUDIO_HOME)
-        _run_setup_script(verbose = verbose)
+        # Duplicate-metadata repair can reinstall unsloth even when the
+        # installer set SKIP_STUDIO_BASE. Free and preserve the running Windows
+        # launcher exactly as the direct update path does.
+        with _WindowsLauncherUpdateTransaction() as launcher_update:
+            _run_setup_script(verbose = verbose)
+            launcher_update.validate_launcher()
 
 
-def _fail_if_install_damaged() -> None:
+def _fail_if_install_damaged(package_name: str = "unsloth") -> None:
     """Refuse to call an update successful when the tree it produced is damaged.
 
     pip considers a distribution with intact metadata already satisfied, so an
@@ -3899,6 +3904,36 @@ def _fail_if_install_damaged() -> None:
         # This CLI does not live in the venv the update just wrote, so its own
         # file list describes the wrong tree. Silence beats a wrong answer.
         return
+    managed_names = (package_name, "unsloth-zoo")
+    managed_conflicts = _studio_deps.installed_metadata_conflicts(names = managed_names)
+    if managed_conflicts:
+        typer.echo("", err = True)
+        typer.echo("Update finished, but Studio package metadata is inconsistent:", err = True)
+        for entry in managed_conflicts:
+            typer.echo(f"  {entry}", err = True)
+        typer.echo("", err = True)
+        typer.echo("The file check cannot safely choose between these records.", err = True)
+        typer.echo("The installer could not repair its managed package metadata.", err = True)
+        typer.echo(
+            "Recreate the managed environment before running the Studio installer again.", err = True
+        )
+        typer.echo("", err = True)
+        typer.echo(
+            "To update anyway without this check: unsloth studio update --no-verify", err = True
+        )
+        raise typer.Exit(code = 1)
+    other_conflicts = _studio_deps.installed_metadata_conflicts(exclude_names = managed_names)
+    if other_conflicts:
+        typer.echo("", err = True)
+        typer.echo("Warning: some other packages have duplicate metadata:", err = True)
+        for entry in other_conflicts:
+            typer.echo(f"  {entry}", err = True)
+        typer.echo("", err = True)
+        typer.echo("Studio skipped file verification for these packages.", err = True)
+        typer.echo(
+            "Reinstall the intended version from its original package source, or use a clean environment.",
+            err = True,
+        )
     damaged = _studio_deps.damaged_installed_files()
     if not damaged:
         return
@@ -4065,7 +4100,7 @@ def update(
             # is optional, but a successful update must leave its own launcher usable.
             launcher_update.validate_launcher()
             if verify:
-                _fail_if_install_damaged()
+                _fail_if_install_damaged(package)
     # Tauri desktop owns its own bundle entries; skip CLI launcher refresh
     # so a Tauri-initiated update doesn't create duplicate shortcuts.
     if os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":

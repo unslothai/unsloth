@@ -224,6 +224,7 @@ def test_restoring_a_split_move_never_deletes_the_half_left_behind(tmp_path: Pat
     blocks = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
+            "Test-StudioPathPresent",
             "Remove-StudioVenvTreeWithRetry",
             "Merge-StudioVenvRollbackTree",
             "Restore-StudioVenvRollback",
@@ -280,6 +281,7 @@ def test_merging_a_split_move_keeps_every_sibling_at_its_own_path(tmp_path: Path
     blocks = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
+            "Test-StudioPathPresent",
             "Remove-StudioVenvTreeWithRetry",
             "Merge-StudioVenvRollbackTree",
             "Restore-StudioVenvRollback",
@@ -347,6 +349,7 @@ def test_merging_a_split_move_never_walks_through_a_link(tmp_path: Path, shell: 
     blocks = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
+            "Test-StudioPathPresent",
             "Remove-StudioVenvTreeWithRetry",
             "Merge-StudioVenvRollbackTree",
             "Restore-StudioVenvRollback",
