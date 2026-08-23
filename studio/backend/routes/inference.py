@@ -26776,9 +26776,9 @@ async def _generate_openai_images(
     from core.inference.diffusion_memory import ImageActivationShortfallError
     from core.inference.diffusion_families import DiffusionModelReplacedError
 
-    # A replacement can commit between this status() read and generate() taking its lock (#9448),
-    # running the NEW model with the OLD model's steps/guidance and edit-only verdict. Pin the read
-    # to the generation via expected_repo_id, then re-decide from fresh state once.
+    # A replacement can commit between this status() read and generate() taking its lock, running the
+    # new model with the old one's steps/guidance and edit-only verdict (#9448). Pin the read to the
+    # generation, then re-decide from fresh state once.
     result = None
     for attempt in range(2):
         status = backend.status()

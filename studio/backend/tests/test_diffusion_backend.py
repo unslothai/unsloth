@@ -755,11 +755,7 @@ def fake_runtime(monkeypatch):
 
 
 def test_generate_refuses_when_the_model_was_replaced_since_the_snapshot(fake_runtime, tmp_path):
-    """A status() snapshot must not silently steer a different model (#9448).
-
-    generate(expected_repo_id=...) refuses, with a typed error, when the loaded
-    model changed between the caller's status() read and the generation lock.
-    """
+    """The guard in isolation: a snapshot naming another model is refused, typed (#9448)."""
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
     backend.load_pipeline(
@@ -776,7 +772,6 @@ def test_generate_refuses_when_the_model_was_replaced_since_the_snapshot(fake_ru
     assert replaced.value.expected == "other/model"
     assert replaced.value.actual == repo_id
 
-    # A matching snapshot still generates normally.
     gen = backend.generate(prompt = "fresh request", expected_repo_id = repo_id, steps = 4)
     assert len(gen["images"]) == 1
 
@@ -786,11 +781,11 @@ def test_generate_refuses_when_the_model_was_replaced_since_the_snapshot(fake_ru
 
 
 def test_generate_refuses_a_replacement_that_committed_while_it_waited(fake_runtime, tmp_path):
-    """The reported interleaving end to end (#9448), not just the guard in isolation.
+    """The reported interleaving end to end (#9448).
 
-    A load drops its teardown fence right after _unload_locked, then holds _generate_lock
-    alone for the whole construction of the new model. A generate arriving in that window
-    used to block, then denoise on the NEW model with the snapshot's steps/guidance.
+    A load drops its teardown fence for the whole construction of the new model while still
+    holding the generation lock, so a generate arriving there used to block, then denoise on
+    the NEW model with the snapshot's steps/guidance.
     """
     old_dir, new_dir = tmp_path / "old", tmp_path / "new"
     for d in (old_dir, new_dir):

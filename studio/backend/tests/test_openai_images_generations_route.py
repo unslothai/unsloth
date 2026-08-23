@@ -108,8 +108,8 @@ class _FakeBackend:
         native_seeds = False,
         # Supported workflows: a list, or a repo_id -> list map so a replacement changes them.
         workflows = None,
-        # repo_id values generate() reports as loaded, popped one per call: models a replacement
-        # landing between the route's status() read and generate() taking its lock (#9448).
+        # repo_id values generate() reports as loaded, one per call: models a replacement landing
+        # between the route's status() read and generate() taking its lock (#9448).
         replaced_by = None,
     ) -> None:
         self._loaded = loaded
@@ -582,8 +582,7 @@ def _replacement_client(monkeypatch, backend):
 
 
 def test_generation_pins_the_status_read_it_derived_its_params_from(monkeypatch):
-    # The pin is what lets generate() tell a stale snapshot from a fresh one; without it the
-    # backend has no way to refuse and silently runs the new model with the old parameters.
+    # Without the pin the backend cannot tell a stale snapshot from a fresh one.
     backend = _FakeBackend()
     cli, _ = _replacement_client(monkeypatch, backend)
     assert cli.post("/v1/images/generations", json = {"prompt": "p"}).status_code == 200
@@ -602,8 +601,7 @@ def test_replacement_retries_once_with_the_new_models_params(monkeypatch):
 
 
 def test_second_replacement_is_a_503_not_a_sanitized_500(monkeypatch):
-    # Two replacements in a row: bounded at one retry, and the client is told to retry rather than
-    # handed an opaque server error.
+    # Bounded at one retry, and the client is told to retry rather than handed a server error.
     backend = _FakeBackend(replaced_by = ["a/one", "b/two"])
     cli, _ = _replacement_client(monkeypatch, backend)
     resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
@@ -615,8 +613,7 @@ def test_second_replacement_is_a_503_not_a_sanitized_500(monkeypatch):
 
 
 def test_replacement_into_an_edit_only_model_is_a_400(monkeypatch):
-    # The retry re-decides eligibility too, so a replacement into an edit-only model is refused
-    # with the actionable 400 instead of being generated on or turned into a 503.
+    # The retry re-decides eligibility too, not just the parameters.
     edit_only = "unsloth/Qwen-Image-Edit-GGUF"
     backend = _FakeBackend(
         replaced_by = [edit_only],

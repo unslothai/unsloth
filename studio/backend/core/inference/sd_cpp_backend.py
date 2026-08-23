@@ -2205,8 +2205,7 @@ class SdCppDiffusionBackend:
                 ):
                     self._state = None
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
-                # A replacement can commit while this waits for the lock, so a caller that snapshotted
-                # status() earlier would otherwise run a different model with its parameters (#9448).
+                # Same window as the diffusers engine: a replacement can commit while this waits (#9448).
                 if expected_repo_id is not None and state.repo_id != expected_repo_id:
                     raise DiffusionModelReplacedError(expected_repo_id, state.repo_id)
                 self._active_generate_cancel = cancel

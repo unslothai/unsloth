@@ -753,8 +753,7 @@ def test_generate_qwen_passes_sampling_args():
 
 
 def test_generate_refuses_a_snapshot_naming_another_model():
-    # Parity with the diffusers engine (#9448): on a no-GPU host this is the engine the OpenAI
-    # images route runs on, so its caller's steps/guidance must not reach a replacement model.
+    # Parity with the diffusers engine (#9448): on a no-GPU host the OpenAI images route runs here.
     eng = _FakeEngine()
     b = _loaded_backend(engine = eng)
     with pytest.raises(bk.DiffusionModelReplacedError) as replaced:

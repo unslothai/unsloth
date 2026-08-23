@@ -5602,8 +5602,7 @@ class DiffusionBackend:
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
                 if cancel.is_set():
                     raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-                # The slot admits on a zero fence, which a COMMITTED replacement also satisfies, so a
-                # caller that snapshotted status() earlier can still land on a different model (#9448).
+                # The slot admits on a zero fence, which a COMMITTED replacement also satisfies (#9448).
                 if expected_repo_id is not None and state.repo_id != expected_repo_id:
                     raise DiffusionModelReplacedError(expected_repo_id, state.repo_id)
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not read idle.
