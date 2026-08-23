@@ -132,13 +132,13 @@ def _model_dump_exclusions(rel: str, function: str) -> set[str]:
                 for element in keyword.value.elts
                 if isinstance(element, ast.Constant) and isinstance(element.value, str)
             }
-            assert len(names) == len(keyword.value.elts), (
-                f"{function}: exclude holds a name this check cannot read statically"
-            )
+            assert len(names) == len(
+                keyword.value.elts
+            ), f"{function}: exclude holds a name this check cannot read statically"
             excluded.append(names)
-    assert len(excluded) == 1, (
-        f"{rel}:{function} has {len(excluded)} model_dump(exclude = ...) calls, want 1"
-    )
+    assert (
+        len(excluded) == 1
+    ), f"{rel}:{function} has {len(excluded)} model_dump(exclude = ...) calls, want 1"
     return excluded[0]
 
 
@@ -149,9 +149,9 @@ def _annotated_field(rel: str, class_name: str, field: str) -> tuple[str, object
             continue
         if not (isinstance(statement.target, ast.Name) and statement.target.id == field):
             continue
-        assert isinstance(statement.value, ast.Constant), (
-            f"{class_name}.{field} no longer defaults to a literal"
-        )
+        assert isinstance(
+            statement.value, ast.Constant
+        ), f"{class_name}.{field} no longer defaults to a literal"
         return ast.unparse(statement.annotation), statement.value.value
     raise AssertionError(f"{rel}:{class_name} declares no field named {field}")
 
