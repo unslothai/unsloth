@@ -807,9 +807,7 @@ class TestDuplicateCoreMetadataRepair:
             [sys.executable, "-m", "pip", "uninstall", "-y", "unsloth"]
         ]
 
-    def test_pips_tilde_backup_is_moved_aside_so_the_loop_can_converge(
-        self, tmp_path, monkeypatch
-    ):
+    def test_pips_tilde_backup_is_moved_aside_so_the_loop_can_converge(self, tmp_path, monkeypatch):
         """The commonest real conflict: pip renamed the outgoing distribution to a
         `~` sibling and was killed. Its METADATA still says Name: unsloth so it
         counts as a duplicate, but `pip uninstall unsloth` logs "Ignoring invalid
@@ -823,12 +821,8 @@ class TestDuplicateCoreMetadataRepair:
         )
         # Two records; one once the backup is aside; none after the uninstall; then
         # the reinstalled one for the final convergence probe.
-        probes = iter(
-            (["2026.8.12", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"])
-        )
-        monkeypatch.setattr(
-            ips.install_manifest, "installed_versions", lambda _name: next(probes)
-        )
+        probes = iter((["2026.8.12", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"]))
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))
         monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _name: [])
         monkeypatch.setattr(
             ips.install_manifest, "pip_backup_metadata_paths", lambda _name: [backup]
