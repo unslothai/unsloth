@@ -779,54 +779,85 @@ def run(args, ab_ref = None) -> int:
         # left to be re-derived from the tier later: `--report` reads it back to decide which rungs
         # a payload owes, and a `--rungs` override the payload did not carry made that answer wrong.
         rungs = args.rungs.split(",") if args.rungs else TIER_RUNGS[args.tier]
+        meta_row = {
+            "row_type": "run_meta",
+            "tier": args.tier,
+            "tool_version": TOOL_VERSION,
+            "corpus_hash": corpus.corpus_hash,
+            "studio_ref": args.branch if owns_studio else f"attached:{base_url}",
+            # WHICH COMMIT THAT REF NAMED, so a later `--resume` can tell a continuation from
+            # a branch that moved. Empty for an attached Studio, whose build is not visible
+            # from here. See `commit_problems`.
+            "studio_commit": sides[0].get("commit") or "",
+            "bundle": verdict.as_dict(),
+            "platform": {
+                "system": platform.system(),
+                "machine": platform.machine(),
+                "python": sys.version.split()[0],
+                "engine": bundle.engine,
+                "engine_note": bundle.engine_note,
+            },
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "pacer_base_url": pacer.base_url,
+            "cadence": args.cadence,
+            "rungs": rungs,
+            "tier_rungs": TIER_RUNGS[args.tier],
+            "reps": args.reps,
+            "instrument_level": args.instrument_level,
+            # In the payload, not only in the log. Two runs with different fixtures are
+            # not comparable, and a fixture difference that is not recorded is one a later
+            # reader has no way to notice before quoting a ratio across it.
+            "stream_tail_chars": args.stream_tail_chars,
+            "corpus_dollars": bool(args.corpus_dollars),
+            # WHICH PROBE, IF ANY, WAS IN THE PAGE. Recorded next to the corpus hash and for
+            # the same reason: a payload nobody can audit against the page it measured has to
+            # be taken on trust. `null` is the normal case and the only scorable one.
+            "probe_init_script": extra_init or None,
+            # WHETHER THE PROBE RAN BEFORE THE FILM, for the same reason and with the same
+            # consequence: it changes what the cell measures without moving the cell id, so
+            # `--resume` needs it on the record to be able to refuse a toggle. See
+            # `IDENTITY_AXES`.
+            "click_probe": bool(getattr(args, "click_probe", False)),
+            # AN ARM RUNNING THIS IS NOT A MEASUREMENT OF THE BUILD, and the payload has to
+            # say so itself. A reader who finds a treatment arm 40% slower has no other way
+            # to discover that the harness put the 40% there on purpose, and `--resume` reads
+            # it back as an identity axis so a calibration cannot be continued as an ordinary
+            # run or the other way round. See `IDENTITY_AXES`.
+            "inject_stream_cost_ms": getattr(args, "inject_stream_cost_ms", None),
+        }
+        rec.emit(meta_row)
+
+        from .scoring import payload_rules
+
+        # THE COMPARABILITY KEY, emitted as its own row so a prose comparison can be checked later.
+        #
+        # `floor_table.load` already refuses to POOL payloads across tiers and corpora, and that
+        # guard works. What it cannot reach is a comparison made in PROSE between two separately
+        # published runs, which is how a wrong number nearly propagated here twice.
+        #
+        # Computed over the run_meta row that was actually emitted, not over a second dict built
+        # to look like it. A hand-copied duplicate is one more value whose provenance is not
+        # stable, which is the whole failure this module exists to stop: the key has to describe
+        # the payload, not a parallel description of it that can drift.
+        #
+        # Keyed on the COMPUTED corpus hash rather than on the harness commit, because a commit is
+        # a claim about provenance and the hash is the thing itself: one tree in this campaign ran
+        # a corpus that matched neither the branch's pre-fix nor its post-fix hash, silently and
+        # self-consistently, and only printing the hash revealed it.
         rec.emit(
             {
-                "row_type": "run_meta",
-                "tier": args.tier,
-                "tool_version": TOOL_VERSION,
-                "corpus_hash": corpus.corpus_hash,
-                "studio_ref": args.branch if owns_studio else f"attached:{base_url}",
-                # WHICH COMMIT THAT REF NAMED, so a later `--resume` can tell a continuation from
-                # a branch that moved. Empty for an attached Studio, whose build is not visible
-                # from here. See `commit_problems`.
-                "studio_commit": sides[0].get("commit") or "",
-                "bundle": verdict.as_dict(),
-                "platform": {
-                    "system": platform.system(),
-                    "machine": platform.machine(),
-                    "python": sys.version.split()[0],
-                    "engine": bundle.engine,
-                    "engine_note": bundle.engine_note,
-                },
-                "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "pacer_base_url": pacer.base_url,
-                "cadence": args.cadence,
-                "rungs": rungs,
-                "tier_rungs": TIER_RUNGS[args.tier],
-                "reps": args.reps,
-                "instrument_level": args.instrument_level,
-                # In the payload, not only in the log. Two runs with different fixtures are
-                # not comparable, and a fixture difference that is not recorded is one a later
-                # reader has no way to notice before quoting a ratio across it.
-                "stream_tail_chars": args.stream_tail_chars,
-                "corpus_dollars": bool(args.corpus_dollars),
-                # WHICH PROBE, IF ANY, WAS IN THE PAGE. Recorded next to the corpus hash and for
-                # the same reason: a payload nobody can audit against the page it measured has to
-                # be taken on trust. `null` is the normal case and the only scorable one.
-                "probe_init_script": extra_init or None,
-                # WHETHER THE PROBE RAN BEFORE THE FILM, for the same reason and with the same
-                # consequence: it changes what the cell measures without moving the cell id, so
-                # `--resume` needs it on the record to be able to refuse a toggle. See
-                # `IDENTITY_AXES`.
-                "click_probe": bool(getattr(args, "click_probe", False)),
-                # AN ARM RUNNING THIS IS NOT A MEASUREMENT OF THE BUILD, and the payload has to
-                # say so itself. A reader who finds a treatment arm 40% slower has no other way
-                # to discover that the harness put the 40% there on purpose, and `--resume` reads
-                # it back as an identity axis so a calibration cannot be continued as an ordinary
-                # run or the other way round. See `IDENTITY_AXES`.
-                "inject_stream_cost_ms": getattr(args, "inject_stream_cost_ms", None),
+                "row_type": "comparability",
+                "key": payload_rules.comparability_key(meta_row),
+                "fields": payload_rules.comparability_fields(meta_row),
+                "note": (
+                    "quote this key beside any number taken from this payload. Two numbers with "
+                    "different keys are not comparable, and `--compare` will name the field that "
+                    "differs."
+                ),
             }
         )
+        _log(f"  comparability {payload_rules.comparability_key(meta_row)}")
+
         rec.gate("production_build", verdict.production, verdict.as_dict())
 
         if args.tier == "fast":
@@ -1741,6 +1772,53 @@ def report_only(args) -> int:
     return 0
 
 
+def compare_payloads(args) -> int:
+    """Are these two payloads comparable, and if not, exactly which field stops them?
+
+    The guard in `floor_table.load` refuses to POOL payloads across tiers and corpora and it
+    works. It cannot reach a comparison made in prose across two separately published runs, which
+    is how a withdrawn number nearly propagated twice in one campaign. Quoting the comparability
+    key beside a number turns that check from an act of memory into one command.
+    """
+    from .scoring import payload_rules
+
+    metas = []
+    for raw in args.compare:
+        path = Path(raw)
+        if not path.exists():
+            print(f"no such payload: {path}")
+            return 2
+        meta = None
+        for line in path.read_text(errors = "ignore").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("row_type") == "run_meta":
+                meta = row
+                break
+        if meta is None:
+            print(f"{path} carries no run_meta row, so it cannot be checked at all")
+            return 2
+        metas.append((path, meta))
+
+    (pa, a), (pb, b) = metas
+    ka = payload_rules.comparability_key(a)
+    kb = payload_rules.comparability_key(b)
+    print(f"  {pa}  {ka}")
+    print(f"  {pb}  {kb}")
+    if ka == kb:
+        print("\ncomparable: every field the key covers matches.")
+        return 0
+    print("\nNOT COMPARABLE. These differ:")
+    for line in payload_rules.explain_incomparable(a, b):
+        print(f"  {line}")
+    print(
+        "\nA number from one of these must not be quoted against a number from the other. "
+        "Re-run the older side."
+    )
+    return 1
+
+
 def assert_liveness(args) -> int:
     """Fail unless every scheduled action in a payload actually ran.
 
@@ -1890,6 +1968,16 @@ def parse_args(argv: list):
         metavar = "PAYLOAD",
         help = "score and render an existing payload.jsonl, then exit. Runs offline, "
         "so a payload mailed in from another machine reports here",
+    )
+    ap.add_argument(
+        "--compare",
+        metavar = ("PAYLOAD_A", "PAYLOAD_B"),
+        nargs = 2,
+        dest = "compare",
+        help = "offline. Say whether two payloads may be compared at all, and if not, name the "
+        "field that differs. `floor_table` already refuses to POOL across tiers and corpora; "
+        "this is for the case it cannot reach, a comparison made in PROSE between two "
+        "separately published runs",
     )
     ap.add_argument(
         "--assert-liveness",
@@ -2051,6 +2139,8 @@ def main(argv: list) -> int:
         return doctor(args)
     if args.report:
         return report_only(args)
+    if args.compare:
+        return compare_payloads(args)
     if args.assert_liveness:
         return assert_liveness(args)
     if args.ab:

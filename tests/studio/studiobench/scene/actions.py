@@ -313,42 +313,110 @@ def scroll_after(ctx: ActionContext) -> ActionResult:
 
 # ── 4. reasoning expand / collapse ──────────────────────────────────
 
+# SETTLING ON THE DOM, NOT ON A STATE ATTRIBUTE.
+#
+# `data-state="open"` flips when the Collapsible's state changes. It says nothing about whether the
+# content that state reveals has mounted, and how far apart those two frames are depends on the
+# COLLAPSE MECHANISM -- which is exactly the thing an A/B across a collapse change is comparing. So
+# an instant defined by the attribute means a different thing on each arm.
+#
+# Measured, 100K rung, both arms, same corpus. Reading `pre span` on the frame the attribute
+# settles gives 74,917 on the measured-height arm and 44,075 on the grid-rows arm, a 41% apparent
+# reduction. Reading it once the span count has stopped changing gives 74,250 on BOTH, to the span.
+# The 41% was the grid arm being counted before it had finished mounting.
+#
+# Its null control did not catch this and could not have: the null runs one bundle against itself,
+# so the skew is identical on both sides and cancels exactly. A null cannot see a bias it shares.
+#
+# So both the timing and the census now terminate on a QUIET DOM: the observed quantity has to stop
+# changing for `quietFrames` consecutive animation frames before it is read. If it never goes
+# quiet, nothing is returned for it and the reason is recorded, because silence beats a confident
+# wrong answer.
+SETTLE_QUIET_FRAMES = 4
+
 REASONING_JS = """
-async (timeoutMs) => {
+async ([timeoutMs, quietFrames]) => {
   const D = window.__sb.dom;
   const triggers = D.reasoningTriggers();
   if (triggers.length === 0) return { ran: false, reason: "no reasoning pane in the thread" };
   const before = D.reasoningOpenCount();
+  const spanCount = () => document.querySelectorAll("pre span").length;
+
+  // Wait for the open count to reach `want` AND for the span census to stop moving. Returns the
+  // elapsed time, the number of frames spent, and why it stopped, so a censored reading is
+  // distinguishable from a fast one rather than both arriving as a number.
   const settle = async (want) => {
     const started = performance.now();
+    let frames = 0;
+    let quiet = 0;
+    let last = spanCount();
+    let reachedAt = null;
     while (performance.now() - started < timeoutMs) {
-      if (D.reasoningOpenCount() === want) return performance.now() - started;
       await window.__sbNextPaint();
+      frames += 1;
+      const now = spanCount();
+      const stateReached = D.reasoningOpenCount() === want;
+      if (stateReached && reachedAt === null) reachedAt = performance.now() - started;
+      quiet = now === last ? quiet + 1 : 0;
+      last = now;
+      if (stateReached && quiet >= quietFrames) {
+        return {
+          ms: performance.now() - started,
+          frames,
+          state_reached_ms: reachedAt,
+          spans: now,
+          censored: false,
+          reason: null,
+        };
+      }
     }
-    return null;
+    return {
+      ms: null,
+      frames,
+      state_reached_ms: reachedAt,
+      spans: null,
+      censored: true,
+      reason: reachedAt === null
+        ? `the open count never reached ${want} within ${timeoutMs}ms`
+        : `the open count reached ${want} after ${Math.round(reachedAt)}ms but the span census `
+          + `was still changing when the ${timeoutMs}ms budget ran out, so nothing here is a `
+          + `reading of a settled document`,
+    };
   };
+
   // Toggle EVERY pane, not one: the mechanism under investigation scales with how much content
   // is mounted, and opening a single pane in a thread of forty is a constant-size action being
   // reported on an axis of thread length.
   const openStart = performance.now();
   for (const t of triggers) t.click();
-  const openedIn = await settle(triggers.length);
-  const openMs = openedIn === null ? null : performance.now() - openStart;
+  const opened = await settle(triggers.length);
   const openCount = D.reasoningOpenCount();
-  const spansOpen = document.querySelectorAll("pre span").length;
   const closeStart = performance.now();
   for (const t of D.reasoningTriggers()) t.click();
-  const closedIn = await settle(0);
-  const closeMs = closedIn === null ? null : performance.now() - closeStart;
+  const closed = await settle(0);
   return {
     ran: true,
     panes: triggers.length,
     before,
     openCount,
     afterClose: D.reasoningOpenCount(),
-    spansOpen,
-    openMs: openMs === null ? null : Math.round(openMs * 10) / 10,
-    closeMs: closeMs === null ? null : Math.round(closeMs * 10) / 10,
+    // ONLY from a settled document. `null` when the census never went quiet.
+    spansOpen: opened.spans,
+    spansOpenReason: opened.reason,
+    openMs: opened.ms === null ? null : Math.round(opened.ms * 10) / 10,
+    closeMs: closed.ms === null ? null : Math.round(closed.ms * 10) / 10,
+    openCensored: opened.censored,
+    closeCensored: closed.censored,
+    openCensoredReason: opened.reason,
+    closeCensoredReason: closed.reason,
+    // The ruler's own resolution, so a reader can see that a difference smaller than a frame is
+    // not a difference. `open_ms` is quantised to the paint interval by construction.
+    openFrames: opened.frames,
+    closeFrames: closed.frames,
+    openStateReachedMs: opened.state_reached_ms === null
+      ? null : Math.round(opened.state_reached_ms * 10) / 10,
+    quietFramesRequired: quietFrames,
+    timeoutMs,
   };
 }
 """
@@ -356,21 +424,41 @@ async (timeoutMs) => {
 
 @register_action(name = "reasoning_toggle", default_budget_ms = 12000)
 def reasoning_toggle(ctx: ActionContext) -> ActionResult:
-    raw = _ev(ctx, REASONING_JS, SETTLE_TIMEOUT_MS)
+    raw = _ev(ctx, REASONING_JS, [SETTLE_TIMEOUT_MS, SETTLE_QUIET_FRAMES])
     err = _failed(raw)
     if err:
         return not_run(err)
     if not raw.get("ran"):
         return not_run(raw.get("reason", "the reasoning toggle did not run"))
-    # Both directions, and the pane count is read from `data-state` on the Collapsible ROOT.
-    # Radix keeps collapsed content mounted for its animation, so a presence check on the content
-    # element reports every pane as open and the assertion can never fail.
-    ok = (
-        raw["openMs"] is not None
-        and raw["closeMs"] is not None
-        and raw["openCount"] == raw["panes"]
-        and raw["afterClose"] == 0
-    )
+
+    # THE REASON NAMES THE CLAUSE THAT ACTUALLY FAILED.
+    #
+    # This used to be built from the pane counts alone, so a run whose real failure was a censored
+    # timing printed "16 of 16 panes opened and 0 were still open after collapsing" -- a
+    # description of SUCCESS -- under the heading EXPECT FAILED. A reader who trusts the message
+    # concludes the assertion is broken rather than that the timing is missing.
+    failures: list[str] = []
+    if raw["openCount"] != raw["panes"]:
+        failures.append(f"only {raw['openCount']} of {raw['panes']} panes opened")
+    if raw["afterClose"] != 0:
+        failures.append(f"{raw['afterClose']} panes were still open after collapsing")
+    if raw["openMs"] is None:
+        failures.append(f"open_ms is censored: {raw.get('openCensoredReason')}")
+    if raw["closeMs"] is None:
+        failures.append(f"close_ms is censored: {raw.get('closeCensoredReason')}")
+    ok = not failures
+
+    # A CENSORED TIMING IS ABSENT, NOT ZERO, and it is absent LOUDLY. `_action_timings` drops
+    # non-numeric values, so a censored cell silently leaves the pooled metric and the survivors
+    # are the fast ones -- survivorship bias wearing a mean. The censoring is therefore recorded
+    # as its own field so the scoring layer can refuse to pool a metric that is censored at some
+    # rungs and not others.
+    timings = {}
+    if raw["openMs"] is not None:
+        timings["open_ms"] = raw["openMs"]
+    if raw["closeMs"] is not None:
+        timings["close_ms"] = raw["closeMs"]
+
     return ActionResult(
         ran = True,
         expect_ok = ok,
@@ -387,13 +475,23 @@ def reasoning_toggle(ctx: ActionContext) -> ActionResult:
             "panes_scope": "mounted",
             "open_after_expand": raw["openCount"],
             "open_after_collapse": raw["afterClose"],
+            # Present ONLY when the span census went quiet. See the note above REASONING_JS: read
+            # on the frame the state attribute flips, this number was 41% wrong on one arm and
+            # right on the other, and its null control could not see the difference.
             "highlight_spans_while_open": raw["spansOpen"],
+            "highlight_spans_while_open_reason": raw.get("spansOpenReason"),
+            "settled": raw["spansOpen"] is not None,
+            "open_censored": bool(raw.get("openCensored")),
+            "close_censored": bool(raw.get("closeCensored")),
+            "open_censored_reason": raw.get("openCensoredReason"),
+            "close_censored_reason": raw.get("closeCensoredReason"),
+            # The ruler's resolution, and how much of `open_ms` was spent after the state flip.
+            "open_frames": raw.get("openFrames"),
+            "open_state_reached_ms": raw.get("openStateReachedMs"),
+            "quiet_frames_required": raw.get("quietFramesRequired"),
         },
-        timings = {"open_ms": raw["openMs"], "close_ms": raw["closeMs"]},
-        reason = None
-        if ok
-        else f"{raw['openCount']} of {raw['panes']} panes opened and "
-        f"{raw['afterClose']} were still open after collapsing",
+        timings = timings,
+        reason = None if ok else "; ".join(failures),
     )
 
 
