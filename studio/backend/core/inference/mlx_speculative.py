@@ -2240,6 +2240,20 @@ def mlx_speculative_request_reason(
     ).reason
 
 
+# A comparison the preflight could not reach, because it needs files the target has not
+# downloaded yet. The load decides it once both checkpoints are on disk.
+_UNPROVEN_REASONS = frozenset({"tokenizer_contract_unavailable", "verifier_contract_unavailable"})
+
+
+def mlx_speculative_reason_is_unproven(reason: Optional[str]) -> bool:
+    """Whether ``reason`` records an undecided comparison rather than an incompatible pair.
+
+    A preflight that refuses one rejects a pair that would have loaded, because fetching the
+    target is what makes the comparison possible.
+    """
+    return reason in _UNPROVEN_REASONS
+
+
 def mlx_speculative_refusal(mode: Any, resolution: "MlxSpeculativeResolution") -> Optional[str]:
     """Why ``resolution`` cannot be loaded, or None to load it.
 

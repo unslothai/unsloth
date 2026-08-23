@@ -161,6 +161,19 @@ def test_a_target_no_drafter_can_attach_to_is_refused_before_the_model_is_unload
     assert _drive_validate(monkeypatch, is_gguf = False, mlx_speculative_mode = "auto")
 
 
+def test_a_comparison_the_target_cannot_answer_yet_is_not_a_refusal(monkeypatch):
+    # Comparing tokenizers needs the target's own tokenizer, which a first-time target has not
+    # downloaded at preflight time. Refusing on that rejects a pair the load would have run,
+    # because fetching the target is what makes the comparison possible.
+    monkeypatch.setattr(
+        inf, "mlx_speculative_request_reason", lambda *_a, **_k: "tokenizer_contract_unavailable"
+    )
+    # The target itself is eligible, so the undecided comparison is the only thing left to
+    # refuse on -- and validation still succeeds.
+    monkeypatch.setattr(inf, "mlx_speculative_target_ineligible", lambda **_k: None)
+    assert _drive_validate(monkeypatch, is_gguf = False, mlx_speculative_mode = "mtp")
+
+
 def test_the_pairing_is_judged_again_once_the_target_configuration_arrives(monkeypatch):
     # The preflight defers a target whose configuration is not fetched yet, so the pairing is
     # judged after the fetch: here, where a refusal costs the caller nothing, rather than at

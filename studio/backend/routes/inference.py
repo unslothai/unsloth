@@ -2983,6 +2983,7 @@ from core.inference.mlx_speculative import (
     mlx_speculative_refusal_text,
     normalize_mlx_speculative_mode,
     mlx_speculative_options,
+    mlx_speculative_reason_is_unproven,
     mlx_speculative_request_reason,
     mlx_speculative_refusal,
     mlx_speculative_target_ineligible,
@@ -14736,7 +14737,9 @@ async def validate_model(
         _mlx_spec_reason = mlx_speculative_request_reason(
             model_identifier, request.mlx_speculative_mode, request.mlx_draft_model
         )
-        if _mlx_spec_reason is not None:
+        if _mlx_spec_reason is not None and not mlx_speculative_reason_is_unproven(
+            _mlx_spec_reason
+        ):
             raise HTTPException(
                 status_code = 400, detail = mlx_speculative_refusal_text(_mlx_spec_reason)
             )
@@ -14767,14 +14770,18 @@ async def validate_model(
 
         # Asked again now the configuration is here. The preflight above defers a target it
         # could not read yet, so this is where a drafter that does not pair is caught; leaving
-        # it to /load answers only after the caller has committed to the switch.
+        # it to /load answers only after the caller has committed to the switch. A comparison
+        # that needs files this target has not downloaded is still deferred: the load fetches
+        # them, so refusing here would reject a pair that goes on to load.
         _mlx_spec_reason = await asyncio.to_thread(
             mlx_speculative_request_reason,
             model_identifier,
             request.mlx_speculative_mode,
             request.mlx_draft_model,
         )
-        if _mlx_spec_reason is not None:
+        if _mlx_spec_reason is not None and not mlx_speculative_reason_is_unproven(
+            _mlx_spec_reason
+        ):
             raise HTTPException(
                 status_code = 400, detail = mlx_speculative_refusal_text(_mlx_spec_reason)
             )
