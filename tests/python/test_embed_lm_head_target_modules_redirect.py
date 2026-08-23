@@ -115,7 +115,10 @@ def test_embedding_only_target_list_raises_instead_of_training_nothing():
     try:
         with pytest.raises(RuntimeError, match = "target_modules` is now empty"):
             FastLanguageModel.get_peft_model(
-                model, r = 8, lora_alpha = 16, target_modules = ["embed_tokens", "lm_head"],
+                model,
+                r = 8,
+                lora_alpha = 16,
+                target_modules = ["embed_tokens", "lm_head"],
             )
     finally:
         del model

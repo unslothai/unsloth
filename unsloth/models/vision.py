@@ -1932,7 +1932,8 @@ class FastBaseModel:
         # them, and LoRA on them never trains anyway (see _redirect_embedding_targets).
         # Move them to modules_to_save before scoping, matching FastLanguageModel.
         target_modules, modules_to_save, _moved = _redirect_embedding_targets(
-            target_modules, modules_to_save,
+            target_modules,
+            modules_to_save,
             allow_redirect = finetune_language_layers,
         )
         _raise_if_no_lora_targets_left(target_modules, _moved)

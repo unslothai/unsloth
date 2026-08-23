@@ -4451,7 +4451,12 @@ def warn_if_zoo_cannot_merge_moe_experts():
 EMBEDDING_MODULES = frozenset(("embed_tokens", "lm_head"))
 
 
-def _redirect_embedding_targets(target_modules, modules_to_save, *, allow_redirect = True):
+def _redirect_embedding_targets(
+    target_modules,
+    modules_to_save,
+    *,
+    allow_redirect = True,
+):
     """Move embed_tokens/lm_head from target_modules into modules_to_save.
 
     LoRA on either module is silently dead in Unsloth: the fused CE loss reads

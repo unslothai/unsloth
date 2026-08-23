@@ -3316,7 +3316,8 @@ class FastLlamaModel:
         # LoRA on embed_tokens/lm_head never trains (see _redirect_embedding_targets),
         # so route them to modules_to_save, which also makes embedding_learning_rate work.
         target_modules, modules_to_save, _moved_embedding_modules = _redirect_embedding_targets(
-            target_modules, modules_to_save,
+            target_modules,
+            modules_to_save,
         )
         _raise_if_no_lora_targets_left(target_modules, _moved_embedding_modules)
         for module in _moved_embedding_modules:

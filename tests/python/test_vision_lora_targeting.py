@@ -90,7 +90,8 @@ def test_embedding_redirect_raises_when_no_lora_target_remains():
     )
 
     adjusted, modules_to_save, moved = _redirect_embedding_targets(
-        ["embed_tokens", "lm_head"], None,
+        ["embed_tokens", "lm_head"],
+        None,
     )
 
     assert adjusted == []
@@ -118,7 +119,8 @@ def test_embedding_redirect_keeps_string_modules_to_save_whole():
     from unsloth.models._utils import _redirect_embedding_targets
 
     adjusted, modules_to_save, moved = _redirect_embedding_targets(
-        ["q_proj", "embed_tokens"], "lm_head",
+        ["q_proj", "embed_tokens"],
+        "lm_head",
     )
 
     assert adjusted == ["q_proj"]
@@ -136,7 +138,8 @@ def test_embedding_redirect_rejects_embeddings_for_fast_inference():
         vllm_engine = object()
 
     adjusted, modules_to_save, moved = _redirect_embedding_targets(
-        ["q_proj", "embed_tokens", "lm_head"], None,
+        ["q_proj", "embed_tokens", "lm_head"],
+        None,
     )
 
     assert adjusted == ["q_proj"]
@@ -165,7 +168,8 @@ def test_embedding_redirect_deduplicates_targets():
     from unsloth.models._utils import _redirect_embedding_targets
 
     adjusted, modules_to_save, moved = _redirect_embedding_targets(
-        ["q_proj", "q_proj", "lm_head", "lm_head"], None,
+        ["q_proj", "q_proj", "lm_head", "lm_head"],
+        None,
     )
 
     assert adjusted == ["q_proj"]
