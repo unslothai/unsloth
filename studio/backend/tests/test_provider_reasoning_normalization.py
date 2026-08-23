@@ -54,7 +54,9 @@ def _openrouter() -> str:
 
 def _openrouter_encrypted() -> str:
     return "".join(
-        _chunk({"reasoning": t, "reasoning_details": [{"type": "reasoning.encrypted", "data": "zz"}]})
+        _chunk(
+            {"reasoning": t, "reasoning_details": [{"type": "reasoning.encrypted", "data": "zz"}]}
+        )
         for t in THOUGHT
     )
 
@@ -69,9 +71,7 @@ SHAPES = {
 
 def _relay(body: str) -> list[str]:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200, content = body, headers = {"content-type": "text/event-stream"}
-        )
+        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
 
     ep_mod._http_client = httpx.AsyncClient(transport = httpx.MockTransport(handler))
     client = ExternalProviderClient(
