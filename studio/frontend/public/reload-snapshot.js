@@ -818,9 +818,12 @@
       saveSnapshot();
     }
   });
-  // WKWebView/WebKitGTK do not expose pageswap, but still deliver pagehide on
-  // reload. Do not register both: Chromium fires pagehide after pageswap and a
-  // second full-DOM capture during unload is both expensive and lower fidelity.
+  // Firefox, WebKitGTK and Safari before 18.2 do not expose pageswap, but
+  // still deliver pagehide on reload. Do not register both: Chromium fires
+  // pagehide after pageswap and a second full-DOM capture during unload is
+  // both expensive and lower fidelity. pagehide cannot tell a reload from any
+  // other unload, so on those engines a snapshot is also written when the user
+  // navigates away; the restore side discards it (navigationType below).
   if (!("onpageswap" in window)) {
     window.addEventListener("pagehide", function (event) {
       if (!event.persisted) saveSnapshot();
