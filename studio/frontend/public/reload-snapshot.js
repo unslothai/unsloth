@@ -380,12 +380,19 @@
     );
   }
 
+  var sensitiveAttributes = ["title", "aria-label", "alt", "placeholder"];
+
   function mirrorFieldState(original, cloned) {
     var tag = original.tagName;
     if (isSensitiveField(original)) {
       // cloneNode can retain input attributes, textarea text, or a secret
-      // rendered into an ordinary code/span subtree.
+      // rendered into an ordinary code/span subtree. The same value is
+      // routinely repeated in a tooltip or an accessible name beside it, and
+      // clearing children alone leaves those behind.
       cloned.removeAttribute("value");
+      sensitiveAttributes.forEach(function (name) {
+        cloned.removeAttribute(name);
+      });
       if (tag !== "INPUT") cloned.replaceChildren();
       return;
     }

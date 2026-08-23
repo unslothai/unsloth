@@ -83,6 +83,22 @@ const projectsPageSource = readFileSync(
   new URL("../src/features/chat/projects-page.tsx", import.meta.url),
   "utf8",
 );
+
+const seedDialogSource = readFileSync(
+  new URL(
+    "../src/features/recipe-studio/dialogs/seed/seed-dialog.tsx",
+    import.meta.url,
+  ),
+  "utf8",
+);
+
+const projectSourceDropzoneSource = readFileSync(
+  new URL(
+    "../src/features/rag/components/project-source-dropzone.tsx",
+    import.meta.url,
+  ),
+  "utf8",
+);
 const dataRecipesPageSource = readFileSync(
   new URL(
     "../src/features/data-recipes/pages/data-recipes-page.tsx",
@@ -1337,6 +1353,20 @@ test("carries live form state, except what sensitive fields hide", () => {
           attributes: { "data-reload-snapshot-sensitive": "" },
         },
         {
+          // A filename row repeats the same value in its tooltip and in the
+          // accessible name of the button beside it, so clearing text alone
+          // would still ship it.
+          tag: "span",
+          rect: [0, 1440, 560, 0],
+          text: "rendered-local-filename.csv",
+          attributes: {
+            "data-reload-snapshot-sensitive": "",
+            title: "rendered-local-filename.csv",
+            "aria-label": "Remove rendered-local-filename.csv",
+            placeholder: "rendered-local-filename.csv",
+          },
+        },
+        {
           tag: "div",
           rect: [0, 1440, 600, 0],
           attributes: { "data-reload-snapshot-sensitive": "" },
@@ -1391,6 +1421,7 @@ test("carries live form state, except what sensitive fields hide", () => {
     html,
     /pending-local-attachment|private-local-picker|retained-frame/,
   );
+  assert.doesNotMatch(html, /rendered-local-filename/);
   assert.match(
     sharedComposerSource,
     /function PendingImageThumb[\s\S]*?data-reload-snapshot-sensitive/,
@@ -1413,6 +1444,24 @@ test("carries live form state, except what sensitive fields hide", () => {
   assert.match(
     unstructuredDropZoneSource,
     /data-reload-snapshot-sensitive[\s\S]*?entry\.name/,
+  );
+  assert.match(
+    seedDialogSource,
+    /data-reload-snapshot-sensitive[\s\S]*?localFile\?\.name/,
+  );
+  assert.match(
+    sharedComposerSource,
+    /data-reload-snapshot-sensitive[\s\S]*?pendingAudio\.name/,
+  );
+  // Both carriers here: the tooltip on the name, and the accessible name on
+  // the remove button, which is a sibling no ancestor marker would reach.
+  assert.match(
+    projectSourceDropzoneSource,
+    /data-reload-snapshot-sensitive[\s\S]*?title=\{entry\.name\}/,
+  );
+  assert.match(
+    projectSourceDropzoneSource,
+    /data-reload-snapshot-sensitive\s*\n\s*aria-label=\{`Remove \$\{entry\.name\}`\}/,
   );
   assert.match(
     attachmentSource,

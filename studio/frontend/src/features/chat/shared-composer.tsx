@@ -2130,7 +2130,9 @@ export function SharedComposer({
           {pendingAudio && (
             <div className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs">
               <HeadphonesIcon className="size-3.5 text-muted-foreground" />
-              <span className="max-w-48 truncate">{pendingAudio.name}</span>
+              <span data-reload-snapshot-sensitive className="max-w-48 truncate">
+                {pendingAudio.name}
+              </span>
               <button
                 type="button"
                 onClick={() => {

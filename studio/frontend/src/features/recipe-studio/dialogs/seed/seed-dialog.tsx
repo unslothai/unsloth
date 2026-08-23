@@ -1053,7 +1053,10 @@ export function SeedDialog({
               </p>
               {(localFile?.name || config.local_file_name?.trim()) && (
                 <p className="text-xs text-muted-foreground">
-                  Selected: {localFile?.name ?? config.local_file_name?.trim()}
+                  Selected:{" "}
+                  <span data-reload-snapshot-sensitive>
+                    {localFile?.name ?? config.local_file_name?.trim()}
+                  </span>
                 </p>
               )}
             </div>
