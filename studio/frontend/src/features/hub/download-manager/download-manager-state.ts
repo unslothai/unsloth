@@ -74,6 +74,7 @@ function sanitizePersistedJob(
     expectedBytes: nonNegativeNumber(value.expectedBytes),
     fraction: Math.min(Math.max(finiteNumber(value.fraction, 0), 0), 1),
     bytesPerSec: 0,
+    etaSeconds: 0,
     error: typeof value.error === "string" ? value.error : null,
     startedAt: nonNegativeNumber(value.startedAt, Date.now()),
     ...(Number.isSafeInteger(value.serverGeneration)
@@ -128,7 +129,7 @@ function sanitizePersistedState(
 
 function toPersistedJob(
   job: ManagedDownload,
-): Omit<ManagedDownload, "bytesPerSec" | "completeOnDisk"> {
+): Omit<ManagedDownload, "bytesPerSec" | "etaSeconds" | "completeOnDisk"> {
   return {
     key: job.key,
     kind: job.kind,
