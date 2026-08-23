@@ -541,7 +541,13 @@ def test_the_refusal_exits_two_not_one_through_the_cli(tmp_path, monkeypatch, ca
 # ── an action that ran on one arm and not the other ──────────────────
 
 
-def one_sided_payload(tmp_path: Path, name: str, action: str, reps: tuple[str, ...]) -> Path:
+def one_sided_payload(
+    tmp_path: Path,
+    name: str,
+    action: str,
+    reps: tuple[str, ...],
+    reason: str = "the control never became visible",
+) -> Path:
     """A film where `action` runs on base and cannot be performed on treatment, in `reps`.
 
     Everything else matches on both arms in both repetitions, so the ONLY thing wrong with this
@@ -558,7 +564,7 @@ def one_sided_payload(tmp_path: Path, name: str, action: str, reps: tuple[str, .
             if arm == "treatment" and rep in reps:
                 row = action_row(cid, action, "SAME")
                 row["ran"] = False
-                row["reason"] = "the control never became visible"
+                row["reason"] = reason
                 row["slot_missed"] = False
                 rows.append(row)
             else:
@@ -598,7 +604,13 @@ def test_an_action_expected_to_vary_is_not_failed_for_reaching_one_arm_only(tmp_
     # `stop_generation` runs only while a stream is live, so which arm reached it before the
     # stream ended is the same race its UNSTABLE_ACTIONS entry already describes. Scoring that as
     # a build difference would red the job on stream timing.
-    path = one_sided_payload(tmp_path, "racy", "stop_generation", ("rep0", "rep1"))
+    path = one_sided_payload(
+        tmp_path,
+        "racy",
+        "stop_generation",
+        ("rep0", "rep1"),
+        reason = "nothing was generating and a new turn did not start within 8s",
+    )
     assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 0
     assert "expected to vary between runs" in capsys.readouterr().out
 
@@ -1244,10 +1256,13 @@ def test_every_racy_execution_entry_states_its_mechanism():
     # The same bar the digest list is held to. An exemption without a stated mechanism is how the
     # nine-action version of this list survived unexamined, and each of these has to name the
     # `not_run` it is excusing.
-    for action, why in P.RACY_EXECUTION.items():
+    for action, (why, markers) in P.RACY_EXECUTION.items():
         assert action in P.UNSTABLE_ACTIONS, action
         assert "not_run" in why or "not run" in why, action
         assert len(why) > 60, action
+        # And the markers are the operative half: an entry that documents a mechanism but matches
+        # nothing, or matches everything, is the failure this keying exists to prevent.
+        assert markers and all(len(m) > 10 for m in markers), action
 
 
 # ── the scope is what the VERDICT turns on, not what merely happened ──
@@ -1259,7 +1274,13 @@ def test_a_racy_execution_action_is_not_put_in_the_audit_scope(tmp_path):
     Scoped anyway, the null observing the same legitimate stream-timing race made the audit
     return 1 and failed the workflow on stream timing -- a verdict of 0 with a red job.
     """
-    path = one_sided_payload(tmp_path, "racy", "stop_generation", ("rep0", "rep1"))
+    path = one_sided_payload(
+        tmp_path,
+        "racy",
+        "stop_generation",
+        ("rep0", "rep1"),
+        reason = "nothing was generating and a new turn did not start within 8s",
+    )
     assert "stop_generation" in P.RACY_EXECUTION
     # The verdict does not count it.
     assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 0
@@ -1299,3 +1320,42 @@ def test_a_control_the_head_cannot_open_is_still_in_the_audit_scope(tmp_path):
     path = one_sided_payload(tmp_path, "real", "settings", ("rep0", "rep1"))
     assert U.report([path], "t", frozenset(), min_reps = 2, min_compared = 16) == 1
     assert ("r100K", "settings") in U.actions_needing_an_excuse([path], 2)
+
+
+def test_a_removed_stop_button_is_not_exempt_just_because_stop_generation_can_race(tmp_path):
+    """The exemption has to match the not-run it names, not the action it is filed under.
+
+    `stop_generation` has two not_run paths: nothing was generating (a race with the model) and
+    the stop button being absent (`scene/actions.py:501`, which is the build). Keyed by action
+    name alone, a treatment build that REMOVES the Stop control recorded exactly the one-arm-only
+    regression this category exists to catch and was filed under "expected to vary".
+    """
+    path = one_sided_payload(
+        tmp_path,
+        "removed",
+        "stop_generation",
+        ("rep0", "rep1"),
+        reason = "the stop button is not present",
+    )
+    assert not P.racy_execution("stop_generation", "the stop button is not present")
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 1
+    # And the null is asked about it, because the verdict now turns on it.
+    assert ("r100K", "stop_generation") in U.actions_needing_an_excuse([path], 2)
+
+
+def test_a_missing_composer_is_not_exempt_just_because_send_turn_can_be_queued(tmp_path):
+    # The same for send_turn: "a reply was still streaming" is the previous turn overrunning,
+    # "no composer on the page" is the build having removed the composer.
+    racy = one_sided_payload(
+        tmp_path,
+        "queued",
+        "send_turn",
+        ("rep0", "rep1"),
+        reason = "a reply was still streaming, so this send would have been queued",
+    )
+    assert U.report([racy], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 0
+
+    gone = one_sided_payload(
+        tmp_path, "gone", "send_turn", ("rep0", "rep1"), reason = "no composer on the page"
+    )
+    assert U.report([gone], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 1

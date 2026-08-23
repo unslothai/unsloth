@@ -156,7 +156,9 @@ def differing_actions(
     one_sided = [
         (action, shard, cell, [r.get("reason", "")], r.get("one_sided") or None)
         for action, shard, cell, r in results
-        if r["verdict"] == P.NOT_EXERCISED and r.get("one_sided") and action not in P.RACY_EXECUTION
+        if r["verdict"] == P.NOT_EXERCISED
+        and r.get("one_sided")
+        and not P.racy_execution(action, r.get("idle_reason") or "")
     ]
     # The third way `report` returns 1: the action ran on both arms and its own assertion failed
     # on one. Not filtered by the unstable set, for the same reason the verdict does not filter

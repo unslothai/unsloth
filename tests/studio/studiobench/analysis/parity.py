@@ -79,17 +79,42 @@ UNSTABLE_ACTIONS: dict[str, str] = {
 # `slot_missed` already covers the runner arriving late, so what is left here is the narrow case
 # of an action that legitimately cannot run because the stream it needs is not there. Read out of
 # each action's own `not_run` reasons in `scene/actions.py` rather than assumed:
-RACY_EXECUTION: dict[str, str] = {
-    "stop_generation": "needs a live stream to stop, and returns not_run when nothing was "
-    "generating and a new turn did not start within 8s (scene/actions.py:493). Whether a stream "
-    "was in flight on this arm at this moment is a race with the model, not a property of the "
-    "build",
-    "scroll_during_generation": "returns not_run with 'nothing was generating, so this is not a "
-    "scroll during generation' (scene/actions.py:334). Same race, same reason",
-    "send_turn": "returns not_run when 'a reply was still streaming, so this send would have "
-    "been queued' (scene/actions.py:993), which is the previous turn's stream overrunning rather "
-    "than this build being unable to send",
+# `action -> (why, the not_run reasons that qualify)`. KEYED ON THE REASON, not just the action,
+# because each of these has non-racy failure paths too: send_turn also returns not_run for "no
+# composer on the page" (scene/actions.py:1016) and stop_generation for "the stop button is not
+# present" (scene/actions.py:501). A treatment build that REMOVES either control records exactly
+# the one-arm-only regression this instrument exists to catch, and keyed by name alone the
+# exemption swallowed it. The mechanism was always written down here; it just was not what the
+# code matched on.
+RACY_EXECUTION: dict[str, tuple[str, tuple[str, ...]]] = {
+    "stop_generation": (
+        "needs a live stream to stop, and returns not_run when nothing was generating and a new "
+        "turn did not start within 8s (scene/actions.py:493). Whether a stream was in flight on "
+        "this arm at this moment is a race with the model, not a property of the build. Its "
+        "OTHER not_run, the stop button being absent, is the build and is not exempt",
+        ("nothing was generating",),
+    ),
+    "scroll_during_generation": (
+        "returns not_run with 'nothing was generating, so this is not a scroll during "
+        "generation' (scene/actions.py:334), and that is its only not_run path",
+        ("nothing was generating",),
+    ),
+    "send_turn": (
+        "returns not_run when 'a reply was still streaming, so this send would have been queued' "
+        "(scene/actions.py:993), which is the previous turn's stream overrunning rather than "
+        "this build being unable to send. Its composer-absent and queue-exhausted paths are not "
+        "exempt",
+        ("a reply was still streaming",),
+    ),
 }
+
+
+def racy_execution(action: str, reason: str) -> bool:
+    """Is THIS not-run a stream-timing race, rather than merely on a racy action?"""
+    entry = RACY_EXECUTION.get(action)
+    if entry is None:
+        return False
+    return any(marker in (reason or "") for marker in entry[1])
 
 # The six that are NOT here, and why, since dropping an exemption needs as much justification as
 # granting one. `composer_fill`, `keystroke`, `copy_markdown`, `message_menu` and `select_text`
@@ -320,6 +345,9 @@ def compare_rows(base_row: Optional[dict], treat_row: Optional[dict]) -> dict:
             "verdict": NOT_EXERCISED,
             "moved": [],
             "one_sided": live[0] if live else "",
+            # The idle arm's OWN not_run string, unwrapped. `reason` below is prose built for a
+            # reader; the exemption has to match on what the action actually recorded.
+            "idle_reason": reason,
             "reason": detail,
             "style_verdict": NOT_EXERCISED,
             "style_reason": "",

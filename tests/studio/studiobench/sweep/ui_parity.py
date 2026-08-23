@@ -322,7 +322,7 @@ def actions_needing_an_excuse(paths: list[Path], min_reps: int) -> set[tuple[str
         for e in results
         if e[3]["verdict"] == P.NOT_EXERCISED
         and e[3].get("one_sided")
-        and e[0] not in P.RACY_EXECUTION
+        and not P.racy_execution(e[0], e[3].get("idle_reason") or "")
     ]
     firm_differing, _ = corroborated(differing, min_reps)
     firm_one_sided, _ = corroborated(one_sided, min_reps)
@@ -743,7 +743,12 @@ def report(
                 # regression shape that leaves no digest to differ, so a broken composer taking
                 # `keystroke` down on the treatment arm in both repetitions exited 0. `scroll_after`
                 # was exempt without even having a `not_run` path to reach.
-                (one_sided_unstable if action in P.RACY_EXECUTION else one_sided).append(entry)
+                # ON THE RECORDED REASON, not the action name. Each of the three has non-racy
+                # not_run paths too -- send_turn's "no composer on the page", stop_generation's
+                # "the stop button is not present" -- and a treatment build that REMOVES either
+                # control records exactly the regression this exists to catch.
+                _racy = P.racy_execution(action, r.get("idle_reason") or "")
+                (one_sided_unstable if _racy else one_sided).append(entry)
             else:
                 idle.append(entry)
             continue
