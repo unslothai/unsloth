@@ -878,14 +878,23 @@ def two_tier_parity(tmp_path: Path, name: str, fast: tuple[str, str], standard: 
 
 
 def test_a_null_control_holding_two_tiers_is_refused_before_the_set_is_derived(tmp_path):
-    # One differing 100K pair from the fast film and one matching 100K pair from the standard film
-    # are pooled by `derive_unstable` into two observations of one action at one rung, which is
-    # exactly `min_observations`, so `settings` is marked unstable at 100K on the strength of two
-    # different films. That is the pooling, stated so the refusal below is not vacuous.
+    # THE POOLING THIS USED TO DEMONSTRATE IS GONE, and it was fixed underneath rather than here.
+    # The setup assertion used to be `("r100K", "settings") in unstable`: one differing 100K pair
+    # from the fast film and one matching 100K pair from the standard film pooled into exactly
+    # `min_observations`, marking the action unstable on the strength of two different films.
+    #
+    # `latest_attempt_rows` now keys an attempt on any attempt-stamped row rather than on the
+    # terminal cell row alone, and the two films write the SAME cell ids, so they are read as two
+    # attempts of one cell and the superseded one is dropped before pairing. Only the standard
+    # film's matching pair survives, so there is one observation and nothing is derived. Asserting
+    # the old pooling here would be asserting a bug that no longer exists.
     null = two_tier_parity(tmp_path, "null_mixed", ("X", "Y"), ("Q", "Q"))
     unstable, _derived, _checks = U.unstable_set([null])
-    assert ("r100K", "settings") in unstable
+    assert ("r100K", "settings") not in unstable
 
+    # The refusal is kept regardless, as the layer that does not depend on the two films colliding
+    # on a cell id. Two tiers that walk different ladders need not collide at all, and a set
+    # derived across films is wrong whether or not de-duplication happened to absorb it.
     with pytest.raises(SystemExit) as exc:
         U.main([str(tmp_path / "mine_any"), "--null", str(null.parent)])
     assert "more than one tier" in str(exc.value)
