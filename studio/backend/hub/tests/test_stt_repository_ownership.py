@@ -75,11 +75,11 @@ def test_stt_owner_and_model_hub_job_can_use_unrelated_repositories():
     )
 
     assert claimed is True
-    assert registry.begin_delete("Org/Stt") is False
-    assert registry.begin_delete("Org/Other") is True
+    assert registry.begin_delete("Org/Stt") is not None
+    assert registry.begin_delete("Org/Other") is None
     registry.end_delete("Org/Other")
     assert registry.release_repository_owner("Org/Stt", owner) is True
-    assert registry.begin_delete("Org/Stt") is True
+    assert registry.begin_delete("Org/Stt") is None
 
 
 def test_only_the_current_stt_owner_can_release_a_repository():

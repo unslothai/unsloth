@@ -598,6 +598,103 @@ def test_app_processed_cache_without_raw_snapshot_is_partial(monkeypatch):
     assert cache_inventory._scan_hf_dataset_caches() == [app_row]
 
 
+@pytest.mark.parametrize(
+    ("conflict", "expected_detail"),
+    [
+        ("deleting", "A delete of this dataset is already running. Wait for it to finish."),
+        (
+            "downloading",
+            "A download is writing this dataset. Cancel it (or wait for it), then delete.",
+        ),
+    ],
+)
+def test_delete_cached_dataset_reports_retryable_cache_conflict(
+    monkeypatch, conflict, expected_detail
+):
+    async def run_inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", run_inline)
+    monkeypatch.setattr(
+        cache_inventory,
+        "resolve_cached_repo_id_case",
+        lambda repo_id, **_kwargs: repo_id,
+    )
+    monkeypatch.setattr(
+        cache_inventory.downloads.registry,
+        "begin_delete",
+        lambda _repo_id: conflict,
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(cache_inventory.delete_cached_dataset_response("Org/Data"))
+
+    assert caught.value.status_code == 409
+    assert caught.value.detail == expected_detail
+
+
+def test_cancelled_dataset_delete_keeps_its_reservation_until_the_worker_finishes(
+    monkeypatch,
+):
+    worker = {"started": False, "release": False, "finished": False}
+
+    class Registry:
+        held = False
+
+        def begin_delete(self, _repo_id):
+            self.held = True
+            return None
+
+        def end_delete(self, _repo_id):
+            self.held = False
+
+    registry = Registry()
+
+    def blocking_delete(*_args):
+        worker["finished"] = True
+        return {"status": "deleted"}
+
+    async def run_controlled(function, *args, **kwargs):
+        if function is blocking_delete:
+            worker["started"] = True
+            while not worker["release"]:
+                await asyncio.sleep(0.01)
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(
+        cache_inventory,
+        "resolve_cached_repo_id_case",
+        lambda repo_id, **_kwargs: repo_id,
+    )
+    monkeypatch.setattr(cache_inventory.downloads, "registry", registry)
+    monkeypatch.setattr(cache_inventory, "_delete_cached_dataset_blocking", blocking_delete)
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "invalidate_hf_cache_scans", lambda: None)
+    monkeypatch.setattr(asyncio, "to_thread", run_controlled)
+
+    async def drive():
+        task = asyncio.create_task(
+            cache_inventory.delete_cached_dataset_response("Org/Data")
+        )
+        for _ in range(100):
+            if worker["started"]:
+                break
+            await asyncio.sleep(0.01)
+        assert worker["started"] is True
+        task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        assert registry.held is True
+
+        worker["release"] = True
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(drive())
+
+    assert worker["finished"] is True
+    assert registry.held is False
+
+
 def test_delete_cached_dataset_scopes_delete_to_selected_root(monkeypatch, tmp_path):
     """A dataset present in the active cache and a previously selected cache is
     deleted only from the selected root, so the other cache's copy survives."""
@@ -1227,7 +1324,7 @@ def test_dataset_claim_register_cancel_uses_registry_marker_owner(monkeypatch):
         def current_generation(self, _key):
             return 1
 
-        def register_process(self, _key, _proc):
+        def register_process(self, _key, _proc, _cleanup_owner = None):
             return False
 
         def persist_cancel_for_key(self, *_args, **_kwargs):

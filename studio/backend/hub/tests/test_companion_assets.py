@@ -11,6 +11,7 @@ encoder, VAE, tokenizer and configs that both quants load through.
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -31,6 +32,7 @@ COMPANION_BYTES = 8_229_021_460
 def _isolated_state_root(monkeypatch, tmp_path):
     """Companion links live under the app cache root; keep each test to its own."""
     monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "app-cache")
+    monkeypatch.setattr(deletion, "_load_state_delete_block", lambda _repo, _variant: None)
 
 
 def _file(
@@ -91,6 +93,17 @@ def _install(monkeypatch, *repos):
     return scans
 
 
+def _use_cache_operations(monkeypatch, operations):
+    from hub.utils.download_registry import DownloadRegistry
+
+    registry = DownloadRegistry(cache_operations = operations)
+    monkeypatch.setattr(deletion.downloads, "registry", registry)
+
+
+async def _run_inline(function, *args, **kwargs):
+    return function(*args, **kwargs)
+
+
 # --------------------------------------------------------------------------------------------
 # 1. Compatible quants reuse ONE cached copy of the companion assets.
 # --------------------------------------------------------------------------------------------
@@ -137,6 +150,546 @@ def test_whole_repo_delete_reclaims_every_quant(monkeypatch):
     impact = asyncio.run(companion_cleanup.delete_impact_response(GGUF_REPO))
     assert impact["reclaimed_bytes"] == Q2_K_BYTES + Q4_K_M_BYTES
     assert [f["repo_id"] for f in impact["freeable_companions"]] == [BASE_REPO]
+    assert impact["delete_block"] is None
+
+
+def test_delete_preview_counts_only_the_selected_cache_copy(monkeypatch, tmp_path):
+    first_root = (tmp_path / "c1").resolve()
+    second_root = (tmp_path / "c2").resolve()
+    first = _repo(GGUF_REPO, [("model-Q2_K.gguf", Q2_K_BYTES)], cache = str(first_root))
+    second = _repo(GGUF_REPO, [("model-Q4_K_M.gguf", Q4_K_M_BYTES)], cache = str(second_root))
+    _install(monkeypatch, first, second, _base_repo())
+    selected_path = str(
+        second_root / f"models--{GGUF_REPO.replace('/', '--')}" / "snapshots" / "rev1"
+    )
+
+    def select_root(repo_type, repo_id, cache_path, owners):
+        assert (repo_type, repo_id, cache_path) == ("model", GGUF_REPO, selected_path)
+        assert set(owners) == {first_root, second_root}
+        return second_root
+
+    monkeypatch.setattr(companion_cleanup, "resolve_delete_target_root", select_root)
+
+    impact = companion_cleanup._delete_impact_blocking(
+        GGUF_REPO,
+        None,
+        cache_path = selected_path,
+    )
+
+    assert impact["reclaimed_bytes"] == Q4_K_M_BYTES
+    assert [row["repo_id"] for row in impact["retained_companions"]] == [BASE_REPO]
+    assert impact["freeable_companions"] == []
+
+
+def test_delete_endpoint_scopes_both_load_state_checks_to_the_selected_copy(
+    monkeypatch, tmp_path
+):
+    cache_root = (tmp_path / "selected" / "hub").resolve()
+    cache_path = cache_root / f"models--{GGUF_REPO.replace('/', '--')}"
+    resolved = []
+    guarded = []
+    deleted = []
+
+    def scoped_root(repo_type, repo_id, selected_path):
+        resolved.append((repo_type, repo_id, selected_path))
+        return cache_root
+
+    async def load_state(repo_id, variant, *, cache_root = None):
+        guarded.append((repo_id, variant, cache_root))
+        return None
+
+    async def wait_for_worker(work):
+        return await work
+
+    def delete(repo_id, variant, hf_token, selected_path, **kwargs):
+        deleted.append((repo_id, variant, hf_token, selected_path, kwargs))
+        return {"status": "deleted", "repo_id": repo_id}
+
+    monkeypatch.setattr(asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(deletion, "scoped_delete_root", scoped_root)
+    monkeypatch.setattr(deletion, "load_state_delete_block", load_state)
+    monkeypatch.setattr(
+        deletion,
+        "resolve_cached_repo_id_case",
+        lambda repo_id, **_kwargs: repo_id,
+    )
+    monkeypatch.setattr(deletion.downloads.registry, "begin_delete", lambda _repo: None)
+    monkeypatch.setattr(deletion.downloads.registry, "end_delete", lambda _repo: None)
+    monkeypatch.setattr(deletion, "_delete_cached_model_blocking", delete)
+    monkeypatch.setattr(deletion, "wait_for_reserved_worker", wait_for_worker)
+    monkeypatch.setattr(deletion.cache_inventory, "invalidate_hf_cache_scans", lambda: None)
+
+    result = asyncio.run(
+        deletion.delete_cached_model_response(
+            GGUF_REPO,
+            variant = "Q4_K_M",
+            hf_token = "token",
+            cache_path = str(cache_path),
+        )
+    )
+
+    assert result == {"status": "deleted", "repo_id": GGUF_REPO}
+    assert resolved == [("model", GGUF_REPO, str(cache_path))]
+    assert guarded == [
+        (GGUF_REPO, "Q4_K_M", cache_root),
+        (GGUF_REPO, "Q4_K_M", cache_root),
+    ]
+    assert deleted == [
+        (
+            GGUF_REPO,
+            "Q4_K_M",
+            "token",
+            str(cache_path),
+            {"only_if_orphan": False},
+        )
+    ]
+
+
+def test_delete_preview_scopes_its_load_state_probe_to_the_selected_copy(
+    monkeypatch, tmp_path
+):
+    cache_root = (tmp_path / "selected" / "hub").resolve()
+    cache_path = cache_root / f"models--{GGUF_REPO.replace('/', '--')}"
+    guarded = []
+
+    monkeypatch.setattr(asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        deletion,
+        "scoped_delete_root",
+        lambda repo_type, repo_id, selected_path: cache_root,
+    )
+    monkeypatch.setattr(deletion, "cache_reservation_delete_block", lambda *_args: None)
+    monkeypatch.setattr(
+        companion_cleanup,
+        "_delete_impact_blocking",
+        lambda repo_id, variant, selected_path: {
+            "repo_id": repo_id,
+            "variant": variant,
+        },
+    )
+    monkeypatch.setattr(
+        companion_cleanup,
+        "_DELETE_IMPACT_LOAD_STATE_CAPACITY",
+        threading.BoundedSemaphore(1),
+    )
+    monkeypatch.setattr(companion_cleanup, "_DELETE_IMPACT_LOAD_STATE_PROBES", {})
+
+    def load_state(repo_id, variant, *, cache_root = None):
+        guarded.append((repo_id, variant, cache_root))
+        return None
+
+    monkeypatch.setattr(deletion, "_load_state_delete_block", load_state)
+
+    impact = asyncio.run(
+        companion_cleanup.delete_impact_response(
+            GGUF_REPO,
+            "Q4_K_M",
+            cache_path = str(cache_path),
+        )
+    )
+
+    assert guarded == [(GGUF_REPO, "Q4_K_M", cache_root)]
+    assert impact == {
+        "repo_id": GGUF_REPO,
+        "variant": "Q4_K_M",
+        "delete_block": None,
+    }
+
+
+def test_delete_and_preview_reject_an_explicit_path_outside_known_caches(monkeypatch):
+    cache_path = "/foreign/models--unsloth--FLUX.2-klein-4B-GGUF"
+    monkeypatch.setattr(deletion, "scoped_delete_root", lambda *_args: None)
+
+    for response in (
+        deletion.delete_cached_model_response,
+        companion_cleanup.delete_impact_response,
+    ):
+        with pytest.raises(HTTPException) as caught:
+            asyncio.run(response(GGUF_REPO, cache_path = cache_path))
+        assert caught.value.status_code == 400
+        assert caught.value.detail == "Invalid cache_path"
+
+
+def test_rootless_delete_and_preview_keep_the_unscoped_guard_fail_closed(monkeypatch):
+    endpoint_roots = []
+
+    async def unavailable_endpoint(_repo_id, _variant, *, cache_root = None):
+        endpoint_roots.append(cache_root)
+        return 503, deletion._LOAD_STATE_UNVERIFIABLE_DETAIL
+
+    monkeypatch.setattr(deletion, "load_state_delete_block", unavailable_endpoint)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(deletion.delete_cached_model_response(GGUF_REPO))
+    assert endpoint_roots == [None]
+    assert caught.value.status_code == 503
+
+    preview_roots = []
+
+    def unavailable_preview(_repo_id, _variant, **kwargs):
+        preview_roots.append(kwargs.get("cache_root"))
+        raise RuntimeError("unavailable")
+
+    monkeypatch.setattr(asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(deletion, "_load_state_delete_block", unavailable_preview)
+    monkeypatch.setattr(deletion, "cache_reservation_delete_block", lambda *_args: None)
+    monkeypatch.setattr(
+        companion_cleanup,
+        "_delete_impact_blocking",
+        lambda repo_id, variant, cache_path: {"repo_id": repo_id, "variant": variant},
+    )
+    monkeypatch.setattr(
+        companion_cleanup,
+        "_DELETE_IMPACT_LOAD_STATE_CAPACITY",
+        threading.BoundedSemaphore(1),
+    )
+    monkeypatch.setattr(companion_cleanup, "_DELETE_IMPACT_LOAD_STATE_PROBES", {})
+
+    impact = asyncio.run(companion_cleanup.delete_impact_response(GGUF_REPO))
+
+    assert preview_roots == [None]
+    assert impact["delete_block"] == {
+        "status_code": 503,
+        "detail": deletion._LOAD_STATE_UNVERIFIABLE_DETAIL,
+        "retryable": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("status_code", "detail"),
+    [
+        (400, deletion._MODEL_ACTIVE_DELETE_DETAIL),
+        (409, deletion._MODEL_LOADING_DELETE_DETAIL),
+    ],
+)
+def test_delete_preview_reports_a_load_state_block(monkeypatch, status_code, detail):
+    _install(monkeypatch, _gguf_repo(("Q4_K_M", Q4_K_M_BYTES)))
+    monkeypatch.setattr(asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        deletion,
+        "_load_state_delete_block",
+        lambda _repo, _variant: (status_code, detail),
+    )
+
+    impact = asyncio.run(companion_cleanup.delete_impact_response(GGUF_REPO))
+
+    assert impact["delete_block"] == {
+        "status_code": status_code,
+        "detail": detail,
+        "retryable": status_code == 409,
+    }
+
+
+def test_delete_preview_reports_a_cache_reservation_block(monkeypatch):
+    from utils.model_cache_reservations import ModelCacheOperations
+
+    _install(monkeypatch, _gguf_repo(("Q4_K_M", Q4_K_M_BYTES)))
+    monkeypatch.setattr(asyncio, "to_thread", _run_inline)
+    operations = ModelCacheOperations()
+    owner = object()
+    assert operations.claim_inference_load((GGUF_REPO,), owner) is None
+    _use_cache_operations(monkeypatch, operations)
+
+    def unexpected_load_state_probe(*_args):
+        pytest.fail("a reservation already gives the preview an authoritative block")
+
+    monkeypatch.setattr(deletion, "_load_state_delete_block", unexpected_load_state_probe)
+
+    impact = asyncio.run(companion_cleanup.delete_impact_response(GGUF_REPO))
+
+    # 409, not 400: the load releases the repo on its own, so the preview may re-read it.
+    assert impact["delete_block"] == {
+        "status_code": 409,
+        "detail": deletion._cache_conflict_delete_detail(None, "inference_loading"),
+        "retryable": True,
+    }
+
+
+def test_delete_preview_bounds_submissions_for_a_blocked_load_state_probe(monkeypatch):
+    _install(monkeypatch, _gguf_repo(("Q4_K_M", Q4_K_M_BYTES)))
+    monkeypatch.setattr(companion_cleanup, "_DELETE_IMPACT_LOAD_STATE_TIMEOUT_S", 0.02)
+    monkeypatch.setattr(asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        companion_cleanup,
+        "_DELETE_IMPACT_LOAD_STATE_CAPACITY",
+        threading.BoundedSemaphore(2),
+    )
+    monkeypatch.setattr(companion_cleanup, "_DELETE_IMPACT_LOAD_STATE_PROBES", {})
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def blocked_probe(*_args):
+        calls.append((threading.current_thread().name, threading.current_thread().daemon))
+        if len(calls) == 1:
+            started.set()
+            release.wait()
+
+    monkeypatch.setattr(deletion, "_load_state_delete_block", blocked_probe)
+
+    async def drive():
+        first = asyncio.create_task(companion_cleanup.delete_impact_response(GGUF_REPO))
+        while not started.is_set():
+            await asyncio.sleep(0)
+        impacts = await asyncio.gather(
+            first,
+            *(companion_cleanup.delete_impact_response(GGUF_REPO) for _ in range(9)),
+        )
+        recovered = await companion_cleanup.delete_impact_response(GGUF_REPO)
+        return impacts, recovered
+
+    try:
+        impacts, recovered = asyncio.run(drive())
+    finally:
+        release.set()
+    capacity = companion_cleanup._DELETE_IMPACT_LOAD_STATE_CAPACITY
+    assert capacity.acquire(timeout = 1)
+    assert capacity.acquire(timeout = 1)
+    capacity.release()
+    capacity.release()
+
+    assert len(calls) == 2
+    assert calls == [
+        ("delete-impact-load-state", True),
+        ("delete-impact-load-state", True),
+    ]
+    for impact in impacts:
+        assert impact["reclaimed_bytes"] == Q4_K_M_BYTES
+        assert impact["delete_block"] == {
+            "status_code": 503,
+            "detail": deletion._LOAD_STATE_UNVERIFIABLE_DETAIL,
+            "retryable": False,
+        }
+    assert recovered["delete_block"] is None
+
+
+def test_delete_preview_shares_only_matching_load_state_probes(monkeypatch):
+    monkeypatch.setattr(
+        companion_cleanup,
+        "_DELETE_IMPACT_LOAD_STATE_CAPACITY",
+        threading.BoundedSemaphore(2),
+    )
+    monkeypatch.setattr(companion_cleanup, "_DELETE_IMPACT_LOAD_STATE_PROBES", {})
+    started = threading.Event()
+    release = threading.Event()
+
+    def probe(repo_id, _variant):
+        started.set()
+        release.wait()
+        return repo_id
+
+    first = companion_cleanup._submit_delete_impact_load_state_probe(
+        probe, "Org/First", None
+    )
+    assert started.wait(1)
+    shared = companion_cleanup._submit_delete_impact_load_state_probe(
+        probe, "org/first", None
+    )
+    second = companion_cleanup._submit_delete_impact_load_state_probe(
+        probe, "Org/Second", None
+    )
+    assert shared is first
+    assert second is not None and second is not first
+
+    release.set()
+    assert first.result(timeout = 1) == "Org/First"
+    assert second.result(timeout = 1) == "Org/Second"
+
+
+def test_delete_preview_probe_coalesces_normalized_roots_but_separates_copies(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        companion_cleanup,
+        "_DELETE_IMPACT_LOAD_STATE_CAPACITY",
+        threading.BoundedSemaphore(2),
+    )
+    monkeypatch.setattr(companion_cleanup, "_DELETE_IMPACT_LOAD_STATE_PROBES", {})
+    first_root = tmp_path / "first" / "hub"
+    alias_parent = first_root / "alias-parent"
+    second_root = tmp_path / "second" / "hub"
+    alias_parent.mkdir(parents = True)
+    second_root.mkdir(parents = True)
+    first_alias = alias_parent / ".."
+    started = threading.Event()
+    release = threading.Event()
+
+    def probe(repo_id, _variant, *, cache_root):
+        started.set()
+        release.wait()
+        return repo_id, cache_root
+
+    first = companion_cleanup._submit_delete_impact_load_state_probe(
+        probe,
+        "Org/Model",
+        "Q4_K_M",
+        first_root,
+    )
+    assert started.wait(1)
+    shared = companion_cleanup._submit_delete_impact_load_state_probe(
+        probe,
+        "org/model",
+        "q4_k_m",
+        first_alias,
+    )
+    distinct = companion_cleanup._submit_delete_impact_load_state_probe(
+        probe,
+        "Org/Model",
+        "Q4_K_M",
+        second_root,
+    )
+
+    try:
+        assert shared is first
+        assert distinct is not None and distinct is not first
+    finally:
+        release.set()
+
+    assert first.result(timeout = 1) == ("Org/Model", first_root)
+    assert distinct.result(timeout = 1) == ("Org/Model", second_root)
+
+
+def test_delete_preview_retrieves_both_concurrent_results(monkeypatch):
+    completed = []
+    monkeypatch.setattr(asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(deletion, "cache_reservation_delete_block", lambda *_args: None)
+
+    def fail_impact(*_args):
+        raise HTTPException(status_code = 409)
+
+    monkeypatch.setattr(companion_cleanup, "_delete_impact_blocking", fail_impact)
+
+    def load_state(*_args):
+        completed.append(True)
+        return None
+
+    monkeypatch.setattr(deletion, "_load_state_delete_block", load_state)
+
+    with pytest.raises(HTTPException):
+        asyncio.run(companion_cleanup.delete_impact_response(GGUF_REPO))
+
+    assert completed == [True]
+
+
+def test_a_held_repo_names_the_repo_not_the_quant_being_deleted(monkeypatch):
+    # Delete admission answers whole-repo for a held repository, because a variant delete also
+    # unlinks the shared companions a sibling-quant load is reading. Naming the requested quant
+    # sent the user to stop a load of a quantization nothing was loading.
+    from utils.model_cache_reservations import ModelCacheOperations
+
+    operations = ModelCacheOperations()
+    assert operations.claim_inference_load((GGUF_REPO,), object(), "Q4_K_M") is None
+    _use_cache_operations(monkeypatch, operations)
+
+    block = deletion.cache_reservation_delete_block(GGUF_REPO, "Q8_0")
+
+    assert block is not None
+    assert "Q8_0" not in block[1]
+    assert block == deletion.cache_reservation_delete_block(GGUF_REPO, None)
+
+
+def test_delete_preview_blocks_any_active_repo_writer(monkeypatch):
+    from hub.utils.download_registry import DownloadRegistry
+    from utils.model_cache_reservations import ModelCacheOperations
+
+    operations = ModelCacheOperations()
+    registry = DownloadRegistry(cache_operations = operations)
+    claimed, _ = registry.claim(
+        f"{GGUF_REPO}::Q4_K_M",
+        "http",
+        repo_type = "model",
+        repo_id = GGUF_REPO,
+        variant = "Q4_K_M",
+    )
+    assert claimed is True
+    monkeypatch.setattr(deletion.downloads, "registry", registry)
+
+    assert deletion.cache_reservation_delete_block(GGUF_REPO, None) is not None
+    assert deletion.cache_reservation_delete_block(GGUF_REPO, "Q4_K_M") is not None
+    assert deletion.cache_reservation_delete_block(GGUF_REPO, "Q8_0") is not None
+
+
+def test_delete_preview_keeps_gguf_load_blocks_variant_specific(monkeypatch):
+    _install(monkeypatch, _gguf_repo(("Q4_K_M", Q4_K_M_BYTES)))
+    monkeypatch.setattr(
+        deletion,
+        "_load_state_delete_block",
+        lambda _repo, variant: (
+            (400, deletion._MODEL_ACTIVE_DELETE_DETAIL)
+            if variant == "Q4_K_M"
+            else None
+        ),
+    )
+
+    blocked = asyncio.run(
+        companion_cleanup.delete_impact_response(GGUF_REPO, "Q4_K_M")
+    )
+    sibling = asyncio.run(
+        companion_cleanup.delete_impact_response(GGUF_REPO, "Q8_0")
+    )
+
+    assert blocked["delete_block"] is not None
+    assert sibling["delete_block"] is None
+
+
+def test_delete_preview_fails_closed_when_load_state_is_unverifiable(monkeypatch):
+    _install(monkeypatch, _gguf_repo(("Q4_K_M", Q4_K_M_BYTES)))
+    monkeypatch.setattr(asyncio, "to_thread", _run_inline)
+
+    def raise_unavailable(_repo, _variant):
+        raise RuntimeError("unavailable")
+
+    monkeypatch.setattr(deletion, "_load_state_delete_block", raise_unavailable)
+
+    impact = asyncio.run(companion_cleanup.delete_impact_response(GGUF_REPO))
+
+    assert impact["delete_block"] == {
+        "status_code": 503,
+        "detail": deletion._LOAD_STATE_UNVERIFIABLE_DETAIL,
+        "retryable": False,
+    }
+
+
+def test_delete_preview_preserves_shared_asset_block_when_load_state_is_unverifiable(monkeypatch):
+    _install(monkeypatch, _gguf_repo(("Q4_K_M", Q4_K_M_BYTES)), _base_repo())
+    monkeypatch.setattr(asyncio, "to_thread", _run_inline)
+
+    def raise_unavailable(_repo, _variant):
+        raise RuntimeError("unavailable")
+
+    monkeypatch.setattr(deletion, "_load_state_delete_block", raise_unavailable)
+
+    impact = asyncio.run(companion_cleanup.delete_impact_response(BASE_REPO))
+
+    assert impact["delete_block"] == {
+        "status_code": 503,
+        "detail": deletion._LOAD_STATE_UNVERIFIABLE_DETAIL,
+        "retryable": False,
+    }
+    assert impact["blocked_by"] == [GGUF_REPO]
+
+
+def test_delete_preview_prefers_known_reservation_when_load_state_is_unverifiable(monkeypatch):
+    from utils.model_cache_reservations import ModelCacheOperations
+
+    _install(monkeypatch, _gguf_repo(("Q4_K_M", Q4_K_M_BYTES)))
+    monkeypatch.setattr(asyncio, "to_thread", _run_inline)
+    operations = ModelCacheOperations()
+    owner = object()
+    assert operations.claim_inference_load((GGUF_REPO,), owner) is None
+    _use_cache_operations(monkeypatch, operations)
+
+    def raise_unavailable(_repo, _variant):
+        raise RuntimeError("unavailable")
+
+    monkeypatch.setattr(deletion, "_load_state_delete_block", raise_unavailable)
+
+    impact = asyncio.run(companion_cleanup.delete_impact_response(GGUF_REPO))
+
+    assert impact["delete_block"] == {
+        "status_code": 409,
+        "detail": deletion._cache_conflict_delete_detail(None, "inference_loading"),
+        "retryable": True,
+    }
 
 
 # --------------------------------------------------------------------------------------------
