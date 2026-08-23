@@ -1612,15 +1612,6 @@ html[data-chat-font] .aui-root {
 	   the standing DOM; the overlay costs one element. See
 	   components/ui/panel-resize-handle.tsx. */
 
-	html[data-panel-resizing]
-		:is(
-			[data-slot="sidebar-inner"],
-			[data-slot="sidebar-inset"],
-			[data-slot="chat-settings-panel"] > div
-		) {
-		pointer-events: none;
-	}
-
 	/* Model selector: pointer cursor on every clickable element. */
 	.unsloth-model-selector-trigger,
 	.unsloth-model-selector-menu button {

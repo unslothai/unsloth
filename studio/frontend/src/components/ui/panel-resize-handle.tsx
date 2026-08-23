@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/tooltip"
 import { getClientPlatform } from "@/components/tauri/window-titlebar"
 import { PANEL_RESIZE_SCOPED_VARS_ENABLED } from "@/components/ui/panel-resize-recalc-flags"
+import { Z_LAYER } from "@/lib/z-layers"
 
 /** Pointer travel (px) below which a drag counts as a plain click. */
 const DRAG_SLOP = 4
@@ -30,9 +31,16 @@ const RESIZE_STEP = 16
 // proportional to the STANDING DOM rather than to the one thing that changed,
 // which is the same shape as the sidebar-width writes scoped in #9400/#9441.
 //
-// A single fixed element on top of the viewport carries the same cursor with an
-// invalidation set of one element. It is transparent and it is removed the
-// instant the drag ends, so nothing about what the user sees changes.
+// The same is true of the rule that blanked pointer events on the sidebar and
+// on [data-slot="sidebar-inset"], the <main> holding the whole app including
+// the thread: `pointer-events` is inherited too, so that write dirtied the
+// thread's subtree on both flips as well.
+//
+// A single fixed element on top of the viewport does both jobs with an
+// invalidation set of one element. It carries the cursor, and by being the hit
+// test target for the whole viewport it keeps hover and click off the content
+// underneath. It is transparent and it is removed the instant the drag ends, so
+// nothing about what the user sees changes.
 const DRAG_OVERLAY_SLOT = "panel-resize-drag-overlay"
 /** Nested drags cannot happen through pointer capture, but a stuck overlay would
  *  swallow the whole UI, so ownership is explicit rather than assumed. */
@@ -49,10 +57,16 @@ function acquireDragOverlay(): void {
   const s = el.style
   s.position = "fixed"
   s.inset = "0"
-  // Above every app surface. The overlay outlives no frame the user can act in,
-  // and pointer capture means it never receives the drag's own events.
-  s.zIndex = "2147483647"
+  // Top of the named scale, not a hand-picked large number: the rules it
+  // replaces were `!important` and blanked whole subtrees, so anything it did
+  // not out-rank it would only partly stand in for.
+  s.zIndex = String(Z_LAYER.DRAG_CURSOR_OVERLAY)
   s.background = "transparent"
+  // Explicit, because it is load-bearing rather than incidental. Being the hit
+  // test target for the whole viewport is what keeps hover and click off the
+  // content underneath, which is the job `pointer-events: none` on
+  // [data-slot="sidebar-inset"] used to do by dirtying the thread's subtree.
+  s.pointerEvents = "auto"
   // col-resize unconditionally, which is what the replaced rule did even when a
   // collapsed edge was being dragged open.
   s.cursor = "col-resize"
