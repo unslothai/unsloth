@@ -472,25 +472,29 @@ def test_safe_extractall_rejects_malformed_symlink_targets(tmp_path, link_target
 def test_safe_extractall_rejects_a_symlink_redirected_parent(tmp_path):
     if not _can_create_symlinks(tmp_path):
         pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
-    # An earlier member can turn a later member's parent into a link, which the pre-extraction
-    # pass cannot see because no link exists yet. Without a re-check at creation time, the
-    # third member's unlink/symlink_to lands on a file outside the install dir.
+    # An earlier member can turn a later member's parent into a link. Preflight refuses the
+    # member under it, so nothing outside is touched and nothing inside is half replaced: the
+    # working binary an install would have overwritten is still the one that was there.
     target = tmp_path / "install"
     target.mkdir()
+    (target / "sd-cli").write_bytes(b"working binary from the previous install")
     outside = tmp_path / "outside_dir"
     outside.mkdir()
     victim = outside / "victim"
     victim.write_bytes(b"outside the install dir")
     archive = tmp_path / "evil.zip"
     with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("sd-cli", b"replacement from the rejected archive")
         _link_member(zf, "a", ".")
         _link_member(zf, "a/out", "../outside_dir")
         _link_member(zf, "a/out/victim", "replacement")
     with zipfile.ZipFile(archive) as zf:
-        with pytest.raises(RuntimeError, match = "unsafe symlink"):
+        with pytest.raises(RuntimeError, match = "under a symlink member"):
             _safe_extractall(zf, target)
     assert not victim.is_symlink()
     assert victim.read_bytes() == b"outside the install dir"
+    assert (target / "sd-cli").read_bytes() == b"working binary from the previous install"
+    assert sorted(p.name for p in target.iterdir()) == ["sd-cli"]
 
 
 def test_the_sweep_keeps_a_binary_supplied_under_a_symlinked_directory(tmp_path):

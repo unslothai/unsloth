@@ -585,13 +585,23 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
         checked = dest.resolve()
         if checked != base and base not in checked.parents:
             raise RuntimeError(f"unsafe path in archive: {member.filename!r}")
-        written.append(Path(os.path.normpath(dest)))
+        written.append((Path(os.path.normpath(dest)), member.filename))
         if _is_symlink_member(member):
-            if written[-1] in reserved:
+            if written[-1][0] in reserved:
                 raise RuntimeError(f"symlink at a reserved installer path: {member.filename!r}")
             links.append((dest, _checked_link_target(zf, member, dest, base), member))
         else:
             plain.append(member)
+    # No member may sit under a directory this same archive turns into a link: extraction would
+    # write through the link, and the creation-time check below would only catch it once part of
+    # the tree had already been replaced. Refused here, before the first write.
+    link_dests = {os.path.normpath(d) for d, _, _ in links}
+    for dest, filename in written:
+        parent = os.path.dirname(str(dest))
+        while parent != str(base) and parent.startswith(str(base)):
+            if parent in link_dests:
+                raise RuntimeError(f"unsafe path in archive: {filename!r} is under a symlink member")
+            parent = os.path.dirname(parent)
     # Chains are normal (libwebp.so -> libwebp.so.7 -> libwebp.so.7.2.0) but must terminate:
     # a cycle installs a library nothing can read, so every load would reinstall it again.
     by_dest = {os.path.normpath(d): t for d, t, _ in links}
@@ -608,7 +618,7 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     # and writes the member into the file it points at. Drop stale links first: a name that one
     # bundle ships as a link the next can ship as a regular file (the mirror ships plain copies
     # where upstream ships links), and an accelerator switch lands exactly that way.
-    for dest in written:
+    for dest, _ in written:
         if dest.is_symlink():
             dest.unlink()
     zf.extractall(target, members = plain)
