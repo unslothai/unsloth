@@ -585,11 +585,30 @@ const EXPECTED_PER_CYCLE: Record<string, number> = {
   artifactCards: 2,
   // python, typescript, json, svg, the html document, and the two tool result panes.
   codeBlocks: 7,
-  // Shiki is async and per block, so a <pre> exists long before it is highlighted. A floor under
-  // the token count is what tells a finished thread apart from one still building itself; a
-  // settled-looking count of 577 against the 3216 a whole cycle produces is a real measured
-  // failure of the naive "it stopped moving" gate.
-  highlightedTokens: 2500,
+  /*
+   * THE CODE ITSELF, in characters, which is the deferral-invariant way to ask this.
+   *
+   * This row used to be a floor of 2,500 highlighted tokens, and that number was doing two jobs
+   * at once. Off-screen fences now render as a plain shell by default, so a token count is partly a
+   * measurement of where the viewport happens to be: measured on Chromium the same fixture
+   * renders 1,322 tokens for one cycle where it used to render 3,216, with no fixture change at
+   * all. Lowering the floor to fit would have left the check unable to tell a deferred thread
+   * from one that had quietly stopped rendering code, which is the only thing it is for.
+   *
+   * Characters inside `pre code` do not move: the deferred shell carries the same text node the
+   * highlighted block carries. Measured at 12,660 for one cycle and 51,081 for four, with 2 of 5
+   * and 15 of 20 fences deferred respectively, so the number is flat across a fourfold change in
+   * how much of the thread the reader had reached. It is also flat across engines: Chromium,
+   * Firefox and WebKit each report 12,660 for one cycle, to the character.
+   *
+   * The floor is 12,000 against that 12,660. One cycle is seven code blocks averaging about 1,800
+   * characters, so the 660 of slack is well under half of the smallest thing that could go
+   * missing: losing any one block still fails.
+   *
+   * The OTHER job that number was doing, telling a finished thread from one still building
+   * itself, is now `unhighlightedMountedFences` in the census, asked per block.
+   */
+  codeChars: 12000,
 };
 
 /**
@@ -781,6 +800,40 @@ function HeavyThreadApi({
           domNodes: document.getElementsByTagName("*").length,
           codeBlocks: document.querySelectorAll("pre").length,
           highlightedTokens: document.querySelectorAll("pre code span").length,
+          /*
+           * HOW MUCH CODE IS ON THE PAGE, which is what "is this the heavy thread" needs to ask.
+           *
+           * `highlightedTokens` used to answer it, and cannot any more: off-screen fences render
+           * as a plain shell by default, so the token count now measures where the reader is
+           * looking as much as what the fixture built. Characters do not move: the shell holds
+           * the same text node the highlighted block holds, which is what makes selection,
+           * clipboard and find-in-page identical across the two states. So this reads the same
+           * number whether a fence is deferred or not, and still goes down the moment the
+           * fixture stops rendering code.
+           */
+          codeChars: Array.from(document.querySelectorAll("pre code")).reduce(
+            (total, node) => total + (node.textContent?.length ?? 0),
+            0,
+          ),
+          fenceBlocks: document.querySelectorAll('[data-streamdown="code-block"]').length,
+          deferredFences: document.querySelectorAll("[data-unsloth-fence-deferred]").length,
+          /*
+           * A fence that is NEITHER deferred NOR highlighted, at rest.
+           *
+           * This is the half of the old token floor that was about settlement rather than about
+           * the fixture, and it asks it per block instead of in total. Streamdown mounts a code
+           * block showing its own unhighlighted fallback and colours it from a passive effect, so
+           * this state exists for a frame on any build; a thread that has settled must hold none
+           * of them. Stronger than a floor on the total, which a thread with one block stuck on
+           * the fallback passes as long as the others make up the count.
+           */
+          unhighlightedMountedFences: Array.from(
+            document.querySelectorAll('[data-streamdown="code-block"]'),
+          ).filter(
+            (block) =>
+              !block.hasAttribute("data-unsloth-fence-deferred") &&
+              block.querySelector("pre code span") === null,
+          ).length,
           toolParts: document.querySelectorAll(".aui-tool-fallback-root").length,
           // The collapsible CONTENT ELEMENT, which Radix keeps in the tree for its collapse
           // animation. It is present whether the card is open or shut, so it counts cards, not
