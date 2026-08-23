@@ -454,7 +454,9 @@ def _mixed_host(monkeypatch):
     monkeypatch.setattr(
         torch.cuda,
         "mem_get_info",
-        lambda i: (96 * GB, 128 * GB) if i == 0 else pytest.fail("a discrete card must not be asked"),
+        lambda i: (96 * GB, 128 * GB)
+        if i == 0
+        else pytest.fail("a discrete card must not be asked"),
     )
     return torch
 
