@@ -33,3 +33,43 @@ Thank you so much for reading and we hope you have lots of fun using Unsloth! ðŸ
 - Keep PRs focused on a single change
 - Include a concise description and motivation
 - Link related issues when applicable
+
+### Changes to Studio's UI
+
+A pull request that touches the Studio frontend must leave the interface behaving the same
+way it did before. Reviewers should be able to assume that a change described as a
+performance fix is a performance fix and nothing else.
+
+There are two exemptions.
+
+1. **A dramatic performance improvement can justify a deliberate UI difference.** State the
+   difference plainly in the PR body, say what it costs the user, and attach the measurement
+   that justifies it. A difference that is not called out is a regression, however fast the
+   PR is.
+2. **A difference that exists only off screen is fine.** Rendering only what is visible is an
+   accepted technique, not a parity violation. Windowing, deferring off-screen work and
+   unmounting rows the user cannot see are all allowed, provided everything inside the
+   viewport is identical to what it was before.
+
+The second exemption is narrower than it sounds, and the boundary is where these changes go
+wrong in practice:
+
+- An element that is partly on screen is visible, and so is one that scrolls into view during
+  an interaction.
+- Selection, clipboard, native find-in-page and printing are whole-document operations. A
+  user pressing Ctrl+A, Ctrl+C or Ctrl+F is asking about the conversation, not about the
+  viewport, so off-screen content still has to participate. Truncating a copied thread is a
+  data-loss bug, not an off-screen rendering difference.
+- Scroll geometry is visible. A scrollbar that no longer describes the length of the thread
+  is a UI change even though the thing that shrank was off screen.
+
+If you are changing what the thread renders, measure at the 100K rung or larger against a
+concurrent control, and say which of the two exemptions you are relying on, or that you are
+relying on neither.
+
+Run the parity suite either way and put its verdict in the PR, with the number of action
+pairs compared and the concurrent null control's score on the same run. Without the null
+there is no floor, so a clean-looking verdict cannot be distinguished from a suite that
+compared nothing. Say which claim the verdict supports: the structural digest covers thread
+structure and is blind to the sidebar and to computed layout, while visible-region parity is
+the check that supports the off-screen exemption.
