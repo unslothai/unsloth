@@ -22,6 +22,11 @@ interface EmbeddingModelState {
   load: () => Promise<void>;
 }
 
+// Both surfaces read on mount, so two reads overlap with no save between them
+// to bump the revision. Only the newest may commit, or a slow one lands last
+// and shows an error, or an older model, over what the newer one just read.
+let latestLoad = 0;
+
 export const useEmbeddingModelStore = create<EmbeddingModelState>(
   (set, get) => ({
     settings: null,
@@ -35,13 +40,15 @@ export const useEmbeddingModelStore = create<EmbeddingModelState>(
       })),
     load: async () => {
       const revision = get().revision;
+      const load = ++latestLoad;
+      const stale = () => get().revision !== revision || load !== latestLoad;
       try {
         const settings = await loadEmbeddingModelSettings();
-        // A save committed while this read was in flight, so the read is stale.
-        if (get().revision !== revision) return;
+        // A save committed, or a later read started, while this was in flight.
+        if (stale()) return;
         set({ settings, loadError: null });
       } catch (error) {
-        if (get().revision !== revision) return;
+        if (stale()) return;
         set({
           loadError: error instanceof Error ? error.message : "",
         });

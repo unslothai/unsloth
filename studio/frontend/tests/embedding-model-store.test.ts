@@ -107,6 +107,35 @@ test("a read that finishes first is still replaced by the save", async () => {
   );
 });
 
+test("a slow read cannot report over the one that overtook it", async () => {
+  reset();
+  // General mounts and its read hangs; Data mounts behind it and answers.
+  let release = (): void => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = () => resolve();
+  });
+  globalThis.fetch = (async () => {
+    await gate;
+    throw new Error("network unreachable");
+  }) as typeof fetch;
+  const first = useEmbeddingModelStore.getState().load();
+
+  respondWith("unsloth/bge-m3");
+  await useEmbeddingModelStore.getState().load();
+  release();
+  await first;
+
+  assert.equal(
+    useEmbeddingModelStore.getState().loadError,
+    null,
+    "the newer read succeeded, so no error is raised over it",
+  );
+  assert.equal(
+    useEmbeddingModelStore.getState().settings?.embeddingModel,
+    "unsloth/bge-m3",
+  );
+});
+
 test("a failed read reports the backend's reason", async () => {
   reset();
   globalThis.fetch = (async () =>
