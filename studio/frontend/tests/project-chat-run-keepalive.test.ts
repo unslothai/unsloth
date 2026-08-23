@@ -275,16 +275,56 @@ test("every active-thread publication stands down while backgrounded", () => {
   assert.ok(publications.length >= 6, "expected the publications to still be here");
   assert.match(
     provider,
-    /if \(modelType === "base" && !pairId && !backgroundedRef\?\.current\) \{[\s\S]*?store\.setActiveThreadId\(remoteId\);/,
+    /!backgroundedRef\?\.current &&\s*!switchInFlight\s*\) \{[\s\S]*?store\.setActiveThreadId\(remoteId\);/,
   );
   assert.match(
     provider,
-    /if \(modelType === "base" && !pairId && !backgroundedRef\.current\) \{[\s\S]*?store\.setActiveThreadId\(remoteId\);/,
+    /!backgroundedRef\.current &&\s*!switchInFlight\s*\) \{[\s\S]*?store\.setActiveThreadId\(remoteId\);/,
   );
-  // The ref reaches the adapter without joining the memo's dependencies: a new runtime-hook
+  // The refs reach the adapter without joining the memo's dependencies: a new runtime-hook
   // identity would rebuild the runtime, and not rebuilding it is the whole point.
   assert.match(
     provider,
-    /createRuntimeHook\(\s*modelType,\s*pairId,\s*initialThreadId,\s*onInitialHistoryReady,\s*backgroundedRef,\s*\),\s*\[initialThreadId, modelType, onInitialHistoryReady, pairId\],/,
+    /createRuntimeHook\(\s*modelType,\s*pairId,\s*initialThreadId,\s*onInitialHistoryReady,\s*backgroundedRef,\s*newThreadSwitchStateRef,\s*\),\s*\[initialThreadId, modelType, onInitialHistoryReady, pairId\],/,
   );
+});
+
+test("a publication landing mid-switch does not reclaim the view", () => {
+  // switchToNewThread() is async, so mainThreadId is still the OUTGOING thread until it
+  // resolves. Both publications read mainThreadId as proof that "this pane is on screen",
+  // so a write landing in that gap republishes the chat the user just left -- and the
+  // project view, which openProjectLanding deliberately opened with no active thread,
+  // picks the id back up and renders the outgoing conversation inside the new project.
+  // attempt !== landedAttempt is exactly the in-flight window.
+  const guards =
+    provider.match(
+      /const switchInFlight[\s\S]{0,240}?switchState\.landedAttempt !== switchState\.attempt/g,
+    ) ?? [];
+  assert.equal(guards.length, 2, "both publications need the same stand-down");
+  for (const guard of guards) {
+    assert.match(guard, /activeNonce !== null/);
+  }
+  // Both read the SAME ref the switch components mutate, so the two never disagree.
+  assert.match(
+    provider,
+    /<ThreadBackendAutosave[\s\S]*?newThreadSwitchStateRef=\{newThreadSwitchStateRef\}[\s\S]*?\/>/,
+  );
+});
+
+test("compare only waits on runs from its own pair", () => {
+  // runningByThreadId is global. Before the shared provider a base run could not outlive
+  // the base view, so "anything running" meant "a compare run". It can now, and a global
+  // check made this effect skip listStoredChatThreads for the whole length of a base
+  // generation: an existing compare opened on blank runtimes.
+  assert.doesNotMatch(
+    page,
+    /const compareRunning = useChatRuntimeStore\(\s*\(s\) => Object\.keys\(s\.runningByThreadId\)\.length > 0,/,
+  );
+  const scoped =
+    page.match(
+      /const compareRunning = useChatRuntimeStore\(\(s\) =>\s*Boolean\([\s\S]*?\),\s*\);/g,
+    ) ?? [];
+  assert.equal(scoped.length, 2, "both compare variants must be scoped");
+  assert.match(scoped[0]!, /baseThreadId[\s\S]*?loraThreadId/);
+  assert.match(scoped[1]!, /model1ThreadId[\s\S]*?model2ThreadId/);
 });

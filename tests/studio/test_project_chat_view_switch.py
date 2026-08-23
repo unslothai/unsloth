@@ -618,10 +618,20 @@ def test_the_provider_wires_the_pause_and_the_shared_ref():
         "ThreadNewChatSwitch must render only for a new-chat nonce, and never alongside "
         "ThreadAutoSwitch: both write the same shared switch state"
     )
-    assert jsx.count("newThreadSwitchStateRef={newThreadSwitchStateRef}") == 2, (
-        "both children must share ONE ref, or leaving a new chat for a saved one cannot "
-        "tell the next new chat that the composer is no longer fresh"
+    # Three, not two: ThreadBackendAutosave reads the same ref so its active-thread
+    # publication can tell "this pane is on screen" from "a switch away from it has not
+    # landed yet". Both switch children still share it, which is what the count protects.
+    assert jsx.count("newThreadSwitchStateRef={newThreadSwitchStateRef}") == 3, (
+        "both switch children must share ONE ref, or leaving a new chat for a saved one "
+        "cannot tell the next new chat that the composer is no longer fresh -- and the "
+        "autosave must read that same ref rather than a copy of its own"
     )
+    for child in ("ThreadAutoSwitch", "ThreadNewChatSwitch", "ThreadBackendAutosave"):
+        opening = jsx.index(f"<{child}")
+        element = jsx[opening : jsx.index("/>", opening)]
+        assert "newThreadSwitchStateRef={newThreadSwitchStateRef}" in element, (
+            f"{child} must be handed the shared switch state ref"
+        )
     assert jsx.count("paused={backgrounded}") == 2, (
         "BOTH children must be paused while backgrounded. ThreadAutoSwitch's first effect "
         "reaches requestTemporaryPromptQueueStop, which names every temporary queue on the "

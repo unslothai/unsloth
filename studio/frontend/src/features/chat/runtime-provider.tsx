@@ -1141,6 +1141,7 @@ function useStudioRuntimeAdapters(
   // A ref, so handing it down never changes the memoized runtime hook's identity: a new
   // hook identity would rebuild the runtime, which is the one thing this PR must not do.
   backgroundedRef?: { current: boolean },
+  newThreadSwitchStateRef?: { current: NewThreadSwitchState },
 ): StudioRuntimeAdapters {
   const aui = useAui();
 
@@ -1494,7 +1495,26 @@ function useStudioRuntimeAdapters(
           // lands here is the one the shared provider keeps alive, and enterCompare blanked the
           // active id, so the guard below would otherwise be satisfied. Read through a ref, at
           // publish time: the write may have been queued while the pane was still on screen.
-          if (modelType === "base" && !pairId && !backgroundedRef?.current) {
+          //
+          // Nor while a New Chat switch this provider started is still in flight.
+          // switchToNewThread() is async, so mainThreadId is still the OUTGOING thread for
+          // the whole gap, and the guard below reads that as "this pane is on screen". A
+          // write landing in the gap then republishes the thread the user just left; the
+          // project view (which openProjectLanding deliberately opened with no active
+          // thread) picks the id back up and renders the outgoing conversation inside the
+          // project the user navigated to. attempt !== landedAttempt is exactly that gap.
+          const switchState = newThreadSwitchStateRef?.current;
+          const switchInFlight = Boolean(
+            switchState &&
+              switchState.activeNonce !== null &&
+              switchState.landedAttempt !== switchState.attempt,
+          );
+          if (
+            modelType === "base" &&
+            !pairId &&
+            !backgroundedRef?.current &&
+            !switchInFlight
+          ) {
             const store = useChatRuntimeStore.getState();
             const visibleThreadId = aui.threads().getState().mainThreadId;
             if (
@@ -1566,6 +1586,7 @@ function useStudioRuntimeAdapters(
       aui,
       backgroundedRef,
       modelType,
+      newThreadSwitchStateRef,
       onInitialHistoryReady,
       pairId,
       reloadReadyThreadId,
@@ -1622,6 +1643,7 @@ function useRuntimeHook(
   reloadReadyThreadId?: string,
   onInitialHistoryReady?: () => void,
   backgroundedRef?: { current: boolean },
+  newThreadSwitchStateRef?: { current: NewThreadSwitchState },
 ): ReturnType<typeof useLocalRuntime> {
   const adapters = useStudioRuntimeAdapters(
     modelType,
@@ -1629,6 +1651,7 @@ function useRuntimeHook(
     reloadReadyThreadId,
     onInitialHistoryReady,
     backgroundedRef,
+    newThreadSwitchStateRef,
   );
   const persistedChatAdapter = useMemo(
     () =>
@@ -1646,6 +1669,7 @@ function createRuntimeHook(
   reloadReadyThreadId?: string,
   onInitialHistoryReady?: () => void,
   backgroundedRef?: { current: boolean },
+  newThreadSwitchStateRef?: { current: NewThreadSwitchState },
 ) {
   return function useConfiguredRuntimeHook(): ReturnType<
     typeof useLocalRuntime
@@ -1656,6 +1680,7 @@ function createRuntimeHook(
       reloadReadyThreadId,
       onInitialHistoryReady,
       backgroundedRef,
+      newThreadSwitchStateRef,
     );
   };
 }
@@ -2466,10 +2491,12 @@ function ThreadBackendAutosave({
   modelType,
   pairId,
   backgrounded,
+  newThreadSwitchStateRef,
 }: {
   modelType: ModelType;
   pairId?: string;
   backgrounded: boolean;
+  newThreadSwitchStateRef: { current: NewThreadSwitchState };
 }): ReactElement | null {
   const aui = useAui();
   const saveChainRef = useRef(Promise.resolve());
@@ -2513,7 +2540,20 @@ function ThreadBackendAutosave({
       // The save still runs while backgrounded; only the PUBLICATION is suppressed. A
       // hidden pane naming itself active reaches Compare's exportThreadIds
       // ([model1, model2, activeThreadId]), so Export would pull the unrelated base chat.
-      if (modelType === "base" && !pairId && !backgroundedRef.current) {
+      // Same stand-down while a New Chat switch is in flight, and for the same reason as
+      // the history adapter's publication: mainThreadId is still the OUTGOING thread until
+      // switchToNewThread() resolves, so a save landing in that gap would republish the
+      // chat the user just left into the project view they navigated to.
+      const switchState = newThreadSwitchStateRef.current;
+      const switchInFlight =
+        switchState.activeNonce !== null &&
+        switchState.landedAttempt !== switchState.attempt;
+      if (
+        modelType === "base" &&
+        !pairId &&
+        !backgroundedRef.current &&
+        !switchInFlight
+      ) {
         const store = useChatRuntimeStore.getState();
         const activeThreadId = runtime.threads.getState().mainThreadId;
         if (activeThreadId === threadId && store.activeThreadId !== remoteId) {
@@ -2521,7 +2561,7 @@ function ThreadBackendAutosave({
         }
       }
     },
-    [aui, modelType, pairId],
+    [aui, modelType, newThreadSwitchStateRef, pairId],
   );
 
   const queueSave = useCallback(
@@ -2613,6 +2653,17 @@ export function ChatRuntimeProvider({
   // whole point of the shared provider is that it does not.
   const backgroundedRef = useRef(backgrounded);
   backgroundedRef.current = backgrounded;
+  // Declared before the memo below because the memo reads it. Same ref the switch
+  // components mutate, so the adapter can tell "this pane is on screen" from "this pane is
+  // the thread we are switching AWAY from and mainThreadId has not caught up yet".
+  const newThreadSwitchStateRef = useRef<NewThreadSwitchState>({
+    activeNonce: null,
+    hasSwitched: false,
+    attempt: 0,
+    pendingSavedThreadIds: [],
+    nonceThread: null,
+    landedAttempt: 0,
+  });
   const runtimeHook = useMemo(
     () =>
       createRuntimeHook(
@@ -2621,6 +2672,7 @@ export function ChatRuntimeProvider({
         initialThreadId,
         onInitialHistoryReady,
         backgroundedRef,
+        newThreadSwitchStateRef,
       ),
     [initialThreadId, modelType, onInitialHistoryReady, pairId],
   );
@@ -2637,14 +2689,6 @@ export function ChatRuntimeProvider({
   }, [modelType, onInitialHistoryReady, pairId]);
 
   const aui = useAui({});
-  const newThreadSwitchStateRef = useRef<NewThreadSwitchState>({
-    activeNonce: null,
-    hasSwitched: false,
-    attempt: 0,
-    pendingSavedThreadIds: [],
-    nonceThread: null,
-    landedAttempt: 0,
-  });
   useEffect(() => {
     if (!initialThreadId && !newThreadNonce) {
       newThreadSwitchStateRef.current.hasSwitched = true;
@@ -2695,6 +2739,7 @@ export function ChatRuntimeProvider({
           modelType={modelType}
           pairId={pairId}
           backgrounded={backgrounded}
+          newThreadSwitchStateRef={newThreadSwitchStateRef}
         />
         <CancelRegistrar />
         {initialThreadId && (

@@ -898,10 +898,21 @@ def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
 
     # The publication is what is gated -- and ONLY the publication.
     assert (
-        'if (modelType === "base" && !pairId && !backgroundedRef.current) {' in autosave
+        "!backgroundedRef.current &&" in autosave
     ), "the active-thread publication must be gated on the pane being visible"
     publish_at = autosave.index("store.setActiveThreadId(remoteId)")
     guard_at = autosave.index("!backgroundedRef.current")
+
+    # ...and on no switch away from this thread being in flight. switchToNewThread() is
+    # async, so mainThreadId still reads as this pane for the whole gap, and a save landing
+    # in it republishes the chat the user just left into the view they navigated to.
+    assert "!switchInFlight" in autosave, (
+        "the publication must also stand down while this provider's own New Chat switch is "
+        "still resolving"
+    )
+    assert (
+        "switchState.landedAttempt !== switchState.attempt" in autosave
+    ), "the in-flight window is attempt != landedAttempt, not merely activeNonce being set"
     assert guard_at < publish_at, "the guard has to come before the write it guards"
 
     # The save itself is untouched: gating it would defeat the PR, which exists so a run
@@ -936,8 +947,12 @@ def test_the_history_adapters_publish_stands_down_with_the_autosaves():
         "store.setActiveThreadId(remoteId);" in append
     ), "this test is about the history adapter's publication; if it moved, follow it"
     assert (
-        'if (modelType === "base" && !pairId && !backgroundedRef?.current) {' in append
+        "!backgroundedRef?.current &&" in append
     ), "the history adapter's publication needs the same visibility gate as the autosave's"
+    assert "!switchInFlight" in append, (
+        "...and the same stand-down while a New Chat switch this provider started is still "
+        "resolving; see the autosave test for why mainThreadId cannot be trusted in that gap"
+    )
 
     # Read at publish time, through a ref, for the same reason the autosave does: the write
     # is queued when the message arrives and resolves after Compare may have hidden the pane.

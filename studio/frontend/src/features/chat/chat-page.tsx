@@ -731,8 +731,18 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const markInitialHistoryReady = useCompareReloadReadiness(pairId);
   const active = useChatActive();
 
-  const compareRunning = useChatRuntimeStore(
-    (s) => Object.keys(s.runningByThreadId).length > 0,
+  // This pair's own runs, not every run on the page. `runningByThreadId` is global, and
+  // it used to hold only compare runs while compare was on screen, because opening
+  // compare unmounted the base view and killed its run. The shared provider (#8908) keeps
+  // that run alive, so a base chat still generating made `compareRunning` true and this
+  // effect skipped listStoredChatThreads for the whole length of it: an existing compare
+  // opened on blank runtimes, and a user could start replacement pair threads over it.
+  // Undefined ids read as not running, which is the state this effect exists to leave.
+  const compareRunning = useChatRuntimeStore((s) =>
+    Boolean(
+      (baseThreadId && s.runningByThreadId[baseThreadId]) ||
+        (loraThreadId && s.runningByThreadId[loraThreadId]),
+    ),
   );
 
   useEffect(() => {
@@ -932,8 +942,14 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   const globalGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const globalIsDiffusion = useChatRuntimeStore((s) => s.loadedIsDiffusion);
   const active = useChatActive();
-  const compareRunning = useChatRuntimeStore(
-    (s) => Object.keys(s.runningByThreadId).length > 0,
+  // This pair's own runs only; see the note on the Lora variant above. A base chat kept
+  // alive by the shared provider (#8908) is in the same global map, and letting it stand
+  // in for a compare run stalls this effect for as long as it generates.
+  const compareRunning = useChatRuntimeStore((s) =>
+    Boolean(
+      (model1ThreadId && s.runningByThreadId[model1ThreadId]) ||
+        (model2ThreadId && s.runningByThreadId[model2ThreadId]),
+    ),
   );
   const [model1, setModel1] = useState<CompareModelSelection>({
     id: globalCheckpoint || "",
