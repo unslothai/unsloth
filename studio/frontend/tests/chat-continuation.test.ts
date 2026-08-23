@@ -38,6 +38,10 @@ const {
   stripContinuationOverlap,
 } = await import("../src/features/chat/utils/continuation.ts");
 
+const { createImageGateRunOwner, isImageGateRunOnly } = await import(
+  "../src/features/chat/utils/image-input-support.ts"
+);
+
 const PARTIAL =
   "There are three steps to proofing dough properly. First, warm the bowl and";
 
@@ -1684,6 +1688,229 @@ test("the keeper is wired to the failure the adapter already reports", () => {
     wiring,
     /keeper\.failed\(/,
     "the failure has to reach the keeper",
+  );
+  assert.doesNotMatch(
+    wiring,
+    /setTimeout\(/,
+    "a deadline here is the arming timeout coming back, which lapses live continuations",
+  );
+});
+
+/**
+ * The same field the keeper reads in the app, owners and all.
+ *
+ * `runSignalFake` above answers from a bare set of thread ids, which is every case where
+ * what holds the flag does not matter. Here it does: the image gate flips the flag on and
+ * off around a request it never issued, and the real signal in
+ * `auto-continue-run-keeper.ts` is what tells that pair from a run. Built on the shipped
+ * predicate rather than a copy of it, so a change to either side fails here.
+ */
+function ownedRunSignalFake() {
+  const running = new Map<string, { owner: () => void }[]>();
+  const listeners = new Set<() => void>();
+  const announce = () => {
+    for (const listener of [...listeners]) {
+      listener();
+    }
+  };
+  return {
+    signal: {
+      isRunning: (threadId: string) => {
+        const owners = running.get(threadId);
+        return Boolean(owners?.length) && !isImageGateRunOnly(owners);
+      },
+      subscribe: (onChange: () => void) => {
+        listeners.add(onChange);
+        return () => listeners.delete(onChange);
+      },
+    },
+    /** `setThreadRunning(threadId, true, { owner })`, and the notify it fires. */
+    start: (threadId: string, owner: () => void) => {
+      running.set(threadId, [...(running.get(threadId) ?? []), { owner }]);
+      announce();
+    },
+    /** `setThreadRunning(threadId, false, { owner })`, clearing that run only. */
+    end: (threadId: string, owner: () => void) => {
+      const rest = (running.get(threadId) ?? []).filter(
+        (entry) => entry.owner !== owner,
+      );
+      if (rest.length > 0) {
+        running.set(threadId, rest);
+      } else {
+        running.delete(threadId);
+      }
+      announce();
+    },
+  };
+}
+
+test("a continuation refused by the image gate is not recorded as continued", async () => {
+  // Reopen a chat containing a picture with a text-only model loaded -- or switch Vision
+  // off for the one that wrote the truncated reply -- and the automatic continuation is
+  // refused before a request is made. The gate pulses the thread's running flag true and
+  // then false first, so compare mode's `waitForRunEnd` resolves rather than hanging. Read
+  // as a run, that pair arms the hold and settles it one call later with the `done` marker
+  // that tells every other tab for a day that the message HAS been continued -- for a
+  // provider request that was never sent. The failure that follows cannot take it back: a
+  // released hold is already gone.
+  const { storage } = storageFake();
+  const locks = lockManagerFake();
+  const tab = createAutoContinueTab({ storage, locks });
+  const otherTab = createAutoContinueTab({ storage, locks });
+  const runs = ownedRunSignalFake();
+  const pending: Promise<unknown>[] = [];
+  const start = 1_000;
+  let clock = start;
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: () => {
+      assert.fail(
+        "the gate issued no request, so nothing may be marked continued",
+      );
+    },
+    now: () => clock,
+  });
+
+  assert.equal(
+    await tab.claim("m1", { now: start, holder: "thread-A" }),
+    "started",
+  );
+  keeper.hold("m1", "thread-A");
+
+  // `chat-adapter.ts`: setThreadRunning(true, { owner: gateOwner }) then false, then throw.
+  const gateOwner = createImageGateRunOwner();
+  runs.start("thread-A", gateOwner);
+  assert.equal(
+    keeper.held(),
+    1,
+    "a pulse that stands for a refusal does not arm the hold",
+  );
+  runs.end("thread-A", gateOwner);
+  assert.equal(keeper.held(), 1, "and so cannot settle it either");
+
+  // The throw reaches the wrapper's catch, which is the signal that ends an unarmed hold.
+  keeper.failed("thread-A");
+  assert.equal(keeper.held(), 0);
+
+  const lapsed = clock + AUTO_CONTINUE_LEASE_TTL_MS + 1;
+  clock = lapsed;
+  keeper.tick();
+  await Promise.all(pending);
+  assert.equal(
+    await otherTab.claim("m1", { now: lapsed }),
+    "started",
+    "the message was never continued, so it comes back rather than reading done for a day",
+  );
+});
+
+test("a real run on the thread the gate refused still owns its lease", async () => {
+  // Compare mode puts two runtimes on one key, and an unresolved thread files its run under
+  // the shared "__default". A gate firing beside a run that is genuinely streaming must not
+  // make the keeper read the thread as idle: that hold would be released mid-stream, and one
+  // settle window later another tab could claim the message being written.
+  const { storage } = storageFake();
+  const locks = lockManagerFake();
+  const tab = createAutoContinueTab({ storage, locks });
+  const otherTab = createAutoContinueTab({ storage, locks });
+  const runs = ownedRunSignalFake();
+  const released: string[] = [];
+  const pending: Promise<unknown>[] = [];
+  const start = 1_000;
+  let clock = start;
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: (messageId: string, holder: string, now: number) => {
+      released.push(messageId);
+      pending.push(tab.release(messageId, holder, { now }));
+    },
+    now: () => clock,
+  });
+
+  await tab.claim("m1", { now: start, holder: "__default" });
+  keeper.hold("m1", "__default");
+
+  const streamingRun = () => {};
+  runs.start("__default", streamingRun);
+  clock = start + AUTO_CONTINUE_LEASE_RENEW_MS;
+  keeper.tick();
+
+  // The sibling's image turn is refused while this one streams.
+  const gateOwner = createImageGateRunOwner();
+  runs.start("__default", gateOwner);
+  runs.end("__default", gateOwner);
+  assert.deepEqual(released, [], "the run beside it is still generating");
+  assert.equal(keeper.held(), 1);
+
+  // Its own run ending is what gives the lease back, marked continued.
+  runs.end("__default", streamingRun);
+  await Promise.all(pending);
+  assert.deepEqual(released, ["m1"]);
+  assert.equal(
+    await otherTab.claim("m1", {
+      now: clock + AUTO_CONTINUE_LEASE_TTL_MS + 1,
+    }),
+    "held-elsewhere",
+    "this one really was continued",
+  );
+});
+
+test("only the gate's own tokens are read as a refusal", () => {
+  // The predicate is asked about "is this thread generating", so anything it cannot prove
+  // is a gate pulse has to answer yes: a run from before per-run tracking carries no owner
+  // at all, and a key shared with a real run carries one of each.
+  const gateOwner = createImageGateRunOwner();
+  const runOwner = () => {};
+  assert.equal(isImageGateRunOnly([{ owner: gateOwner }]), true);
+  assert.equal(isImageGateRunOnly([{ owner: runOwner }]), false);
+  assert.equal(
+    isImageGateRunOnly([{ owner: gateOwner }, { owner: runOwner }]),
+    false,
+  );
+  assert.equal(isImageGateRunOnly([]), false, "an ownerless flag is a run");
+  assert.equal(isImageGateRunOnly(undefined), false);
+  assert.notEqual(
+    createImageGateRunOwner(),
+    gateOwner,
+    "one token per pulse, or two gates on a shared key clear each other",
+  );
+});
+
+test("the gate's pulse is tagged where it is fired and read where it matters", () => {
+  // Neither end is exercised by a unit test: the adapter's gate is deep inside a run, and
+  // the keeper's real signal reads a zustand store. Pinned at both ends instead.
+  const adapter = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  const gate = adapter.slice(adapter.indexOf("const imageGateReason ="));
+  assert.match(
+    gate,
+    /const gateOwner = createImageGateRunOwner\(\)/,
+    "an anonymous owner is indistinguishable from a run that really started",
+  );
+  assert.match(
+    gate.slice(gate.indexOf("const gateOwner")),
+    /setThreadRunning\([\s\S]*owner: gateOwner[\s\S]*setThreadRunning\([\s\S]*owner: gateOwner/,
+    "the pulse compare mode waits on is still fired under that token",
+  );
+
+  const wiring = readFileSync(
+    new URL(
+      "../src/features/chat/utils/auto-continue-run-keeper.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    wiring,
+    /isImageGateRunOnly\(state\.runOwnerByThreadId\[threadId\]\)/,
+    "the keeper is arming holds on a request the gate refused to send",
   );
   assert.doesNotMatch(
     wiring,

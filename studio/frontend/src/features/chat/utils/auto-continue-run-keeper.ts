@@ -16,6 +16,7 @@ import {
   AUTO_CONTINUE_LEASE_RENEW_MS,
   createAutoContinueLeaseKeeper,
 } from "./continuation";
+import { isImageGateRunOnly } from "./image-input-support";
 import {
   PROMPT_QUEUE_RUN_FAILED_EVENT,
   type PromptQueueRunFailedEventDetail,
@@ -23,8 +24,30 @@ import {
 
 const keeper = createAutoContinueLeaseKeeper({
   signal: {
-    isRunning: (threadId) =>
-      Boolean(useChatRuntimeStore.getState().runningByThreadId[threadId]),
+    /**
+     * Generating, and not the image gate settling its waiters.
+     *
+     * A continuation carrying an image that the loaded model cannot read -- a chat with a
+     * picture in it, reopened on a truncated reply with a text-only model loaded, or with
+     * Vision switched off since -- is refused before any request is made, and the gate
+     * pulses this field true and then false so compare mode's `waitForRunEnd` resolves. To
+     * a hold that is waiting for its own run to start, that pair reads as the run starting
+     * and finishing: it arms on the first and is released on the second, with the `done`
+     * marker that tells every other tab for a day that the message HAS been continued. The
+     * failure that follows cannot undo it, because a released hold is gone. So the pulse is
+     * not counted as a run, the hold never arms, and the failure discards it as it does any
+     * other run that died before it started.
+     *
+     * Only when the gate is ALL that holds the flag. A real run sharing the key -- the
+     * other compare pane, or a sibling under "__default" -- still answers yes.
+     */
+    isRunning: (threadId) => {
+      const state = useChatRuntimeStore.getState();
+      return (
+        Boolean(state.runningByThreadId[threadId]) &&
+        !isImageGateRunOnly(state.runOwnerByThreadId[threadId])
+      );
+    },
     subscribe: (onChange) => useChatRuntimeStore.subscribe(onChange),
   },
 });

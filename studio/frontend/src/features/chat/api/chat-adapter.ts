@@ -170,7 +170,10 @@ import {
   type LastLocalModelKind,
 } from "../utils/last-local-model-load";
 import { createRetryableSharedRead } from "../utils/retryable-shared-read";
-import { getImageInputUnavailableReason } from "../utils/image-input-support";
+import {
+  createImageGateRunOwner,
+  getImageInputUnavailableReason,
+} from "../utils/image-input-support";
 import { mergeContextTruncation } from "../utils/context-truncation";
 import {
   createThinkTagTracker,
@@ -4650,8 +4653,10 @@ export function createOpenAIStreamAdapter(
           // before the streaming path's setThreadRunning(true).
           const gatedThreadKey = resolvedThreadId || "__default";
           // Own token: siblings share "__default", so an ownerless clear would drop their
-          // entries while they are still generating.
-          const gateOwner = () => {};
+          // entries while they are still generating. Marked as the gate's, so a reader that
+          // means "this thread's run started" is not told one did by a pair of flags that
+          // stand for a request nobody made.
+          const gateOwner = createImageGateRunOwner();
           runtime.setThreadRunning(gatedThreadKey, true, { owner: gateOwner });
           runtime.setThreadRunning(gatedThreadKey, false, { owner: gateOwner });
           clearSelectedImageEditReference();
