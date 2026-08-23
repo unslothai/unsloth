@@ -1946,7 +1946,8 @@ class FastBaseModel:
             ensure_weight_tying,
         )
         modules_to_save = _drop_tied_output_module(
-            modules_to_save, ensure_weight_tying,
+            modules_to_save,
+            ensure_weight_tying,
         )
         if _moved:
             logger.warning_once(

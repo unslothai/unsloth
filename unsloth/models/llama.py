@@ -3342,7 +3342,8 @@ class FastLlamaModel:
             ensure_weight_tying,
         )
         modules_to_save = _drop_tied_output_module(
-            modules_to_save, ensure_weight_tying,
+            modules_to_save,
+            ensure_weight_tying,
         )
         for module in _moved_embedding_modules:
             if module == "embed_tokens":
