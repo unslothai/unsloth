@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 import ast
 import builtins
 import os
@@ -5,14 +8,13 @@ from pathlib import Path
 
 import pytest
 
-# Both for_training implementations must survive a PEFT wrapper that delegates the
-# read of _flag_for_generation inwards but owns no attribute to delete. See issue #2490.
+# Both for_training sites must survive a PEFT wrapper that delegates the flag read
+# but owns nothing to delete. See issue #2490.
 SITES = [("llama.py", "FastLlamaModel"), ("vision.py", "FastBaseModel")]
 
 
 class _Namespace(dict):
-    """Globals for a method lifted out of its module; unused module-level helpers
-    resolve to None, which is the "feature absent" branch wherever they are read."""
+    """Globals for a method lifted out of its module; unused helpers resolve to None."""
 
     def __missing__(self, name):
         return getattr(builtins, name, None)

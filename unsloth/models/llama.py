@@ -3892,8 +3892,7 @@ class FastLlamaModel:
             # Set a flag for generation!
             if hasattr(m, "_flag_for_generation"):
                 try:
-                    # PEFT wrappers delegate the read inwards but own no attribute
-                    # to delete, so skip them and let the walk reach the real owner
+                    # A PEFT wrapper delegates the read but owns nothing to delete
                     del m._flag_for_generation
                 except AttributeError:
                     pass
