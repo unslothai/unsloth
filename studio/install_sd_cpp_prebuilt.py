@@ -588,10 +588,12 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
         dest = Path(os.path.normpath(dest))
         # Re-resolved HERE, never reused from the pass above: that pass ran before a single
         # link existed, so an earlier member (a -> .) can turn a later member's parent into a
-        # link (a/out -> ../outside) and send this unlink/symlink_to outside base. A parent
-        # that no longer resolves to itself has been redirected.
+        # link (a/out -> ../outside) and send this unlink/symlink_to outside base. Both ends
+        # are checked for containment, not for being link-free, so a tree that legitimately
+        # symlinks one of its own subdirectories still installs.
+        parent = Path(os.path.realpath(dest.parent))
         resolved = (dest.parent / link_target).resolve()
-        if os.path.realpath(dest.parent) != str(dest.parent) or (
+        if (parent != base and base not in parent.parents) or (
             resolved != base and base not in resolved.parents
         ):
             raise RuntimeError(f"unsafe symlink in archive: {member.filename!r} -> {link_target!r}")

@@ -493,6 +493,30 @@ def test_safe_extractall_rejects_a_symlink_redirected_parent(tmp_path):
     assert victim.read_bytes() == b"outside the install dir"
 
 
+def test_safe_extractall_allows_a_parent_symlinked_inside_the_tree(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    # The creation-time re-check asks whether the parent still resolves INSIDE the install
+    # dir, not whether it is link-free, so a tree that symlinks one of its own subdirectories
+    # still installs. A parent pointing outside is already refused by the member-path check.
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / "real_bin").mkdir()
+    (target / "build").mkdir()
+    (target / "build" / "bin").symlink_to(target / "real_bin")
+    archive = tmp_path / "libs.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("build/bin/libwebp.so.7.2.0", b"\x7fELFpayload")
+        _link_member(zf, "build/bin/libwebp.so.7", "libwebp.so.7.2.0")
+
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+
+    link = target / "build" / "bin" / "libwebp.so.7"
+    assert link.is_symlink()
+    assert link.read_bytes() == b"\x7fELFpayload"
+
+
 def test_safe_extractall_rejects_symlink_cycles(tmp_path):
     # Chains are normal, a cycle is not: it installs a library nothing can read, so the
     # loader failure would send the backend round the reinstall loop on every load.
