@@ -616,8 +616,7 @@ def test_an_estimated_turn_is_never_called_too_big_to_send(role, hard, soft):
 def test_a_measured_turn_still_gets_the_hard_wording():
     # The gate is provenance, not size: a counted turn over the window is unchanged.
     context_refusal.record_fit(
-        _refusal(irreducible = 5120, latest_turn = 5400, role = "tool")
-        | {"latest_turn_exact": True}
+        _refusal(irreducible = 5120, latest_turn = 5400, role = "tool") | {"latest_turn_exact": True}
     )
     assert "A tool returned more than this context window can hold" in _friendly_error(
         ValueError(_SERVER_ERROR)
@@ -651,9 +650,7 @@ def test_a_sparse_tool_result_over_the_window_is_only_ever_hedged():
             if message.get("role") == "tool":
                 previous = messages[index - 1] if index else None
                 if not (
-                    previous
-                    and previous.get("role") == "assistant"
-                    and previous.get("tool_calls")
+                    previous and previous.get("role") == "assistant" and previous.get("tool_calls")
                 ):
                     continue
                 # Calibrated to the measurement above: 32,876 characters of escaped
