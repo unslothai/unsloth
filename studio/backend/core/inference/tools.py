@@ -8916,6 +8916,10 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
         # evidence, and it names the other chat.
         return False
     _workdirs.pop(session_id, None)
+    # Resolved BEFORE anything is removed: the record is named by the real path of the
+    # spill directory, which cannot be derived once the tree is gone. Without this every
+    # deleted chat that ever truncated output leaves one small file behind for good.
+    forget_record = _spill_record_path(os.path.join(target, _SPILL_DIR))
     try:
         if delete_files:
             # Renamed while locked, deleted after: every tool start takes this
@@ -8928,6 +8932,7 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
                 shutil.rmtree(target, ignore_errors = True)
                 return not os.path.isdir(target)
             _queue_detached_delete(detached)
+            _forget_spill_record(forget_record)
             return True
         # Empty means no files of the user's: a tool that only ran mkdir, or
         # deleted what it wrote, leaves directories behind, and the chat record
@@ -8935,7 +8940,10 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
         if not _holds_no_user_files(target, _sandbox_name(session_id)):
             return False
         shutil.rmtree(target, ignore_errors = True)
-        return not os.path.isdir(target)
+        gone = not os.path.isdir(target)
+        if gone:
+            _forget_spill_record(forget_record)
+        return gone
     except OSError:
         return False
 
@@ -14323,12 +14331,93 @@ def _own_spill_root(root: str) -> bool:
         return False
 
 
+# Only where the platform can do the whole write through a directory descriptor: Windows
+# has neither O_DIRECTORY nor dir_fd, and there the path-based write below stands, with the
+# link checks it already makes.
+_DIR_FD_WRITES = (
+    hasattr(os, "O_DIRECTORY")
+    and os.open in getattr(os, "supports_dir_fd", set())
+    and os.rename in getattr(os, "supports_dir_fd", set())
+    and os.unlink in getattr(os, "supports_dir_fd", set())
+)
+
+
+def _write_spill_file(target_dir: str, name: str, body: str) -> bool:
+    """Write one spill into ``target_dir``, without following a link at any point.
+
+    The directory is opened ONCE, O_NOFOLLOW, and every step after that is relative to
+    that descriptor. Checking the path and then writing to it by name is a race a shared
+    project sandbox can lose: another call can replace the directory with a symlink in
+    between, and both the create and the rename would follow it, putting this output
+    outside the sandbox with the backend's own permissions.
+
+    Still written to a fresh O_EXCL file and moved into place rather than opened over
+    whatever is at the name: the spill name comes from content the model produced, so it
+    can predict it and pre-create it, as a symlink or as a hard link sharing an inode with
+    some file elsewhere. Replacing a directory entry does not touch either.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if not _DIR_FD_WRITES:
+        tmp = os.path.join(target_dir, f".tmp-{uuid.uuid4().hex[:12]}.txt")
+        try:
+            with os.fdopen(
+                os.open(tmp, flags | getattr(os, "O_NOFOLLOW", 0), 0o600),
+                "w",
+                encoding = "utf-8",
+                newline = "",
+            ) as handle:
+                handle.write(body)
+            os.replace(tmp, os.path.join(target_dir, name))
+            return True
+        except OSError:
+            logger.debug("tool result spill write failed", exc_info = True)
+            _quiet_unlink(tmp)
+            return False
+    dir_fd = None
+    tmp_name = f".tmp-{uuid.uuid4().hex[:12]}.txt"
+    try:
+        dir_fd = os.open(target_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        with os.fdopen(
+            os.open(tmp_name, flags, 0o600, dir_fd = dir_fd), "w", encoding = "utf-8", newline = ""
+        ) as handle:
+            handle.write(body)
+        # `os.rename` rather than `os.replace`: only rename takes directory descriptors,
+        # and on the POSIX platforms this branch runs on the two are the same call.
+        os.rename(tmp_name, name, src_dir_fd = dir_fd, dst_dir_fd = dir_fd)
+        return True
+    except OSError:
+        logger.debug("tool result spill write failed", exc_info = True)
+        if dir_fd is not None:
+            _quiet_unlink(tmp_name, dir_fd = dir_fd)
+        return False
+    finally:
+        if dir_fd is not None:
+            os.close(dir_fd)
+
+
+def _quiet_unlink(path: str, dir_fd = None) -> None:
+    try:
+        os.unlink(path, dir_fd = dir_fd) if dir_fd is not None else os.unlink(path)
+    except OSError:
+        pass
+
+
+def _forget_spill_record(path: str) -> None:
+    """Drop the record for a sandbox that has been removed. See `_spill_records_dir`."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def _spill_stamp(path: str) -> "str | None":
-    """What a spill looked like when it was written: device, inode, size and mtime.
+    """What a spill looked like when it was written: device, inode, size, mtime, ctime.
 
     A recorded PATH is not the file: tool code can write its own content over one, in
-    place, keeping the inode. Anything the user's code touches stops being ours to prune
-    or to discount when the chat is deleted, and one of those four changes when it does.
+    place, keeping the inode. mtime alone is not enough either, since `os.utime` can put
+    it back and a coarse-grained filesystem can leave it unchanged on its own; ctime moves
+    on any write to the file OR its metadata and cannot be set back from userspace, so
+    restoring the mtime is itself a change this sees.
     """
     try:
         stat = os.lstat(path)
@@ -14336,17 +14425,40 @@ def _spill_stamp(path: str) -> "str | None":
         return None
     if not os.path.isfile(path) or os.path.islink(path):
         return None
-    return f"{stat.st_dev}:{stat.st_ino}:{stat.st_size}:{stat.st_mtime_ns}"
+    return ":".join(
+        str(part)
+        for part in (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    )
 
 
-def _is_recorded_spill(root: str, path: str, owned: "dict[str, str]") -> bool:
-    """Whether ``path`` is still the file this recorded, rather than one written over it."""
+def _file_digest(path: str) -> "str | None":
+    """The digest of what is on disk now, or None when it cannot be read."""
+    try:
+        with open(path, "rb") as handle:
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def _is_recorded_spill(root: str, path: str, owned: "dict[str, tuple[str, str]]") -> bool:
+    """Whether ``path`` is still the file this wrote, rather than one written over it.
+
+    Both the stamp and the CONTENT, because the stamp is only evidence about metadata: the
+    content is what says this file is still the output this process put there, and it is
+    the last word before anything is deleted. Read only after the cheap check passes, so
+    the cost falls on the handful of files that already look like ours.
+    """
     relative = os.path.relpath(path, root).replace(os.sep, "/")
-    stamp = owned.get(relative)
-    return stamp is not None and stamp == _spill_stamp(path)
+    recorded = owned.get(relative)
+    if recorded is None or recorded[0] != _spill_stamp(path):
+        return False
+    return recorded[1] == _file_digest(path)
 
 
-def _spill_record(root: str) -> "tuple[str | None, dict[str, str]]":
+def _spill_record(root: str) -> "tuple[str | None, dict[str, tuple[str, str]]]":
     """The recorded identity of ``root`` and the spills written into it.
 
     ``(None, {})`` when there is no record, which is the answer for any directory this
@@ -14361,18 +14473,19 @@ def _spill_record(root: str) -> "tuple[str | None, dict[str, str]]":
     if not lines or not lines[0].startswith(_SPILL_RECORD_HEADER):
         return None, {}
     identity = lines[0][len(_SPILL_RECORD_HEADER) :].strip() or None
-    entries: "dict[str, str]" = {}
+    entries: "dict[str, tuple[str, str]]" = {}
     for line in lines[1:]:
-        name, _, stamp = line.strip().partition("\t")
-        if name and stamp:
+        name, _, rest = line.strip().partition("\t")
+        stamp, _, digest = rest.partition("\t")
+        if name and stamp and digest:
             # Last line wins: the same content spilled twice rewrites the file, and the
             # stamp of the write actually on disk is the later one.
-            entries[name] = stamp
+            entries[name] = (stamp, digest)
     return identity, entries
 
 
-def _spill_manifest(root: str) -> "dict[str, str]":
-    """The spills this process wrote into ``root``: relative path to stamp."""
+def _spill_manifest(root: str) -> "dict[str, tuple[str, str]]":
+    """The spills this process wrote into ``root``: relative path to stamp and digest."""
     return _spill_record(root)[1]
 
 
@@ -14392,7 +14505,8 @@ def _write_spill_manifest(
         with os.fdopen(fd, "w", encoding = "utf-8") as handle:
             handle.write(f"{_SPILL_RECORD_HEADER}{identity or ''}\n")
             for name in sorted(entries):
-                handle.write(f"{name}\t{entries[name]}\n")
+                stamp, digest = entries[name]
+                handle.write(f"{name}\t{stamp}\t{digest}\n")
         os.replace(tmp, path)
         tmp = None
     finally:
@@ -14404,14 +14518,15 @@ def _write_spill_manifest(
 
 
 def _record_spill(root: str, relative: str) -> None:
-    """Append one written spill, with its stamp, to the record. See `_spill_record`."""
-    stamp = _spill_stamp(os.path.join(root, *relative.split("/")))
-    if stamp is None:
+    """Append one written spill, with its stamp and digest. See `_spill_record`."""
+    path = os.path.join(root, *relative.split("/"))
+    stamp, digest = _spill_stamp(path), _file_digest(path)
+    if stamp is None or digest is None:
         return
     try:
         with _spill_lock(root):
             with open(_spill_record_path(root), "a", encoding = "utf-8") as handle:
-                handle.write(f"{relative}\t{stamp}\n")
+                handle.write(f"{relative}\t{stamp}\t{digest}\n")
     except OSError:
         logger.debug("tool result spill record append failed", exc_info = True)
 
@@ -14516,20 +14631,9 @@ def _spill_full_output(
         # and shares the inode of some file outside the sandbox. Truncating that writes
         # through to it with the backend's privileges; replacing a directory entry does
         # not touch the linked file at all.
-        tmp = None
-        try:
-            fd, tmp = tempfile.mkstemp(dir = target_dir, prefix = ".tmp-", suffix = ".txt")
-            with os.fdopen(fd, "w", encoding = "utf-8", newline = "") as handle:
-                handle.write(body)
-            os.replace(tmp, path)
-            tmp = None
-            _record_spill(os.path.join(workdir, _SPILL_DIR), f"{scope}/{name}" if scope else name)
-        finally:
-            if tmp is not None and os.path.exists(tmp):
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
+        if not _write_spill_file(target_dir, name, body):
+            return None, True
+        _record_spill(os.path.join(workdir, _SPILL_DIR), f"{scope}/{name}" if scope else name)
         _prune_spills(target_dir, os.path.join(workdir, _SPILL_DIR))
         # Relative, so the command works from the cwd the tools already run in, and so
         # the absolute sandbox path never reaches the model.

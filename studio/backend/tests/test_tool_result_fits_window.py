@@ -531,7 +531,10 @@ class TestPruningOnlyTouchesStudioSpills:
         mine = [target / f"{i:012x}.txt" for i in range(tools._SPILL_KEEP + 5)]
         for path in mine:
             path.write_text("spill")
-        tools._write_spill_manifest(str(target), {p.name: tools._spill_stamp(str(p)) for p in mine})
+        tools._write_spill_manifest(
+            str(target),
+            {p.name: (tools._spill_stamp(str(p)), tools._file_digest(str(p))) for p in mine},
+        )
         theirs = [target / "notes.txt", target / "receipts-2026.txt"]
         for path in theirs:
             path.write_text("keep me")
@@ -1247,3 +1250,86 @@ class TestConcurrentSpillsKeepTheirRecords:
         on_disk = {str(p.relative_to(root)) for p in root.rglob("*.txt") if p.name != "victim.txt"}
         assert on_disk, results[:1]
         assert on_disk <= recorded, "a spill on disk that the manifest does not record"
+
+    def test_a_spill_restored_to_its_old_mtime_is_still_not_ours(self, tmp_path):
+        """mtime alone is forgeable: same-sized content and `os.utime` put it back, and a
+        coarse-grained filesystem can leave it unchanged without any help. ctime moves on
+        any write and cannot be set from userspace, and the content is checked besides."""
+        spilled = tools._truncate(
+            "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path)
+        )
+        theirs = tmp_path / _spill_path(spilled)
+        was = theirs.stat()
+        theirs.write_bytes(b"m" * was.st_size)
+        os.utime(theirs, ns = (was.st_atime_ns, was.st_mtime_ns))
+
+        assert theirs.stat().st_size == was.st_size
+        assert theirs.stat().st_mtime_ns == was.st_mtime_ns
+        assert not tools._holds_no_user_files(str(tmp_path))
+
+    @pytest.mark.skipif(
+        not tools._DIR_FD_WRITES, reason = "no dir_fd support; the path-based write stands"
+    )
+    def test_the_spill_write_never_follows_a_swapped_directory(self, tmp_path):
+        """A shared project sandbox can lose the race between checking the directory and
+        writing into it by name: another call can put a symlink there in between, and a
+        path-based create and rename both follow it.
+
+        Checked on the writer itself, since by construction the swap happens after every
+        check the caller makes.
+        """
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        swapped = tmp_path / "scope"
+        swapped.symlink_to(outside, target_is_directory = True)
+
+        assert tools._write_spill_file(str(swapped), "abcdef123456.txt", "x" * 100) is False
+        assert list(outside.iterdir()) == [], "the spill was written outside the sandbox"
+
+    def test_the_writer_still_works_on_a_real_directory(self, tmp_path):
+        """The control, so the refusal above is not simply "never writes"."""
+        assert tools._write_spill_file(str(tmp_path), "abcdef123456.txt", "x" * 100) is True
+
+        assert (tmp_path / "abcdef123456.txt").read_text() == "x" * 100
+
+
+class TestARemovedSandboxTakesItsRecordWithIt:
+    """Session workdirs are unique, so a record left behind is one small file per deleted
+    chat, for the life of the installation."""
+
+    @staticmethod
+    def _sandbox(tmp_path, monkeypatch, session):
+        monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+        tools._workdirs.clear()
+        workdir = tools.get_sandbox_workdir(session)
+        tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir = workdir)
+        record = tools._spill_record_path(os.path.join(workdir, tools._SPILL_DIR))
+        assert os.path.exists(record)
+        return workdir, record
+
+    def test_an_empty_sandbox_takes_its_record(self, tmp_path, monkeypatch):
+        """Only spills are left in it, so the sandbox goes without opting into files."""
+        workdir, record = self._sandbox(tmp_path, monkeypatch, "__LOCALID_spill111")
+
+        assert tools.remove_session_sandbox("__LOCALID_spill111") is True
+
+        assert not os.path.exists(workdir)
+        assert not os.path.exists(record)
+
+    def test_a_sandbox_deleted_with_its_files_does_too(self, tmp_path, monkeypatch):
+        workdir, record = self._sandbox(tmp_path, monkeypatch, "__LOCALID_spill222")
+        open(os.path.join(workdir, "game.html"), "w").close()
+
+        assert tools.remove_session_sandbox("__LOCALID_spill222", delete_files = True) is True
+
+        assert not os.path.exists(record)
+
+    def test_a_sandbox_that_stays_keeps_its_record(self, tmp_path, monkeypatch):
+        """The control: the files are the user's, the sandbox stays, and so does the
+        record of what in it is Studio's."""
+        workdir, record = self._sandbox(tmp_path, monkeypatch, "__LOCALID_spill333")
+        open(os.path.join(workdir, "game.html"), "w").close()
+
+        assert tools.remove_session_sandbox("__LOCALID_spill333") is False
+
+        assert os.path.exists(record)
