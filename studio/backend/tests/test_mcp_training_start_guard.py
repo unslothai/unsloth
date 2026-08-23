@@ -45,7 +45,13 @@ def _config(**overrides):
     return payload
 
 
-def _arm(monkeypatch, route, *, inflight = 0, video = False):
+def _arm(
+    monkeypatch,
+    route,
+    *,
+    inflight = 0,
+    video = False,
+):
     """Point the route at a fresh backend and a controllable inference count."""
     backend = TrainingBackend()
     monkeypatch.setattr(route, "get_training_backend", lambda: backend)
@@ -274,9 +280,7 @@ def test_the_mcp_tool_surfaces_the_409_as_a_tool_error_not_a_dict(monkeypatch):
         "other_inference_request_count",
         lambda current_request_counted = True, **_: 1,
     )
-    monkeypatch.setattr(
-        training_routes, "_background_video_generation_active", lambda: False
-    )
+    monkeypatch.setattr(training_routes, "_background_video_generation_active", lambda: False)
 
     server = mcp_server.create_studio_mcp()
 
