@@ -11,9 +11,9 @@ nothing puts it back for this view:
   * ``ActiveThreadSync`` is disabled outright whenever a nonce is present;
   * ``ProjectLanding`` restores on resume, and the single-chat path had no equivalent.
 
-``ThreadScopedSettingsSync`` is NOT nonce-gated, so the chat came back live but detached: it
-runs on the installation defaults, and an edit made in it moves THOSE rather than its own
-snapshot. Title, context usage and the model notice are keyed on the same id.
+``ThreadScopedSettingsSync`` is NOT nonce-gated, so the chat came back live but detached: on
+installation defaults, an edit in it moving THOSE rather than its own snapshot. Title,
+context usage and the model notice are keyed on the same id.
 
 ``NonceThreadResumeRestore``'s effect is sliced verbatim out of the provider and replayed
 through the same React-effect emulator the sibling suites use, so wiring drift breaks this
@@ -24,8 +24,6 @@ from __future__ import annotations
 
 import re
 import textwrap
-
-import pytest
 
 from _node_harness import (
     WORKDIR,
@@ -163,10 +161,10 @@ def test_a_materialized_chat_keeping_its_runtime_id_is_still_restored() -> None:
     """The ordinary case, and the one an id-prefix guard would have skipped.
 
     ``createStudioDbAdapter.initialize()`` writes the row under whatever id assistant-ui
-    minted and returns that same id, so a ``?new=`` chat that has been sent to keeps its
-    ``__LOCALID_`` id. Refusing to restore that is refusing to restore almost every chat
-    this component exists for. It is published raw, exactly as ActiveThreadSync publishes
-    it elsewhere; the consumers that need a persisted id filter for themselves."""
+    minted and returns it, so a ``?new=`` chat that has been sent to keeps its
+    ``__LOCALID_`` id, and refusing that refuses almost every chat this component exists
+    for. Published raw, as ActiveThreadSync does elsewhere; consumers that need a
+    persisted id filter for themselves."""
     out = _run(
         """
         const render = mount(true);
@@ -213,11 +211,11 @@ def test_staying_hidden_never_restores() -> None:
 
 
 def test_the_provider_gates_the_restore_on_a_nonce_view_that_is_visible() -> None:
-    """Structural. The emulator above replays the effect but not the props the JSX hands it,
-    so the enable expression is only pinned here. Every clause carries its own reason:
-    ``newThreadNonce`` because a saved thread already has ActiveThreadSync, ``initialThreadId``
-    for the same reason, ``pairId``/``base`` because a compare pane has no single chat to
-    attach, and ``backgrounded`` because a hidden view must not claim the visible one's id."""
+    """Structural. The emulator replays the effect but not the props the JSX hands it, so
+    the enable expression is only pinned here. ``newThreadNonce`` and ``initialThreadId``
+    because a saved thread already has ActiveThreadSync, ``pairId``/``base`` because a
+    compare pane has no single chat to attach, ``backgrounded`` because a hidden view must
+    not claim the visible one's id."""
     jsx = slice_between(
         read(PROVIDER),
         "<NonceThreadResumeRestore",

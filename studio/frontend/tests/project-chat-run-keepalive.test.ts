@@ -2,12 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // #8908: a chat started inside a project ran under ProjectLanding's own
-// ChatRuntimeProvider, so leaving the project view mid-response unmounted the
-// runtime, useLocalRuntime's cleanup called detach(), and the backend cancelled
-// on the disconnect. The fix is structural and invisible at runtime until
-// somebody navigates mid-run, so the shape is pinned here: one provider above
-// the project/single switch, carrying no key, with compare a sibling rather
-// than a replacement.
+// ChatRuntimeProvider, so leaving the project view mid-response unmounted the runtime,
+// useLocalRuntime's cleanup called detach(), and the backend cancelled on the disconnect.
+// The fix is structural and invisible until somebody navigates mid-run, so the shape is
+// pinned here: one provider above the project/single switch, no key, compare a sibling
+// rather than a replacement.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -26,8 +25,8 @@ const provider = readFileSync(
 function componentSource(source: string, declaration: string): string {
   const start = source.indexOf(declaration);
   assert.notEqual(start, -1, `${declaration} not found`);
-  // Both closers: a plain declaration ends at a column-0 "}", a memo() wrapper
-  // at "});". Anything nested is indented, so neither matches early.
+  // Both closers: a plain declaration ends at a column-0 "}", a memo() wrapper at "});".
+  // Anything nested is indented, so neither matches early.
   const ends = ["\n}\n", "\n});\n"]
     .map((closer) => source.indexOf(closer, start))
     .filter((index) => index !== -1);
@@ -43,7 +42,7 @@ test("one runtime provider sits above the project/single switch", () => {
     "one shared provider plus ComparePane's own; a third means a view built its own again",
   );
 
-  // ComparePane must keep its own: two panes need two runtimes, and
+  // ComparePane keeps its own: two panes need two runtimes, and
   // useRemoteThreadListRuntime throws when providers nest.
   const comparePane = componentSource(page, "function ComparePane({");
   assert.equal(
@@ -52,8 +51,8 @@ test("one runtime provider sits above the project/single switch", () => {
     "ComparePane owns exactly one",
   );
 
-  // The two views the bug was about must not build one, or switching between
-  // them remounts the runtime and cuts the run off again.
+  // The two views the bug was about must not build one, or switching between them
+  // remounts the runtime and cuts the run off again.
   for (const declaration of [
     "const SingleContent = memo(function SingleContent({",
     "function ProjectLanding({",
@@ -67,17 +66,16 @@ test("one runtime provider sits above the project/single switch", () => {
 });
 
 test("the shared provider is never keyed", () => {
-  // A key on it is indistinguishable from remounting it: keying by project
-  // (the state before the fix), by thread, or by nonce all restore #8908.
+  // A key is indistinguishable from remounting: by project (the state before the fix),
+  // by thread, or by nonce all restore #8908.
   const openingTags = page.match(/<ChatRuntimeProvider[\s\S]*?\n\s*>/g) ?? [];
   assert.equal(openingTags.length, 2);
   for (const tag of openingTags) {
     assert.equal(tag.includes("key="), false, `keyed provider: ${tag}`);
   }
 
-  // The project's new-chat nonce is owned by ChatPage, not ProjectLanding:
-  // ProjectLanding lives under the provider, so a nonce held there would be
-  // one the provider could not see.
+  // The project's new-chat nonce is owned by ChatPage, not ProjectLanding: the latter
+  // lives under the provider, so a nonce held there would be invisible to it.
   assert.match(
     page,
     /const \[projectNewThreadNonce, setProjectNewThreadNonce\] = useState\(/,
@@ -85,9 +83,8 @@ test("the shared provider is never keyed", () => {
 });
 
 test("compare hides the shared provider instead of unmounting it", () => {
-  // Rendering CompareContent in the provider's place unmounts it, which is the
-  // same detach()/cancel path as #8908 -- reachable now that a run survives the
-  // navigation that precedes opening a compare chat.
+  // Rendering CompareContent in the provider's place unmounts it: the same detach()/cancel
+  // path as #8908, reachable now that a run survives the navigation before a compare open.
   assert.match(page, /const baseBackgrounded = view\.mode === "compare";/);
   assert.match(page, /inert=\{baseBackgrounded \|\| undefined\}/);
   assert.match(page, /\{view\.mode === "compare" \? \(\s*<CompareContent/);
@@ -97,8 +94,7 @@ test("compare hides the shared provider instead of unmounting it", () => {
     "compare must be a sibling of the provider, not its alternative",
   );
 
-  // Hidden, it must not drive the shared single-chat state the compare view is
-  // using: the active thread, the context bar, the thread-scoped settings.
+  // Hidden, it must not drive the shared single-chat state the compare view is using.
   assert.match(page, /backgrounded=\{baseBackgrounded\}/);
   for (const gated of [
     /<ActiveThreadSync\s+enabled=\{[\s\S]*?!backgrounded\s*\}/,
@@ -106,11 +102,11 @@ test("compare hides the shared provider instead of unmounting it", () => {
     /<ActiveBranchRegistrar\s+enabled=\{[^}]*!backgrounded\s*\}/,
     /<ThreadContextUsageRecount\s+enabled=\{[^}]*!backgrounded\s*\}/,
     /<ThreadNewChatSwitch[\s\S]*?nonce=\{newThreadNonce\}[\s\S]*?paused=\{backgrounded\}[\s\S]*?\/>/,
-    // The saved-thread switch stands down too. Its first effect calls
-    // requestTemporaryPromptQueueStop(), which names every temporary queue on
-    // the page rather than this provider's, so a hidden pane reaching it would
-    // stop a queue the compare view on screen owns. syncActiveThreadId is one of
-    // its dependencies, so the effect re-runs on every compare open and close.
+    // The saved-thread switch stands down too: its first effect calls
+    // requestTemporaryPromptQueueStop(), which names every temporary queue on the page
+    // rather than this provider's, so a hidden pane reaching it would stop a queue the
+    // compare view owns. syncActiveThreadId is a dependency, so the effect re-runs on
+    // every compare open and close.
     /<ThreadAutoSwitch[\s\S]*?paused=\{backgrounded\}[\s\S]*?\/>/,
   ]) {
     assert.match(provider, gated);
@@ -124,10 +120,9 @@ test("compare hides the shared provider instead of unmounting it", () => {
 });
 
 test("a switch that never opens releases its nonce", () => {
-  // switchToNewThread() marks the nonce served before it resolves, so a
-  // rejection would leave the guard reading it as already handled and the same
-  // New Chat could never be retried in place. Both arms are handled, so the
-  // rejection is never unhandled either.
+  // switchToNewThread() marks the nonce served before it resolves, so a rejection would
+  // leave the guard reading it as handled and the same New Chat could never be retried in
+  // place. Both arms are handled, so the rejection is never unhandled either.
   const switchSource = componentSource(
     provider,
     "function ThreadNewChatSwitch({",
@@ -136,16 +131,16 @@ test("a switch that never opens releases its nonce", () => {
     switchSource,
     /void Promise\.resolve\(aui\.threads\(\)\.switchToNewThread\(\)\)\.then\(/,
   );
-  // Keyed by attempt as well as nonce: leaving for a saved chat releases the
-  // nonce, so two switches for one nonce can overlap and the older one must not
-  // release a thread the newer one legitimately opened.
+  // Keyed by attempt as well as nonce: leaving for a saved chat releases the nonce, so
+  // two switches for one nonce can overlap and the older must not release the newer's
+  // thread.
   assert.match(
     switchSource,
     /if \(\s*switchStateNow\.attempt === attempt &&\s*switchStateNow\.activeNonce === nonce\s*\) \{\s*switchStateNow\.activeNonce = null;\s*\}/,
   );
   assert.match(switchSource, /const attempt = switchState\.attempt \+ 1;/);
-  // clearAttachments() removes each staged file through the attachment adapter,
-  // so the promise needs handling and not just the synchronous call.
+  // clearAttachments() removes each staged file through the attachment adapter, so the
+  // promise needs handling and not just the synchronous call.
   assert.match(
     switchSource,
     /void Promise\.resolve\(aui\.composer\(\)\.clearAttachments\(\)\)\.catch\(\s*\(\) => undefined,\s*\);/,
@@ -166,10 +161,9 @@ test("compare preserves a materialized project chat", () => {
 });
 
 test("a staged attachment does not follow the user into the next view", () => {
-  // switchToNewThread() reuses the uninitialized new thread rather than minting
-  // one, and the composer belongs to that thread. With the provider shared, that
-  // is literally the same composer across a project switch, so an unsent
-  // attachment would be filed into a chat under the next project.
+  // switchToNewThread() reuses the uninitialized new thread rather than minting one, and
+  // the composer belongs to that thread. With the provider shared it is the same composer
+  // across a project switch, so an unsent attachment would land in the next project's chat.
   assert.match(
     provider,
     /const switchState = newThreadSwitchStateRef\.current;\s*if \(switchState\.activeNonce === nonce\) \{\s*return;\s*\}/,
@@ -218,11 +212,10 @@ test("a staged attachment does not follow the user into the next view", () => {
 });
 
 test("the outgoing thread id is captured before the provider blanks it", () => {
-  // ThreadNewChatSwitch is an earlier sibling of the provider's children, so on
-  // an already-mounted provider its effect reaches setActiveThreadId(null)
-  // before ProjectLanding's effects run. Read in an effect, the guard below
-  // would compare against null forever and Back into a project would swap the
-  // landing for the chat the user just left.
+  // ThreadNewChatSwitch is an earlier sibling, so on an already-mounted provider its
+  // effect reaches setActiveThreadId(null) before ProjectLanding's effects run. Read in
+  // an effect, the guard below would compare against null forever and Back into a project
+  // would swap the landing for the chat the user just left.
   assert.match(
     page,
     /const \[initialActiveThreadId\] = useState\(\s*\(\) => useChatRuntimeStore\.getState\(\)\.activeThreadId,\s*\);/,

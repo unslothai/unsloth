@@ -576,15 +576,11 @@ LOADED_MODEL = """
 def test_the_harness_stubs_every_name_refresh_context_usage_imports() -> None:
     """A new import in the real module must not silently zero the recount.
 
-    `_refresh_module_body()` replays that file with its import block stripped, so
-    an imported name that this harness does not define becomes a ReferenceError
-    the moment the replayed code reaches it. The failure does not look like a
-    missing stub: the effect bails, `counts` stays 0, and the assertion reads
-    "the empty New Chat view must be priced exactly once" -- a pricing bug that
-    is not there.
-
-    That is not hypothetical. #9056 added `findLatestUserVideoBase64` to decline
-    pricing a prompt carrying video, and took 41 tests in this file red.
+    `_refresh_module_body()` replays that file with its import block stripped, so an
+    imported name this harness does not define becomes a ReferenceError the moment the
+    replayed code reaches it. The failure does not look like a missing stub: the effect
+    bails, `counts` stays 0, and it reads as a pricing bug that is not there. Not
+    hypothetical: #9056 added `findLatestUserVideoBase64` and took 41 tests here red.
     """
     text = read(REFRESH)
     # The single braced import list this module takes from ../api/chat-adapter.

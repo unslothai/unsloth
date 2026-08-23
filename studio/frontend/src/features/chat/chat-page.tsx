@@ -1126,9 +1126,8 @@ function ProjectLanding({
   const active = useChatActive();
   const wasActiveRef = useRef(active);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  // Captured in render, not an effect: the shared provider's ThreadNewChatSwitch
-  // is an earlier sibling of this subtree, so its mount effect blanks the store's
-  // activeThreadId first and an effect here would only ever read back null.
+  // Captured in render, not an effect: the shared provider's ThreadNewChatSwitch is an
+  // earlier sibling, so its mount effect blanks activeThreadId before an effect here runs.
   const [initialActiveThreadId] = useState(
     () => useChatRuntimeStore.getState().activeThreadId,
   );
@@ -2123,14 +2122,12 @@ export function ChatPage({
   const persistedActiveThreadId = isAssistantLocalThreadId(activeThreadId)
     ? null
     : activeThreadId;
-  // A chat opened as ?new=<nonce> has no thread in the URL, and it keeps none after
-  // the first send, so the model notice never saw the row that send created: switching
-  // model in a chat you just started offered nothing until you navigated away and
-  // reopened it. The store does learn the id -- runtime-provider publishes it once the
-  // visible thread is the one being persisted -- but it still holds the PREVIOUS chat's
-  // id for the first render, until ThreadNewChatSwitch blanks it in an effect. Handing
-  // that over would put the previous chat's notice on this one. So latch on having seen
-  // it blanked for this nonce; before the first send there is nothing to offer anyway.
+  // A ?new=<nonce> chat has no thread in the URL before or after its first send, so the
+  // model notice never saw the row that send created. The store does learn the id, but
+  // for the first render it still holds the PREVIOUS chat's, until ThreadNewChatSwitch
+  // blanks it in an effect -- using it then would show the previous chat's notice here.
+  // So latch on having seen it blanked for this nonce; before the first send there is
+  // nothing to offer anyway.
   const newChatBlankedRef = useRef<string | null>(null);
   if (
     search.new &&
@@ -2547,11 +2544,10 @@ export function ChatPage({
       ? "single:implicit"
       : artifactViewKey;
 
-  // Compare replaces the shared provider on screen, so the base view is kept
-  // mounted behind it (hidden + inert) rather than unmounted: unmounting runs
-  // useLocalRuntime's detach(), the backend cancels on the disconnect, and a run
-  // left going in a project chat would die the moment a compare chat is opened.
-  // Frozen to the last non-compare view so the provider's props don't churn.
+  // Compare replaces the shared provider on screen, so the base view is kept mounted
+  // behind it (hidden + inert): unmounting runs useLocalRuntime's detach(), the backend
+  // cancels on the disconnect, and a project chat's run would die on opening a compare
+  // chat. Frozen to the last non-compare view so the provider's props don't churn.
   const keptBaseViewRef = useRef<{
     view: Exclude<ChatView, { mode: "compare" }>;
     attachmentTargetKey: string;
@@ -2818,9 +2814,8 @@ export function ChatPage({
     [artifactViewKey],
   );
   const nativeModelDropState = useNativeModelDrop({
-    // Compare used to disable this outright, so a drop there vanished with no
-    // overlay and no message (#9036). Keep listening and refuse out loud. The
-    // refusal covers models too: nothing may load behind a compare view.
+    // Compare used to disable this outright, so a drop there vanished with no overlay
+    // and no message (#9036). Keep listening and refuse out loud, models included.
     enabled: active,
     dropsUnsupportedReason:
       view.mode === "single"
@@ -3340,9 +3335,8 @@ export function ChatPage({
     return [...fromLoras, ...localModels];
   }, [lorasFromStore, localModels]);
 
-  // Everything the picker can offer right now, so the chat's own model is only
-  // proposed when selecting it would actually work. A model since deleted, or a
-  // connection since removed, drops out and the notice stays quiet.
+  // Everything the picker can offer right now, so the chat's own model is only proposed
+  // when selecting it would work: a deleted model or removed connection drops out.
   const selectableModelIds = useMemo(
     () =>
       new Set<string>([
@@ -3353,10 +3347,10 @@ export function ChatPage({
     [models, loraModels, externalModels],
   );
 
-  // Still handleCheckpointChange, the picker's own handler, but reached the way
-  // the picker reaches it: with the row's metadata, not the bare id. A local or
-  // fine-tuned row is in neither `/api/models/list` nor the external ids, so
-  // without it the switch loads on different arguments than the menu would.
+  // The picker's own handler, reached the way the picker reaches it: with the row's
+  // metadata, not the bare id. A local or fine-tuned row is in neither
+  // `/api/models/list` nor the external ids, so without it the switch loads on
+  // different arguments than the menu would.
   const handleSwitchBackToChatModel = useCallback(
     (modelId: string) => {
       handleCheckpointChange(
@@ -3529,12 +3523,10 @@ export function ChatPage({
           render their own copy and the shared-composer menu would have none. It
           also portals to body, so gate it on `active` like the tour above. */}
       {active && <BypassPermissionsConfirmDialog />}
-      {/* `--studio-chat-notice-height` is 0 until ChatModelNotice is actually on
-          screen, and the thread viewport adds it to the top padding it already
-          reserves for the header. Without it the notice is an opaque bar over
-          space nothing reserved, and the top of the first message reads
-          underneath it. Declared here, on the nearest ancestor of BOTH the
-          notice and the viewport, so the two cannot disagree about its height. */}
+      {/* `--studio-chat-notice-height` is 0 until ChatModelNotice is on screen; the
+          thread viewport adds it to the top padding it reserves for the header, so
+          without it the first message reads under an opaque bar. Declared on the
+          nearest ancestor of BOTH so the two cannot disagree about its height. */}
       <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden has-[[data-chat-model-notice]]:[--studio-chat-notice-height:2.25rem]">
         <NativeModelDropOverlay state={nativeModelDropState} />
         {/* Fade under the top bar so messages dissolve as they scroll
@@ -3797,14 +3789,11 @@ export function ChatPage({
           />
         )}
 
-        {/* One provider shared by the project and single views, never keyed on
-            thread / nonce / project. Switching between them (open an old chat
-            mid-run in a project, come back) therefore reattaches the live run
-            instead of remounting the runtime and aborting generation (#8908);
-            assistant-ui keeps every alive thread's runtime mounted. Re-adding
-            any key here brings the bug straight back. Compare renders as a
-            sibling, not in its place, so entering compare hides this rather
-            than unmounting it -- ComparePane builds its own providers and
+        {/* One provider shared by the project and single views, never keyed on thread /
+            nonce / project, so switching between them reattaches the live run instead of
+            remounting the runtime and aborting generation (#8908). Any key here brings
+            the bug back. Compare renders as a sibling, not in its place, so it hides
+            this rather than unmounting it -- ComparePane builds its own providers and
             useRemoteThreadListRuntime throws when they nest. */}
         {baseView ? (
           <div

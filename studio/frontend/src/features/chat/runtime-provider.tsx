@@ -282,11 +282,10 @@ class VisionImageAdapter implements AttachmentAdapter {
 class PDFAttachmentAdapter implements AttachmentAdapter {
   accept = "application/pdf";
 
-  // Refused here, not at send: the composer empties itself before it awaits
-  // send(), so a ceiling that only fires there discards the typed message too.
-  // The throw itself is invisible, as with audio: nothing subscribes to
-  // attachmentAddError and the picker never awaits addAttachment, so the toast
-  // is the only thing that tells the user why no file appeared.
+  // Refused here, not at send: the composer empties itself before it awaits send(), so a
+  // ceiling that only fires there discards the typed message too. The throw is invisible
+  // (nothing subscribes to attachmentAddError, the picker never awaits addAttachment), so
+  // the toast is the only thing telling the user why no file appeared.
   add({ file }: { file: File }): Promise<PendingAttachment> {
     const sizeError = getDocumentAttachmentSizeError(file, "PDF");
     if (sizeError) {
@@ -401,9 +400,9 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
   accept =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
-  // The archive's own parts are checked here too, not just the upload ceiling:
-  // a small .docx can still declare a part that only mammoth's inflate would
-  // grow past the cap, and refusing that at send() would empty the composer.
+  // The archive's own parts are checked too, not just the upload ceiling: a small .docx
+  // can declare a part that only mammoth's inflate grows past the cap, and refusing that
+  // at send() would empty the composer.
   async add({ file }: { file: File }): Promise<PendingAttachment> {
     const error = await getDocxAttachmentError(file);
     if (error) {
@@ -1600,10 +1599,9 @@ function createRuntimeHook(modelType: ModelType, pairId?: string) {
 type NewThreadSwitchState = {
   activeNonce: string | null;
   hasSwitched: boolean;
-  // Bumped by every switch this provider starts. The nonce alone does not
-  // identify an attempt: leaving for a saved chat and coming back releases the
-  // nonce, so two switches for the SAME nonce can be in flight at once and the
-  // older one must not be able to speak for the newer.
+  // Bumped by every switch this provider starts. The nonce alone does not identify an
+  // attempt: leaving for a saved chat and coming back releases it, so two switches for
+  // the SAME nonce can be in flight and the older must not speak for the newer.
   attempt: number;
 };
 
@@ -1623,12 +1621,11 @@ function ThreadAutoSwitch({
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
 
   useEffect(() => {
-    // Paused as well as loading: requestTemporaryPromptQueueStop() names every
-    // temporary queue on the page, not this provider's, so a backgrounded pane
-    // reaching it would stop a queue the view on screen owns. The switch itself
-    // is equally off-screen work; `paused` is a dependency, so both are paid on
-    // resume. Reachable while `mainThreadId` is still wrong, because
-    // `syncActiveThreadId` re-runs this effect on every compare open and close.
+    // Paused as well as loading: requestTemporaryPromptQueueStop() names every temporary
+    // queue on the page, not this provider's, so a backgrounded pane reaching it would
+    // stop a queue the on-screen view owns. `paused` is a dependency, so the switch and
+    // the stop are both paid on resume. Reachable while `mainThreadId` is still wrong,
+    // since `syncActiveThreadId` re-runs this effect on every compare open and close.
     if (isLoading || paused) {
       return;
     }
@@ -1705,9 +1702,8 @@ function ThreadNewChatSwitch({
     switchState.hasSwitched = true;
     const clearAttachments = () => {
       try {
-        // Chained, not just called: clearAttachments() removes each staged file
-        // through the attachment adapter, and a rejecting remove() would leave
-        // an unhandled rejection behind rather than be caught below.
+        // Chained, not just called: clearAttachments() removes each staged file through
+        // the attachment adapter, so a rejecting remove() would go unhandled.
         void Promise.resolve(aui.composer().clearAttachments()).catch(
           () => undefined,
         );
@@ -1728,25 +1724,24 @@ function ThreadNewChatSwitch({
       () => {
         if (!clearAfterSwitch) return;
         const switchStateNow = newThreadSwitchStateRef.current;
-        // By attempt as well as nonce, matching the rejection arm. A saved-thread
-        // detour releases the nonce, so returning to the same New Chat starts a
-        // newer attempt; without the attempt check this older completion still
-        // matches on nonce and wipes an attachment staged in the thread that
-        // newer attempt already opened. The nonce check stays: the detour nulls
-        // it without bumping the attempt, and that must still cancel the clear.
+        // By attempt as well as nonce, matching the rejection arm. A saved-thread detour
+        // releases the nonce, so returning to the same New Chat starts a newer attempt;
+        // without the attempt check this older completion still matches on nonce and
+        // wipes an attachment staged in the thread the newer attempt opened. The nonce
+        // check stays: the detour nulls it without bumping the attempt, and that must
+        // still cancel the clear.
         if (switchStateNow.attempt !== attempt) return;
         if (switchStateNow.activeNonce !== nonce) return;
         clearAttachments();
       },
       () => {
-        // The fresh thread never opened, so the view is still on the outgoing
-        // one. Release the nonce: the guard at the top of this effect otherwise
-        // reads it as already served and the same New Chat can never be retried
-        // in place. Handled on both arms, so a rejection is never unhandled.
+        // The fresh thread never opened, so the view is still on the outgoing one.
+        // Release the nonce, or the guard at the top of this effect reads it as already
+        // served and the same New Chat can never be retried in place. Both arms are
+        // handled, so a rejection is never unhandled.
         const switchStateNow = newThreadSwitchStateRef.current;
-        // By attempt, not by nonce alone: a later switch for the same nonce owns
-        // the thread it opened, and releasing it here would switch away from a
-        // chat the user may already be typing in.
+        // By attempt, not by nonce alone: a later switch for the same nonce owns the
+        // thread it opened, and releasing it would switch away from a chat in use.
         if (
           switchStateNow.attempt === attempt &&
           switchStateNow.activeNonce === nonce
@@ -1828,11 +1823,10 @@ function NonceThreadResumeRestore({
     }
     // Published raw, exactly as ActiveThreadSync publishes it on the paths this stands in
     // for. A `__LOCALID_` id is NOT a reason to skip: createStudioDbAdapter.initialize()
-    // writes the row under whatever id assistant-ui minted and hands that same id back, so
-    // a materialized new chat keeps it, and refusing it here would make this restore a
-    // no-op for the ordinary case. Consumers that need a persisted id filter for
-    // themselves (chat-page's persistedActiveThreadId, ThreadScopedSettingsSync), which is
-    // the convention every other publisher already relies on.
+    // writes the row under whatever id assistant-ui minted and hands it back, so a
+    // materialized new chat keeps it and skipping would make this restore a no-op for the
+    // ordinary case. As elsewhere, consumers needing a persisted id filter for themselves
+    // (chat-page's persistedActiveThreadId, ThreadScopedSettingsSync).
     if (!mainThreadId) {
       return;
     }
@@ -2312,10 +2306,9 @@ export function ChatRuntimeProvider({
   newThreadNonce?: string;
   syncActiveThreadId?: boolean;
   listThreads?: boolean;
-  // Mounted only to keep an in-flight run attached while another view is on
-  // screen. The runtime stays alive; everything that drives the shared
-  // single-chat state (active thread, context bar, thread-scoped settings)
-  // stands down so it can't fight the view the user is actually looking at.
+  // Mounted only to keep an in-flight run attached while another view is on screen. The
+  // runtime stays alive; everything driving the shared single-chat state (active thread,
+  // context bar, thread-scoped settings) stands down so it can't fight the visible view.
   backgrounded?: boolean;
 }): ReactElement {
   const runtimeHook = useMemo(
@@ -2354,14 +2347,13 @@ export function ChatRuntimeProvider({
             !backgrounded
           }
         />
-        {/* Compare clears activeThreadId on the way in, and this view is now
-            hidden rather than unmounted, so nothing puts it back: the nonce is
-            unchanged so ThreadNewChatSwitch returns, and ActiveThreadSync is off
-            while a nonce is present. ThreadScopedSettingsSync is NOT nonce-gated
-            though, so the chat came back detached -- running on the installation
-            defaults, with its edits moving those instead of its own snapshot, and
-            no title, context usage or model notice. ProjectLanding restores on
-            resume for the same reason; this is the single-chat half. */}
+        {/* Compare clears activeThreadId on the way in, and this view is hidden rather
+            than unmounted, so nothing puts it back: the nonce is unchanged so
+            ThreadNewChatSwitch returns, and ActiveThreadSync is off while a nonce is
+            present. ThreadScopedSettingsSync is NOT nonce-gated, so the chat came back
+            detached -- on installation defaults, its edits moving those instead of its
+            own snapshot, with no title, context usage or model notice. ProjectLanding
+            restores on resume for the same reason; this is the single-chat half. */}
         <NonceThreadResumeRestore
           enabled={
             modelType === "base" &&
