@@ -1388,20 +1388,6 @@ def _render_ab(
                 continue
 
     out = paths.out / "ab.md"
-    # A FULLY RESUMED A/B MEASURED NOTHING OF ITS OWN. `--resume` against a finished output skips
-    # every cell and is a success, but the ratio is scoped to THIS session, so re-rendering here
-    # replaced a real table with NO READING and exited 0 while doing it. The run that measured
-    # keeps its report; a run with no prior table still gets one, since there is nothing to lose.
-    if not any(r.get("row_type") == "cell" and r.get("session_id") == session_id for r in records):
-        if out.exists():
-            _log(f"\nno cell ran in this session; keeping the A/B table already at {out}")
-            return
-
-    # Detected, not declared. `--ab main` IS a null control whether or not the caller says so, and
-    # a null control that renders as an ordinary A/B invites somebody to quote "7.7% faster" from a
-    # build compared with itself. See `is_null_control`.
-    is_null = is_null_control(sides)
-    label = _ab_label(sides, is_null)
 
     # NO TABLE AT ALL for a probe run, rather than a table with a warning printed above it. The
     # warning scrolls off; `ab.md` sits in the output directory and gets pasted into a pull
@@ -1429,6 +1415,30 @@ def _render_ab(
             _log(f"  a previous {stale} was replaced by this refusal")
         _log("")
         return
+
+    # A FULLY RESUMED A/B MEASURED NOTHING OF ITS OWN. `--resume` against a finished output skips
+    # every cell and is a success, but the ratio is scoped to THIS session, so re-rendering here
+    # replaced a real table with NO READING and exited 0 while doing it. The run that measured
+    # keeps its report; a run with no prior table still gets one, since there is nothing to lose.
+    #
+    # AFTER THE PROBE REFUSAL, NOT BEFORE IT. The payload the resume keeps is the payload this
+    # check is deciding on behalf of, and a probed one is not scorable no matter which session
+    # recorded it. Run first, this returned early for the one sequence that needs the refusal
+    # most: a fresh PROBE run into a directory that already holds a clean `ab.md`, killed after
+    # its last cell was fsynced and before it rendered -- `archive_payload` moves `payload.jsonl`
+    # and nothing else, so the clean table stays at the standard artifact path -- and then
+    # resumed, which finds every cell complete, records none of its own and left that table
+    # standing over an unscorable probe payload.
+    if not any(r.get("row_type") == "cell" and r.get("session_id") == session_id for r in records):
+        if out.exists():
+            _log(f"\nno cell ran in this session; keeping the A/B table already at {out}")
+            return
+
+    # Detected, not declared. `--ab main` IS a null control whether or not the caller says so, and
+    # a null control that renders as an ordinary A/B invites somebody to quote "7.7% faster" from a
+    # build compared with itself. See `is_null_control`.
+    is_null = is_null_control(sides)
+    label = _ab_label(sides, is_null)
 
     try:
         result = compare_arms(
