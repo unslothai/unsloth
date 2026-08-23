@@ -1810,6 +1810,33 @@ function ActiveThreadSync({
   return null;
 }
 
+function NonceThreadResumeRestore({
+  enabled,
+}: { enabled: boolean }): ReactElement | null {
+  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+  const wasEnabledRef = useRef(enabled);
+
+  useEffect(() => {
+    const resumed = enabled && !wasEnabledRef.current;
+    wasEnabledRef.current = enabled;
+    if (!resumed) {
+      return;
+    }
+    // Only ever fills a hole. A restore that overwrote a live id would fight whoever set it.
+    if (useChatRuntimeStore.getState().activeThreadId != null) {
+      return;
+    }
+    // A runtime-made id has no row, so publishing it just makes ThreadScopedSettingsSync
+    // discard it again; the remote id is the one that pairs.
+    if (!mainThreadId || isAssistantLocalThreadId(mainThreadId)) {
+      return;
+    }
+    useChatRuntimeStore.getState().setActiveThreadId(mainThreadId);
+  }, [enabled, mainThreadId]);
+
+  return null;
+}
+
 // A thread read that fails leaves the chat unpaired, so it is worth a couple of goes.
 const THREAD_READ_RETRY_MS = 1_500;
 const THREAD_READ_RETRIES = 2;
@@ -2318,6 +2345,23 @@ export function ChatRuntimeProvider({
             modelType === "base" &&
             !pairId &&
             !newThreadNonce &&
+            !initialThreadId &&
+            !backgrounded
+          }
+        />
+        {/* Compare clears activeThreadId on the way in, and this view is now
+            hidden rather than unmounted, so nothing puts it back: the nonce is
+            unchanged so ThreadNewChatSwitch returns, and ActiveThreadSync is off
+            while a nonce is present. ThreadScopedSettingsSync is NOT nonce-gated
+            though, so the chat came back detached -- running on the installation
+            defaults, with its edits moving those instead of its own snapshot, and
+            no title, context usage or model notice. ProjectLanding restores on
+            resume for the same reason; this is the single-chat half. */}
+        <NonceThreadResumeRestore
+          enabled={
+            modelType === "base" &&
+            !pairId &&
+            !!newThreadNonce &&
             !initialThreadId &&
             !backgrounded
           }
