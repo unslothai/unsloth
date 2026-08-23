@@ -18,6 +18,7 @@ deliberate changes:
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -32,7 +33,7 @@ import urllib.request
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 
 @dataclass
@@ -53,13 +54,167 @@ class StudioInstall:
         return f"http://127.0.0.1:{self.port}"
 
 
+#: What the backend gives an access token: `auth/authentication.py`, ACCESS_TOKEN_EXPIRE_MINUTES.
+#: Only a FALLBACK. The expiry actually enforced is the `exp` claim in the token this run was
+#: handed, which is read from the token itself; this number is what to assume when the server
+#: hands back something that is not a readable JWT.
+ACCESS_TOKEN_TTL_S = 60 * 60
+#: How far ahead of `exp` a token is replaced. Seeding a 1M-token thread is ONE request with a
+#: 900 second timeout, so a token that is merely valid at the moment the request is written is not
+#: good enough: it has to still be valid when the server finishes reading the body.
+TOKEN_REFRESH_MARGIN_S = 15 * 60
+
+
+def jwt_expiry(token: str) -> Optional[float]:
+    """The `exp` claim of a JWT, in unix seconds, WITHOUT verifying anything.
+
+    This is not authentication, it is a clock: the harness holds a token the server issued and
+    needs to know when the server will stop accepting it. Verification is the server's job and it
+    does it on every request. Anything unreadable returns None and the caller falls back to
+    `ACCESS_TOKEN_TTL_S`.
+    """
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")).decode("utf-8"))
+        exp = claims.get("exp")
+        return float(exp) if exp is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 @dataclass
 class StudioAuth:
+    """The harness's own credentials, WHICH OUTLIVE THE TOKEN THEY WERE HANDED.
+
+    THE RUN IS LONGER THAN THE TOKEN. An access token is good for one hour
+    (`ACCESS_TOKEN_EXPIRE_MINUTES = 60`) and this harness authenticated once per arm, at setup,
+    before the first install. A standard A/B at four repetitions is 24 films of 243 seconds --
+    97 minutes of cells alone, before seeding, calibration and two installs -- so the token the
+    seeder holds expires PART WAY THROUGH, and every request after that answers 401: the next
+    `create_thread` fails and the cell dies. In the browser it is worse than an error, because the
+    SPA's own 401 path clears its tokens and navigates to the login route, which reaches Playwright
+    as `Execution context was destroyed, most likely because of a navigation` -- the exact shape of
+    a flake, arriving on a schedule.
+
+    So the token is REPLACED BEFORE IT EXPIRES rather than after it fails. `token()` is what every
+    authenticated request asks for and it re-authenticates whenever `exp` is inside
+    `TOKEN_REFRESH_MARGIN_S`; `auth_request_json` additionally recovers from a 401 that arrives
+    anyway, because a clock skew between this process and the server is exactly the case a
+    deadline computed here cannot see.
+
+    RE-LOGIN, NOT REFRESH, and the difference matters. `POST /api/auth/refresh` is SINGLE USE
+    (`storage.consume_refresh_token`) and the refresh token this object holds is the same one the
+    page was seeded with. Spending it here would invalidate the copy in the SPA's localStorage and
+    log the page out to fix the harness -- trading this defect for itself. A password login mints a
+    fresh pair and touches nothing the page owns.
+    """
+
     access_token: str
     refresh_token: str
     base_url: str
     username: str
     password: str
+    #: Unix seconds, from the token's own `exp`. None means "unknown", treated as `ACCESS_TOKEN_TTL_S`
+    #: from the moment this object was built.
+    expires_at: Optional[float] = None
+    #: Called with `self` after the token is replaced. The browser context seeds its localStorage
+    #: from a SNAPSHOT of these values, so whoever owns that context re-seeds it here.
+    on_rotate: Optional[Callable[["StudioAuth"], None]] = None
+    rotations: int = field(default = 0, init = False)
+    #: Turned off the first time a FRESH token still reads as expiring, which means the `exp` this
+    #: process reads and the server's own clock do not agree. See `rotate`.
+    proactive: bool = field(default = True, init = False)
+    #: The last `on_rotate` failure, kept rather than raised. See `rotate`.
+    hook_error: Optional[str] = field(default = None, init = False)
+
+    def __post_init__(self) -> None:
+        if self.expires_at is None:
+            self.expires_at = jwt_expiry(self.access_token) or (time.time() + ACCESS_TOKEN_TTL_S)
+
+    def seconds_left(self) -> float:
+        return float(self.expires_at or 0) - time.time()
+
+    def needs_refresh(self, margin_s: Optional[float] = None) -> bool:
+        margin = TOKEN_REFRESH_MARGIN_S if margin_s is None else margin_s
+        return self.seconds_left() <= margin
+
+    def token(self, margin_s: Optional[float] = None) -> str:
+        """The access token to send, re-minted first if it is close to expiring."""
+        if self.proactive and self.needs_refresh(margin_s):
+            self.rotate()
+        return self.access_token
+
+    def rotate(self) -> str:
+        """Log in again and adopt the new pair. Raises if the server will not have us.
+
+        The password is the one THIS harness rotated to (`authenticate` clears the
+        password-change gate up front), so there is a credential to log in with for as long as the
+        run lasts.
+
+        A FRESH TOKEN THAT IS ALREADY INSIDE THE MARGIN TURNS THE PROACTIVE HALF OFF, and this is
+        the guard against the one way "refresh before `exp`" can run away. `needs_refresh` compares
+        the server's `exp` against THIS PROCESS'S clock, and the two are not required to agree: a
+        Studio running 45 minutes behind, or a deployment that shortens
+        `ACCESS_TOKEN_EXPIRE_MINUTES` below the margin, makes every token ever issued look like it
+        is about to expire. Without this, every single request would log in again and append
+        another init script to the browser context for the rest of the run. So the condition is
+        tested against a token known to be one second old: if even that one is inside the margin,
+        the margin is not usable here and the token is left to `auth_request_json`'s 401 recovery,
+        which asks the server rather than the clock.
+
+        THE HOOK CANNOT FAIL THE CREDENTIAL. `on_rotate` re-seeds a Playwright context, which can
+        throw for reasons that have nothing to do with authentication -- a closed context, a page
+        that crashed. The token has already been replaced by then and the caller's request must go
+        out; the failure is recorded on `hook_error` instead of being raised through a function
+        whose job was to hold a credential.
+        """
+        fresh = login(self.base_url, self.username, self.password)
+        self.access_token = fresh.access_token
+        self.refresh_token = fresh.refresh_token or self.refresh_token
+        self.expires_at = fresh.expires_at
+        self.rotations += 1
+        if self.needs_refresh():
+            self.proactive = False
+        if self.on_rotate is not None:
+            try:
+                self.on_rotate(self)
+            except Exception as exc:  # noqa: BLE001
+                self.hook_error = f"{type(exc).__name__}: {exc}"
+        return self.access_token
+
+
+def auth_request_json(
+    auth: StudioAuth,
+    url: str,
+    *,
+    method: str = "GET",
+    body: Optional[dict] = None,
+    timeout: float = 30.0,
+) -> Any:
+    """`request_json` with credentials that survive a long run: refreshed BEFORE `exp`, and
+    re-minted once more if the server rejects the token anyway.
+
+    Both halves are needed. The proactive half is what keeps a 900 second seeding PUT from dying
+    half way through a request that was valid when it started. The reactive half covers what this
+    process cannot compute: a clock offset against the server, a Studio restarted underneath the
+    run, or a token invalidated by something else. One retry only -- a 401 that survives a fresh
+    login is a real refusal and must be raised, not looped on.
+
+    The token is fetched OUTSIDE the `try`, so a 401 raised by the login inside `token()` is not
+    mistaken for a 401 from this request and answered with a second login. The backend locks an
+    account out after five failures in a minute (`routes/auth.py`, `_LOGIN_MAX_FAILS`), so a wrong
+    credential retried at double rate reaches the lockout twice as fast and the run then dies on a
+    429 that says nothing about the password.
+    """
+    bearer = auth.token()
+    try:
+        return request_json(url, method = method, body = body, token = bearer, timeout = timeout)
+    except HttpError as exc:
+        if exc.status != 401:
+            raise
+    auth.rotate()
+    return request_json(url, method = method, body = body, token = auth.access_token, timeout = timeout)
 
 
 @dataclass
@@ -124,24 +279,24 @@ def register_provider(base_url: str, auth: StudioAuth, provider: ProviderSeed) -
     harness from having to RSA-encrypt a dummy secret against the server's published public key
     just to have it ignored.
     """
-    existing = request_json(f"{base_url.rstrip('/')}/api/providers/", token = auth.access_token) or []
+    existing = auth_request_json(auth, f"{base_url.rstrip('/')}/api/providers/") or []
     for row in existing:
         # Idempotent across runs. Every run binds a NEW ephemeral pacer port, so a stale entry
         # from a previous run points at a port nothing is listening on, and leaving it there gives
         # the picker two identically named models of which one is dead.
         if row.get("display_name") == provider.name:
             try:
-                request_json(
+                auth_request_json(
+                    auth,
                     f"{base_url.rstrip('/')}/api/providers/{row['id']}",
                     method = "DELETE",
-                    token = auth.access_token,
                 )
             except HttpError:
                 pass
-    created = request_json(
+    created = auth_request_json(
+        auth,
         f"{base_url.rstrip('/')}/api/providers/",
         method = "POST",
-        token = auth.access_token,
         body = {
             "provider_type": provider.provider_type,
             "display_name": provider.name,
@@ -505,6 +660,7 @@ def login(base_url: str, username: str, password: str) -> StudioAuth:
         base_url = base_url,
         username = username,
         password = password,
+        expires_at = jwt_expiry(body["access_token"]),
     )
 
 
@@ -563,6 +719,7 @@ def authenticate(
             base_url = base_url,
             username = username,
             password = new_password,
+            expires_at = jwt_expiry(body["access_token"]),
         )
     return auth
 
@@ -574,10 +731,36 @@ def seed_init_script(
 ) -> str:
     """localStorage the SPA reads on its FIRST paint, so it boots already logged in and already
     holding the provider. The plaintext key is RSA-encrypted by the SPA per request against the
-    server's published public key, so seeding it plainly here is the supported path."""
-    payload = {
+    server's published public key, so seeding it plainly here is the supported path.
+
+    THE REFRESH TOKEN GOES UNDER THE KEY THE APP READS, which is
+    `unsloth_auth_refresh_token` (`features/auth/session.ts`, `AUTH_REFRESH_TOKEN_KEY`) and not
+    `unsloth_refresh_token`, which nothing in the frontend has ever read. Seeded under the wrong
+    name the page boots with an access token and NO way to renew it, so one hour in --
+    `ACCESS_TOKEN_EXPIRE_MINUTES = 60`, shorter than a standard A/B -- the first request to answer
+    401 takes `authFetch` down the branch that clears the tokens and navigates to the login route.
+    Playwright reports that as `Execution context was destroyed, most likely because of a
+    navigation`, which reads as a flake and is not one: it is the clock. With the right key the
+    SPA rotates its own pair through `POST /api/auth/refresh` and the film carries on.
+
+    That endpoint is SINGLE USE, which is why the harness re-authenticates by password instead of
+    spending this token itself -- see `StudioAuth`. This copy belongs to the page.
+
+    AND THE AUTH KEYS ARE WRITTEN ONLY BY THE FRESHEST WRITER. An init script is a snapshot that
+    re-runs on EVERY navigation, and there is one navigation per cell, so a script carrying the
+    token this run started with would keep putting it back over whatever the SPA had rotated to.
+    The harness re-seeds after `StudioAuth.rotate`, but Playwright says outright that "the order of
+    evaluation of multiple scripts installed via browser_context.add_init_script() and
+    page.add_init_script() is not defined", so "the newest one was added last" decides nothing.
+    Each script therefore compares its own token's `exp` against the one already in storage and
+    writes only if it is carrying the later one. That converges on the freshest token whatever
+    order they run in, which is the only property worth having here.
+    """
+    auth_payload = {
         "unsloth_auth_token": auth.access_token,
-        "unsloth_refresh_token": auth.refresh_token,
+        "unsloth_auth_refresh_token": auth.refresh_token,
+    }
+    payload = {
         "unsloth_chat_external_providers": json.dumps([p.as_provider_entry() for p in providers]),
         "unsloth_chat_external_provider_keys": json.dumps(
             {p.id: p.api_key for p in providers if p.api_key}
@@ -586,9 +769,23 @@ def seed_init_script(
     }
     for k, v in (extra_local_storage or {}).items():
         payload[k] = v if isinstance(v, str) else json.dumps(v)
+    # `exp` out of an unverified JWT payload, base64url with the padding this token does not carry.
+    # Anything unreadable scores 0, so a token nobody can date never displaces one that can be.
+    exp_of = (
+        "const expOf = (t) => { try { let p = String(t).split('.')[1]"
+        ".replace(/-/g, '+').replace(/_/g, '/'); while (p.length % 4) p += '='; "
+        "return Number(JSON.parse(window.atob(p)).exp) || 0; } catch (e) { return 0; } };"
+    )
     return (
         "(() => { const seed = "
         + json.dumps(payload)
         + "; for (const k of Object.keys(seed)) { try { window.localStorage.setItem(k, seed[k]);"
-        " } catch (e) {} } })();"
+        " } catch (e) {} } const auth = "
+        + json.dumps(auth_payload)
+        + "; "
+        + exp_of
+        + " try { const held = window.localStorage.getItem('unsloth_auth_token');"
+        " if (!held || expOf(held) < expOf(auth['unsloth_auth_token'])) {"
+        " for (const k of Object.keys(auth)) window.localStorage.setItem(k, auth[k]); }"
+        " } catch (e) {} })();"
     )

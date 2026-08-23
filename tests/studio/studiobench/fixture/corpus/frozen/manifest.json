@@ -141,7 +141,49 @@
       "kind": "code",
       "chars": 290984,
       "sha256": "7655e788d2c355f2d9ccf571e47a1eac3fb34150b5265125555458713726c45f"
+    },
+    {
+      "index": 22,
+      "kind": "reasoning",
+      "chars": 289431,
+      "sha256": "76d5f66d3c511a962df310d5a0eed0d9827ba8603132a2b7b96517f0c322cef1"
+    },
+    {
+      "index": 23,
+      "kind": "code",
+      "chars": 321842,
+      "sha256": "976f5641cff82368c512da916cc83270fa288fb331b96e7938b3d2a6afae6a0a"
+    },
+    {
+      "index": 24,
+      "kind": "reasoning",
+      "chars": 217349,
+      "sha256": "f1bf889d3e49befd9e0010896d5388e3deb267f1136554913c55ebab430277e3"
+    },
+    {
+      "index": 25,
+      "kind": "code",
+      "chars": 321278,
+      "sha256": "0c606e663295d28df4003b45de26b3051332a6af4617c9390b5d37e555dce5fa"
+    },
+    {
+      "index": 26,
+      "kind": "reasoning",
+      "chars": 322586,
+      "sha256": "7190c240820eb162ead8aca71475d92a941838b1a0a9e60a057a5c2802fceab9"
+    },
+    {
+      "index": 27,
+      "kind": "code",
+      "chars": 260180,
+      "sha256": "2be1b8ad3036fbdf6d27230521612a2b96a357480696bda15e14918349d3cf06"
+    },
+    {
+      "index": 28,
+      "kind": "reasoning",
+      "chars": 323227,
+      "sha256": "5d311d80080c3209d7835265f17e60595b319d718f226c94dcaa2320538c4f8d"
     }
   ],
-  "corpus_hash": "f113503e6cea3574e9c1a99653ee140904ab24f7606505f9e0d8d66efda96070"
+  "corpus_hash": "23cd24646603bc54d277d11f9f1276920dc01f0587b4244bdd94071783877c70"
 }

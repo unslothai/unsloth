@@ -19,6 +19,7 @@ import core.inference.diffusion as diffusion_module
 import core.inference.diffusion_engine_router as engine_router
 import core.inference.image_gallery as gallery_module
 from auth.authentication import get_current_subject
+from core.inference.api_monitor import api_monitor
 from core.inference.diffusion_families import default_generation_params
 from routes.inference import router, _parse_openai_image_size
 from utils.api_errors import install_api_error_handlers
@@ -459,3 +460,83 @@ def test_activation_shortfall_is_an_actionable_400(monkeypatch):
     assert err["param"] == "size"
     # Still typed: an ordinary ValueError keeps its sanitized 500 (test above), so no other raw
     # exception text rides out on the back of this.
+
+
+def test_generation_opens_a_monitor_row(client):
+    api_monitor.clear()
+    assert _post(client, {"prompt": "a sloth in space"}).status_code == 200
+    rows = api_monitor.snapshot(include_details = False)
+    assert len(rows) == 1
+    assert rows[0]["endpoint"] == "/v1/images/generations"
+    assert rows[0]["method"] == "POST"
+    assert rows[0]["status"] == "completed"
+    assert rows[0]["prompt_preview"] == "a sloth in space"
+    # Relabelled to what served, not the informational body.model.
+    assert rows[0]["model"] == "unsloth/Z-Image-Turbo-GGUF"
+
+
+def test_no_loaded_model_records_an_error_row(monkeypatch):
+    backend = _FakeBackend(loaded = False)
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    cli, store, _save = _make_client(backend)
+    monkeypatch.setattr(gallery_module, "save", _save)
+    api_monitor.clear()
+    assert _post(cli, {"prompt": "a sloth"}).status_code == 503
+    rows = api_monitor.snapshot(include_details = False)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "error"
+    # The route's 503 detail, not _friendly_error's generic fallback.
+    assert "image model" in rows[0]["error"]
+
+
+def test_local_directory_load_is_not_leaked_into_the_monitor(monkeypatch):
+    # A local pick puts the host directory in repo_id and the row goes out over the tunnel,
+    # so the label gets the same path-free treatment as active_model.
+    backend = _FakeBackend(repo_id = "/home/ana/models/my-flux")
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    cli, store, _save = _make_client(backend)
+    monkeypatch.setattr(gallery_module, "save", _save)
+    api_monitor.clear()
+    assert (
+        cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"}).status_code
+        == 200
+    )
+    rows = api_monitor.snapshot(include_details = False)
+    assert len(rows) == 1
+    assert rows[0]["model"] == "my-flux"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"prompt": "p", "size": "300x300"},
+        {"prompt": "p", "size": "abc"},
+        {"prompt": "p", "stream": True},
+    ],
+)
+def test_a_refused_request_records_nothing(client, body):
+    """size and stream were validated inside the monitor, so a request refused before any
+    work still produced a red error row. /audio/speech and /audio/transcriptions reject
+    their bad parameters before opening a row, and this route now matches them."""
+    api_monitor.clear()
+    assert _post(client, body).status_code == 400
+    assert api_monitor.snapshot(include_details = False) == []
+
+
+def test_a_failed_generation_does_not_leak_a_local_path_label(monkeypatch):
+    """The relabel only runs after a successful generation, so a failure left whatever the
+    client sent in body.model on a row that goes out over the tunnel."""
+    backend = _FakeBackend(loaded = False)
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    cli, store, _save = _make_client(backend)
+    monkeypatch.setattr(gallery_module, "save", _save)
+    for sent, expected in (
+        ("/home/ana/models/my-flux", "my-flux"),
+        ("C:\\models\\my-flux", "my-flux"),
+        ("unsloth/Z-Image-Turbo-GGUF", "unsloth/Z-Image-Turbo-GGUF"),
+    ):
+        api_monitor.clear()
+        assert _post(cli, {"prompt": "a sloth", "model": sent}).status_code == 503
+        row = api_monitor.snapshot(include_details = False)[0]
+        assert row["status"] == "error"
+        assert row["model"] == expected

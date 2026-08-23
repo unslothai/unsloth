@@ -526,7 +526,7 @@ export const ptBR = {
           "Salva o cache KV antes de um descarregamento por inatividade, para que chats retomados não releiam o histórico. Até 10 GB em disco.",
         apiOnly: "Descarregar apenas modelos carregados pela API",
         apiOnlyDescription:
-          "O descarregamento por inatividade mantém na memória o modelo que você carregou pelo Studio e libera apenas os que uma requisição da API carregou.",
+          "O descarregamento por inatividade mantém na memória o modelo que você carregou pelo Unsloth e libera apenas os que uma requisição da API carregou.",
       },
       previewSharing: {
         sectionTitle: "Compartilhamento de pré-visualização",
@@ -583,6 +583,7 @@ export const ptBR = {
         embeddingModel: "Modelo de embedding",
         embeddingModelDescription:
           "Modelo do Hugging Face ou caminho local usado para indexar e buscar seus documentos. O padrão é {defaultModel}.",
+        searchPlaceholder: "Buscar modelos de embedding",
         reindexWarning:
           "Afeta apenas documentos recém-indexados. Reenvie os documentos existentes após alterar o modelo.",
         emptyError: "Insira um id de modelo do Hugging Face ou um caminho local.",
@@ -1018,7 +1019,7 @@ export const ptBR = {
       quickstart: {
         title: "Montar um comando",
         description:
-          "Inicie um agente com o modelo carregado no Studio. Carregue um modelo primeiro e depois troque claude por qualquer agente compatível abaixo.",
+          "Inicie um agente com o modelo carregado no Unsloth. Carregue um modelo primeiro e depois troque claude por qualquer agente compatível abaixo.",
         noneDetected:
           "Nenhuma CLI de agente compatível foi encontrada no seu PATH.",
         installed: "Instalado",
@@ -1040,7 +1041,7 @@ export const ptBR = {
         description:
           "As flags do Unsloth são interpretadas primeiro; tudo o que ele não reconhecer é repassado direto ao agente.",
         model:
-          "Seleciona um modelo. Sem --model, o unsloth start usa o modelo carregado no Studio e retorna erro se não houver nenhum.",
+          "Seleciona um modelo. Sem --model, o unsloth start usa o modelo carregado no Unsloth e retorna erro se não houver nenhum.",
         contextLength:
           "Define o tamanho de contexto solicitado (alias: --max-seq-length).",
         ggufVariant: "Escolhe a variante de quantização GGUF.",
@@ -1056,12 +1057,16 @@ export const ptBR = {
           "Mantém o agente principal no modelo atual e registra o Unsloth como subagente local (Claude Code, Codex e OpenCode).",
         apiKey:
           "Informa sua chave de API do Unsloth (ou defina UNSLOTH_API_KEY).",
+        reasoning:
+          "Usar raciocínio no chat: on, off ou auto. Auto segue o chat template do modelo, o que normalmente significa on.",
+        reasoningEffort:
+          "Esforço de raciocínio passado ao chat template do modelo, por exemplo medium. Os níveis dependem do modelo, então use um que ele aceite. Sem valor, vale o do template.",
         yolo: "Pula os pedidos de aprovação. Use apenas em ambientes confiáveis.",
       },
       remote: {
-        title: "Conectar a um Studio remoto",
+        title: "Conectar a um Unsloth Studio remoto",
         description:
-          "Aponte o unsloth start para um Studio em execução em outro lugar, definindo estas variáveis antes de iniciar (ou passe --api-key diretamente):",
+          "Aponte o unsloth start para um Unsloth Studio em execução em outro lugar, definindo estas variáveis antes de iniciar (ou passe --api-key diretamente):",
       },
       passthrough: {
         title: "Repassar argumentos ao agente",
@@ -1118,6 +1123,12 @@ export const ptBR = {
         collapseByDefault: "Recolher o raciocínio por padrão",
         collapseByDefaultDescription:
           "Mantém o raciocínio recolhido enquanto o modelo pensa, em vez de abri-lo automaticamente. Expanda um bloco para lê-lo.",
+      },
+      webSearch: {
+        title: "Busca na web",
+        images: "Mostrar imagens da busca na web",
+        imagesDescription:
+          "Permite que a busca na web retorne imagens e busca uma para cada item que uma resposta lista. As miniaturas são baixadas e redimensionadas pelo Studio, então o navegador nunca acessa os servidores de imagens.",
       },
       artifacts: {
         title: "Canvas",

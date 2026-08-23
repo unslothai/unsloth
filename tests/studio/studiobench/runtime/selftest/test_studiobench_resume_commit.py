@@ -54,7 +54,10 @@ class _Verdict:
 
 
 class _Bundle:
-    engine = "webkit"
+    # WHAT `browser.launch` WOULD HAVE RESOLVED on the machine running this test. `run_meta`
+    # records the engine and `requested_identity` resolves the same way, so a stub that names a
+    # fixed one would make a legitimate resume look like an engine change off Linux and macOS.
+    engine = browser_mod.default_engine()[0]
     engine_note = "stubbed for this test"
     browser = context = page = cdp = None
 

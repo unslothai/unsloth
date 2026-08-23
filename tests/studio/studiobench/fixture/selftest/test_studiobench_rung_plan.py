@@ -95,10 +95,20 @@ def test_during_generation_slots_actually_fall_during_generation():
 
 
 def test_stop_opens_only_after_the_tail_has_drained():
-    """Stop owns its own turn now; opening it mid-stream would truncate the measured reply."""
+    """Stop owns its own turn now; opening it mid-stream would truncate the measured reply.
+
+    HELD TO THE DECLARED CEILING RATHER THAN TO THE CURRENT CORPUS. This used to take the worst
+    drain the frozen corpus happened to produce, which made a scene's packing a function of the
+    corpus contents: the 1M rung streamed recycled text while the manifest was sized at exactly
+    the top rung's seeded target, the observed worst came in low, and the fast film sat at 18.2 s
+    against a real ceiling of 18.25 s without anything failing. Re-freezing the corpus moved the
+    observed number and the film that had been out of bounds all along was the thing that broke.
+    `STREAM_TAIL_CHARS` is the bound the plans are actually held to, one test above, so it is the
+    bound a schedule has to clear -- and it does not move when the corpus is re-frozen.
+    """
     from studiobench.scene.schedule import SCENES
 
-    worst = max(p.streamed_chars for p in _plans().values()) / FIELD_CHARS_PER_SEC
+    worst = STREAM_TAIL_CHARS / FIELD_CHARS_PER_SEC
     for name, scene in SCENES.items():
         stop = [s for s in scene.slots if s.action == "stop_generation"]
         assert stop, name

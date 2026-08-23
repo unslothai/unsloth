@@ -10,7 +10,8 @@
 //      only build where React's `<Profiler>` `onRender` callback exists at all.
 //   2. Hidden sourcemaps, so our own frames get real names without shipping a
 //      `//# sourceMappingURL` comment.
-//   3. `keepNames`, so the bundler and minifier do not rename our functions.
+//   3. Minifier name preservation, so our own functions and classes keep
+//      their source names instead of being mangled to single letters.
 //
 // The resulting dist is injected into a REAL Studio install through the
 // existing `unsloth studio --frontend <dir>` flag (see `studio/backend/run.py`
@@ -20,18 +21,35 @@
 //
 // WHAT THIS BUILD DOES NOT FIX, and cannot. React's production and profiling
 // dists are minified by React's own release pipeline BEFORE Vite ever sees
-// them. `keepNames` and sourcemaps therefore recover OUR component names and
+// them. Name preservation and sourcemaps therefore recover OUR names and
 // nothing whatsoever inside `react-dom`: the original identifier really is
 // `Zk`. Recovering react-dom names is the job of the symbol bridge in
 // `tests/studio/studiobench/analysis/symbols.py`, not of this config, and no
 // build flag here can do it.
 
+import { createRequire } from "node:module";
 import path from "node:path";
-import tailwindcss from "@tailwindcss/vite";
-import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
 
 const FRONTEND_ROOT = path.resolve(__dirname, "../studio/frontend");
+
+// The plugins are resolved from the FRONTEND package, not from this directory,
+// and that is not a stylistic preference. Vite bundles a `--config` file with
+// its bare imports left external (`bundleConfigFile` sets `root =
+// path.dirname(fileName)`) and then loads the bundle under the config file's
+// own path: CJS via `module._compile(code, <config path>)`, ESM via a temp file
+// in the nearest ancestor `node_modules`, of which this directory has none. So
+// Node starts its `node_modules` walk at `attribution/` and climbs to the
+// repository root, and NEITHER has a `node_modules` -- only
+// `studio/frontend/node_modules` does. Written with plain top-level imports
+// this config could not be loaded from any working directory, by any `vite`
+// binary: `Cannot find module '@tailwindcss/vite'`, and the same for the React
+// plugin and for `vite` itself. Anchoring the lookup at the frontend package's
+// `package.json` is the whole fix, and it points at the same installed copies
+// the shipping `studio/frontend/vite.config.ts` uses.
+const requireFromFrontend = createRequire(path.join(FRONTEND_ROOT, "package.json"));
+const tailwindcss = requireFromFrontend("@tailwindcss/vite").default;
+const react = requireFromFrontend("@vitejs/plugin-react").default;
+const { defineConfig } = requireFromFrontend("vite");
 
 export default defineConfig({
   root: FRONTEND_ROOT,
@@ -117,15 +135,51 @@ export default defineConfig({
     // the profiling renderer, and devtools does not silently start resolving
     // maps mid-measurement.
     sourcemap: "hidden",
-    // Vite 8 minifies with oxc by default and the name-preservation knob is
-    // Rolldown's `output.keepNames`, not a `terserOptions.keep_fnames`. Vite
-    // spreads the user `output` last, so this is not clobbered. Without it the
-    // minifier renames our own components too and even the app-side frames
+    // Vite 8 minifies with oxc by default, and without a name-preservation
+    // knob the minifier renames our own components too: the app-side frames
     // become single letters, which would leave the symbol bridge with no
-    // anchors to validate against.
+    // anchors to validate against. Measured on this tree, of the 403
+    // `export function <Component>` names in `studio/frontend/src` only 37
+    // survive an unconfigured build, against 390 with the option below.
+    //
+    // The knob is the OXC MINIFIER's `mangle.keepNames`, reached through
+    // `output.minify`, and NOT the bundler-level `output.keepNames`. That
+    // distinction is the whole reason this block looks the way it does.
+    // `output.keepNames: true` on the rolldown that Vite 8.0.16 pins
+    // (`rolldown@1.0.3`, an exact pin in Vite's own `dependencies`) fails the
+    // build outright:
+    //
+    //   [MISSING_EXPORT] "toString" is not exported by
+    //   "node_modules/underscore/modules/_setup.js"
+    //
+    // and 23 more like it. That is rolldown#9973: under `keepNames` the
+    // bundler splits a multi-declarator `export var a = 1, b = 2` into
+    // separate declarations and drops the `export` keyword while doing it, so
+    // every name after the split silently stops being exported. Underscore's
+    // `_setup.js` is written almost entirely in that style
+    // (`export var push = ..., slice = ..., toString = ...`) and we reach it
+    // through `@dagrejs/graphlib`, so the build aborts. Fixed upstream by
+    // rolldown#9974, first released in the 1.1.x line; unavailable to us
+    // without overriding the rolldown that Vite pins, which would change the
+    // bundler under the shipping UI and is not something an attribution-only
+    // config gets to do.
+    //
+    // `mangle.keepNames` is the option that actually matters here anyway.
+    // Bundler-level renaming only appends deconflicting suffixes and leaves
+    // names readable; it is the minifier's mangler that turns `AppSidebar`
+    // into a letter. `compress.keepNames` is set alongside it because oxc
+    // documents the pair as belonging together -- DCE has to stop treating
+    // the name-carrying binding as dead. Vite spreads the user `output` last
+    // (`buildOutputOptions`), so `minify` here replaces Vite's default
+    // `minify: true` rather than being clobbered by it; compression and
+    // mangling both stay on, and the bundle grows only ~3.9% from carrying
+    // the real names.
     rolldownOptions: {
       output: {
-        keepNames: true,
+        minify: {
+          compress: { keepNames: { function: true, class: true } },
+          mangle: { keepNames: { function: true, class: true } },
+        },
         // Marks the bundle so the harness can prove it is measuring the
         // attribution build and not a stale shipping dist left in the
         // directory handed to `unsloth studio --frontend`. Read by

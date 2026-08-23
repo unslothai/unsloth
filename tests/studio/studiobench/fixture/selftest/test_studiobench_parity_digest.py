@@ -496,9 +496,25 @@ def test_an_action_that_never_ran_is_not_a_matching_surface():
     # still closes and the digest is still captured, so both arms agreed and `image_upload` was
     # reported as a stable, matching surface. Nobody had opened it.
     idle = {"ran": False, "reason": "no visible attachments button", "parity": capture()}
-    got = P.compare_rows(idle, {"ran": True, "parity": capture()})
+    got = P.compare_rows(idle, idle)
     assert got["verdict"] == P.NOT_EXERCISED
     assert "nothing touched" in got["reason"]
+    # NEITHER arm ran it, so nobody opened the surface on either build and the only thing lost is
+    # coverage. `one_sided` says so, and the caller needs it to keep that apart from the case below.
+    assert got["one_sided"] == ""
+
+
+def test_an_action_only_one_arm_could_perform_is_named_as_such():
+    # A control that stops opening leaves NO digest to differ: the arm that cannot reach it
+    # records `ran: false` and the pair carries no comparison at all. Folding that into the
+    # missed-slot case is how a button that no longer works reads as lost coverage.
+    idle = {"ran": False, "reason": "the control never became visible", "parity": capture()}
+    got = P.compare_rows({"ran": True, "parity": capture()}, idle)
+    assert got["verdict"] == P.NOT_EXERCISED
+    assert got["one_sided"] == "base"
+    assert "did not behave the same way" in got["reason"]
+    # And in the other direction, named after the arm that DID run it.
+    assert P.compare_rows(idle, {"ran": True, "parity": capture()})["one_sided"] == "treatment"
 
 
 def test_a_pair_that_ran_on_both_arms_is_compared_normally():
