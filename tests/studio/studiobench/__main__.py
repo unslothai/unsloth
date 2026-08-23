@@ -939,7 +939,16 @@ def run(args, ab_ref = None) -> int:
         rec.close()
 
     if ab_ref:
-        _render_ab(paths, sides, ctx.session_id, corpus.corpus_hash)
+        # The cells THIS session was asked to measure. A resumed A/B skips whole pairs or none
+        # (`ab.skippable_cells`), so this is either every planned cell or none of them, and it is
+        # what `_render_ab` checks the payload against before it is allowed to print a verdict.
+        _render_ab(
+            paths,
+            sides,
+            ctx.session_id,
+            corpus.corpus_hash,
+            planned = [c.cell_id for _t, c, _p in work if c.cell_id not in done],
+        )
 
     _summarise(rows, paths)
     completed = sum(1 for r in rows if r.get("completed"))
@@ -996,15 +1005,21 @@ def _sweep_surfaces(sides: list, ctx, paths) -> None:
         ctx.recorder.gate(f"surface_sweep:{label}", passed, manifest)
 
 
-def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
+def _render_ab(paths, sides, session_id: str, corpus_hash: str, planned = ()) -> None:
     """Render the A/B table from the payload the run just wrote.
 
     Read back from disk rather than kept in memory on purpose: it is the same path a tester takes
     with `--report`, so the table nobody checks and the table everybody reads are produced by one
     piece of code.
+
+    NO VERDICT OVER A PLAN WITH A HOLE IN IT. `planned` is the cells this session was asked to
+    measure, and a failed cell does not stop the run -- `CellRunner.run` records the failure and
+    returns -- so without this check the comparison is rendered over whatever pairs survived. See
+    `ab.unmeasured_planned_cells`: the loss is not the failed cell but its healthy partner, which
+    the arm intersection removes silently.
     """
     from .report.render import render_ab_table
-    from .runtime.ab import compare_arms
+    from .runtime.ab import compare_arms, unmeasured_planned_cells
 
     records = []
     with paths.payload_jsonl.open(encoding = "utf-8") as fh:
@@ -1045,10 +1060,23 @@ def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
         _log(f"\nA/B table could not be built: {type(exc).__name__}: {exc}")
         return
 
+    missing = unmeasured_planned_cells(records, planned, session_id = session_id)
+    if missing:
+        result.void = True
+        result.void_reason = (
+            f"{len(missing)} of {len(planned)} planned cells did not complete, so what remains is "
+            "a selection rather than the plan: " + ", ".join(missing)
+        )
+
     text = render_ab_table(result)
     print("\n" + text)
     out.write_text(text, encoding = "utf-8")
     _log(f"A/B table written to {out}")
+    if missing:
+        # A noise floor derived from a partial null control is a number about the cells that did
+        # not die, quoted afterwards at every real A/B on this machine.
+        _log("the plan did not complete, so no noise floor is derived from it")
+        return
     if is_null:
         from .scoring.ab import noise_floor_from_null_control
         try:

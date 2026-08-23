@@ -217,11 +217,21 @@ def render_ab_table(result: AbResult) -> str:
         lines.append("")
         lines.append("VOID. No numbers are quotable from this comparison.")
         lines.append(f"  {result.void_reason}")
-        lines.append(
-            "  The null-treatment control measures whether this machine can currently tell two "
-            "identical builds apart. When it cannot, nothing measured alongside it can be "
-            "believed, so nothing is printed."
-        )
+        # The paragraph under the reason explains the NULL CONTROL, and printing it under an
+        # incomplete plan named the wrong cause for the void. A void has more than one cause; the
+        # reason line carries which one, and only a null control gets the null-control paragraph.
+        if result.is_null_control:
+            lines.append(
+                "  The null-treatment control measures whether this machine can currently tell "
+                "two identical builds apart. When it cannot, nothing measured alongside it can "
+                "be believed, so nothing is printed."
+            )
+        else:
+            lines.append(
+                "  A comparison is all of its pairs. A cell that did not complete takes its "
+                "healthy partner out of the table with it, so the pairs that remain are a "
+                "selection and no verdict is printed over them."
+            )
         return "\n".join(lines)
 
     lines.append(f"noise floor {result.noise_floor_pct:.2f}%  ({result.noise_floor_source})")

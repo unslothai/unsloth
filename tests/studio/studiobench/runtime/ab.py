@@ -24,7 +24,7 @@ printing. That check is the whole reason this file interleaves at all.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 from ..fixture.corpus import Corpus, RungPlan
 from .types import Cell
@@ -150,6 +150,38 @@ def order_is_balanced(plan: list[tuple[Target, Cell, RungPlan]]) -> bool:
     # single-rep plan -- where one side always goes first and nothing cancels -- as balanced,
     # which is the one answer this function exists to prevent.
     return len(labels) > 1 and len(set(first_counts.values())) == 1
+
+
+def unmeasured_planned_cells(
+    records: list[dict], planned: Sequence[str], session_id: Optional[str] = None
+) -> list[str]:
+    """The planned cells this session has no completed reading for, in plan order.
+
+    A COMPARISON IS ALL OF ITS PAIRS, and a cell that failed removes its HEALTHY PARTNER from the
+    table too: `readings_by_arm` drops the incomplete cell, and `compare_arms` intersects the two
+    arms' keys, so the surviving pairs are a subset chosen by which cell happened to die. The
+    hazard is the one `skippable_cells` describes for an interrupted resume, arriving by the other
+    road -- `CellRunner.run` catches the exception and returns an incomplete row, so the run
+    continues and `_render_ab` is reached with a hole in the plan. A 10K base cell that died
+    published `VERDICT: IMPROVED (20.0% faster)` off the 100K pair alone while the completed 10K
+    pair underneath it was a 26.5% regression, and `ab.md` named neither the missing rung nor the
+    failure.
+
+    The exit code is already nonzero when a cell fails, and it is not enough: `ab.md` outlives the
+    process and is what gets quoted. `render_ab_table` prints no numbers at all when a result is
+    void, for the reason stated there -- the table gets screenshotted and the warning does not --
+    and an incomplete plan is voided on the same grounds.
+    """
+    from ..scoring.from_payload import latest_attempt_rows
+
+    complete: set = set()
+    for row in latest_attempt_rows(records):
+        if row.get("row_type") != "cell" or row.get("completed") is not True:
+            continue
+        if session_id is not None and row.get("session_id") not in (None, session_id):
+            continue
+        complete.add(str(row.get("cell_id")))
+    return [str(cell_id) for cell_id in planned if str(cell_id) not in complete]
 
 
 def readings_by_arm(
