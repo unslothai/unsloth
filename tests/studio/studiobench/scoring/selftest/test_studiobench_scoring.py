@@ -631,7 +631,8 @@ def test_the_table_does_not_print_a_direction_it_could_not_resolve():
     text = render_ab_table(result)
     assert "VERDICT: INCONCLUSIVE" in text
     assert "improved" not in text
-    assert "do not agree on the sign" in text
+    assert "no direction is claimed" in text
+    assert "contains it" in text  # the interval straddles 1.0, as opposed to being absent
 
 
 # ---------------------------------------------------------------------------------------
@@ -857,3 +858,71 @@ def test_an_unresolved_metric_never_clears_a_resolved_regression():
 
     assert result.regressions
     assert result.verdict == "FAIL"
+
+
+def test_a_metric_with_no_ci_at_all_does_not_claim_a_direction():
+    """An interval that does not exist cannot clear 1.0, so it must not read as permission.
+
+    `bootstrap_geomean_ci` returns (None, None) below three usable pairs, which a short ladder or
+    a partially measured metric reaches easily. The rule added here claims a direction only when
+    the CI clears no effect, and testing "does the interval contain 1.0" fails open when there is
+    no interval: two pairs at 0.5 printed a 50% win with nothing behind it.
+    """
+
+    result = compare(
+        "treatment",
+        _split_pairs("keystroke_p95_ms", [0.5, 0.5]),
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+    )
+    metric = result.metrics[0]
+    assert metric.n_pairs == 2
+    assert (metric.ci_low, metric.ci_high) == (None, None)
+    assert metric.beyond_noise is True
+    assert metric.ci_spans_no_effect is False  # nothing to span
+    assert metric.unresolved is True
+    assert metric.verdict == "inconclusive"
+    assert result.headline_ratio is None
+    assert result.verdict == "INCONCLUSIVE"
+
+
+def test_a_regression_with_no_ci_is_still_a_regression_and_still_in_the_headline():
+    """The refusal is one-sided: a missing interval withholds a win, never a loss.
+
+    Withholding an unresolved win costs a headline; withholding an unresolved loss ships the
+    regression. So the worse side keeps its plain "regressed" label, its FAIL, and its place in
+    the aggregate, where it can only pull the number toward worse.
+    """
+
+    result = compare(
+        "treatment",
+        _split_pairs("keystroke_p95_ms", [1.5, 1.5]),
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+    )
+    metric = result.metrics[0]
+    assert (metric.ci_low, metric.ci_high) == (None, None)
+    assert metric.verdict == "regressed"
+    assert metric.withheld is False
+    assert result.headline_ratio == pytest.approx(1.5, abs = 1e-9)
+    assert result.regressions
+    assert result.verdict == "FAIL"
+
+
+def test_three_pairs_still_resolve_a_direction():
+    """The control: the threshold is three, so three agreeing pairs still read as a win."""
+
+    result = compare(
+        "treatment",
+        _split_pairs("keystroke_p95_ms", [0.5, 0.5, 0.5]),
+        _identity(),
+        _identity(),
+        noise_floor_pct = 5.0,
+    )
+    metric = result.metrics[0]
+    assert metric.ci_low is not None
+    assert metric.unresolved is False
+    assert metric.verdict == "improved"
+    assert result.verdict == "IMPROVED"
