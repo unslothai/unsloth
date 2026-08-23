@@ -1400,16 +1400,19 @@ def test_a_late_failure_cannot_release_a_nonce_a_newer_attempt_owns():
         }));
         """,
     )
-    assert out["beforeFailure"] == {
-        "state": {
-            "activeNonce": "n1",
-            "hasSwitched": True,
-            "attempt": 3,
-            "pendingSavedThreadIds": [],
-        },
-        "switched": 2,
-        "mainThreadId": "local-2",
-    }, "two new-chat attempts for one nonce, the second of which opened the thread on screen, plus the saved detour between them"
+    assert (
+        out["beforeFailure"]
+        == {
+            "state": {
+                "activeNonce": "n1",
+                "hasSwitched": True,
+                "attempt": 3,
+                "pendingSavedThreadIds": [],
+            },
+            "switched": 2,
+            "mainThreadId": "local-2",
+        }
+    ), "two new-chat attempts for one nonce, the second of which opened the thread on screen, plus the saved detour between them"
     assert out["afterFailure"]["state"] == {
         "activeNonce": "n1",
         "hasSwitched": True,
@@ -2094,7 +2097,7 @@ def test_a_saved_switch_failing_late_does_not_detach_the_saved_chat_that_replace
         """,
     )
     assert out["beforeFailure"] == "thread-b", "B really owned the active id before A failed"
-    assert out["activeThreadId"] == "thread-b", (
-        "a superseded saved switch failing must not detach the saved chat now on screen"
-    )
+    assert (
+        out["activeThreadId"] == "thread-b"
+    ), "a superseded saved switch failing must not detach the saved chat now on screen"
     assert out["unhandled"] == 0
