@@ -142,8 +142,12 @@ def differing_actions(
         for action, shard, cell, r in results
         if r["verdict"] == P.DIFFER and not is_unstable(unstable, action, cell)
     ]
+    # Carrying the DIRECTION as the fifth element, exactly as `report` does, so the artifact
+    # illustrates the same set the verdict counted. Without it a direction-reversing pair would
+    # be firm here and uncorroborated there, and the evidence would show a regression the job
+    # did not fail on.
     one_sided = [
-        (action, shard, cell, [r.get("reason", "")])
+        (action, shard, cell, [r.get("reason", "")], r.get("one_sided") or None)
         for action, shard, cell, r in results
         if r["verdict"] == P.NOT_EXERCISED
         and r.get("one_sided")
@@ -153,14 +157,14 @@ def differing_actions(
     # on one. Not filtered by the unstable set, for the same reason the verdict does not filter
     # it -- that set measures digest stability, and this is not a digest.
     expect_bad = [
-        (action, shard, cell, [r.get("expect_reason", "")])
+        (action, shard, cell, [r.get("expect_reason", "")], r["expect_regressed"])
         for action, shard, cell, r in results
         if r.get("expect_regressed")
     ]
     firm, _weak = corroborated(stable, min_reps)
     firm_one_sided, _weak_one_sided = corroborated(one_sided, min_reps)
     firm_expect, _weak_expect = corroborated(expect_bad, min_reps)
-    for action, shard, cell, moved in firm + firm_one_sided + firm_expect:
+    for action, shard, cell, moved, *_dir in firm + firm_one_sided + firm_expect:
         out.append({"action": action, "shard": shard, "cell": cell, "moved": moved})
     return out
 

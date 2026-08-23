@@ -594,10 +594,22 @@ def corroborated(entries: list[tuple], min_reps: int) -> tuple[list[tuple], list
     once, and the repetitions are not independent runs of a fresh app but two passes in one
     session, so this is not free. It is printed as UNCORROBORATED rather than dropped, so the
     reading survives even when the verdict does not rest on it.
+
+    THE DIRECTION IS PART OF THE CLAIM, where there is one. An entry may carry a fifth element
+    naming the arm it is about: which arm went idle, or which arm's assertion failed. Two
+    repetitions that disagree about WHICH BUILD failed are not one finding seen twice, they are a
+    race that landed on either side, and grouping them only by action and rung let the pair reach
+    `firm` and report "the two builds did not behave the same way" while its own two lines named
+    opposite arms. Keyed on the direction they separate, and each side is then a single
+    repetition, so both print as UNCORROBORATED and the verdict does not rest on them.
+
+    A four-element entry has no direction and groups exactly as before, which is right for a
+    digest difference: `stable_bad` is a statement about a PAIR of arms and has no failing side.
     """
-    by_action: dict[tuple[str, str], list[tuple]] = collections.defaultdict(list)
+    by_action: dict[tuple, list[tuple]] = collections.defaultdict(list)
     for entry in entries:
-        by_action[(entry[0], rung_of_cell(entry[2]))].append(entry)
+        direction = entry[4] if len(entry) > 4 else None
+        by_action[(entry[0], rung_of_cell(entry[2]), direction)].append(entry)
     firm, weak = [], []
     for group in by_action.values():
         # DISTINCT repetitions, not rows: one repetition seen twice is one observation.
@@ -644,10 +656,17 @@ def report(
         # declared unstable list, so a head that no longer stops generation was excused twice
         # over. The exemption was measured for digest stability; applying it here would be
         # applying it to a different quantity that happens to share an action name.
+        # The fifth element is the DIRECTION, and `corroborated` keys on it. Which arm's
+        # assertion failed is part of what is being claimed: a treatment failure in one
+        # repetition and a base failure in the next is a race that landed on either side, not
+        # one finding seen twice.
         if r.get("expect_regressed"):
-            expect_bad.append((action, shard, cell, [r.get("expect_reason", "")]))
+            expect_bad.append(
+                (action, shard, cell, [r.get("expect_reason", "")], r["expect_regressed"])
+            )
         if r["verdict"] == P.NOT_EXERCISED:
-            entry = (action, shard, cell, [r.get("reason", "")])
+            # Same, for which arm stayed live: `one_sided` names the arm that DID run.
+            entry = (action, shard, cell, [r.get("reason", "")], r.get("one_sided") or None)
             if r.get("one_sided"):
                 # ONE ARM RAN IT AND THE OTHER COULD NOT, which is not the missed-slot case.
                 # A missed slot is a runner losing a race and it costs coverage; an action that
@@ -740,7 +759,7 @@ def report(
             "\n  on only one, in every repetition. Not excused by the unstable set: that set is a"
             "\n  measurement of whether a DIGEST races, and this is not a digest:"
         )
-        for action, shard, cell, why in expect_bad:
+        for action, shard, cell, why, *_dir in expect_bad:
             print(f"    {action:<26} {shard} {cell}: {why[0]}")
 
     if expect_weak:
@@ -748,7 +767,7 @@ def report(
             f"\n  UNCORROBORATED assertion failure -- on one arm in fewer than {min_reps} "
             f"repetitions; reported, not counted:"
         )
-        for action, shard, cell, why in expect_weak[:8]:
+        for action, shard, cell, why, *_dir in expect_weak[:8]:
             print(f"    {action:<26} {shard} {cell}: {why[0]}")
 
     if one_sided:
@@ -756,7 +775,7 @@ def report(
             "\n  RAN ON ONE ARM ONLY -- one build could perform these and the other could not,"
             "\n  in every repetition. That is a difference between the builds, not lost coverage:"
         )
-        for action, shard, cell, why in one_sided:
+        for action, shard, cell, why, *_dir in one_sided:
             print(f"    {action:<26} {shard} {cell}: {why[0]}")
 
     if one_sided_weak:
@@ -764,7 +783,7 @@ def report(
             f"\n  UNCORROBORATED one-arm-only -- ran on one arm in fewer than {min_reps} "
             f"repetitions; reported, not counted:"
         )
-        for action, shard, cell, why in one_sided_weak[:8]:
+        for action, shard, cell, why, *_dir in one_sided_weak[:8]:
             print(f"    {action:<26} {shard} {cell}: {why[0]}")
 
     if one_sided_unstable:
@@ -772,7 +791,7 @@ def report(
             "\n  (reported, not counted) one-arm-only on an action expected to vary between runs"
             "\n  of any build, so which arm reached its slot is a race rather than a signal:"
         )
-        for action, shard, cell, why in one_sided_unstable[:8]:
+        for action, shard, cell, why, *_dir in one_sided_unstable[:8]:
             print(f"    {action:<26} {shard} {cell}: {why[0]}")
 
     if stable_bad:
@@ -801,13 +820,13 @@ def report(
     if idle:
         # Named surfaces, deduplicated: what matters is WHICH actions this run never opened, not
         # that it failed to open one of them sixteen separate times.
-        names = sorted({action for action, _s, _c, _w in idle})
+        names = sorted({entry[0] for entry in idle})
         print(
             f"\n  NOT EXERCISED -- {len(idle)} pair(s) over {len(names)} action(s) that did not "
             f"run. These surfaces are UNCHECKED, not unchanged:"
         )
         for name in names:
-            why = next(w[0] for a, _s, _c, w in idle if a == name)
+            why = next(entry[3][0] for entry in idle if entry[0] == name)
             print(f"    {name:<26} {why}")
 
     if style_bad:

@@ -463,3 +463,28 @@ def test_the_evidence_uses_the_same_confined_set_the_verdict_scored_with(tmp_pat
     out = tmp_path / "out"
     assert S.build(result, null, shots, out, min_reps = 2) == 0
     assert any("settings" in p.name for p in out.glob("*composite*"))
+
+
+def test_a_direction_reversing_pair_is_not_illustrated_either(tmp_path):
+    # The verdict does not fail on a pair whose two repetitions blame opposite arms, so the
+    # artifact must not present one as the change that turned the job red. The two selections are
+    # keyed the same way for the same reason they are corroborated the same way.
+    shots = tmp_path / "shots"
+    rows = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            f = f"settings_{rep}_{arm}.png"
+            png(shots / f, 200, 120, (10, 60, 10) if arm == "base" else (60, 10, 10))
+            row = action(f"r100K.{arm}.{rep}", "settings", "SAME", f)
+            if (arm == "treatment" and rep == "rep0") or (arm == "base" and rep == "rep1"):
+                row["ran"] = False
+                row["reason"] = "the control never became visible"
+                row["slot_missed"] = False
+            rows.append(row)
+            rows.append({"row_type": "cell", "cell_id": f"r100K.{arm}.{rep}", "completed": True})
+    result = write(tmp_path, "result", rows)
+    null = quiet_null(tmp_path, "null", ["settings"])
+    assert S.differing_actions(S.shards_of(str(result)), S.shards_of(str(null)), min_reps = 2) == []
+    out = tmp_path / "out"
+    assert S.build(result, null, shots, out, min_reps = 2) == 0
+    assert not list(out.glob("*composite*"))

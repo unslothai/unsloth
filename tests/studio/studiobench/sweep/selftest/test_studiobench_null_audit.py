@@ -1055,3 +1055,83 @@ def test_an_assertion_that_failed_in_one_repetition_of_two_is_not_counted(tmp_pa
     )
     assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 0
     assert "UNCORROBORATED assertion failure" in capsys.readouterr().out
+
+
+# ── two repetitions that blame OPPOSITE arms are not one finding ─────
+
+
+def _reversing_expect_payload(tmp_path: Path, name: str, action: str) -> Path:
+    """`action` fails its assertion on TREATMENT in rep0 and on BASE in rep1."""
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            cid = f"r100K.{arm}.{rep}"
+            for i in range(16):
+                r = action_row(cid, f"filler{i}", "SAME")
+                r["expect_ok"] = True
+                rows.append(r)
+            r = action_row(cid, action, "SAME")
+            bad = (arm == "treatment" and rep == "rep0") or (arm == "base" and rep == "rep1")
+            r["expect_ok"] = not bad
+            if bad:
+                r["reason"] = "clicking Stop did not end the stream"
+            rows.append(r)
+            rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+    out = tmp_path / name
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    return path
+
+
+def test_an_assertion_that_blames_a_different_arm_each_time_is_not_corroborated(tmp_path, capsys):
+    """A race that landed on either side is not a build that consistently failed.
+
+    Grouped by action and rung alone, a treatment failure in rep0 and a base failure in rep1 are
+    two distinct repetition labels, so the pair reached `firm` and the job exited 1 reporting
+    "the two builds did not behave the same way" -- directly above its own two lines naming
+    OPPOSITE arms. Neither build failed twice.
+
+    Keyed on the direction they separate, so each side is a single repetition and both print as
+    UNCORROBORATED. The safe direction: this can only ever under-count, and an under-count is
+    visible in the output rather than silent.
+    """
+    path = _reversing_expect_payload(tmp_path, "reversing", "stop_generation")
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 0
+    printed = capsys.readouterr().out
+    assert "UNCORROBORATED assertion failure" in printed
+    assert "ASSERTION failed on one arm:  0" in printed
+
+
+def test_an_assertion_that_blames_the_same_arm_twice_still_fails_the_job(tmp_path):
+    # The other side of the same key, and the reason the fix is not just "require more". A build
+    # that consistently fails the assertion is exactly what this category exists to catch, and it
+    # must survive the direction keying.
+    path = _expect_payload(tmp_path, "consistent", "stop_generation", failed_on = "treatment")
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 1
+
+
+def test_one_arm_only_that_swaps_arms_between_repetitions_is_not_corroborated(tmp_path, capsys):
+    # The same defect on the one-arm-only category, which is the one the item was filed against.
+    # A precondition race that stops the treatment arm performing the action in rep0 and the base
+    # arm in rep1 says nothing about either build.
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            cid = f"r100K.{arm}.{rep}"
+            for i in range(16):
+                rows.append(action_row(cid, f"filler{i}", "SAME"))
+            row = action_row(cid, "settings", "SAME")
+            if (arm == "treatment" and rep == "rep0") or (arm == "base" and rep == "rep1"):
+                row["ran"] = False
+                row["reason"] = "the control never became visible"
+                row["slot_missed"] = False
+            rows.append(row)
+            rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+    out = tmp_path / "swap"
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+
+    assert U.report([path], "t", frozenset(), min_reps = 2, min_compared = 16) == 0
+    assert "UNCORROBORATED one-arm-only" in capsys.readouterr().out
