@@ -1039,13 +1039,15 @@ def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
 #: cell id that stays identical: the tier picks the FILM (the standard film runs 243 s, the quick
 #: one 77.5 s and the fast one 47 s, with different budgets), the cadence picks the rate the reply
 #: streams at, the instrument level decides how much of the number is the instrument, the corpus
-#: hash is the fixture, and the two refs are the builds under test.
+#: hash is the fixture, the engine is what rendered every frame, and the two refs are the builds
+#: under test.
 #:
 #: `rungs` and `reps` are deliberately NOT here. Resuming with more repetitions or another rung is
 #: a legitimate continuation -- it ADDS cells rather than reinterpreting the ones already recorded.
 IDENTITY_AXES = (
     "tier",
     "cadence",
+    "engine",
     "instrument_level",
     "corpus_hash",
     "studio_ref",
@@ -1078,11 +1080,20 @@ def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
     `studio_ref` is spelled exactly as `run_meta` records it, so the requested value and the
     recorded one are comparable without a second convention to keep in step.
     """
+    from .runtime.browser import default_engine
+
     base_ref = f"attached:{args.attach.rstrip('/')}" if args.attach else args.branch
     attach_b = (getattr(args, "attach_b", "") or "").rstrip("/")
     return {
         "tier": args.tier,
         "cadence": args.cadence,
+        # THE ENGINE THAT WILL RENDER, not the flag that asked for it. `--engine` defaults to
+        # nothing and `browser.launch` resolves the platform's desktop webview family, so the
+        # requested value has to be resolved the same way `launch` resolves it -- otherwise the
+        # commonest engine change of all, one run naming `--engine chromium` and the resume
+        # naming none, reads as no difference at all. Resolvable here, before anything is
+        # installed, because `default_engine` reads `platform.system()` and nothing else.
+        "engine": getattr(args, "engine", "") or default_engine()[0],
         "instrument_level": args.instrument_level,
         "corpus_hash": corpus_hash,
         "studio_ref": base_ref,
@@ -1100,9 +1111,10 @@ def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
 def recorded_identities(payload_path) -> list:
     """One identity per session already in the payload, from the rows those sessions wrote.
 
-    Read out of `run_meta`, `ab_plan` and the cells rather than out of a new field, so a payload
-    written before this check existed is judged on exactly the axes it DID record: an axis a row
-    never declared cannot be a difference, and an older output therefore still resumes.
+    Read out of `run_meta` (including its nested `platform.engine`), `ab_plan` and the cells
+    rather than out of a new field, so a payload written before this check existed is judged on
+    exactly the axes it DID record: an axis a row never declared cannot be a difference, and an
+    older output therefore still resumes.
 
     `mode` is the one entry here that is not an axis of any single row. It is what the session's
     cells were recorded under, which is the thing `identity_problems` has to compare and the only
@@ -1139,6 +1151,17 @@ def recorded_identities(payload_path) -> list:
             for axis in IDENTITY_AXES + COMMIT_AXES:
                 if axis in row:
                     by_session[session][axis] = row[axis]
+            # THE ENGINE IS NESTED, under `run_meta.platform`, so the loop above cannot see it.
+            # Read from there rather than from a new top-level field for the same reason as
+            # everything else here: a payload written before this check existed still declares
+            # what it rendered with, and is judged on it. `run_meta` is emitted AFTER
+            # `browser.launch` returns, so what is recorded is the RESOLVED engine and a session
+            # that never got a browser up declares none -- and an axis a row never declared
+            # cannot be a difference, so that session still resumes.
+            if row_type == "run_meta":
+                engine = str((row.get("platform") or {}).get("engine") or "")
+                if engine:
+                    by_session[session]["engine"] = engine
             # `ab_plan` is where the treatment ref is recorded; `run_meta` names only the base.
             if row_type == "ab_plan" and row.get("treatment_ref") is not None:
                 by_session[session]["treatment_ref"] = row["treatment_ref"]

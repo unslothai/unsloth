@@ -403,6 +403,124 @@ def test_a_session_that_died_before_its_first_cell_declares_no_mode(tmp_path):
     )
 
 
+def _one_engine_rung(tmp_path, engine, name = "out") -> Paths:
+    """A payload holding one measured rung, recorded by a session that launched `engine`."""
+
+    paths = Paths.under(tmp_path / name)
+    _record(
+        paths,
+        "sess-1",
+        [
+            _run_meta(
+                "standard",
+                "main",
+                ["1K", "10K"],
+                platform = {"system": "Linux", "engine": engine, "engine_note": "for this test"},
+            ),
+            _cell("r1K.A0.rep0", 1_000),
+            _keystroke("r1K.A0.rep0", 40.0),
+        ],
+    )
+    return paths
+
+
+def test_resuming_under_a_different_browser_engine_is_refused(tmp_path):
+    """The engine RENDERED every number in the payload, and the cell id does not name it.
+
+    A run that measured 1K under Chromium, resumed under WebKit to add 10K, skips the completed
+    Chromium cell and measures the new rung under a different renderer -- and the two land in one
+    ladder, which `score_payload` reads as one build getting slower with context. The engine is
+    part of what a payload measured, exactly like the tier and the cadence.
+    """
+
+    paths = _one_engine_rung(tmp_path, "chromium")
+    args = parse_args(
+        ["--tier", "standard", "--branch", "main", "--engine", "webkit"]
+        + ["--rungs", "1K,10K", "--resume"]
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+        )
+
+    message = str(excinfo.value)
+    assert "engine" in message
+    assert "'chromium'" in message and "'webkit'" in message
+
+
+def test_the_engine_compared_is_the_one_that_will_launch_not_the_flag(tmp_path):
+    """`--engine` defaults to nothing and `browser.launch` resolves the platform's webview family.
+
+    So the commonest engine change of all is the one where the second invocation names no engine
+    at all, and comparing the flags rather than the resolved engines would wave it through.
+    """
+
+    from studiobench.runtime.browser import default_engine
+
+    other = "chromium" if default_engine()[0] != "chromium" else "webkit"
+    paths = _one_engine_rung(tmp_path, other)
+    args = parse_args(["--tier", "standard", "--branch", "main", "--rungs", "1K,10K", "--resume"])
+
+    assert requested_identity(args, None, CORPUS)["engine"] == default_engine()[0]
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+        )
+
+    assert "engine" in str(excinfo.value)
+
+
+def test_the_same_engine_still_resumes(tmp_path):
+    """The control: naming the engine the payload was recorded under is a resume."""
+
+    paths = _one_engine_rung(tmp_path, "chromium")
+    args = parse_args(
+        ["--tier", "standard", "--branch", "main", "--engine", "chromium"]
+        + ["--rungs", "1K,10K", "--resume"]
+    )
+
+    assert (
+        prepare_payload(
+            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+        )
+        is None
+    )
+    assert _resume_set(paths) == {"r1K.A0.rep0"}
+
+
+def test_a_payload_that_never_recorded_an_engine_still_resumes(tmp_path):
+    """The legacy control for this axis, and the one for a session that never got a browser up.
+
+    `run_meta` is emitted after `browser.launch` returns, so a session with no engine in its
+    header either predates the field or never launched anything. Neither declares an engine, and
+    an axis a row never declared cannot be a difference.
+    """
+
+    paths = Paths.under(tmp_path / "out")
+    _record(
+        paths,
+        "sess-old",
+        [
+            _run_meta("standard", "main", ["1K", "10K"], platform = {"system": "Linux"}),
+            _cell("r1K.A0.rep0", 1_000),
+            _keystroke("r1K.A0.rep0", 40.0),
+        ],
+    )
+    args = parse_args(
+        ["--tier", "standard", "--branch", "main", "--engine", "firefox"]
+        + ["--rungs", "1K,10K", "--resume"]
+    )
+
+    assert (
+        prepare_payload(
+            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+        )
+        is None
+    )
+    assert _resume_set(paths) == {"r1K.A0.rep0"}
+
+
 def test_the_report_a_mode_change_would_have_produced(tmp_path):
     """WHY the refusal above exists, as a number rather than as an argument.
 
