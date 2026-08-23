@@ -356,8 +356,23 @@ async ([timeoutMs, quietFrames]) => {
       frames += 1;
       const now = spanCount();
       const stateReached = D.reasoningOpenCount() === want;
-      if (stateReached && reachedAt === null) reachedAt = performance.now() - started;
-      quiet = now === last ? quiet + 1 : 0;
+      const justReached = stateReached && reachedAt === null;
+      if (justReached) reachedAt = performance.now() - started;
+      // THE QUIET STREAK BELONGS ENTIRELY TO THE WINDOW AFTER THE STATE IS REACHED.
+      //
+      // Counting it from the first frame instead defeats the whole fix whenever the panes take
+      // `quietFrames` or more frames to reach the open state while nothing has mounted yet -- and
+      // that is the NORMAL case at the rungs this was written for. The catalogue's own 500K
+      // reading is "the open count reached 16 after 10440ms": the census is static through all of
+      // those frames because the content it would count has not been revealed yet, so the streak
+      // is already satisfied on the very frame the state flips, and the read happens exactly where
+      // it used to. Reproduced against this JS with a page whose state flips at frame 6 and whose
+      // spans mount to frame 40: it returned 44,075 with `censored: false`, which is the withdrawn
+      // number, reported confidently, out of the code that exists to stop it.
+      //
+      // The streak also RESTARTS if the state is lost again, so a count that oscillates around
+      // `want` cannot bank quiet frames it did not hold.
+      quiet = stateReached && !justReached && now === last ? quiet + 1 : 0;
       last = now;
       if (stateReached && quiet >= quietFrames) {
         return {

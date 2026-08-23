@@ -144,20 +144,62 @@ def comparability_key(run_meta: dict) -> str:
     import hashlib
     import json
 
-    platform = run_meta.get("platform") or {}
-    fields = {
-        "corpus_hash": run_meta.get("corpus_hash"),
-        "tier": run_meta.get("tier"),
-        "rungs": run_meta.get("rungs"),
-        "engine": platform.get("engine"),
-        "tool_version": run_meta.get("tool_version"),
-        "instrument_level": run_meta.get("instrument_level"),
-        "cadence": run_meta.get("cadence"),
-        "stream_tail_chars": run_meta.get("stream_tail_chars"),
-        "corpus_dollars": run_meta.get("corpus_dollars"),
-    }
-    blob = json.dumps(fields, sort_keys = True, default = str).encode()
+    # COMPUTED OVER `comparability_fields`, not over a second copy of the same dict. The two were
+    # written out separately and had to be kept in step by hand, which is the drift this module
+    # exists to argue against: a field added to one and forgotten in the other would make the key
+    # and its own explanation disagree about what the key covers.
+    blob = json.dumps(comparability_fields(run_meta), sort_keys = True, default = str).encode()
     return "cmp:" + hashlib.sha256(blob).hexdigest()[:10]
+
+
+def run_metas(records: Iterable[dict]) -> list[dict]:
+    """EVERY `run_meta` row in the payload, in the order written. There is rarely only one."""
+    return [r for r in records if r.get("row_type") == "run_meta"]
+
+
+def merged_run_meta(records: Iterable[dict]) -> tuple[dict | None, list[str]]:
+    """One `run_meta` describing the WHOLE payload, plus the disagreements that forbid one.
+
+    A payload is append-only and `--resume` writes a SECOND header behind the first, so reading
+    only the first describes the run that started the file rather than the cells now in it.
+    `floor_table` has been bitten by this twice and says so where it was fixed: "Reading only the
+    first is what let a fast-tier film and a standard-tier film sit in one file and pass the
+    refusal below." This is the same mistake in the one reader that was not converted.
+
+    `rungs` is UNIONED rather than compared, because extending the ladder is explicitly legitimate.
+    `IDENTITY_AXES` leaves `rungs` and `reps` out on purpose: "Resuming with more repetitions or
+    another rung is a legitimate continuation -- it ADDS cells rather than reinterpreting the ones
+    already recorded." A resumed payload really does describe the union, so the union is what a
+    later reader has to compare against.
+
+    Every OTHER key field is a conflict when the headers disagree, and three of them can differ
+    without `--resume` objecting: `engine` (`--engine` is free on resume), `tool_version` (a module
+    constant, so pulling a harness upgrade mid-campaign changes it), and anything the identity
+    check does not cover. A file whose own headers disagree on those is not one measurement, and no
+    single key can honestly stand for it.
+    """
+    metas = run_metas(records)
+    if not metas:
+        return None, []
+    merged = dict(metas[0])
+    rungs: list = []
+    for m in metas:
+        for rung in m.get("rungs") or []:
+            if rung not in rungs:
+                rungs.append(rung)
+    merged["rungs"] = rungs
+    base = comparability_fields(metas[0])
+    conflicts: list[str] = []
+    for m in metas[1:]:
+        other = comparability_fields(m)
+        for key in sorted(base):
+            if key == "rungs":
+                continue
+            if other.get(key) != base.get(key):
+                line = f"{key}: {base.get(key)!r} != {other.get(key)!r}"
+                if line not in conflicts:
+                    conflicts.append(line)
+    return merged, conflicts
 
 
 def comparability_fields(run_meta: dict) -> dict:
@@ -173,6 +215,21 @@ def comparability_fields(run_meta: dict) -> dict:
         "cadence": run_meta.get("cadence"),
         "stream_tail_chars": run_meta.get("stream_tail_chars"),
         "corpus_dollars": run_meta.get("corpus_dollars"),
+        # THE THREE THAT CHANGE WHAT IS MEASURED, not merely what is measured on. The harness
+        # already treats all three as identity axes that `--resume` refuses to toggle, and the
+        # `run_meta` emission says why in its own words -- so a key that ignored them would call
+        # two payloads comparable that the tool itself refuses to continue as one run.
+        #
+        # `inject_stream_cost_ms` is the sharpest: an arm running it is not a measurement of the
+        # build at all, because the harness put the slowdown there on purpose. Nothing in the
+        # scoring path refuses an injected payload, so `--compare` blessing it against a clean run
+        # was a live route to publishing a difference the harness itself created.
+        #
+        # `click_probe` is normalised through `bool` so a payload written before the field existed
+        # reads as False rather than None; the other two are `None` in the ordinary case already.
+        "click_probe": bool(run_meta.get("click_probe")),
+        "probe_init_script": run_meta.get("probe_init_script"),
+        "inject_stream_cost_ms": run_meta.get("inject_stream_cost_ms"),
     }
 
 

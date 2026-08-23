@@ -190,6 +190,112 @@ def _meta(
     }
 
 
+def test_a_probed_or_calibration_run_is_not_comparable_with_a_clean_one():
+    """The three fields that change what is MEASURED, not merely what it is measured on.
+
+    All three are `IDENTITY_AXES`, which is to say `--resume` refuses to toggle them mid-payload.
+    A comparability key that ignored them would call two payloads comparable that the harness
+    itself refuses to continue as one run.
+
+    `inject_stream_cost_ms` is the one that could publish a number: an arm running it is not a
+    measurement of the build, because the harness added the slowdown deliberately, and nothing in
+    the scoring path refuses an injected payload. Blessing it against a clean run is a direct route
+    to reporting a difference the harness created.
+    """
+    corpus = "ac9d5d8e37be2a3844deed559fde6070247ad2322377295fb383b60b5eec5a0c"
+    clean = _meta(corpus)
+    for field, probed_value in (
+        ("inject_stream_cost_ms", 40.0),
+        ("click_probe", True),
+        ("probe_init_script", "/tmp/probe.js"),
+    ):
+        probed = _meta(corpus)
+        probed[field] = probed_value
+        assert payload_rules.comparability_key(clean) != payload_rules.comparability_key(probed), (
+            f"a run with {field}={probed_value!r} carries the same comparability key as a clean "
+            f"run, so `--compare` calls them comparable"
+        )
+        assert any(
+            line.startswith(f"{field}:")
+            for line in payload_rules.explain_incomparable(clean, probed)
+        )
+
+
+def test_a_payload_written_before_the_probe_fields_existed_still_matches_a_clean_run():
+    """`click_probe` normalises through bool, so a legacy payload is not gratuitously orphaned.
+
+    A refusal that invalidated every older payload would be a cost with no safety in it: absent
+    and False mean the same thing here, which is why the harness reads absence as a value.
+    """
+    corpus = "ac9d5d8e37be2a3844deed559fde6070247ad2322377295fb383b60b5eec5a0c"
+    legacy = _meta(corpus)
+    legacy.pop("click_probe", None)
+    current = _meta(corpus)
+    current["click_probe"] = False
+    assert payload_rules.comparability_key(legacy) == payload_rules.comparability_key(current)
+
+
+def test_a_resumed_payload_is_keyed_on_the_ladder_it_grew_into(tmp_path):
+    """Reading only the FIRST run_meta hashes a ladder the file has since outgrown.
+
+    `--resume` appends a second header, and it may legitimately have extended the ladder:
+    `IDENTITY_AXES` leaves `rungs` out on purpose because adding a rung ADDS cells rather than
+    reinterpreting recorded ones. Keyed on the first header, a payload resumed from one rung to two
+    carries the same key as the one-rung run it started as, and `--compare` pronounces them
+    comparable while the payload's own later comparability row says otherwise.
+    """
+    corpus = "ac9d5d8e37be2a3844deed559fde6070247ad2322377295fb383b60b5eec5a0c"
+    first = _meta(corpus)
+    first["rungs"] = ["100K"]
+    second = _meta(corpus)
+    second["rungs"] = ["100K", "500K"]
+
+    merged, conflicts = payload_rules.merged_run_meta([first, second])
+    assert conflicts == []
+    assert merged["rungs"] == [
+        "100K",
+        "500K",
+    ], "the merge kept the ladder the run STARTED with rather than the one the file describes"
+    one_rung = payload_rules.comparability_key(first)
+    assert payload_rules.comparability_key(merged) != one_rung
+
+
+def test_a_payload_whose_headers_disagree_has_no_key_at_all():
+    """Two runs in one file that were not measuring the same thing cannot share a token.
+
+    `tool_version` needs no exotic invocation to differ: resume a half-finished payload after
+    pulling a harness upgrade and header one reads 0.1.0 while header two reads 0.2.0. Neither
+    value describes the file.
+    """
+    corpus = "ac9d5d8e37be2a3844deed559fde6070247ad2322377295fb383b60b5eec5a0c"
+    before = _meta(corpus)
+    before["tool_version"] = "0.1.0"
+    after = _meta(corpus)
+    after["tool_version"] = "0.2.0"
+    _merged, conflicts = payload_rules.merged_run_meta([before, after])
+    assert conflicts == ["tool_version: '0.1.0' != '0.2.0'"]
+
+
+def test_the_key_is_computed_over_the_fields_it_explains():
+    """The token and its explanation must not be able to drift apart.
+
+    They were written as two separate dicts kept in step by hand. A field added to one and missed
+    in the other would make `--compare` hash something its own "these differ" list never mentions,
+    which is the provenance failure this module argues against, committed by the module itself.
+    """
+    corpus = "ac9d5d8e37be2a3844deed559fde6070247ad2322377295fb383b60b5eec5a0c"
+    a = _meta(corpus)
+    for field in payload_rules.comparability_fields(a):
+        b = _meta(corpus)
+        if field == "engine":
+            b["platform"] = {"engine": "webkit"}
+        else:
+            b[field] = "CHANGED"
+        assert payload_rules.comparability_key(a) != payload_rules.comparability_key(
+            b
+        ), f"{field} is listed in comparability_fields but does not move the key"
+
+
 def test_a_run_from_before_the_settling_fix_is_not_comparable_with_one_from_after():
     """The corpus did not change here, so `tool_version` is the only field that can separate them.
 

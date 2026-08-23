@@ -1810,16 +1810,32 @@ def compare_payloads(args) -> int:
         if not path.exists():
             print(f"no such payload: {path}")
             return 2
-        meta = None
+        # EVERY header, not the first. `--resume` appends a second `run_meta` describing the run
+        # that continued the file, and it may legitimately have extended the ladder: `rungs` is
+        # deliberately outside `IDENTITY_AXES` because adding a rung ADDS cells rather than
+        # reinterpreting the recorded ones. Keying on the first header therefore hashes a ladder
+        # the file has since outgrown, and declares a resumed payload comparable with the one-rung
+        # run it started as. `floor_table.tiers_of` and `corpora_of` were both fixed for exactly
+        # this; `--compare` was the reader left behind.
+        records = []
         for line in path.read_text(errors = "ignore").splitlines():
             if not line.strip():
                 continue
-            row = json.loads(line)
-            if row.get("row_type") == "run_meta":
-                meta = row
-                break
+            records.append(json.loads(line))
+        meta, conflicts = payload_rules.merged_run_meta(records)
         if meta is None:
             print(f"{path} carries no run_meta row, so it cannot be checked at all")
+            return 2
+        if conflicts:
+            # A file whose own headers disagree is not one measurement, so no single key can stand
+            # for it and the honest answer is a refusal rather than a token.
+            print(f"{path} disagrees with ITSELF across its own run_meta rows:")
+            for line in conflicts:
+                print(f"  {line}")
+            print(
+                "\nThis payload holds more than one run and they were not measuring the same "
+                "thing, so no comparability key describes it. Score the sessions apart."
+            )
             return 2
         metas.append((path, meta))
 

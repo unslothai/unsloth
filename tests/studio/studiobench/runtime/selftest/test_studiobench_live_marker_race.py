@@ -1,0 +1,143 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Two runs that start at the same moment: exactly one may have the output directory.
+
+THE EXISTING GUARD TEST BUILDS ITS TWO RECORDERS ONE AFTER THE OTHER, which the broken code passed
+trivially. A sequential test cannot see a race, and the guard was racy from the day it landed:
+
+    the marker was named `.running.{session_id}`, so the two contenders raced on DIFFERENT paths.
+    Each globbed the directory, each found no marker but its own, and each then wrote one. Scan
+    and write are two syscalls and the window between them is wide enough to lose.
+
+Measured on the shipped guard with two processes released together, holding their recorders open so
+the overlap is real rather than sequential reuse: 107 of 200 trials admitted BOTH, and with four
+processes 68 of 100 admitted more than one. That is the defect-9 corruption reproduced through the
+guard written to prevent it -- two `run_meta` rows, one `cell_id` completed twice, the two copies
+carrying 73.4 ms and 144.5 ms because the runs were contending with each other.
+
+With the lock acquired by exclusive create on ONE fixed name, the same harness admits exactly one
+in 200 trials at two processes and 100 at four.
+
+A BARRIER, NOT SPAWNED PROCESSES ON A SHARED FLAG FILE. The window between the scan and the write
+is roughly 100 to 200 microseconds, so the release has to be tighter than that or the contenders
+simply arrive at different times and the broken guard looks fine. The first version of this test
+used `subprocess.Popen` children spinning on a flag file and PASSED against the racy code three
+times out of three, which is worth recording: a concurrency test that does not synchronise finely
+enough is not a weak test, it is a green one that proves nothing.
+
+Processes rather than threads: the liveness check is `os.kill(pid, 0)`, so two threads would be
+judged against this process's own pid and the test would say nothing about two runs.
+"""
+
+from __future__ import annotations
+
+import multiprocessing as mp
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[5]
+
+#: SIZED BY MEASUREMENT, not by guesswork. Under `spawn` the per-trial collision rate on the broken
+#: guard is well below the 50% a barrier reaches under `fork`, because each contender pays its own
+#: interpreter startup before arriving. At 10 trials the two headline tests missed the defect in one
+#: run out of four; at 40 they caught it in six runs out of six, and the whole file still costs
+#: about ten seconds. A concurrency test that only usually fails on the broken code is not much
+#: better than one that never does.
+#:
+#: `spawn` rather than `fork` because pytest has already started threads by the time this runs, and
+#: forking a multi-threaded process is deprecated for the good reason that the child can deadlock.
+TRIALS = 40
+
+
+def _contend(repo_root: str, outdir: str, index: int, start, hold, q) -> None:
+    """Take the directory, report, and keep holding until every contender has tried."""
+    sys.path.insert(0, repo_root)
+    from tests.studio.studiobench.runtime.types import Recorder, new_session_id
+
+    rec = None
+    start.wait()
+    try:
+        rec = Recorder(Path(outdir) / "payload.jsonl", new_session_id())
+        q.put((True, ""))
+    except SystemExit as exc:
+        q.put((False, str(exc)))
+    except Exception as exc:  # noqa: BLE001 - reported rather than lost
+        q.put((False, f"UNEXPECTED {type(exc).__name__}: {exc}"))
+    finally:
+        # Nobody releases the marker until everyone has attempted, so an admission is genuine
+        # overlap rather than sequential reuse of a directory the first run already let go.
+        try:
+            hold.wait(timeout = 60)
+        except Exception:  # noqa: BLE001
+            pass
+        if rec is not None:
+            rec.close()
+
+
+def _trial(tmp_path: Path, n: int, trial: int) -> list[tuple[bool, str]]:
+    out = tmp_path / f"out{trial}"
+    out.mkdir()
+    ctx = mp.get_context("spawn")
+    start, hold, q = ctx.Barrier(n), ctx.Barrier(n), ctx.Queue()
+    procs = [
+        ctx.Process(target = _contend, args = (str(REPO_ROOT), str(out), i, start, hold, q))
+        for i in range(n)
+    ]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join(timeout = 120)
+    return [q.get(timeout = 10) for _ in range(n)]
+
+
+def _admissions(tmp_path: Path, n: int) -> list[int]:
+    counts = []
+    for trial in range(TRIALS):
+        got = _trial(tmp_path, n, trial)
+        for ok, why in got:
+            if not ok and why.startswith("UNEXPECTED"):
+                pytest.fail(f"a contender failed for the wrong reason: {why}")
+        counts.append(sum(1 for ok, _ in got if ok))
+    return counts
+
+
+def test_two_simultaneous_runs_cannot_both_take_one_output_directory(tmp_path):
+    """The property the guard exists for, asserted against genuine concurrency.
+
+    Against the racy guard this reports about half the trials admitting two.
+    """
+    counts = _admissions(tmp_path, 2)
+    assert set(counts) == {1}, (
+        f"admitted-per-trial counts were {counts}; every trial must admit exactly one. Two runs "
+        f"in one output directory both append to one payload.jsonl, every cell id is written "
+        f"twice, and a reader keyed on the cell id sees whichever was appended last. That is the "
+        f"withdrawn 149.8% regression."
+    )
+
+
+def test_four_simultaneous_runs_admit_exactly_one(tmp_path):
+    """More contenders widen the window, so this is the same property under a harder push."""
+    counts = _admissions(tmp_path, 4)
+    assert set(counts) == {1}, f"admitted-per-trial counts were {counts}"
+
+
+def test_the_refusal_names_the_run_that_holds_the_directory(tmp_path):
+    """A refusal that does not say who holds it sends the reader looking for a phantom."""
+    got = _trial(tmp_path, 2, 0)
+    refused = [why for ok, why in got if not ok]
+    assert len(refused) == 1
+    assert "still running" in refused[0]
+
+
+def test_the_directory_is_free_again_once_the_holder_exits(tmp_path):
+    """The refusal must not outlive the run that caused it, or one race locks the dir forever."""
+    got = _trial(tmp_path, 2, 0)
+    assert sum(1 for ok, _ in got if ok) == 1
+    sys.path.insert(0, str(REPO_ROOT))
+    from tests.studio.studiobench.runtime.types import Recorder, new_session_id
+
+    rec = Recorder(tmp_path / "out0" / "payload.jsonl", new_session_id())
+    rec.close()

@@ -49,6 +49,7 @@ from tests.studio.studiobench.scoring.from_payload import (  # noqa: E402
     _stream_measures,
     refuse_if_probed,
 )
+from tests.studio.studiobench.scoring import payload_rules  # noqa: E402
 
 METRICS = tuple(ACTION_SOURCES) + FRAME_METRICS + STREAM_METRICS
 
@@ -360,9 +361,40 @@ def load(paths: list[Path]) -> tuple[dict[str, list[tuple[float, float]]], set[s
     return pooled, tiers
 
 
+def partial_censoring(paths: list[Path]) -> dict[str, str]:
+    """{metric: why it must not be pooled across this ladder}, over every shard.
+
+    THE GUARD WAS WRITTEN AND THEN NEVER CALLED. `payload_rules.refuse_partial_censoring` returned
+    the right refusal from the moment it landed and nothing in the scoring or sweep path asked it
+    anything, so the only code that ever saw the answer was its own selftest. That is the same
+    shape as the row type that was registered nowhere: a guard that cannot fire is not a guard, and
+    it is worse than an absent one because the reader believes the case is covered.
+
+    What it catches is defect 2. `reasoning_toggle.open_ms` is censored on every cell above the
+    100K rung, so `paired()` pools only the cells that could answer and `render()` prints the mean
+    of those under a bare metric name. On a 100K/500K/1M ladder that row is a 100K-only number
+    wearing a ladder label, and the only hint is a smaller `n` sitting beside the other rows --
+    indistinguishable from a metric that simply had fewer repetitions.
+    """
+    out: dict[str, str] = {}
+    for path in paths:
+        records = read_rows(path)
+        for metric in sorted(censorable_metrics(records)):
+            why = payload_rules.refuse_partial_censoring(records, metric)
+            if why and metric not in out:
+                out[metric] = why
+    return out
+
+
+def censorable_metrics(records: list[dict]) -> set[str]:
+    """Every metric this payload censored anywhere, which is the set worth asking about."""
+    return set(payload_rules.censored_metrics(records))
+
+
 def summarise(paths: list[Path]) -> dict[str, dict[str, float]]:
     out: dict[str, dict[str, float]] = {}
     pooled, _tiers = load(paths)
+    censoring = partial_censoring(paths)
     for metric, rows in pooled.items():
         ratios = [t / b for b, t in rows]
         out[metric] = {
@@ -378,6 +410,15 @@ def summarise(paths: list[Path]) -> dict[str, dict[str, float]]:
             # a real comparison it is the effect's own scatter, which is GATE 3.
             "spread_pct": (max(ratios) - min(ratios)) * 100.0,
         }
+        # LABELLED, NOT DROPPED AND NOT RAISED. Raising would be the defect-10 mistake: `open_ms`
+        # is censored above 100K on EVERY standard and full run, so a refusal that exited would
+        # abort the whole table on the normal case and the guard would be removed within a day.
+        # Dropping the row silently would delete a reading somebody may still want at the one rung
+        # that produced it. So the row survives, carries the rungs it actually covers, and is
+        # denied a verdict below -- it can no longer clear a gate or be counted as a survivor.
+        if metric in censoring:
+            out[metric]["poolable"] = False
+            out[metric]["censoring"] = censoring[metric]
     return out
 
 
@@ -452,18 +493,35 @@ def render(
     print(head + ("      floor %  verdict" if floors else ""))
     print("  " + "-" * (len(head) + (26 if floors else 0)))
     survivors = 0
+    censored_notes: list[str] = []
     for metric in sorted(stats, key = lambda m: (m in METRICS, m)):
         s = stats[metric]
+        # A metric censored at some rungs and measured at others is marked in the NAME COLUMN, so
+        # the caveat cannot be separated from the number when somebody copies one row out of this
+        # table into prose. That is the route every withdrawn figure in this harness travelled.
+        partial = s.get("poolable") is False
+        shown = f"{metric} [*]" if partial else metric
         line = (
-            f"  {metric:<28}{s['n']:>3}{s['base']:>11.1f}{s['treat']:>11.1f}"
+            f"  {shown:<28}{s['n']:>3}{s['base']:>11.1f}{s['treat']:>11.1f}"
             f"{s['delta_pct']:>+10.1f}{s['spread_pct']:>10.1f}"
         )
         if floors is not None:
-            f, verdict = verdict_for(s, floors.get(metric), is_count_metric(metric))
-            line += (f"{'--':>13}" if f is None else f"{f:>13.1f}") + f"  {verdict}"
-            if verdict in ("faster", "SLOWER", "LOST (invariant fell)", "gained"):
-                survivors += 1
+            if partial:
+                # DENIED A VERDICT. Passing three gates on the rungs that could answer is not
+                # passing them on the ladder the row is labelled with.
+                line += f"{'--':>13}  not pooled"
+            else:
+                f, verdict = verdict_for(s, floors.get(metric), is_count_metric(metric))
+                line += (f"{'--':>13}" if f is None else f"{f:>13.1f}") + f"  {verdict}"
+                if verdict in ("faster", "SLOWER", "LOST (invariant fell)", "gained"):
+                    survivors += 1
+        if partial:
+            censored_notes.append(s["censoring"])
         print(line)
+    if censored_notes:
+        print("\n  [*] NOT A LADDER NUMBER, and not scored:")
+        for note in censored_notes:
+            print(f"      {note}")
     if floors is not None:
         print(f"\n  {survivors} metric(s) cleared all three gates.")
     return survivors
