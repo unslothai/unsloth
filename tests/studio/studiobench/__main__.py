@@ -1042,6 +1042,20 @@ def run(args, ab_ref = None) -> int:
             # it back as an identity axis so a calibration cannot be continued as an ordinary
             # run or the other way round. See `IDENTITY_AXES`.
             "inject_stream_cost_ms": getattr(args, "inject_stream_cost_ms", None),
+            # WHICH BROWSER ACTUALLY RENDERED THIS, which the engine name does not settle.
+            #
+            # `--headed` flips `headless` at launch, and since Playwright 1.57 the two modes
+            # default to DIFFERENT BINARIES -- headed resolves to `chrome`, headless to
+            # `chrome-headless-shell`. This workflow pins `playwright>=1.45,<2`, so that split is
+            # in range. It is not a mode flag with a mode-shaped effect: one report measures
+            # headless-shell at two to three times the processing time of chrome-stable, headless
+            # falls back to software rendering for GPU-accelerated work, and the compositor still
+            # ticks at 60 Hz in headless unless BeginFrameControl is driven by hand.
+            #
+            # This tool measures frames, jank and time-to-settle. A payload recorded headed and one
+            # recorded headless are two different renderers, and the payload has to say which it
+            # was before anything compares them.
+            "headed": bool(getattr(args, "headed", False)),
         }
         rec.emit(meta_row)
 
@@ -1639,6 +1653,14 @@ IDENTITY_AXES = (
     # cells that were recorded cleanly before it are unscorable from then on and nothing this tool
     # offers takes it back. Refusing here costs a millisecond and happens before the first install.
     "probe_init_script",
+    # `--headed`. On the same rule as `engine` directly above the others, and for the same reason
+    # the engine is there at all: it decides which browser binary renders the film. Since
+    # Playwright 1.57 headed and headless resolve to different executables (`chrome` against
+    # `chrome-headless-shell`), headless falls back to software rendering for GPU-accelerated
+    # work, and the compositor's own pacing differs. A resume that toggles it would skip the
+    # completed cells and append the rest under the same ids, building one ladder from two
+    # renderers -- exactly what this check exists to refuse.
+    "headed",
 )
 
 #: The axes that describe the SECOND side, which only exist when a run has one. See
@@ -1665,6 +1687,7 @@ HISTORICAL_DEFAULTS = {
     "click_probe": False,
     "inject_stream_cost_ms": None,
     "probe_init_script": None,
+    "headed": False,
 }
 
 #: THE RATIO THE LADDER WAS SIZED BY, carried on every cell's `meta` by `session.build_cells`.
@@ -1732,6 +1755,11 @@ def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
         "corpus_dollars": bool(args.corpus_dollars),
         "click_probe": bool(getattr(args, "click_probe", False)),
         "inject_stream_cost_ms": getattr(args, "inject_stream_cost_ms", None),
+        # Spelled the same way `run_meta` records it, through `bool`, so the recorded False and
+        # the requested value are the same type. Adding the axis without this line made every
+        # resume refuse itself -- the payload declared `False` and the request declared `None` --
+        # which is the failure mode an identity axis has when it is only half wired up.
+        "headed": bool(getattr(args, "headed", False)),
         # FROM THE ENVIRONMENT, because that is where this one is asked for: the probe hook is a
         # variable rather than a flag on purpose, so `args` never sees it and there is nothing to
         # read it from. Spelled exactly as `run_meta` records it -- the path as it was given -- for

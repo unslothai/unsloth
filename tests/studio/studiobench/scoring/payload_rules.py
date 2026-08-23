@@ -327,6 +327,14 @@ def comparability_fields(run_meta: dict) -> dict:
         # comparison was the place it was missing.
         "system": platform.get("system"),
         "machine": platform.get("machine"),
+        # WHICH BROWSER BINARY DREW THE FRAMES, which `engine` does not settle. Since Playwright
+        # 1.57 headed and headless default to different executables -- `chrome` against
+        # `chrome-headless-shell` -- and headless falls back to software rendering for
+        # GPU-accelerated work while its compositor keeps its own pacing. For a tool whose output
+        # is frames, jank and time-to-settle, those are two different renderers under one engine
+        # name. Normalised through `bool` so a payload written before the field existed reads as
+        # the headless default rather than as None.
+        "headed": bool(run_meta.get("headed")),
     }
 
 

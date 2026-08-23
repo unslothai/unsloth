@@ -467,3 +467,42 @@ def test_a_payload_with_no_resumed_attempt_is_unchanged():
         {"row_type": "cell", "cell_id": "r100K.base.rep0", "session_id": "s1", "completed": True},
     ]
     assert len(payload_rules.windows_of_completed_cells(rows)) == 1
+
+
+def test_a_headed_run_is_not_comparable_with_a_headless_one():
+    """`engine` does not settle which browser drew the frames.
+
+    Since Playwright 1.57 the two modes default to different binaries -- `chrome` against
+    `chrome-headless-shell` -- and this repo pins `playwright>=1.45,<2`, so that split is in range.
+    Headless also falls back to software rendering for GPU-accelerated work and its compositor
+    keeps its own pacing. For a tool whose output is frames, jank and time-to-settle, those are two
+    different renderers reported under one engine name.
+    """
+    corpus = "ac9d5d8e37be2a3844deed559fde6070247ad2322377295fb383b60b5eec5a0c"
+    headless = _meta(corpus)
+    headed = _meta(corpus)
+    headed["headed"] = True
+    assert payload_rules.comparability_key(headless) != payload_rules.comparability_key(headed)
+    assert payload_rules.explain_incomparable(headless, headed) == ["headed: False != True"]
+
+
+def test_a_payload_written_before_the_headed_field_reads_as_headless():
+    """Absence is the headless default, not a third state that orphans every older payload."""
+    corpus = "ac9d5d8e37be2a3844deed559fde6070247ad2322377295fb383b60b5eec5a0c"
+    legacy = _meta(corpus)
+    legacy.pop("headed", None)
+    current = _meta(corpus)
+    current["headed"] = False
+    assert payload_rules.comparability_key(legacy) == payload_rules.comparability_key(current)
+
+
+def test_the_launch_mode_is_an_identity_axis_a_resume_cannot_toggle():
+    """Recording it is not enough: `--resume` must refuse to continue one renderer with another.
+
+    Nothing moves the cell id, so a resume that toggled the flag would skip the completed cells and
+    append the rest under the same ids, building one ladder from two browsers.
+    """
+    from tests.studio.studiobench.__main__ import HISTORICAL_DEFAULTS, IDENTITY_AXES
+
+    assert "headed" in IDENTITY_AXES
+    assert HISTORICAL_DEFAULTS["headed"] is False
