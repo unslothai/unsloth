@@ -1367,6 +1367,16 @@ async def clear_history(
     # added between the listing above and the delete is gone too, and its
     # sandbox would otherwise be stranded.
     cleared, cleared_runs, replayed = await run_in_threadpool(_clear_rows)
+    # Taken HERE, not at the reap below: the archive and sandbox cleanup in between can
+    # run for seconds, and an image registered during it belongs to a chat created after
+    # the transaction, which the clear is therefore keeping. Reaping it would 404 that
+    # chat's cards. Snapshotting before the slow work bounds the reap to what this clear
+    # is actually responsible for.
+    from core.inference.search_images import registered_image_ids
+
+    reapable_image_ids = (
+        None if replayed else await run_in_threadpool(registered_image_ids)
+    )
     # A chat started between the listing and the transaction is in `cleared`
     # but was never cancelled, and a generation still running would dispatch a
     # tool and rebuild the sandbox this call is about to remove.
@@ -1401,7 +1411,7 @@ async def clear_history(
     # the client hangs up, so the attempt this retry replaces still runs to here.
     if not replayed:
         from core.inference.search_images import clear_cache
-        await run_in_threadpool(clear_cache)
+        await run_in_threadpool(clear_cache, reapable_image_ids)
     return {
         "status": "deleted",
         "deletedThreadIds": cleared,

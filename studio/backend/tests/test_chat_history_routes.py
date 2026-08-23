@@ -230,7 +230,9 @@ def test_clear_history_reaps_search_thumbnails_with_a_body(monkeypatch):
     from core.inference import search_images
 
     reaped: list[bool] = []
-    monkeypatch.setattr(search_images, "clear_cache", lambda: reaped.append(True))
+    monkeypatch.setattr(
+            search_images, "clear_cache", lambda only_ids = None: reaped.append(True)
+        )
 
     async def remove_sandboxes(_thread_ids, _delete_files):
         return 0, []
@@ -712,6 +714,76 @@ def _clear_thread_row(thread_id: str) -> dict:
     }
 
 
+def test_a_clear_does_not_reap_an_image_registered_while_it_was_running(tmp_path, monkeypatch):
+    """The reap is global; the delete it accompanies is not.
+
+    Between the transaction committing and the reap there is archive and sandbox cleanup
+    that can run for seconds. A chat created in that window survives the delete, so
+    wiping the whole registry afterwards took ITS thumbnails and left its cards 404ing
+    out of thumbnail_bytes. Independent of the replay case: this one is a first clear.
+
+    The snapshot is taken before the slow work, so an id registered during it is not the
+    clear's to reap.
+    """
+    from core.inference import search_images
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(search_images, "_registry", {})
+    monkeypatch.setattr(search_images, "_cleared_unservable", set())
+    monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path / "thumbs")
+    (tmp_path / "thumbs").mkdir(parents = True, exist_ok = True)
+
+    old = search_images.register_images(
+        [{"title": "before", "image": "https://img.example.com/a.jpg",
+          "thumbnail": "https://tse1.mm.bing.net/th?id=a",
+          "url": "https://example.com/a", "source": "Bing"}]
+    )
+    assert old, "fixture must register: the whole test turns on this id being reapable"
+    old_id = old[0]["id"]
+
+    late: dict[str, str] = {}
+
+    async def remove_sandboxes(_thread_ids, _delete_files):
+        # Stands in for the concurrent client: another tab registers an image for a chat
+        # created after the transaction, while this slow cleanup is still running.
+        entries = search_images.register_images(
+            [{"title": "during", "image": "https://img.example.com/b.jpg",
+              "thumbnail": "https://tse1.mm.bing.net/th?id=b",
+              "url": "https://example.com/b", "source": "Bing"}]
+        )
+        late["id"] = entries[0]["id"]
+        return 0, []
+
+    monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
+    monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
+    monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
+    monkeypatch.setattr(
+        chat_history, "_remove_conversation_archives", lambda _ids, cutoff = None: None
+    )
+    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+
+    studio_db.upsert_chat_thread(_clear_thread_row("before-clear"))
+    asyncio.run(
+        chat_history.clear_history(
+            request,
+            chat_history.ChatClearRequest(ids = [], operationId = "clear-operation-race"),
+            current_subject = "test-user",
+        )
+    )
+
+    assert late.get("id"), "the stand-in never registered, so this asserts nothing"
+    assert search_images.lookup_image(late["id"]) is not None, (
+        "an image registered while the clear was running belongs to a chat the clear "
+        "kept, so reaping it 404s that chat's cards"
+    )
+    assert search_images.lookup_image(old_id) is None, (
+        "the clear still has to reap what it was responsible for"
+    )
+
+
 def test_replayed_clear_keeps_the_thumbnails_of_a_chat_it_did_not_delete(tmp_path, monkeypatch):
     """A retry under a recorded operationId replays, so it must not reap the global cache.
 
@@ -730,7 +802,9 @@ def test_replayed_clear_keeps_the_thumbnails_of_a_chat_it_did_not_delete(tmp_pat
     monkeypatch.setattr(studio_db, "_schema_ready", False)
 
     reaped: list[str] = []
-    monkeypatch.setattr(search_images, "clear_cache", lambda: reaped.append("reaped"))
+    monkeypatch.setattr(
+        search_images, "clear_cache", lambda only_ids = None: reaped.append("reaped")
+    )
 
     async def remove_sandboxes(_thread_ids, _delete_files):
         return 0, []

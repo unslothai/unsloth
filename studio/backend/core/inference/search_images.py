@@ -468,14 +468,44 @@ def thumbnail_bytes(image_id: str) -> bytes | None:
                 _inflight.pop(image_id, None)
 
 
-def clear_cache() -> None:
-    """Drop every registered image and its cached bytes. Called when the user
-    clears all chats: the thumbnails say what was searched for."""
+def registered_image_ids() -> set[str]:
+    """Every id a clear starting now would be responsible for, in memory and on disk.
+
+    Taken before the caller's slow work so the reap that follows can be limited to it.
+    A clear is global while the chat delete it accompanies is not, so anything that
+    registers after this snapshot belongs to a chat the delete is keeping.
+    """
+    ids: set[str] = set()
+    with _registry_lock:
+        ids.update(_registry)
+    for pattern in ("*.jpg", "*.json"):
+        try:
+            ids.update(path.stem for path in _cache_dir().glob(pattern))
+        except OSError:
+            # Unreadable dir: the reap falls back to clearing everything, as before.
+            return set()
+    return ids
+
+
+def clear_cache(only_ids: set[str] | None = None) -> None:
+    """Drop registered images and their cached bytes. Called when the user clears all
+    chats: the thumbnails say what was searched for.
+
+    ``only_ids`` limits the reap to a snapshot taken before the caller's slow work, so
+    an image registered meanwhile -- by another tab or the LAN listener, for a chat the
+    clear is not deleting -- keeps its bytes instead of 404ing out of ``thumbnail_bytes``.
+    The generation still bumps either way: it is the signal that aborts every in-flight
+    fetch, and a spared entry merely re-fetches on the next request.
+    """
     global _cache_generation
     # The unlinks are under the lock too, so an in-flight fetch cannot slip its write
     # in between the bump and the delete and leave a cleared thumbnail on disk.
     with _registry_lock:
-        _registry.clear()
+        if only_ids is None:
+            _registry.clear()
+        else:
+            for image_id in only_ids:
+                _registry.pop(image_id, None)
         _cache_generation += 1
         for pattern in ("*.jpg", "*.json", "*.tmp"):
             try:
@@ -483,6 +513,15 @@ def clear_cache() -> None:
             except OSError:
                 continue
             for path in paths:
+                # `.tmp` stems carry a writer suffix, so they never match a snapshot id
+                # and are always swept: one was never servable, and a torn write left
+                # behind by a crashed fetch has no owner to spare it for.
+                if (
+                    only_ids is not None
+                    and pattern != "*.tmp"
+                    and path.stem not in only_ids
+                ):
+                    continue
                 # Per file, as _evict_cache does: one that cannot be unlinked --
                 # a JPEG another process holds open on Windows -- must not leave
                 # every later one on disk, where the cache-first read in
