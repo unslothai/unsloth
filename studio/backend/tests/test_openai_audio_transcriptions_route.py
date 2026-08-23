@@ -192,6 +192,7 @@ def test_verbose_json_never_emits_a_null_language(monkeypatch):
 
     OpenAI types language as a required string, so emitting null here raised a
     validation error inside the official clients before the caller saw the text."""
+
     async def _no_language(raw):
         return {"text": "hola", "language": None, "duration": 2.0, "model": "small"}
 
@@ -202,6 +203,7 @@ def test_verbose_json_never_emits_a_null_language(monkeypatch):
 
 def test_verbose_json_never_emits_a_null_duration(monkeypatch):
     """A clip that decodes to no samples has no duration; OpenAI requires a number."""
+
     async def _empty(raw):
         return {"text": "", "language": "en", "duration": None, "model": "small"}
 
@@ -283,6 +285,7 @@ def test_client_abort_records_a_cancelled_row(monkeypatch):
 def test_a_baseexception_still_closes_the_row(monkeypatch, exc):
     """KeyboardInterrupt and SystemExit are not Exception, so they used to fall past
     every handler and leave the row stuck at "running" for the life of the process."""
+
     async def _boom(raw):
         raise exc("bang")
 
