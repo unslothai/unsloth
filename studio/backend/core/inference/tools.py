@@ -14775,10 +14775,18 @@ def _unlink_verified_spill(root: str, path: str, owned: "dict[str, tuple[str, st
     that point it is not the file this recorded and is not this to delete. The rename
     itself moves ctime, which is ours to move, so the second check compares the device,
     inode, size and mtime, and the content.
+
+    Nothing but a regular file with the recorded identity is moved at all: a directory or
+    a FIFO left at the name by the sandbox is rejected through its own descriptor before
+    the rename, so the restore below is never asked to put back a kind of thing `os.link`
+    cannot. That leaves only the vanishing window between the check and the rename, and
+    the restore handles it by falling back to a rename when the name is free again.
     """
     directory, name = os.path.split(path)
     recorded = owned.get(os.path.relpath(path, root).replace(os.sep, "/"))
     if recorded is None:
+        return False
+    if not _is_stamped_regular(path, recorded[0]):
         return False
     private = os.path.join(directory, f".tmp-prune-{uuid.uuid4().hex[:12]}.txt")
     try:
@@ -14793,14 +14801,62 @@ def _unlink_verified_spill(root: str, path: str, owned: "dict[str, tuple[str, st
     ):
         _quiet_unlink(private)
         return True
+    _restore_pruned_path(private, path)
+    return False
+
+
+def _is_stamped_regular(path: str, stamp: str) -> bool:
+    """Whether ``path`` is right now the regular file ``stamp`` recorded.
+
+    Through a descriptor rather than the path, and for the same reasons `_file_digest`
+    does it that way: O_NOFOLLOW refuses a symlink dropped at the name and O_NONBLOCK
+    refuses to hang on a FIFO or a device. A directory opens, and is rejected by the
+    mode check. ctime is deliberately not compared -- the caller compares it under the
+    private name, where the rename it performs has already moved it.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = None
+    try:
+        fd = os.open(path, flags)
+        info = os.fstat(fd)
+    except OSError:
+        return False
+    finally:
+        if fd is not None:
+            os.close(fd)
+    if not stat.S_ISREG(info.st_mode):
+        return False
+    return [str(part) for part in (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)] == (
+        stamp.split(":")[:4]
+    )
+
+
+def _restore_pruned_path(private: str, path: str) -> None:
+    """Put back something the prune moved but must not delete.
+
+    `os.link` first, because it refuses to overwrite: if the sandbox has taken the name
+    again in the meantime, the file it put there is not this to replace. A hard link
+    cannot be made to a directory, so when it fails and the name is in fact free, the
+    rename that moved this here is reversed instead, which works whatever was moved.
+    Neither can promise the name is still free at the instant it runs, so the last resort
+    is to leave the data under the private name and say where it went, rather than
+    unlink it.
+    """
     try:
         os.link(private, path)
         _quiet_unlink(private)
+        return
     except OSError:
-        # The name is taken again, so whatever is there now is not this to overwrite
-        # either. The file stays, under a name nothing will prune.
-        logger.warning("tool result spill prune: kept a swapped file as %s", private)
-    return False
+        pass
+    try:
+        if not os.path.lexists(path):
+            os.rename(private, path)
+            return
+    except OSError:
+        pass
+    # The name is taken again, so whatever is there now is not this to overwrite either.
+    # The file stays, under a name nothing will prune.
+    logger.warning("tool result spill prune: kept a swapped file as %s", private)
 
 
 def _prune_spills(target_dir: str, root: "str | None" = None) -> None:
@@ -15366,7 +15422,11 @@ def _python_exec(
     if not disable_sandbox:
         error = _check_code_safety(code)
         if error:
-            return error
+            # Capped like any other result: the analyzer names every occurrence it
+            # found, so code that repeats a forbidden construct enough times reports
+            # back something larger than the room that is left, which is the overflow
+            # this budget exists to prevent. See `_fit_result_to_room`.
+            return _truncate(error)
         # Stripping the child env is not enough: a same-UID child can read
         # /proc/<getppid()>/environ to recover the unfiltered secrets, so close
         # that read here too, not only in bypass mode. Best-effort: the child env
@@ -15494,7 +15554,9 @@ def _python_exec(
         return result
 
     except Exception as e:
-        return f"Execution error: {e}"
+        # An exception message carries whatever the failure put in it, so it is capped
+        # like the result would have been.
+        return _truncate(f"Execution error: {e}")
     finally:
         _call_finished(call_token)
         if _scratch_name:
@@ -15531,7 +15593,9 @@ def _bash_exec(
     if not disable_sandbox:
         blocked = _find_blocked_commands(command)
         if blocked:
-            return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
+            # Capped for the same reason the Python analyzer's error is: it lists what
+            # it found in the command it was handed.
+            return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(blocked))}")
         # Stripping the child env is not enough: a same-UID child can read
         # /proc/<getppid()>/environ to recover the unfiltered secrets, so close
         # that read here too, not only in bypass mode. Best-effort: the child env
@@ -15627,7 +15691,9 @@ def _bash_exec(
         return result
 
     except Exception as e:
-        return f"Execution error: {e}"
+        # An exception message carries whatever the failure put in it, so it is capped
+        # like the result would have been.
+        return _truncate(f"Execution error: {e}")
     finally:
         _call_finished(call_token)
         _forget_tool_pid(locals().get("proc"))

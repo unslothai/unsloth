@@ -1614,3 +1614,160 @@ class TestReadingASpillCannotBeRedirected:
         )
 
         assert tools._holds_no_user_files(str(tmp_path)), spilled
+
+
+class TestPruningNeverMovesSomethingItCannotPutBack:
+    """A rename moves whatever is at the name, and the sandbox can put anything there.
+
+    The prune moves a spill to a private name so the inode it verified is the inode it
+    deletes. If the sandbox replaced that name with a directory first, the rename takes
+    the directory, the stamp check then rejects it, and `os.link` cannot put a directory
+    back: the user's data ends up stranded under a hidden temporary name. So nothing but
+    the regular file the record remembers is moved in the first place.
+    """
+
+    @staticmethod
+    def _a_recorded_spill(tmp_path) -> "tuple[str, str, dict]":
+        spilled = tools._truncate(
+            "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path)
+        )
+        root = str(tmp_path / tools._SPILL_DIR)
+        return root, str(tmp_path / _spill_path(spilled)), tools._spill_manifest(root)
+
+    @staticmethod
+    def _private_names(root) -> list:
+        return [p.name for p in os.scandir(root) if p.name.startswith(".tmp-prune-")]
+
+    @staticmethod
+    def _watch_renames(monkeypatch) -> list:
+        """Every source `os.rename` was asked to move. Putting a thing back afterwards is
+        the backstop; not moving it at all is the fix."""
+        moved = []
+        real = os.rename
+
+        def _rename(src, dst, *args, **kwargs):
+            moved.append(os.fspath(src))
+            return real(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(os, "rename", _rename)
+        return moved
+
+    def test_a_directory_left_at_the_name_is_not_moved(self, tmp_path, monkeypatch):
+        root, spill, owned = self._a_recorded_spill(tmp_path)
+        os.unlink(spill)
+        os.mkdir(spill)
+        open(os.path.join(spill, "receipts.csv"), "w").write("the user's own data")
+        moved = self._watch_renames(monkeypatch)
+
+        assert tools._unlink_verified_spill(root, spill, owned) is False
+        assert spill not in moved, "a directory was moved to a private name"
+        assert os.path.isdir(spill), "the prune moved a directory it could not put back"
+        assert open(os.path.join(spill, "receipts.csv")).read() == "the user's own data"
+        assert not self._private_names(root)
+
+    def test_a_fifo_left_at_the_name_is_not_moved(self, tmp_path, monkeypatch):
+        root, spill, owned = self._a_recorded_spill(tmp_path)
+        os.unlink(spill)
+        os.mkfifo(spill)
+        moved = self._watch_renames(monkeypatch)
+
+        # A plain open would block here with no timeout above it, so a hang is the failure.
+        assert tools._unlink_verified_spill(root, spill, owned) is False
+        assert spill not in moved, "a FIFO was moved to a private name"
+        assert os.path.exists(spill)
+        assert not self._private_names(root)
+
+    def test_a_file_written_over_in_place_is_not_moved(self, tmp_path, monkeypatch):
+        """Same name, same inode, different content: the identity check is not just a
+        file-type check."""
+        root, spill, owned = self._a_recorded_spill(tmp_path)
+        open(spill, "w").write("the user's own data")
+        moved = self._watch_renames(monkeypatch)
+
+        assert tools._unlink_verified_spill(root, spill, owned) is False
+        assert spill not in moved, "a file the sandbox had rewritten was moved"
+        assert open(spill).read() == "the user's own data"
+        assert not self._private_names(root)
+
+    def test_a_spill_moved_and_then_rejected_is_put_back(self, tmp_path, monkeypatch):
+        """The window between the check and the rename is narrow, not closed, so the
+        restore still has to work when `os.link` is the one thing that cannot do it."""
+        root, spill, owned = self._a_recorded_spill(tmp_path)
+        was = open(spill).read()
+        real_rename = os.rename
+
+        def _rename(src, dst, *args, **kwargs):
+            result = real_rename(src, dst, *args, **kwargs)
+            if os.fspath(src) == spill:
+                # Swapped in the instant after the move, which is what the check above
+                # cannot see and the restore has to survive.
+                open(dst, "w").write("changed underneath")
+            return result
+
+        monkeypatch.setattr(os, "rename", _rename)
+        monkeypatch.setattr(os, "link", _refuses_directories)
+
+        assert tools._unlink_verified_spill(root, spill, owned) is False
+        assert os.path.isfile(spill), "the prune stranded a file it declined to delete"
+        assert open(spill).read() == "changed underneath", was[:20]
+        assert not self._private_names(root)
+
+    def test_an_untouched_spill_is_still_deleted(self, tmp_path):
+        """The control: everything above has to leave the prune able to prune."""
+        root, spill, owned = self._a_recorded_spill(tmp_path)
+
+        assert tools._unlink_verified_spill(root, spill, owned) is True
+        assert not os.path.exists(spill)
+        assert not self._private_names(root)
+
+
+def _refuses_directories(*args, **kwargs):
+    """`os.link` as it behaves on the case that motivates this: EPERM, always."""
+    raise OSError(1, "Operation not permitted")
+
+
+class TestARejectedToolCallIsHeldToTheRoomToo:
+    """`python` and `terminal` cap the output of a run, but a call that never gets that
+    far returns straight out of the validator. The Python analyzer names every occurrence
+    it found, so code repeating one forbidden construct reports back a result larger than
+    the room that is left, which is the overflow the budget exists to prevent."""
+
+    @staticmethod
+    def _tampering(times: int) -> str:
+        return "import signal\ndef h(a, b): pass\n" + "\n".join(
+            "signal.signal(signal.SIGALRM, h)" for _ in range(times)
+        )
+
+    def test_the_unsafe_code_error_is_capped(self, monkeypatch):
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        uncapped = tools._check_code_safety(self._tampering(400))
+        assert uncapped and len(uncapped) > 10_000, "the analyzer stopped amplifying"
+
+        out = tools.execute_tool(
+            "python", {"code": self._tampering(400)}, result_budget_tokens = 120
+        )
+
+        assert out.startswith("Error: unsafe code detected")
+        _within_room(out, 120)
+
+    def test_a_blocked_command_is_capped(self, monkeypatch):
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        monkeypatch.setattr(tools, "_find_blocked_commands", lambda command: {_dense(40_000)})
+
+        out = tools.execute_tool("terminal", {"command": "ls"}, result_budget_tokens = 120)
+
+        assert out.startswith("Blocked command(s) for safety:")
+        _within_room(out, 120)
+
+    def test_a_short_rejection_is_returned_whole(self, monkeypatch):
+        """The control: a cap that rewrote every rejection would hide what was wrong."""
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+
+        out = tools.execute_tool(
+            "python", {"code": self._tampering(1)}, result_budget_tokens = 120
+        )
+
+        assert out == tools._check_code_safety(self._tampering(1))
