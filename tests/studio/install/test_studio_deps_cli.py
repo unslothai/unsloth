@@ -505,6 +505,30 @@ def test_a_foreign_lib64_venv_reports_no_duplicates(tmp_path, deps):
     assert conflicts == set()
 
 
+def test_a_foreign_venvs_sole_tilde_backup_is_a_conflict(tmp_path, deps):
+    """The backup reads as one healthy version, so nothing else here can tell
+    the environment apart from a good one, yet pip calls it an invalid
+    distribution and the payload is renamed away with it. Reproduced in a real
+    venv: the scanner reported 1.0 while the package was unimportable.
+    """
+    venv = tmp_path / "managed"
+    site = venv / "lib" / "python3.13" / "site-packages"
+    site.mkdir(parents = True)
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\nversion = 3.13.0\n", encoding = "utf-8")
+    backup = site / "~nsloth_zoo-2026.8.12.dist-info"
+    backup.mkdir()
+    (backup / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: unsloth_zoo\nVersion: 2026.8.12\n", encoding = "utf-8"
+    )
+
+    found = deps._distributions_in(venv)
+
+    assert found is not None
+    installed, conflicts = found
+    assert installed["unsloth-zoo"] == "2026.8.12"
+    assert conflicts == {"unsloth-zoo"}
+
+
 def test_a_nameless_local_record_is_reported_as_a_conflict(tmp_path, monkeypatch, deps):
     """install_manifest.installed_versions() calls this state a conflict, so the
     CLI's own check has to agree: pip cannot parse the record either."""

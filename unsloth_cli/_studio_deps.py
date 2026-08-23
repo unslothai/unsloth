@@ -229,12 +229,18 @@ def _distributions_in(root: Path) -> Optional[tuple[Dict[str, str], set[str]]]:
     found: Dict[str, str] = {}
     conflicts: set[str] = set()
     for dist in Distribution.discover(context = DistributionFinder.Context(path = paths)):
+        path = getattr(dist, "_path", None)
+        stem = os.path.basename(os.fspath(path)) if path is not None else ""
         try:
             name = dist.metadata.get("Name")
             if name:
                 canonical = _canonical(name)
                 version = dist.version or ""
-                if not version or canonical in found:
+                # pip renames the outgoing record to a `~` sibling while it lays
+                # the replacement down, so a kill there can leave the backup as
+                # the only record. It reads as one healthy version, but pip calls
+                # it an invalid distribution and the payload is renamed with it.
+                if not version or canonical in found or stem.startswith("~"):
                     conflicts.add(canonical)
                 if canonical not in found:
                     found[canonical] = version
@@ -242,8 +248,6 @@ def _distributions_in(root: Path) -> Optional[tuple[Dict[str, str], set[str]]]:
         except Exception:
             pass
         # A nameless or unreadable record must not hide a foreign conflict.
-        path = getattr(dist, "_path", None)
-        stem = os.path.basename(os.fspath(path)) if path is not None else ""
         path_name, separator, _version = stem.removesuffix(".dist-info").rpartition("-")
         if stem.endswith(".dist-info") and separator:
             conflicts.add(_canonical(path_name))
