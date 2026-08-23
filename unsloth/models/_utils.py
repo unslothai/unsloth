@@ -4554,7 +4554,7 @@ def _drop_tied_output_module(modules_to_save, ensure_weight_tying):
     nothing and trains two copies that diverge. Measured on 0.18.1 and 0.20.0: this
     spelling gives one trainable matrix on both.
     """
-    if not ensure_weight_tying:
+    if not ensure_weight_tying or not EMBEDDING_MODULES <= set(modules_to_save or ()):
         return modules_to_save
     return [x for x in modules_to_save if x != "lm_head"]
 

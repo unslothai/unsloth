@@ -927,14 +927,13 @@ def _full_weight_embedding_elements(arch: ModelArchConfig, target_modules) -> in
 def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: list) -> int:
     all_linear = _targets_all_linear(target_modules)
     selected_modules = list(DEFAULT_TARGET_MODULES) if all_linear else target_modules
-    # Studio's CPT path swaps an embedding-only list for the default projections
-    # (worker.py); count those adapters too, or the estimate picks a GPU that then OOMs.
-    if (
-        not all_linear
-        and _full_weight_embedding_elements(arch, target_modules)
-        and not set(selected_modules) - EMBEDDING_TARGET_MODULES
-    ):
-        selected_modules = list(selected_modules) + list(DEFAULT_TARGET_MODULES)
+    # Studio's CPT path hands the trainer everything except the embedding names, so an
+    # empty remainder becomes the default projections and "all-linear" expands to them
+    # (worker.py). Count those adapters too, or the estimate picks a GPU that then OOMs.
+    if not all_linear and _full_weight_embedding_elements(arch, target_modules):
+        remainder = [m for m in selected_modules if m not in EMBEDDING_TARGET_MODULES]
+        if not remainder or _targets_all_linear(remainder):
+            selected_modules = list(selected_modules) + list(DEFAULT_TARGET_MODULES)
     hd = arch.hidden_size
     r = lora_rank
     n_layers = arch.num_hidden_layers
