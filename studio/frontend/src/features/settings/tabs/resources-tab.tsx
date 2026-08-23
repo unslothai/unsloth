@@ -142,11 +142,16 @@ function MetricTile({
           {percentKnown ? formatPercent(safePercent) : "--"}
         </span>
       </div>
+      {/* Both lines truncate in a half-width tile, so carry the full text as a title:
+          a sentence-length detail (the GPU states) is otherwise unrecoverable. */}
       <div className="min-w-0">
-        <div className="truncate font-mono text-sm tabular-nums text-foreground">
+        <div
+          title={value}
+          className="truncate font-mono text-sm tabular-nums text-foreground"
+        >
           {value}
         </div>
-        <div className="mt-0.5 truncate text-xs text-muted-foreground">
+        <div title={detail} className="mt-0.5 truncate text-xs text-muted-foreground">
           {detail}
         </div>
       </div>
@@ -348,7 +353,8 @@ export function ResourcesTab() {
   // tells an AMD/ROCm user their card is unused, so until the host has actually
   // been read, report which of the two non-answers it is: still checking, or
   // asked and got nothing back.
-  const gpuUnknown = systemInfo.status !== "ready" && !hasGpu;
+  const hostUnread = systemInfo.status !== "ready";
+  const gpuUnknown = hostUnread && !hasGpu;
   const gpuUnknownLabel =
     systemInfo.status === "unavailable"
       ? t("settings.resources.gpu.unreadable")
@@ -380,6 +386,9 @@ export function ResourcesTab() {
           .join(" · ")
     : null;
   const unknownLabel = t("settings.resources.environment.unknown");
+  // Same rule as the GPU sections: the placeholder's cpu backend and empty package list
+  // are not facts about the host either, so the Environment rows wait for the read too.
+  const hostReading = (value: string) => (hostUnread ? unknownLabel : value);
 
   return (
     <div className="flex flex-col gap-6">
@@ -692,7 +701,7 @@ export function ResourcesTab() {
       <SettingsSection title={t("settings.resources.environment.title")}>
         <InfoRow
           label={t("settings.resources.environment.backend")}
-          value={backendLabel}
+          value={hostReading(backendLabel)}
         />
         <InfoRow
           label={t("settings.resources.environment.python")}
@@ -700,25 +709,25 @@ export function ResourcesTab() {
         />
         <InfoRow
           label={t("settings.resources.environment.torch")}
-          value={
+          value={hostReading(
             systemInfo.ml_packages.torch ??
-            t("settings.resources.environment.notInstalled")
-          }
+              t("settings.resources.environment.notInstalled"),
+          )}
         />
         <InfoRow
           label={t("settings.resources.environment.transformers")}
-          value={
+          value={hostReading(
             systemInfo.ml_packages.transformers ??
-            t("settings.resources.environment.notInstalled")
-          }
+              t("settings.resources.environment.notInstalled"),
+          )}
         />
         <InfoRow
           label={t("settings.resources.environment.uptime")}
-          value={formatUptime(systemInfo.uptime_seconds)}
+          value={hostReading(formatUptime(systemInfo.uptime_seconds))}
         />
         <InfoRow
           label={t("settings.resources.environment.processMemory")}
-          value={formatMb(systemInfo.memory?.process_used_mb)}
+          value={hostReading(formatMb(systemInfo.memory?.process_used_mb))}
         />
       </SettingsSection>
     </div>
