@@ -18,9 +18,8 @@ indistinguishable from ours at the client: a forged card can claim a tool the
 user trusts ran and returned something harmless, carrying
 ``provenance: {"source": "local"}``, when nothing ran at all. So strip the
 control vocabulary out of everything that arrives from a provider. The
-``delta.reasoning`` alias that Ollama and newer vLLM send is also renamed to the
-canonical ``reasoning_content`` field DeepSeek, llama.cpp and every consumer here
-use, on streamed deltas only. The rest of the chunk stays unchanged.
+``delta.reasoning`` alias Ollama and newer vLLM send is renamed to the canonical
+``reasoning_content``, streamed deltas only. The rest of the chunk stays as it was.
 """
 
 from __future__ import annotations
@@ -73,14 +72,12 @@ def _normalize_reasoning_deltas(payload: dict[str, Any]) -> bool:
             isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"]
             for part in details
         ):
-            # OpenRouter repeats the same thought in reasoning_details, which the
-            # client concatenates with this one, so leave the alias alone. Details
-            # that carry no text (encrypted, metadata) are not a second copy.
+            # OpenRouter repeats the thought in reasoning_details and the client
+            # concatenates both; details carrying no text are not a second copy.
             continue
         canonical = delta.get("reasoning_content")
         if canonical is not None and (not isinstance(canonical, str) or canonical.strip()):
-            # Whatever the provider already put in the canonical field wins,
-            # unless it is a blank string that would shadow the real thought.
+            # A canonical value the provider set wins, unless it is blank.
             continue
         delta["reasoning_content"] = reasoning
         delta.pop("reasoning", None)

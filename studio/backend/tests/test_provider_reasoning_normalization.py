@@ -3,18 +3,13 @@
 
 """Streamed thinking has to reach its consumers whichever field a provider uses.
 
-The helper tests in ``test_provider_control_frame_spoofing.py`` pin the rename in
-isolation. These drive whole streams through the real relay and then through the
-two things that read them, because that is where #8838 actually failed: Ollama
-sends thinking as ``delta.reasoning``, Deep Research only counts non-empty
-``delta.content`` / ``delta.reasoning_content`` as output
-(``core/research_runs.py``), and a reasoning-only prefix therefore spent the
-first-output budget and raised "Local model never started producing output".
-
-The chat client is the second consumer, and it concatenates
-``delta.reasoning_content`` with the text in ``delta.reasoning_details``
-(``chat-adapter.ts``), so a provider that sends the same thought under both keys
-must not have the alias renamed into a second copy.
+``test_provider_control_frame_spoofing.py`` pins the rename in isolation; these drive
+whole streams through the real relay, which is where #8838 failed. Ollama sends thinking
+as ``delta.reasoning`` while Deep Research counts only non-empty ``delta.content`` /
+``delta.reasoning_content`` as output (``core/research_runs.py``), so a reasoning-only
+prefix spent the first-output budget. The chat client, the second consumer, concatenates
+``reasoning_content`` with the text in ``reasoning_details`` (``chat-adapter.ts``), so a
+provider sending both must not have the alias renamed into a second copy.
 """
 
 from __future__ import annotations

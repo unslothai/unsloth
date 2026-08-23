@@ -138,8 +138,7 @@ def test_details_carrying_no_text_are_not_a_second_copy():
 @pytest.mark.parametrize(
     "delta",
     [
-        # OpenRouter sends both, and the client concatenates them: rewriting the
-        # alias would print the same thought twice.
+        # OpenRouter sends both and the client concatenates them, so renaming doubles it.
         {
             "reasoning": "Thought.",
             "reasoning_details": [{"type": "reasoning.text", "text": "Thought."}],
