@@ -219,16 +219,20 @@ def test_tying_leaves_the_output_module_for_peft_to_reconstruct():
     nothing and trains two copies that diverge."""
     from unsloth.models._utils import _drop_tied_output_module
 
+    tied, untied = _Model(tie = True), _Model(tie = False)
     both = ["embed_tokens", "lm_head"]
-    assert _drop_tied_output_module(both, True) == ["embed_tokens"]
-    assert _drop_tied_output_module(both, False) == both
+    assert _drop_tied_output_module(tied, both, True) == ["embed_tokens"]
+    assert _drop_tied_output_module(tied, both, False) == both
+    # An untied model has no counterpart for PEFT to rebuild, so dropping lm_head there
+    # would leave the head the caller asked to train frozen.
+    assert _drop_tied_output_module(untied, both, True) == both
     # Only a real pair is split: tying can be requested with no pair to tie, and dropping
     # the lone head would train nothing (or crash on None).
-    assert _drop_tied_output_module(["embed_tokens", "score"], True) == ["embed_tokens", "score"]
-    assert _drop_tied_output_module(["lm_head"], True) == ["lm_head"]
-    assert _drop_tied_output_module(["lm_head"], False) == ["lm_head"]
-    assert _drop_tied_output_module(None, True) is None
-    assert _drop_tied_output_module([], True) == []
+    assert _drop_tied_output_module(tied, ["embed_tokens", "score"], True) == ["embed_tokens", "score"]
+    assert _drop_tied_output_module(tied, ["lm_head"], True) == ["lm_head"]
+    assert _drop_tied_output_module(tied, ["lm_head"], False) == ["lm_head"]
+    assert _drop_tied_output_module(tied, None, True) is None
+    assert _drop_tied_output_module(tied, [], True) == []
 
 
 @pytest.mark.parametrize("requested", [True, False])

@@ -4553,6 +4553,10 @@ def _raise_if_no_lora_targets_left(
         )
 
 
+def _model_ties_embeddings(model):
+    return bool(getattr(getattr(model, "config", None), "tie_word_embeddings", False))
+
+
 def _resolve_ensure_weight_tying(model, modules_to_save, requested):
     """Default `ensure_weight_tying` on when a tied pair lands in modules_to_save.
 
@@ -4564,16 +4568,24 @@ def _resolve_ensure_weight_tying(model, modules_to_save, requested):
         return bool(requested)
     if not EMBEDDING_MODULES <= set(modules_to_save or ()):
         return False
-    return bool(getattr(getattr(model, "config", None), "tie_word_embeddings", False))
+    return _model_ties_embeddings(model)
 
 
-def _drop_tied_output_module(modules_to_save, ensure_weight_tying):
+def _drop_tied_output_module(model, modules_to_save, ensure_weight_tying):
     """Keep the input embedding and leave the tied output for PEFT to reconstruct.
 
     peft 0.18 ties only `tied_weight_keys - modules_to_save`, so naming both there ties
     nothing and trains two diverging copies. One matrix on 0.18.1 and 0.20.0 alike.
+
+    Gated on the model, not the flag: `ensure_weight_tying` can be passed explicitly on
+    an untied model, where PEFT has no counterpart to rebuild and only warns, so dropping
+    lm_head would leave the head the caller asked to train frozen.
     """
-    if not ensure_weight_tying or not EMBEDDING_MODULES <= set(modules_to_save or ()):
+    if (
+        not ensure_weight_tying
+        or not _model_ties_embeddings(model)
+        or not EMBEDDING_MODULES <= set(modules_to_save or ())
+    ):
         return modules_to_save
     return [x for x in modules_to_save if x != "lm_head"]
 
