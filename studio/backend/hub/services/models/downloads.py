@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Optional, Sequence, TYPE_CHECKING
 
@@ -22,7 +23,12 @@ from hub.utils import download_registry
 from hub.utils import download_manifest
 from hub.utils import gguf_plan
 from hub.utils import inventory_scan as hf_cache_scan
-from hub.utils.hf_cache_state import has_active_incomplete_blobs, preferred_repo_cache_dirs
+from hub.utils.gguf import gguf_variant_key, gguf_variant_scopes_overlap
+from hub.utils.hf_cache_state import (
+    has_active_incomplete_blobs,
+    iter_active_repo_cache_dirs,
+    preferred_repo_cache_dirs,
+)
 from hub.utils.snapshot_filters import blob_hashes_for_siblings
 from hub.utils.paths import (
     is_valid_gguf_variant as _is_valid_gguf_variant,
@@ -32,6 +38,8 @@ from hub.utils.paths import (
 from hub.services import snapshot_progress
 from hub.services import download_lifecycle
 from hub.services.models import cache_inventory, gguf_variants
+from hub.services.models.common import _is_main_gguf_filename
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = get_logger(__name__)
 
@@ -117,17 +125,20 @@ def _diffusion_load_in_flight(repo_id: str) -> bool:
     return False
 
 
+def _gguf_load_in_flight(repo_id: str) -> bool:
+    try:
+        from core.inference.llama_cpp import hf_gguf_load_in_flight
+
+        return hf_gguf_load_in_flight(repo_id)
+    except Exception:
+        return False
+
+
 def _load_in_flight(repo_id: str) -> bool:
     """Whether ANY loader is already fetching *repo_id*. Chat is not the only loader that
     downloads on the load path: the Images and Video backends stage their snapshots the same
     way, so both are consulted."""
-    try:
-        from core.inference.llama_cpp import hf_gguf_load_in_flight
-        if hf_gguf_load_in_flight(repo_id):
-            return True
-    except Exception:
-        pass
-    return _diffusion_load_in_flight(repo_id)
+    return _gguf_load_in_flight(repo_id) or _diffusion_load_in_flight(repo_id)
 
 
 def _load_in_flight_error(repo_id: str) -> HTTPException:
@@ -141,9 +152,122 @@ def _load_in_flight_error(repo_id: str) -> HTTPException:
     )
 
 
-def _reject_if_load_in_flight(repo_id: str) -> None:
-    if _load_in_flight(repo_id):
-        raise _load_in_flight_error(repo_id)
+def _revision_has_cache_scope(revision: Path, variant: Optional[str]) -> bool:
+    pending = [revision]
+    while pending:
+        current = pending.pop()
+        try:
+            with os.scandir(current) as children:
+                for child in children:
+                    try:
+                        is_directory = child.is_dir(follow_symlinks = False)
+                    except OSError:
+                        return True
+                    if is_directory:
+                        pending.append(Path(child.path))
+                        continue
+                    child_path = Path(child.path)
+                    if is_appledouble_metadata(child_path):
+                        continue
+                    if variant is None:
+                        return True
+                    try:
+                        relative = child_path.relative_to(revision).as_posix()
+                    except (OSError, RuntimeError, ValueError):
+                        return True
+                    if _is_main_gguf_filename(relative) and gguf_variant_scopes_overlap(
+                        gguf_variant_key(relative),
+                        variant,
+                    ):
+                        return True
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+    return False
+
+
+def _active_cache_has_scope(
+    repo_id: str,
+    variant: Optional[str],
+    root: Path | str,
+) -> bool:
+    scan_errors: list = []
+    entries = list(
+        iter_active_repo_cache_dirs(
+            "model",
+            repo_id,
+            root = Path(root),
+            scan_errors = scan_errors,
+        )
+    )
+    if scan_errors:
+        return True
+    for entry in entries:
+        snapshots = entry / "snapshots"
+        try:
+            revisions = list(snapshots.iterdir())
+        except (FileNotFoundError, NotADirectoryError):
+            revisions = []
+        except (OSError, ValueError):
+            return True
+        try:
+            for revision in revisions:
+                if _revision_has_cache_scope(revision, variant):
+                    return True
+        except (OSError, ValueError):
+            return True
+    return False
+
+
+def _raise_model_rewrite_block(
+    repo_id: str,
+    variant: Optional[str],
+    block: Optional[tuple[int, str]],
+) -> None:
+    if block is None:
+        return
+    status_code, detail = block
+    if status_code == 503:
+        raise HTTPException(status_code = status_code, detail = detail)
+    scope = f"{repo_id} ({variant})" if variant else repo_id
+    raise HTTPException(
+        status_code = 409,
+        detail = (
+            f"'{scope}' is loaded for inference. Unload it (or wait for its load to "
+            "finish), then start the download."
+        ),
+    )
+
+
+async def _reject_if_model_is_resident(
+    repo_id: str,
+    variant: Optional[str],
+    *,
+    cache_root: Path | str,
+) -> None:
+    """Refuse to replace cache files an inference process has open.
+
+    A verified GGUF variant download reclaims the revision it superseded, unlinking the
+    files llama-server keeps mmapped: on Windows that fails with a sharing violation
+    part-way through, and on POSIX it succeeds and leaves the running server on a deleted
+    revision. The reclaim is scoped to that quant's main GGUF files, so the question is
+    per-quant of every backend that reads one quantization: a sibling quant stays
+    downloadable while another one serves. A reader with no quant scope is still refused
+    whole -- a safetensors or MLX load, and the companion repos an Images/Video engine
+    re-reads between generations, whose files no variant names.
+    """
+    from hub.services.models import deletion
+
+    block = await deletion.load_state_rewrite_block(
+        repo_id,
+        variant,
+        cache_root = cache_root,
+        fail_closed = lambda: _active_cache_has_scope(
+            repo_id,
+            variant,
+            cache_root,
+        ),
+    )
+    _raise_model_rewrite_block(repo_id, variant, block)
 
 
 def _spawn_download_worker(
@@ -193,7 +317,8 @@ async def download_model_response(
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
 
     # Avoid concurrent writers to the same HF cache files.
-    _reject_if_load_in_flight(repo_id)
+    if await asyncio.to_thread(_load_in_flight, repo_id):
+        raise _load_in_flight_error(repo_id)
 
     variant = (body.gguf_variant or "").strip() or None
     if variant is not None and not _is_valid_gguf_variant(variant):
@@ -204,6 +329,9 @@ async def download_model_response(
     # A scoped job fetches only `files` and keys itself apart from the repo's full snapshot.
     scoped_files = [f for f in (body.files or []) if f and f.strip()]
     scope_variant = _scope_variant(body.scope_id)
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    cache_paths = get_hf_cache_paths()
     if scope_variant is not None:
         if variant is not None:
             raise HTTPException(
@@ -215,6 +343,16 @@ async def download_model_response(
         if not _is_valid_gguf_variant(scope_variant):
             raise HTTPException(status_code = 400, detail = f"Invalid scope_id: {body.scope_id!r}")
         variant = scope_variant
+    else:
+        # Scoped jobs are exempt: they add the files they name under whatever revision
+        # resolves and never reclaim a superseded one, so they write beside a resident
+        # model rather than over it. The guard would otherwise refuse the shared companion
+        # repo every Images/Video family switch stages while the old model is still up.
+        await _reject_if_model_is_resident(
+            repo_id,
+            variant,
+            cache_root = cache_paths.hub_cache,
+        )
     key = _download_job_key(repo_id, variant)
     # Off the event loop: resolving "auto" can run the Xet reachability probe, and a blackholed DNS
     # makes that outlast its 3s budget while every other Studio request waits behind it.
@@ -225,9 +363,6 @@ async def download_model_response(
     )
     transport = download_lifecycle.resolve_transport(use_xet)
     logger.info("Download transport for %s: %s (%s)", repo_id, transport, transport_reason)
-    from utils.hf_cache_settings import get_hf_cache_paths
-
-    cache_paths = get_hf_cache_paths()
     cache_env = cache_paths.child_env({})
     variant_blob_hashes = frozenset()
     variant_progress_blob_hashes = frozenset()
@@ -276,6 +411,33 @@ async def download_model_response(
                 variant_progress_blob_hashes,
             )
 
+    inference_load_epoch = _registry.inference_load_epoch(repo_id, variant)
+    # Diffusion probes may enter backend locks, so sample them before claim. A load
+    # starting in the remaining window advances the reservation epoch.
+    diffusion_load_in_flight = await asyncio.to_thread(_diffusion_load_in_flight, repo_id)
+    admission_block: Optional[tuple[int, str]] = None
+    if scope_variant is None:
+        from hub.services.models import deletion
+
+        admission_block = await deletion.load_state_rewrite_block(
+            repo_id,
+            variant,
+            cache_root = cache_paths.hub_cache,
+            fail_closed = lambda: _active_cache_has_scope(
+                repo_id,
+                variant,
+                cache_paths.hub_cache,
+            ),
+        )
+
+    def _admission_check() -> bool:
+        return (
+            not _gguf_load_in_flight(repo_id)
+            and not diffusion_load_in_flight
+            and admission_block is None
+            and _registry.inference_load_epoch(repo_id, variant) == inference_load_epoch
+        )
+
     claimed, claim_state = _registry.claim(
         key,
         transport,
@@ -285,14 +447,16 @@ async def download_model_response(
         blob_hashes = variant_blob_hashes,
         progress_blob_hashes = variant_progress_blob_hashes,
         completed_baseline_bytes = completed_baseline_bytes,
-        admission_check = lambda: not _load_in_flight(repo_id),
+        admission_check = _admission_check,
         hub_cache = str(cache_paths.hub_cache),
         xet_cache = str(cache_paths.xet_cache),
         scoped_files = scoped_files if scope_variant is not None else None,
     )
     generation = _registry.current_generation(key)
     if not claimed:
-        if claim_state == "admission_blocked":
+        if claim_state == "admission_blocked" and admission_block is not None:
+            _raise_model_rewrite_block(repo_id, variant, admission_block)
+        if claim_state in ("admission_blocked", "inference_loading"):
             raise _load_in_flight_error(repo_id)
         if claim_state == "scope_file_mismatch":
             raise HTTPException(

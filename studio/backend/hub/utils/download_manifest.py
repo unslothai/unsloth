@@ -495,9 +495,8 @@ def write_manifest(
 ) -> bool:
     """Write/overwrite the manifest for this triple. Best-effort.
 
-    ``False`` on write failure must not be treated as fatal: the
-    worst-case fallback is the pre-fix scanner behavior (one missed
-    partial detection), which is no regression.
+    ``False`` on write failure is nonfatal for the transfer, but callers must
+    skip any activation or reclaim operation that depends on this attestation.
     """
     recorded_hub_cache = _canonical_hub_cache(hub_cache)
     path = manifest_path(

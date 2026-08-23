@@ -253,8 +253,33 @@ def _read_refs_by_commit(refs_dir: Path) -> Optional[dict[str, set[str]]]:
     return refs_by_commit
 
 
+def _repo_has_download_state(repo_type: str, repo_id: str, hub_cache: Path) -> bool:
+    from hub.utils import download_manifest
+
+    try:
+        if download_manifest.read_manifest(
+            repo_type, repo_id, hub_cache = hub_cache
+        ) is not None or download_manifest.has_cancel_marker(
+            repo_type, repo_id, hub_cache = hub_cache
+        ):
+            return True
+        return any(
+            next(entries, None) is not None
+            for entries in (
+                download_manifest.iter_variant_manifests(
+                    repo_type, repo_id, hub_cache = hub_cache
+                ),
+                download_manifest.iter_variant_markers(
+                    repo_type, repo_id, hub_cache = hub_cache
+                ),
+            )
+        )
+    except Exception:
+        return False
+
+
 def _recover_repo_dropped_by_scan(repo_dir: Path) -> Optional[_RecoveredRepoInfo]:
-    """Recover readable revisions from a repo omitted by ``scan_cache_dir``.
+    """Recover readable revisions or explicit partial state from a dropped repo.
 
     Dangling refs, broken snapshot links, and stray snapshot files can hide an otherwise usable
     repo. Skip those bad entries and rebuild a read-only row from the intact files. Return None
@@ -269,9 +294,8 @@ def _recover_repo_dropped_by_scan(repo_dir: Path) -> Optional[_RecoveredRepoInfo
     if refs_by_commit is None:
         return None
     try:
-        if not snapshots_dir.is_dir():
-            return None
-        snapshot_entries = sorted(snapshots_dir.iterdir())
+        snapshots_missing = not snapshots_dir.is_dir()
+        snapshot_entries = [] if snapshots_missing else sorted(snapshots_dir.iterdir())
     except OSError:
         return None
 
@@ -279,7 +303,7 @@ def _recover_repo_dropped_by_scan(repo_dir: Path) -> Optional[_RecoveredRepoInfo
     revisions: set[_RecoveredRevisionInfo] = set()
     dangling = dict(refs_by_commit)
     # Entries that explain why upstream dropped the repo.
-    skipped = 0
+    skipped = int(snapshots_missing)
     for snapshot in snapshot_entries:
         if snapshot.name in _CACHE_ENTRIES_TO_IGNORE:
             continue
@@ -331,8 +355,10 @@ def _recover_repo_dropped_by_scan(repo_dir: Path) -> Optional[_RecoveredRepoInfo
                 last_modified = last_modified,
             )
         )
-    # Nothing fetched yet, so the repo is not on disk.
-    if not revisions:
+    if not revisions and (
+        (not dangling and not skipped)
+        or not _repo_has_download_state(repo_type, repo_id, repo_dir.parent)
+    ):
         return None
     # Nothing here explains why upstream omitted the repo.
     if not dangling and not skipped:
@@ -482,8 +508,8 @@ def resolve_snapshot_dir_for_scan(
     snapshot. Otherwise scans roots in priority order (active, legacy, default)
     and returns the newest snapshot in the first root that holds one; active is
     where snapshot_download writes, so it is authoritative. Within a root,
-    picks by mtime (what from_pretrained resolves to) rather than refs/main,
-    since the user may have downloaded a non-main commit.
+    picks the newest cached snapshot by mtime; load identity is resolved
+    separately, since the user may have downloaded a non-main commit.
     """
     if repo_cache_dir is not None:
         latest = latest_snapshot_dir(repo_cache_dir)

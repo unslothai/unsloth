@@ -17,6 +17,8 @@ the number in a delete dialog has to be the number the disk gives back.
 from __future__ import annotations
 
 import asyncio
+import threading
+from concurrent.futures import Future
 from pathlib import Path
 from typing import Optional
 
@@ -25,6 +27,8 @@ from loggers import get_logger
 
 from hub.utils import companion_assets
 from hub.utils.gguf import gguf_variant_key
+from hub.utils.hf_cache_state import AmbiguousDeleteTargetError, resolve_delete_target_root
+from hub.utils.state_dir import normalize_hub_cache
 from hub.services.models import cache_inventory
 from hub.services.models.common import _is_main_gguf_filename
 from hub.utils.paths import is_valid_gguf_variant as _is_valid_gguf_variant
@@ -32,6 +36,94 @@ from hub.utils.paths import is_valid_repo_id as _is_valid_repo_id
 from utils.paths.path_utils import is_appledouble_metadata
 
 logger = get_logger(__name__)
+
+_DELETE_IMPACT_LOAD_STATE_TIMEOUT_S = 1.0
+_DELETE_IMPACT_LOAD_STATE_CAPACITY = threading.BoundedSemaphore(2)
+_DELETE_IMPACT_LOAD_STATE_LOCK = threading.Lock()
+_DELETE_IMPACT_LOAD_STATE_PROBES: dict[
+    tuple[str, Optional[str], Optional[str]], Future
+] = {}
+
+
+def _delete_impact_load_state_probe_key(
+    repo_id: str,
+    variant: Optional[str],
+    cache_root: Optional[str | Path],
+) -> tuple[str, Optional[str], Optional[str]]:
+    return (
+        repo_id.strip().lower(),
+        (variant or "").strip().lower() or None,
+        normalize_hub_cache(cache_root) if cache_root is not None else None,
+    )
+
+
+def _submit_delete_impact_load_state_probe(
+    target,
+    repo_id: str,
+    variant: Optional[str],
+    cache_root: Optional[str | Path] = None,
+):
+    capacity = _DELETE_IMPACT_LOAD_STATE_CAPACITY
+    key = _delete_impact_load_state_probe_key(repo_id, variant, cache_root)
+    with _DELETE_IMPACT_LOAD_STATE_LOCK:
+        current = _DELETE_IMPACT_LOAD_STATE_PROBES.get(key)
+        if current is not None and not current.done():
+            return current
+        if not capacity.acquire(blocking = False):
+            return None
+        probe = Future()
+        _DELETE_IMPACT_LOAD_STATE_PROBES[key] = probe
+
+    def run_probe() -> None:
+        if not probe.set_running_or_notify_cancel():
+            return
+        try:
+            if cache_root is None:
+                result = target(repo_id, variant)
+            else:
+                result = target(repo_id, variant, cache_root = cache_root)
+        except BaseException as exc:
+            probe.set_exception(exc)
+        else:
+            probe.set_result(result)
+
+    def release_probe(_future: Future) -> None:
+        with _DELETE_IMPACT_LOAD_STATE_LOCK:
+            if _DELETE_IMPACT_LOAD_STATE_PROBES.get(key) is probe:
+                _DELETE_IMPACT_LOAD_STATE_PROBES.pop(key, None)
+        capacity.release()
+
+    try:
+        threading.Thread(
+            target = run_probe,
+            name = "delete-impact-load-state",
+            daemon = True,
+        ).start()
+    except BaseException:
+        with _DELETE_IMPACT_LOAD_STATE_LOCK:
+            if _DELETE_IMPACT_LOAD_STATE_PROBES.get(key) is probe:
+                _DELETE_IMPACT_LOAD_STATE_PROBES.pop(key, None)
+        capacity.release()
+        raise
+    probe.add_done_callback(release_probe)
+    return probe
+
+
+def _abandon_delete_impact_load_state_probe(
+    repo_id: str,
+    variant: Optional[str],
+    probe: Future,
+    cache_root: Optional[str | Path] = None,
+) -> None:
+    key = _delete_impact_load_state_probe_key(repo_id, variant, cache_root)
+    with _DELETE_IMPACT_LOAD_STATE_LOCK:
+        if _DELETE_IMPACT_LOAD_STATE_PROBES.get(key) is probe:
+            _DELETE_IMPACT_LOAD_STATE_PROBES.pop(key, None)
+
+
+def _retrieve_probe_exception(probe: asyncio.Future) -> None:
+    if not probe.cancelled():
+        probe.exception()
 
 
 def _repo_blob_bytes(repo_info, *, only = None) -> int:
@@ -146,11 +238,29 @@ def _variant_is_a_required_companion_asset(repo_id: str, variant: str) -> bool:
     return _impl(repo_id, variant)
 
 
-def _delete_impact_blocking(repo_id: str, variant: Optional[str]) -> dict:
+def _delete_impact_blocking(
+    repo_id: str,
+    variant: Optional[str],
+    cache_path: Optional[str],
+) -> dict:
     scans = cache_inventory.all_hf_cache_scans()
     by_id = _repos_by_id(scans)
     key = repo_id.strip().lower()
-    repos = by_id.get(key, [])
+    all_repos = by_id.get(key, [])
+    owners: dict[Path, list] = {}
+    for repo_info in all_repos:
+        try:
+            owner = Path(repo_info.repo_path).parent.resolve(strict = False)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        owners.setdefault(owner, []).append(repo_info)
+    try:
+        target_root = resolve_delete_target_root("model", repo_id, cache_path, owners.keys())
+    except AmbiguousDeleteTargetError as exc:
+        raise HTTPException(status_code = 409, detail = exc.detail) from exc
+    if target_root is None:
+        raise HTTPException(status_code = 400, detail = "Invalid cache_path")
+    repos = owners.get(target_root, [])
 
     reclaimed = 0
     for repo_info in repos:
@@ -158,8 +268,8 @@ def _delete_impact_blocking(repo_id: str, variant: Optional[str]) -> dict:
 
     # Would this delete leave the repo with no runnable checkpoint? Only then can its companions
     # become reclaimable; while a sibling quant survives they stay in use.
-    removes_last_checkpoint = True
-    if variant:
+    removes_last_checkpoint = len(repos) == len(all_repos)
+    if variant and removes_last_checkpoint:
         for repo_info in repos:
             if _remaining_main_gguf_variants(repo_info, excluding = variant):
                 removes_last_checkpoint = False
@@ -224,14 +334,80 @@ class _SingleRepoScan:
         self.repos = repos
 
 
-async def delete_impact_response(repo_id: str, variant: Optional[str] = None) -> dict:
+async def delete_impact_response(
+    repo_id: str,
+    variant: Optional[str] = None,
+    cache_path: Optional[str] = None,
+) -> dict:
     """What a delete of *repo_id* (/*variant*) would reclaim, retain, and be blocked by."""
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     variant = (variant or "").strip() or None
     if variant is not None and not _is_valid_gguf_variant(variant):
         raise HTTPException(status_code = 400, detail = f"Invalid gguf_variant: {variant!r}")
-    return await asyncio.to_thread(_delete_impact_blocking, repo_id, variant)
+    from hub.services.models import deletion
+
+    cache_root = deletion._explicit_delete_cache_root(repo_id, cache_path)
+    reservation_block = deletion.cache_reservation_delete_block(repo_id, variant)
+    if reservation_block is not None:
+        impact = await asyncio.to_thread(_delete_impact_blocking, repo_id, variant, cache_path)
+        delete_block = reservation_block
+    else:
+        async def bounded_load_state():
+            try:
+                probe = _submit_delete_impact_load_state_probe(
+                    deletion._load_state_delete_block,
+                    repo_id,
+                    variant,
+                    cache_root,
+                )
+                if probe is None:
+                    return 503, deletion._LOAD_STATE_UNVERIFIABLE_DETAIL
+                wrapped_probe = asyncio.wrap_future(probe)
+                wrapped_probe.add_done_callback(_retrieve_probe_exception)
+                done, _ = await asyncio.wait(
+                    (wrapped_probe,),
+                    timeout = _DELETE_IMPACT_LOAD_STATE_TIMEOUT_S,
+                )
+                if not done:
+                    _abandon_delete_impact_load_state_probe(
+                        repo_id,
+                        variant,
+                        probe,
+                        cache_root,
+                    )
+                    return 503, deletion._LOAD_STATE_UNVERIFIABLE_DETAIL
+                return wrapped_probe.result()
+            except Exception as exc:
+                logger.warning(
+                    f"Load-state verification failed for {repo_id}; refusing delete: {exc}"
+                )
+                return 503, deletion._LOAD_STATE_UNVERIFIABLE_DETAIL
+
+        impact_result, delete_block_result = await asyncio.gather(
+            asyncio.to_thread(_delete_impact_blocking, repo_id, variant, cache_path),
+            bounded_load_state(),
+            return_exceptions = True,
+        )
+        if isinstance(impact_result, BaseException):
+            raise impact_result
+        if isinstance(delete_block_result, BaseException):
+            raise delete_block_result
+        impact = impact_result
+        delete_block = delete_block_result
+        reservation_block = deletion.cache_reservation_delete_block(repo_id, variant)
+    if reservation_block is not None and (delete_block is None or delete_block[0] == 503):
+        delete_block = reservation_block
+    impact["delete_block"] = (
+        {
+            "status_code": delete_block[0],
+            "detail": delete_block[1],
+            "retryable": delete_block[0] == deletion._DELETE_RETRY_LATER,
+        }
+        if delete_block
+        else None
+    )
+    return impact
 
 
 def _orphan_companions_blocking() -> dict:

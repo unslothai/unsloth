@@ -28,6 +28,7 @@ from hub.utils.dataset_processed_cache import (
     iter_app_processed_dataset_caches,
 )
 from hub.utils.hf_cache_state import (
+    AmbiguousDeleteTargetError,
     purge_partial_repo,
     purge_repo_cache_dirs,
     resolve_delete_target_root,
@@ -37,6 +38,7 @@ from hub.utils.paths import (
     is_valid_repo_id as _is_valid_repo_id,
     resolve_cached_repo_id_case,
 )
+from utils.model_cache_reservations import wait_for_reserved_worker
 
 logger = get_logger(__name__)
 
@@ -555,19 +557,30 @@ async def list_cached_datasets_response() -> dict:
         ) from exc
 
 
+def _cache_conflict_delete_detail(reason: str) -> str:
+    if reason == "deleting":
+        return "A delete of this dataset is already running. Wait for it to finish."
+    if reason == "downloading":
+        return "A download is writing this dataset. Cancel it (or wait for it), then delete."
+    return "Another operation is using this dataset. Wait for it to finish, then delete."
+
+
 async def delete_cached_dataset_response(repo_id: str, cache_path: Optional[str] = None) -> dict:
     """Remove a cached dataset repo from the HF cache."""
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
 
     repo_key = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
-    if not downloads.registry.begin_delete(repo_key):
+    conflict = downloads.registry.begin_delete(repo_key)
+    if conflict is not None:
         raise HTTPException(
-            status_code = 400,
-            detail = "Cancel the active download before deleting.",
+            status_code = 409,
+            detail = _cache_conflict_delete_detail(conflict),
         )
     try:
-        return await asyncio.to_thread(_delete_cached_dataset_blocking, repo_key, cache_path)
+        return await wait_for_reserved_worker(
+            asyncio.to_thread(_delete_cached_dataset_blocking, repo_key, cache_path)
+        )
     finally:
         downloads.registry.end_delete(repo_key)
         hf_cache_scan.invalidate_hf_cache_scans()
@@ -591,7 +604,10 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
                 continue
             owners.setdefault(owner, []).append((hf_cache, repo_info))
 
-    target_root = resolve_delete_target_root("dataset", repo_id, cache_path, owners.keys())
+    try:
+        target_root = resolve_delete_target_root("dataset", repo_id, cache_path, owners.keys())
+    except AmbiguousDeleteTargetError as exc:
+        raise HTTPException(status_code = 409, detail = exc.detail) from exc
     # A processed-only dataset row sends its Arrow cache path, which is not a Hub datasets-- dir, so
     # resolve_delete_target_root returns None. Accept it and fall through to the processed delete.
     if target_root is None and not (

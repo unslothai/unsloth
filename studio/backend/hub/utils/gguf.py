@@ -477,6 +477,22 @@ def bare_quant_alias(key: str) -> str:
     return extract_quant_label(f"{basename}.gguf")
 
 
+def gguf_variant_scopes_overlap(first: Optional[str], second: Optional[str]) -> bool:
+    """Whether two cache-operation scopes may name the same GGUF checkpoint."""
+    left = (first or "").strip().replace("\\", "/").lower() or None
+    right = (second or "").strip().replace("\\", "/").lower() or None
+    if left is None or right is None:
+        return True
+    if left == right:
+        return True
+    return any(
+        is_qualified_gguf_variant_key(qualified)
+        and not is_qualified_gguf_variant_key(bare)
+        and bare_quant_alias(qualified).lower() == bare
+        for qualified, bare in ((left, right), (right, left))
+    )
+
+
 def is_qualified_gguf_variant_key(key: str) -> bool:
     """Whether *key* names more than its bare quantization.
 

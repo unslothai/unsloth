@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 import threading
@@ -16,8 +17,23 @@ from pathlib import Path
 from typing import Optional
 
 from loggers import get_logger
+from utils.hf_repo_ids import is_valid_repo_id as _is_valid_repo_id
+
+is_valid_repo_id = _is_valid_repo_id
 
 logger = get_logger(__name__)
+
+_WINDOWS_REPARSE_TAG_NAME_SURROGATE = 0x20000000
+
+
+def is_redirect_stat(path_stat: os.stat_result) -> bool:
+    reparse_tag = getattr(path_stat, "st_reparse_tag", 0)
+    app_exec_link_tag = getattr(stat, "IO_REPARSE_TAG_APPEXECLINK", None)
+    return (
+        stat.S_ISLNK(path_stat.st_mode)
+        or bool(reparse_tag & _WINDOWS_REPARSE_TAG_NAME_SURROGATE)
+        or (app_exec_link_tag is not None and reparse_tag == app_exec_link_tag)
+    )
 
 
 def _infer_studio_home_from_venv() -> Optional[Path]:
@@ -171,31 +187,6 @@ def is_local_path(path: str) -> bool:
     except Exception:
         pass
     return has_local_syntax
-
-
-_VALID_REPO_ID_SEGMENT = re.compile(r"^[A-Za-z0-9_](?:[A-Za-z0-9._-]*[A-Za-z0-9_])?$")
-_MAX_REPO_ID_LENGTH = 96
-
-
-def is_valid_repo_id(repo_id: str) -> bool:
-    """Validate Hugging Face ``repo_name`` or ``namespace/repo_name`` IDs."""
-    if not repo_id or repo_id != repo_id.strip():
-        return False
-    if repo_id.endswith(".git"):
-        return False
-    if "--" in repo_id or ".." in repo_id:
-        return False
-    segments = repo_id.split("/")
-    if len(segments) not in (1, 2):
-        return False
-    # Match huggingface_hub.validate_repo_id: the 96-char limit applies per segment (repo name /
-    # namespace), not to the whole "namespace/repo_name" string.
-    return all(
-        segment not in ("", ".", "..")
-        and len(segment) <= _MAX_REPO_ID_LENGTH
-        and _VALID_REPO_ID_SEGMENT.fullmatch(segment) is not None
-        for segment in segments
-    )
 
 
 _GGUF_VARIANT_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")

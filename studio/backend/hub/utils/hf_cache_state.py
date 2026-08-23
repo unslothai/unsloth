@@ -732,6 +732,22 @@ def scoped_delete_root(repo_type: str, repo_id: str, cache_path: Optional[str]) 
     return root if root in allowed else None
 
 
+class AmbiguousDeleteTargetError(RuntimeError):
+    def __init__(self, repo_type: str, repo_id: str, cache_roots: Iterable[Path]):
+        self.repo_type = repo_type
+        self.repo_id = repo_id
+        self.cache_paths = tuple(
+            str(root / repo_cache_dir_name(repo_type, repo_id)) for root in cache_roots
+        )
+        super().__init__(
+            "Multiple cached copies were found. Choose a cache location to delete."
+        )
+
+    @property
+    def detail(self) -> dict[str, object]:
+        return {"message": str(self), "cache_paths": list(self.cache_paths)}
+
+
 def resolve_delete_target_root(
     repo_type: str, repo_id: str, cache_path: Optional[str], owner_roots
 ) -> Optional[Path]:
@@ -747,11 +763,20 @@ def resolve_delete_target_root(
     from utils.hf_cache_settings import get_hf_cache_paths
 
     active = Path(get_hf_cache_paths().hub_cache).resolve(strict = False)
-    roots = list(owner_roots)
+    roots: list[Path] = []
+    for owner_root in owner_roots:
+        try:
+            root = Path(owner_root).resolve(strict = False)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            continue
+        if root not in roots:
+            roots.append(root)
     if active in roots:
         return active
     if len(roots) == 1:
         return roots[0]
+    if len(roots) > 1:
+        raise AmbiguousDeleteTargetError(repo_type, repo_id, roots)
     return active
 
 

@@ -220,12 +220,25 @@ class LocalModelListResponse(BaseModel):
     )
 
 
+class CachedRepoCopy(BaseModel):
+    cache_path: str
+    load_id: Optional[str] = None
+    size_bytes: int = 0
+    active_cache: bool = False
+    partial: bool = False
+    last_modified: Optional[float] = None
+
+
 class CachedRepoBase(BaseModel):
     """Shared shape for a cached HF repo row surfaced under On Device."""
 
     repo_id: str
     size_bytes: int = 0
     cache_path: Optional[str] = None
+    active_cache: Optional[bool] = None
+    copy_count: Optional[int] = None
+    total_size_bytes: Optional[int] = None
+    cache_copies: List[CachedRepoCopy] = Field(default_factory = list)
     last_modified: Optional[float] = None
     partial: bool = False
     partial_transport: Optional[str] = None
@@ -327,6 +340,12 @@ class CompanionAssetInfo(BaseModel):
     )
 
 
+class DeleteBlockInfo(BaseModel):
+    status_code: int
+    detail: str
+    retryable: bool
+
+
 class DeleteImpactResponse(BaseModel):
     """What a pending delete would actually do, so the confirm dialog can say it."""
 
@@ -340,6 +359,10 @@ class DeleteImpactResponse(BaseModel):
     freeable_companions: List[CompanionAssetInfo] = Field(
         default_factory = list,
         description = "Shared assets that become orphaned by this delete and can then be removed",
+    )
+    delete_block: Optional[DeleteBlockInfo] = Field(
+        None,
+        description = "Current backend state that makes this delete unavailable",
     )
     blocked_by: List[str] = Field(
         default_factory = list,

@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import os
+import stat
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from fastapi import HTTPException
 from loggers import get_logger
@@ -19,6 +21,7 @@ from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.gguf import (
     bare_quant_alias,
     extract_quant_token,
+    gguf_variant_scopes_overlap,
     gguf_variant_key,
     is_qualified_gguf_variant_key,
     quant_token_with_bpw,
@@ -26,13 +29,18 @@ from hub.utils.gguf import (
     is_reclaimable_drafter_path as _is_reclaimable_drafter_path,
 )
 from hub.utils.hf_cache_state import (
+    AmbiguousDeleteTargetError,
     INCOMPLETE_SUFFIX,
+    iter_active_repo_cache_dirs,
     iter_repo_cache_dirs,
     purge_partial_repo,
     purge_repo_cache_dirs,
     resolve_delete_target_root,
+    scoped_delete_root,
 )
+from hub.utils.snapshot_reclaim import SnapshotRefsUnverifiable, referenced_snapshot_revisions
 from hub.utils.paths import (
+    is_redirect_stat,
     is_valid_gguf_variant as _is_valid_gguf_variant,
     is_valid_repo_id as _is_valid_repo_id,
     resolve_cached_repo_id_case,
@@ -45,31 +53,122 @@ from hub.services.models.common import (
     _is_main_gguf_filename,
     _is_mmproj_filename,
 )
+from utils.model_cache_reservations import wait_for_reserved_worker
 from utils.paths.path_utils import is_appledouble_metadata
 
 logger = get_logger(__name__)
+
+
+def _unresolved_variant_partial_detail(repo_id: str, variant: str) -> str:
+    return (
+        f"Couldn't fully delete {variant} for {repo_id}: partial download bytes "
+        "exist but this variant's blob hashes are unavailable. Delete the entire "
+        "cached model to remove its partial downloads offline, or reconnect/provide "
+        "access and try deleting this variant again."
+    )
+
+
+class _CacheBlobReferencesUnverifiable(RuntimeError):
+    pass
+
+
+def _snapshot_entry_revision(snap: Path, repo_dir: Optional[Path]) -> Optional[str]:
+    if repo_dir is None:
+        return None
+    try:
+        repo = repo_dir.expanduser().resolve(strict = True)
+        raw_snapshots = repo_dir.expanduser() / "snapshots"
+        snapshots_stat = raw_snapshots.lstat()
+        if is_redirect_stat(snapshots_stat) or not stat.S_ISDIR(snapshots_stat.st_mode):
+            return None
+        snapshots = raw_snapshots.resolve(strict = True)
+        if snapshots != repo / "snapshots":
+            return None
+        relative_parent = snap.parent.resolve(strict = True).relative_to(snapshots)
+        if not relative_parent.parts:
+            return None
+        revision = download_manifest.normalized_commit_hash(relative_parent.parts[0])
+        if revision is None:
+            return None
+        revision_dir = snapshots / revision
+        revision_stat = revision_dir.lstat()
+        if is_redirect_stat(revision_stat) or not stat.S_ISDIR(revision_stat.st_mode):
+            return None
+        if revision_dir.resolve(strict = True) != revision_dir:
+            return None
+        return revision
+    except (OSError, RuntimeError, ValueError):
+        return None
 
 
 def _snapshot_blob_reference_counts(repo_dir: Optional[Path]) -> dict[Path, int]:
     """Map each blob's realpath to its live snapshot symlink count, so per-variant deletion never unlinks a blob another revision still references (call after the target variant's own symlinks are removed)."""
     counts: dict[Path, int] = {}
     if repo_dir is None:
-        return counts
+        raise _CacheBlobReferencesUnverifiable("cache repository location is unavailable")
     snapshots = repo_dir / "snapshots"
-    if not snapshots.is_dir():
-        return counts
     try:
-        entries = list(snapshots.rglob("*"))
-    except OSError:
-        return counts
-    for link in entries:
         try:
-            if not link.is_symlink():
-                continue
-            target = link.resolve()
-        except OSError:
-            continue
-        counts[target] = counts.get(target, 0) + 1
+            snapshots_stat = snapshots.lstat()
+        except FileNotFoundError:
+            return counts
+        if is_redirect_stat(snapshots_stat) or not stat.S_ISDIR(snapshots_stat.st_mode):
+            raise _CacheBlobReferencesUnverifiable(
+                "snapshots path is redirected or is not a directory"
+            )
+
+        def raise_walk_error(error: OSError) -> None:
+            raise error
+
+        def lstat_if_present(path: Path) -> Optional[os.stat_result]:
+            for _attempt in range(2):
+                try:
+                    return path.lstat()
+                except FileNotFoundError:
+                    pass
+            return None
+
+        def readlink_if_present(path: Path) -> Optional[Path]:
+            for _attempt in range(2):
+                try:
+                    return path.readlink()
+                except FileNotFoundError:
+                    pass
+            return None
+
+        for current, directories, files in os.walk(
+            snapshots,
+            topdown = True,
+            onerror = raise_walk_error,
+            followlinks = False,
+        ):
+            current_path = Path(current)
+            for name in list(directories):
+                directory_stat = lstat_if_present(current_path / name)
+                if directory_stat is None:
+                    directories.remove(name)
+                    continue
+                if is_redirect_stat(directory_stat) or not stat.S_ISDIR(directory_stat.st_mode):
+                    raise _CacheBlobReferencesUnverifiable(
+                        f"snapshot directory is redirected or is not a directory: {name}"
+                    )
+            for name in files:
+                link = current_path / name
+                link_stat = lstat_if_present(link)
+                if link_stat is None or not stat.S_ISLNK(link_stat.st_mode):
+                    continue
+                raw_target = readlink_if_present(link)
+                if raw_target is None:
+                    continue
+                candidate = raw_target if raw_target.is_absolute() else link.parent / raw_target
+                target = candidate.resolve(strict = False)
+                counts[target] = counts.get(target, 0) + 1
+    except _CacheBlobReferencesUnverifiable:
+        raise
+    except (OSError, RuntimeError) as exc:
+        raise _CacheBlobReferencesUnverifiable(
+            f"snapshot scan failed ({type(exc).__name__}: {exc})"
+        ) from exc
     return counts
 
 
@@ -82,9 +181,12 @@ def _blob_hash_from_path(blob: Path) -> Optional[str]:
 
 def _path_exists_or_symlink(path: Path) -> bool:
     try:
-        return path.is_symlink() or path.exists()
-    except OSError:
+        path.lstat()
+        return True
+    except FileNotFoundError:
         return False
+    except OSError:
+        return True
 
 
 def _unlink_snapshot_entry(snap: Path) -> int:
@@ -99,6 +201,225 @@ def _unlink_snapshot_entry(snap: Path) -> int:
         removed += 1
     remove_appledouble_sidecar(snap)
     return removed
+
+
+def _blob_key(blob: Path) -> Path:
+    try:
+        return blob.resolve()
+    except (OSError, RuntimeError):
+        return blob
+
+
+def _unlink_snapshot_matches(
+    matches: list[tuple[Path, Optional[Path], str]],
+) -> tuple[int, int, dict[Path, list[tuple[Path, Path, str]]], set[Path], list[str]]:
+    removed = 0
+    removed_bytes = 0
+    removed_links: dict[Path, list[tuple[Path, Path, str]]] = {}
+    protected_blobs: set[Path] = set()
+    failures: list[str] = []
+    for snap, blob, name in matches:
+        blob_key = _blob_key(blob) if blob is not None else None
+        link_target: Optional[Path] = None
+        direct_size = 0
+        try:
+            entry_stat = snap.lstat()
+            if stat.S_ISLNK(entry_stat.st_mode):
+                if blob is None:
+                    failures.append(f"{name}: cache link target is unavailable")
+                    continue
+                link_target = snap.readlink()
+                candidate = (
+                    link_target if link_target.is_absolute() else snap.parent / link_target
+                )
+                if candidate.resolve(strict = False) != blob.resolve(strict = False):
+                    failures.append(f"{name}: cache link target changed during delete")
+                    if blob_key is not None:
+                        protected_blobs.add(blob_key)
+                    continue
+            elif not is_redirect_stat(entry_stat) and stat.S_ISREG(entry_stat.st_mode):
+                direct_size = entry_stat.st_size
+            else:
+                failures.append(f"{name}: cache entry is not a regular file or symlink")
+                if blob_key is not None:
+                    protected_blobs.add(blob_key)
+                continue
+        except FileNotFoundError:
+            continue
+        except (OSError, RuntimeError) as e:
+            failures.append(f"{name}: couldn't inspect cache entry: {e}")
+            if blob_key is not None:
+                protected_blobs.add(blob_key)
+            continue
+        try:
+            removed_now = _unlink_snapshot_entry(snap)
+            removed += removed_now
+            removed_bytes += direct_size if removed_now else 0
+            if removed_now and blob is not None and link_target is not None:
+                removed_links.setdefault(_blob_key(blob), []).append((snap, link_target, name))
+        except OSError as e:
+            failures.append(f"{name}: {e}")
+            if blob_key is not None:
+                protected_blobs.add(blob_key)
+    return removed, removed_bytes, removed_links, protected_blobs, failures
+
+
+def _restore_snapshot_links(
+    links: list[tuple[Path, Path, str]],
+) -> tuple[int, list[str]]:
+    restored = 0
+    failures: list[str] = []
+    for snap, target, name in links:
+        if _path_exists_or_symlink(snap):
+            restored += 1
+            continue
+        try:
+            snap.symlink_to(target)
+            restored += 1
+        except OSError as e:
+            failures.append(f"{name}: couldn't restore cache link after delete failed: {e}")
+    return restored, failures
+
+
+def _delete_unreferenced_match_blobs(
+    matches: list[tuple[Path, Optional[Path], str]],
+    repo_dir: Optional[Path],
+    removed_links: dict[Path, list[tuple[Path, Path, str]]],
+    protected_blobs: set[Path],
+) -> tuple[int, int, int, list[str]]:
+    reference_error: Optional[str] = None
+    try:
+        ref_counts = _snapshot_blob_reference_counts(repo_dir)
+    except _CacheBlobReferencesUnverifiable as exc:
+        ref_counts = None
+        reference_error = str(exc)
+    seen_blobs: set[Path] = set()
+    deleted_blobs = 0
+    deleted_bytes = 0
+    restored_snapshots = 0
+    failures: list[str] = []
+    if ref_counts is None:
+        for links in removed_links.values():
+            restored, restore_failures = _restore_snapshot_links(links)
+            restored_snapshots += restored
+            failures.extend(restore_failures)
+        has_remaining_blob = False
+        for _snap, blob, _name in matches:
+            if blob is None:
+                continue
+            try:
+                blob.lstat()
+                has_remaining_blob = True
+                break
+            except FileNotFoundError:
+                continue
+            except OSError:
+                has_remaining_blob = True
+                break
+        if removed_links or has_remaining_blob:
+            failures.insert(
+                0,
+                "cache blob references could not be verified: "
+                f"{reference_error or 'snapshot scan failed'}. Repair the cache path or "
+                "permissions, or delete the entire cached model.",
+            )
+        return 0, 0, restored_snapshots, failures
+
+    for _snap, blob, name in matches:
+        if blob is None:
+            continue
+        if not cache_inventory._is_real_cache_blob(blob, repo_dir):
+            continue
+        blob_key = _blob_key(blob)
+        if blob_key in seen_blobs:
+            continue
+        seen_blobs.add(blob_key)
+        if blob_key in protected_blobs:
+            continue
+        if ref_counts.get(blob_key, 0) > 0:
+            continue
+        try:
+            blob_stat = blob.lstat()
+            if is_redirect_stat(blob_stat) or not stat.S_ISREG(blob_stat.st_mode):
+                raise OSError(errno.EINVAL, "cache blob is not a regular file", str(blob))
+            size = blob_stat.st_size
+            blob.unlink()
+            deleted_bytes += size
+            deleted_blobs += 1
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            failures.append(f"{name}: {e}")
+            restored, restore_failures = _restore_snapshot_links(removed_links.get(blob_key, []))
+            restored_snapshots += restored
+            failures.extend(restore_failures)
+    return deleted_blobs, deleted_bytes, restored_snapshots, failures
+
+
+def _validated_keep_snapshot(
+    keep_snapshot: Optional[str | Path],
+    repo_dir: Optional[Path],
+) -> Optional[Path]:
+    if keep_snapshot is None or repo_dir is None:
+        return None
+    try:
+        raw_repo = repo_dir.expanduser()
+        repo_stat = raw_repo.lstat()
+        if is_redirect_stat(repo_stat) or not stat.S_ISDIR(repo_stat.st_mode):
+            return None
+        repo = raw_repo.resolve(strict = True)
+        raw_snapshots = raw_repo / "snapshots"
+        snapshots_stat = raw_snapshots.lstat()
+        if is_redirect_stat(snapshots_stat) or not stat.S_ISDIR(snapshots_stat.st_mode):
+            return None
+        snapshots = raw_snapshots.resolve(strict = True)
+        if snapshots != repo / "snapshots":
+            return None
+        raw_candidate = Path(keep_snapshot).expanduser()
+        candidate_stat = raw_candidate.lstat()
+        if is_redirect_stat(candidate_stat) or not stat.S_ISDIR(candidate_stat.st_mode):
+            return None
+        candidate = raw_candidate.resolve(strict = True)
+        if candidate != snapshots / raw_candidate.name:
+            return None
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return candidate
+
+
+def _is_stale_snapshot_copy(
+    snap: Path,
+    blob: Optional[Path],
+    repo_dir: Optional[Path],
+    keep_snapshot: Optional[Path],
+) -> bool:
+    if blob is None or repo_dir is None or keep_snapshot is None:
+        return False
+    try:
+        snap_stat = snap.lstat()
+        if is_redirect_stat(snap_stat) or not stat.S_ISREG(snap_stat.st_mode):
+            return False
+        snapshots = (repo_dir.expanduser().resolve(strict = False) / "snapshots").resolve(
+            strict = False
+        )
+        snap_path = snap.resolve(strict = False)
+        blob_path = blob.resolve(strict = False)
+        relative = snap_path.relative_to(snapshots)
+        if len(relative.parts) < 2 or snap_path != blob_path:
+            return False
+        return not snap_path.is_relative_to(keep_snapshot)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _snapshot_entry_is_in_keep_snapshot(snap: Path, keep_snapshot: Optional[Path]) -> bool:
+    if keep_snapshot is None:
+        return False
+    try:
+        candidate = snap.parent.resolve(strict = False) / snap.name
+        return candidate.is_relative_to(keep_snapshot)
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
 def _repo_file_matches(target_repo, predicate) -> list[tuple[Path, Optional[Path], str]]:
@@ -208,13 +529,24 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
     return removed, failures
 
 
-def _remove_empty_snapshot_dirs(target_repos: list) -> tuple[int, list[str]]:
+def _remove_empty_snapshot_dirs(
+    target_repos: list,
+    *,
+    preserve_refs: bool = False,
+) -> tuple[int, list[str]]:
     removed = 0
     failures: list[str] = []
     for target_repo in target_repos:
         repo_path = getattr(target_repo, "repo_path", None)
         if not repo_path:
             continue
+        referenced_revisions: frozenset[str] = frozenset()
+        if preserve_refs:
+            try:
+                referenced_revisions = referenced_snapshot_revisions(Path(repo_path))
+            except SnapshotRefsUnverifiable as exc:
+                failures.append(f"refs: {exc}")
+                continue
         snapshots = Path(repo_path) / "snapshots"
         if not snapshots.is_dir():
             continue
@@ -223,6 +555,8 @@ def _remove_empty_snapshot_dirs(target_repos: list) -> tuple[int, list[str]]:
         except OSError:
             continue
         for snap in snap_dirs:
+            if snap.name in referenced_revisions:
+                continue
             try:
                 snap.rmdir()
                 removed += 1
@@ -267,7 +601,6 @@ def _delete_gguf_variant_from_repos(
     target_repos: list,
     hf_token: Optional[str],
     *,
-    sibling_active: bool = False,
     root: Optional[Path] = None,
 ) -> dict:
     failures: list[str] = []
@@ -275,6 +608,8 @@ def _delete_gguf_variant_from_repos(
     deleted_bytes = 0
     deleted_blobs = 0
     completed_hashes: set[str] = set()
+    companion_targets: list[tuple[object, Optional[Path]]] = []
+    single_target = len(target_repos) == 1
 
     for target_repo in target_repos:
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
@@ -284,15 +619,53 @@ def _delete_gguf_variant_from_repos(
             lambda name, keys = wanted_keys: _is_main_gguf_filename(name)
             and gguf_variant_key(name).lower() in keys,
         )
+        variant_partial = (
+            not matched
+            and single_target
+            and repo_dir is not None
+            and hf_cache_scan.is_variant_partial(
+                repo_id,
+                variant,
+                repo_cache_dir = repo_dir,
+            )
+        )
 
-        for snap, _blob, name in matched:
-            try:
-                removed_snapshots += _unlink_snapshot_entry(snap)
-            except OSError as e:
-                failures.append(f"{name}: {e}")
+        removed, freed, removed_links, protected_blobs, unlink_failures = (
+            _unlink_snapshot_matches(matched)
+        )
+        removed_snapshots += removed
+        deleted_bytes += freed
+        failures.extend(unlink_failures)
 
-        companion_matches: list[tuple[Path, Optional[Path], str]] = []
-        if matched and not sibling_active and not _has_remaining_main_gguf(target_repo):
+        for _snap, blob, _name in matched:
+            if blob is None:
+                continue
+            blob_hash = _blob_hash_from_path(blob)
+            if blob_hash:
+                completed_hashes.add(blob_hash)
+        deleted, freed, restored, blob_failures = _delete_unreferenced_match_blobs(
+            matched,
+            repo_dir,
+            removed_links,
+            protected_blobs,
+        )
+        deleted_blobs += deleted
+        deleted_bytes += freed
+        removed_snapshots -= restored
+        failures.extend(blob_failures)
+
+        if (
+            (matched or variant_partial)
+            and not unlink_failures
+            and not blob_failures
+            and not _has_remaining_main_gguf(target_repo)
+        ):
+            companion_targets.append((target_repo, repo_dir))
+
+    # A locked main blob restores its snapshot link before this barrier, leaving every shared
+    # companion intact for the retry.
+    if not failures:
+        for target_repo, repo_dir in companion_targets:
             companion_matches = _repo_file_matches(
                 target_repo,
                 # Companions: mmproj and the drafters Studio downloads (MTP with
@@ -307,44 +680,52 @@ def _delete_gguf_variant_from_repos(
                     or _is_imatrix_filename(name)
                 ),
             )
-            for snap, _blob, name in companion_matches:
-                try:
-                    removed_snapshots += _unlink_snapshot_entry(snap)
-                except OSError as e:
-                    failures.append(f"{name}: {e}")
-
-        ref_counts = _snapshot_blob_reference_counts(repo_dir)
-        seen_blobs: set[Path] = set()
-        for _snap, blob, name in [*matched, *companion_matches]:
-            if blob is None:
-                continue
-            blob_hash = _blob_hash_from_path(blob)
-            if blob_hash:
-                completed_hashes.add(blob_hash)
-            try:
-                blob_key = blob.resolve()
-            except OSError:
-                blob_key = blob
-            if blob_key in seen_blobs:
-                continue
-            seen_blobs.add(blob_key)
-            if ref_counts.get(blob_key, 0) > 0:
-                continue
-            try:
-                if blob.exists():
-                    deleted_bytes += blob.stat().st_size
-                    blob.unlink()
-                    deleted_blobs += 1
-            except OSError as e:
-                failures.append(f"{name}: {e}")
+            (
+                removed,
+                freed,
+                companion_links,
+                companion_protected,
+                unlink_failures,
+            ) = _unlink_snapshot_matches(companion_matches)
+            removed_snapshots += removed
+            deleted_bytes += freed
+            failures.extend(unlink_failures)
+            for _snap, blob, _name in companion_matches:
+                if blob is None:
+                    continue
+                blob_hash = _blob_hash_from_path(blob)
+                if blob_hash:
+                    completed_hashes.add(blob_hash)
+            deleted, freed, restored, blob_failures = _delete_unreferenced_match_blobs(
+                companion_matches,
+                repo_dir,
+                companion_links,
+                companion_protected,
+            )
+            deleted_blobs += deleted
+            deleted_bytes += freed
+            removed_snapshots -= restored
+            failures.extend(blob_failures)
 
     if failures:
+        reference_failure = next(
+            (
+                failure
+                for failure in failures
+                if failure.startswith("cache blob references could not be verified:")
+            ),
+            None,
+        )
         raise HTTPException(
             status_code = 409,
             detail = (
-                f"Couldn't fully delete {variant} for {repo_id}: "
-                f"{len(failures)} file(s) are in use. "
-                "Unload the model and try again."
+                f"Couldn't fully delete {variant} for {repo_id}: {reference_failure}"
+                if reference_failure is not None
+                else (
+                    f"Couldn't fully delete {variant} for {repo_id}: "
+                    f"{len(failures)} file(s) are in use. "
+                    "Unload the model and try again."
+                )
             ),
         )
 
@@ -353,17 +734,13 @@ def _delete_gguf_variant_from_repos(
         variant,
         hf_token,
         extra_hashes = frozenset(completed_hashes),
-        companions = not sibling_active,
+        companions = True,
         root = root,
     )
     if incomplete_result.unresolved:
         raise HTTPException(
             status_code = 409,
-            detail = (
-                f"Couldn't fully delete {variant} for {repo_id}: partial "
-                "download bytes exist but this variant's blob hashes are unavailable. "
-                "Reconnect or provide access to the repo, then try again."
-            ),
+            detail = _unresolved_variant_partial_detail(repo_id, variant),
         )
 
     state_purged = download_manifest.purge_state("model", repo_id, variant, hub_cache = root)
@@ -408,12 +785,13 @@ def reclaim_replaced_gguf_variant(
     hf_token: Optional[str] = None,
     *,
     hub_cache: Optional[str | Path] = None,
+    keep_snapshot: Optional[str | Path] = None,
 ) -> dict:
     """Prune stale main-GGUF files for a variant after a replacement verified.
 
     This is intentionally narrower than user-driven delete: it removes only
-    same-variant main files whose local blob hash is not in *keep_main_hashes*,
-    then unlinks their blobs only if no remaining snapshot references them.
+    same-variant main files outside the verified replacement, then unlinks
+    their blobs only if no remaining snapshot references them.
     Shared companions and sibling variants are left intact.
     """
     if not keep_main_hashes:
@@ -501,62 +879,103 @@ def reclaim_replaced_gguf_variant(
         if str(getattr(repo_info, "repo_id", "")) in matched_repo_ids
     ]
 
+    cleanup_repos: list = []
     for target_repo in target_repos:
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
+        current_snapshot = _validated_keep_snapshot(keep_snapshot, repo_dir)
+        try:
+            if repo_dir is None:
+                raise SnapshotRefsUnverifiable("cache repository location is unavailable")
+            referenced_revisions = referenced_snapshot_revisions(repo_dir)
+        except SnapshotRefsUnverifiable as exc:
+            failures.append(f"refs: {exc}")
+            continue
         stale_matches: list[tuple[Path, Optional[Path], str]] = []
         matches = _repo_file_matches(
             target_repo,
             lambda name: _is_main_gguf_filename(name)
             and gguf_variant_key(name).lower() == variant_key,
         )
+        entries_verifiable = True
         for snap, blob, name in matches:
-            # Prune only a file we can identify as a real, stale cache blob. A
-            # no-symlink snapshot file has no identifiable blob hash, so keep it.
-            blob_hash = (
-                _blob_hash_from_path(blob)
-                if cache_inventory._is_real_cache_blob(blob, repo_dir)
-                else None
-            )
-            if blob_hash is None or blob_hash in keep_main_hashes:
+            if _snapshot_entry_is_in_keep_snapshot(snap, current_snapshot):
                 continue
-            stale_matches.append((snap, blob, name))
+            revision = _snapshot_entry_revision(snap, repo_dir)
+            if revision is None:
+                failures.append(f"{name}: snapshot revision could not be verified")
+                entries_verifiable = False
+                break
+            if revision in referenced_revisions:
+                continue
+            if cache_inventory._is_real_cache_blob(blob, repo_dir):
+                blob_hash = _blob_hash_from_path(blob) if blob is not None else None
+                if blob_hash is not None and blob_hash not in keep_main_hashes:
+                    stale_matches.append((snap, blob, name))
+            elif _is_stale_snapshot_copy(snap, blob, repo_dir, current_snapshot):
+                stale_matches.append((snap, blob, name))
 
+        if not entries_verifiable:
+            continue
+        if not stale_matches:
+            cleanup_repos.append(target_repo)
+            continue
+        try:
+            referenced_revisions |= referenced_snapshot_revisions(repo_dir)
+        except SnapshotRefsUnverifiable as exc:
+            failures.append(f"refs: {exc}")
+            continue
+        filtered_matches: list[tuple[Path, Optional[Path], str]] = []
+        for match in stale_matches:
+            revision = _snapshot_entry_revision(match[0], repo_dir)
+            if revision is None:
+                failures.append(f"{match[2]}: snapshot revision could not be reverified")
+                entries_verifiable = False
+                break
+            if revision not in referenced_revisions:
+                filtered_matches.append(match)
+        if not entries_verifiable:
+            continue
+        stale_matches = filtered_matches
+        cleanup_repos.append(target_repo)
         if not stale_matches:
             continue
 
-        for snap, _blob, name in stale_matches:
-            try:
-                removed_snapshots += _unlink_snapshot_entry(snap)
-            except OSError as e:
-                failures.append(f"{name}: {e}")
-
-        ref_counts = _snapshot_blob_reference_counts(repo_dir)
-        seen_blobs: set[Path] = set()
-        for _snap, blob, name in stale_matches:
-            if blob is None:
-                continue
-            try:
-                blob_key = blob.resolve()
-            except OSError:
-                blob_key = blob
-            if blob_key in seen_blobs:
-                continue
-            seen_blobs.add(blob_key)
-            if ref_counts.get(blob_key, 0) > 0:
-                continue
-            try:
-                if blob.exists():
-                    deleted_bytes += blob.stat().st_size
-                    blob.unlink()
-                    deleted_blobs += 1
-            except OSError as e:
-                failures.append(f"{name}: {e}")
+        removed, freed, removed_links, protected_blobs, unlink_failures = (
+            _unlink_snapshot_matches(stale_matches)
+        )
+        removed_snapshots += removed
+        deleted_bytes += freed
+        failures.extend(unlink_failures)
+        deleted, freed, restored, blob_failures = _delete_unreferenced_match_blobs(
+            stale_matches,
+            repo_dir,
+            removed_links,
+            protected_blobs,
+        )
+        deleted_blobs += deleted
+        deleted_bytes += freed
+        removed_snapshots -= restored
+        failures.extend(blob_failures)
 
     removed_dirs = 0
     dir_failures: list[str] = []
-    if target_repos:
-        removed_dirs, dir_failures = _remove_empty_variant_dirs(target_repos, variant)
-        removed_snap_dirs, snap_dir_failures = _remove_empty_snapshot_dirs(target_repos)
+    if cleanup_repos:
+        verified_cleanup_repos: list = []
+        for target_repo in cleanup_repos:
+            try:
+                referenced_snapshot_revisions(Path(target_repo.repo_path))
+            except SnapshotRefsUnverifiable as exc:
+                failures.append(f"refs: {exc}")
+                continue
+            verified_cleanup_repos.append(target_repo)
+        removed_dirs, dir_failures = _remove_empty_variant_dirs(
+            verified_cleanup_repos,
+            variant,
+        )
+        removed_snap_dirs, snap_dir_failures = _remove_empty_snapshot_dirs(
+            verified_cleanup_repos,
+            preserve_refs = True,
+        )
         removed_dirs += removed_snap_dirs
         dir_failures.extend(snap_dir_failures)
         failures.extend(dir_failures)
@@ -592,8 +1011,13 @@ def reclaim_replaced_gguf_variant(
     }
 
 
-def _loaded_id_matches_repo(loaded_id: str, repo_id: str) -> bool:
-    """Match a loaded repo ID or an on-disk path inside any copy of the repo."""
+def _loaded_id_matches_repo(
+    loaded_id: str,
+    repo_id: str,
+    *,
+    cache_root: Optional[str | Path] = None,
+) -> bool:
+    """Match a repo ID, or a path in *cache_root* (any known root when omitted)."""
     rid = repo_id.lower()
     lid = loaded_id.lower()
     if lid == rid or lid.startswith(f"{rid}/"):
@@ -602,64 +1026,122 @@ def _loaded_id_matches_repo(loaded_id: str, repo_id: str) -> bool:
     try:
         loaded_path = Path(loaded_id).expanduser().resolve(strict = False)
     except (OSError, RuntimeError, ValueError):
+        if cache_root is not None:
+            raise
         return False
-    for repo_dir in iter_repo_cache_dirs("model", repo_id):
+    if cache_root is None:
+        repo_dirs = iter_repo_cache_dirs("model", repo_id)
+    else:
+        scan_errors: list[Exception] = []
+        repo_dirs = tuple(
+            iter_active_repo_cache_dirs(
+                "model",
+                repo_id,
+                root = Path(cache_root),
+                scan_errors = scan_errors,
+            )
+        )
+        if scan_errors:
+            raise scan_errors[0]
+    for repo_dir in repo_dirs:
         try:
             resolved_repo = repo_dir.resolve(strict = False)
             if loaded_path == resolved_repo or loaded_path.is_relative_to(resolved_repo):
                 return True
         except (OSError, RuntimeError, ValueError):
+            if cache_root is not None:
+                raise
             continue
     return False
 
 
 def _loaded_repo_variant_blocks_delete(
-    loaded_id: str, repo_id: str, delete_variant: Optional[str], loaded_variant: Optional[str]
+    loaded_id: str,
+    repo_id: str,
+    delete_variant: Optional[str],
+    loaded_variant: Optional[str],
+    *,
+    cache_root: Optional[str | Path] = None,
 ) -> bool:
-    if not _loaded_id_matches_repo(loaded_id, repo_id):
+    if not _loaded_id_matches_repo(loaded_id, repo_id, cache_root = cache_root):
         return False
     if not delete_variant:
         return True
     if not loaded_variant:
         return True
-    return loaded_variant.lower() == delete_variant.lower()
+    return gguf_variant_scopes_overlap(loaded_variant, delete_variant)
 
 
 _LOAD_STATE_UNVERIFIABLE_DETAIL = (
     "Couldn't verify whether this model is still loaded for inference. "
     "Unload it if it is active, then try deleting again."
 )
+_LOAD_STATE_REWRITE_UNVERIFIABLE_DETAIL = (
+    "Couldn't verify whether this model is still loaded for inference. "
+    "Unload it if it is active, then try the download again."
+)
+_MODEL_ACTIVE_DELETE_DETAIL = "Unload the model before deleting"
+_MODEL_LOADING_DELETE_DETAIL = "Cannot delete a model while it is loading"
+_DeleteBlock = tuple[int, str]
+# The status code separates the two kinds of refusal, and the delete preview polls on it: 409
+# names a holder that releases on its own (a load, a download, another delete), 400 one the user
+# has to clear first. Answering 400 for a transient holder leaves Delete greyed out until the
+# dialog is reopened; answering 409 for a resident model polls a cache scan that never changes.
+_DELETE_RETRY_LATER = 409
+_DELETE_USER_MUST_ACT = 400
 
 
-def _llama_cpp_blocks_delete(repo_id: str, variant: Optional[str]) -> bool:
-    """Whether the llama.cpp backend holds *repo_id* (/variant). Acquiring fails open (import error means nothing loaded); reading load state is unguarded so a raise propagates and the caller fails closed rather than delete a live model."""
+def _raise_load_state_delete_block(block: Optional[_DeleteBlock]) -> None:
+    if block is None:
+        return
+    status_code, detail = block
+    raise HTTPException(status_code = status_code, detail = detail)
+
+
+def _llama_cpp_blocks_delete(
+    repo_id: str,
+    variant: Optional[str],
+    *,
+    cache_root: Optional[str | Path] = None,
+) -> Optional[_DeleteBlock]:
+    """Why the llama.cpp backend blocks deleting *repo_id* (/variant), if it does."""
     try:
         from routes.inference import get_llama_cpp_backend
         backend = get_llama_cpp_backend()
     except Exception as e:
         logger.debug(f"llama.cpp backend unavailable during delete guard for {repo_id}: {e}")
-        return False
+        return None
     loaded_id = backend.model_identifier
+    if cache_root is not None:
+        loaded_id = getattr(backend, "gguf_path", None) or loaded_id
     loaded_variant = getattr(backend, "hf_variant", None)
     if backend.is_active and not backend.is_loaded and loaded_id:
-        return _loaded_repo_variant_blocks_delete(
+        if _loaded_repo_variant_blocks_delete(
             loaded_id,
             repo_id,
             variant,
             loaded_variant,
-        )
+            cache_root = cache_root,
+        ):
+            return _DELETE_RETRY_LATER, _MODEL_LOADING_DELETE_DETAIL
     if backend.is_loaded and loaded_id:
-        return _loaded_repo_variant_blocks_delete(
+        if _loaded_repo_variant_blocks_delete(
             loaded_id,
             repo_id,
             variant,
             loaded_variant,
-        )
-    return False
+            cache_root = cache_root,
+        ):
+            return _DELETE_USER_MUST_ACT, _MODEL_ACTIVE_DELETE_DETAIL
+    return None
 
 
-def _inference_backend_blocks_delete(repo_id: str) -> bool:
-    """Whether the subprocess inference backend holds *repo_id*; same fail-open-on-acquire / surface-on-query contract as :func:`_llama_cpp_blocks_delete`."""
+def _inference_backend_delete_block(
+    repo_id: str,
+    *,
+    cache_root: Optional[str | Path] = None,
+) -> Optional[_DeleteBlock]:
+    """Why the subprocess inference backend blocks deleting *repo_id*, if it does."""
     try:
         from core.inference.orchestrator import peek_inference_backend
 
@@ -667,15 +1149,60 @@ def _inference_backend_blocks_delete(repo_id: str) -> bool:
         backend = peek_inference_backend()
     except Exception as e:
         logger.debug(f"Inference backend unavailable during delete guard for {repo_id}: {e}")
-        return False
+        return None
     if backend is None:
-        return False
+        return None
+    # active_model_name is published only after the subprocess reports a successful
+    # load. Until then, both Transformers and MLX targets live exclusively in this
+    # set; deleting one in that window can unlink weights under the loading worker.
+    # Snapshot it before reading active_model_name so the loading -> active handoff
+    # cannot land between the two reads and briefly make the model look unheld.
+    loading_names = tuple(getattr(backend, "loading_models", ()) or ())
     active_name = backend.active_model_name
-    return bool(active_name) and _loaded_id_matches_repo(active_name, repo_id)
+    if active_name and _loaded_id_matches_repo(
+        active_name, repo_id, cache_root = cache_root
+    ):
+        return _DELETE_USER_MUST_ACT, _MODEL_ACTIVE_DELETE_DETAIL
+    if any(
+        loading_name
+        and _loaded_id_matches_repo(loading_name, repo_id, cache_root = cache_root)
+        for loading_name in loading_names
+    ):
+        return _DELETE_RETRY_LATER, _MODEL_LOADING_DELETE_DETAIL
+    return None
 
 
-def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
-    """The 400 detail if the Images backend holds *repo_id*, else None.
+def _media_variant_exempt(
+    status: dict,
+    held_id: str,
+    variant: Optional[str],
+) -> bool:
+    """Whether *held_id* is the engine's own checkpoint at a quantization other than
+    *variant*.
+
+    A managed variant download or delete touches that quant's main GGUF files. A resident sibling
+    quant is outside that scope, while companion repositories remain protected independently.
+    Both sides are reduced to the bare quant token, which is what ``status()`` publishes.
+    """
+    if not variant:
+        return False
+    resident = str(status.get("gguf_variant") or "").strip()
+    checkpoint = str(status.get("repo_id") or "").strip()
+    if not resident or not checkpoint:
+        return False
+    if held_id.strip().lower() != checkpoint.lower():
+        return False
+    wanted = extract_quant_token(variant)
+    return bool(wanted) and wanted.lower() != resident.lower()
+
+
+def _diffusion_blocks_delete(
+    repo_id: str,
+    variant: Optional[str] = None,
+    *,
+    cache_root: Optional[str | Path] = None,
+) -> Optional[_DeleteBlock]:
+    """The block if the Images backend holds *repo_id*, else None.
 
     Queries the ACTIVE engine: on a native selection the diffusers singleton reports
     unloaded while sd-cli still generates from the cached GGUF. Same
@@ -689,21 +1216,34 @@ def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
         return None
     status = engine.status()
     if status.get("loaded") and status.get("repo_id"):
-        if _loaded_id_matches_repo(str(status["repo_id"]), repo_id):
-            return "Unload the model before deleting"
+        held = str(status["repo_id"])
+        if not _media_variant_exempt(status, held, variant) and _loaded_id_matches_repo(
+            held, repo_id, cache_root = cache_root
+        ):
+            return _DELETE_USER_MUST_ACT, _MODEL_ACTIVE_DELETE_DETAIL
     # sd.cpp re-reads companion VAE / text-encoder files every generation and status().repo_id covers only the main GGUF, so refuse the companions too.
     for lid in getattr(engine, "loaded_repo_ids", tuple)():
-        if _loaded_id_matches_repo(str(lid), repo_id):
-            return "Unload the model before deleting"
+        if _media_variant_exempt(status, str(lid), variant):
+            continue
+        if _loaded_id_matches_repo(str(lid), repo_id, cache_root = cache_root):
+            return _DELETE_USER_MUST_ACT, _MODEL_ACTIVE_DELETE_DETAIL
     # A downloading repo still reports loaded=False, but deleting would pull blobs from under the in-flight fetch.
     for lid in getattr(engine, "loading_repo_ids", tuple)():
-        if _loaded_id_matches_repo(str(lid), repo_id):
-            return "An Images model load is using this repo; wait for it to finish"
+        if _loaded_id_matches_repo(str(lid), repo_id, cache_root = cache_root):
+            return (
+                _DELETE_RETRY_LATER,
+                "An Images model load is using this repo; wait for it to finish",
+            )
     return None
 
 
-def _video_blocks_delete(repo_id: str) -> Optional[str]:
-    """The 400 detail if the Video backend holds or is fetching *repo_id*, else None.
+def _video_blocks_delete(
+    repo_id: str,
+    variant: Optional[str] = None,
+    *,
+    cache_root: Optional[str | Path] = None,
+) -> Optional[_DeleteBlock]:
+    """The block if the Video backend holds or is fetching *repo_id*, else None.
 
     Video repos share the On Device delete action, so a live Wan / LTX / Hunyuan
     pipeline could otherwise lose its snapshot. Mirrors :func:`_diffusion_blocks_delete`.
@@ -715,21 +1255,170 @@ def _video_blocks_delete(repo_id: str) -> Optional[str]:
         logger.debug(f"Video backend unavailable during delete guard for {repo_id}: {e}")
         return None
     status = backend.status()
+    wanted = (variant or "").strip().replace("\\", "/").lower() or None
+    for held_id, held_variant in getattr(backend, "loaded_gguf_dependency_scopes", tuple)():
+        held_key = str(held_variant).strip().replace("\\", "/").lower()
+        if _loaded_id_matches_repo(
+            str(held_id), repo_id, cache_root = cache_root
+        ) and (
+            wanted is None or wanted == held_key
+        ):
+            return _DELETE_USER_MUST_ACT, _MODEL_ACTIVE_DELETE_DETAIL
     if status.get("loaded"):
-        # repo_id names the checkpoint; for a GGUF / single-file load the companion base supplies the VAE and text encoders, so refuse it too.
-        for key in ("repo_id", "base_repo"):
+        # Diffusers GGUF/single-file loads read base_repo; native sd.cpp reports it only as metadata.
+        keys = ("repo_id",) if status.get("engine") == "sd_cpp" else ("repo_id", "base_repo")
+        for key in keys:
             held = status.get(key)
-            if held and _loaded_id_matches_repo(str(held), repo_id):
-                return "Unload the model before deleting"
-    # The native H3 runtime re-reads its Qwen encoder and both VAEs from companion repos that are
-    # neither of the two ids above, so refuse those as well, exactly as the Images guard does.
+            if not held or _media_variant_exempt(status, str(held), variant):
+                continue
+            if _loaded_id_matches_repo(str(held), repo_id, cache_root = cache_root):
+                return _DELETE_USER_MUST_ACT, _MODEL_ACTIVE_DELETE_DETAIL
+    # Refuse the additional repositories a native runtime re-reads between generations.
     for lid in getattr(backend, "loaded_repo_ids", tuple)():
-        if _loaded_id_matches_repo(str(lid), repo_id):
-            return "Unload the model before deleting"
+        if _media_variant_exempt(status, str(lid), variant):
+            continue
+        if _loaded_id_matches_repo(str(lid), repo_id, cache_root = cache_root):
+            return _DELETE_USER_MUST_ACT, _MODEL_ACTIVE_DELETE_DETAIL
     for lid in getattr(backend, "loading_repo_ids", tuple)():
-        if _loaded_id_matches_repo(str(lid), repo_id):
-            return "A Video model load is using this repo; wait for it to finish"
+        if _loaded_id_matches_repo(str(lid), repo_id, cache_root = cache_root):
+            return (
+                _DELETE_RETRY_LATER,
+                "A Video model load is using this repo; wait for it to finish",
+            )
     return None
+
+
+def _load_state_delete_block(
+    repo_id: str,
+    variant: Optional[str],
+    *,
+    cache_root: Optional[str | Path] = None,
+) -> Optional[_DeleteBlock]:
+    cache_scope = {} if cache_root is None else {"cache_root": cache_root}
+    if llama_cpp_block := _llama_cpp_blocks_delete(
+        repo_id, variant, **cache_scope
+    ):
+        return llama_cpp_block
+    inference_block = _inference_backend_delete_block(repo_id, **cache_scope)
+    if inference_block:
+        return inference_block
+    return _diffusion_blocks_delete(
+        repo_id, variant, **cache_scope
+    ) or _video_blocks_delete(repo_id, variant, **cache_scope)
+
+
+async def load_state_delete_block(
+    repo_id: str,
+    variant: Optional[str],
+    *,
+    cache_root: Optional[str | Path] = None,
+) -> Optional[_DeleteBlock]:
+    try:
+        cache_scope = {} if cache_root is None else {"cache_root": cache_root}
+        return await asyncio.to_thread(
+            _load_state_delete_block,
+            repo_id,
+            variant,
+            **cache_scope,
+        )
+    except Exception as exc:
+        logger.warning(f"Load-state verification failed for {repo_id}; refusing delete: {exc}")
+        return 503, _LOAD_STATE_UNVERIFIABLE_DETAIL
+
+
+def _explicit_delete_cache_root(
+    repo_id: str,
+    cache_path: Optional[str],
+) -> Optional[Path]:
+    if not cache_path:
+        return None
+    cache_root = scoped_delete_root("model", repo_id, cache_path)
+    if cache_root is None:
+        raise HTTPException(status_code = 400, detail = "Invalid cache_path")
+    return cache_root
+
+
+def load_state_rewrite_block_now(
+    repo_id: str,
+    variant: Optional[str],
+    *,
+    fail_closed: bool | Callable[[], bool],
+    cache_root: str | Path,
+) -> Optional[_DeleteBlock]:
+    """Why a download cannot rewrite *repo_id*/*variant*, or None.
+
+    A managed variant download replaces the revision it supersedes, and reclaims exactly the
+    main GGUF files carrying that quant label -- so the question is per-quant of every backend
+    that reads one quantization, not just chat: a resident sibling quant stays downloadable.
+    Backends with no quant scope still answer whole-repo -- a safetensors or MLX load, and the
+    media backends' companion repos, whose files no variant scope names.
+    """
+    try:
+        return _load_state_delete_block(repo_id, variant, cache_root = cache_root)
+    except Exception as exc:
+        try:
+            refuse = fail_closed() if callable(fail_closed) else fail_closed
+        except Exception as cache_exc:
+            logger.warning(
+                "Cache-state verification failed for %s while load-state verification "
+                "was unavailable; refusing rewrite: %s",
+                repo_id,
+                cache_exc,
+            )
+            refuse = True
+        outcome = "refusing" if refuse else "allowing"
+        logger.warning(f"Load-state verification failed for {repo_id}; {outcome} download: {exc}")
+        if refuse:
+            return 503, _LOAD_STATE_REWRITE_UNVERIFIABLE_DETAIL
+        return None
+
+
+async def load_state_rewrite_block(
+    repo_id: str,
+    variant: Optional[str],
+    *,
+    fail_closed: bool | Callable[[], bool],
+    cache_root: str | Path,
+) -> Optional[_DeleteBlock]:
+    return await asyncio.to_thread(
+        load_state_rewrite_block_now,
+        repo_id,
+        variant,
+        fail_closed = fail_closed,
+        cache_root = cache_root,
+    )
+
+
+def _cache_conflict_delete_detail(variant: Optional[str], reason: Optional[str]) -> str:
+    """Why the cache scope is unavailable, in the caller's terms. *reason* comes from the
+    reservation registry; naming the wrong holder sends the user to cancel a download that
+    is not there, and naming the wrong scope sends them to stop a load of a quantization
+    nothing is loading."""
+    scope = "this model's cache files" if variant is not None else "this model"
+    if reason == "deleting":
+        return f"A delete of {scope} is already running. Wait for it to finish."
+    if reason == "inference_loading":
+        # Repo-scoped on purpose: delete admission answers whole-repo for a held repository,
+        # so the holder may well be a sibling quantization of the one being deleted.
+        return "A model load is reading this model's files. Wait for it to finish, then delete."
+    if reason == "repository_owned":
+        return (
+            "A dictation model download is writing this model's files. "
+            "Wait for it to finish, then delete."
+        )
+    if reason == "downloading":
+        return f"A download is writing {scope}. Cancel it (or wait for it), then delete."
+    return f"Another operation is using {scope}. Wait for it to finish, then delete."
+
+
+def cache_reservation_delete_block(
+    repo_id: str,
+    variant: Optional[str],
+) -> Optional[_DeleteBlock]:
+    reason = downloads.registry.delete_admission_conflict(repo_id)
+    if reason is None:
+        return None
+    return _DELETE_RETRY_LATER, _cache_conflict_delete_detail(variant, reason)
 
 
 def _is_companion_base_repo(repo_id: str) -> bool:
@@ -793,7 +1482,7 @@ async def delete_cached_model_response(
 
     When *variant* is provided, only the GGUF files matching that quant label
     are removed (e.g. ``UD-Q4_K_XL``).  Otherwise the entire repo is deleted.
-    Refuses if the model is currently loaded for inference.
+    Refuses when the requested cache scope is used by a model loading or loaded for inference.
 
     *only_if_orphan* is Free up space's precondition: 409 rather than delete when the repo has
     become an installed checkpoint since the list the caller is acting on was built.
@@ -807,68 +1496,48 @@ async def delete_cached_model_response(
             detail = f"Invalid gguf_variant: {variant!r}",
         )
 
-    # Guard fails closed: if a live backend's load state can't be read, abort
-    # with 503 rather than risk unlinking weights under a running process.
-    # Every guard is sync and the chat ones reach get_inference_backend(), whose cold build waits
-    # on hardware detection. One worker keeps the `or` short-circuit and keeps the event loop free.
-    def _load_state_blocks_delete() -> Optional[str]:
-        if _llama_cpp_blocks_delete(repo_id, variant) or (
-            _inference_backend_blocks_delete(repo_id)
-        ):
-            return "Unload the model before deleting"
-        # The guards above are chat-only; Images / Video hold their own pipelines.
-        return _diffusion_blocks_delete(repo_id) or _video_blocks_delete(repo_id)
-
-    try:
-        blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)
-    except Exception as e:
-        logger.warning(f"Load-state verification failed for {repo_id}; refusing delete: {e}")
-        raise HTTPException(
-            status_code = 503,
-            detail = _LOAD_STATE_UNVERIFIABLE_DETAIL,
-        )
-    if blocks_detail:
-        raise HTTPException(
-            status_code = 400,
-            detail = blocks_detail,
-        )
+    cache_root = _explicit_delete_cache_root(repo_id, cache_path)
+    blocks_detail = await load_state_delete_block(
+        repo_id,
+        variant,
+        cache_root = cache_root,
+    )
+    _raise_load_state_delete_block(blocks_detail)
 
     repo_key = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
-    if not downloads.registry.begin_delete(repo_key, variant):
-        detail = (
-            f"Cancel the {variant} download before deleting it."
-            if variant is not None
-            else "Cancel the active downloads before deleting."
+    conflict = downloads.registry.begin_delete(repo_key)
+    if conflict is not None:
+        # Logged, not just returned: a reservation outlives its UI marker (a load worker owns it
+        # until it returns), so a wedged worker shows up here as a repo that never becomes
+        # deletable and nowhere else.
+        logger.info(
+            "Delete of %s [%s] refused: cache scope held (%s)", repo_key, variant, conflict
         )
-        raise HTTPException(status_code = 400, detail = detail)
+        raise HTTPException(
+            status_code = _DELETE_RETRY_LATER,
+            detail = _cache_conflict_delete_detail(variant, conflict),
+        )
     try:
-        # Re-derived now the scope is reserved, as only_if_orphan re-derives its own answer
-        # below. The first read ran before the reservation existed, so a load starting in
-        # between published its claim too late to be seen, and begin_delete misses it too:
-        # image and video loads download directly rather than through a registry claim.
-        try:
-            blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)
-        except Exception as e:
-            logger.warning(f"Load-state verification failed for {repo_id}; refusing delete: {e}")
-            raise HTTPException(
-                status_code = 503,
-                detail = _LOAD_STATE_UNVERIFIABLE_DETAIL,
-            )
-        if blocks_detail:
-            raise HTTPException(
-                status_code = 400,
-                detail = blocks_detail,
-            )
-        return await asyncio.to_thread(
-            _delete_cached_model_blocking,
+        blocks_detail = await load_state_delete_block(
             repo_id,
             variant,
-            hf_token,
-            cache_path,
-            only_if_orphan = only_if_orphan,
+            cache_root = cache_root,
+        )
+        _raise_load_state_delete_block(blocks_detail)
+        # Shielded: a client disconnect must not run the finally below -- ending the delete
+        # reservation -- while the worker is still unlinking blobs.
+        return await wait_for_reserved_worker(
+            asyncio.to_thread(
+                _delete_cached_model_blocking,
+                repo_id,
+                variant,
+                hf_token,
+                cache_path,
+                only_if_orphan = only_if_orphan,
+            )
         )
     finally:
-        downloads.registry.end_delete(repo_key, variant)
+        downloads.registry.end_delete(repo_key)
         cache_inventory.invalidate_hf_cache_scans()
 
 
@@ -963,12 +1632,6 @@ def _delete_cached_model_blocking(
             raise HTTPException(status_code = 400, detail = shared_detail)
 
     try:
-        # If a sibling quant is downloading concurrently, restrict this delete to
-        # the variant's own files and leave the shared mmproj companion for it.
-        sibling_active = bool(
-            variant and downloads.registry.has_active_peer_variant(repo_id, variant)
-        )
-
         cache_scans = cache_inventory.all_hf_cache_scans()
 
         # A repo can live in several remembered caches. Group its copies by the
@@ -987,7 +1650,10 @@ def _delete_cached_model_blocking(
                     continue
                 owners.setdefault(owner, []).append((hf_cache, repo_info))
 
-        target_root = resolve_delete_target_root("model", repo_id, cache_path, owners.keys())
+        try:
+            target_root = resolve_delete_target_root("model", repo_id, cache_path, owners.keys())
+        except AmbiguousDeleteTargetError as exc:
+            raise HTTPException(status_code = 409, detail = exc.detail) from exc
         if target_root is None:
             raise HTTPException(status_code = 400, detail = "Invalid cache_path")
         candidate_entries = owners.get(target_root, [])
@@ -1021,17 +1687,13 @@ def _delete_cached_model_blocking(
                     repo_id,
                     variant,
                     hf_token,
-                    companions = not sibling_active,
+                    companions = True,
                     root = target_root,
                 )
                 if incomplete_result.unresolved:
                     raise HTTPException(
                         status_code = 409,
-                        detail = (
-                            f"Couldn't fully delete {variant} for {repo_id}: partial "
-                            "download bytes exist but this variant's blob hashes are unavailable. "
-                            "Reconnect or provide access to the repo, then try again."
-                        ),
+                        detail = _unresolved_variant_partial_detail(repo_id, variant),
                     )
                 state_purged = download_manifest.purge_state(
                     "model",
@@ -1053,7 +1715,6 @@ def _delete_cached_model_blocking(
                 variant,
                 [repo for _cache, repo in target_entries],
                 hf_token,
-                sibling_active = sibling_active,
                 root = target_root,
             )
 

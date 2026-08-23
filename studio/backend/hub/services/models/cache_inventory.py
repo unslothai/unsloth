@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import os
 import threading
 import time
 from collections import OrderedDict
@@ -292,6 +293,128 @@ def _prefer_cache_row(candidate: dict, existing: Optional[dict]) -> bool:
     return int(candidate.get("size_bytes") or 0) > int(existing.get("size_bytes") or 0)
 
 
+def _cache_copy_from_row(row: Optional[dict]) -> Optional[dict]:
+    if not row:
+        return None
+    cache_path = row.get("cache_path")
+    if not isinstance(cache_path, str) or not cache_path:
+        return None
+    copy = {
+        "cache_path": cache_path,
+        "size_bytes": max(0, int(row.get("size_bytes") or 0)),
+        "active_cache": bool(row.get("active_cache")),
+        "partial": bool(row.get("partial")),
+    }
+    load_id = row.get("load_id")
+    if isinstance(load_id, str) and load_id:
+        copy["load_id"] = load_id
+    last_modified = row.get("last_modified")
+    if isinstance(last_modified, (int, float)) and last_modified > 0:
+        copy["last_modified"] = float(last_modified)
+    return copy
+
+
+def _cache_copy_key(
+    copy: dict,
+    cache_copy_keys: Optional[dict[str, str]] = None,
+) -> str:
+    cache_path = str(copy.get("cache_path") or "")
+    if cache_copy_keys is not None and cache_path in cache_copy_keys:
+        return cache_copy_keys[cache_path]
+    raw = cache_path
+    try:
+        raw = str(Path(raw).expanduser().resolve(strict = False))
+    except (OSError, RuntimeError, ValueError):
+        pass
+    key = os.path.normcase(raw)
+    if cache_copy_keys is not None:
+        cache_copy_keys[cache_path] = key
+    return key
+
+
+def _merge_cache_row_copies(
+    candidate: dict,
+    existing: Optional[dict],
+    *,
+    cache_copy_keys: Optional[dict[str, str]] = None,
+) -> dict:
+    winner = (
+        existing
+        if existing is not None and not _prefer_cache_row(candidate, existing)
+        else candidate
+    )
+    if cache_copy_keys is None:
+        cache_copy_keys = {}
+
+    copies_by_path: dict[str, dict] = {}
+    sources: list[dict] = []
+    if existing is not None:
+        existing_copies = existing.get("cache_copies")
+        if isinstance(existing_copies, list) and existing_copies:
+            sources.extend(copy for copy in existing_copies if isinstance(copy, dict))
+        else:
+            existing_copy = _cache_copy_from_row(existing)
+            if existing_copy is not None:
+                sources.append(existing_copy)
+    candidate_copy = _cache_copy_from_row(candidate)
+    if candidate_copy is not None:
+        sources.append(candidate_copy)
+
+    for copy in sources:
+        cache_path = copy.get("cache_path")
+        if not isinstance(cache_path, str) or not cache_path:
+            continue
+        normalized = {
+            "cache_path": cache_path,
+            "size_bytes": max(0, int(copy.get("size_bytes") or 0)),
+            "active_cache": bool(copy.get("active_cache")),
+            "partial": bool(copy.get("partial")),
+        }
+        load_id = copy.get("load_id")
+        if isinstance(load_id, str) and load_id:
+            normalized["load_id"] = load_id
+        modified = copy.get("last_modified")
+        if isinstance(modified, (int, float)) and modified > 0:
+            normalized["last_modified"] = float(modified)
+        key = _cache_copy_key(normalized, cache_copy_keys)
+        previous = copies_by_path.get(key)
+        if previous is None:
+            copies_by_path[key] = normalized
+            continue
+        prefer_normalized = _prefer_cache_row(normalized, previous)
+        previous["size_bytes"] = max(previous["size_bytes"], normalized["size_bytes"])
+        previous["active_cache"] = previous["active_cache"] or normalized["active_cache"]
+        previous["partial"] = previous["partial"] and normalized["partial"]
+        if prefer_normalized and "load_id" in normalized:
+            previous["load_id"] = normalized["load_id"]
+        elif "load_id" not in previous and "load_id" in normalized:
+            previous["load_id"] = normalized["load_id"]
+        latest = max(
+            float(previous.get("last_modified") or 0),
+            float(normalized.get("last_modified") or 0),
+        )
+        if latest > 0:
+            previous["last_modified"] = latest
+
+    copies = sorted(
+        copies_by_path.values(),
+        key = lambda copy: (
+            not copy["active_cache"],
+            _cache_copy_key(copy, cache_copy_keys),
+        ),
+    )
+    merged = dict(winner)
+    merged["cache_copies"] = copies
+    merged["copy_count"] = len(copies)
+    merged["total_size_bytes"] = sum(copy["size_bytes"] for copy in copies)
+    latest = max((float(copy.get("last_modified") or 0) for copy in copies), default = 0)
+    if latest > 0:
+        merged["last_modified"] = latest
+    else:
+        merged.pop("last_modified", None)
+    return merged
+
+
 class _LoadIdentity(NamedTuple):
     """A row's load target and the directory it lands in.
 
@@ -521,6 +644,7 @@ def _scan_cached_gguf(
         variant_states = None
 
     seen_lower: dict[str, dict] = {}
+    cache_copy_keys: dict[str, str] = {}
     for hf_cache in cache_scans:
         for repo_info in hf_cache.repos:
             try:
@@ -584,7 +708,6 @@ def _scan_cached_gguf(
                     "partial_transport": None,
                     "partial_resumable": False,
                 }
-                last_modified = max(last_modified, (existing or {}).get("last_modified", 0.0))
                 if last_modified > 0:
                     row["last_modified"] = last_modified
                 row.update(
@@ -604,11 +727,13 @@ def _scan_cached_gguf(
                         hidden_infra = is_hidden_infra,
                     )
                 )
-                # Only the winning cache root loads, so the loser's vision flag must not carry over.
-                if _prefer_cache_row(row, existing):
-                    seen_lower[key] = row
-                elif last_modified > existing.get("last_modified", 0.0):
-                    existing["last_modified"] = last_modified
+                # Only the winning cache root loads, so its capability flags stay authoritative;
+                # physical-copy metadata is merged independently of which candidate wins.
+                seen_lower[key] = _merge_cache_row_copies(
+                    row,
+                    existing,
+                    cache_copy_keys = cache_copy_keys,
+                )
             except Exception as e:
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
                 logger.warning(f"Skipping cached GGUF repo {repo_label}: {e}")
@@ -979,6 +1104,7 @@ def _scan_cached_models(
         variant_states = None
 
     seen_lower: dict[str, dict] = {}
+    cache_copy_keys: dict[str, str] = {}
     inspected = 0
     skipped_gguf = 0
     skipped_no_weights = 0
@@ -1108,10 +1234,7 @@ def _scan_cached_models(
                     "companion": _cached_row_companion(repo_id),
                     **local_metadata,
                 }
-                last_modified = max(
-                    payload.last_modified,
-                    (existing or {}).get("last_modified", 0.0),
-                )
+                last_modified = payload.last_modified
                 if last_modified > 0:
                     row["last_modified"] = last_modified
                 row.update(
@@ -1125,10 +1248,11 @@ def _scan_cached_models(
                         stt_only = bool(is_whisper_stt),
                     )
                 )
-                if _prefer_cache_row(row, existing):
-                    seen_lower[key] = row
-                elif last_modified > existing.get("last_modified", 0.0):
-                    existing["last_modified"] = last_modified
+                seen_lower[key] = _merge_cache_row_copies(
+                    row,
+                    existing,
+                    cache_copy_keys = cache_copy_keys,
+                )
             except Exception as e:
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
                 logger.warning(f"Skipping cached model repo {repo_label}: {e}")

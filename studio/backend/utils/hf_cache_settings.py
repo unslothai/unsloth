@@ -81,6 +81,32 @@ def _canonical(path: Path | str) -> Path:
     return Path(path).expanduser().resolve(strict = False)
 
 
+def _unique_cache_paths(candidates: Iterator[Path]) -> list[Path]:
+    out: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            canonical = _canonical(candidate)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        key = os.path.normcase(str(canonical))
+        if key in seen:
+            continue
+        duplicate = False
+        for existing in out:
+            try:
+                if canonical.samefile(existing):
+                    duplicate = True
+                    break
+            except (OSError, ValueError):
+                continue
+        if duplicate:
+            continue
+        seen.add(key)
+        out.append(canonical)
+    return out
+
+
 def _environment_paths() -> Optional[HuggingFaceCachePaths]:
     explicit_home = _EXPLICIT_CACHE_ENV.get("HF_HOME")
     explicit_hub = _EXPLICIT_CACHE_ENV.get("HF_HUB_CACHE") or _EXPLICIT_CACHE_ENV.get(
@@ -356,32 +382,14 @@ def known_hf_cache_homes() -> list[Path]:
     if stored is not None:
         candidates.append(stored)
     candidates.extend([*_stored_history(), _default_cache_home()])
-    out: list[Path] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        try:
-            canonical = _canonical(candidate)
-        except (OSError, RuntimeError, ValueError):
-            continue
-        key = os.path.normcase(str(canonical))
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(canonical)
-    return out
+    return _unique_cache_paths(iter(candidates))
 
 
 def known_hf_hub_caches() -> list[Path]:
     active = get_hf_cache_paths()
-    out = [active.hub_cache]
-    seen = {os.path.normcase(str(_canonical(active.hub_cache)))}
-    for home in known_hf_cache_homes():
-        hub = _canonical(home / "hub")
-        key = os.path.normcase(str(hub))
-        if key not in seen:
-            seen.add(key)
-            out.append(hub)
-    return out
+    return _unique_cache_paths(
+        iter([active.hub_cache, *(home / "hub" for home in known_hf_cache_homes())])
+    )
 
 
 def cache_status(paths: Optional[HuggingFaceCachePaths] = None) -> dict:

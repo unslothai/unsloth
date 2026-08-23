@@ -600,23 +600,35 @@ def delete_variant_incomplete_blobs_result(
         gguf_variant_blob_hashes(repo_id, variant, hf_token, include_companions = companions)
         | extra_hashes
     )
+    target_entries = list(iter_destructive_repo_cache_dirs("model", repo_id, root = root))
     if not target_hashes:
-        has_variant_partial_state = hf_cache_scan.is_variant_partial(
-            repo_id,
-            variant,
-            incomplete_blob_hashes = set(),
-            variant_blob_hashes = frozenset(),
+        unresolved = any(
+            (
+                hf_cache_scan.is_variant_partial(
+                    repo_id,
+                    variant,
+                    incomplete_blob_hashes = set(),
+                    variant_blob_hashes = frozenset(),
+                    repo_cache_dir = entry,
+                )
+                and download_registry.incomplete_blob_hashes(
+                    "model",
+                    repo_id,
+                    active_only = True,
+                    root = entry.parent,
+                )
+            )
+            for entry in target_entries
         )
-        has_repo_partials = bool(download_registry.incomplete_blob_hashes("model", repo_id))
         return VariantIncompleteDeleteResult(
             deleted = 0,
-            unresolved = has_variant_partial_state and has_repo_partials,
+            unresolved = bool(unresolved),
         )
     deleted = 0
     # Destructive iterator: only the exact-case match (or abort if ambiguous),
     # so a case-variant sibling repo's partials are never unlinked. ``root`` scopes
     # the purge to one cache so a delete never touches another cache's partials.
-    for entry in iter_destructive_repo_cache_dirs("model", repo_id, root = root):
+    for entry in target_entries:
         blobs_dir = entry / "blobs"
         if not blobs_dir.is_dir():
             continue

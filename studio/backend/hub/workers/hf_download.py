@@ -32,7 +32,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Union
+from typing import Callable, NamedTuple, Union
 
 _HERE = Path(__file__).resolve().parent
 _BACKEND = _HERE.parent.parent
@@ -55,6 +55,11 @@ from hub.utils.gguf_plan import (
     sibling_sha256,
 )
 from hub.utils.state_dir import RepoType
+from hub.utils.snapshot_reclaim import (
+    PreviousMainRef,
+    capture_previous_main_ref,
+    promote_verified_snapshot,
+)
 
 # typing.Union, not `str | bool | None`: an alias is evaluated on import and PEP 604 raises below 3.10.
 HfTokenArg = Union[str, bool, None]
@@ -250,24 +255,24 @@ def _verify_completed_download(
     snapshot_path: str,
     *,
     metadata_unavailable: bool = False,
-) -> None:
+) -> bool:
     """Verify every manifest file is on disk at its declared size; exit nonzero
     with a diagnostic if not.
 
-    No-op when no manifest exists: the manifest write is best-effort, so absence
-    means "verification unavailable, trust snapshot_download's exit code".
+    Returns ``False`` when no manifest exists; callers may still trust
+    ``snapshot_download``, but must not activate it or reclaim an older revision.
     """
     from hub.utils import download_manifest
 
     manifest = download_manifest.read_manifest(repo_type, repo_id, variant)
     if manifest is None:
-        return
+        return False
     result = download_manifest.verify_against_disk(
         manifest,
         Path(snapshot_path),
     )
     if result.ok:
-        return
+        return True
     label = f"{repo_id}{f' [{variant}]' if variant else ''}"
     if metadata_unavailable:
         print(
@@ -541,6 +546,60 @@ def _recover_manifest_after_download(
         )
 
 
+def _snapshot_activation_plan(
+    repo_type: RepoType,
+    repo_id: str,
+    commit_hash: str | None,
+    manifest_written: bool,
+) -> tuple[str | None, PreviousMainRef | None]:
+    if commit_hash is None or not manifest_written:
+        return None, None
+    previous = (
+        capture_previous_main_ref(repo_id)
+        if repo_type == "model"
+        else capture_previous_main_ref(repo_id, repo_type = repo_type)
+    )
+    if not previous.promotion_safe:
+        if previous.allow_unpinned_download:
+            return None, None
+        label = "Model" if repo_type == "model" else "Dataset"
+        raise RuntimeError(
+            f"{label} cache cannot be safely activated for {repo_id}: "
+            f"{previous.reason or 'unsafe refs/main state'}"
+        )
+    return commit_hash, previous
+
+
+def _promote_snapshot(
+    repo_type: RepoType,
+    repo_id: str,
+    revision: str,
+    snapshot_path: str,
+    previous: PreviousMainRef,
+    *,
+    label: str,
+    after_promotion: Callable[[], None] | None = None,
+) -> None:
+    try:
+        promotion_kwargs = (
+            {"after_promotion": after_promotion} if after_promotion is not None else {}
+        )
+        promote_verified_snapshot(
+            repo_type,
+            repo_id,
+            revision,
+            snapshot_path,
+            previous,
+            **promotion_kwargs,
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Verified {label} is present on disk, but automatic activation failed "
+            f"({type(e).__name__}: {e}). The downloaded files remain cached but were "
+            "not activated."
+        ) from e
+
+
 def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
     from huggingface_hub import snapshot_download
     from hub.utils.download_registry import prepare_cache_for_transport
@@ -560,15 +619,32 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
         info = None
 
     download_manifest.clear_cancel_marker("model", repo_id, None)
+    manifest_written = False
     if info is not None:
         ignore_patterns, expected_files = _snapshot_download_plan(info)
+        commit_hash = download_manifest.normalized_commit_hash(getattr(info, "sha", None))
+        if commit_hash is None:
+            print(
+                f"Model metadata did not provide a commit revision for {repo_id}; "
+                "downloading without an immutable revision.",
+                file = sys.stderr,
+            )
         # Written for every transport. The manifest verifies the finalized files under snapshots/, which
         # both transports produce identically (XET also renames a full, correctly-sized blob into place).
         # XET's block-level dedup lives only in the chunk-cache, so per-file size verification is valid.
-        download_manifest.write_manifest("model", repo_id, None, expected_files, mode)
+        manifest_written = download_manifest.write_manifest(
+            "model",
+            repo_id,
+            None,
+            expected_files,
+            mode,
+            commit_hash = commit_hash,
+            metadata_derived = commit_hash is not None,
+        )
     else:
         ignore_patterns = list(SNAPSHOT_IGNORE_PATTERNS)
         expected_files = []
+        commit_hash = None
 
     purged = prepare_cache_for_transport("model", repo_id, mode)
     if purged:
@@ -577,13 +653,25 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
             f"before starting {mode} download.",
             file = sys.stderr,
         )
-    _preflight_disk_space("model", repo_id, expected_files)
-    snapshot_path = snapshot_download(
-        repo_id = repo_id,
-        token = _hf_token_arg(hf_token),
-        ignore_patterns = ignore_patterns,
-        max_workers = 1,
+    download_revision, previous_main = _snapshot_activation_plan(
+        "model",
+        repo_id,
+        commit_hash,
+        manifest_written,
     )
+    _preflight_disk_space("model", repo_id, expected_files)
+    download_kwargs = {
+        "repo_id": repo_id,
+        "token": _hf_token_arg(hf_token),
+        "ignore_patterns": ignore_patterns,
+        "max_workers": 1,
+    }
+    if download_revision is not None:
+        # Metadata and bytes must describe the same immutable revision.  Omitting
+        # this lets snapshot_download resolve main a second time after metadata
+        # was fetched, which can mix a republish into this verified job.
+        download_kwargs["revision"] = download_revision
+    snapshot_path = snapshot_download(**download_kwargs)
     if info is None:
         _recover_manifest_after_download(
             "model",
@@ -593,18 +681,37 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
             fetch_info = lambda: _model_info_with_retry(repo_id, hf_token),
             expected_files_from_info = lambda recovered: _snapshot_download_plan(recovered)[1],
         )
-    _verify_completed_download(
+    verified = _verify_completed_download(
         "model",
         repo_id,
         None,
         snapshot_path,
         metadata_unavailable = info is None,
     )
+    if download_revision is not None:
+        if not verified or previous_main is None:
+            raise RuntimeError(
+                f"Downloaded {repo_id}, but activation failed because completion "
+                "could not be attested."
+            )
+        _promote_snapshot(
+            "model",
+            repo_id,
+            download_revision,
+            snapshot_path,
+            previous_main,
+            label = f"download for {repo_id}",
+        )
+
+
+class _ResolvedGgufVariantPlan(NamedTuple):
+    plan: GgufVariantPlan
+    commit_hash: str | None
 
 
 def _gguf_variant_target_plan(
     repo_id: str, variant: str, hf_token: str | None
-) -> GgufVariantPlan | None:
+) -> _ResolvedGgufVariantPlan | None:
     try:
         info = _model_info_with_retry(repo_id, hf_token)
     except Exception as e:
@@ -616,10 +723,20 @@ def _gguf_variant_target_plan(
         raise RuntimeError(
             f"Metadata unavailable while resolving GGUF variant '{variant}' " f"for {repo_id}"
         ) from e
+    from hub.utils.download_manifest import normalized_commit_hash
+
+    commit_hash = normalized_commit_hash(getattr(info, "sha", None))
+    if commit_hash is None:
+        print(
+            f"Model metadata did not provide a commit revision for {repo_id}; "
+            "downloading without an immutable revision.",
+            file = sys.stderr,
+        )
     # plan_for_variant, not .get: a repo that files every variant under one shared container
     # qualifies every key, and a stored pin or an explicit repo:Q4_K_M then missed the map and
     # the worker exited with "No GGUF shards matching variant".
-    return plan_for_variant(build_gguf_variant_plans(list(info.siblings)), variant)
+    plan = plan_for_variant(build_gguf_variant_plans(list(info.siblings)), variant)
+    return _ResolvedGgufVariantPlan(plan, commit_hash) if plan is not None else None
 
 
 def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mode: str) -> None:
@@ -630,28 +747,32 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
 
     metadata_unavailable = False
     try:
-        plan = _gguf_variant_target_plan(repo_id, variant, hf_token)
+        resolved_plan = _gguf_variant_target_plan(repo_id, variant, hf_token)
     except RuntimeError:
-        plan = None
+        resolved_plan = None
         metadata_unavailable = True
 
     if not metadata_unavailable:
-        if plan is None:
+        if resolved_plan is None:
             print(
                 f"No GGUF shards matching variant '{variant}' in {repo_id}",
                 file = sys.stderr,
             )
             sys.exit(1)
+        plan = resolved_plan.plan
+        commit_hash = resolved_plan.commit_hash
         targets = list(plan.target_filenames)
         expected_files = list(plan.expected_files)
         main_blob_hashes = plan.main_hashes
         companion_blob_hashes = plan.companion_hashes
-        download_manifest.write_manifest(
+        manifest_written = download_manifest.write_manifest(
             "model",
             repo_id,
             variant,
             expected_files,
             mode,
+            commit_hash = commit_hash,
+            metadata_derived = commit_hash is not None,
         )
     else:
         # Metadata unreachable (offline / gated / private). Resume the exact shards the original attempt
@@ -665,15 +786,20 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
             )
             sys.exit(1)
         plan = plan_from_expected_files(variant, manifest.expected_files)
+        commit_hash = manifest.commit_hash
         targets = list(plan.target_filenames)
         expected_files = list(plan.expected_files)
-        download_manifest.write_manifest(
+        manifest_written = download_manifest.write_manifest(
             "model",
             repo_id,
             variant,
             expected_files,
             mode,
+            commit_hash = commit_hash,
+            metadata_derived = manifest.metadata_derived,
         )
+        if not manifest_written and manifest.metadata_derived and commit_hash is not None:
+            manifest_written = True
         main_blob_hashes = plan.main_hashes
         companion_blob_hashes = plan.companion_hashes
         print(
@@ -716,36 +842,76 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
             f"before starting {mode} download.",
             file = sys.stderr,
         )
-    _preflight_disk_space("model", repo_id, expected_files)
-    snapshot_path = snapshot_download(
-        repo_id = repo_id,
-        token = _hf_token_arg(hf_token),
-        allow_patterns = targets,
-        max_workers = 1,
+    download_revision, previous_main = _snapshot_activation_plan(
+        "model",
+        repo_id,
+        commit_hash,
+        manifest_written,
     )
-    _verify_completed_download(
+    if (
+        metadata_unavailable
+        and download_revision is not None
+        and previous_main is not None
+        and previous_main.revision not in (None, download_revision)
+    ):
+        print(
+            f"Metadata-unavailable GGUF resume for {repo_id} [{variant}] is pinned to "
+            "a manifest revision that differs from the active revision; leaving the "
+            "active revision unchanged.",
+            file = sys.stderr,
+        )
+        previous_main = None
+    _preflight_disk_space("model", repo_id, expected_files)
+    download_kwargs = {
+        "repo_id": repo_id,
+        "token": _hf_token_arg(hf_token),
+        "allow_patterns": targets,
+        "max_workers": 1,
+    }
+    if download_revision is not None:
+        download_kwargs["revision"] = download_revision
+    snapshot_path = snapshot_download(**download_kwargs)
+    verified = _verify_completed_download(
         "model",
         repo_id,
         variant,
         snapshot_path,
         metadata_unavailable = metadata_unavailable,
     )
-    if plan is not None:
-        try:
-            from hub.services.models.deletion import reclaim_replaced_gguf_variant
-            reclaim_replaced_gguf_variant(
-                repo_id,
-                variant,
-                plan.main_hashes,
-                hf_token,
-                hub_cache = Path(snapshot_path).parents[2],
-            )
-        except Exception as e:
-            print(
-                f"Verified GGUF update for {repo_id} [{variant}], but stale-cache "
-                f"reclaim failed ({type(e).__name__}: {e})",
-                file = sys.stderr,
-            )
+    if download_revision is not None and not verified:
+        raise RuntimeError(
+            f"Downloaded {repo_id} [{variant}], but activation failed because "
+            "completion could not be attested."
+        )
+    if download_revision is not None and previous_main is not None:
+        def reclaim_after_promotion() -> None:
+            try:
+                from hub.services.models.deletion import reclaim_replaced_gguf_variant
+
+                reclaim_replaced_gguf_variant(
+                    repo_id,
+                    variant,
+                    plan.main_hashes,
+                    hf_token,
+                    hub_cache = Path(snapshot_path).parents[2],
+                    keep_snapshot = snapshot_path,
+                )
+            except Exception as e:
+                print(
+                    f"Verified GGUF update for {repo_id} [{variant}], but stale-cache "
+                    f"reclaim failed ({type(e).__name__}: {e})",
+                    file = sys.stderr,
+                )
+
+        _promote_snapshot(
+            "model",
+            repo_id,
+            download_revision,
+            snapshot_path,
+            previous_main,
+            label = f"GGUF update for {repo_id} [{variant}]",
+            after_promotion = reclaim_after_promotion,
+        )
 
 
 def _download_scoped_snapshot(
@@ -757,7 +923,7 @@ def _download_scoped_snapshot(
     packaged root single, transformer/ shards and fp16 twins). Keyed apart from the repo's
     full snapshot so neither manifest describes the other, and the repo is not later judged
     partial against expectations it was never meant to meet."""
-    from huggingface_hub import HfApi, snapshot_download
+    from huggingface_hub import snapshot_download
     from hub.utils.download_registry import prepare_cache_for_transport
     from hub.utils import download_manifest
     from hub.utils.download_manifest import ExpectedFile
@@ -774,7 +940,16 @@ def _download_scoped_snapshot(
 
     expected_files: list[ExpectedFile] = []
     blob_hashes: frozenset[str] = frozenset()
+    commit_hash = None
+    manifest_written = False
     if info is not None:
+        commit_hash = download_manifest.normalized_commit_hash(getattr(info, "sha", None))
+        if commit_hash is None:
+            print(
+                f"Model metadata did not provide a commit revision for {repo_id}; "
+                "downloading without an immutable revision.",
+                file = sys.stderr,
+            )
         siblings = [s for s in info.siblings if getattr(s, "rfilename", None) in wanted]
         # Every requested file must resolve: dropping an unmatched name would shrink the manifest to the
         # survivors, and snapshot_download also succeeds when an allow pattern matches nothing.
@@ -797,7 +972,15 @@ def _download_scoped_snapshot(
         from hub.utils.snapshot_filters import blob_hashes_for_siblings
 
         blob_hashes = blob_hashes_for_siblings(siblings)
-        download_manifest.write_manifest("model", repo_id, scope, expected_files, mode)
+        manifest_written = download_manifest.write_manifest(
+            "model",
+            repo_id,
+            scope,
+            expected_files,
+            mode,
+            commit_hash = commit_hash,
+            metadata_derived = commit_hash is not None,
+        )
 
     download_manifest.clear_cancel_marker("model", repo_id, scope)
     purged = prepare_cache_for_transport(
@@ -814,13 +997,22 @@ def _download_scoped_snapshot(
             f"before starting {mode} download.",
             file = sys.stderr,
         )
-    _preflight_disk_space("model", repo_id, expected_files)
-    snapshot_path = snapshot_download(
-        repo_id = repo_id,
-        token = _hf_token_arg(hf_token),
-        allow_patterns = files,
-        max_workers = 1,
+    download_revision, previous_main = _snapshot_activation_plan(
+        "model",
+        repo_id,
+        commit_hash,
+        manifest_written,
     )
+    _preflight_disk_space("model", repo_id, expected_files)
+    download_kwargs = {
+        "repo_id": repo_id,
+        "token": _hf_token_arg(hf_token),
+        "allow_patterns": files,
+        "max_workers": 1,
+    }
+    if download_revision is not None:
+        download_kwargs["revision"] = download_revision
+    snapshot_path = snapshot_download(**download_kwargs)
     if info is None:
         # With no metadata there is no manifest, so verification is a no-op, and snapshot_download RETURNS
         # AN EXISTING SNAPSHOT FOLDER when repo_info also fails -- flipping the job to complete with no weights.
@@ -834,13 +1026,27 @@ def _download_scoped_snapshot(
                 file = sys.stderr,
             )
             sys.exit(1)
-    _verify_completed_download(
+    verified = _verify_completed_download(
         "model",
         repo_id,
         scope,
         snapshot_path,
         metadata_unavailable = info is None,
     )
+    if download_revision is not None:
+        if not verified or previous_main is None:
+            raise RuntimeError(
+                f"Downloaded {repo_id} [{scope}], but activation failed because "
+                "completion could not be attested."
+            )
+        _promote_snapshot(
+            "model",
+            repo_id,
+            download_revision,
+            snapshot_path,
+            previous_main,
+            label = f"scoped download for {repo_id} [{scope}]",
+        )
 
 
 def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
@@ -859,17 +1065,24 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
         info = None
     # Cancel-marker clear and manifest write run on every transport (see _download_snapshot for XET).
     download_manifest.clear_cancel_marker("dataset", repo_id, None)
+    manifest_written = False
     if info is not None:
         expected_files = _dataset_expected_files(info)
-        commit_hash = getattr(info, "sha", None)
-        download_manifest.write_manifest(
+        commit_hash = download_manifest.normalized_commit_hash(getattr(info, "sha", None))
+        if commit_hash is None:
+            print(
+                f"Dataset metadata did not provide a commit revision for {repo_id}; "
+                "downloading without an immutable revision.",
+                file = sys.stderr,
+            )
+        manifest_written = download_manifest.write_manifest(
             "dataset",
             repo_id,
             None,
             expected_files,
             mode,
             commit_hash = commit_hash,
-            metadata_derived = True,
+            metadata_derived = commit_hash is not None,
         )
     else:
         expected_files = []
@@ -881,6 +1094,12 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
             f"before starting {mode} download.",
             file = sys.stderr,
         )
+    download_revision, previous_main = _snapshot_activation_plan(
+        "dataset",
+        repo_id,
+        commit_hash,
+        manifest_written,
+    )
     _preflight_disk_space("dataset", repo_id, expected_files)
     download_kwargs = {
         "repo_id": repo_id,
@@ -888,8 +1107,8 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
         "repo_type": "dataset",
         "max_workers": 1,
     }
-    if isinstance(commit_hash, str) and commit_hash.strip():
-        download_kwargs["revision"] = commit_hash.strip()
+    if download_revision is not None:
+        download_kwargs["revision"] = download_revision
     snapshot_path = snapshot_download(
         **download_kwargs,
     )
@@ -903,7 +1122,7 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
             expected_files_from_info = _dataset_expected_files,
             label = "dataset ",
         )
-    _verify_completed_download(
+    verified = _verify_completed_download(
         "dataset",
         repo_id,
         None,
@@ -914,9 +1133,23 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
         _write_dataset_completion_from_metadata(
             repo_id,
             snapshot_path,
-            getattr(info, "sha", None),
+            commit_hash,
             expected_files,
             mode,
+        )
+    if download_revision is not None:
+        if not verified or previous_main is None:
+            raise RuntimeError(
+                f"Downloaded dataset {repo_id}, but activation failed because completion "
+                "could not be attested."
+            )
+        _promote_snapshot(
+            "dataset",
+            repo_id,
+            download_revision,
+            snapshot_path,
+            previous_main,
+            label = f"dataset download for {repo_id}",
         )
 
 

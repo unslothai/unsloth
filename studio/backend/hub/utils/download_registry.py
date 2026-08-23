@@ -54,6 +54,10 @@ from pathlib import Path
 from typing import Callable, Iterator, Literal, NamedTuple, Optional, Sequence
 
 from loggers import get_logger
+from utils.model_cache_reservations import (
+    ModelCacheOperations,
+    get_model_cache_operations,
+)
 
 # One floor, one name, shared. Written out by hand in each module it was needed
 # in at first, and the site that got missed was missed because "who enforces it"
@@ -61,6 +65,7 @@ from loggers import get_logger
 from utils.process_lifetime import is_signalable_pid
 
 from hub.utils import state_dir
+from hub.utils.gguf import gguf_variant_scopes_overlap
 from hub.utils.state_dir import RepoType
 
 logger = get_logger(__name__)
@@ -1289,6 +1294,19 @@ def _repo_of_key(key: str) -> str:
     return normalize_repo_key(key.split("::", 1)[0])
 
 
+def _write_scope_variant(variant: Optional[str]) -> Optional[str]:
+    """The quantization a job's writes are confined to, or None for a whole-repo writer.
+
+    A scoped job rides the variant slot as ``@name`` but fetches an arbitrary file list, so
+    its write scope is no single quantization: it reports as a whole-repo writer rather than
+    passing for a sibling quant.
+    """
+    normalized = (variant or "").strip().lower() or None
+    if normalized is not None and normalized.startswith("@"):
+        return None
+    return normalized
+
+
 def variant_from_key(key: str) -> Optional[str]:
     """Parse the variant suffix from a 'repo_id::variant' key. Empty
     variant returns None — matches the manifest/marker calling
@@ -1355,7 +1373,12 @@ class DownloadRegistry:
     GGUF variants may run concurrently.
     """
 
-    def __init__(self, max_terminal: int = 64) -> None:
+    def __init__(
+        self,
+        max_terminal: int = 64,
+        *,
+        cache_operations: Optional[ModelCacheOperations] = None,
+    ) -> None:
         self._jobs: dict[str, DownloadState] = {}
         self._processes: dict[str, subprocess.Popen] = {}
         self._repo_active: dict[str, set[str]] = {}
@@ -1366,12 +1389,35 @@ class DownloadRegistry:
         # Monotonic across keys so an evicted then re-claimed key never reuses a
         # prior generation (which would let a stale cancel match a new run).
         self._generation_seq = 0
-        self._deleting: dict[str, set[Optional[str]]] = {}
-        # Publish external cache owners under the same lock as Model Hub jobs.
-        self._repository_owners: dict[str, object] = {}
-        self._lock = threading.Lock()
+        self._cache_operations = cache_operations or ModelCacheOperations()
+        self._lock = self._cache_operations.lock
+        self._cache_operations.bind(
+            self._active_writer_state_locked,
+            self._delete_blocked_by_active_locked,
+            gguf_variant_scopes_overlap,
+        )
         _REGISTRIES.add(self)
         self._max_terminal = max_terminal
+
+    def _active_writer_state_locked(
+        self,
+        repo_id: str,
+        variant: Optional[str] = None,
+    ) -> Optional[str]:
+        """State of an active job whose write scope overlaps *repo_id*/*variant*.
+
+        Same overlap rule as :meth:`_delete_blocked_by_active_locked`: a whole-repo
+        scope (``variant is None``) meets any job, a variant scope meets only that
+        checkpoint identity, its bare/path alias, or a whole-repo download. Sibling
+        quants already download side by side, so a reader of one must not be held off.
+        """
+        for key, job in self._jobs.items():
+            if _repo_of_key(key) != repo_id or job.state not in _ACTIVE_STATES:
+                continue
+            other_variant = self._active_job_write_scope_locked(key)
+            if gguf_variant_scopes_overlap(other_variant, variant):
+                return job.state
+        return None
 
     def _put_terminal_job_locked(
         self,
@@ -1495,10 +1541,16 @@ class DownloadRegistry:
         key = normalize_job_key(key)
         return generation is None or self._generations.get(key, 0) == generation
 
-    def register_process(self, key: str, proc: subprocess.Popen) -> bool:
+    def register_process(
+        self,
+        key: str,
+        proc: subprocess.Popen,
+        cleanup_owner: Optional[object] = None,
+    ) -> bool:
         """Register *proc* for *key*. Returns ``False`` when a cancel was
         requested during the claim→register window (the caller must kill
-        *proc* immediately); ``True`` otherwise."""
+        *proc* immediately); ``True`` otherwise. When supplied, *cleanup_owner*
+        keeps cache mutation reserved until that unregistered child is reaped."""
         key = normalize_job_key(key)
         metadata_to_persist: Optional[DownloadMetadata] = None
         registered = False
@@ -1510,6 +1562,9 @@ class DownloadRegistry:
                 key,
                 pending_generation,
             ):
+                repo = _repo_of_key(key)
+                if cleanup_owner is not None:
+                    self._cache_operations.begin_writer_cleanup(repo, cleanup_owner)
                 self._put_terminal_job_locked(key, "cancelled")
                 metadata_to_persist = self._metadata.pop(key, None)
                 marker_transport = self._cancel_marker_transports.pop(key, None)
@@ -1520,7 +1575,6 @@ class DownloadRegistry:
                         metadata_to_persist,
                         transport = marker_transport,
                     )
-                repo = _repo_of_key(key)
                 active = self._repo_active.get(repo)
                 if active is not None:
                     active.discard(key)
@@ -1614,8 +1668,12 @@ class DownloadRegistry:
         requested_hashes = blob_hashes or frozenset()
         requested_progress_hashes = progress_blob_hashes or frozenset()
         with self._lock:
-            if repo in self._repository_owners:
-                return False, "repository_owned"
+            # Scoped to what this job writes: a load reading one quantization must not hold
+            # off a download of its siblings, exactly as two sibling downloads run together.
+            write_scope = _write_scope_variant(variant_from_key(key))
+            cache_conflict = self._cache_operations.cache_writer_conflict(repo, write_scope)
+            if cache_conflict is not None:
+                return False, cache_conflict
             # Run the final external admission check while the registry lock is
             # held, immediately before inspecting and publishing active state.
             # The GGUF load path establishes its marker before calling
@@ -1623,10 +1681,7 @@ class DownloadRegistry:
             # or the load's later probe observes this claim.
             if admission_check is not None and not admission_check():
                 return False, "admission_blocked"
-            deleting_scopes = self._deleting.get(repo)
-            if deleting_scopes is not None and (
-                None in deleting_scopes or variant_from_key(key) in deleting_scopes
-            ):
+            if self._cache_operations.deletion_conflicts(repo):
                 return False, "deleting"
             active = self._repo_active.get(repo, set())
             stale_keys: list[str] = []
@@ -1639,7 +1694,7 @@ class DownloadRegistry:
                     stale_keys.append(other_key)
                     continue
                 other_metadata = self._metadata.get(other_key)
-                # Same-transport variants of one model run concurrently: each
+                # Disjoint same-transport variants of one model run concurrently: each
                 # worker purges only its own re-resolved main blobs and the
                 # shared companion is guarded by its marker. Cross-transport
                 # stays serialized so an HTTP resume and an XET rewrite never
@@ -1651,6 +1706,9 @@ class DownloadRegistry:
                     and other_metadata.repo_type == "model"
                     and bool(other_metadata.variant)
                     and other_metadata.transport == transport
+                    and not gguf_variant_scopes_overlap(
+                        self._active_job_write_scope_locked(other_key), write_scope
+                    )
                 )
                 if concurrent_gguf_variants:
                     continue
@@ -1711,28 +1769,34 @@ class DownloadRegistry:
         This covers snapshots, GGUF variants, and deletion. The opaque owner
         prevents a stale run from releasing a newer claim.
         """
-        repo = normalize_repo_key(repo_id)
-        with self._lock:
-            if repo in self._repository_owners:
-                return False, "repository_owned"
-            if repo in self._deleting:
-                return False, "deleting"
-            for key, job in self._jobs.items():
-                if _repo_of_key(key) != repo or job.state not in _ACTIVE_STATES:
-                    continue
-                # Retry handoffs can temporarily disappear from _repo_active.
-                return False, job.state
-            self._repository_owners[repo] = owner
-            return True, "owned"
+        return self._cache_operations.claim_repository_owner(repo_id, owner)
+
+    def inference_load_epoch(
+        self,
+        repo_id: str,
+        variant: Optional[str] = None,
+    ) -> int:
+        return self._cache_operations.inference_load_epoch(
+            repo_id,
+            _write_scope_variant(variant),
+        )
 
     def release_repository_owner(self, repo_id: str, owner: object) -> bool:
         """Release *repo_id* only when *owner* still holds its reservation."""
-        repo = normalize_repo_key(repo_id)
-        with self._lock:
-            if self._repository_owners.get(repo) is not owner:
-                return False
-            self._repository_owners.pop(repo, None)
-            return True
+        return self._cache_operations.release_repository_owner(repo_id, owner)
+
+    def begin_writer_cleanup(self, key: str, owner: object) -> bool:
+        """Atomically retain a job's repo while terminal watcher cleanup runs."""
+        return self._cache_operations.begin_writer_cleanup(
+            _repo_of_key(normalize_job_key(key)),
+            owner,
+        )
+
+    def end_writer_cleanup(self, key: str, owner: object) -> None:
+        self._cache_operations.end_writer_cleanup(
+            _repo_of_key(normalize_job_key(key)),
+            owner,
+        )
 
     def adoptable(self, key: str) -> bool:
         """True when *key* itself has a live job a client can attach to.
@@ -1746,36 +1810,33 @@ class DownloadRegistry:
 
     def _active_job_variant_locked(self, key: str) -> Optional[str]:
         metadata = self._metadata.get(key)
-        if metadata is not None:
-            return (metadata.variant or "").strip().lower() or None
-        return variant_from_key(key)
+        variant = metadata.variant if metadata is not None else variant_from_key(key)
+        return (variant or "").strip().lower() or None
+
+    def _active_job_write_scope_locked(self, key: str) -> Optional[str]:
+        return _write_scope_variant(self._active_job_variant_locked(key))
 
     def _delete_blocked_by_active_locked(self, repo_id: str, variant: Optional[str]) -> bool:
         """Whether an active download conflicts with deleting *repo_id*/*variant*.
 
-        A whole-repo delete (``variant is None``) conflicts with any active
-        download. A variant delete conflicts only with that same variant or a
-        whole-repo download writing the shared snapshot; other quantizations
-        download concurrently and never block it."""
+        Delete admission passes a repository scope because a variant delete may also
+        reclaim shared companions. Variant-scoped queries retain the normal writer-overlap
+        semantics."""
         active_keys = self._repo_active.get(repo_id, set())
         for key in active_keys:
             job = self._jobs.get(key)
             if job is None or job.state not in _ACTIVE_STATES:
                 continue
-            if variant is None:
-                return True
-            other_variant = self._active_job_variant_locked(key)
-            if other_variant is None or other_variant == variant:
+            other_variant = self._active_job_write_scope_locked(key)
+            if gguf_variant_scopes_overlap(other_variant, variant):
                 return True
         for key, job in self._jobs.items():
             if key in active_keys or _repo_of_key(key) != repo_id:
                 continue
             if job.state not in _ACTIVE_STATES:
                 continue
-            if variant is None:
-                return True
-            other_variant = self._active_job_variant_locked(key)
-            if other_variant is None or other_variant == variant:
+            other_variant = self._active_job_write_scope_locked(key)
+            if gguf_variant_scopes_overlap(other_variant, variant):
                 return True
         return False
 
@@ -1849,8 +1910,10 @@ class DownloadRegistry:
             return refs
 
     def has_active_variant(self, repo_id: str, variant: Optional[str]) -> bool:
-        """Whether an active model job targets this exact GGUF variant.
+        """Whether an active model job targets this GGUF variant or its bare/path alias.
 
+        A scoped ``@name`` job retains its separate identity because it adds a fixed file
+        set without replacing a checkpoint.
         Scans the job table rather than only ``_repo_active`` so an XET-to-HTTP
         retry handoff remains visible while it has temporarily released its
         active slot.
@@ -1861,78 +1924,40 @@ class DownloadRegistry:
             for key, job in self._jobs.items():
                 if _repo_of_key(key) != repo_key or job.state not in _ACTIVE_STATES:
                     continue
-                if self._active_job_variant_locked(key) == target:
+                active_variant = self._active_job_variant_locked(key)
+                if active_variant is None:
+                    if target is None:
+                        return True
+                    continue
+                if (
+                    target is not None
+                    and gguf_variant_scopes_overlap(active_variant, target)
+                ):
                     return True
         return False
+
+    def delete_admission_conflict(
+        self,
+        repo_id: str,
+    ) -> Optional[str]:
+        return self._cache_operations.delete_admission_conflict(repo_id)
 
     def begin_delete(
         self,
         repo_id: str,
-        variant: Optional[str] = None,
-    ) -> bool:
-        """Reserve *repo_id* (or one GGUF *variant* of it) for deletion. Returns
-        ``False`` when a conflicting download is active (a whole-repo delete vs
-        any download, a variant delete vs that same variant or a whole-repo
-        download), so sibling quantizations keep downloading. On success the
-        scope is marked so :func:`claim` rejects overlapping downloads until
-        :func:`end_delete` runs, closing the check-then-delete race against a
-        concurrently spawned worker."""
-        repo_id = normalize_repo_key(repo_id)
-        variant_key = (variant or "").strip().lower() or None
-        with self._lock:
-            if repo_id in self._repository_owners:
-                return False
-            if self._delete_blocked_by_active_locked(repo_id, variant_key):
-                return False
-            self._deleting.setdefault(repo_id, set()).add(variant_key)
-            return True
+    ) -> Optional[str]:
+        """Reserve *repo_id* for deletion. Returns None on
+        success, else the conflict reason: an owning load, a model load reading the repo,
+        another delete, or an active download. Variant deletion still owns the repository
+        because it may remove shared GGUF companions. On success :func:`claim` rejects new
+        writers until :func:`end_delete` runs."""
+        return self._cache_operations.begin_delete(repo_id)
 
     def end_delete(
         self,
         repo_id: str,
-        variant: Optional[str] = None,
     ) -> None:
-        repo_id = normalize_repo_key(repo_id)
-        variant_key = (variant or "").strip().lower() or None
-        with self._lock:
-            scopes = self._deleting.get(repo_id)
-            if scopes is None:
-                return
-            scopes.discard(variant_key)
-            if not scopes:
-                self._deleting.pop(repo_id, None)
-
-    def has_active_peer_variant(self, repo_id: str, variant: Optional[str]) -> bool:
-        """Whether a DIFFERENT quantization of *repo_id* is downloading while
-        *variant* is being deleted. When one is, the delete reclaims only this
-        variant's files and leaves the shared companion (mmproj) for the live
-        sibling. Point-in-time (a sibling may claim just after it returns), but
-        safe: the finalized companion is held by deletion's reference-count
-        walk and a sibling starting mid-delete re-fetches it, so protection
-        never depends on the sibling having resolved its blob hashes."""
-        repo_id = normalize_repo_key(repo_id)
-        target = (variant or "").strip().lower() or None
-        with self._lock:
-            active_keys = self._repo_active.get(repo_id, set())
-            for key in active_keys:
-                job = self._jobs.get(key)
-                if job is None or job.state not in _ACTIVE_STATES:
-                    continue
-                if self._active_job_variant_locked(key) != target:
-                    return True
-            # An XET->HTTP retry peer between release_active_slot() and its reclaim
-            # is briefly absent from _repo_active while its job stays active and
-            # still owns the shared companion; mirror the released-but-active scan
-            # used by _delete_blocked_by_active_locked so it still blocks companion
-            # deletion of a different variant.
-            for key, job in self._jobs.items():
-                if key in active_keys or _repo_of_key(key) != repo_id:
-                    continue
-                if job.state not in _ACTIVE_STATES:
-                    continue
-                if self._active_job_variant_locked(key) != target:
-                    return True
-        return False
+        self._cache_operations.end_delete(repo_id)
 
     def request_cancel(
         self,
@@ -2051,7 +2076,9 @@ def _named_registry(name: str) -> DownloadRegistry:
     with _NAMED_REGISTRIES_LOCK:
         registry = _NAMED_REGISTRIES.get(name)
         if registry is None:
-            registry = DownloadRegistry()
+            registry = DownloadRegistry(
+                cache_operations = get_model_cache_operations() if name == "models" else None
+            )
             _NAMED_REGISTRIES[name] = registry
         return registry
 

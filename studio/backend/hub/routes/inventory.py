@@ -220,6 +220,7 @@ async def list_hidden_models(current_subject: str = Depends(get_current_subject)
 async def delete_impact(
     repo_id: str = Body(...),
     variant: Optional[str] = Body(None),
+    cache_path: Optional[str] = Body(None),
     current_subject: str = Depends(get_current_subject),
 ):
     """Preview a delete: bytes reclaimed, shared assets retained, and anything blocking it.
@@ -227,7 +228,7 @@ async def delete_impact(
     POST rather than GET because a repo id is a path-shaped value and this reads no cache of its
     own; it is a pure query and mutates nothing.
     """
-    return await companion_cleanup.delete_impact_response(repo_id, variant)
+    return await companion_cleanup.delete_impact_response(repo_id, variant, cache_path)
 
 
 @router.get("/orphan-companions", response_model = OrphanCompanionsResponse)

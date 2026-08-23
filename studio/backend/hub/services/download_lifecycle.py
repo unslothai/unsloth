@@ -353,6 +353,7 @@ def finalize_worker_exit(
     transport: Optional[str] = None,
     cancel_marker_transport: Optional[str] = None,
     defer_error: bool = False,
+    cleanup_owner: Optional[object] = None,
 ) -> str:
     """Block until *proc* exits, then record the job's terminal state in
     *registry*. Drains and scrubs stderr first, then classifies the exit code.
@@ -372,6 +373,13 @@ def finalize_worker_exit(
     )
     metadata = registry.get_job_metadata(key)
     state = classify_exit(rc, cancel_requested = cancel_requested)
+    # Publish the cleanup hold before publishing a terminal job state. Otherwise an
+    # immediate delete can enter after set_job() drops the active slot but before the
+    # watcher persists its marker and sweeps partial files.
+    if cleanup_owner is not None and (state != "error" or not defer_error):
+        begin_cleanup = getattr(registry, "begin_writer_cleanup", None)
+        if callable(begin_cleanup):
+            begin_cleanup(key, cleanup_owner)
     if state == "complete":
         registry.set_job(key, "complete")
         # Where /v1 learns a new model exists: its resolver answers from a cached scan
@@ -453,7 +461,12 @@ def _set_retry_failure_state(
     fallback_variant: Optional[str],
     fallback_transport: Optional[str],
     logger,
+    cleanup_owner: Optional[object] = None,
 ) -> str:
+    if cleanup_owner is not None:
+        begin_cleanup = getattr(registry, "begin_writer_cleanup", None)
+        if callable(begin_cleanup):
+            begin_cleanup(key, cleanup_owner)
     state, metadata = registry.set_error_unless_cancelled(key, error)
     if state == "cancelled":
         download_registry.persist_cancel_marker(
@@ -471,6 +484,12 @@ def _set_retry_failure_state(
 
 # "no byte baseline was handed to us, sample one" -- distinct from a sampled None (unmeasurable).
 _UNSAMPLED = object()
+
+# Reclaiming the download slot waits on a holder that releases on its own -- a sibling job, or a
+# model load that reserved the repo. Either can run for minutes, so the poll backs off from a
+# responsive first retry to a cheap steady state instead of re-claiming 20 times a second.
+_RECLAIM_POLL_SECONDS = 0.05
+_RECLAIM_POLL_MAX_SECONDS = 1.0
 
 
 def _is_data_phase_stall(message: str) -> bool:
@@ -511,6 +530,7 @@ def _try_transport_retry(
     pending_xet_failure: Optional[str] = None,
     bytes_before: "Optional[int]" = _UNSAMPLED,
     allow_ambient_token: bool = True,
+    cleanup_owner: Optional[object] = None,
 ) -> bool:
     """Reclaim *key* under *retry_transport* and spawn a recovery worker.
 
@@ -562,6 +582,7 @@ def _try_transport_retry(
             fallback_variant = download_registry.variant_from_key(key),
             fallback_transport = download_registry.TRANSPORT_XET,
             logger = logger,
+            cleanup_owner = cleanup_owner,
         )
         return False
     if original_metadata.transport != download_registry.TRANSPORT_XET:
@@ -581,6 +602,7 @@ def _try_transport_retry(
             fallback_variant = original_metadata.variant,
             fallback_transport = original_metadata.transport,
             logger = logger,
+            cleanup_owner = cleanup_owner,
         )
         return False
     variant = original_metadata.variant
@@ -598,6 +620,7 @@ def _try_transport_retry(
     )
     generation = registry.current_generation(key)
     registry.release_active_slot(key)
+    wait_seconds = _RECLAIM_POLL_SECONDS
     while True:
         if registry.cancel_requested(key):
             # A user cancel is not evidence against Xet: a held-back stall is dropped, not charged.
@@ -610,6 +633,7 @@ def _try_transport_retry(
                 fallback_variant = variant,
                 fallback_transport = original_metadata.transport,
                 logger = logger,
+                cleanup_owner = cleanup_owner,
             )
             return False
 
@@ -636,8 +660,9 @@ def _try_transport_retry(
         )
         if claimed:
             break
-        # An STT owner is not an active job, so mark_pending_cancel cannot reach
-        # this loop; waiting it out here would be an uninterruptible spin.
+        # A delete is taking these bytes away, and a repository owner holds every cache write
+        # for as long as it lives, so neither is worth outlasting. Every other blocker --
+        # a sibling job, a model load that reserved the repo -- releases on its own.
         if conflict_state in ("deleting", "repository_owned"):
             logger.debug(
                 "%s XET retry claim rejected for %s; blocked by %s",
@@ -655,15 +680,18 @@ def _try_transport_retry(
                 fallback_variant = variant,
                 fallback_transport = original_metadata.transport,
                 logger = logger,
+                cleanup_owner = cleanup_owner,
             )
             return False
         logger.debug(
-            "%s XET retry claim blocked for %s by active sibling state %s; waiting",
+            "%s XET retry claim blocked for %s by %s; waiting %.2fs",
             log_prefix,
             label,
             conflict_state,
+            wait_seconds,
         )
-        time.sleep(0.05)
+        time.sleep(wait_seconds)
+        wait_seconds = min(wait_seconds * 2, _RECLAIM_POLL_MAX_SECONDS)
 
     args: list[str] = ["--repo-id", repo_id]
     if repo_type == "dataset":
@@ -747,6 +775,7 @@ def _try_transport_retry(
                 pending_xet_failure = pending_xet_failure,
                 bytes_before = bytes_before,
                 allow_ambient_token = allow_ambient_token,
+                cleanup_owner = cleanup_owner,
             )
         _give_up()
         _set_retry_failure_state(
@@ -758,6 +787,7 @@ def _try_transport_retry(
             fallback_variant = variant,
             fallback_transport = original_metadata.transport,
             logger = logger,
+            cleanup_owner = cleanup_owner,
         )
         return False
 
@@ -778,6 +808,7 @@ def _try_transport_retry(
         pending_xet_failure = pending_xet_failure,
         bytes_before = bytes_before,
         allow_ambient_token = allow_ambient_token,
+        failed_registration_cleanup_owner = cleanup_owner,
     )
 
 
@@ -988,6 +1019,7 @@ def register_worker(
     xet_attempt: int = 1,
     pending_xet_failure: Optional[str] = None,
     allow_ambient_token: bool = True,
+    failed_registration_cleanup_owner: Optional[object] = None,
 ) -> bool:
     """Watch *proc* to completion and drive the recovery ladder off its exit.
 
@@ -997,8 +1029,16 @@ def register_worker(
     two consecutive failures that demote a machine. *allow_ambient_token* is the token policy this
     job was started under, carried onto every rung of the ladder.
     """
-    if not registry.register_process(key, proc):
-        kill_and_reap_process(proc, label = label, logger = logger)
+    cleanup_owner = object()
+    registration_cleanup_owner = failed_registration_cleanup_owner or cleanup_owner
+    if not registry.register_process(key, proc, registration_cleanup_owner):
+        try:
+            kill_and_reap_process(proc, label = label, logger = logger)
+        finally:
+            if failed_registration_cleanup_owner is None:
+                end_cleanup = getattr(registry, "end_writer_cleanup", None)
+                if callable(end_cleanup):
+                    end_cleanup(key, cleanup_owner)
         return False
 
     worker_token = hf_token
@@ -1069,6 +1109,7 @@ def register_worker(
                 transport = transport,
                 cancel_marker_transport = cancel_marker_transport,
                 defer_error = can_retry_http,
+                cleanup_owner = cleanup_owner,
             )
             if watchdog_stop is not None:
                 # Stop measuring once the worker is reaped: post-download work (symlinking,
@@ -1162,6 +1203,7 @@ def register_worker(
                     # partial writes in, so a recovered attempt would read as a cached no-op.
                     bytes_before = _bytes_before,
                     allow_ambient_token = allow_ambient_token,
+                    cleanup_owner = cleanup_owner,
                 )
         except Exception:
             if watchdog_stop is not None:
@@ -1181,6 +1223,9 @@ def register_worker(
             except Exception:
                 logger.exception("failed to drop worker after watcher crash for %s", key)
             try:
+                begin_cleanup = getattr(registry, "begin_writer_cleanup", None)
+                if callable(begin_cleanup):
+                    begin_cleanup(key, cleanup_owner)
                 registry.set_job(key, "error", "download watcher crashed")
             except Exception:
                 logger.exception("failed to mark %s errored after watcher crash", key)
@@ -1232,7 +1277,12 @@ def register_worker(
             except Exception:
                 logger.exception("abandoned-partial sweep failed for %s", key)
             finally:
-                hf_cache_scan.invalidate_hf_cache_scans()
+                try:
+                    hf_cache_scan.invalidate_hf_cache_scans()
+                finally:
+                    end_cleanup = getattr(registry, "end_writer_cleanup", None)
+                    if callable(end_cleanup):
+                        end_cleanup(key, cleanup_owner)
 
     threading.Thread(target = _watch, name = watch_name, daemon = True).start()
     return True
