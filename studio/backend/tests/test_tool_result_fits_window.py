@@ -1455,3 +1455,37 @@ class TestTheContinuationChunkDecodes:
             blob[offset - 1 : offset - 1 + span].decode("utf-8")
             == text[len(shown) : len(shown) + len(shown)]
         )
+
+
+class TestInstallingASpillNeverReplacesAnything:
+    """The caller checks the destination, then the write takes as long as it takes. In
+    that window another call sharing the workspace can put a file at the name, and a
+    rename would replace it silently: POSIX rename overwrites, link does not."""
+
+    def test_a_name_taken_during_the_write_is_not_overwritten(self, tmp_path):
+        theirs = tmp_path / "abcdef123456.txt"
+        theirs.write_text("the user's own data")
+
+        assert tools._write_spill_file(str(tmp_path), theirs.name, "x" * 100) is False
+
+        assert theirs.read_text() == "the user's own data"
+
+    def test_no_temporary_is_left_when_the_name_is_taken(self, tmp_path):
+        (tmp_path / "abcdef123456.txt").write_text("mine")
+
+        tools._write_spill_file(str(tmp_path), "abcdef123456.txt", "x" * 100)
+
+        assert [p.name for p in tmp_path.iterdir()] == ["abcdef123456.txt"]
+
+    def test_an_unchanged_spill_is_reused_without_writing(self, tmp_path, monkeypatch):
+        """And the repeat case does not go near the install at all: the name is the digest
+        of the text, so a recorded spill at it already holds exactly this content."""
+        text = "\n".join(str(i) for i in range(5_000))
+        first = tools._truncate(text, 200, workdir = str(tmp_path))
+
+        def _refuse(*args, **kwargs):
+            raise AssertionError("rewrote a spill that was already there")
+
+        monkeypatch.setattr(tools, "_write_spill_file", _refuse)
+
+        assert tools._truncate(text, 200, workdir = str(tmp_path)) == first

@@ -14356,7 +14356,7 @@ def _own_spill_root(root: str) -> bool:
 _DIR_FD_WRITES = (
     hasattr(os, "O_DIRECTORY")
     and os.open in getattr(os, "supports_dir_fd", set())
-    and os.rename in getattr(os, "supports_dir_fd", set())
+    and os.link in getattr(os, "supports_dir_fd", set())
     and os.unlink in getattr(os, "supports_dir_fd", set())
 )
 
@@ -14370,10 +14370,15 @@ def _write_spill_file(target_dir: str, name: str, body: str) -> bool:
     between, and both the create and the rename would follow it, putting this output
     outside the sandbox with the backend's own permissions.
 
-    Still written to a fresh O_EXCL file and moved into place rather than opened over
-    whatever is at the name: the spill name comes from content the model produced, so it
-    can predict it and pre-create it, as a symlink or as a hard link sharing an inode with
-    some file elsewhere. Replacing a directory entry does not touch either.
+    Still written to a fresh O_EXCL file and installed under the real name rather than
+    opened over whatever is there: the spill name comes from content the model produced, so
+    it can predict it and pre-create it, as a symlink or as a hard link sharing an inode
+    with some file elsewhere.
+
+    Installed with `os.link`, which fails when the name is taken, rather than a rename,
+    which on POSIX replaces silently. The caller checks the destination first, but between
+    that check and this write another call sharing the workspace can put a file there, and
+    a rename would then destroy it.
     """
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if not _DIR_FD_WRITES:
@@ -14386,7 +14391,8 @@ def _write_spill_file(target_dir: str, name: str, body: str) -> bool:
                 newline = "",
             ) as handle:
                 handle.write(body)
-            os.replace(tmp, os.path.join(target_dir, name))
+            os.link(tmp, os.path.join(target_dir, name))
+            _quiet_unlink(tmp)
             return True
         except OSError:
             logger.debug("tool result spill write failed", exc_info = True)
@@ -14400,9 +14406,11 @@ def _write_spill_file(target_dir: str, name: str, body: str) -> bool:
             os.open(tmp_name, flags, 0o600, dir_fd = dir_fd), "w", encoding = "utf-8", newline = ""
         ) as handle:
             handle.write(body)
-        # `os.rename` rather than `os.replace`: only rename takes directory descriptors,
-        # and on the POSIX platforms this branch runs on the two are the same call.
-        os.rename(tmp_name, name, src_dir_fd = dir_fd, dst_dir_fd = dir_fd)
+        # `os.link` rather than a rename: rename replaces the destination silently on
+        # POSIX, and the name may have been taken since the caller looked. link fails with
+        # EEXIST instead, which is the answer this wants.
+        os.link(tmp_name, name, src_dir_fd = dir_fd, dst_dir_fd = dir_fd)
+        _quiet_unlink(tmp_name, dir_fd = dir_fd)
         return True
     except OSError:
         logger.debug("tool result spill write failed", exc_info = True)
@@ -14655,11 +14663,19 @@ def _spill_full_output(
         # put the user's own data at it. `_is_recorded_spill` is what says whether it is
         # still ours, and the rename below would otherwise replace it either way.
         path = os.path.join(target_dir, name)
-        if os.path.exists(path) and not _is_recorded_spill(
-            os.path.join(workdir, _SPILL_DIR),
-            path,
-            _spill_manifest(os.path.join(workdir, _SPILL_DIR)),
-        ):
+        if os.path.exists(path):
+            # The name is the digest of the text, so a recorded spill at it already HOLDS
+            # this content: reuse it and write nothing. That is the repeat case this whole
+            # change is about, and not writing is also the only way not to race with
+            # another call that may be replacing the file right now.
+            if _is_recorded_spill(
+                os.path.join(workdir, _SPILL_DIR),
+                path,
+                _spill_manifest(os.path.join(workdir, _SPILL_DIR)),
+            ):
+                return f"{relative}/{name}", complete
+            # Not ours: the user's code put something at that path, and the install below
+            # would replace it.
             return None, True
         if not _write_spill_file(target_dir, name, body):
             return None, True
