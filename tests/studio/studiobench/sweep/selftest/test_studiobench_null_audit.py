@@ -288,3 +288,73 @@ def test_one_repetition_seen_twice_is_not_two_observations(tmp_path):
     a = null_run(tmp_path, "sh1", [("r100K", "rep0", "settings", "A", "B")])
     b = null_run(tmp_path, "sh2", [("r100K", "rep0", "settings", "A", "B")])
     assert U.report([a, b], "t", frozenset(), min_reps = 2) == 0
+
+
+# ── a cell that never completed: dropped on the null, kept on the result ──
+
+
+def cell_rows(rows: list[dict], cid: str, completed: bool) -> None:
+    if completed:
+        rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+
+
+def run_with_completion(tmp_path: Path, name: str, specs: list[tuple]) -> Path:
+    """`specs` is (rep, base digest, treat digest, cell completed)."""
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep, base, treat, done in specs:
+        for arm, digest in (("base", base), ("treatment", treat)):
+            cid = f"r100K.{arm}.{rep}"
+            rows.append(action_row(cid, "settings", digest))
+            cell_rows(rows, cid, done)
+    out = tmp_path / name
+    out.mkdir(parents = True, exist_ok = True)
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    return path
+
+
+def test_a_null_control_ignores_a_cell_that_never_completed(tmp_path):
+    # The half-written film. Its rows look complete and pair like real ones, and counting them
+    # narrows the excuse set, which is how a truncated null manufactures false alarms downstream.
+    null = run_with_completion(
+        tmp_path,
+        "truncated",
+        [("rep0", "A", "B", True), ("rep1", "A", "B", False)],
+    )
+    # Only the completed repetition is an observation, so one observation, so undecided.
+    rc, report = U.audit_null([null])
+    assert rc == 1
+    assert report["decided"] == []
+
+
+def test_the_same_two_repetitions_decide_it_once_both_cells_completed(tmp_path):
+    null = run_with_completion(
+        tmp_path,
+        "whole",
+        [("rep0", "A", "B", True), ("rep1", "A", "B", True)],
+    )
+    rc, report = U.audit_null([null])
+    assert rc == 0
+    assert report["differed"] == [("r100K", "settings")]
+
+
+def test_a_result_still_reports_a_difference_from_a_cell_that_died(tmp_path):
+    # The OTHER sign, and the one that matters more. A cell that died is the latest attempt at
+    # itself and the difference it saw is real; dropping it would silence a regression, which is
+    # the worse direction. `test_an_attempt_that_was_never_re_run_still_carries_its_parity_
+    # verdict` holds the same line from the other file.
+    mine = run_with_completion(
+        tmp_path,
+        "died",
+        [("rep0", "A", "B", False), ("rep1", "A", "B", False)],
+    )
+    assert U.compare_all([mine])[0] != []
+    assert U.report([mine], "t", frozenset(), min_reps = 2) == 1
+
+
+def test_a_payload_with_no_cell_rows_says_it_could_not_check(tmp_path, capsys):
+    # Falling back to the old behaviour is right; falling back silently is how a guard stops
+    # guarding without anybody noticing.
+    old = null_run(tmp_path, "nocells", two_reps("settings", "A", "B"))
+    U.report([old], "t", frozenset())
+    assert "NOT GUARDED" in capsys.readouterr().out

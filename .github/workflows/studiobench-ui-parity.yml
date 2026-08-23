@@ -334,43 +334,56 @@ jobs:
       # run's threads into the shot, and the harness then manufactures a visible difference on
       # the exact pair whose whole claim is that nothing changed -- a real screenshot of the
       # wrong state, under the right label, which is the worst artefact this job could produce.
-      # The homes are created fresh under the workspace on every run, so this should always
-      # hold; "should always hold" is the reason to check it rather than the reason not to.
-      #
       # It also catches the case the digest cannot: two arms that are each non-empty but agree
-      # would compare clean and be measuring somebody else's leftovers.
+      # would compare clean while measuring somebody else's leftovers.
+      #
+      # READ FROM THE DATABASE, NOT THE API, and the first version of this did the latter and
+      # failed the whole job on every run. Studio mints a bootstrap password and sets
+      # `must_change_password`; until that is cleared, login SUCCEEDS and returns a token while
+      # every authenticated route answers `403 Password change required`. studiobench clears the
+      # gate itself when it authenticates, which is after this step, so a check that calls
+      # `/api/chat/threads` here can only ever 403 -- exactly what run 32605705930 did, failing
+      # both arms in under three minutes without either of them reaching a parity comparison.
+      # `lifecycle.py` documents that gate at the top of the file; it is easy to walk into from
+      # a new direction anyway.
+      #
+      # sqlite has no such gate, needs no server and no credential, and answers the question more
+      # directly than the API does.
       - name: Both arms start from an empty thread list
         timeout-minutes: 2
         run: |
           set -euo pipefail
-          for spec in "a:$PORT_A" "b:$PORT_B"; do
-            side="${spec%%:*}"; port="${spec##*:}"
-            pw_var="PASSWORD_$side"; pw="${!pw_var}"
-            n="$(python - "$port" "$pw" <<'PY'
-          import json, sys, urllib.request
-          port, pw = sys.argv[1], sys.argv[2]
-          def post(path, body):
-              req = urllib.request.Request(
-                  f"http://127.0.0.1:{port}{path}", method="POST",
-                  data=json.dumps(body).encode(),
-                  headers={"Content-Type": "application/json"})
-              return json.load(urllib.request.urlopen(req, timeout=30))
-          tok = post("/api/auth/login", {"username": "unsloth", "password": pw})["access_token"]
-          req = urllib.request.Request(f"http://127.0.0.1:{port}/api/chat/threads",
-                                       headers={"Authorization": f"Bearer {tok}"})
-          got = json.load(urllib.request.urlopen(req, timeout=30))
-          rows = got if isinstance(got, list) else got.get("threads", got.get("items", []))
-          print(len(rows))
+          python - "$HOME_A" "$HOME_B" <<'PY'
+          import pathlib
+          import sqlite3
+          import sys
+
+          bad = False
+          for home in sys.argv[1:]:
+              db = pathlib.Path(home) / "studio.db"
+              if not db.exists():
+                  print(f"  {home}: no studio.db yet, so no thread can be in it")
+                  continue
+              # Read-only, and immutable so a live writer cannot block the read.
+              con = sqlite3.connect(f"file:{db}?mode=ro", uri = True)
+              try:
+                  n = con.execute("SELECT count(*) FROM chat_threads").fetchone()[0]
+              except sqlite3.Error as exc:
+                  # A schema this does not recognise is NOT MEASURED, and saying so beats
+                  # passing quietly on a check that has silently stopped checking.
+                  print(f"::error::{home}: could not count chat_threads ({exc})")
+                  bad = True
+                  continue
+              finally:
+                  con.close()
+              print(f"  {home}: {n} existing thread(s)")
+              if n:
+                  bad = True
+          if bad:
+              print("::error::an arm is not starting clean. Anything it renders is partly some")
+              print("other run, so the pair below would be a real screenshot of the wrong state.")
+              sys.exit(1)
           PY
-          )"
-            echo "  side $side: $n existing thread(s)"
-            if [ "$n" != "0" ]; then
-              echo "::error::side $side booted with $n pre-existing thread(s). This home is not"
-              echo "clean, so anything it renders is partly somebody else's run and the pair"
-              echo "below would be a real screenshot of the wrong state."
-              exit 1
-            fi
-          done
 
       # --reps 2, not 1, and this is load-bearing rather than a comfort margin.
       # `analysis/parity.derive_unstable` needs min_observations=2 before it will

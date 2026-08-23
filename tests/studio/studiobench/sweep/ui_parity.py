@@ -82,7 +82,7 @@ def rung_of(cell_id: str) -> str:
     return cell_id.split(".", 1)[0]
 
 
-def collect(paths: list[Path]) -> dict:
+def collect(paths: list[Path], require_complete: bool = False) -> dict:
     """{(shard, rung, rep, session, action): {arm: action row}} plus a tally of what was captured.
 
     THE RUNG IS PART OF THE IDENTITY. A standard-tier run walks 1K, 10K and 100K inside one
@@ -128,12 +128,45 @@ def collect(paths: list[Path]) -> dict:
     """
     out: dict[tuple, dict] = collections.defaultdict(dict)
     attempted = missing = 0
+    incomplete = 0
+    no_cell_rows = 0
     for path in paths:
         shard = path.parent.name
+        raw_rows = rows(path)
+        # A CELL THAT DID NOT FINISH IS NOT AN OBSERVATION -- ON THE NULL CONTROL ONLY, and the
+        # asymmetry is the point rather than an omission.
+        #
+        # Action rows are emitted as the film runs; the `cell` row is written when it ends. So an
+        # interrupted or in-flight cell leaves a complete-looking set of action rows that nothing
+        # owns, and they pair and compare exactly like real ones.
+        #
+        # ON THE NULL they must be dropped. The null's job is to say which actions are unstable,
+        # and an under-observed action reads as stable or undetermined instead -- which NARROWS
+        # the excuse set, so the result's ordinary noise then has nothing to hide behind. Scoring
+        # this sweep's own half-written film as a null control turned 0 false alarms into 5 of 30
+        # for exactly that reason. `floor_table.cell_metrics` refuses the same rows on the timing
+        # side.
+        #
+        # ON THE RESULT they must be kept, and `test_an_attempt_that_was_never_re_run_still_
+        # carries_its_parity_verdict` holds that: a cell that died is the latest attempt at
+        # itself, and a difference it observed is still a difference. Dropping it would silence a
+        # regression, which is the worse direction of the two. So the conservative choice has
+        # opposite signs on the two sides, because "conservative" means a different thing on each.
+        completed = {
+            r.get("cell_id") for r in raw_rows if r.get("row_type") == "cell" and r.get("completed")
+        }
+        # A payload with no `cell` rows at all predates them, or is a fixture. Falling back is
+        # right; falling back SILENTLY is how a guard stops guarding, so it is counted and said.
+        has_cell_rows = any(r.get("row_type") == "cell" for r in raw_rows)
+        if not has_cell_rows:
+            no_cell_rows += 1
         # Per file: the payload is append-only within one shard, and a cell id is reused across
         # shards, so superseding has to be resolved inside the stream that appended it.
-        for r in latest_attempt_rows(rows(path)):
+        for r in latest_attempt_rows(raw_rows):
             if r.get("row_type") != "action":
+                continue
+            if require_complete and has_cell_rows and r.get("cell_id") not in completed:
+                incomplete += 1
                 continue
             parity = r.get("parity")
             if isinstance(parity, dict) and parity.get("parity_attempted"):
@@ -144,15 +177,21 @@ def collect(paths: list[Path]) -> dict:
             rep = cid.rsplit(".", 1)[-1]
             sid = str(r.get("session_id") or "")
             out[(shard, rung_of(cid), rep, sid, r.get("action"))][arm_of(cid)] = r
-    return {"pairs": out, "attempted": attempted, "missing": missing}
+    return {
+        "pairs": out,
+        "attempted": attempted,
+        "missing": missing,
+        "incomplete": incomplete,
+        "shards_without_cell_rows": no_cell_rows,
+    }
 
 
-def compare_all(paths: list[Path]) -> tuple[list[tuple], dict]:
+def compare_all(paths: list[Path], require_complete: bool = False) -> tuple[list[tuple], dict]:
     """[(action, shard, cell, compare-result)] over every base/treatment pair found.
 
     `cell` is `rung rep`, so the two rungs of one repetition stay two observations.
     """
-    got = collect(paths)
+    got = collect(paths, require_complete = require_complete)
     results = []
     for (shard, rung, rep, sid, action), sides in sorted(got["pairs"].items()):
         cell = f"{rung} {rep}"
@@ -228,7 +267,7 @@ def audit_null(paths: list[Path], allow_undecided: frozenset = frozenset()) -> t
 
     Returns `(exit code, report)`. 0 decided, 1 undecided beyond the excused names, 2 no data.
     """
-    results, _got = compare_all(paths)
+    results, _got = compare_all(paths, require_complete = True)
     if not results:
         return 2, {"reason": "no parity data", "decided": [], "undecided": [], "differed": []}
 
@@ -327,7 +366,7 @@ def unstable_set(paths: list[Path] | None) -> tuple[frozenset, dict, dict]:
     """
     if not paths:
         return frozenset(UNSTABLE_ACTIONS), {}, {}
-    results, _ = compare_all(paths)
+    results, _ = compare_all(paths, require_complete = True)
     by_rung: dict[str, list[tuple[str, dict]]] = collections.defaultdict(list)
     for action, _shard, cell, r in results:
         by_rung[rung_of_cell(cell)].append((action, r))
@@ -420,6 +459,16 @@ def report(
 
     print(f"\n{label}")
     print(f"  {len(results)} action pairs across {len(paths)} shard(s)")
+    if got.get("incomplete"):
+        print(
+            f"  dropped:                    {got['incomplete']} action row(s) whose cell never "
+            f"completed (not observations)"
+        )
+    if got.get("shards_without_cell_rows"):
+        print(
+            f"  NOT GUARDED:                {got['shards_without_cell_rows']} shard(s) carry no "
+            f"cell rows, so completion could not be checked"
+        )
     print(f"  matched:                    {matched}")
     print(
         f"  stable actions differing:   {len(stable_bad)}"
