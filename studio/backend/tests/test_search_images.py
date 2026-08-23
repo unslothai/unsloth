@@ -1227,9 +1227,9 @@ def test_a_lookup_already_running_when_a_clear_starts_publishes_nothing(monkeypa
     # The lookup comes back and tries to publish.
     published = search_images.register_images(RAW_IMAGES, expected_generation = sampled)
 
-    assert published == [], (
-        "an answer this clear is deleting must not get its images registered behind it"
-    )
+    assert (
+        published == []
+    ), "an answer this clear is deleting must not get its images registered behind it"
     assert list(tmp_path.glob("*.json")) == [], "and no sidecar may be written either"
 
 

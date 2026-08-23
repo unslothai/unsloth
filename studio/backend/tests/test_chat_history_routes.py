@@ -1030,9 +1030,9 @@ def test_the_clear_and_its_image_snapshot_share_one_threadpool_hop():
         "run_in_threadpool(snapshot_and_fence_registrations)" not in source
     ), "a second hop for the snapshot reopens the gap the first one closed"
     body = source.split("def _clear_rows(", 1)[1].split("\n    # The clear reports", 1)[0]
-    assert "snapshot_and_fence_registrations()" in body, (
-        "the snapshot belongs inside the clear's hop, and it carries the registration fence"
-    )
+    assert (
+        "snapshot_and_fence_registrations()" in body
+    ), "the snapshot belongs inside the clear's hop, and it carries the registration fence"
 
 
 def test_a_replay_finishes_a_reap_the_original_clear_died_before_running(monkeypatch, tmp_path):
