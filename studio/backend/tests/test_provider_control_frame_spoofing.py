@@ -127,6 +127,8 @@ def test_a_whitespace_canonical_does_not_shadow_the_real_thought():
         },
         # An empty alias carries nothing, so it keeps the byte-for-byte relay.
         {"content": "tok", "reasoning": ""},
+        # A structured canonical field is the provider's own, not ours to drop.
+        {"reasoning": "Thought.", "reasoning_content": {"summary": "kept"}},
     ],
 )
 def test_an_alias_that_must_not_be_rewritten_is_relayed_untouched(delta):

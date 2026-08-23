@@ -73,7 +73,9 @@ def _normalize_reasoning_deltas(payload: dict[str, Any]) -> bool:
             # concatenates them, so leave the alias for reasoning_details to win.
             continue
         canonical = delta.get("reasoning_content")
-        if isinstance(canonical, str) and canonical.strip():
+        if canonical is not None and (not isinstance(canonical, str) or canonical.strip()):
+            # Whatever the provider already put in the canonical field wins,
+            # unless it is a blank string that would shadow the real thought.
             continue
         delta["reasoning_content"] = reasoning
         delta.pop("reasoning", None)
