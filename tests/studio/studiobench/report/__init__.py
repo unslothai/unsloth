@@ -11,6 +11,7 @@ from .ablation import (  # noqa: F401
     render_route,
 )
 from .payload import (  # noqa: F401
+    COLLAPSED_SECTIONS,
     PayloadWriter,
     RECORD_KINDS,
     ROW_TYPE_SECTIONS,
@@ -45,6 +46,7 @@ __all__ = [
     "render_fix_implications",
     "render_interactions",
     "render_route",
+    "COLLAPSED_SECTIONS",
     "HeadlinePolicyError",
     "PayloadWriter",
     "RECORD_KINDS",
