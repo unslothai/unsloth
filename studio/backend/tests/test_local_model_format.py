@@ -231,7 +231,6 @@ def test_scan_models_dir_root_weights_do_not_hide_child_models(tmp_path):
     assert [Path(r.path).name for r in models_route._scan_models_dir(root)] == ["llama"]
 
 
-
 # ── GGUF picker task tags without opening model weights ─────────────────────
 from models.models import LocalModelInfo  # noqa: E402
 

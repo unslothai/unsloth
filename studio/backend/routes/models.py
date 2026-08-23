@@ -3368,8 +3368,6 @@ async def check_embedding_model(
         )
 
 
-
-
 def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optional[str], int]:
     """Primary shard path and total weight bytes for a downloaded quant, or
     (None, 0). Metadata lives in shard 1, so the lexicographically first file of
@@ -4048,7 +4046,6 @@ def _task_from_name_hints(name_hints: tuple[Optional[str], ...]) -> Optional[str
 
     try:
         from core.inference.video_families import detect_video_family
-
         for hint in name_hints:
             if not hint:
                 continue
@@ -4062,7 +4059,6 @@ def _task_from_name_hints(name_hints: tuple[Optional[str], ...]) -> Optional[str
 
     try:
         from core.inference.diffusion_families import detect_family_for_pick
-
         for hint in name_hints:
             if hint and detect_family_for_pick(hint) is not None:
                 return (

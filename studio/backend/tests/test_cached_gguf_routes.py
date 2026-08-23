@@ -2205,9 +2205,7 @@ def test_gguf_variants_mmproj_does_not_mark_quant_downloaded(monkeypatch, tmp_pa
     assert flags["F16"] is False
 
 
-def test_gguf_variants_route_does_not_read_headers_before_variant_selection(
-    monkeypatch, tmp_path
-):
+def test_gguf_variants_route_does_not_read_headers_before_variant_selection(monkeypatch, tmp_path):
     """Opening the variant menu must not hydrate an online-only GGUF."""
     snapshot = tmp_path / "models--org--repo" / "snapshots" / "rev"
     snapshot.mkdir(parents = True)
@@ -2244,8 +2242,6 @@ def test_gguf_variants_route_does_not_read_headers_before_variant_selection(
     assert header_reads == []
 
 
-
-
 def test_gguf_variants_route_forwards_offline(monkeypatch):
     """Parity with /api/hub/gguf-variants: without this an unreachable Hub still sends the
     picker down the remote path."""
@@ -2269,8 +2265,6 @@ def test_gguf_variants_route_forwards_offline(monkeypatch):
     assert calls == [
         {"prefer_local_cache": False, "offline": True, "local_path": None, "hf_token": None}
     ]
-
-
 
 
 def test_gguf_variants_ignore_big_endian_siblings(monkeypatch, tmp_path):
@@ -3678,8 +3672,6 @@ def test_one_caller_giving_up_leaves_the_scan_for_the_others(monkeypatch):
     assert len(scans) == 1
 
 
-
-
 def test_switching_cache_storage_does_not_join_a_stuck_scan(monkeypatch, tmp_path):
     """Pointing Studio at another cache has to start a fresh scan. Coalescing on the request
     alone made the new request wait on the scan wedged against the old volume."""
@@ -3813,7 +3805,6 @@ def test_failed_hub_lists_the_selected_cache_not_another_one(monkeypatch, tmp_pa
     _unreachable_hub(monkeypatch)
     monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
 
-
     response = asyncio.run(
         models_route.get_gguf_variants(
             repo_id = "org/repo",
@@ -3891,8 +3882,6 @@ def test_another_caches_quant_is_offered_as_a_download_not_as_downloaded(monkeyp
     )
     assert [v.quant for v in response.variants] == ["Q8_0"]
     assert [v.downloaded for v in response.variants] == [False]
-
-
 
 
 def _point_ref_at(repo_dir: Path, revision: str) -> None:
@@ -4171,7 +4160,6 @@ def test_a_case_variant_repo_dir_still_names_its_snapshot(monkeypatch, tmp_path)
     _unreachable_hub(monkeypatch)
     monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
 
-
     response = asyncio.run(
         models_route.get_gguf_variants(
             repo_id = "org/Repo",  # on disk as models--org--repo
@@ -4397,8 +4385,6 @@ def test_a_mixed_gguf_repo_classifies_the_same_in_either_walk_order(tmp_path, mo
         repo_dir, monkeypatch, lambda: models_route._repo_gguf_task(repo_info)
     )
     assert answers == ["text-to-image", "text-to-image"], answers
-
-
 
 
 def test_a_pure_text_gguf_folder_is_never_promoted_to_a_media_task(tmp_path, monkeypatch):
