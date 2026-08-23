@@ -1029,9 +1029,19 @@ def test_an_action_that_asserts_nothing_is_not_an_assertion_failure(tmp_path):
     # Asserted on the signal as well as the exit code: read through the exit code alone this case
     # is indistinguishable from the both-arms one, so a mutation that turns None into a failure
     # would still pass here. `expect_regressed` is where the distinction actually lives.
-    row = {"ran": True, "expect_ok": None, "parity": {"parity_attempted": True, "digest": "A",
-           "root_kind": "thread", "chars": 1, "messages": [], "overlays": [],
-           "style": {"style_attempted": True, "capped": False, "nodes": []}}}
+    row = {
+        "ran": True,
+        "expect_ok": None,
+        "parity": {
+            "parity_attempted": True,
+            "digest": "A",
+            "root_kind": "thread",
+            "chars": 1,
+            "messages": [],
+            "overlays": [],
+            "style": {"style_attempted": True, "capped": False, "nodes": []},
+        },
+    }
     other = dict(row, expect_ok = True)
     assert P.compare_rows(row, other)["expect_regressed"] == ""
     assert P.compare_rows(other, row)["expect_regressed"] == ""
