@@ -1109,6 +1109,15 @@ function MemoryEstimateRow({
             label="Compute buffers"
             value={formatMemoryGb(estimate.computeBytes)}
           />
+          {/* Only when speculation loads a separate drafter, and it is the term most
+              likely to surprise: its cache grows with context like the target's. */}
+          {estimate.drafterRuntimeBytes > 0 && (
+            <MemoryBreakdownLine
+              label="Draft cache"
+              value={formatMemoryGb(estimate.drafterRuntimeBytes)}
+              note={estimate.kvOnGpu ? undefined : "host RAM"}
+            />
+          )}
         </div>
       )}
       {advisory && (

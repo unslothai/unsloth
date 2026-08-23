@@ -7050,15 +7050,22 @@ def _gguf_runtime_bytes(
 
         probe = LlamaCppBackend()
         probe._read_gguf_metadata(gguf_path)
+        # Carried out even when the cache cannot be sized: block_count is a separate
+        # key and is usually there, and a caller that loses it prices a manual offload
+        # split as fully GPU-resident (_gguf_offloaded_layer_fraction has nothing to
+        # scale against and answers 1.0), which is the wrong answer at --gpu-layers 0.
+        unknown = _GGUF_RUNTIME_UNKNOWN._replace(
+            layer_count = getattr(probe, "_n_layers", None) or None
+        )
         if not probe._can_estimate_kv():
-            return _GGUF_RUNTIME_UNKNOWN
+            return unknown
         try:
             ctx_override = parse_ctx_override(llama_extra_args) or 0
         except Exception:
             ctx_override = 0  # malformed extras are rejected upstream; fall back
         ctx = max(max_seq_length or 0, ctx_override) or (probe._context_length or 0)
         if ctx <= 0:
-            return _GGUF_RUNTIME_UNKNOWN
+            return unknown
         slots = max(1, n_parallel or 1)
         planned_cache_types = _planned_main_cache_types(
             cache_type_kv,
@@ -7703,6 +7710,9 @@ class _GgufMemoryBreakdown(NamedTuple):
     weights_bytes: int
     kv_bytes: int
     compute_bytes: int
+    # A separate drafter's KV and rollback state, kept out of compute_bytes so each
+    # line names one thing.
+    drafter_runtime_bytes: int
     # Weights + KV + compute, wherever they sit: GPU, host RAM, or a unified pool.
     total_bytes: int
     # The part that lands on the GPU under the requested offload.
@@ -7872,7 +7882,12 @@ _DRAFT_FORCE_GPU_ARGS = ("--spec-draft-ngl", "999", "--spec-draft-device", "gpu"
 _DRAFT_FORCE_CPU_ARGS = ("--spec-draft-ngl", "0")
 
 
-def _charged_drafter_path(config: ModelConfig, drafter_bytes: int) -> Optional[str]:
+def _charged_drafter_path(
+    config: ModelConfig,
+    drafter_bytes: int,
+    *,
+    extras: Optional[list[str]] = None,
+) -> Optional[str]:
     """Which drafter file accounts for ``drafter_bytes``, or None.
 
     Identified by size rather than by re-deriving the mode precedence. That
@@ -7880,9 +7895,19 @@ def _charged_drafter_path(config: ModelConfig, drafter_bytes: int) -> Optional[s
     probes and Auto-mode rules; a second copy of it would pick a different sidecar
     from the one that was actually charged, which is worse than not pricing the KV
     at all. Matching on the bytes it added cannot disagree with it.
+
+    An extras ``--model-draft`` is taken first and without the size match: it is the
+    drafter the launch opens whatever discovery found, and it need not be one of the
+    sidecars below. A remote ``--spec-draft-hf`` is not a local file, so it stays
+    unsized either way.
     """
     if drafter_bytes <= 0:
         return None
+    from core.inference.llama_cpp import _extra_args_mtp_draft_path
+
+    named = _extra_args_mtp_draft_path(extras, env = {}) if extras else None
+    if named and Path(named).is_file():
+        return str(named)
     for attr in ("gguf_dspark_file", "gguf_dflash_file", "gguf_mtp_file"):
         candidate = getattr(config, attr, None)
         if not candidate or not Path(candidate).is_file():
@@ -7975,6 +8000,7 @@ def _gguf_memory_breakdown(
     if files_gb is None:
         return None
     from core.inference.llama_cpp import (
+        _extra_args_draft_cache_types,
         _extra_args_draft_offloaded_to_cpu,
         _kv_offload_from_args,
         _resolved_mmproj_offload,
@@ -7996,7 +8022,11 @@ def _gguf_memory_breakdown(
     # admission figure. This panel reports host RAM too, so those bytes belong in the
     # total even though they never reach the GPU. Recovered by re-pricing with the pin
     # overridden rather than by re-deriving which sidecar the mode picks.
+    # Bound before the branch: a CPU pin on a model that ships no sidecar charges no
+    # drafter either way, and reading this below raised UnboundLocalError -- a 500 that
+    # took the whole row out for an otherwise ordinary load.
     host_drafter_bytes = 0
+    gpu_drafter_bytes = 0
     if _extra_args_draft_offloaded_to_cpu(extras):
         unpinned = _files_bytes_with(_DRAFT_FORCE_GPU_ARGS)
         if unpinned is not None and unpinned > gpu_files_bytes:
@@ -8005,8 +8035,6 @@ def _gguf_memory_breakdown(
         no_drafter = _files_bytes_with(_DRAFT_FORCE_CPU_ARGS)
         if no_drafter is not None:
             gpu_drafter_bytes = max(0, gpu_files_bytes - no_drafter)
-        else:
-            gpu_drafter_bytes = 0
     weights_bytes = gpu_files_bytes + host_drafter_bytes
 
     # The drafter keeps its own KV cache and rollback state on top of its file, which
@@ -8016,19 +8044,23 @@ def _gguf_memory_breakdown(
     drafter_runtime_bytes = 0
     drafter_on_gpu = host_drafter_bytes == 0
     drafter_path = _charged_drafter_path(
-        config, host_drafter_bytes if host_drafter_bytes else gpu_drafter_bytes
+        config, host_drafter_bytes or gpu_drafter_bytes, extras = extras
     )
     if drafter_path:
         probe = LlamaCppBackend()
         probe._read_gguf_metadata(gguf_path)
+        # K and V are independent overrides, and extras beat the panel field the same
+        # way they do at launch; passing the field for both priced a cache the load
+        # will not allocate.
+        draft_k, draft_v = _extra_args_draft_cache_types(extras)
         drafter_runtime_bytes = (
             probe._estimate_mtp_overhead_bytes(
                 runtime.n_ctx,
                 spec_draft_n_max = _estimate_draft_n_max(
                     config, drafter_path, requested = spec_draft_n_max, extras = extras
                 ),
-                draft_cache_type_k = spec_draft_cache_type,
-                draft_cache_type_v = spec_draft_cache_type,
+                draft_cache_type_k = draft_k or spec_draft_cache_type,
+                draft_cache_type_v = draft_v or spec_draft_cache_type,
                 drafter_path = drafter_path,
                 # The file is already in weights_bytes; this term is runtime only.
                 draft_weights_bytes = 0,
@@ -8074,6 +8106,7 @@ def _gguf_memory_breakdown(
         weights_bytes = weights_bytes,
         kv_bytes = runtime.kv_bytes,
         compute_bytes = runtime.compute_bytes,
+        drafter_runtime_bytes = drafter_runtime_bytes,
         total_bytes = weights_bytes + runtime_bytes,
         gpu_bytes = gpu_bytes,
         kv_estimable = runtime.kv_estimable,
@@ -11677,6 +11710,7 @@ async def estimate_memory(
             weights_bytes = breakdown.weights_bytes,
             kv_bytes = breakdown.kv_bytes,
             compute_bytes = breakdown.compute_bytes,
+            drafter_runtime_bytes = breakdown.drafter_runtime_bytes,
             total_bytes = breakdown.total_bytes,
             gpu_bytes = breakdown.gpu_bytes,
             kv_estimable = breakdown.kv_estimable,

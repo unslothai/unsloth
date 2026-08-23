@@ -798,6 +798,12 @@ class EstimateMemoryResponse(BaseModel):
     weights_bytes: int = Field(0, description = "Resident model files: weights, projector, drafter")
     kv_bytes: int = Field(0, description = "KV cache at the requested context and slots")
     compute_bytes: int = Field(0, description = "Compute / graph buffers, flat plus context-linear")
+    drafter_runtime_bytes: int = Field(
+        0,
+        description = "A separate drafter's own KV cache and rollback state, on top of "
+        "its file in weights_bytes. Included in total_bytes, and in gpu_bytes unless the "
+        "drafter is CPU-pinned. Reported separately so the itemization accounts for it.",
+    )
     total_bytes: int = Field(0, description = "Weights + KV + compute, wherever they land")
     gpu_bytes: int = Field(
         0, description = "The share of total_bytes that lands on the GPU under this offload"

@@ -27,6 +27,7 @@ No GPU, no network, no model load: every GGUF here is a synthetic header on
 tmp_path. Cross-platform.
 """
 
+import inspect
 import os
 import sys
 import types as _types
@@ -256,7 +257,11 @@ class TestGgufRuntimeBytes:
         assert runtime.compute_bytes == 0
         # It also stops describing a priced load, since none was priced.
         assert runtime.n_ctx == 0
-        assert runtime.layer_count is None
+        # block_count is a separate key and survives: a caller sizing a manual offload
+        # split needs it, and without it _gguf_offloaded_layer_fraction answers 1.0 and
+        # calls --gpu-layers 0 a fully GPU-resident load.
+        assert runtime.layer_count == 12
+        assert ri._gguf_offloaded_layer_fraction("manual", 0, runtime.layer_count) == 0.0
 
     def test_unreadable_file_is_unknown(self, tmp_path):
         # Not a GGUF at all: the header walk raises and the caller must still get
@@ -1163,3 +1168,63 @@ class TestQuantSubdirCompanions:
         _write_gguf(tmp_path, "clip", {"block_count": 2}, name = "mmproj-F16.gguf")
         localized = ri._localized_estimate_config(_repo_config(is_vision = True), weight)
         assert localized.gguf_mmproj_file is None
+
+
+class TestDrafterEdgeCases:
+    """The narrow drafter paths, each of which produced a wrong answer or a 500."""
+
+    @pytest.fixture
+    def bare_config(self, gqa_gguf):
+        """A model shipping no sidecar of any kind."""
+        return SimpleNamespace(
+            identifier = "local/model",
+            gguf_file = gqa_gguf,
+            is_gguf = True,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+        )
+
+    def test_a_cpu_pin_without_a_drafter_does_not_crash(self, bare_config, gqa_gguf, monkeypatch):
+        # Only the else branch bound gpu_drafter_bytes, so a CPU pin on a model with
+        # nothing to pin raised UnboundLocalError and answered 500 for an ordinary load.
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: 1.0)
+        breakdown = ri._gguf_memory_breakdown(
+            bare_config, gqa_gguf, n_ctx = 4096, llama_extra_args = ["--spec-draft-ngl", "0"]
+        )
+        assert breakdown is not None
+        assert breakdown.drafter_runtime_bytes == 0
+        assert breakdown.total_bytes > 0
+
+    def test_a_custom_model_draft_is_carried_into_runtime_sizing(
+        self, bare_config, gqa_gguf, tmp_path
+    ):
+        # The launch opens whatever --model-draft names, which need not be one of the
+        # discovered sidecars; matching only those dropped its cache entirely.
+        custom = tmp_path / "my-drafter.gguf"
+        custom.write_bytes(Path(gqa_gguf).read_bytes())
+        found = ri._charged_drafter_path(bare_config, 4096, extras = ["--model-draft", str(custom)])
+        assert found == str(custom)
+        # A remote repo is not a local file, so it stays unsized rather than guessed.
+        assert (
+            ri._charged_drafter_path(
+                bare_config, 4096, extras = ["--spec-draft-hf", "org/drafter-GGUF"]
+            )
+            is None
+        )
+        # And nothing is resolved when no drafter was charged in the first place.
+        assert (
+            ri._charged_drafter_path(bare_config, 0, extras = ["--model-draft", str(custom)]) is None
+        )
+
+    def test_draft_cache_overrides_come_from_the_extras(self):
+        # K and V are independent at launch, so passing the panel field for both
+        # priced a cache the load will not allocate.
+        from core.inference.llama_cpp import _extra_args_draft_cache_types
+
+        assert _extra_args_draft_cache_types(["--cache-type-k-draft", "f32"]) == ("f32", None)
+        assert _extra_args_draft_cache_types(["--cache-type-v-draft", "q8_0"]) == (None, "q8_0")
+        source = inspect.getsource(ri._gguf_memory_breakdown)
+        assert "_extra_args_draft_cache_types(extras)" in source
+        assert "draft_cache_type_k = draft_k or spec_draft_cache_type" in source

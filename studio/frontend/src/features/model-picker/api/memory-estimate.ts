@@ -20,6 +20,8 @@ export interface MemoryEstimate {
   kvBytes: number;
   /** Compute / graph buffers, flat plus the context-linear growth. */
   computeBytes: number;
+  /** A separate drafter's own cache and rollback state, on top of its file. */
+  drafterRuntimeBytes: number;
   /** Weights + KV + compute, wherever they land (VRAM, host RAM, or one unified pool). */
   totalBytes: number;
   /** The share of `totalBytes` that lands on the GPU under the requested offload. */
@@ -73,6 +75,7 @@ const UNAVAILABLE: MemoryEstimate = {
   weightsBytes: 0,
   kvBytes: 0,
   computeBytes: 0,
+  drafterRuntimeBytes: 0,
   totalBytes: 0,
   gpuBytes: 0,
   kvEstimable: false,
@@ -91,6 +94,7 @@ interface ApiEstimateResponse {
   weights_bytes: number;
   kv_bytes: number;
   compute_bytes: number;
+  drafter_runtime_bytes: number;
   total_bytes: number;
   gpu_bytes: number;
   kv_estimable: boolean;
@@ -138,6 +142,7 @@ function toMemoryEstimate(body: ApiEstimateResponse): MemoryEstimate {
     weightsBytes: body.weights_bytes ?? 0,
     kvBytes: body.kv_bytes ?? 0,
     computeBytes: body.compute_bytes ?? 0,
+    drafterRuntimeBytes: body.drafter_runtime_bytes ?? 0,
     totalBytes: body.total_bytes ?? 0,
     gpuBytes: body.gpu_bytes ?? 0,
     // Absent on an older backend: treat the KV figure as unverified, the safe
