@@ -2711,13 +2711,17 @@ export function ModelConfigPage({
                     onValueChange={([v]) => setContextSliderValue(v)}
                     className="panel-slider"
                     aria-label="Context Length"
-                    // Position 0 is Auto, not a zero-token context, and the
-                    // number Auto lands on is the point of the setting. Both
-                    // have to be spoken; aria-valuenow carries only the first.
+                    // Position 0 is Auto, not a zero-token context, so
+                    // aria-valuenow alone reads as a length no model has. The
+                    // number is only spoken once one exists: before a load
+                    // contextInputValue is the offload fallback used to seed the
+                    // input, not a selection, and Auto may still fit native.
                     thumbValueText={(v) =>
-                      v === 0
-                        ? `Auto, currently ${contextInputValue.toLocaleString()} tokens`
-                        : `${v.toLocaleString()} tokens`
+                      v !== 0
+                        ? `${v.toLocaleString()} tokens`
+                        : activeLoadedContext != null
+                          ? `Auto, currently ${contextInputValue.toLocaleString()} tokens`
+                          : "Auto"
                     }
                   />
                   <div className="flex justify-between text-ui-10 text-muted-foreground">

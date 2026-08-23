@@ -48,13 +48,20 @@ test("the wrapper can express a spoken value for a position", () => {
 });
 
 test("the context slider says Auto rather than zero", () => {
-  // aria-valuenow carries the raw position, so the number Auto chose needs saying.
+  // aria-valuenow carries the raw position, so Auto needs saying in words.
   assert.match(panel, /thumbValueText=\{\(v\) =>/);
+  assert.match(panel, /v !== 0 \? `\$\{v\.toLocaleString\(\)\} tokens`/);
+  assert.match(panel, /: "Auto"/);
+});
+
+test("Auto announces a current value only once one exists", () => {
+  // Before a load contextInputValue is the offload fallback that seeds the input,
+  // not a selection: Auto may still fit the model's native context. Announcing it
+  // as "currently N" tells a screen-reader user a number no other user is shown.
   assert.match(
     panel,
-    /v === 0 \? `Auto, currently \$\{contextInputValue\.toLocaleString\(\)\} tokens`/,
+    /activeLoadedContext != null \? `Auto, currently \$\{contextInputValue\.toLocaleString\(\)\} tokens` : "Auto"/,
   );
-  assert.match(panel, /: `\$\{v\.toLocaleString\(\)\} tokens`/);
 });
 
 test("no slider is left announcing a bare number for a named position", () => {
