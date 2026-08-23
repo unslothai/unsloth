@@ -381,7 +381,9 @@ def test_a_scaffold_only_difference_across_a_finished_and_a_running_arm_is_refus
     treat = _capture_html(page, _page(tail = "arr", **_writing()))
     assert base["streaming"] is False and treat["streaming"] is True
     assert treat["in_flight"] == [3] and treat["in_flight_unplaced"] is False
-    assert [m["digest"] for m in base["messages"][:3]] == [m["digest"] for m in treat["messages"][:3]]
+    assert [m["digest"] for m in base["messages"][:3]] == [
+        m["digest"] for m in treat["messages"][:3]
+    ]
     assert base["digest_scaffold"] != treat["digest_scaffold"]
     got = P.compare(base, treat)
     assert got["verdict"] == P.NOT_COMPARABLE, got
@@ -403,18 +405,26 @@ def test_a_real_message_difference_is_still_reported_across_a_generation_disagre
     moved; a settled message that differs is reported exactly as before."""
     base = _capture_html(page, _page(tail = "arrived at last", **_finished()))
     treat_statuses = list(_STREAMING_STATUSES)
-    treat = _capture_html(page, _page(
-        tail = "arr",
-        control = _STOP_BUTTON,
-        queue_stack = False,
-        statuses = treat_statuses,
-        overlay = "",
-    ))
+    treat = _capture_html(
+        page,
+        _page(
+            tail = "arr",
+            control = _STOP_BUTTON,
+            queue_stack = False,
+            statuses = treat_statuses,
+            overlay = "",
+        ),
+    )
     # Change a SETTLED message on the treatment arm as well.
-    treat2 = _capture_html(page, _page(
-        tail = "arr", control = _STOP_BUTTON, queue_stack = False,
-        statuses = treat_statuses,
-    ).replace("reply 1 ", "reply 1 rewritten "))
+    treat2 = _capture_html(
+        page,
+        _page(
+            tail = "arr",
+            control = _STOP_BUTTON,
+            queue_stack = False,
+            statuses = treat_statuses,
+        ).replace("reply 1 ", "reply 1 rewritten "),
+    )
     assert treat["messages"][1]["digest"] != treat2["messages"][1]["digest"]
     got = P.compare(base, treat2)
     assert got["verdict"] == P.DIFFER, got
@@ -425,15 +435,19 @@ def test_a_scaffold_difference_with_both_arms_agreeing_is_still_a_difference(pag
     """And the coverage this must not cost: when the arms agree about generation, the composer is
     comparable again and a scaffolding change is reported."""
     base = _capture_html(page, _page(tail = "same", **_finished()))
-    treat = _capture_html(page, _page(tail = "same", **_finished()).replace(
-        ">typed while it ran<", ">a different draft left in the box<",
-    ))
+    treat = _capture_html(
+        page,
+        _page(tail = "same", **_finished()).replace(
+            ">typed while it ran<",
+            ">a different draft left in the box<",
+        ),
+    )
     assert base["streaming"] == treat["streaming"]
     got = P.compare(base, treat)
     assert got["verdict"] == P.DIFFER, got
     assert got["moved"] == [
-        "thread scaffolding outside any message (%d->%dc)" % (
-            base["chars_scaffold"], treat["chars_scaffold"])
+        "thread scaffolding outside any message (%d->%dc)"
+        % (base["chars_scaffold"], treat["chars_scaffold"])
     ], got["moved"]
 
 
@@ -445,10 +459,13 @@ def test_the_blind_branch_reads_the_scaffold_when_the_arms_agree_about_generatio
     could not be placed.
     """
     base = _capture_html(page, _page(tail = "same", **BLIND))
-    treat = _capture_html(page, _page(tail = "same", **BLIND).replace(
-        '<textarea aria-label="Message input">typed while it ran</textarea>',
-        '<textarea aria-label="Message input">typed while it ran, differently</textarea>',
-    ))
+    treat = _capture_html(
+        page,
+        _page(tail = "same", **BLIND).replace(
+            '<textarea aria-label="Message input">typed while it ran</textarea>',
+            '<textarea aria-label="Message input">typed while it ran, differently</textarea>',
+        ),
+    )
     assert base["in_flight_unplaced"] is True and treat["in_flight_unplaced"] is True
     assert base["streaming"] == treat["streaming"]
     got = P.compare(base, treat)

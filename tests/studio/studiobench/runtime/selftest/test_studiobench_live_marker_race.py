@@ -205,7 +205,11 @@ def test_a_crashed_run_does_not_lock_the_directory_forever(tmp_path):
 # idle one.
 
 
-def _stalled_holder(marker: Path, write_after_s: float, session: str = "realsession"):
+def _stalled_holder(
+    marker: Path,
+    write_after_s: float,
+    session: str = "realsession",
+):
     """A holder that takes the lock and only then publishes itself, which is the required order:
     the write is what makes the marker say anything, and writing before the lock would let a LOSER
     publish itself as the holder."""
@@ -221,7 +225,8 @@ def _stalled_holder(marker: Path, write_after_s: float, session: str = "realsess
     )
     proc = subprocess.Popen(
         [sys.executable, "-c", code, str(marker), str(write_after_s), session],
-        stdout = subprocess.PIPE, text = True,
+        stdout = subprocess.PIPE,
+        text = True,
     )
     assert proc.stdout is not None
     proc.stdout.readline()

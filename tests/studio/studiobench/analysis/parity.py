@@ -406,7 +406,11 @@ def generation_disagrees(base: dict, treat: dict) -> bool:
     return bool(base.get("streaming")) != bool(treat.get("streaming"))
 
 
-def _messages_moved(base: dict, treat: dict, skip: Optional[set[int]] = None) -> bool:
+def _messages_moved(
+    base: dict,
+    treat: dict,
+    skip: Optional[set[int]] = None,
+) -> bool:
     """The message half of `_any_moved`, on its own."""
     skip = skip or set()
     bm, tm = _messages(base), _messages(treat)
