@@ -406,6 +406,10 @@ def test_safe_extractall_restores_symlink_members(tmp_path):
     assert not real.is_symlink()
 
 
+# The binary the sweep looks for, spelled the way this host spells it.
+_CLI = sdmod._binary_names()[0]
+
+
 def _can_create_symlinks(tmp_path) -> bool:
     probe = tmp_path / "_link_probe"
     try:
@@ -509,7 +513,7 @@ def test_the_sweep_keeps_a_binary_supplied_under_a_symlinked_directory(tmp_path)
     (target / "build" / "bin").symlink_to(target / "real")
     archive = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("build/bin/sd-cli", b"\x7fELF new binary")
+        zf.writestr(f"build/bin/{_CLI}", b"\x7fELF new binary")
 
     with zipfile.ZipFile(archive) as zf:
         supplied = sdmod._archive_binary_paths(zf, target)
@@ -517,7 +521,7 @@ def test_the_sweep_keeps_a_binary_supplied_under_a_symlinked_directory(tmp_path)
     sdmod._discard_superseded_binaries(target, supplied)
 
     assert sdmod._locate_sd_cli(target) is not None
-    assert (target / "real" / "sd-cli").read_bytes() == b"\x7fELF new binary"
+    assert (target / "real" / _CLI).read_bytes() == b"\x7fELF new binary"
 
 
 def test_the_sweep_keeps_a_binary_whose_parent_link_the_archive_replaces(tmp_path):
@@ -533,7 +537,7 @@ def test_the_sweep_keeps_a_binary_whose_parent_link_the_archive_replaces(tmp_pat
     archive = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("build/bin/", b"")
-        zf.writestr("build/bin/sd-cli", b"\x7fELF new binary")
+        zf.writestr(f"build/bin/{_CLI}", b"\x7fELF new binary")
 
     with zipfile.ZipFile(archive) as zf:
         supplied = sdmod._archive_binary_paths(zf, target)
@@ -572,15 +576,15 @@ def test_the_sweep_keeps_a_binary_the_bundle_ships_as_a_symlink(tmp_path):
     target.mkdir()
     archive = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("build/bin/sd-cli-1.2", b"\x7fELF new binary")
-        _link_member(zf, "build/bin/sd-cli", "sd-cli-1.2")
+        zf.writestr(f"build/bin/{_CLI}-1.2", b"\x7fELF new binary")
+        _link_member(zf, f"build/bin/{_CLI}", f"{_CLI}-1.2")
 
     with zipfile.ZipFile(archive) as zf:
         supplied = sdmod._archive_binary_paths(zf, target)
         _safe_extractall(zf, target)
     sdmod._discard_superseded_binaries(target, supplied)
 
-    assert (target / "build" / "bin" / "sd-cli").is_symlink()
+    assert (target / "build" / "bin" / _CLI).is_symlink()
     assert sdmod._locate_sd_cli(target) is not None
 
 
@@ -893,6 +897,41 @@ def test_safe_extractall_refuses_to_flatten_when_a_unix_host_rejects_symlinks(
     assert not (target / "libwebp.so.7").exists()
     assert not (target / "libwebp.so.7.2.0").exists()
     assert (target / "sd-cli").read_bytes() == b"\x7fELF old working"
+
+
+def test_safe_extractall_rejects_a_member_with_a_parent_component(tmp_path):
+    # extractall drops ".." instead of cancelling the component before it, so "a/../victim"
+    # is "a/victim" to it, and an existing link at "a" lands the write outside the tree.
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = tmp_path / "install"
+    target.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "victim").write_bytes(b"untouched")
+    (target / "a").symlink_to(outside)
+    archive = tmp_path / "slip.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("a/../victim", b"pwned")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "unsafe path"):
+            _safe_extractall(zf, target)
+    assert (outside / "victim").read_bytes() == b"untouched"
+
+
+def test_safe_extractall_rejects_a_cycle_closed_through_link_parents(tmp_path):
+    # a -> b/x and b -> a/y are one cycle only once the b prefix is followed through the
+    # archive, since neither link exists on disk when the graph is built.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "cycle.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        _link_member(zf, "a", "b/x")
+        _link_member(zf, "b", "a/y")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "symlink cycle"):
+            _safe_extractall(zf, target)
+    assert not any(target.iterdir())
 
 
 def test_safe_extractall_rejects_a_link_that_descends_through_itself(tmp_path):

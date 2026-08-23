@@ -535,6 +535,9 @@ def _download(
 # larger is a decompression bomb rather than a library name.
 _MAX_LINK_TARGET_BYTES = 4096
 
+# What Linux allows before ELOOP, so a layout this deep is one the loader could not read anyway.
+_MAX_LINK_DEPTH = 40
+
 
 def _is_symlink_member(member: zipfile.ZipInfo) -> bool:
     """``external_attr``'s high bits are a Unix mode only when a Unix host wrote the entry."""
@@ -570,20 +573,38 @@ def _checked_link_target(
     return link_target
 
 
-def _plan_key(dest: Path, base: Path, replaced: set[str]) -> Path:
-    """Where ``dest`` will really land, given the directory links the tree will have.
+def _plan_resolve(
+    path: Path, base: Path, replaced: set[str], archive: dict, depth: int = 0
+) -> Path:
+    """``path`` with every component resolved as the tree will have it after extraction.
 
-    Parents are resolved, the final component is left alone: it is the link about to be
-    created, and following it would compare the wrong thing. Links this archive replaces
-    are not followed, since they are gone before anything is written."""
+    Links this archive ships are followed from the archive, not from disk (they do not exist
+    yet); links it replaces are not followed at all (they are gone before the first write);
+    anything else is a link a previous bundle left. Two link members can point through each
+    other's directories, so the recursion is bounded and a runaway is the cycle it describes."""
+    if path == base or base not in path.parents:
+        return path
+    if depth > _MAX_LINK_DEPTH:
+        raise RuntimeError(f"symlink cycle in archive: {str(path.relative_to(base))!r}")
+    cur = base
+    for part in path.relative_to(base).parts:
+        cur = cur / part
+        target = archive.get(str(cur))
+        if target is not None:
+            cur = _plan_resolve(
+                Path(os.path.normpath(cur.parent / target)), base, replaced, archive, depth + 1
+            )
+        elif str(cur) not in replaced and cur.is_symlink():
+            cur = Path(os.path.realpath(cur))
+    return cur
+
+
+def _plan_key(dest: Path, base: Path, replaced: set[str], archive: dict) -> Path:
+    """Where ``dest`` will really land. Only the parents are resolved: the final component is
+    the link about to be created, and following it would compare the wrong thing."""
     if dest == base or base not in dest.parents:
         return dest
-    cur = base
-    for part in dest.relative_to(base).parts[:-1]:
-        cur = cur / part
-        if str(cur) not in replaced and cur.is_symlink():
-            cur = Path(os.path.realpath(cur))
-    return cur / dest.name
+    return _plan_resolve(dest.parent, base, replaced, archive) / dest.name
 
 
 def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
@@ -603,6 +624,12 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     plain: list[zipfile.ZipInfo] = []
     written: list[tuple[Path, str]] = []
     for member in zf.infolist():
+        # extractall DROPS ".." components instead of cancelling the one before them, so
+        # "a/.." is "a" to it. Normalising here would compare a path it never writes to, and
+        # with a link at "a" the member lands outside base. No release ships "..", so refuse it.
+        parts = PurePosixPath(member.filename).parts
+        if ".." in parts:
+            raise RuntimeError(f"unsafe path in archive: {member.filename!r}")
         # Lexical, never resolve()d. Extraction MERGES, so resolving would follow the link the
         # PREVIOUS install wrote and end with the real library replaced by a link to itself.
         dest = Path(os.path.normpath(base / member.filename))
@@ -631,14 +658,15 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     # Every destination this archive writes stops being whatever it is now, so a stale link at
     # one of them must not be followed: it is about to become this archive's own member.
     replaced = {str(d) for d, _ in written}
-    replaced |= {str(_plan_key(d, base, replaced)) for d, _ in written}
+    archive = {str(d): t for d, t, _ in links}
+    replaced |= {str(_plan_key(d, base, replaced, archive)) for d, _ in written}
     # A member path is not where the link lands: a directory link a PREVIOUS bundle left
     # (alias -> .) makes alias/<record> land on the record itself, and a lexical comparison
     # here misses it, so _write_install_record would follow the link and overwrite whatever
     # it points at while still reading back as a valid install. Same for a directory already
     # sitting where a link goes: checked here rather than at creation, so a refused archive
     # has not yet replaced a working binary.
-    keys = {str(d): _plan_key(d, base, replaced) for d, _, _ in links}
+    keys = {str(d): _plan_key(d, base, replaced, archive) for d, _, _ in links}
     for dest, _, member in links:
         key = keys[str(dest)]
         if key in reserved:
@@ -667,7 +695,7 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
             # every attempt to resolve a walks a again. Anything under the link is a loop.
             if Path(cur) in nxt.parents:
                 raise RuntimeError(f"symlink cycle in archive: {member.filename!r}")
-            cur = str(_plan_key(nxt, base, replaced))
+            cur = str(_plan_key(nxt, base, replaced, archive))
         else:
             raise RuntimeError(f"symlink cycle in archive: {member.filename!r}")
     # Last thing decided before the first write: whether this filesystem can hold links at all.
