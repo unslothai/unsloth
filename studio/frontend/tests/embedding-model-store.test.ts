@@ -235,3 +235,49 @@ test("a save still bumps the revision the reads check", async () => {
   store.applySettings(settings("unsloth/bge-m3"));
   assert.equal(useEmbeddingModelStore.getState().revision, 1);
 });
+
+test("a save with nothing overlapping it commits without a re-read", async () => {
+  reset();
+  const store = useEmbeddingModelStore.getState();
+  let reads = 0;
+  globalThis.fetch = (async () => {
+    reads += 1;
+    throw new Error("should not be read");
+  }) as typeof fetch;
+  assert.ok(await store.save(async () => settings("unsloth/bge-m3")));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  // The ordinary path is one request, not a write followed by a read.
+  assert.equal(reads, 0);
+  assert.equal(
+    useEmbeddingModelStore.getState().settings?.embeddingModel,
+    "unsloth/bge-m3",
+  );
+});
+
+test("the settle flag does not carry into the next save", async () => {
+  reset();
+  const store = useEmbeddingModelStore.getState();
+  // One overlap, reconciled, and then an ordinary save on its own.
+  respondWith("unsloth/bge-m3");
+  let release = (): void => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = () => resolve();
+  });
+  const first = store.save(async () => {
+    await gate;
+    return settings("unsloth/bge-m3");
+  });
+  await store.save(async () => settings("unsloth/bge-m3"));
+  release();
+  await first;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  let reads = 0;
+  globalThis.fetch = (async () => {
+    reads += 1;
+    throw new Error("should not be read");
+  }) as typeof fetch;
+  await store.save(async () => settings("unsloth/bge-small-en-v1.5"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(reads, 0, "the earlier overlap was already settled");
+});
