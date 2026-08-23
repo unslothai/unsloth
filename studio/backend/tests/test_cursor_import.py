@@ -379,13 +379,15 @@ def test_a_chat_deleted_after_an_import_is_not_brought_back(cursor_home):
 
 
 def test_clearing_history_lets_cursor_be_imported_again(cursor_home):
+    write_transcript(cursor_home, "Users-me-app", "session-two", [turn("user", "Keep me")])
     import_cursor_chats()
     studio_db.clear_chat_history()
 
     summary = import_cursor_chats()
 
-    assert summary.new_chats == 1
+    assert summary.new_chats == 2
     assert studio_db.get_chat_thread(thread_id_for("session-one")) is not None
+    assert studio_db.get_chat_thread(thread_id_for("session-two")) is not None
 
 
 def test_an_appended_turn_hangs_off_the_last_message_the_user_kept(cursor_home):

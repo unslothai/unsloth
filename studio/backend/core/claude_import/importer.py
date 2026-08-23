@@ -310,6 +310,11 @@ def import_claude_chats(
 
     summary = ClaudeImportSummary()
     now_ms = int(time.time() * 1000)
+    # An empty Studio is a blank slate. Lift every tombstone before the first
+    # chat lands: lifting them one by one would make the second transcript see
+    # a nonempty history and skip the rest as targeted deletes.
+    if not dry_run and not studio_db.list_chat_threads():
+        studio_db.lift_all_chat_thread_tombstones()
     for project in projects:
         _import_project(project, summary = summary, now_ms = now_ms, dry_run = dry_run)
 
