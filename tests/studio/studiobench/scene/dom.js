@@ -140,6 +140,18 @@
     // queue surface is up and the only control is the Queue button, so this reads false and the
     // control is not armed for that capture. Under-claiming, and cheap: probe blindness is a
     // renamed selector, which is global, so every other capture in the run still catches it.
+    // A RESEARCH RUN IS A GENERATION THIS PREDICATE CANNOT SEE, and deliberately so for now.
+    // `ComposerRightControls` renders "Stop research" / "Stopping research" under
+    // `isResearchActive`, which neither `stopButton()` nor `queueButton()` matches, and a research
+    // report renders through `MarkdownPreview` rather than the assistant text part, so
+    // `streamingMessages()` finds no `data-status` for it either. All THREE are blind to it
+    // together.
+    //
+    // Not patched, because nothing here can start one: `ResearchMessage` is gated on
+    // `message.metadata` and the seeder writes `None` for every message, and no action, corpus
+    // unit or scene touches the composer's research toggle. Fixing one of the three would leave
+    // two that still disagree with it. If a research scene is ever added, move all three in the
+    // same change, and add the report's own busy hook to `STATUS_HOOK` at the same time.
     generating() {
       if (D.stopButton()) return true;
       if (!D.queueButton()) return false;
