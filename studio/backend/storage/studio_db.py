@@ -2841,7 +2841,7 @@ def _generation_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str
 
 
 def _terminal_generation_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
-    return {
+    terminal = {
         str(message_id)
         for row in conn.execute(
             """SELECT user_message_id, assistant_message_id
@@ -2852,6 +2852,18 @@ def _terminal_generation_message_ids(conn: sqlite3.Connection, thread_id: str) -
         for message_id in row
         if message_id is not None
     }
+    active = {
+        str(message_id)
+        for row in conn.execute(
+            """SELECT user_message_id, assistant_message_id
+               FROM chat_generation_runs
+               WHERE thread_id = ? AND status IN ('queued', 'running', 'cancelling')""",
+            (thread_id,),
+        ).fetchall()
+        for message_id in row
+        if message_id is not None
+    }
+    return terminal - active
 
 
 def _references_tombstoned_generation(conn: sqlite3.Connection, message: dict) -> bool:

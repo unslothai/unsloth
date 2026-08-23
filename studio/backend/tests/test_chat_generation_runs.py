@@ -185,6 +185,29 @@ def test_explicit_prune_deletes_terminal_generation_messages(chat_home):
     _assert_protected(stale_assistant)
 
 
+def test_terminal_run_does_not_unprotect_a_message_shared_with_an_active_run(chat_home):
+    user = studio_db.get_chat_message("thread-1", "user-1")
+    user["attachments"] = [{"id": "file-1", "name": "notes.txt"}]
+    studio_db.upsert_chat_message(user)
+    _create()
+    token = runs_db.get_worker_token("run-1")
+    assert runs_db.mark_running("run-1", token)
+    runs_db.finish_run("run-1", worker_token = token, status = "completed")
+    _create("run-2")
+
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.delete_chat_attachment("user-1", "file-1")
+    studio_db.sync_chat_messages(
+        "thread-1",
+        [],
+        prune_missing = True,
+        deleted_message_ids = {"user-1"},
+    )
+
+    assert studio_db.get_chat_message("thread-1", "user-1") is not None
+    assert runs_db.get_run("run-2") is not None
+
+
 def test_generation_message_writes_are_run_bound_and_monotonic(chat_home):
     _create()
     token = runs_db.get_worker_token("run-1")
