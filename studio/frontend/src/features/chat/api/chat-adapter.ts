@@ -1394,6 +1394,105 @@ function toOpenAIMessages(
   ];
 }
 
+/** Payload the turn carries in its own parts, so that a turn holding real history is kept
+ * even when the replay serialiser emits nothing for it.
+ *
+ * Tool calls are deliberately absent. A call the serialiser can carry leaves `tool_calls` on
+ * the wire and is caught by the shape check below; a call it cannot carry (a local call
+ * Stopped before its result arrived, which OpenAI forbids replaying without a responding
+ * `role="tool"` message) reaches the provider as nothing. Counting the second as payload keeps
+ * a turn the backend then drops (`_drop_empty_assistant_sentinels`), so
+ * `_coalesce_consecutive_user_turns` merges the two user turns, resending the cancelled
+ * prompt and inviting the tool request again. */
+function assistantTurnCarriesPayload(message: RunMessage): boolean {
+  for (const part of message.content ?? []) {
+    // sanitizeAssistantReplayText only substitutes, never empties, so the raw part is
+    // equivalent here and keeps the scan off that regex.
+    if (part.type === "text" && part.text.trim().length > 0) return true;
+  }
+  if (collectImageParts(message).length > 0) return true;
+  return "attachments" in message && (message.attachments?.length ?? 0) > 0;
+}
+
+/** Whitespace is not content: `_build_external_messages` (studio/backend/routes/inference.py)
+ * drops any assistant turn whose string content trims away, so counting it here would keep a
+ * pair the backend then splits apart again. */
+function hasReplayContent(content: OpenAIMessageContent | null): boolean {
+  if (typeof content === "string") return content.trim().length > 0;
+  return Boolean(content);
+}
+
+/** `status` is session state only (a reloaded thread comes back stamped complete), so the
+ * persisted marker is read alongside it. */
+function assistantTurnEndedEarly(message: RunMessage): boolean {
+  return (
+    message.status?.type === "incomplete" ||
+    readIncompleteInfo((message as { metadata?: unknown }).metadata) !== null
+  );
+}
+
+/** A Stop that landed before the turn produced anything: it serialises to a lone empty
+ * assistant message, which every backend drops, stranding two user turns in a row. */
+function isAbandonedAssistantTurn(
+  message: RunMessage,
+  includeReasoningContent: boolean,
+): boolean {
+  if (message.role !== "assistant") return false;
+  if (assistantTurnCarriesPayload(message)) return false;
+  // A turn that finished on reasoning alone is a reply; on an external request it serialises
+  // empty only because reasoning is stripped there, which must not read as abandoned.
+  if (
+    !assistantTurnEndedEarly(message) &&
+    (message.content ?? []).some((part) => part.type === "reasoning")
+  ) {
+    return false;
+  }
+  const [only, ...rest] = toOpenAIMessages(message, includeReasoningContent);
+  return (
+    rest.length === 0 &&
+    only?.role === "assistant" &&
+    !hasReplayContent(only.content) &&
+    !only.tool_calls &&
+    !only.reasoning_content
+  );
+}
+
+/** Drop refused and abandoned assistant turns along with the user prompt that triggered
+ * them: a refusal re-triggers the classifier, an abandoned turn breaks role alternation. */
+function pruneOutboundHistory(
+  messages: RunMessages,
+  includeReasoningContent: boolean,
+): RunMessage[] {
+  const history = [...messages];
+  const abandoned = history.map((message) =>
+    isAbandonedAssistantTurn(message, includeReasoningContent),
+  );
+  // A prompt is only stranded when something survives after it, so a thread whose last turn
+  // was abandoned keeps its trailing prompt: that is the history the next send needs.
+  let lastSurviving = -1;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    if (!abandoned[index] && !isAnthropicRefusalMessage(history[index])) {
+      lastSurviving = index;
+      break;
+    }
+  }
+
+  const surviving: RunMessage[] = [];
+  for (let index = 0; index < history.length; index += 1) {
+    const message = history[index];
+    const refused = isAnthropicRefusalMessage(message);
+    if (refused || abandoned[index]) {
+      if (refused || index < lastSurviving) {
+        const last = surviving.at(-1);
+        if (last && last.role === "user") surviving.pop();
+      }
+      continue;
+    }
+    surviving.push(message);
+  }
+  return surviving;
+}
+
 function extractImageBase64(input: string): string | undefined {
   if (!input) {
     return undefined;
@@ -1569,17 +1668,7 @@ export async function buildOutboundMessagesForTokenCount(
   messages: RunMessages,
   threadId: string | undefined,
 ): Promise<OpenAIChatMessage[]> {
-  const survivingMessages: RunMessage[] = [];
-  for (const message of messages) {
-    if (isAnthropicRefusalMessage(message)) {
-      const last = survivingMessages.at(-1);
-      if (last && last.role === "user") survivingMessages.pop();
-      continue;
-    }
-    survivingMessages.push(message);
-  }
-
-  const outboundMessages = survivingMessages
+  const outboundMessages = pruneOutboundHistory(messages, true)
     .flatMap((message) => toOpenAIMessages(message, true))
     .filter((message): message is NonNullable<typeof message> =>
       Boolean(message),
@@ -4418,19 +4507,10 @@ export function createOpenAIStreamAdapter(
         throw new Error("Image generation edit unavailable.");
       }
 
-      // Drop refused assistant turns + their triggering user prompt;
-      // otherwise context re-triggers the classifier.
-      const survivingMessages: RunMessage[] = [];
-      for (const message of messages) {
-        if (isAnthropicRefusalMessage(message)) {
-          const last = survivingMessages.at(-1);
-          if (last && last.role === "user") {
-            survivingMessages.pop();
-          }
-          continue;
-        }
-        survivingMessages.push(message);
-      }
+      const survivingMessages = pruneOutboundHistory(
+        messages,
+        !isExternalRequest,
+      );
 
       // toOpenAIMessages emits assistant tool_calls + role="tool"
       // follow-ups; the backend Gemini translator rebuilds the
