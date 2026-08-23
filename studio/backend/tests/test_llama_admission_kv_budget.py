@@ -537,13 +537,10 @@ class TestToolLoopsReserveTheirUpperBound:
 class TestCancellingTheBlockingHeadReopensTheLine:
     """A cancelled head owns nothing, so nothing else re-runs admission for it.
 
-    FIFO means a waiter too large for the free budget parks the whole line behind
-    it. That is deliberate, and a release re-runs admission. But a cancel is not a
-    release: it frees no slot and no tokens, so before this was fixed the smaller
-    waiters behind the cancelled head sat there with free slots and free budget in
-    front of them until some unrelated reserve or release happened to come along.
-    On a queue whose only active lease is parked awaiting tool approval, that next
-    event never arrives and the tail waits forever.
+    FIFO parks the line behind an oversized waiter, and a release re-runs
+    admission. A cancel frees no slot and no tokens, so the waiters behind it sat
+    on a free budget until unrelated traffic arrived, which never happens on a
+    queue whose only lease is parked awaiting tool approval.
     """
 
     def test_a_smaller_waiter_runs_once_the_oversized_head_is_cancelled(self):
