@@ -89,6 +89,48 @@ const isClosingFenceLine = (
   return true;
 };
 
+// Does any line at or after `from`, which must be a line start, close a fence
+// opened with `markerLength` copies of `marker`? A line scan, not a parse, so a
+// caller that has already settled the text before `from` pays only for what
+// arrived since.
+export function hasClosingFenceLine(
+  content: string,
+  from: number,
+  marker: "`" | "~",
+  markerLength: number,
+): boolean {
+  for (let lineStart = from; lineStart <= content.length; ) {
+    const lf = content.indexOf("\n", lineStart);
+    const rawEnd = lf < 0 ? content.length : lf;
+    const end =
+      rawEnd > lineStart && content[rawEnd - 1] === "\r" ? rawEnd - 1 : rawEnd;
+    if (
+      isClosingFenceLine(content.slice(lineStart, end), marker, markerLength)
+    ) {
+      return true;
+    }
+    if (lf < 0) return false;
+    lineStart = lf + 1;
+  }
+  return false;
+}
+
+// The marker a fence opening at `offset` uses, or null when that is not a fence
+// opening line.
+export function readFenceMarker(
+  content: string,
+  offset: number,
+): { marker: "`" | "~"; markerLength: number } | null {
+  const lf = content.indexOf("\n", offset);
+  const rawEnd = lf < 0 ? content.length : lf;
+  const end =
+    rawEnd > offset && content[rawEnd - 1] === "\r" ? rawEnd - 1 : rawEnd;
+  const opening = content.slice(offset, end).match(FENCE_OPEN_RE);
+  return opening
+    ? { marker: opening[2][0] as "`" | "~", markerLength: opening[2].length }
+    : null;
+}
+
 type FenceOpening = {
   language: string | null;
   marker: "`" | "~";
@@ -268,7 +310,21 @@ const terminalCodeNodeOffset = (markdown: string): number | null => {
 // parser/block boundary and never search or slice the canonical whole message.
 export function getTerminalStreamingCodeFence(
   blockContent: string,
+  // The offset this fence had on the previous chunk. An open fence absorbs every
+  // appended character -- CommonMark ends one only at a matching closing line or
+  // the end of the document -- so while it stays open its offset cannot move and
+  // the whole-tail parse below is recomputing a constant. Trusted only while the
+  // line scan still reports it open, which is the case the argument covers.
+  knownOpeningOffset?: number,
 ): TerminalStreamingCodeFence | null {
+  if (knownOpeningOffset !== undefined) {
+    const fenceMarkdown = blockContent.slice(knownOpeningOffset);
+    const parsed = parseStreamingCodeFence(fenceMarkdown);
+    if (parsed && !parsed.isClosed) {
+      return { ...parsed, fenceMarkdown, openingOffset: knownOpeningOffset };
+    }
+  }
+
   const openingOffset = terminalCodeNodeOffset(blockContent);
   if (openingOffset === null) {
     return null;

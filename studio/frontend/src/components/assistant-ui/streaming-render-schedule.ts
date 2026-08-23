@@ -10,7 +10,9 @@ import { type BlockProps, parseMarkdownIntoBlocks } from "streamdown";
 
 import {
   getTerminalStreamingCodeFence,
+  hasClosingFenceLine,
   normalizeCodeFenceLanguage,
+  readFenceMarker,
 } from "./streaming-code-policy.ts";
 
 // Retain blocks only after they are outside the rollback window.
@@ -1020,6 +1022,94 @@ export function getCompletedCodeFences(
   return fences;
 }
 
+/*
+ * The same answer for a block that only grew, without re-parsing it.
+ *
+ * A block holding an unclosed fence is the whole live tail, and it is re-lexed
+ * on every token, so charging it a whole-document CommonMark parse each time
+ * makes one chunk cost the length of the fence and a reply the square of it.
+ * That is the exact shape #9517 removed from the repair path.
+ *
+ * While the last fence is open nothing else in the block can change: CommonMark
+ * ends a fenced code block only at a matching closing line or at the end of the
+ * document, so every earlier fence is settled and the appended characters can
+ * only extend that one body. So carry the previous result forward and re-parse
+ * only when a closing line actually arrives, which is once per fence.
+ */
+type OpenFenceMemo = {
+  blockId: string;
+  content: string;
+  fences: IncrementalMarkdownCodeFence[];
+  marker: "`" | "~";
+  markerLength: number;
+};
+
+// What mdast reports as the body of a still-open fence: everything after the
+// opening line, less the single trailing line ending it drops.
+const openFenceBody = (content: string, openingOffset: number): string => {
+  const lf = content.indexOf("\n", openingOffset);
+  if (lf < 0) return "";
+  const body = content.slice(lf + 1);
+  return body.endsWith("\n") ? body.slice(0, -1) : body;
+};
+
+// A block whose last fence runs unclosed to its end, or null. A closed fence
+// cannot pass: its body stops before a closer that is still in the content. Nor
+// can a half-written opening line, where the next character joins the info
+// string rather than the body.
+const openFenceOf = (
+  content: string,
+  fences: readonly IncrementalMarkdownCodeFence[],
+): Pick<OpenFenceMemo, "marker" | "markerLength"> | null => {
+  const last = fences.at(-1);
+  if (
+    !last ||
+    content.indexOf("\n", last.openingOffset) < 0 ||
+    last.source !== openFenceBody(content, last.openingOffset)
+  ) {
+    return null;
+  }
+  return readFenceMarker(content, last.openingOffset);
+};
+
+export function createCompletedCodeFenceCache(): (
+  content: string,
+  blockId: string,
+) => IncrementalMarkdownCodeFence[] {
+  let memo: OpenFenceMemo | null = null;
+
+  return (content, blockId) => {
+    if (
+      memo !== null &&
+      memo.blockId === blockId &&
+      content.length > memo.content.length &&
+      hasPrefix(content, memo.content) &&
+      // A closer has to start a line, and the appended text may continue the
+      // block's last partial one, so rescan from that line's start.
+      !hasClosingFenceLine(
+        content,
+        memo.content.lastIndexOf("\n") + 1,
+        memo.marker,
+        memo.markerLength,
+      )
+    ) {
+      const previous = memo.fences;
+      const last = previous[previous.length - 1];
+      const fences = [
+        ...previous.slice(0, -1),
+        { ...last, source: openFenceBody(content, last.openingOffset) },
+      ];
+      memo = { ...memo, content, fences };
+      return fences;
+    }
+
+    const fences = getCompletedCodeFences(content, blockId);
+    const open = openFenceOf(content, fences);
+    memo = open && { ...open, blockId, content, fences };
+    return fences;
+  };
+}
+
 
 export class IncrementalMarkdownCache {
   private source = "";
@@ -1068,10 +1158,12 @@ export class IncrementalMarkdownCache {
   private retainedPrefixRebuilds = 0;
   private rewoundCharacters = 0;
 
+  private completedCodeFences = createCompletedCodeFenceCache();
+
   private createBlock(content: string): IncrementalMarkdownBlock {
     const id = `${this.epoch}:${this.nextBlockIdentity}`;
     const block = {
-      codeFences: getCompletedCodeFences(content, id),
+      codeFences: this.completedCodeFences(content, id),
       content,
       id,
     } satisfies IncrementalMarkdownBlock;
@@ -1093,7 +1185,7 @@ export class IncrementalMarkdownCache {
         return existing;
       }
       return {
-        codeFences: getCompletedCodeFences(content, existing.id),
+        codeFences: this.completedCodeFences(content, existing.id),
         content,
         id: existing.id,
       } satisfies IncrementalMarkdownBlock;
@@ -1297,8 +1389,21 @@ export class IncrementalMarkdownCache {
     // cold malformed reply still needs the same bounded terminal-code plan; only
     // animation and action availability follow `isStreaming`.
 
+    // Same argument as the completed-fence cache above: while the fence stays
+    // open its opening offset cannot move, so the whole-tail parse that finds it
+    // is recomputing a constant once per token.
+    const settledOpeningOffset =
+      previousCodeTail !== null &&
+      !previousCodeTail.isClosed &&
+      hasPrefix(sourceShellMarkdown, previousCodeTail.prefixMarkdown) &&
+      sourceShellMarkdown.startsWith(
+        previousCodeTail.openingLine,
+        previousCodeTail.openingOffset,
+      )
+        ? previousCodeTail.openingOffset
+        : undefined;
     const candidate = sourceShellIsExact
-      ? getTerminalStreamingCodeFence(sourceShellMarkdown)
+      ? getTerminalStreamingCodeFence(sourceShellMarkdown, settledOpeningOffset)
       : null;
     const sourceOffset = candidate
       ? this.committedLength + shellStart + candidate.openingOffset
