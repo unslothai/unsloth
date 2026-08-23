@@ -1170,11 +1170,10 @@ async def start_training(
         backend = get_training_backend()
         job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
         if request.start_request_id:
-            # A retry of an id that already resolved replays its stored outcome, even when the
-            # transient guard below would refuse a NEW start: the caller asked what happened to
-            # THIS start, and "an inference request is in progress" is not that answer. Peeking
-            # also refreshes a cancellation tombstone, so a retried-through-the-guard start can
-            # never outlive the tombstone and go on to spawn the run the user cancelled.
+            # A retry of an id that already resolved replays its stored outcome even when the
+            # guard below would refuse a NEW start: the caller asked what happened to THIS
+            # start. Peeking also refreshes a cancellation tombstone, so a retry cannot outlive
+            # it and go on to spawn the run the user cancelled.
             existing_record = backend.peek_start_request(request.start_request_id)
             if existing_record is not None:
                 return _start_request_response(existing_record)
@@ -1182,10 +1181,8 @@ async def start_training(
         # When Unsloth is driven as an inference API (API-key auth), refuse to start training while
         # a request is in flight: training frees VRAM by unloading the chat model, killing the
         # stream. The UI (session auth) still starts and coexists. Mixed UI+API is not special-cased.
-        # Checked BEFORE reserving start_request_id: this refusal is transient (it clears when the
-        # stream ends), so it must not resolve the caller's idempotency key to "rejected" -- that
-        # record is permanent, and a retry with the same key would replay the stale rejection
-        # forever instead of starting the run.
+        # Checked BEFORE reserving start_request_id: this refusal is transient, so resolving the
+        # idempotency key to "rejected" would make every retry replay a stale rejection forever.
         if via_api_key is True:
             from core.inference.llama_keepwarm import other_inference_request_count
             if (

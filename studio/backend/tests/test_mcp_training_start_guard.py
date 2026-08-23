@@ -359,9 +359,6 @@ def test_the_mcp_tool_surfaces_the_409_as_a_tool_error_not_a_dict(monkeypatch):
         asyncio.run(run_tool_body())
     assert excinfo.value.status_code == 409
 
-    # What the MCP client actually receives: an isError tool result, not a
-    # JSON-RPC protocol error, and (mask_error_details defaults False) the
-    # detail text survives.
     from fastmcp.exceptions import ToolError
 
     with pytest.raises(ToolError) as tool_error:

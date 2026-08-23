@@ -1203,10 +1203,9 @@ class TrainingBackend:
     def peek_start_request(self, start_request_id: str) -> Optional[TrainingStartRequestRecord]:
         """The lookup half of reserve_start_request(), with no reservation.
 
-        Returns the record a retry of `start_request_id` would replay -- live or
-        cancellation-tombstoned -- and refreshes the tombstone TTL exactly as the reserve
-        path does, so a retry still keeps a cancellation alive. Returns None when the id
-        is unknown, leaving the caller free to reserve it."""
+        Returns the record a retry would replay (live or cancellation-tombstoned), refreshing
+        the tombstone TTL as the reserve path does so a retry keeps a cancellation alive, or
+        None when the id is unknown and the caller is free to reserve it."""
         with self._lock:
             self._prune_start_cancel_tombstones_locked()
             existing = self._start_requests.get(start_request_id)
