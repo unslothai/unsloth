@@ -275,12 +275,13 @@ def render_ab_table(result: AbResult) -> str:
             f"({abs(1.0 - result.headline_ratio) * 100:.1f}% {direction}, weighted)"
         )
     lines.append(f"VERDICT: {result.verdict}")
-    unresolved = [m for m in result.metrics if m.beyond_noise and m.ci_spans_no_effect]
+    unresolved = [m for m in result.metrics if m.unresolved]
     if unresolved:
         lines.append("")
         lines.append(
             "The 95% CI of these metrics contains 1.0, so their repetitions do not agree on the "
-            "sign and no direction is claimed for them:"
+            "sign and no direction is claimed for them. They are excluded from the headline "
+            "ratio above, which would otherwise quote their size as a measured win:"
         )
         for metric in unresolved:
             lines.append(

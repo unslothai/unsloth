@@ -788,3 +788,72 @@ def test_a_null_control_of_only_bounded_ratios_falls_back_to_the_declared_defaul
 
     assert "declared default" in source
     assert "under an instrument floor" in source
+
+
+def test_an_unresolved_metric_does_not_lend_its_magnitude_to_the_headline():
+    """A metric that cannot resolve its own sign must not supply the number that gets quoted.
+
+    The headline is a weighted geometric mean of point estimates with no interval of its own, so
+    an inconclusive metric that happened to move a long way used to dominate it. keystroke_p95_ms
+    at 0.2, 0.2, 1.5, 1.5 (geomean 0.548, CI 0.200-1.500) beside a resolved menu_open_ms of 0.900
+    produced a headline of 0.631 and the word IMPROVED: a quoted 36.9% win almost entirely made
+    of data the same table labels inconclusive.
+    """
+
+    pairs = _split_pairs("keystroke_p95_ms", [0.2, 0.2, 1.5, 1.5])
+    pairs += _split_pairs("menu_open_ms", [0.9, 0.9, 0.9, 0.9])
+    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct = 5.0)
+
+    by_key = {m.metric_key: m for m in result.metrics}
+    assert by_key["keystroke_p95_ms"].verdict == "inconclusive"
+    assert by_key["menu_open_ms"].verdict == "improved"
+    # Only the resolved metric survives into the headline, so the quoted size is the real one.
+    assert result.headline_ratio == pytest.approx(0.9, abs = 1e-9)
+    assert result.verdict == "IMPROVED"
+
+
+def test_a_run_whose_every_moving_metric_is_unresolved_is_inconclusive_not_no_reading():
+    """Dropping unresolved metrics from the headline must not turn "says nothing" into "no data".
+
+    NO READING means there was nothing to read. This run measured fine and simply failed to
+    resolve a direction, which is a different answer and the one the operator has to act on.
+    """
+
+    pairs = _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2])
+    pairs += _split_pairs("menu_open_ms", [0.6, 0.6, 1.3, 1.3])
+    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct = 5.0)
+
+    assert all(m.ci_spans_no_effect for m in result.metrics)
+    assert result.headline_ratio is None
+    assert result.verdict == "INCONCLUSIVE"
+
+
+def test_an_unresolved_mover_beside_a_flat_metric_is_not_no_difference():
+    """"No difference" asserts the change did nothing, which is stronger than this data supports.
+
+    Dropping an unresolved mover from the headline can leave only flat metrics behind, putting the
+    aggregate back inside the noise floor. Reading that as NO DIFFERENCE would convert a refusal
+    to answer into a positive finding of no effect, when one metric did move and simply could not
+    resolve its own sign.
+    """
+
+    pairs = _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2])
+    pairs += _split_pairs("menu_open_ms", [1.0, 1.0, 1.0, 1.0])
+    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct = 5.0)
+
+    by_key = {m.metric_key: m for m in result.metrics}
+    assert by_key["keystroke_p95_ms"].unresolved is True
+    assert by_key["menu_open_ms"].verdict == "within noise"
+    assert result.headline_ratio == pytest.approx(1.0, abs = 1e-9)
+    assert result.verdict == "INCONCLUSIVE"
+
+
+def test_an_unresolved_metric_never_clears_a_resolved_regression():
+    """A fail is never cleared by the exclusion: regressions are collected independently."""
+
+    pairs = _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2])
+    pairs += _split_pairs("menu_open_ms", [1.3, 1.3, 1.3, 1.3])
+    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct = 5.0)
+
+    assert result.regressions
+    assert result.verdict == "FAIL"
