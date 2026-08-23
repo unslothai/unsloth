@@ -25,6 +25,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -642,20 +643,25 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
             dest.unlink()
         try:
             dest.symlink_to(link_target)
-            # The graph on disk also holds links a previous bundle left, so an archive edge can
-            # close a cycle with one this archive never saw. Undo ours rather than leave a pair
-            # nothing can read, which the retry would hit again.
-            try:
-                dest.resolve(strict = True)
-            except FileNotFoundError:
-                pass  # a target this bundle does not ship is still fine
-            except OSError as exc:
-                dest.unlink(missing_ok = True)
-                raise RuntimeError(f"symlink cycle in archive: {member.filename!r}") from exc
         except OSError:
             # No privilege (Windows outside developer mode). Fall back to the flattened
             # member, which is what shipped before this, so the install still finishes.
             zf.extract(member, target)
+            continue
+        # The graph on disk also holds links a previous bundle left, so an archive edge can
+        # close a cycle with one this archive never saw. Undo ours rather than leave a pair
+        # nothing can read, which the retry would hit again. os.stat, not
+        # Path.resolve(strict = True): that raises RuntimeError on a loop before 3.13 and
+        # OSError from 3.13 on, so the raw errno is the only portable signal.
+        try:
+            os.stat(dest)
+        except FileNotFoundError:
+            pass  # a target this bundle does not ship is still fine
+        except OSError as exc:
+            if exc.errno != errno.ELOOP:
+                raise
+            dest.unlink(missing_ok = True)
+            raise RuntimeError(f"symlink cycle in archive: {member.filename!r}") from exc
 
 
 def _maybe_fetch_windows_cudart(release: dict, chosen: str, target: Path) -> None:
