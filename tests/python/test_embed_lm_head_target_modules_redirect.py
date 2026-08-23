@@ -123,9 +123,9 @@ def test_a_repeat_call_with_the_same_targets_still_passes_through():
     try:
         kwargs = dict(r = 8, lora_alpha = 16, target_modules = list(TARGET_MODULES))
         model = FastLanguageModel.get_peft_model(model, **kwargs)
-        assert getattr(model.peft_config["default"], "modules_to_tie", None), (
-            "tied model did not redirect lm_head; this guard would check nothing"
-        )
+        assert getattr(
+            model.peft_config["default"], "modules_to_tie", None
+        ), "tied model did not redirect lm_head; this guard would check nothing"
         model = FastLanguageModel.get_peft_model(model, **kwargs)
     finally:
         del model
