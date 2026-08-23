@@ -135,6 +135,12 @@ EXEMPT_SUBTREE_KEYS = frozenset(
         "env",
         "identity",
         "header",
+        # The comparability key's own section. `fields` is the identity block the key is hashed
+        # over -- `instrument_level`, `stream_tail_chars`, `corpus_dollars` -- every one of which
+        # is a true statement about how the run was configured rather than a measurement of the
+        # app, and every one of which is legitimately 0. Same rule as `identity` and `config`
+        # directly above.
+        "comparability",
         "footer",
         "record_counts",
         "histogram",
