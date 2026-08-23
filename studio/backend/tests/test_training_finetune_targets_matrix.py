@@ -243,9 +243,7 @@ def test_mlx_guard_only_fires_on_an_empty_module_selection(
     if not targets:
         empty = not (attention or mlp)
     else:
-        empty = not _names_a_cpt_target(targets) and not (
-            attention or mlp or language or vision
-        )
+        empty = not _names_a_cpt_target(targets) and not (attention or mlp or language or vision)
     expected = training_type == "LoRA/QLoRA" and empty
 
     assert _mlx_guard_fires(config) is expected
@@ -456,9 +454,7 @@ def test_all_linear_alongside_other_leaves_is_not_the_keyword():
         _check_finetune_targets_after_detect(_Trainer("vlm"), config)
 
 
-@pytest.mark.parametrize(
-    "target_modules", [["lm_head"], ["embed_tokens"], ["lm_head", "Wqkv"]]
-)
+@pytest.mark.parametrize("target_modules", [["lm_head"], ["embed_tokens"], ["lm_head", "Wqkv"]])
 def test_mlx_keeps_a_target_the_loader_trains_whatever_the_flags_say(target_modules):
     """embed_tokens and lm_head go down get_peft_model's CPT path, where the full module and
     the head adapter are applied without consulting the layer families. Something trains, so
