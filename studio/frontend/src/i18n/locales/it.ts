@@ -565,6 +565,7 @@ export const it = {
         embeddingModel: "Modello di embedding",
         embeddingModelDescription:
           "Modello Hugging Face o percorso locale usato per indicizzare e cercare nei tuoi documenti. Il valore predefinito è {defaultModel}.",
+        searchPlaceholder: "Cerca modelli di embedding",
         reindexWarning:
           "Vale solo per i documenti indicizzati da ora in poi. Ricarica quelli esistenti dopo aver cambiato modello.",
         emptyError:
@@ -1041,6 +1042,10 @@ export const it = {
           "Mantieni l'agente principale sul suo modello attuale e registra Unsloth come subagente locale (Claude Code, Codex e OpenCode).",
         apiKey:
           "Fornisci la tua chiave API Unsloth (oppure imposta UNSLOTH_API_KEY).",
+        reasoning:
+          "Usare il ragionamento nella chat: on, off o auto. Auto segue il chat template del modello, che di solito significa on.",
+        reasoningEffort:
+          "Impegno di ragionamento passato al chat template del modello, ad esempio medium. I livelli dipendono dal modello, quindi usane uno che accetta. Se non impostato resta quello del template.",
         yolo: "Salta le richieste di approvazione. Usa solo in ambienti fidati.",
       },
       remote: {

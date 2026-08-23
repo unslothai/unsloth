@@ -573,6 +573,7 @@ export const ar = {
         embeddingModel: "نموذج التضمين (Embedding)",
         embeddingModelDescription:
           "نموذج Hugging Face أو مسار محلي يُستخدم لفهرسة مستنداتك والبحث فيها. القيمة الافتراضية هي {defaultModel}.",
+        searchPlaceholder: "ابحث عن نماذج التضمين",
         reindexWarning:
           "يؤثر فقط في المستندات التي تُفهرس حديثًا. أعِد رفع المستندات الحالية بعد تغيير النموذج.",
         emptyError: "أدخل معرّف نموذج Hugging Face أو مسارًا محليًا.",
@@ -1041,6 +1042,10 @@ export const ar = {
         asSubagent:
           "يبقي الوكيل الأصلي على نموذجه الحالي ويسجّل Unsloth كوكيل فرعي محلي (Claude Code وCodex وOpenCode).",
         apiKey: "يمرّر مفتاح API الخاص بـ Unsloth (أو اضبط UNSLOTH_API_KEY).",
+        reasoning:
+          "استخدام الاستدلال في المحادثة: on أو off أو auto. ويتبع auto قالب المحادثة الخاص بالنموذج، وهو غالبًا on.",
+        reasoningEffort:
+          "جهد الاستدلال المُمرَّر إلى قالب المحادثة الخاص بالنموذج، مثل medium. وتختلف المستويات بحسب النموذج، فاستخدم مستوى يقبله. وبدون قيمة يبقى مستوى القالب.",
         yolo: "يتخطى طلبات الموافقة. استخدمه في البيئات الموثوقة فقط.",
       },
       remote: {

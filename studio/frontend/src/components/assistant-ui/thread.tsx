@@ -21,7 +21,9 @@ import {
   MessageResponseDetailsSheet,
   MessageResponseModelBadge,
 } from "@/components/assistant-ui/message-response-details-sheet";
+import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
+import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
 import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
@@ -227,6 +229,7 @@ import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { MenuDismissGuard } from "@/lib/menu-dismiss-guard";
 import { MicIcon } from "@/lib/mic-icon";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
@@ -1535,13 +1538,27 @@ export const Thread: FC<{
   // the spacer clamp math. State, not a ref: the keyed provider remounts the
   // viewport on thread switches and the scroll listener must re-attach.
   const [viewportEl, setViewportEl] = useState<HTMLElement | null>(null);
+  // Same element in an identity-stable ref, so ProgressiveMessages can read the viewport without a
+  // prop that would rebuild its row array on thread switch. A ref rather than a document-wide query
+  // because the Compare panes each mount their own Thread.
+  const viewportElRef = useRef<HTMLElement | null>(null);
   const composedViewportRef = useCallback(
     (node: HTMLElement | null) => {
+      viewportElRef.current = node;
       setViewportEl(node);
       viewportRef(node);
     },
     [viewportRef],
   );
+
+  // Copying a selection out of the thread writes the plain text itself rather than letting the
+  // browser serialise the selection, which spends over 99% of a long thread's copy building the
+  // styled clipboard flavour. thread-fast-copy.ts holds the rule for when that substitution is
+  // provably invisible, and hands the event back to the browser whenever it is not.
+  useEffect(() => {
+    if (!viewportEl) return;
+    return attachThreadFastCopy(viewportEl);
+  }, [viewportEl]);
 
   // Bottom spacer sizing. Invariant: chat never moves on its own on composer
   // resize.
@@ -1751,9 +1768,17 @@ export const Thread: FC<{
               </AuiIf>
             )}
 
-            <ThreadPrimitive.Messages>
-              {renderThreadMessage}
-            </ThreadPrimitive.Messages>
+            {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to
+            the tail and mounts the rest over the following frames. Nothing unmounts and the
+            document converges to the tree this rendered before; consumers that cannot wait call
+            completeProgressiveMounts. It takes the propless slot #9042 introduced, for the same
+            reason: React's bail-out needs one shared element per row. See
+            progressive-mount-controller.ts. */}
+            <ProgressiveMessages
+              renderMessage={renderThreadMessage}
+              resetKey={runtimeThreadId}
+              viewportRef={viewportElRef}
+            />
 
             {/* Bottom slack so the last message has room above the sticky
             scroll-to-bottom button (and floating composer in single mode),
@@ -2445,11 +2470,22 @@ const Composer: FC<{
         (s.pendingImageAttachments[nativeAttachmentTargetKey]?.length ?? 0) > 0,
     ),
   );
+  const hasPendingOpenDocumentAttachments = useNativeIntentStore((s) =>
+    Boolean(
+      nativeAttachmentTargetKey &&
+        (s.pendingOpenDocumentAttachments[nativeAttachmentTargetKey]?.length ??
+          0) > 0,
+    ),
+  );
   const registeringImageDrops = useNativeIntentStore(
     (s) => s.registeringImageDrops > 0,
   );
   const [materializingDroppedImages, setMaterializingDroppedImages] =
     useState(false);
+  const [
+    materializingDroppedOpenDocuments,
+    setMaterializingDroppedOpenDocuments,
+  ] = useState(false);
   const hasPendingAudioAttachments = useNativeIntentStore((s) =>
     Boolean(
       nativeAttachmentTargetKey &&
@@ -2875,10 +2911,115 @@ const Composer: FC<{
       unsubscribe();
     };
   }, [nativeAttachmentTargetKey, aui]);
+  useEffect(() => {
+    if (!nativeAttachmentTargetKey) {
+      return;
+    }
+    const targetKey = nativeAttachmentTargetKey;
+    const identityAtSetup = composerIdentityRef.current;
+    useNativeIntentStore
+      .getState()
+      .claimImageAttachments(identityAtSetup, targetKey);
+    let disposed = false;
+    let draining = false;
+
+    const stillThisComposer = () =>
+      composerIdentityRef.current === identityAtSetup;
+    const requeue = (intents: NativeIntent[]) => {
+      const key = stillThisComposer()
+        ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
+        : targetKey;
+      const store = useNativeIntentStore.getState();
+      store.addOpenDocumentAttachments(key, intents);
+      store.noteImageDropOwner(key, identityAtSetup);
+    };
+
+    const drainPendingOpenDocuments = async () => {
+      if (disposed || draining) return;
+      draining = true;
+      setMaterializingDroppedOpenDocuments(true);
+      try {
+        while (!disposed) {
+          const intents = useNativeIntentStore
+            .getState()
+            .takeOpenDocumentAttachments(targetKey);
+          if (intents.length === 0) break;
+          for (const [index, intent] of intents.entries()) {
+            if (disposed) {
+              requeue(intents.slice(index));
+              return;
+            }
+            let file: File;
+            try {
+              file = await nativeAttachmentIntentToFile(intent);
+            } catch (error) {
+              toast.error("Could not attach dropped document", {
+                description:
+                  error instanceof Error ? error.message : String(error),
+              });
+              if (stillThisComposer()) cancelQueuedSendRef.current?.();
+              continue;
+            }
+            if (
+              disposed ||
+              nativeAttachmentTargetKeyRef.current !== targetKey
+            ) {
+              requeue(intents.slice(index));
+              return;
+            }
+            try {
+              await aui.composer().addAttachment(file);
+            } catch {
+              if (stillThisComposer()) cancelQueuedSendRef.current?.();
+            }
+          }
+        }
+      } finally {
+        draining = false;
+        if (!disposed) {
+          const pending =
+            useNativeIntentStore.getState().pendingOpenDocumentAttachments[
+              targetKey
+            ]?.length ?? 0;
+          if (pending > 0 && stillThisComposer()) {
+            void drainPendingOpenDocuments();
+          } else {
+            setMaterializingDroppedOpenDocuments(false);
+          }
+        }
+      }
+    };
+
+    const unsubscribe = useNativeIntentStore.subscribe((state) => {
+      const orphaned = Object.entries(state.imageDropOwners).some(
+        ([key, owner]) => owner === identityAtSetup && key !== targetKey,
+      );
+      if (orphaned) {
+        useNativeIntentStore
+          .getState()
+          .claimImageAttachments(identityAtSetup, targetKey);
+        return;
+      }
+      if (
+        (state.pendingOpenDocumentAttachments[targetKey]?.length ?? 0) > 0
+      ) {
+        void drainPendingOpenDocuments();
+      }
+    });
+    void drainPendingOpenDocuments();
+
+    return () => {
+      disposed = true;
+      setMaterializingDroppedOpenDocuments(false);
+      unsubscribe();
+    };
+  }, [nativeAttachmentTargetKey, aui]);
   const hasMaterializingImageAttachments =
     registeringImageDrops ||
     hasPendingImageAttachments ||
-    materializingDroppedImages;
+    materializingDroppedImages ||
+    hasPendingOpenDocumentAttachments ||
+    materializingDroppedOpenDocuments;
   const hasMaterializingAudioAttachments =
     registeringAudioDrops ||
     hasPendingAudioAttachments ||
@@ -7521,6 +7662,8 @@ const AssistantActionBar: FC = () => {
             onCloseAutoFocus={(e) => e.preventDefault()}
             className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-[21px] bg-popover px-[9px] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
           >
+            {/* Prevent an outside dismissal from triggering Delete. */}
+            <MenuDismissGuard />
             <ActionBarMorePrimitive.Item
               disabled={forkDisabled}
               onSelect={() => void forkMessage()}
