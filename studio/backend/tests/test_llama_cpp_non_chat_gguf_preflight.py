@@ -395,3 +395,10 @@ def test_the_metadata_less_branch_asks_what_the_pickers_ask(tmp_path):
             _arch_to_task("wan", name_hints = (identifier, name)) == "text-to-video"
         ) is page_named
         assert ("Open it from the Video page" in message) is page_named, message
+
+
+def test_speech_arch_names_the_audio_page(tmp_path):
+    _, message = _refusal(tmp_path, arch = "llama-csm", name = "sesame-csm-backbone.gguf")
+    assert message is not None
+    assert "Audio page" in message
+    assert "Images page" not in message

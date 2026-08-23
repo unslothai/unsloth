@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 import shutil
 import tempfile
+from utils.paths.path_utils import is_appledouble_metadata
 
 
 logger = get_logger(__name__)
@@ -579,8 +580,11 @@ def hf_cache_snapshot_is_loadable(model_name: str) -> bool:
         has_config = (snapshot / "config.json").is_file() or (snapshot / "modules.json").is_file()
         if not has_config:
             return False
+
         for path in snapshot.rglob("*"):
-            if path.suffix.lower() in _LOADABLE_WEIGHT_SUFFIXES and path.is_file():
+            if path.suffix.lower() not in _LOADABLE_WEIGHT_SUFFIXES or not path.is_file():
+                continue
+            if not is_appledouble_metadata(path):
                 return True
     except OSError:
         return False
@@ -595,6 +599,18 @@ def safe_error_detail(error: Exception, fallback: str = "An internal error occur
     """Map an exception to a generic, client-safe message (never raw
     ``str(error)``, which can leak paths). Log the real exception server-side.
     """
+    # A mid-stream llama-server failure carries a message that was written to be shown,
+    # so the leak this function guards against does not apply to it. Without this the
+    # non-streaming paths reduced it to the fallback while streaming clients got the
+    # cause, which is the same "reaches the user stripped of its reason" defect one layer
+    # further out. Imported lazily: utils is low level and must not depend on
+    # core.inference at import time.
+    try:
+        from core.inference.stream_errors import LlamaStreamError  # noqa: PLC0415
+        if isinstance(error, LlamaStreamError) and error.friendly:
+            return error.friendly
+    except Exception:  # noqa: BLE001 -- fall through to the generic mapping below
+        pass
     text = str(error).lower()
     if (
         isinstance(error, (ConnectionError, TimeoutError))

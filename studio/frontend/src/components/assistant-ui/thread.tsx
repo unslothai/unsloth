@@ -9,6 +9,11 @@ import {
   GeneratedImageOverlayProvider,
   useGeneratedImageOverlay,
 } from "@/components/assistant-ui/generated-image-overlay-context";
+import { CompactionNotice } from "@/components/assistant-ui/compaction-notice";
+import {
+  compactionBoundary,
+  type ContextTruncation,
+} from "@/features/chat/utils/context-truncation";
 import { downloadImagePart } from "@/components/assistant-ui/image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { MessageHtmlArtifacts } from "@/components/assistant-ui/message-html-artifacts";
@@ -16,7 +21,9 @@ import {
   MessageResponseDetailsSheet,
   MessageResponseModelBadge,
 } from "@/components/assistant-ui/message-response-details-sheet";
+import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
+import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
 import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
@@ -57,6 +64,7 @@ import {
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
   YoutubeTranscriptPrompt,
+  stripSearchImageTokens,
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
@@ -129,7 +137,12 @@ import {
   modeAllowsContinuation,
   readIncompleteInfo,
   readTextThoughtSignature,
+  claimAutoContinue,
+  forgetAutoContinue,
+  recordAutoContinue,
+  shouldAutoContinueMessage,
 } from "@/features/chat/utils/continuation";
+import { holdAutoContinueRun } from "@/features/chat/utils/auto-continue-run-keeper";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
@@ -219,6 +232,7 @@ import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { MenuDismissGuard } from "@/lib/menu-dismiss-guard";
 import { MicIcon } from "@/lib/mic-icon";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
@@ -269,6 +283,7 @@ import {
   FastForwardIcon,
   GlobeIcon,
   HeadphonesIcon,
+  Loader2Icon,
   MoreHorizontalIcon,
   PlusIcon,
   RefreshCwIcon,
@@ -1526,13 +1541,27 @@ export const Thread: FC<{
   // the spacer clamp math. State, not a ref: the keyed provider remounts the
   // viewport on thread switches and the scroll listener must re-attach.
   const [viewportEl, setViewportEl] = useState<HTMLElement | null>(null);
+  // Same element in an identity-stable ref, so ProgressiveMessages can read the viewport without a
+  // prop that would rebuild its row array on thread switch. A ref rather than a document-wide query
+  // because the Compare panes each mount their own Thread.
+  const viewportElRef = useRef<HTMLElement | null>(null);
   const composedViewportRef = useCallback(
     (node: HTMLElement | null) => {
+      viewportElRef.current = node;
       setViewportEl(node);
       viewportRef(node);
     },
     [viewportRef],
   );
+
+  // Copying a selection out of the thread writes the plain text itself rather than letting the
+  // browser serialise the selection, which spends over 99% of a long thread's copy building the
+  // styled clipboard flavour. thread-fast-copy.ts holds the rule for when that substitution is
+  // provably invisible, and hands the event back to the browser whenever it is not.
+  useEffect(() => {
+    if (!viewportEl) return;
+    return attachThreadFastCopy(viewportEl);
+  }, [viewportEl]);
 
   // Bottom spacer sizing. Invariant: chat never moves on its own on composer
   // resize.
@@ -1742,9 +1771,17 @@ export const Thread: FC<{
               </AuiIf>
             )}
 
-            <ThreadPrimitive.Messages>
-              {renderThreadMessage}
-            </ThreadPrimitive.Messages>
+            {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to
+            the tail and mounts the rest over the following frames. Nothing unmounts and the
+            document converges to the tree this rendered before; consumers that cannot wait call
+            completeProgressiveMounts. It takes the propless slot #9042 introduced, for the same
+            reason: React's bail-out needs one shared element per row. See
+            progressive-mount-controller.ts. */}
+            <ProgressiveMessages
+              renderMessage={renderThreadMessage}
+              resetKey={runtimeThreadId}
+              viewportRef={viewportElRef}
+            />
 
             {/* Bottom slack so the last message has room above the sticky
             scroll-to-bottom button (and floating composer in single mode),
@@ -2176,6 +2213,16 @@ const PendingAudioChip: FC = () => {
   );
 };
 
+/** Keep a drop on a portaled child, such as a dialog or its overlay, from also
+ * attaching to the composer. React routes portal events through the composer,
+ * whose dropzone attaches in the capture phase before the dialog sees them. */
+function claimPortaledDrop(event: ReactDragEvent): void {
+  const target = event.target as Element | null;
+  if (!target?.closest?.(".aui-composer-attachment-dropzone")) {
+    event.preventDefault();
+  }
+}
+
 const Composer: FC<{
   disabled?: boolean;
   placeholder?: string;
@@ -2426,11 +2473,22 @@ const Composer: FC<{
         (s.pendingImageAttachments[nativeAttachmentTargetKey]?.length ?? 0) > 0,
     ),
   );
+  const hasPendingOpenDocumentAttachments = useNativeIntentStore((s) =>
+    Boolean(
+      nativeAttachmentTargetKey &&
+        (s.pendingOpenDocumentAttachments[nativeAttachmentTargetKey]?.length ??
+          0) > 0,
+    ),
+  );
   const registeringImageDrops = useNativeIntentStore(
     (s) => s.registeringImageDrops > 0,
   );
   const [materializingDroppedImages, setMaterializingDroppedImages] =
     useState(false);
+  const [
+    materializingDroppedOpenDocuments,
+    setMaterializingDroppedOpenDocuments,
+  ] = useState(false);
   const hasPendingAudioAttachments = useNativeIntentStore((s) =>
     Boolean(
       nativeAttachmentTargetKey &&
@@ -2856,10 +2914,115 @@ const Composer: FC<{
       unsubscribe();
     };
   }, [nativeAttachmentTargetKey, aui]);
+  useEffect(() => {
+    if (!nativeAttachmentTargetKey) {
+      return;
+    }
+    const targetKey = nativeAttachmentTargetKey;
+    const identityAtSetup = composerIdentityRef.current;
+    useNativeIntentStore
+      .getState()
+      .claimImageAttachments(identityAtSetup, targetKey);
+    let disposed = false;
+    let draining = false;
+
+    const stillThisComposer = () =>
+      composerIdentityRef.current === identityAtSetup;
+    const requeue = (intents: NativeIntent[]) => {
+      const key = stillThisComposer()
+        ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
+        : targetKey;
+      const store = useNativeIntentStore.getState();
+      store.addOpenDocumentAttachments(key, intents);
+      store.noteImageDropOwner(key, identityAtSetup);
+    };
+
+    const drainPendingOpenDocuments = async () => {
+      if (disposed || draining) return;
+      draining = true;
+      setMaterializingDroppedOpenDocuments(true);
+      try {
+        while (!disposed) {
+          const intents = useNativeIntentStore
+            .getState()
+            .takeOpenDocumentAttachments(targetKey);
+          if (intents.length === 0) break;
+          for (const [index, intent] of intents.entries()) {
+            if (disposed) {
+              requeue(intents.slice(index));
+              return;
+            }
+            let file: File;
+            try {
+              file = await nativeAttachmentIntentToFile(intent);
+            } catch (error) {
+              toast.error("Could not attach dropped document", {
+                description:
+                  error instanceof Error ? error.message : String(error),
+              });
+              if (stillThisComposer()) cancelQueuedSendRef.current?.();
+              continue;
+            }
+            if (
+              disposed ||
+              nativeAttachmentTargetKeyRef.current !== targetKey
+            ) {
+              requeue(intents.slice(index));
+              return;
+            }
+            try {
+              await aui.composer().addAttachment(file);
+            } catch {
+              if (stillThisComposer()) cancelQueuedSendRef.current?.();
+            }
+          }
+        }
+      } finally {
+        draining = false;
+        if (!disposed) {
+          const pending =
+            useNativeIntentStore.getState().pendingOpenDocumentAttachments[
+              targetKey
+            ]?.length ?? 0;
+          if (pending > 0 && stillThisComposer()) {
+            void drainPendingOpenDocuments();
+          } else {
+            setMaterializingDroppedOpenDocuments(false);
+          }
+        }
+      }
+    };
+
+    const unsubscribe = useNativeIntentStore.subscribe((state) => {
+      const orphaned = Object.entries(state.imageDropOwners).some(
+        ([key, owner]) => owner === identityAtSetup && key !== targetKey,
+      );
+      if (orphaned) {
+        useNativeIntentStore
+          .getState()
+          .claimImageAttachments(identityAtSetup, targetKey);
+        return;
+      }
+      if (
+        (state.pendingOpenDocumentAttachments[targetKey]?.length ?? 0) > 0
+      ) {
+        void drainPendingOpenDocuments();
+      }
+    });
+    void drainPendingOpenDocuments();
+
+    return () => {
+      disposed = true;
+      setMaterializingDroppedOpenDocuments(false);
+      unsubscribe();
+    };
+  }, [nativeAttachmentTargetKey, aui]);
   const hasMaterializingImageAttachments =
     registeringImageDrops ||
     hasPendingImageAttachments ||
-    materializingDroppedImages;
+    materializingDroppedImages ||
+    hasPendingOpenDocumentAttachments ||
+    materializingDroppedOpenDocuments;
   const hasMaterializingAudioAttachments =
     registeringAudioDrops ||
     hasPendingAudioAttachments ||
@@ -4483,7 +4646,12 @@ const Composer: FC<{
           {composerContent}
         </div>
       ) : (
-        <ComposerPrimitive.AttachmentDropzone className="group/dropzone aui-composer-attachment-dropzone unsloth-composer-surface relative z-10">
+        <ComposerPrimitive.AttachmentDropzone
+          className="group/dropzone aui-composer-attachment-dropzone unsloth-composer-surface relative z-10"
+          onDragEnterCapture={claimPortaledDrop}
+          onDragOverCapture={claimPortaledDrop}
+          onDropCapture={claimPortaledDrop}
+        >
           {composerContent}
           {/* Gemini-style drop affordance, shown while a file is dragged over
               the composer. Absolute + pointer-events-none so the outline adds
@@ -6488,23 +6656,189 @@ const ContinueMessageBarForLastMessage: FC = () => {
     status?.type === "incomplete" && status?.reason === "cancelled";
   const reason = cancelled ? ("cancelled" as const) : stamped?.reason;
 
-  // Newest turn only: appending to an older one would strand the replies after it.
-  // A turn cut mid-thought has no text to resume from, so Retry stays the way out.
-  if (
-    !reason ||
-    !isLast ||
-    isRunning ||
-    researchRunId ||
-    researchActive ||
-    !continuable ||
-    !modeAllowsContinuation({
+  // Every gate the bar itself answers to. Resuming without asking has to clear the same
+  // ones, or it would resume a turn the bar would have refused to offer.
+  const resumable =
+    Boolean(reason) &&
+    isLast &&
+    !isRunning &&
+    !researchRunId &&
+    !researchActive &&
+    continuable &&
+    modeAllowsContinuation({
       fromAudioInput,
       audioOutputModel,
       deepResearchArmed,
-    }) ||
-    !partial.trim()
-  ) {
+    }) &&
+    Boolean(partial.trim());
+
+  // The parent is what every round of one logical turn shares; the message id changes
+  // each round, because a continuation runs as a sibling.
+  const parentId = useAuiState(({ thread, message }) => {
+    const index = thread.messages.findIndex((m) => m.id === message.id);
+    return index > 0 ? thread.messages[index - 1].id : null;
+  });
+
+  const startContinuation = useCallback(() => {
+    const messages = aui.thread().getState().messages;
+    const index = messages.findIndex((message) => message.id === messageId);
+    if (index < 0) {
+      return;
+    }
+    // Sibling of the truncated turn, so the branch picker can still reach the partial.
+    const parent = index > 0 ? messages[index - 1].id : null;
+    aui.thread().startRun({
+      parentId: parent,
+      runConfig: {
+        custom: {
+          [CONTINUATION_RUN_CONFIG_KEY]: { partial, thoughtSignature },
+        },
+      },
+    });
+  }, [aui, messageId, partial, thoughtSignature]);
+
+  // The resumed turn's own fit. Resuming replays the partial as the final assistant turn,
+  // which the fit protects, so a partial too big to sit beside the system turn makes the
+  // request irreducible and every further round fails identically.
+  const truncation = useAuiState(({ message }) => {
+    const custom = (message.metadata as { custom?: Record<string, unknown> } | undefined)
+      ?.custom;
+    return (custom?.contextTruncation ?? null) as ContextTruncation | null;
+  });
+
+  // Hitting Max Tokens is the reply running out of room mid-sentence, not a decision the
+  // user made, so it resumes on its own and the bar never appears. Bounded, and only for
+  // `length`: see `shouldAutoContinue`. Asked per MESSAGE, not just per turn: the round
+  // budget belongs to the turn and one spent round out of three still says yes, so
+  // arriving at a message the claim below has already taken -- the branch picker back to
+  // the truncated sibling, or returning to the chat -- would otherwise show a spinner for
+  // a run `claimAutoContinue` refuses to start, on top of the Continue button it hides.
+  //
+  // Another tab won the message. The claim resolves after this component has already
+  // rendered off `shouldAutoContinueMessage`, which cannot see a race the lock decides,
+  // so the answer has to come back as state: without it this tab keeps a spinner for a
+  // run it never started, with the manual Continue button hidden behind it.
+  //
+  // Remembered as the message the answer was decided for, not as a bare flag: rows are
+  // mounted by INDEX (`<MessageByIndexProvider key={index}>` in progressive-messages.tsx),
+  // so selecting a different truncated branch at the same index re-renders THIS component
+  // instead of remounting it. A boolean survived that and suppressed the automatic
+  // continuation of a message no other tab had claimed, for as long as the row lived.
+  // Comparing ids re-answers per message while still refusing the one that really lost.
+  const [heldElsewhereFor, setHeldElsewhereFor] = useState<string | null>(null);
+  const claimHeldElsewhere = heldElsewhereFor === messageId;
+  // The runtime this bar belongs to, so its keeper renews and releases this claim and no
+  // other pane's.
+  // The thread this run will file itself under, which is what the lease belongs to and
+  // what its lifetime is read from. `remoteId`, not `id`: it is the value assistant-ui
+  // passes the adapter as `unstable_threadId` and the key the run appears under in
+  // `runningByThreadId`, and an uninitialized thread has an `id` but no `remoteId`.
+  const runThreadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
+  const autoContinuing =
+    !claimHeldElsewhere &&
+    resumable &&
+    shouldAutoContinueMessage(messageId, reason, parentId, {
+      fits: truncation?.fits,
+      // The same cheap estimator the backend fit uses, which is all that is needed to
+      // spot a partial that has already eaten the whole budget.
+      partialTokens: Math.ceil(partial.length / 4),
+      promptTarget: truncation?.prompt_target,
+    });
+  useEffect(() => {
+    if (!autoContinuing || !parentId) {
+      return;
+    }
+    let mounted = true;
+    // Claimed in module scope, not a ref, and under a cross-tab lock. `<StrictMode>` in
+    // src/main.tsx replays this effect on the same fiber with the same `autoContinuing`,
+    // so nothing inside would have differed, and rechecking the round budget would not
+    // help either: one recorded round still leaves the limit unspent. A ref fixed the
+    // replay but not a real remount, so leaving the chat with a truncated branch selected
+    // and returning fired it again, creating another sibling and another paid request.
+    // A module claim survived both but not a second TAB, which has its own module scope
+    // and its own empty claim; the lease behind this one is shared and settles that.
+    void claimAutoContinue(messageId, runThreadId ?? "").then((claim) => {
+      if (claim === "started") {
+        // Is there still a message to resume? `aui.thread()` follows the SELECTION, not
+        // the thread this bar belongs to, so a chat or branch switch inside the window the
+        // Web Lock is pending leaves `startContinuation` looking at a different list, where
+        // it finds nothing and issues no run at all.
+        //
+        // Asked BEFORE anything is held, because a hold whose run never appears is renewed
+        // forever on purpose -- preflight has no upper bound, so no deadline can separate
+        // "never coming" from "still on its way". A hold taken for a run that was never
+        // issued therefore renews its lease for the life of the tab, and every other tab
+        // reads that lease as live and refuses the message for just as long.
+        //
+        // Not the preflight case, and it cannot become it: this is `startRun` never having
+        // been called, decided synchronously off the same store `startContinuation` reads a
+        // line later in the same tick. A run that HAS been issued and is merely slow to
+        // begin passes here and keeps its hold and its renewals.
+        const stillThere = aui
+          .thread()
+          .getState()
+          .messages.some((message) => message.id === messageId);
+        if (!stillThere) {
+          // Nothing held and nothing recorded, so the lease this claim took runs out its
+          // own TTL -- the same thing a tab that closed mid-claim leaves behind -- and the
+          // turn keeps the round no request was ever made for.
+          //
+          // The claim itself is given back, and only inside this tab: it is what makes
+          // `claimAutoContinue` answer "skipped" for a message it has already continued,
+          // and a message nothing was issued for has not been continued at all. Left in,
+          // returning to this branch found the message skipped for the life of the tab.
+          // The lease stays, so no second tab may start while this one is still deciding.
+          forgetAutoContinue(messageId);
+          return;
+        }
+        // Held for as long as THIS thread's run generates, wherever the user navigates
+        // to meanwhile. The bar cannot hold it itself: the continuation's sibling becomes
+        // the selected branch and unmounts this component almost at once.
+        holdAutoContinueRun(messageId, runThreadId);
+        // Started whether or not this component is still mounted: the run belongs to the
+        // thread, not to the bar, and a claim taken and then dropped would leave the
+        // message continued by nobody.
+        //
+        // Recorded BEFORE the run, so a round that produces nothing still spends its
+        // budget instead of re-firing this effect forever.
+        recordAutoContinue(parentId);
+        startContinuation();
+        return;
+      }
+      // `skipped` is this tab's own duplicate call, where the run is coming from the
+      // other one and nothing on screen should move.
+      if (claim === "held-elsewhere" && mounted) {
+        setHeldElsewhereFor(messageId);
+      }
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [
+    aui,
+    autoContinuing,
+    parentId,
+    messageId,
+    startContinuation,
+    runThreadId,
+  ]);
+
+  // Newest turn only: appending to an older one would strand the replies after it.
+  // A turn cut mid-thought has no text to resume from, so Retry stays the way out.
+  // `reason` is repeated rather than left to `resumable`, which is a boolean and so
+  // narrows nothing: the label below needs it proven non-undefined.
+  if (!resumable || !reason) {
     return null;
+  }
+  if (autoContinuing) {
+    // The run is starting this tick; showing the bar first would flash a question that is
+    // already being answered.
+    return (
+      <div className="aui-continue-bar mt-2 flex items-center gap-2 rounded-md border border-border/70 bg-muted/50 p-2.5 text-sm text-muted-foreground">
+        <Loader2Icon className="size-3.5 animate-spin" strokeWidth={1.75} />
+        Continuing automatically.
+      </div>
+    );
   }
 
   const handleContinue = () => {
@@ -6792,6 +7126,42 @@ const AssistantMessage: FC = () => {
       ? custom.researchRunId
       : null;
   });
+  // Persisted on the assistant turn that compacted, so the notice survives a reload.
+  const contextTruncation = useAuiState(({ message }) => {
+    const custom = (
+      message.metadata as
+        | { custom?: { contextTruncation?: unknown } }
+        | undefined
+    )?.custom;
+    const value = custom?.contextTruncation;
+    return value && typeof value === "object"
+      ? (value as ContextTruncation)
+      : null;
+  });
+  // Once a thread outgrows the window every request runs the fit, so "this turn
+  // compacted" is true of every later reply and would put a notice on all of them. What
+  // matters is when MORE of the conversation fell out of view: the eviction boundary
+  // rising above the last turn that reported one. Between moves the model sees the same
+  // history, so there is nothing new to say.
+  const showsNotice = useAuiState(({ thread }) => {
+    let previousDropped = 0;
+    for (const message of thread.messages) {
+      if (message.role !== "assistant") continue;
+      const value = (
+        message.metadata as
+          | { custom?: { contextTruncation?: unknown } }
+          | undefined
+      )?.custom?.contextTruncation as ContextTruncation | undefined;
+      const dropped = compactionBoundary(value);
+      if (dropped > previousDropped) {
+        if (message.id === messageId) return true;
+        previousDropped = dropped;
+      } else if (message.id === messageId) {
+        return false;
+      }
+    }
+    return false;
+  });
   const incognito = useChatRuntimeStore((s) => s.incognito);
 
   // Use global store for editing state to ensure a single source of truth
@@ -6866,6 +7236,9 @@ const AssistantMessage: FC = () => {
       onBlur={focusReveal.onBlur}
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
+        {contextTruncation && showsNotice && !isEditing && (
+          <CompactionNotice truncation={contextTruncation} />
+        )}
         {isEditing ? (
           <div className="flex flex-col gap-2 w-full">
             <textarea
@@ -7222,7 +7595,9 @@ const CopyButton: FC = () => {
   const handleCopy = async () => {
     // getCopyText reads content only, and a long paste sits in an attachment.
     const pasted = attachmentsPastedText(aui.message().getState().attachments);
-    const text = [aui.message().getCopyText(), pasted]
+    // The image tokens are renderer markup, not prose: strip them or the clipboard
+    // gets `[[img:0123456789ab]]` where the picture was.
+    const text = [stripSearchImageTokens(aui.message().getCopyText()), pasted]
       .filter((part) => part.length > 0)
       .join("\n\n");
     if (await copyToClipboard(text)) {
@@ -7275,7 +7650,9 @@ const EditAssistantMessageButton: FC = () => {
 async function exportMessageMarkdown(content: string): Promise<void> {
   try {
     await downloadFile(
-      content,
+      // Same rule as the copy button and the whole-chat export: the tokens are
+      // renderer markup, so a saved answer must not carry them as prose.
+      stripSearchImageTokens(content),
       `message-${Date.now()}.md`,
       "text/markdown",
     );
@@ -7371,6 +7748,8 @@ const AssistantActionBar: FC = () => {
             onCloseAutoFocus={(e) => e.preventDefault()}
             className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-[21px] bg-popover px-[9px] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
           >
+            {/* Prevent an outside dismissal from triggering Delete. */}
+            <MenuDismissGuard />
             <ActionBarMorePrimitive.Item
               disabled={forkDisabled}
               onSelect={() => void forkMessage()}
@@ -7399,9 +7778,13 @@ const AssistantActionBar: FC = () => {
                   // reasoning, tool calls and citations would be dropped and a
                   // tool-only reply would read as empty. Same conversion the
                   // whole-chat save runs.
-                  const text = replySourceMarkdown(
-                    aui.message().getState().content,
-                    toolResultModelText,
+                  // Stripped: a project source is retrieved back into context, so
+                  // saved tokens would teach the model ids that resolve to nothing.
+                  const text = stripSearchImageTokens(
+                    replySourceMarkdown(
+                      aui.message().getState().content,
+                      toolResultModelText,
+                    ),
                   );
                   if (!text.trim()) {
                     toast.info("No content to save.");

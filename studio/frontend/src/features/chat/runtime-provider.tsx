@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { chatModelLoaded } from "./lib/chat-model-loaded";
 import {
   AssistantRuntimeProvider,
   type Attachment,
@@ -43,26 +42,28 @@ import {
 } from "./api/chat-adapter";
 import { CHAT_HISTORY_UPDATED_EVENT } from "./api/chat-api";
 import { getResearchThreadState } from "./api/research-api";
-import { sanitizeThreadScopedSettings } from "./utils/thread-scoped-settings";
 import {
-  ingestResearchUpdate,
-  useResearchRunStore,
-} from "./stores/research-run-store";
+  TEXT_ATTACHMENT_ACCEPT,
+  extractDocxAttachmentText,
+  extractHtmlAttachmentText,
+  extractPdfAttachmentText,
+  getDocumentAttachmentSizeError,
+  getDocxAttachmentError,
+} from "./attachment-content";
+import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import {
   loadConnectionsEnabled,
   loadExternalProviders,
   parseExternalModelId,
   providerModelSupportsVision,
 } from "./external-providers";
+import { chatModelLoaded } from "./lib/chat-model-loaded";
 import {
-  OPEN_DOCUMENT_SPREADSHEET_MIME,
-  OPEN_DOCUMENT_TEXT_MIME,
   type OpenDocumentAttachmentContent,
   readActiveOpenDocumentAttachmentContent,
   readOpenDocumentAttachmentContent,
 } from "./open-document";
-import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
-import { VideoAttachmentAdapter } from "./video-attachment-adapter";
+import { OPEN_DOCUMENT_ATTACHMENT_ACCEPT } from "./open-document-accept";
 import {
   awaitThreadScopedSettingsWrite,
   beginThreadScopedPairing,
@@ -70,35 +71,18 @@ import {
   releaseHeldThreadScopedEdits,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
+import {
+  ingestResearchUpdate,
+  useResearchRunStore,
+} from "./stores/research-run-store";
 import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
-import {
-  notifyPromptQueueRunFailed,
-  requestPromptQueueStop,
-  requestTemporaryPromptQueueStop,
-} from "./utils/prompt-queue-boundary";
-import {
-  adoptPreStreamRunReservation,
-  claimPreStreamRunReservation,
-  findPreStreamRunReservation,
-  isPreStreamRunReservationCancelled,
-  preStreamRunThreadIdsForRuntime,
-  releasePreStreamRunReservation,
-} from "./utils/pre-stream-run-reservation";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import {
   chatContentPartAttachmentIdFromSignature,
   chatContentPartAttachmentSignature,
   onChatAttachmentDeleted,
 } from "./utils/chat-attachment-events";
-import {
-  attachmentContentText,
-  attachmentsSample,
-  isPastedTextFile,
-} from "./utils/pasted-text";
-import {
-  refreshContextUsage,
-  setActiveBranchReader,
-} from "./utils/refresh-context-usage";
+import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
 import {
   awaitStoredChatThreadWrites,
   deleteStoredChatThreads,
@@ -119,11 +103,34 @@ import {
   isChatThreadDeleted,
   markChatThreadDeleted,
 } from "./utils/chat-thread-tombstones";
-import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
 import { fallbackTitleFromUserText } from "./utils/chat-title";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import {
+  attachmentContentText,
+  attachmentsSample,
+  isPastedTextFile,
+} from "./utils/pasted-text";
+import {
+  adoptPreStreamRunReservation,
+  claimPreStreamRunReservation,
+  findPreStreamRunReservation,
+  isPreStreamRunReservationCancelled,
+  preStreamRunThreadIdsForRuntime,
+  releasePreStreamRunReservation,
+} from "./utils/pre-stream-run-reservation";
+import {
+  notifyPromptQueueRunFailed,
+  requestPromptQueueStop,
+  requestTemporaryPromptQueueStop,
+} from "./utils/prompt-queue-boundary";
+import {
+  refreshContextUsage,
+  setActiveBranchReader,
+} from "./utils/refresh-context-usage";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
+import { sanitizeThreadScopedSettings } from "./utils/thread-scoped-settings";
+import { VideoAttachmentAdapter } from "./video-attachment-adapter";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
 // Resolves to the thread id assigned when this message's chat was first persisted.
@@ -219,6 +226,7 @@ class VisionImageAdapter implements AttachmentAdapter {
       loadedIsMultimodal: state.loadedIsMultimodal,
       modelLoaded,
       loadError: state.lastModelLoadError,
+      visionDisabledByUser: state.loadedVisionDisabledByUser,
       mmprojFallbackReason: state.mmprojFallbackReason,
     });
     if (unavailableReason) {
@@ -274,7 +282,17 @@ class VisionImageAdapter implements AttachmentAdapter {
 class PDFAttachmentAdapter implements AttachmentAdapter {
   accept = "application/pdf";
 
+  // Refused here, not at send: the composer empties itself before it awaits
+  // send(), so a ceiling that only fires there discards the typed message too.
+  // The throw itself is invisible, as with audio: nothing subscribes to
+  // attachmentAddError and the picker never awaits addAttachment, so the toast
+  // is the only thing that tells the user why no file appeared.
   add({ file }: { file: File }): Promise<PendingAttachment> {
+    const sizeError = getDocumentAttachmentSizeError(file, "PDF");
+    if (sizeError) {
+      toast.error(sizeError);
+      throw new Error(sizeError);
+    }
     return Promise.resolve({
       id: crypto.randomUUID(),
       type: "document",
@@ -286,12 +304,7 @@ class PDFAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const [{ extractText, getDocumentProxy }, buffer] = await Promise.all([
-      import("unpdf"),
-      attachment.file.arrayBuffer().then((bytes) => new Uint8Array(bytes)),
-    ]);
-    const pdf = await getDocumentProxy(buffer);
-    const { text } = await extractText(pdf, { mergePages: true });
+    const text = await extractPdfAttachmentText(attachment.file);
     return {
       id: attachment.id,
       type: "document",
@@ -311,17 +324,7 @@ class TextAttachmentAdapter implements AttachmentAdapter {
   // MIME is unreliable for source files, so also match by extension
   // (assistant-ui's fileMatchesAccept supports ".ext" entries). Covers svg, code,
   // config and other plain-text formats; html keeps its own adapter below.
-  accept = [
-    "text/plain,text/markdown,text/csv,text/xml,text/json,text/css",
-    "application/json,application/xml,image/svg+xml",
-    ".txt,.text,.log,.md,.markdown,.mdx,.rst,.csv,.tsv",
-    ".json,.jsonl,.ndjson,.xml,.yaml,.yml,.toml,.ini,.cfg,.conf,.env,.properties",
-    ".css,.scss,.sass,.less,.svg",
-    ".js,.jsx,.mjs,.cjs,.ts,.tsx,.py,.pyi,.ipynb,.rb,.php,.go,.rs,.java,.kt,.kts,.scala,.swift",
-    ".c,.h,.cc,.cpp,.hpp,.cxx,.cs,.m,.mm",
-    ".sh,.bash,.zsh,.fish,.ps1,.bat,.lua,.pl,.pm,.r,.jl,.dart,.vue,.svelte,.astro",
-    ".sql,.graphql,.gql,.proto,.tf,.tfvars,.gradle,.dockerfile,.makefile,.cmake,.diff,.patch",
-  ].join(",");
+  accept = TEXT_ATTACHMENT_ACCEPT;
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
     return {
@@ -378,10 +381,7 @@ class HtmlAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const html = await attachment.file.text();
-    const doc = new DOMParser().parseFromString(html, "text/html");
-    for (const el of doc.querySelectorAll("script, style")) el.remove();
-    const text = (doc.body.textContent ?? "").replace(/\s+/g, " ").trim();
+    const text = extractHtmlAttachmentText(await attachment.file.text());
     return {
       id: attachment.id,
       type: "document",
@@ -401,29 +401,33 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
   accept =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
-  add({ file }: { file: File }): Promise<PendingAttachment> {
-    return Promise.resolve({
+  // The archive's own parts are checked here too, not just the upload ceiling:
+  // a small .docx can still declare a part that only mammoth's inflate would
+  // grow past the cap, and refusing that at send() would empty the composer.
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    const error = await getDocxAttachmentError(file);
+    if (error) {
+      toast.error(error);
+      throw new Error(error);
+    }
+    return {
       id: crypto.randomUUID(),
       type: "document",
       name: file.name,
       contentType: file.type,
       file,
       status: { type: "requires-action", reason: "composer-send" },
-    });
+    };
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const [{ default: mammoth }, arrayBuffer] = await Promise.all([
-      import("mammoth"),
-      attachment.file.arrayBuffer(),
-    ]);
-    const { value } = await mammoth.extractRawText({ arrayBuffer });
+    const text = await extractDocxAttachmentText(attachment.file);
     return {
       id: attachment.id,
       type: "document",
       name: attachment.name,
       contentType: attachment.contentType,
-      content: [{ type: "text", text: `[DOCX: ${attachment.name}]\n${value}` }],
+      content: [{ type: "text", text: `[DOCX: ${attachment.name}]\n${text}` }],
       status: { type: "complete" },
     };
   }
@@ -441,12 +445,7 @@ class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
     Promise<OpenDocumentAttachmentContent | null>
   >();
 
-  accept = [
-    ".ods",
-    ".odt",
-    OPEN_DOCUMENT_SPREADSHEET_MIME,
-    OPEN_DOCUMENT_TEXT_MIME,
-  ].join(",");
+  accept = OPEN_DOCUMENT_ATTACHMENT_ACCEPT;
 
   async *add({
     file,
@@ -866,7 +865,9 @@ function createStudioDbAdapter(
       // while the creator is still queued. Use the same retry choke point as other mutations so a
       // temporarily missing row does not permanently skip first-turn title generation. A title is
       // cosmetic, so a row that never landed falls back to the default rather than rejecting here.
-      const thread = await ensureStoredChatThread(remoteId).catch(() => undefined);
+      const thread = await ensureStoredChatThread(remoteId).catch(
+        () => undefined,
+      );
       const defaultTitle = "New Chat";
 
       function streamTitle(title: string) {
@@ -929,10 +930,11 @@ function createStudioDbAdapter(
           const running = useChatRuntimeStore.getState().runningByThreadId;
           if (running[paired.id]) {
             setTimeout(() => {
-              void createStudioDbAdapter(modelType, pairId, projectId).generateTitle(
-                remoteId,
-                messages,
-              );
+              void createStudioDbAdapter(
+                modelType,
+                pairId,
+                projectId,
+              ).generateTitle(remoteId, messages);
             }, 600);
             return streamTitle(thread.title || defaultTitle);
           }
@@ -1029,7 +1031,9 @@ async function waitForRunStartHistoryAppend(
     return;
   }
   const runStartReady = pendingRunStartReadyByMessageId.get(userMessage.id);
-  const historyAppendReady = pendingHistoryAppendByMessageId.get(userMessage.id);
+  const historyAppendReady = pendingHistoryAppendByMessageId.get(
+    userMessage.id,
+  );
   if (runStartReady === undefined && historyAppendReady === undefined) {
     return undefined;
   }
@@ -1054,7 +1058,9 @@ async function waitForRunStartHistoryAppend(
   return adoptedThreadId;
 }
 
-function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter {
+function createPersistedRunAdapter(
+  adapter: ChatModelAdapter,
+): ChatModelAdapter {
   return {
     ...adapter,
     async *run(options) {
@@ -1081,10 +1087,7 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
       };
       throwIfReservationCancelled();
       const persistedRunThreadIds = preStreamRunThreadIdsForRuntime(
-        [
-          ...reservationThreadIds,
-          ...trackedRunStartThreadIds,
-        ],
+        [...reservationThreadIds, ...trackedRunStartThreadIds],
         undefined,
       );
       let adoptedThreadId: string | undefined;
@@ -1134,6 +1137,8 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
 function useStudioRuntimeAdapters(
   modelType: ModelType,
   pairId?: string,
+  reloadReadyThreadId?: string,
+  onInitialHistoryReady?: () => void,
 ): StudioRuntimeAdapters {
   const aui = useAui();
 
@@ -1222,8 +1227,7 @@ function useStudioRuntimeAdapters(
                     ...(Array.isArray(attachments)
                       ? {
                           attachments: attachments.filter(
-                            (attachment) =>
-                              attachment.id !== attachmentId,
+                            (attachment) => attachment.id !== attachmentId,
                           ),
                         }
                       : {}),
@@ -1246,9 +1250,7 @@ function useStudioRuntimeAdapters(
             ).attachments;
             if (
               Array.isArray(attachments) &&
-              attachments.some(
-                (attachment) => attachment.id === attachmentId,
-              )
+              attachments.some((attachment) => attachment.id === attachmentId)
             ) {
               changed = true;
               return {
@@ -1302,9 +1304,25 @@ function useStudioRuntimeAdapters(
   const history = useMemo<ThreadHistoryAdapter>(
     () => ({
       async load() {
+        const completeLoad = <T,>(result: T, loadedThreadId?: string): T => {
+          // A runtime bootstraps on an empty thread before switching to the
+          // requested one, so an unrequested load is not readiness.
+          const loadedTheRequestedThread =
+            !reloadReadyThreadId || loadedThreadId === reloadReadyThreadId;
+          if (onInitialHistoryReady) {
+            if (loadedTheRequestedThread) onInitialHistoryReady();
+          } else if (
+            modelType === "base" &&
+            !pairId &&
+            loadedTheRequestedThread
+          ) {
+            window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+          }
+          return result;
+        };
         const { remoteId } = aui.threadListItem().getState();
         if (!remoteId) {
-          return { messages: [] };
+          return completeLoad({ messages: [] });
         }
         const roleOrder: Record<string, number> = {
           system: 0,
@@ -1411,27 +1429,31 @@ function useStudioRuntimeAdapters(
         const hasParentIds = msgs.some((m) => m.parentId != null);
         if (hasParentIds) {
           let previousId: string | null = null;
-          return {
-            messages: msgs.map((m) => {
-              const parentId = m.parentId != null ? m.parentId : previousId;
-              previousId = m.id;
-              return {
-                parentId,
-                message: toThreadMessage(m),
-              };
-            }),
-          };
+          return completeLoad(
+            {
+              messages: msgs.map((m) => {
+                const parentId = m.parentId != null ? m.parentId : previousId;
+                previousId = m.id;
+                return {
+                  parentId,
+                  message: toThreadMessage(m),
+                };
+              }),
+            },
+            remoteId,
+          );
         }
-        return ExportedMessageRepository.fromArray(msgs.map(toThreadMessage));
+        return completeLoad(
+          ExportedMessageRepository.fromArray(msgs.map(toThreadMessage)),
+          remoteId,
+        );
       },
 
       append({ parentId, message }: ExportedMessageRepositoryItem) {
         const localThreadId = aui.threadListItem().getState().id;
         const historyClearGeneration = chatHistoryClearBoundary.capture();
         const throwIfHistoryWasCleared = async (remoteId: string) => {
-          if (
-            chatHistoryClearBoundary.capture() === historyClearGeneration
-          ) {
+          if (chatHistoryClearBoundary.capture() === historyClearGeneration) {
             return;
           }
           markChatThreadDeleted(remoteId);
@@ -1480,17 +1502,22 @@ function useStudioRuntimeAdapters(
           await throwIfHistoryWasCleared(remoteId);
           const content = cloneContent(message.content);
           const attachments =
-            message.role === "user" ? cloneAttachments(message.attachments) : [];
+            message.role === "user"
+              ? cloneAttachments(message.attachments)
+              : [];
           const custom = message.metadata?.custom;
           const createdAt =
             existingMessage?.createdAt ??
             message.createdAt?.getTime?.() ??
-              Date.now();
+            Date.now();
           const existingMetadata = existingMessage?.metadata;
           const incomingRevision = Number(
-            (custom as Record<string, unknown> | undefined)?.serverRevision ?? -1,
+            (custom as Record<string, unknown> | undefined)?.serverRevision ??
+              -1,
           );
-          const existingRevision = Number(existingMetadata?.serverRevision ?? -1);
+          const existingRevision = Number(
+            existingMetadata?.serverRevision ?? -1,
+          );
           const incomingMetadata = custom as
             | Record<string, unknown>
             | undefined;
@@ -1524,7 +1551,13 @@ function useStudioRuntimeAdapters(
         return trackHistoryAppend(message.id, write);
       },
     }),
-    [aui, modelType, pairId],
+    [
+      aui,
+      modelType,
+      onInitialHistoryReady,
+      pairId,
+      reloadReadyThreadId,
+    ],
   );
 
   // Always register the adapter so the mic stays clickable for any engine. The
@@ -1574,8 +1607,15 @@ function useStudioRuntimeAdapters(
 function useRuntimeHook(
   modelType: ModelType,
   pairId?: string,
+  reloadReadyThreadId?: string,
+  onInitialHistoryReady?: () => void,
 ): ReturnType<typeof useLocalRuntime> {
-  const adapters = useStudioRuntimeAdapters(modelType, pairId);
+  const adapters = useStudioRuntimeAdapters(
+    modelType,
+    pairId,
+    reloadReadyThreadId,
+    onInitialHistoryReady,
+  );
   const persistedChatAdapter = useMemo(
     () =>
       createPersistedRunAdapter(
@@ -1586,18 +1626,32 @@ function useRuntimeHook(
   return useLocalRuntime(persistedChatAdapter, { adapters });
 }
 
-function createRuntimeHook(modelType: ModelType, pairId?: string) {
-  return function useConfiguredRuntimeHook(): ReturnType<typeof useLocalRuntime> {
-    return useRuntimeHook(modelType, pairId);
+function createRuntimeHook(
+  modelType: ModelType,
+  pairId?: string,
+  reloadReadyThreadId?: string,
+  onInitialHistoryReady?: () => void,
+) {
+  return function useConfiguredRuntimeHook(): ReturnType<
+    typeof useLocalRuntime
+  > {
+    return useRuntimeHook(
+      modelType,
+      pairId,
+      reloadReadyThreadId,
+      onInitialHistoryReady,
+    );
   };
 }
 
 function ThreadAutoSwitch({
   threadId,
   syncActiveThreadId = true,
+  onSwitchFailed,
 }: {
   threadId: string;
   syncActiveThreadId?: boolean;
+  onSwitchFailed?: () => void;
 }): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
@@ -1617,10 +1671,18 @@ function ThreadAutoSwitch({
           if (syncActiveThreadId) {
             useChatRuntimeStore.getState().setActiveThreadId(null);
           }
+          onSwitchFailed?.();
         });
       }
     }
-  }, [aui, isLoading, mainThreadId, syncActiveThreadId, threadId]);
+  }, [
+    aui,
+    isLoading,
+    mainThreadId,
+    onSwitchFailed,
+    syncActiveThreadId,
+    threadId,
+  ]);
 
   useEffect(() => {
     if (!syncActiveThreadId || isLoading || mainThreadId !== threadId) {
@@ -1679,7 +1741,14 @@ function ThreadNewChatSwitch({
     // runActive is a DEPENDENCY, not just a guard: refreshContextUsage declines while anything
     // generates, and nothing else re-fires this when the run ends. ThreadContextUsageRecount
     // cannot cover for it -- an unpersisted New Chat has no activeThreadId.
-  }, [checkpoint, ggufContextLength, isLoading, modelLoading, nonce, runActive]);
+  }, [
+    checkpoint,
+    ggufContextLength,
+    isLoading,
+    modelLoading,
+    nonce,
+    runActive,
+  ]);
 
   return null;
 }
@@ -1845,7 +1914,9 @@ function ThreadScopedSettingsSync({
           // the response spells every omitted field as null, which is not a value to apply.
           applyThreadScopedSettings(
             activeThreadId,
-            thread.settings ? sanitizeThreadScopedSettings(thread.settings) : null,
+            thread.settings
+              ? sanitizeThreadScopedSettings(thread.settings)
+              : null,
           );
         })
         // A failed read leaves the installation defaults up (dropped to above), not the
@@ -1986,7 +2057,11 @@ function CancelRegistrar(): ReactElement | null {
     if (!mainThreadId) return;
     const runtime = aui.threads().__internal_getAssistantRuntime?.();
     const threadIds = Array.from(
-      new Set([mainThreadId, remoteThreadId].filter((id): id is string => Boolean(id))),
+      new Set(
+        [mainThreadId, remoteThreadId].filter((id): id is string =>
+          Boolean(id),
+        ),
+      ),
     );
     const cancel = () => {
       for (const threadId of threadIds) {
@@ -2027,9 +2102,7 @@ function CancelRegistrar(): ReactElement | null {
           return;
         }
         for (const threadId of threadIds) {
-          useChatRuntimeStore
-            .getState()
-            .clearThreadCancel(threadId, cancel);
+          useChatRuntimeStore.getState().clearThreadCancel(threadId, cancel);
         }
         unsubscribe();
       });
@@ -2158,6 +2231,7 @@ export function ChatRuntimeProvider({
   newThreadNonce,
   syncActiveThreadId = true,
   listThreads = true,
+  onInitialHistoryReady,
 }: {
   children: ReactNode;
   modelType?: ModelType;
@@ -2167,15 +2241,29 @@ export function ChatRuntimeProvider({
   newThreadNonce?: string;
   syncActiveThreadId?: boolean;
   listThreads?: boolean;
+  onInitialHistoryReady?: () => void;
 }): ReactElement {
   const runtimeHook = useMemo(
-    () => createRuntimeHook(modelType, pairId),
-    [modelType, pairId],
+    () =>
+      createRuntimeHook(
+        modelType,
+        pairId,
+        initialThreadId,
+        onInitialHistoryReady,
+      ),
+    [initialThreadId, modelType, onInitialHistoryReady, pairId],
   );
   const runtime = useRemoteThreadListRuntime({
     runtimeHook,
     adapter: createStudioDbAdapter(modelType, pairId, projectId, listThreads),
   });
+  const signalFailedInitialSwitchReady = useCallback(() => {
+    if (onInitialHistoryReady) {
+      onInitialHistoryReady();
+    } else if (modelType === "base" && !pairId) {
+      window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+    }
+  }, [modelType, onInitialHistoryReady, pairId]);
 
   const aui = useAui({});
 
@@ -2202,6 +2290,7 @@ export function ChatRuntimeProvider({
           <ThreadAutoSwitch
             threadId={initialThreadId}
             syncActiveThreadId={syncActiveThreadId}
+            onSwitchFailed={signalFailedInitialSwitchReady}
           />
         )}
         {!initialThreadId && newThreadNonce && (

@@ -193,6 +193,7 @@ export const ko = {
       chat: "채팅",
       connections: "연결",
       apiKeys: "API",
+      remoteLan: "원격 및 LAN",
       about: "정보",
       data: "데이터",
       agents: "에이전트",
@@ -279,6 +280,17 @@ export const ko = {
         engineModel: "로컬 음성 인식",
         engineModelDescription:
           "음성 인식(STT) 모델을 로컬에서 실행하며 오프라인으로 동작합니다. 다운로드 후 로드하고, 일정 시간 사용하지 않으면 자동으로 해제됩니다.",
+        engineCustom: "사용자 지정 엔드포인트",
+        engineCustomDescription:
+          "연결에 등록된 OpenAI 호환 STT 서버로 녹음된 오디오를 전송합니다.",
+        connectionLabel: "연결",
+        connectionDescription:
+          "연결에서 OpenAI 호환 서버와 선택적 API 키를 추가하세요.",
+        connectionPlaceholder: "연결 선택",
+        connectionEmpty: "사용 가능한 연결이 없습니다",
+        customModelLabel: "모델",
+        customModelDescription:
+          "/v1/audio/transcriptions에 전송할 모델 이름입니다.",
         sttModelLabel: "음성 인식 모델",
         sttModelDescription: "로컬에서 실행할 STT 모델을 선택하거나 검색하세요.",
         sttModelSearchPlaceholder: "모델 검색",
@@ -337,6 +349,7 @@ export const ko = {
         languageLabel: "받아쓰기 언어",
         languageDescription: "인식할 언어",
         languageAuto: "자동(브라우저 언어)",
+        languageAutoDetect: "자동(언어 감지)",
       },
       dictionary: {
         sectionTitle: "받아쓰기 사전",
@@ -505,7 +518,7 @@ export const ko = {
           "유휴 해제 전에 KV 캐시를 저장해, 이어서 하는 채팅이 기록을 다시 읽지 않도록 합니다. 디스크를 최대 10GB 사용합니다.",
         apiOnly: "API가 불러온 모델만 해제",
         apiOnlyDescription:
-          "유휴 해제 시 Studio에서 직접 불러온 모델은 메모리에 남기고, API 요청이 불러온 모델만 해제합니다.",
+          "유휴 해제 시 Unsloth에서 직접 불러온 모델은 메모리에 남기고, API 요청이 불러온 모델만 해제합니다.",
       },
       previewSharing: {
         sectionTitle: "미리보기 공유",
@@ -558,6 +571,7 @@ export const ko = {
         embeddingModel: "임베딩 모델",
         embeddingModelDescription:
           "문서를 색인하고 검색하는 데 사용되는 Hugging Face 모델 또는 로컬 경로입니다. 기본값은 {defaultModel}입니다.",
+        searchPlaceholder: "임베딩 모델 검색",
         reindexWarning:
           "새로 색인되는 문서에만 적용됩니다. 모델을 변경한 후 기존 문서를 다시 업로드하세요.",
         emptyError: "Hugging Face 모델 ID 또는 로컬 경로를 입력하세요.",
@@ -857,6 +871,24 @@ export const ko = {
         switchFailed: "llama.cpp 백엔드를 변경하지 못했습니다.",
         switchInterrupted: "전환이 완료되기 전에 중단되었습니다.",
         envLocked: "환경 변수 UNSLOTH_LLAMA_CPP_BACKEND가 {backend}(으)로 고정했으며, 이 설정보다 우선합니다.",
+        customPath: {
+          label: "사용자 지정 llama.cpp 폴더",
+          description: "직접 빌드한 llama-server를 사용합니다.",
+          hint: "llama-server가 들어 있는 llama.cpp 폴더 또는 build/bin 아래에 있는 빌드를 선택하세요. 사용자 지정 런타임은 GGUF 채팅, 임베딩, 지원되는 음성 모델에 사용됩니다. 환경 변수가 계속 우선합니다.",
+          automatic: "자동(번들)",
+          bundled: "Unsloth가 설치한 llama.cpp 런타임을 사용합니다.",
+          active: "다음 모델 로드부터 사용자 지정 llama-server를 사용합니다.",
+          environmentManaged: "{variable} 환경 변수로 관리됩니다.",
+          missingBinary: "이 폴더에서 llama-server를 더 이상 사용할 수 없습니다. 다른 폴더를 선택하거나 번들 런타임을 사용하세요.",
+          reloadRequired: "선택한 llama-server를 사용하려면 모델을 다시 로드하세요.",
+          change: "변경",
+          saving: "저장 중...",
+          useBundled: "번들 사용",
+          chooseTitle: "llama.cpp 폴더 선택",
+          chooseAction: "이 폴더 사용",
+          saved: "llama.cpp 폴더가 업데이트되었습니다",
+          saveError: "llama.cpp 폴더를 업데이트하지 못했습니다",
+        },
         backends: {
           auto: "자동",
           cpu: "CPU",
@@ -869,6 +901,7 @@ export const ko = {
           notInstalled: "관리되는 llama.cpp 설치를 찾을 수 없어 전환할 백엔드가 없습니다.",
           localLink: "llama.cpp는 직접 연결한 로컬 디렉터리이므로 Unsloth가 교체하지 않습니다.",
           sourceBuild: "이 llama.cpp는 소스에서 빌드되어 여기서 백엔드를 전환할 수 없습니다.",
+          customPath: "사용자 지정 llama.cpp 폴더가 선택되어 있습니다. 해당 빌드가 컴퓨팅 백엔드를 결정합니다.",
           unresolved: "사용 가능한 백엔드를 확인하지 못했습니다. 연결을 확인한 뒤 다시 시도하세요.",
         },
         // 표시되지 않음: 설정 검색용 추가 키워드.
@@ -973,7 +1006,7 @@ export const ko = {
       quickstart: {
         title: "명령 만들기",
         description:
-          "Studio에 현재 로드된 모델로 에이전트를 실행합니다. 먼저 모델을 로드한 다음 claude를 아래 지원되는 에이전트로 바꾸세요.",
+          "Unsloth에 현재 로드된 모델로 에이전트를 실행합니다. 먼저 모델을 로드한 다음 claude를 아래 지원되는 에이전트로 바꾸세요.",
         noneDetected: "PATH에서 지원되는 에이전트 CLI를 찾지 못했습니다.",
         installed: "설치됨",
       },
@@ -994,7 +1027,7 @@ export const ko = {
         description:
           "Unsloth 플래그가 먼저 처리되고, 인식되지 않은 값은 그대로 에이전트에 전달됩니다.",
         model:
-          "모델을 선택합니다. --model이 없으면 unsloth start는 Studio에 현재 로드된 모델을 사용하며, 로드된 모델이 없으면 오류가 납니다.",
+          "모델을 선택합니다. --model이 없으면 unsloth start는 Unsloth에 현재 로드된 모델을 사용하며, 로드된 모델이 없으면 오류가 납니다.",
         contextLength:
           "요청할 컨텍스트 길이를 설정합니다(별칭: --max-seq-length).",
         ggufVariant: "GGUF 양자화 변형을 선택합니다.",
@@ -1008,12 +1041,16 @@ export const ko = {
           "상위 에이전트는 현재 모델을 유지하고 Unsloth를 로컬 서브에이전트로 등록합니다(Claude Code, Codex, OpenCode).",
         apiKey:
           "Unsloth API 키를 지정합니다(또는 UNSLOTH_API_KEY 환경 변수를 설정합니다).",
+        reasoning:
+          "채팅에서 추론 사용 여부: on, off, auto. auto는 모델의 채팅 템플릿을 따르며 보통 on입니다.",
+        reasoningEffort:
+          "모델의 채팅 템플릿에 전달하는 추론 강도(예: medium). 사용할 수 있는 값은 모델마다 다르므로 해당 모델이 받는 값을 지정하세요. 지정하지 않으면 템플릿의 값이 유지됩니다.",
         yolo: "승인 확인을 건너뜁니다. 신뢰할 수 있는 환경에서만 사용하세요.",
       },
       remote: {
-        title: "원격 Studio에 연결",
+        title: "원격 Unsloth Studio에 연결",
         description:
-          "실행 전에 다음을 설정하면 unsloth start를 다른 곳에서 실행 중인 Studio로 연결할 수 있습니다(또는 --api-key를 직접 전달):",
+          "실행 전에 다음을 설정하면 unsloth start를 다른 곳에서 실행 중인 Unsloth Studio로 연결할 수 있습니다(또는 --api-key를 직접 전달):",
       },
       passthrough: {
         title: "에이전트에 인자 전달",
@@ -1070,6 +1107,12 @@ export const ko = {
         collapseByDefault: "기본적으로 사고 과정 접기",
         collapseByDefaultDescription:
           "모델이 생각하는 동안 사고 과정을 자동으로 펼치지 않고 접어 둡니다. 읽으려면 블록을 펼치세요.",
+      },
+      webSearch: {
+        title: "웹 검색",
+        images: "웹 검색 이미지 표시",
+        imagesDescription:
+          "웹 검색이 이미지를 반환하고, 답변에 나열된 항목마다 하나씩 가져옵니다. 썸네일은 Studio가 가져와 축소하므로 브라우저가 이미지 호스트에 접속하지 않습니다.",
       },
       artifacts: {
         title: "Canvas",
@@ -1205,6 +1248,11 @@ export const ko = {
     connections: {
       title: "연결",
       description: "제공자 및 외부 연결을 관리합니다.",
+    },
+    remoteLan: {
+      title: "원격 및 LAN",
+      description:
+        "로컬 네트워크나 임시 공개 URL을 통해 다른 기기에서 이 Unsloth에 접속합니다.",
     },
     apiKeys: {
       title: "API",

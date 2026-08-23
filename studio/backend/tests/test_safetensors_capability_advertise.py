@@ -81,7 +81,65 @@ def test_detect_reasoning_flags_qwen3_supports_tools_and_reasoning():
     assert flags["supports_reasoning"] is True
     assert flags["reasoning_style"] == "enable_thinking"
     assert flags["supports_preserve_thinking"] is True
+    assert flags["preserve_thinking_default"] is False
     assert flags["reasoning_always_on"] is False
+
+
+def test_detect_reasoning_flags_qwen38_defaults_preserve_thinking_on():
+    from core.inference.llama_cpp import detect_reasoning_flags
+
+    flags = detect_reasoning_flags(QWEN3_TEMPLATE, "unsloth/Qwen3.8-27B-GGUF")
+    assert flags["supports_preserve_thinking"] is True
+    assert flags["preserve_thinking_default"] is True
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "unsloth/Qwen3.6-27B-GGUF",
+        "unsloth/Qwen3.80-27B-GGUF",
+        "custom/myQwen3.8-27B",
+    ],
+)
+def test_preserve_thinking_default_does_not_leak_to_other_model_families(model_id):
+    from core.inference.llama_cpp import detect_reasoning_flags
+
+    flags = detect_reasoning_flags(QWEN3_TEMPLATE, model_id)
+    assert flags["supports_preserve_thinking"] is True
+    assert flags["preserve_thinking_default"] is False
+
+
+def test_qwen38_without_the_kwarg_does_not_invent_preserve_support():
+    from core.inference.llama_cpp import detect_reasoning_flags
+
+    flags = detect_reasoning_flags(PLAIN_TEMPLATE, "custom/Qwen3.8-27B")
+    assert flags["supports_preserve_thinking"] is False
+    assert flags["preserve_thinking_default"] is False
+
+
+def test_qwen38_default_keeps_prior_reasoning_in_the_template():
+    pytest.importorskip("jinja2")
+    from jinja2 import BaseLoader, Environment
+    from core.inference.llama_cpp import detect_reasoning_flags
+
+    render = Environment(loader = BaseLoader()).from_string(QWEN3_TEMPLATE)
+    common = {
+        "tools": [],
+        "messages": [],
+        "enable_thinking": True,
+        "assistant": {"reasoning_content": "SECRET_THOUGHT"},
+    }
+    before = detect_reasoning_flags(QWEN3_TEMPLATE, "unsloth/Qwen3.6-27B-GGUF")
+    after = detect_reasoning_flags(QWEN3_TEMPLATE, "unsloth/Qwen3.8-27B-GGUF")
+
+    assert "SECRET_THOUGHT" not in render.render(
+        **common,
+        preserve_thinking = before["preserve_thinking_default"],
+    )
+    assert "SECRET_THOUGHT" in render.render(
+        **common,
+        preserve_thinking = after["preserve_thinking_default"],
+    )
 
 
 def test_detect_reasoning_flags_plain_template_all_false():
@@ -149,6 +207,7 @@ def test_detect_safetensors_features_none_template_returns_all_false():
         "reasoning_always_on": False,
         "reasoning_effort_levels": [],
         "supports_preserve_thinking": False,
+        "preserve_thinking_default": False,
         "supports_tools": False,
     }
 
@@ -707,6 +766,20 @@ def test_route_layer_emits_supports_tools_true_for_qwen3_safetensors():
     assert flags["supports_tools"] is True
     assert flags["supports_reasoning"] is True
     assert flags["supports_preserve_thinking"] is True
+
+
+def test_route_layer_emits_preserve_default_true_for_qwen38_safetensors():
+    from routes.inference import _detect_safetensors_features
+
+    backend = SimpleNamespace(
+        active_model_name = "unsloth/Qwen3.8-27B",
+        models = {},
+    )
+
+    flags = _detect_safetensors_features(backend, QWEN3_TEMPLATE)
+
+    assert flags["supports_preserve_thinking"] is True
+    assert flags["preserve_thinking_default"] is True
 
 
 @pytest.mark.parametrize(

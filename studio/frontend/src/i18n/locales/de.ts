@@ -197,6 +197,7 @@ export const de = {
       chat: "Chat",
       connections: "Verbindungen",
       apiKeys: "API",
+      remoteLan: "Remote & LAN",
       about: "Info",
       data: "Daten",
       agents: "Agenten",
@@ -283,6 +284,17 @@ export const de = {
         engineModel: "Lokale Transkription",
         engineModelDescription:
           "Führt ein Spracherkennungsmodell (STT) lokal aus und funktioniert offline. Zuerst herunterladen und laden; nach einer Zeit ohne Nutzung wird es automatisch wieder entladen.",
+        engineCustom: "Benutzerdefinierter Endpunkt",
+        engineCustomDescription:
+          "Sendet Audioaufnahmen an einen OpenAI-kompatiblen STT-Server aus Ihren Verbindungen.",
+        connectionLabel: "Verbindung",
+        connectionDescription:
+          "Fügen Sie unter Verbindungen einen OpenAI-kompatiblen Server und optional einen API-Schlüssel hinzu.",
+        connectionPlaceholder: "Verbindung auswählen",
+        connectionEmpty: "Keine Verbindungen verfügbar",
+        customModelLabel: "Modell",
+        customModelDescription:
+          "Modellname, der an /v1/audio/transcriptions gesendet wird.",
         sttModelLabel: "Spracherkennungsmodell",
         sttModelDescription:
           "Wählen oder suchen Sie ein STT-Modell für die lokale Ausführung.",
@@ -346,6 +358,7 @@ export const de = {
         languageLabel: "Diktatsprache",
         languageDescription: "Zu erkennende Sprache",
         languageAuto: "Automatisch (Browsersprache)",
+        languageAutoDetect: "Automatisch (Sprache erkennen)",
       },
       dictionary: {
         sectionTitle: "Diktatwörterbuch",
@@ -524,7 +537,7 @@ export const de = {
           "Speichert den KV-Cache vor dem Entladen bei Inaktivität, damit der Verlauf bei fortgesetzten Chats nicht erneut eingelesen werden muss. Bis zu 10 GB auf der Festplatte.",
         apiOnly: "Nur über die API geladene Modelle entladen",
         apiOnlyDescription:
-          "Das automatische Entladen bei Inaktivität lässt ein von dir in Studio geladenes Modell im Speicher und gibt nur solche frei, die eine API-Anfrage geladen hat.",
+          "Das automatische Entladen bei Inaktivität lässt ein von dir in Unsloth geladenes Modell im Speicher und gibt nur solche frei, die eine API-Anfrage geladen hat.",
       },
       previewSharing: {
         sectionTitle: "Vorschau-Freigabe",
@@ -581,6 +594,7 @@ export const de = {
         embeddingModel: "Embedding-Modell",
         embeddingModelDescription:
           "Hugging-Face-Modell oder lokaler Pfad zum Indexieren und Durchsuchen Ihrer Dokumente. Standard ist {defaultModel}.",
+        searchPlaceholder: "Embedding-Modelle suchen",
         reindexWarning:
           "Betrifft nur neu indexierte Dokumente. Laden Sie bestehende nach einer Modelländerung erneut hoch.",
         emptyError:
@@ -886,6 +900,24 @@ export const de = {
         switchFailed: "Das llama.cpp-Backend konnte nicht geändert werden.",
         switchInterrupted: "Der Wechsel wurde vor dem Abschluss unterbrochen.",
         envLocked: "Durch die Umgebungsvariable UNSLOTH_LLAMA_CPP_BACKEND auf {backend} festgelegt; sie überschreibt diese Einstellung.",
+        customPath: {
+          label: "Benutzerdefinierter llama.cpp-Ordner",
+          description: "Verwende deinen eigenen llama-server-Build.",
+          hint: "Wähle den llama.cpp-Ordner mit llama-server oder einen Build, in dem er unter build/bin liegt. Die benutzerdefinierte Laufzeit wird für GGUF-Chat, Einbettungen und unterstützte Sprachmodelle verwendet. Umgebungsvariablen haben weiterhin Vorrang.",
+          automatic: "Automatisch (mitgeliefert)",
+          bundled: "Verwendet die von Unsloth installierte llama.cpp-Laufzeit.",
+          active: "Dein eigener llama-server wird beim nächsten Laden eines Modells verwendet.",
+          environmentManaged: "Wird durch die Umgebungsvariable {variable} verwaltet.",
+          missingBinary: "llama-server ist in diesem Ordner nicht mehr verfügbar. Wähle einen anderen Ordner oder verwende die mitgelieferte Laufzeit.",
+          reloadRequired: "Lade das Modell neu, um den ausgewählten llama-server zu verwenden.",
+          change: "Ändern",
+          saving: "Speichern...",
+          useBundled: "Mitgelieferte Version verwenden",
+          chooseTitle: "llama.cpp-Ordner auswählen",
+          chooseAction: "Diesen Ordner verwenden",
+          saved: "llama.cpp-Ordner aktualisiert",
+          saveError: "Der llama.cpp-Ordner konnte nicht aktualisiert werden",
+        },
         backends: {
           auto: "Automatisch",
           cpu: "CPU",
@@ -898,6 +930,7 @@ export const de = {
           notInstalled: "Es wurde keine von Unsloth verwaltete llama.cpp-Installation gefunden, daher gibt es kein Backend zum Wechseln.",
           localLink: "llama.cpp ist ein selbst verknüpftes lokales Verzeichnis, das Unsloth nicht ersetzt.",
           sourceBuild: "Dieses llama.cpp wurde aus dem Quellcode gebaut; sein Backend lässt sich hier nicht wechseln.",
+          customPath: "Ein benutzerdefinierter llama.cpp-Ordner ist ausgewählt. Dessen Build bestimmt das Compute-Backend.",
           unresolved: "Die verfügbaren Backends konnten nicht geprüft werden. Prüfe deine Verbindung und versuche es erneut.",
         },
         // Wird nicht angezeigt: zusätzliche Begriffe für die Einstellungssuche.
@@ -1005,7 +1038,7 @@ export const de = {
       quickstart: {
         title: "Befehl zusammenstellen",
         description:
-          "Starten Sie einen Agenten mit dem aktuell in Studio geladenen Modell. Laden Sie zuerst ein Modell und ersetzen Sie dann claude durch einen der unten aufgeführten Agenten.",
+          "Starten Sie einen Agenten mit dem aktuell in Unsloth geladenen Modell. Laden Sie zuerst ein Modell und ersetzen Sie dann claude durch einen der unten aufgeführten Agenten.",
         noneDetected:
           "In Ihrem PATH wurden keine unterstützten Agent-CLIs gefunden.",
         installed: "Installiert",
@@ -1027,7 +1060,7 @@ export const de = {
         description:
           "Unsloth-Optionen werden zuerst ausgewertet; alles Unbekannte wird unverändert an den Agenten weitergereicht.",
         model:
-          "Wählt ein Modell aus. Ohne --model verwendet unsloth start das aktuell in Studio geladene Modell und bricht mit einem Fehler ab, wenn keines geladen ist.",
+          "Wählt ein Modell aus. Ohne --model verwendet unsloth start das aktuell in Unsloth geladene Modell und bricht mit einem Fehler ab, wenn keines geladen ist.",
         contextLength:
           "Legt die gewünschte Kontextlänge fest (Alias: --max-seq-length).",
         ggufVariant: "Wählt die GGUF-Quantisierungsvariante.",
@@ -1044,13 +1077,17 @@ export const de = {
           "Belässt den übergeordneten Agenten bei seinem aktuellen Modell und registriert Unsloth als lokalen Subagenten (Claude Code, Codex und OpenCode).",
         apiKey:
           "Übergibt Ihren Unsloth-API-Schlüssel (alternativ UNSLOTH_API_KEY setzen).",
+        reasoning:
+          "Reasoning im Chat verwenden: on, off oder auto. Auto folgt der Chat-Vorlage des Modells, was meist on bedeutet.",
+        reasoningEffort:
+          "Reasoning-Aufwand, der an die Chat-Vorlage des Modells übergeben wird, z. B. medium. Die Stufen hängen vom Modell ab, verwenden Sie also eine, die es kennt. Ohne Angabe gilt die Stufe der Vorlage.",
         yolo:
           "Überspringt Bestätigungsabfragen. Nur in vertrauenswürdigen Umgebungen verwenden.",
       },
       remote: {
-        title: "Mit einem Remote-Studio verbinden",
+        title: "Mit einem entfernten Unsloth Studio verbinden",
         description:
-          "Richten Sie unsloth start auf ein anderswo laufendes Studio aus, indem Sie diese Variablen vor dem Aufruf setzen (oder --api-key direkt übergeben):",
+          "Richten Sie unsloth start auf ein anderswo laufendes Unsloth Studio aus, indem Sie diese Variablen vor dem Aufruf setzen (oder --api-key direkt übergeben):",
       },
       passthrough: {
         title: "Argumente an den Agenten übergeben",
@@ -1107,6 +1144,12 @@ export const de = {
         collapseByDefault: "Denken standardmäßig einklappen",
         collapseByDefaultDescription:
           "Das Denken bleibt eingeklappt, während das Modell denkt, statt automatisch aufzuklappen. Zum Lesen einen Block ausklappen.",
+      },
+      webSearch: {
+        title: "Websuche",
+        images: "Bilder aus der Websuche anzeigen",
+        imagesDescription:
+          "Lässt die Websuche Bilder liefern und holt eines für jeden Punkt, den eine Antwort auflistet. Vorschaubilder lädt und verkleinert Studio, der Browser kontaktiert keine Bildhosts.",
       },
       artifacts: {
         title: "Canvas",
@@ -1247,6 +1290,11 @@ export const de = {
     connections: {
       title: "Verbindungen",
       description: "Verwalten Sie Anbieter und externe Verbindungen.",
+    },
+    remoteLan: {
+      title: "Remote & LAN",
+      description:
+        "Erreiche dieses Unsloth von deinen anderen Geräten über dein lokales Netzwerk oder eine temporäre öffentliche URL.",
     },
     apiKeys: {
       title: "API",

@@ -157,7 +157,7 @@ test("someone else's result is not unwrapped as Studio's own wrapper", () => {
   // No name at all stays permissive, as isSandboxWrapper is.
   assert.ok(isMcpUiToolResult(imported));
 
-  // Lifted with the real UI guard and stubs for its two siblings: this is about
+  // Lifted with the real UI guard and stubs for its siblings: this is about
   // which results the UI guard claims, not about the sandbox/image shapes.
   const uiGuardSource = source.slice(
     source.indexOf("export function isMcpUiToolResult("),
@@ -168,6 +168,7 @@ test("someone else's result is not unwrapped as Studio's own wrapper", () => {
     "toolResultModelText",
     `${uiGuardSource}
      const isMcpImageToolResult = () => false;
+     const isSearchImagesToolResult = () => false;
      const isSandboxWrapper = () => false;`,
   );
   assert.deepEqual(toolResultModelText(imported, "get_report"), imported);
