@@ -28,6 +28,7 @@ import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any, Callable, Optional
 
 from ..fixture.corpus import PROVISIONAL_CHARS_PER_TOKEN, Corpus, RungPlan, plan_rung
@@ -96,6 +97,69 @@ FOLLOW_PINNED_MIN = 0.95
 #: stream". The latch is fixed, and this makes the coverage a condition rather than a footnote, so
 #: a future regression that strands the sampler cannot produce a confident pass over a sliver.
 FOLLOW_MIN_STREAM_COVERAGE = 0.50
+
+
+def follow_verdict(follow: Mapping[str, Any]) -> tuple[bool, dict[str, Any]]:
+    """The `follows_the_stream` verdict, and the coverage fields recorded whatever it says.
+
+    A module-level function rather than four lines inside the cell runner because the SPLIT it
+    encodes is the whole point and has to be testable without a browser: which shortfalls are a
+    reading of the BUILD and which are a property of the FILM.
+
+    FATAL, because they describe how the arm behaved while it was attached and can genuinely
+    differ between two builds:
+
+      `pinned_fraction`   below `FOLLOW_PINNED_MIN`, or absent while the sampler was present
+      `ever_fell_behind`  absolute; one drift past tolerance is a failure however fast the recovery
+
+    NOT MEASURED, because it is set by the SCENE SCHEDULE and not by the build under test:
+
+      `attached_fraction_of_stream` below `FOLLOW_MIN_STREAM_COVERAGE`
+
+    The film scrolls away twice inside an ~18s opening stream and the app then correctly declines
+    to yank the reader back, so roughly half the streaming time is detached BY CONSTRUCTION.
+    Measured over 32 cells it is 0.481 +/- 0.009, range 0.4625 to 0.5063 -- so a floor of 0.50 sat
+    above the mean of the quantity it was gating and made the verdict a coin flip. It refused 32 of
+    32 pairs with `TOO LITTLE COMPARED`, exit 3, and the NULL CONTROL -- the same commit on both
+    arms -- refused identically. A gate that fails its own null is not measuring what it names. It
+    was blinding the null audit too, which could not establish its own noise floor: all 16 actions
+    came back `undetermined`.
+
+    Both arms run the same film, so the shortfall is symmetric by construction. It cannot
+    discriminate between them; it can only void the run. It still qualifies an ABSOLUTE quote -- a
+    thread that spent half the stream detached did render less -- which is why the coverage is
+    RECORDED AS A NUMBER rather than dropped, and why this stays a failed gate row a reader has to
+    step over. What it may no longer do is take the cell out of a COMPARISON, where the confound is
+    common to both sides and cancels. Raising the constant instead would be the same trap one turn
+    later: it would need re-deriving every time the film's scroll schedule moves.
+
+    `pinned_ok and not fell_behind` in the `stream_coverage_unmeasured` conjunction is
+    LOAD-BEARING. Without it a genuine follow failure on a large rung, where coverage is low
+    anyway, would ride out on this allowance -- the same defect in the opposite direction.
+    """
+
+    pinned = follow.get("pinned_fraction")
+    coverage = follow.get("attached_fraction_of_stream")
+    pinned_ok = pinned is not None and pinned >= FOLLOW_PINNED_MIN
+    fell_behind = bool(follow.get("ever_fell_behind"))
+    coverage_short = coverage is None or coverage < FOLLOW_MIN_STREAM_COVERAGE
+    # THE COVERAGE AS A NUMBER, WHATEVER THE VERDICT, next to the floor it is read against. It was
+    # only ever visible as a pass or a fail, and that is why it took a campaign to notice the floor
+    # sat above the film's ceiling: every reader saw "FAILED its stream-follow gate", nobody saw
+    # 0.481. A quantity that decides whether a run is quotable has to be legible as a quantity.
+    recorded: dict[str, Any] = {
+        "stream_coverage": coverage,
+        "stream_coverage_floor": FOLLOW_MIN_STREAM_COVERAGE,
+        "stream_coverage_unmeasured": bool(coverage_short and pinned_ok and not fell_behind),
+    }
+    if coverage_short:
+        recorded["stream_coverage_reason"] = (
+            "the thread was attached for "
+            + ("an unknown share" if coverage is None else f"{coverage:.1%}")
+            + f" of the streaming time, under the {FOLLOW_MIN_STREAM_COVERAGE:.0%} floor; "
+            "the follow verdict is NOT MEASURED for this cell, not failed"
+        )
+    return bool(pinned_ok and not coverage_short and not fell_behind), recorded
 
 # How long the composer may take to accept the click that starts the film. Not a performance
 # budget: the point is that the cell survives and the number gets recorded. See `_press_send`.
@@ -550,18 +614,9 @@ class CellRunner:
         row["follow"] = follow
         pinned = follow.get("pinned_fraction")
         coverage = follow.get("attached_fraction_of_stream")
-        rec.gate(
-            "follows_the_stream",
-            bool(
-                pinned is not None
-                and pinned >= FOLLOW_PINNED_MIN
-                and coverage is not None
-                and coverage >= FOLLOW_MIN_STREAM_COVERAGE
-                and not follow.get("ever_fell_behind")
-            ),
-            follow,
-            cell_id = cell.cell_id,
-        )
+        passed, recorded = follow_verdict(follow)
+        follow.update(recorded)
+        rec.gate("follows_the_stream", passed, follow, cell_id = cell.cell_id)
         # THE OTHER HALF OF THE CONTRACT, RECORDED AND DELIBERATELY NOT GATED.
         #
         # It was a gate for one run and it failed on BOTH arms at nearly the same rate (32 of 79
