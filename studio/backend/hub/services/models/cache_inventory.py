@@ -482,12 +482,13 @@ def _cached_row_task(
     pick by it, so a row that arrives without one is dropped from those lists entirely.
     """
     try:
-        from hub.services.models.catalog_classification import (
-            _cached_repo_task,
-            _repo_gguf_task,
-        )
+        # Module-qualified: rebinding these names here re-points a load that resolved to
+        # routes.models before the move, which verify_import_hoist.py blocks.
+        from hub.services.models import catalog_classification
         return (
-            _repo_gguf_task(repo_info, selected) if gguf else _cached_repo_task(repo_info, selected)
+            catalog_classification._repo_gguf_task(repo_info, selected)
+            if gguf
+            else catalog_classification._cached_repo_task(repo_info, selected)
         )
     except Exception:  # noqa: BLE001 -- a classification failure never hides a row
         return None
@@ -577,6 +578,17 @@ def _scan_cached_gguf(
                     continue
                 # Must run after the skips above and before the partial walk it scopes.
                 gguf_snapshot, gguf_payload_snapshots = _repo_gguf_payload_snapshots(repo_info)
+                # Resolved before the row is classified, not inside _cache_inventory_fields
+                # below: a load_id left as the repo id resolves through refs/main, which can
+                # name an older revision than the newest payload snapshot. Classifying the
+                # newest then described a revision the load never reads.
+                gguf_identity = _resolve_load_identity(
+                    repo_id,
+                    repo_path = repo_path,
+                    snapshot_path = gguf_snapshot or snapshot_path,
+                    active_hub_cache = active_hub_cache,
+                    payload_snapshots = gguf_payload_snapshots,
+                )
                 partial = hf_cache_scan.is_gguf_repo_partial(
                     repo_id,
                     repo_path,
@@ -592,7 +604,11 @@ def _scan_cached_gguf(
                     "repo_id": repo_id,
                     "size_bytes": max(total_size, variant_state_size),
                     "cache_path": str(repo_info.repo_path),
-                    "task": _cached_row_task(repo_info, gguf = True, selected = gguf_snapshot),
+                    "task": _cached_row_task(
+                        repo_info,
+                        gguf = True,
+                        selected = gguf_identity.load_snapshot or gguf_snapshot,
+                    ),
                     "partial": partial,
                     # A marker-only sibling moves neither size nor mtime.
                     "has_variant_state": has_variant_state,
@@ -614,6 +630,8 @@ def _scan_cached_gguf(
                         partial = bool(row["partial"]),
                         requires_variant = True,
                         payload_snapshots = gguf_payload_snapshots,
+                        # Same identity the task was classified on, so the two cannot disagree.
+                        identity = gguf_identity,
                         # Scopes the row's vision flag to one directory.
                         gguf_snapshot = gguf_snapshot,
                         repo_info = repo_info,

@@ -7312,3 +7312,70 @@ def test_local_inventory_retries_when_the_cache_changes_during_classification(mo
     listed = asyncio.run(run())
     assert scans == [0, 1], scans
     assert [row.id for row in listed.models] == ["scan2"]
+
+
+def _gguf_with_architecture(path: Path, architecture: str) -> None:
+    """A minimal valid GGUF carrying just ``general.architecture``."""
+    import struct
+
+    def string(value: str) -> bytes:
+        data = value.encode()
+        return struct.pack("<Q", len(data)) + data
+
+    path.parent.mkdir(parents = True, exist_ok = True)
+    metadata = string("general.architecture") + struct.pack("<I", 8) + string(architecture)
+    path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
+
+
+def test_cached_gguf_task_describes_the_revision_the_load_id_resolves_to(tmp_path):
+    """A bare repo id loads through ``refs/main``, which is not always the newest payload
+    snapshot: a revision-pinned fetch adds a newer one without moving the ref. Classifying the
+    newest then advertised a task for a revision the load never reads, and the pickers filter
+    On Device rows on exactly that field."""
+    hub_cache = tmp_path / "hub"
+    repo_path = hub_cache / "models--Org--Model-GGUF"
+    older = repo_path / "snapshots" / "aaaaold"
+    newer = repo_path / "snapshots" / "bbbbnew"
+    _gguf_with_architecture(older / "model-Q4_K_M.gguf", "llama")
+    _gguf_with_architecture(newer / "model-Q4_K_M.gguf", "flux")
+    (repo_path / "refs").mkdir(parents = True, exist_ok = True)
+    (repo_path / "refs" / "main").write_text("aaaaold")
+    os.utime(older, (1_000_000, 1_000_000))
+    os.utime(newer, (2_000_000, 2_000_000))
+
+    def revision(snapshot: Path) -> SimpleNamespace:
+        gguf = snapshot / "model-Q4_K_M.gguf"
+        return SimpleNamespace(
+            snapshot_path = snapshot,
+            files = [
+                SimpleNamespace(
+                    file_name = "model-Q4_K_M.gguf",
+                    size_on_disk = 64,
+                    file_path = gguf,
+                    blob_path = gguf,
+                )
+            ],
+            refs = set(),
+            commit_hash = snapshot.name,
+            last_modified = 1.0,
+            size_on_disk = 64,
+        )
+
+    repo_info = SimpleNamespace(
+        repo_id = "Org/Model-GGUF",
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [revision(older), revision(newer)],
+        size_on_disk = 128,
+        last_accessed = 2.0,
+        last_modified = 2.0,
+        nb_files = 2,
+    )
+
+    rows = cache_inventory._scan_cached_gguf(
+        cache_scans = [SimpleNamespace(repos = [repo_info])], active_hub_cache = hub_cache
+    )
+    row = next(row for row in rows if row["repo_id"] == "Org/Model-GGUF")
+    # The id resolves through refs/main to the llama revision, so the row must say so.
+    assert row["load_id"] == "Org/Model-GGUF"
+    assert row["task"] == "text-generation"

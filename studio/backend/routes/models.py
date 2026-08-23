@@ -21,30 +21,36 @@ from loggers import get_logger
 
 # Dependency-light leaf (PEP 562 package init): no llama.cpp / torch import chain.
 from core.inference.model_ids import display_model_name
+from hub.services.models import catalog_classification as _catalog_classification
 from hub.services.models.catalog_classification import (
-    _AMBIGUOUS_DIFFUSION_GGUF_ARCHS,
-    _DIFFUSION_GGUF_ARCHS,
-    _TASK_CLASSIFY_WALK_SECONDS,
-    _UNSUPPORTED_DIFFUSION_GGUF_ARCHS,
-    _UNSUPPORTED_DIFFUSION_TASK,
-    _VIDEO_GEN_TASK,
-    _VIDEO_GGUF_ARCHS,
-    _arch_to_task,
     _cached_repo_task,
-    _gguf_architecture,
-    _gguf_folder_task,
-    _hf_cache_snapshot_repo_id,
     _is_sd_cpp_companion_repo,
-    _is_trailing_split_shard,
-    _local_family_needles,
-    _local_is_diffusers,
-    _local_model_can_chat,
     _local_model_task,
     _repo_gguf_task,
     _repo_has_pipeline_index,
     _repo_is_diffusers,
-    _task_classify_sort_key,
 )
+
+# Compatibility aliases. These helpers moved to catalog_classification, but callers and
+# tests still resolve them from routes.models, so the names stay bound here. Assigned
+# through the module rather than re-imported: an import this module never loads reads to
+# scripts/verify_import_hoist.py as a botched hoist, and that check gates Source lint.
+_AMBIGUOUS_DIFFUSION_GGUF_ARCHS = _catalog_classification._AMBIGUOUS_DIFFUSION_GGUF_ARCHS
+_DIFFUSION_GGUF_ARCHS = _catalog_classification._DIFFUSION_GGUF_ARCHS
+_TASK_CLASSIFY_WALK_SECONDS = _catalog_classification._TASK_CLASSIFY_WALK_SECONDS
+_UNSUPPORTED_DIFFUSION_GGUF_ARCHS = _catalog_classification._UNSUPPORTED_DIFFUSION_GGUF_ARCHS
+_UNSUPPORTED_DIFFUSION_TASK = _catalog_classification._UNSUPPORTED_DIFFUSION_TASK
+_VIDEO_GEN_TASK = _catalog_classification._VIDEO_GEN_TASK
+_VIDEO_GGUF_ARCHS = _catalog_classification._VIDEO_GGUF_ARCHS
+_arch_to_task = _catalog_classification._arch_to_task
+_gguf_architecture = _catalog_classification._gguf_architecture
+_gguf_folder_task = _catalog_classification._gguf_folder_task
+_hf_cache_snapshot_repo_id = _catalog_classification._hf_cache_snapshot_repo_id
+_is_trailing_split_shard = _catalog_classification._is_trailing_split_shard
+_local_family_needles = _catalog_classification._local_family_needles
+_local_is_diffusers = _catalog_classification._local_is_diffusers
+_local_model_can_chat = _catalog_classification._local_model_can_chat
+_task_classify_sort_key = _catalog_classification._task_classify_sort_key
 from utils.utils import canonical_model_repo_id, log_and_http_error
 
 import re as _re

@@ -136,8 +136,21 @@ def exported_entries() -> List[ModelEntry]:
             continue
         if export_type == "gguf" and _gguf_export_task(path, name, base) in NON_CHAT_TASKS:
             continue
-        load_id = _preferred_complete_gguf(path) if export_type == "gguf" else None
-        entries.append(ModelEntry("Exports", name, export_type, load_id or path))
+        if export_type == "gguf":
+            # No complete quant means every candidate is zero-byte or short a shard, and the
+            # old fallback to `path` offered exactly that; it survives resolve_model_config()
+            # and only fails at load time. Drop it only once the payload is positively
+            # unloadable: _preferred_complete_gguf swallows every exception, so a bare falsy
+            # result also covers "could not tell", and hiding a real export on a transient
+            # read is worse than listing it.
+            load_id = _preferred_complete_gguf(path)
+            if not load_id and not _local_dir_holds_a_payload(Path(path)):
+                continue
+        else:
+            load_id = None
+            if _local_payload_is_torn(Path(path)):
+                continue
+        entries.append(ModelEntry("Fine-tunes", name, export_type, load_id or path))
     return entries
 
 
@@ -155,6 +168,66 @@ def _quant_labels(repo_id: str, repo_path: str) -> str:
         if label not in quants:
             quants.append(label)
     return ", ".join(quants)
+
+
+def _local_payload_is_torn(path: Path) -> bool:
+    """Whether *path*'s own contents prove it cannot serve a load.
+
+    Named apart from ``routes.models._snapshot_payload_is_torn``, which shares the rule but
+    not the error policy: this one fails open, because ``_safe`` turns a raise here into an
+    empty source rather than one dropped row.
+
+    The shared rule the cache rows already use: a zero-byte weight, or a shard set naming a
+    total it does not have, is not a payload. Fails open so an unreadable dir is not hidden.
+    """
+    try:
+        from hub.utils.inventory_scan import _snapshot_cannot_serve_its_payload
+    except ImportError:
+        return False
+    try:
+        return bool(_snapshot_cannot_serve_its_payload(path))
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _gguf_file_is_loadable(path: Path) -> bool:
+    """Whether a single-file GGUF can be read: non-empty, and whole if it names a shard total.
+
+    ``_snapshot_cannot_serve_its_payload`` judges a directory; a scan row can name the ``.gguf``
+    itself, and its folder may hold unrelated quants, so the file is judged on its own family.
+    """
+    try:
+        if path.stat().st_size <= 0:
+            return False
+    except OSError:
+        return True
+    try:
+        from hub.utils.inventory_scan import _GGUF_SPLIT_RE
+    except ImportError:
+        return True
+    split = _GGUF_SPLIT_RE.search(path.name)
+    if split is None:
+        return True
+    total = int(split.group(2))
+    prefix = path.name[: split.start()]
+    if int(split.group(1)) <= 0 or total <= 0 or int(split.group(1)) > total:
+        return False
+    present = set()
+    try:
+        for sibling in path.parent.iterdir():
+            match = _GGUF_SPLIT_RE.search(sibling.name)
+            if (
+                match is None
+                or sibling.name[: match.start()] != prefix
+                or int(match.group(2)) != total
+                or not sibling.is_file()
+                or sibling.stat().st_size <= 0
+            ):
+                continue
+            present.add(int(match.group(1)))
+    except OSError:
+        return True
+    return present >= set(range(1, total + 1))
 
 
 def _preferred_complete_gguf(path: str) -> Optional[str]:
@@ -249,10 +322,12 @@ def _local_dir_holds_a_payload(path: Path) -> bool:
     is a file, not a dir.
     """
     try:
-        if not path.is_dir():
-            return True
+        is_dir = path.is_dir()
     except OSError:
         return True
+    if not is_dir:
+        # A scan row can name the .gguf file itself; anything else still fails open.
+        return _gguf_file_is_loadable(path) if path.suffix.lower() == ".gguf" else True
     from hub.services.models.common import (
         _is_diffusers_pipeline_dir,
         _is_main_gguf_filename,
@@ -260,13 +335,18 @@ def _local_dir_holds_a_payload(path: Path) -> bool:
     )
     from utils.paths.path_utils import is_appledouble_metadata
 
+    # A pipeline keeps its weights in component subdirs, so the torn test below, which reads
+    # the root, would call every pipeline unserviceable.
+    if _is_diffusers_pipeline_dir(path):
+        return True
+    if _local_payload_is_torn(path):
+        return False
     return (
         any(
             _is_main_gguf_filename(file.name) and not is_appledouble_metadata(file)
             for file in path.glob("*.gguf")
         )
         or _is_model_directory(path)
-        or _is_diffusers_pipeline_dir(path)
     )
 
 
@@ -353,7 +433,7 @@ def local_folder_entries() -> List[ModelEntry]:
             continue
         entries.append(
             ModelEntry(
-                "Local folders",
+                "Downloaded",
                 model.display_name,
                 "gguf" if is_gguf else "",
                 model.load_id or model.id,
@@ -370,12 +450,15 @@ def _safe(fn) -> List[ModelEntry]:
 
 
 def _shorten_names(entries: List[ModelEntry]) -> None:
-    repos = [e for e in entries if "/" in e.name]
+    # Counted over EVERY visible label, not just the prefixed ones: a fine-tune already named
+    # Qwen3-0.6B is what an unsloth/Qwen3-0.6B row would collide with once shortened.
     counts = {}
-    for entry in repos:
+    for entry in entries:
         short = entry.name.split("/")[-1].lower()
         counts[short] = counts.get(short, 0) + 1
-    for entry in repos:
+    for entry in entries:
+        if "/" not in entry.name:
+            continue
         short = entry.name.split("/")[-1]
         if counts[short.lower()] == 1:
             entry.name = short

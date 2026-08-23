@@ -660,8 +660,8 @@ def test_catalog_local_folder_entries_keep_safetensors_and_use_id(monkeypatch):
 
     entries = cat.local_folder_entries()
     assert [(e.group, e.name, e.detail, e.model) for e in entries] == [
-        ("Local folders", "Qwen3-0.6B", "", "/models/Qwen3-0.6B"),
-        ("Local folders", "Tiny", "gguf", "/m/Tiny.gguf"),
+        ("Downloaded", "Qwen3-0.6B", "", "/models/Qwen3-0.6B"),
+        ("Downloaded", "Tiny", "gguf", "/m/Tiny.gguf"),
     ]
 
 
@@ -1842,7 +1842,11 @@ def test_catalog_local_folder_entries_require_loadable_payloads(monkeypatch, tmp
         d = tmp_path / name
         d.mkdir()
         for file in files:
-            (d / file).write_bytes(b"\0" * 8)
+            # A config has to parse: an unreadable one is its own reason not to load.
+            if file.endswith("config.json"):
+                (d / file).write_text(json.dumps({"model_type": "qwen3"}))
+            else:
+                (d / file).write_bytes(b"\0" * 8)
         return d
 
     config_only = _dir("ConfigOnly", ["config.json"])
@@ -2026,3 +2030,137 @@ def test_catalog_adapter_classifies_the_exact_cached_base_revision(monkeypatch, 
             "base-commit",
         )
     ]
+
+
+def _catalog_local_row(path, name = None, source = "models_dir", model_format = None):
+    return types.SimpleNamespace(
+        id = str(path),
+        display_name = name or Path(path).name,
+        path = str(path),
+        source = source,
+        model_format = model_format,
+        partial = False,
+        load_id = None,
+    )
+
+
+def test_catalog_rejects_incomplete_local_and_exported_payloads(monkeypatch, tmp_path):
+    """A zero-byte weight and a shard set short of its own total are not payloads.
+
+    Both survive resolve_model_config() and fail only once the loader opens the file, so the
+    picker has to reject them here rather than offer a model that cannot load.
+    """
+    from unsloth_cli._inference import ensure_studio_backend_path
+    from unsloth_cli import _model_catalog as cat
+
+    ensure_studio_backend_path()
+    config = json.dumps({"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]})
+
+    def _dir(name, files):
+        d = tmp_path / name
+        d.mkdir(parents = True)
+        for filename, payload in files.items():
+            (d / filename).write_bytes(payload)
+        return d
+
+    zero_gguf = _dir("zero_gguf", {"m-Q4_K_M.gguf": b""})
+    lone_shard = _dir("lone_shard", {"s-Q4_K_M-00001-of-00003.gguf": b"\0" * 64})
+    zero_export = _dir("zero_export", {"config.json": config.encode(), "model.safetensors": b""})
+    good_gguf = _dir("good_gguf", {"m-Q4_K_M.gguf": b"\0" * 64})
+    good_export = _dir(
+        "good_export", {"config.json": config.encode(), "model.safetensors": b"\0" * 64}
+    )
+    whole_shards = _dir(
+        "whole_shards",
+        {
+            "s-Q4_K_M-00001-of-00002.gguf": b"\0" * 64,
+            "s-Q4_K_M-00002-of-00002.gguf": b"\0" * 64,
+        },
+    )
+
+    # Directories: torn payloads out, every loadable shape kept.
+    assert cat._local_dir_holds_a_payload(zero_gguf) is False
+    assert cat._local_dir_holds_a_payload(lone_shard) is False
+    assert cat._local_dir_holds_a_payload(zero_export) is False
+    assert cat._local_dir_holds_a_payload(good_gguf) is True
+    assert cat._local_dir_holds_a_payload(good_export) is True
+    assert cat._local_dir_holds_a_payload(whole_shards) is True
+
+    # A scan row can name the .gguf file itself, which is judged on its own shard family.
+    assert cat._local_dir_holds_a_payload(zero_gguf / "m-Q4_K_M.gguf") is False
+    assert cat._local_dir_holds_a_payload(lone_shard / "s-Q4_K_M-00001-of-00003.gguf") is False
+    assert cat._local_dir_holds_a_payload(good_gguf / "m-Q4_K_M.gguf") is True
+    assert (
+        cat._local_dir_holds_a_payload(whole_shards / "s-Q4_K_M-00001-of-00002.gguf") is True
+    )
+
+    exports = [
+        ("zero-gguf", str(zero_gguf / "m-Q4_K_M.gguf"), "gguf", None),
+        ("lone-shard", str(lone_shard / "s-Q4_K_M-00001-of-00003.gguf"), "gguf", None),
+        ("zero-export", str(zero_export), "merged", None),
+        ("good-gguf", str(good_gguf / "m-Q4_K_M.gguf"), "gguf", None),
+        ("good-export", str(good_export), "merged", None),
+    ]
+    fake_models = types.ModuleType("utils.models")
+    fake_models.scan_exported_models = lambda: exports
+    monkeypatch.setitem(sys.modules, "utils.models", fake_models)
+
+    assert [e.name for e in cat.exported_entries()] == ["good-gguf", "good-export"]
+
+
+def test_catalog_uses_only_the_two_specified_groups(monkeypatch, tmp_path):
+    """The picker is specified as Fine-tunes and Downloaded; exports and scanned local
+    folders belong inside those, not in two extra headings of their own."""
+    from unsloth_cli._inference import ensure_studio_backend_path
+    from unsloth_cli import _model_catalog as cat
+
+    ensure_studio_backend_path()
+    config = json.dumps({"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]})
+    export = tmp_path / "export"
+    export.mkdir()
+    (export / "config.json").write_text(config)
+    (export / "model.safetensors").write_bytes(b"\0" * 64)
+    local = tmp_path / "local"
+    local.mkdir()
+    (local / "config.json").write_text(config)
+    (local / "model.safetensors").write_bytes(b"\0" * 64)
+
+    fake_models = types.ModuleType("utils.models")
+    fake_models.scan_exported_models = lambda: [("an-export", str(export), "merged", None)]
+    fake_models.scan_trained_models = lambda: []
+    monkeypatch.setitem(sys.modules, "utils.models", fake_models)
+    monkeypatch.setattr(cat, "_local_catalog_rows", lambda: [_catalog_local_row(local)])
+    monkeypatch.setattr(cat, "_local_model_task", lambda model: None)
+    monkeypatch.setattr(cat, "_local_model_can_chat", lambda model: None)
+    monkeypatch.setattr(cat, "_local_is_a_diffusers_pipeline", lambda model: False)
+
+    assert {e.group for e in cat.exported_entries()} == {"Fine-tunes"}
+    assert {e.group for e in cat.local_folder_entries()} == {"Downloaded"}
+
+    monkeypatch.setattr(cat, "cached_entries", lambda: [])
+    monkeypatch.setattr(cat, "trained_entries", lambda: [])
+    headings = []
+    for entry in cat.list_chat_models():
+        if not headings or headings[-1] != entry.group:
+            headings.append(entry.group)
+    assert headings == ["Fine-tunes", "Downloaded"]
+
+
+def test_catalog_keeps_the_org_prefix_when_a_plain_name_collides(monkeypatch):
+    """A fine-tune is already a bare name, so shortening a repo down to the same string
+    produces two identical rows; the collision count has to see both."""
+    from unsloth_cli import _model_catalog as cat
+
+    trained = [cat.ModelEntry("Fine-tunes", "Qwen3-0.6B", "", "/outputs/run-1")]
+    cached = [
+        cat.ModelEntry("Downloaded", "unsloth/Qwen3-0.6B", "", "unsloth/Qwen3-0.6B"),
+        cat.ModelEntry("Downloaded", "unsloth/Llama-3.2-1B", "", "unsloth/Llama-3.2-1B"),
+    ]
+    monkeypatch.setattr(cat, "trained_entries", lambda: trained)
+    monkeypatch.setattr(cat, "cached_entries", lambda: cached)
+    for name in ("exported_entries", "local_folder_entries"):
+        monkeypatch.setattr(cat, name, lambda: [])
+
+    names = [e.name for e in cat.list_chat_models()]
+    assert names == ["Qwen3-0.6B", "unsloth/Qwen3-0.6B", "Llama-3.2-1B"]
+    assert len(names) == len(set(names))
