@@ -107,7 +107,10 @@ class _Trainer:
 
 
 def _request_config(
-    training_type: str, branch: str, selectors: dict, target_modules = None
+    training_type: str,
+    branch: str,
+    selectors: dict,
+    target_modules = None,
 ) -> dict:
     """Build the worker config the way /training/start does: through the request model, so
     an omitted field arrives as the request model's default rather than as a missing key."""
