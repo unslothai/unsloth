@@ -207,6 +207,7 @@ export {
   isPastedTextFile,
   isPlainPasteChord,
   pasteLongTextAsFile,
+  plainPasteStillCounts,
   pastedTextContentBytes,
   pastedTextContentPreview,
   pastedTextOf,

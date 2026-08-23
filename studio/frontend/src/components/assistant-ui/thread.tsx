@@ -62,6 +62,7 @@ import {
   extractYoutubeVideoId,
   pasteLongTextAsFile,
   isPlainPasteChord,
+  plainPasteStillCounts,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
   YoutubeTranscriptPrompt,
@@ -2339,12 +2340,15 @@ const Composer: FC<{
   const [youtubeLink, setYoutubeLink] = useState<string | null>(null);
   // Paste without formatting asks for the clipboard in the field, so the paste
   // it makes stays inline however long it is. A paste event carries no
-  // modifiers, so the chord is read from the keydown before it, and every
-  // other keydown clears it.
-  const plainPasteRef = useRef(false);
+  // modifiers, so the chord is read from the keydown before it: every other
+  // keydown clears it, and so does time, since a chord that pasted nothing
+  // must not be inherited by the menu paste the user reaches for next.
+  const plainPasteAtRef = useRef(0);
   const notePlainPasteChord = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
-      plainPasteRef.current = isPlainPasteChord(event);
+      plainPasteAtRef.current = isPlainPasteChord(event)
+        ? performance.now()
+        : 0;
     },
     [],
   );
@@ -2352,8 +2356,11 @@ const Composer: FC<{
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
       // Read once and cleared here, so a paste with no chord before it, from
       // the menu or a script, is never taken for the plain one.
-      const plainPaste = plainPasteRef.current;
-      plainPasteRef.current = false;
+      const plainPaste = plainPasteStillCounts(
+        plainPasteAtRef.current,
+        performance.now(),
+      );
+      plainPasteAtRef.current = 0;
       const pastedText = event.clipboardData?.getData("text/plain") ?? "";
       if (extractYoutubeVideoId(pastedText)) {
         setYoutubeLink(pastedText.trim());

@@ -95,6 +95,21 @@ export function isPlainPasteChord(
   return (event.key ?? "").toLowerCase() === "v";
 }
 
+/**
+ * How long a plain-paste chord stands for the paste it asks for. The browser
+ * dispatches that paste while it is still handling the keydown, so the window
+ * only has to survive one task. It has to expire, though: on macOS ⇧⌘V is a
+ * web-app convention rather than a menu command, so it can be pressed and
+ * paste nothing, and the Edit-menu paste the user reaches for next arrives
+ * with no keydown of its own to clear the chord.
+ */
+export const PLAIN_PASTE_GESTURE_MS = 1000;
+
+/** True when the paste being handled is the one that chord asked for. */
+export function plainPasteStillCounts(chordAt: number, now: number): boolean {
+  return chordAt > 0 && now - chordAt < PLAIN_PASTE_GESTURE_MS;
+}
+
 // Identity separates a pasted blob from a .txt the user attached. A sent
 // message keeps no File, so the wrapper below carries it over instead.
 const pastedTextFiles = new WeakSet<File>();
