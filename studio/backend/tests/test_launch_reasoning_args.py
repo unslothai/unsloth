@@ -130,9 +130,7 @@ def _backend(style = _REASONING_STYLE, supports_preserve = False):
     ((True, _REASONING_OFF), (False, _REASONING_ON)),
 )
 def test_modern_launch_honors_reasoning_env_override(
-    monkeypatch,
-    thinking_default,
-    reasoning_override,
+    monkeypatch, thinking_default, reasoning_override
 ):
     monkeypatch.setenv(_LLAMA_REASONING_ENV, reasoning_override)
     command = [_SERVER_COMMAND]
