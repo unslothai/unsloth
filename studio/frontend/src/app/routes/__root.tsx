@@ -248,8 +248,11 @@ function RootLayout() {
   );
   // Freeze the last /chat search and latch "mounted" via render-phase setState
   // (React's "adjust state during render" pattern), avoiding effects/refs.
-  const [frozenChatSearch, setFrozenChatSearch] =
-    useState<ChatSearch>(liveChatSearch);
+  // Empty until /chat is visited: location.search is the raw URL's, not the
+  // matched route's, so seeding it would let another route's ?project= stand
+  // in for a chat the user has never opened. The adjustment below fills it on
+  // the first /chat render, so landing straight on /chat loses nothing.
+  const [frozenChatSearch, setFrozenChatSearch] = useState<ChatSearch>({});
   const [chatMounted, setChatMounted] = useState(isChatRoute);
   if (isChatRoute && frozenChatSearch !== liveChatSearch) {
     setFrozenChatSearch(liveChatSearch);

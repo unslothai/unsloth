@@ -820,6 +820,9 @@ test("switching back to Chat lands on the view the user left", async () => {
   assert.match(call, /enabled: !isAuthFlowRoute/);
   // The other workspaces keep the bare helper; only chat carries a search.
   assert.match(root, /useShortcut\("switchToImages", goTo\("\/images"\)/);
+  // location.search is the raw URL's, not the matched route's, so a seeded
+  // freeze would hand /images?project=x to the chord as a chat never opened.
+  assert.match(root, /useState<ChatSearch>\(\{\}\)/);
 });
 
 test("opening a chat by chord drops the selection, as clicking a row does", async () => {
