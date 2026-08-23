@@ -26,9 +26,12 @@ import textwrap
 import urllib.request
 from pathlib import Path
 
-_BACKEND_DIR = Path(__file__).resolve().parent / "backend"
-if str(_BACKEND_DIR) not in sys.path:
-    sys.path.insert(1, str(_BACKEND_DIR))
+_STUDIO_DIR = Path(__file__).resolve().parent
+_BACKEND_DIR = _STUDIO_DIR / "backend"
+for _dir in (_BACKEND_DIR, _STUDIO_DIR):
+    # -P / PYTHONSAFEPATH drops the script directory, so do not rely on sys.path[0].
+    if str(_dir) not in sys.path:
+        sys.path.insert(1, str(_dir))
 
 # setup.sh/setup.ps1 invoke this by path, so its directory is sys.path[0].
 import install_manifest  # noqa: E402
@@ -1903,9 +1906,13 @@ def _clear_confirmed_hsa_spoof(physical_gfx: str) -> None:
     )
 
 
+# ROCr filters first and renumbers, then HIP (CUDA_VISIBLE_DEVICES is its alias) filters.
+_VISIBLE_DEVICE_MASKS = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+
+
 def _first_set_visible_mask() -> "str | None":
     """Name of the visible-device variable in force, first-set-wins, or None."""
-    for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+    for _env in _VISIBLE_DEVICE_MASKS:
         if os.environ.get(_env) is not None:
             return _env
     return None
@@ -2845,6 +2852,8 @@ def _ensure_cpu_torch() -> None:
 def _amd_torch_needs_dependency_pass() -> bool:
     """Return True when setup must run the dependency pass to repair non-ROCm torch.
 
+    Scope is the wheel family, not the ROCm family: a torch carrying any ROCm marker
+    keeps the fast path even when the repair would reroute it to another index.
     Fail closed when torch or host classification is uncertain. This probe never installs.
     """
     if NO_TORCH or not IS_LINUX:
@@ -2861,9 +2870,13 @@ def _amd_torch_needs_dependency_pass() -> bool:
             return False
         if _has_usable_nvidia_gpu():
             return False
-        # An all-hidden mask provides no target to classify.
-        _mask = _first_set_visible_mask()
-        if _mask is not None and (os.environ.get(_mask) or "").strip() in ("", "-1"):
+        # An all-hidden mask provides no target to classify. ROCr filters before HIP and
+        # the two stack, so any hidden layer hides the host, not just the first set one.
+        if any(
+            (os.environ.get(_mask) or "").strip() in ("", "-1")
+            for _mask in _VISIBLE_DEVICE_MASKS
+            if _mask in os.environ
+        ):
             return False
         # Match the repair's two host signals: a visible GPU or an inferred/named arch.
         _inferred_gfx = _infer_linux_amd_gfx_arch()
@@ -4831,4 +4844,8 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--amd-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _amd_torch_needs_dependency_pass() else 1)
+    if any(_arg.startswith("-") for _arg in sys.argv[1:]):
+        # Never let a malformed probe call fall through into a multi-gigabyte install.
+        _safe_print(f"Unknown argument: {' '.join(sys.argv[1:])}")
+        sys.exit(2)
     sys.exit(install_python_stack())

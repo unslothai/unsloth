@@ -1966,6 +1966,7 @@ if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -x "$VENV_DIR/bin/python" ]; then
     fi
     if [ "$_setup_amd_torch_stale" = true ]; then
         substep "installed PyTorch is not a ROCm build on this AMD host -- forcing dependency pass to repair..."
+        substep "   (set UNSLOTH_TORCH_BACKEND=cpu to keep a deliberate CPU install)"
         _SKIP_PYTHON_DEPS=false
     fi
 fi

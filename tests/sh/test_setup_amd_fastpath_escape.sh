@@ -61,10 +61,19 @@ assert_eq "exit 0 forces the dependency pass" "false" "$(run_escape 0)"
 assert_eq "exit 1 keeps the fast path" "true" "$(run_escape 1)"
 
 echo "=== every probe failure keeps the fast path ==="
-# Probe errors, including timeout status 124, keep the fast path.
-for rc in 2 124 125 126 127 137; do
+# Probe errors keep the fast path, including the deadline: 124 on GNU, 143 on BusyBox.
+for rc in 2 124 125 126 127 137 143; do
     assert_eq "exit $rc keeps the fast path" "true" "$(run_escape "$rc")"
 done
+
+echo "=== the fallback branch, on hosts without timeout ==="
+# PATH holds only the stub bin, so `command -v timeout` fails and the elif runs.
+run_no_timeout() { (PATH="$VENV_DIR/bin"; run_escape "$1"); }
+assert_eq "exit 0 forces the pass without timeout" "false" "$(run_no_timeout 0)"
+assert_eq "exit 1 keeps the fast path without timeout" "true" "$(run_no_timeout 1)"
+: > "$PROBE_LOG"
+run_no_timeout 0 >/dev/null
+assert_eq "and still probes exactly once" "1" "$(wc -l < "$PROBE_LOG" | tr -d ' ')"
 
 echo "=== the block does nothing it was not asked to ==="
 assert_eq "a pass already forced is left forced" "false" "$(run_escape 1 false)"

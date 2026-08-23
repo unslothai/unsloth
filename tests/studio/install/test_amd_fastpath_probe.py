@@ -20,6 +20,7 @@ _ROUTING_ENV = (
     "UNSLOTH_TORCH_INDEX_FAMILY",
     "UNSLOTH_TORCH_BACKEND",
     "UNSLOTH_NO_TORCH",
+    "UNSLOTH_ROCM_GFX_ARCH",
     "HIP_VISIBLE_DEVICES",
     "ROCR_VISIBLE_DEVICES",
     "CUDA_VISIBLE_DEVICES",
@@ -106,7 +107,13 @@ def test_a_real_device_selection_is_not_a_hidden_host(monkeypatch):
 
 @pytest.mark.parametrize(
     "torch",
-    [("2.9.0+rocm6.4", "6.4"), ("2.9.0+rocm6.4", ""), ("2.11.0+rocm7.13.0", "7.13")],
+    [
+        ("2.9.0+rocm6.4", "6.4"),
+        ("2.9.0+rocm6.4", ""),
+        ("2.11.0+rocm7.13.0", "7.13"),
+        # AMD and source builds carry torch.version.hip with no +rocm local version.
+        ("2.5.0a0+git1234567", "6.2.41134"),
+    ],
 )
 def test_a_rocm_wheel_keeps_the_fast_path(monkeypatch, torch):
     _host(monkeypatch, torch = torch)
@@ -149,8 +156,48 @@ def test_a_mask_that_hides_every_device_keeps_the_fast_path(monkeypatch, mask, v
     assert _needs_pass() is False
 
 
+@pytest.mark.parametrize(
+    "env",
+    [
+        # ROCr hides everything, then HIP names a device out of the empty set.
+        {"HIP_VISIBLE_DEVICES": "0", "ROCR_VISIBLE_DEVICES": "-1"},
+        {"HIP_VISIBLE_DEVICES": "0", "ROCR_VISIBLE_DEVICES": ""},
+        {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": ""},
+    ],
+)
+def test_stacked_masks_with_a_hidden_layer_keep_the_fast_path(monkeypatch, env):
+    _host(monkeypatch, torch = ("2.9.0+cpu", ""), env = env)
+    assert _needs_pass() is False
+
+
+def test_stacked_masks_that_all_select_are_not_a_hidden_host(monkeypatch):
+    _host(
+        monkeypatch,
+        torch = ("2.9.0+cpu", ""),
+        env = {"HIP_VISIBLE_DEVICES": "0", "ROCR_VISIBLE_DEVICES": "0"},
+    )
+    assert _needs_pass() is True
+
+
 def test_an_nvidia_host_keeps_the_fast_path(monkeypatch):
     _host(monkeypatch, torch = ("2.9.0+cpu", ""), nvidia = True)
+    assert _needs_pass() is False
+
+
+def test_an_nvidia_host_with_an_inferable_amd_arch_keeps_the_fast_path(monkeypatch):
+    """_infer_linux_amd_gfx_arch never checks NVIDIA, so this gate carries the host.
+
+    _ensure_rocm_torch declines on its own NVIDIA gate, so without this one the
+    preflight would force a pass the repair refuses.
+    """
+    _host(
+        monkeypatch,
+        torch = ("2.9.0+cpu", ""),
+        nvidia = True,
+        rocm_gpu = False,
+        gfx = (),
+        inferred = "gfx1151",
+    )
     assert _needs_pass() is False
 
 
@@ -195,21 +242,77 @@ def test_a_host_without_rocm_wheels_keeps_the_fast_path(monkeypatch, kwargs):
 # CLI
 
 
-@pytest.mark.parametrize("env_name", ["UNSLOTH_NO_TORCH", "UNSLOTH_TORCH_BACKEND"])
-def test_the_cli_reports_keep_the_fast_path_as_a_non_zero_exit(env_name):
-    env = {"UNSLOTH_NO_TORCH": "1", "UNSLOTH_TORCH_BACKEND": "cpu"}
-    result = subprocess.run(
-        [sys.executable, str(_STACK_PATH), "--amd-torch-needs-dependency-pass"],
-        env = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", env_name: env[env_name]},
+def _run_cli(*args, env = None, safe_path = False):
+    child = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", **(env or {})}
+    if safe_path:
+        child["PYTHONSAFEPATH"] = "1"
+    return subprocess.run(
+        [sys.executable, str(_STACK_PATH), *args],
+        env = child,
         stdout = subprocess.PIPE,
         stderr = subprocess.PIPE,
         timeout = 180,
     )
-    assert result.returncode == 1, result.stderr.decode(errors = "replace")
+
+
+@pytest.mark.parametrize("env_name", ["UNSLOTH_NO_TORCH", "UNSLOTH_TORCH_BACKEND"])
+@pytest.mark.parametrize("safe_path", [False, True])
+def test_the_cli_reports_keep_the_fast_path_as_a_non_zero_exit(env_name, safe_path):
+    env = {"UNSLOTH_NO_TORCH": "1", "UNSLOTH_TORCH_BACKEND": "cpu"}
+    result = _run_cli(
+        "--amd-torch-needs-dependency-pass",
+        env = {env_name: env[env_name]},
+        safe_path = safe_path,
+    )
+    stderr = result.stderr.decode(errors = "replace")
+    # An import failure also exits 1, so exit 1 alone does not prove the gate ran.
+    assert not stderr, stderr
+    assert result.returncode == 1, stderr
+
+
+@pytest.mark.parametrize(
+    "version,hip,expected",
+    [("2.9.0+cpu", None, 0), ("2.9.0+rocm6.4", "6.4.43483", 1)],
+)
+def test_the_cli_answers_end_to_end_over_a_stub_torch(tmp_path, version, hip, expected):
+    """The exit-0 side is the only one that moves setup.sh, so drive it for real.
+
+    A ROCm pin skips the hardware gates, leaving the wheel family as the only input.
+    """
+    (tmp_path / "torch.py").write_text(
+        "import types\n"
+        f"__version__ = {version!r}\n"
+        f"version = types.SimpleNamespace(hip = {hip!r}, cuda = None)\n"
+    )
+    result = _run_cli(
+        "--amd-torch-needs-dependency-pass",
+        env = {
+            "UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/rocm6.4",
+            "PYTHONPATH": str(tmp_path),
+        },
+    )
+    stderr = result.stderr.decode(errors = "replace")
+    assert not stderr, stderr
+    assert result.returncode == expected, stderr
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--amd-torch-needs-dependency-pass", "--amd-torch-needs-dependency-pass"],
+        ["--amd-torch-needs-dependency-passs"],
+        ["--amd-torch-needs-dependency-pass", "extra"],
+    ],
+)
+def test_a_malformed_probe_call_never_falls_through_to_the_installer(argv):
+    result = _run_cli(*argv)
+    assert result.returncode == 2, result.stdout.decode(errors = "replace")
 
 
 # Repair parity
-# A True preflight must make the repair install. False may be deliberately conservative.
+# Both directions are asserted, so every row here must be one the two sides agree on.
+# The documented conservative divergences (unreadable torch, hidden mask, mixed arch,
+# a ROCm wheel of the wrong family) are covered above and do not belong in this matrix.
 
 
 def _repair_installs(monkeypatch):
@@ -253,6 +356,19 @@ def _repair_installs(monkeypatch):
         (
             "an arch inferred from the CPU model with no runtime",
             dict(rocm_ver = None, inferred = "gfx1151", rocm_gpu = False, gfx = ()),
+            True,
+        ),
+        # The rescue only UNSLOTH_ROCM_GFX_ARCH performs: the runtime enumerates a GPU,
+        # so the row above's "no runtime" disjunct cannot carry it.
+        (
+            "UNSLOTH_ROCM_GFX_ARCH rescuing a visible GPU with an unreadable ROCm",
+            dict(rocm_ver = None, inferred = "gfx1151", gfx = ("gfx1151",)),
+            True,
+        ),
+        # The generic download.pytorch.org arm, the one _generic_pytorch_rocm_tag feeds.
+        (
+            "a non-Strix GPU on a ROCm with a published wheel family",
+            dict(rocm_ver = (6, 4), inferred = None, gfx = ("gfx1030",)),
             True,
         ),
         # The repair prints "skipping torch reinstall" and returns for all three.
