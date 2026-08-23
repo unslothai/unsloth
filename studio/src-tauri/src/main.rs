@@ -2769,4 +2769,51 @@ mod tests {
         apply_renderer_activity(&state, "Downloads", true);
         assert_eq!(renderer_activity(&state), (false, true));
     }
+
+    /// The three states the tray-toggle-server listener in use-tauri-backend.ts acts
+    /// on, plus the one the tray reports progress for.
+    #[test]
+    fn the_tray_toggle_names_the_action_a_click_would_take() {
+        assert_eq!(tray_toggle_label("running"), ("Stop Server", true));
+        assert_eq!(tray_toggle_label("stopped"), ("Start Server", true));
+        assert_eq!(tray_toggle_label("error"), ("Start Server", true));
+        assert_eq!(tray_toggle_label("starting"), ("Starting\u{2026}", false));
+    }
+
+    /// Every remaining BackendStatus the hook can report. The listener does nothing for
+    /// any of them, so the item is greyed rather than offering a click that would be a
+    /// silent no-op. Keep this list in step with the union in use-tauri-backend.ts.
+    #[test]
+    fn a_status_the_tray_cannot_act_on_greys_the_toggle() {
+        for status in [
+            "checking",
+            "not-installed",
+            "installing",
+            "install-error",
+            "needs-elevation",
+            "repairing",
+            "repair-error",
+        ] {
+            assert_eq!(
+                tray_toggle_label(status),
+                ("Start Server", false),
+                "{status} offered a click the renderer would drop"
+            );
+        }
+    }
+
+    /// The status arrives as whatever string the webview sent, so a frontend bundle
+    /// older or newer than this binary can reach the command with something that is not
+    /// a status at all. Match the whole string: a prefix or a case fold would let
+    /// "run" read as an offer to stop a server that is not running.
+    #[test]
+    fn an_unrecognised_status_greys_the_toggle_rather_than_guessing() {
+        for status in ["", " ", "Running", "RUNNING", "running ", "run", "{}"] {
+            assert_eq!(
+                tray_toggle_label(status),
+                ("Start Server", false),
+                "{status:?} was read as a known status"
+            );
+        }
+    }
 }
