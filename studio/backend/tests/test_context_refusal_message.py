@@ -79,7 +79,7 @@ def test_long_history_keeps_the_generic_advice():
 
 
 def test_single_oversized_turn_says_shortening_will_not_help():
-    context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800))
+    context_refusal.record_fit(_refusal(irreducible = 5600, latest_turn = 5400))
     message = _friendly_error(ValueError(_SERVER_ERROR))
     assert "The message just sent does not fit on its own" in message
     assert "shortening the conversation will not help" in message
@@ -87,7 +87,7 @@ def test_single_oversized_turn_says_shortening_will_not_help():
 
 
 def test_oversized_tool_result_names_the_tool():
-    context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800, role = "tool"))
+    context_refusal.record_fit(_refusal(irreducible = 5600, latest_turn = 5400, role = "tool"))
     message = _friendly_error(ValueError(_SERVER_ERROR))
     assert "A tool returned more than this context window can hold" in message
     assert "smaller slice" in message
@@ -96,14 +96,14 @@ def test_oversized_tool_result_names_the_tool():
 
 
 def test_function_role_is_treated_as_a_tool_result():
-    context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800, role = "function"))
+    context_refusal.record_fit(_refusal(irreducible = 5600, latest_turn = 5400, role = "function"))
     assert "A tool returned" in _friendly_error(ValueError(_SERVER_ERROR))
 
 
 def test_an_oversized_assistant_prefill_does_not_ask_the_user_to_split_it():
     # Reachable through auto-continue, which resends the truncated reply as the final
     # assistant message. The user did not write it and cannot send it in pieces.
-    context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800, role = "assistant"))
+    context_refusal.record_fit(_refusal(irreducible = 5600, latest_turn = 5400, role = "assistant"))
     message = _friendly_error(ValueError(_SERVER_ERROR))
     assert "The reply being continued is already too long for this window" in message
     assert "start a new reply" in message
@@ -114,7 +114,7 @@ def test_an_oversized_assistant_prefill_does_not_ask_the_user_to_split_it():
 def test_oversized_instructions_point_at_the_system_prompt(role):
     # System and developer turns survive eviction, so splitting one across messages
     # preserves the total and resolves nothing.
-    context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800, role = role))
+    context_refusal.record_fit(_refusal(irreducible = 5600, latest_turn = 5400, role = role))
     message = _friendly_error(ValueError(_SERVER_ERROR))
     assert "The system instructions do not fit on their own" in message
     assert "shorten the system prompt" in message
@@ -131,7 +131,7 @@ def test_a_dominating_assistant_prefill_hedges_the_same_way():
 @pytest.mark.parametrize("role", ["", "moderator"])
 def test_an_unnameable_role_falls_back_to_the_generic_advice(role):
     # Better to give advice that is merely unspecific than advice aimed at the wrong turn.
-    context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800, role = role))
+    context_refusal.record_fit(_refusal(irreducible = 5600, latest_turn = 5400, role = role))
     assert "shorten the conversation" in _friendly_error(ValueError(_SERVER_ERROR))
 
 
@@ -143,6 +143,7 @@ def test_every_wording_keeps_the_counts_and_the_client_markers():
         _refusal(irreducible = 5000, latest_turn = 300),
         _refusal(irreducible = 5000, latest_turn = 4800),
         _refusal(irreducible = 5000, latest_turn = 4800, role = "tool"),
+        _refusal(irreducible = 5600, latest_turn = 5400, role = "tool"),
     ):
         context_refusal.clear()
         if refusal is not None:
@@ -163,12 +164,15 @@ def test_every_wording_keeps_the_counts_and_the_client_markers():
         # Below two thirds of the irreducible prompt the older turns and the system
         # prompt are a real share of the problem, so the generic advice still applies.
         (3379, "shorten the conversation"),
-        # Over that share but inside the 4096-token prompt budget: the turn is the bulk
-        # of the prompt and would still have fit by itself, so say only that.
+        # Over that share and inside the 5120-token window: the turn is the bulk of the
+        # prompt and would still have been served by itself, so say only that. Note 4097,
+        # over the 4096-token PROMPT BUDGET: the fit refuses it, llama-server would not.
         (3380, "Most of this prompt is the message just sent"),
-        (4096, "Most of this prompt is the message just sent"),
-        # Over the budget: it cannot be sent at all, whatever else is in the window.
-        (4097, "does not fit on its own"),
+        (4097, "Most of this prompt is the message just sent"),
+        (5119, "Most of this prompt is the message just sent"),
+        # At the window: llama-server refuses on the prompt size alone, so it cannot be
+        # sent at all, whatever else is in the window.
+        (5120, "does not fit on its own"),
     ],
 )
 def test_dominating_the_floor_is_not_the_same_as_not_fitting(latest_turn, expected):
@@ -193,15 +197,40 @@ def test_a_dominating_tool_result_hedges_the_same_way():
     assert "smaller slice" in message
 
 
-def test_the_window_stands_in_when_no_prompt_budget_was_recorded():
-    refusal = _refusal(irreducible = 5000, latest_turn = 4800)
-    refusal.pop("prompt_target")
-    context_refusal.record_fit(refusal)
-    # 4800 is over two thirds of the floor but under the 5120 window, so with no budget
-    # recorded the softer wording is the honest one.
-    assert "Most of this prompt is the message just sent" in _friendly_error(
-        ValueError(_SERVER_ERROR)
+@pytest.mark.parametrize("role", ["user", "tool", "assistant", "system"])
+def test_a_turn_the_window_could_have_held_is_never_called_too_big(role):
+    """The reply reservation is not part of what the window "can hold".
+
+    `prompt_budget` hands the prompt the window minus room for the reply (up to a
+    quarter of it), so a 5120-token window with Max Tokens 1024 refuses the prompt at
+    4096. But llama-server admits a prompt on its size alone -- `n_tokens >= n_ctx`,
+    nothing reserved -- so a 4800-token turn in that window IS servable by itself, and
+    every hard wording here would be a false claim about it.
+    """
+    context_refusal.record_fit(
+        _refusal(irreducible = 5000, latest_turn = 4800, role = role, prompt_target = 4096)
     )
+    message = _friendly_error(ValueError(_SERVER_ERROR))
+    assert "Most of this prompt is" in message
+    for false_claim in (
+        "does not fit on its own",
+        "do not fit on their own",
+        "more than this context window can hold",
+        "already too long for this window",
+    ):
+        assert false_claim not in message
+
+
+def test_a_recorded_prompt_budget_does_not_move_the_hard_boundary():
+    # Two fits of the same turn in the same window, differing only in what Max Tokens
+    # reserved. The window is what "can hold" means, so both read the same.
+    with_budget = _refusal(irreducible = 5000, latest_turn = 4800, prompt_target = 4096)
+    without_budget = dict(with_budget)
+    without_budget.pop("prompt_target")
+    context_refusal.record_fit(with_budget)
+    first = _friendly_error(ValueError(_SERVER_ERROR))
+    context_refusal.record_fit(without_budget)
+    assert _friendly_error(ValueError(_SERVER_ERROR)) == first
 
 
 def test_a_diagnosis_for_a_different_window_is_ignored():
@@ -212,7 +241,8 @@ def test_a_diagnosis_for_a_different_window_is_ignored():
 
 
 def test_a_diagnosis_with_no_window_recorded_is_still_usable():
-    refusal = _refusal(irreducible = 5000, latest_turn = 4800)
+    # The server's own number stands in for the window it did not record.
+    refusal = _refusal(irreducible = 5600, latest_turn = 5400)
     refusal.pop("context_length")
     context_refusal.record_fit(refusal)
     assert "does not fit on its own" in _friendly_error(ValueError(_SERVER_ERROR))
@@ -290,7 +320,7 @@ def test_the_recorded_diagnosis_is_a_copy():
 
 
 def _record_in_worker():
-    context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800))
+    context_refusal.record_fit(_refusal(irreducible = 5600, latest_turn = 5400))
     return "drained"
 
 
@@ -327,7 +357,7 @@ def test_a_slot_carries_the_refusal_back_through_task_and_thread():
 
     # Read inside the coroutine: `asyncio.run` gives it its own context copy, exactly as
     # a request task does, and that is the context `_friendly_error` will read from.
-    assert asyncio.run(_run())["latest_turn_tokens"] == 4800
+    assert asyncio.run(_run())["latest_turn_tokens"] == 5400
 
 
 def test_a_slot_carries_the_refusal_back_when_the_drain_raises():

@@ -105,8 +105,8 @@ def _blame_latest_turn(context_tokens: int):
     None also covers no diagnosis recorded, and a diagnosis describing a different
     window than the one just refused: both fall back to generic advice rather than guess.
 
-    `fits_alone` is False only when the turn's own rendered size is over the budget the
-    prompt had to fit in, which is the only evidence that it cannot be sent at all.
+    `fits_alone` is False only when the turn's own rendered size is at or over the
+    CONTEXT WINDOW, which is the only evidence that it cannot be sent at all.
     """
     refusal = latest_refusal()
     if not refusal:
@@ -121,13 +121,23 @@ def _blame_latest_turn(context_tokens: int):
         return None
     if latest_turn < _TURN_DOMINATES * irreducible:
         return None
-    # The prompt's real budget is the window minus the reply reserved out of it. Fall
-    # back to the window itself, which is the same test one reservation looser.
-    budget = _int(refusal.get("prompt_target")) or recorded_context or context_tokens
+    # The WINDOW, not the fit's `prompt_target`. The hard wordings below say the turn is
+    # more than this context window can hold, and `prompt_target` is the window minus the
+    # reply reserved out of it (`prompt_budget`, up to a quarter of the window), so a turn
+    # between the two is refused by the fit and would still have been SERVED on its own:
+    # llama-server admits a prompt on its size alone, with nothing reserved for the reply
+    # ("if (slot.task->n_tokens() >= slot.n_ctx)" in tools/server/server-context.cpp, the
+    # same check whose text this message rewrites), and stops the reply at the wall
+    # instead. Claiming the window cannot hold such a turn would be false, so that band
+    # keeps the softer "most of this prompt is ..." wording, which is true of it.
+    #
+    # `>=`, not `>`, to match that check: a turn exactly the size of the window is
+    # refused by llama-server too.
+    window = recorded_context or context_tokens
     # Not defaulted to "user": a role we cannot name is a turn we cannot give advice
     # about, and `describe_oversize` falls back to the generic wording for it.
     role = str(refusal.get("latest_turn_role") or "")
-    return role, not (budget and latest_turn > budget)
+    return role, not (window and latest_turn >= window)
 
 
 # Per role: what to call the oversized turn when it merely dominates the prompt, what to
