@@ -137,9 +137,11 @@ import {
   readIncompleteInfo,
   readTextThoughtSignature,
   claimAutoContinue,
+  forgetAutoContinue,
   recordAutoContinue,
   shouldAutoContinueMessage,
 } from "@/features/chat/utils/continuation";
+import { holdAutoContinueRun } from "@/features/chat/utils/auto-continue-run-keeper";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
@@ -6712,7 +6714,29 @@ const ContinueMessageBarForLastMessage: FC = () => {
   // arriving at a message the claim below has already taken -- the branch picker back to
   // the truncated sibling, or returning to the chat -- would otherwise show a spinner for
   // a run `claimAutoContinue` refuses to start, on top of the Continue button it hides.
+  //
+  // Another tab won the message. The claim resolves after this component has already
+  // rendered off `shouldAutoContinueMessage`, which cannot see a race the lock decides,
+  // so the answer has to come back as state: without it this tab keeps a spinner for a
+  // run it never started, with the manual Continue button hidden behind it.
+  //
+  // Remembered as the message the answer was decided for, not as a bare flag: rows are
+  // mounted by INDEX (`<MessageByIndexProvider key={index}>` in progressive-messages.tsx),
+  // so selecting a different truncated branch at the same index re-renders THIS component
+  // instead of remounting it. A boolean survived that and suppressed the automatic
+  // continuation of a message no other tab had claimed, for as long as the row lived.
+  // Comparing ids re-answers per message while still refusing the one that really lost.
+  const [heldElsewhereFor, setHeldElsewhereFor] = useState<string | null>(null);
+  const claimHeldElsewhere = heldElsewhereFor === messageId;
+  // The runtime this bar belongs to, so its keeper renews and releases this claim and no
+  // other pane's.
+  // The thread this run will file itself under, which is what the lease belongs to and
+  // what its lifetime is read from. `remoteId`, not `id`: it is the value assistant-ui
+  // passes the adapter as `unstable_threadId` and the key the run appears under in
+  // `runningByThreadId`, and an uninitialized thread has an `id` but no `remoteId`.
+  const runThreadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const autoContinuing =
+    !claimHeldElsewhere &&
     resumable &&
     shouldAutoContinueMessage(messageId, reason, parentId, {
       fits: truncation?.fits,
@@ -6725,21 +6749,80 @@ const ContinueMessageBarForLastMessage: FC = () => {
     if (!autoContinuing || !parentId) {
       return;
     }
-    // Claimed in module scope, not a ref. `<StrictMode>` in src/main.tsx replays this
-    // effect on the same fiber with the same `autoContinuing`, so nothing inside would
-    // have differed, and rechecking the round budget would not help either: one recorded
-    // round still leaves the limit unspent. A ref fixed the replay but not a real
-    // remount, so leaving the chat with a truncated branch selected and returning fired
-    // it again, creating another sibling and another paid request. The claim survives
-    // both, and is the same seam `resetAutoContinue()` clears.
-    if (!claimAutoContinue(messageId)) {
-      return;
-    }
-    // Recorded BEFORE the run, so a round that produces nothing still spends its budget
-    // instead of re-firing this effect forever.
-    recordAutoContinue(parentId);
-    startContinuation();
-  }, [autoContinuing, parentId, messageId, startContinuation]);
+    let mounted = true;
+    // Claimed in module scope, not a ref, and under a cross-tab lock. `<StrictMode>` in
+    // src/main.tsx replays this effect on the same fiber with the same `autoContinuing`,
+    // so nothing inside would have differed, and rechecking the round budget would not
+    // help either: one recorded round still leaves the limit unspent. A ref fixed the
+    // replay but not a real remount, so leaving the chat with a truncated branch selected
+    // and returning fired it again, creating another sibling and another paid request.
+    // A module claim survived both but not a second TAB, which has its own module scope
+    // and its own empty claim; the lease behind this one is shared and settles that.
+    void claimAutoContinue(messageId, runThreadId ?? "").then((claim) => {
+      if (claim === "started") {
+        // Is there still a message to resume? `aui.thread()` follows the SELECTION, not
+        // the thread this bar belongs to, so a chat or branch switch inside the window the
+        // Web Lock is pending leaves `startContinuation` looking at a different list, where
+        // it finds nothing and issues no run at all.
+        //
+        // Asked BEFORE anything is held, because a hold whose run never appears is renewed
+        // forever on purpose -- preflight has no upper bound, so no deadline can separate
+        // "never coming" from "still on its way". A hold taken for a run that was never
+        // issued therefore renews its lease for the life of the tab, and every other tab
+        // reads that lease as live and refuses the message for just as long.
+        //
+        // Not the preflight case, and it cannot become it: this is `startRun` never having
+        // been called, decided synchronously off the same store `startContinuation` reads a
+        // line later in the same tick. A run that HAS been issued and is merely slow to
+        // begin passes here and keeps its hold and its renewals.
+        const stillThere = aui
+          .thread()
+          .getState()
+          .messages.some((message) => message.id === messageId);
+        if (!stillThere) {
+          // Nothing held and nothing recorded, so the lease this claim took runs out its
+          // own TTL -- the same thing a tab that closed mid-claim leaves behind -- and the
+          // turn keeps the round no request was ever made for.
+          //
+          // The claim itself is given back, and only inside this tab: it is what makes
+          // `claimAutoContinue` answer "skipped" for a message it has already continued,
+          // and a message nothing was issued for has not been continued at all. Left in,
+          // returning to this branch found the message skipped for the life of the tab.
+          // The lease stays, so no second tab may start while this one is still deciding.
+          forgetAutoContinue(messageId);
+          return;
+        }
+        // Held for as long as THIS thread's run generates, wherever the user navigates
+        // to meanwhile. The bar cannot hold it itself: the continuation's sibling becomes
+        // the selected branch and unmounts this component almost at once.
+        holdAutoContinueRun(messageId, runThreadId);
+        // Started whether or not this component is still mounted: the run belongs to the
+        // thread, not to the bar, and a claim taken and then dropped would leave the
+        // message continued by nobody.
+        //
+        // Recorded BEFORE the run, so a round that produces nothing still spends its
+        // budget instead of re-firing this effect forever.
+        recordAutoContinue(parentId);
+        startContinuation();
+        return;
+      }
+      // `skipped` is this tab's own duplicate call, where the run is coming from the
+      // other one and nothing on screen should move.
+      if (claim === "held-elsewhere" && mounted) {
+        setHeldElsewhereFor(messageId);
+      }
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [
+    aui,
+    autoContinuing,
+    parentId,
+    messageId,
+    startContinuation,
+    runThreadId,
+  ]);
 
   // Newest turn only: appending to an older one would strand the replies after it.
   // A turn cut mid-thought has no text to resume from, so Retry stays the way out.
