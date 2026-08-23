@@ -256,8 +256,12 @@ def test_the_probe_source_is_the_first_thing_in_its_script():
     assert "window.__sbExtraInitScript" in scripts[0]
     # Appended after an explicit statement boundary, so neither ASI nor an unterminated
     # expression can join it to the probe's last line.
-    assert scripts[0][len(source) :].lstrip("\n").lstrip(";").lstrip("\n").startswith(
-        "window.__sbExtraInitScript"
+    assert (
+        scripts[0][len(source) :]
+        .lstrip("\n")
+        .lstrip(";")
+        .lstrip("\n")
+        .startswith("window.__sbExtraInitScript")
     )
 
 
@@ -330,7 +334,7 @@ def _node_parses(source: str):
         "var result =",
         "let out =",
         "const seen =",
-        'window.__cvpot = {\n  count: 0,\n};\nvar next =',
+        "window.__cvpot = {\n  count: 0,\n};\nvar next =",
         '"use strict";\nvar result =',
     ],
 )
