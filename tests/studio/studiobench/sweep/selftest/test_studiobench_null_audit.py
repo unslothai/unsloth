@@ -557,6 +557,7 @@ def one_sided_payload(tmp_path: Path, name: str, action: str, reps: tuple[str, .
                 row = action_row(cid, action, "SAME")
                 row["ran"] = False
                 row["reason"] = "the control never became visible"
+                row["slot_missed"] = False
                 rows.append(row)
             else:
                 rows.append(action_row(cid, action, "SAME"))
@@ -679,3 +680,47 @@ def test_the_workflow_scopes_the_audit_with_the_verdicts_own_threshold(tmp_path)
     audit = wf.split("--audit-null", 1)[1].split("outputs/parity-null-control", 1)[0]
     assert "--compared-in outputs/parity-result" in audit
     assert "--min-reps 2" in audit
+
+
+def missed_slot_payload(tmp_path: Path, name: str, action: str, reps: tuple[str, ...]) -> Path:
+    """Like `one_sided_payload`, except the base arm MISSED THE SLOT rather than failed to open."""
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            cid = f"r100K.{arm}.{rep}"
+            for i in range(16):
+                rows.append(action_row(cid, f"filler{i}", "SAME"))
+            row = action_row(cid, action, "SAME")
+            if arm == "base" and rep in reps:
+                row["ran"] = False
+                row["slot_missed"] = True
+                row["reason"] = (
+                    "the slot opened at 45700ms and this machine reached it at 47052ms, "
+                    "past its 1200ms budget"
+                )
+            rows.append(row)
+            rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+    out = tmp_path / name
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    return path
+
+
+def test_one_arm_missing_a_slot_in_every_repetition_is_still_not_a_build_difference(tmp_path):
+    # MEASURED, not reasoned: this is the run that went red after the one-arm-only gate landed.
+    # `settings` missed a 1200ms budget on the BASE arm at 45700ms in both repetitions, by 1292ms
+    # and 1352ms. The schedule is fixed, so a machine slow enough to miss that slot once is slow
+    # enough to miss it twice -- the two misses are correlated through the runner and corroboration
+    # cannot separate them from a build difference. `slot_missed` can, and the driver already
+    # records it. Note which arm it was, too: the BASE arm went idle, so reading it as a
+    # regression would have blamed the head build for the old one's timing.
+    path = missed_slot_payload(tmp_path, "slow", "settings", ("rep0", "rep1"))
+    assert U.report([path], "t", frozenset(), min_reps = 2, min_compared = 16) == 0
+
+
+def test_a_control_that_cannot_open_is_still_caught_when_a_slot_is_also_missed_elsewhere(tmp_path):
+    # The discriminator must not become a blanket excuse: a genuine precondition failure still
+    # fails even though the same run also lost slots.
+    path = one_sided_payload(tmp_path, "broken", "settings", ("rep0", "rep1"))
+    assert U.report([path], "t", frozenset(), min_reps = 2, min_compared = 16) == 1
