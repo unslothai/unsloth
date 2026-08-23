@@ -273,7 +273,9 @@ def test_a_changed_user_row_survives_the_blind_refusal(browser):
     assert base["messages"]["3"]["digest"] != treat["messages"]["3"]["digest"]
     got = P.compare_visible(base, treat)
     assert got["verdict"] == P.DIFFER, got
-    assert [m for m in got["moved"] if m.startswith("ordinal 3(user)")] == got["moved"], got["moved"]
+    assert [m for m in got["moved"] if m.startswith("ordinal 3(user)")] == got["moved"], got[
+        "moved"
+    ]
     assert "cannot be the reply being written" in got["reason"]
 
 
