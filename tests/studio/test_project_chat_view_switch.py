@@ -2364,3 +2364,56 @@ def test_returning_to_a_nonce_reopens_the_chat_started_under_it():
     )
     assert out["mintedOnReturn"] == 0, "and it must not mint another thread to do it"
     assert out["unhandled"] == 0
+
+
+def test_a_reopen_that_lands_after_the_nonce_rotated_does_not_take_the_view():
+    """The returning-nonce reopen has to be as cancellable as a saved-thread switch.
+
+    A project landing remounts when the user comes back from a saved chat, and its mount
+    effect rotates the nonce -- but the first render still carries the OLD one, so the
+    reopen starts before the rotation. Two switches are then in flight, and if the reopen
+    resolves last the overview's composer is left on the old conversation and the next
+    prompt appends there.
+    """
+    out = _run(
+        "renderProvider, renderSettled, world",
+        """
+        await renderSettled({ newThreadNonce: "n1" });
+        const started = world.mainThreadId;
+        world.remoteIds[started] = "remote-1";
+
+        // Detour to a saved chat, releasing the nonce.
+        await renderSettled({ initialThreadId: "thread-a" });
+
+        // Back on the stale nonce: the reopen starts, held open.
+        let release: any;
+        world.switchToThreadGate = new Promise((resolve) => { release = resolve; });
+        renderProvider({ newThreadNonce: "n1" });
+        await tick();
+
+        // The landing's mount effect rotates the nonce, starting a fresh switch.
+        world.switchToThreadGate = null;
+        renderProvider({ newThreadNonce: "n2" });
+        await tick();
+        await tick();
+
+        // Only now does the reopen land.
+        release();
+        await tick();
+        await tick();
+        renderProvider({ newThreadNonce: "n2" });
+        await tick();
+        await tick();
+
+        console.log(JSON.stringify({
+          started,
+          mainThreadId: world.mainThreadId,
+          unhandled: unhandled.length,
+        }));
+        """,
+    )
+    assert out["mainThreadId"] != out["started"], (
+        "a reopen that lost the race to a rotated nonce must not leave the overview on the "
+        "old conversation"
+    )
+    assert out["unhandled"] == 0

@@ -1876,6 +1876,39 @@ function ThreadNewChatSwitch({
     // persisted, so abandoning it must also discard its otherwise unreachable
     // queue. Queue provenance remains reliable even if incognito was cleared first.
     requestTemporaryPromptQueueStop();
+    // A reopen is as cancellable as a saved-thread switch, and for the same reason: a
+    // project landing remounts on the way back from a saved chat and its mount effect
+    // rotates the nonce, but the first render still carries the OLD one, so the reopen is
+    // already in flight when the rotation starts its own switch. Claimed here so that if
+    // the reopen resolves last the correction below recognises it and undoes it, instead
+    // of leaving the overview's composer on the old conversation.
+    let reopenClaim: PendingSavedThreadSwitch | null = null;
+    if (returningToOwnChat && recorded) {
+      reopenClaim = { id: recorded, settled: false };
+      switchState.pendingSavedThreadIds.push(reopenClaim);
+      if (
+        switchState.pendingSavedThreadIds.length >
+        MAX_PENDING_SAVED_THREAD_SWITCHES
+      ) {
+        switchState.pendingSavedThreadIds.splice(
+          0,
+          switchState.pendingSavedThreadIds.length -
+            MAX_PENDING_SAVED_THREAD_SWITCHES,
+        );
+      }
+    }
+    // Dropped outright when this nonce is still the one on screen: the reopen did what it
+    // was for, and a claim left armed would have the correction below undo it. Only when
+    // the nonce has moved on -- a rotation beat it -- is the claim left in place, which is
+    // exactly the arrival that has to be corrected.
+    const settleReopenClaim = () => {
+      if (!reopenClaim) return;
+      reopenClaim.settled = true;
+      const switchStateNow = newThreadSwitchStateRef.current;
+      if (switchStateNow.activeNonce !== nonce) return;
+      const at = switchStateNow.pendingSavedThreadIds.indexOf(reopenClaim);
+      if (at !== -1) switchStateNow.pendingSavedThreadIds.splice(at, 1);
+    };
     // Switch to a fresh local thread without persisting it yet; persistence
     // still happens on first message append.
     void Promise.resolve(
@@ -1884,6 +1917,7 @@ function ThreadNewChatSwitch({
         : aui.threads().switchToNewThread(),
     ).then(
       () => {
+        settleReopenClaim();
         if (!clearAfterSwitch) return;
         const switchStateNow = newThreadSwitchStateRef.current;
         // By attempt as well as nonce, matching the rejection arm. A saved-thread detour
@@ -1897,6 +1931,7 @@ function ThreadNewChatSwitch({
         clearAttachments();
       },
       () => {
+        settleReopenClaim();
         // The fresh thread never opened, so the view is still on the outgoing one.
         // Release the nonce, or the guard at the top of this effect reads it as already
         // served and the same New Chat can never be retried in place. Both arms are
