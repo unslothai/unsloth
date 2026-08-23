@@ -531,7 +531,9 @@ class TestPruningOnlyTouchesStudioSpills:
         mine = [target / f"{i:012x}.txt" for i in range(tools._SPILL_KEEP + 5)]
         for path in mine:
             path.write_text("spill")
-        tools._write_spill_manifest(str(target), [p.name for p in mine])
+        tools._write_spill_manifest(
+            str(target), {p.name: tools._spill_stamp(str(p)) for p in mine}
+        )
         theirs = [target / "notes.txt", target / "receipts-2026.txt"]
         for path in theirs:
             path.write_text("keep me")
@@ -1190,6 +1192,33 @@ class TestOwnershipIsNotKeptWhereToolCodeCanWriteIt:
         assert not tools._is_spill_artifact(str(tmp_path), str(root), name)
 
 
+    def test_a_spill_written_over_stops_being_ours(self, tmp_path):
+        """A recorded path is not the file. Tool code can write its own content over a
+        spill, in place, and from then on it is the user's: not something to prune, and
+        not something the cleanup may delete the sandbox on top of."""
+        spilled = tools._truncate(
+            "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path)
+        )
+        theirs = tmp_path / _spill_path(spilled)
+        theirs.write_text("the user's own data")
+
+        for n in range(tools._SPILL_KEEP + 5):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+
+        assert theirs.read_text() == "the user's own data"
+        assert not tools._holds_no_user_files(str(tmp_path))
+
+    def test_an_untouched_spill_is_still_ours(self, tmp_path):
+        """The control: reading a spill back, which is the whole point of writing it, must
+        not turn it into user content."""
+        spilled = tools._truncate(
+            "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path)
+        )
+        (tmp_path / _spill_path(spilled)).read_text()
+
+        assert tools._holds_no_user_files(str(tmp_path))
+
+
 class TestConcurrentSpillsKeepTheirRecords:
     def test_a_spill_recorded_during_a_prune_is_not_dropped(self, tmp_path):
         """A project's chats share one sandbox. Appending a spill and rewriting the
@@ -1217,7 +1246,7 @@ class TestConcurrentSpillsKeepTheirRecords:
             thread.join()
 
         root = tmp_path / tools._SPILL_DIR
-        recorded = tools._spill_manifest(str(root))
+        recorded = set(tools._spill_manifest(str(root)))
         on_disk = {str(p.relative_to(root)) for p in root.rglob("*.txt") if p.name != "victim.txt"}
         assert on_disk, results[:1]
         assert on_disk <= recorded, "a spill on disk that the manifest does not record"
