@@ -5,12 +5,11 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-// The tray label is settled across two languages: the hook pushes a BackendStatus over
-// the IPC and main.rs turns it into a label and an enabled flag. Neither half can be
-// rendered here, so both are asserted against source, the way the rest of the desktop
-// startup tests do it. tray_toggle_label's own table is covered by the Rust unit tests
-// in main.rs; what is left, and what only a test spanning both files can hold, is that
-// the two halves still agree on the set of statuses.
+// The tray label is settled across two languages: the hook pushes a BackendStatus over the
+// IPC and main.rs turns it into a label and an enabled flag. Neither half can be rendered
+// here, so both are asserted against source, as the rest of the desktop startup tests do.
+// tray_toggle_label's own table is covered by the Rust unit tests in main.rs; only a test
+// spanning both files can hold that the two halves still agree on the set of statuses.
 
 function hookSource(): Promise<string> {
   return readFile(
@@ -110,10 +109,8 @@ test("a tray sync never surfaces on the web build or on a binary without the com
     /if \(!isTauri\) return;/,
     "syncTrayStatus reaches for the Tauri IPC outside the desktop app",
   );
-  // A frontend bundle can be newer than the binary serving it, in which case
-  // set_tray_server_status is not registered and the invoke rejects. That leaves the
-  // tray on its build-time label, which is the pre-existing behaviour, and must not
-  // raise an unhandled rejection over a running app.
+  // Against an older binary the command is unregistered and the invoke rejects, leaving
+  // the tray on its build-time label. That must not raise an unhandled rejection.
   assert.match(
     sync,
     /\.catch\(\(\) => \{\}\)/,
@@ -177,9 +174,8 @@ test("the tray toggle starts clickable, for a frontend older than this binary", 
     /MenuItemBuilder::with_id\("toggle", "([^"]*)"\)([\s\S]{0,40}?)\.build\(app\)/,
   );
   assert.ok(built, "the toggle item is no longer built with a literal label");
-  // A bundle predating set_tray_server_status never calls it, so whatever is set here
-  // is what that user sees for the whole session. Seeding it disabled would strand
-  // them with a tray toggle they can never click.
+  // A bundle predating set_tray_server_status never calls it, so seeding it disabled
+  // would strand that user with a tray toggle they can never click.
   assert.doesNotMatch(
     built[2],
     /\.enabled\(false\)/,

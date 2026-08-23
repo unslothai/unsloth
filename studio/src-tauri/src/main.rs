@@ -2780,9 +2780,9 @@ mod tests {
         assert_eq!(tray_toggle_label("starting"), ("Starting\u{2026}", false));
     }
 
-    /// Every remaining BackendStatus the hook can report. The listener does nothing for
-    /// any of them, so the item is greyed rather than offering a click that would be a
-    /// silent no-op. Keep this list in step with the union in use-tauri-backend.ts.
+    /// Every remaining BackendStatus: the listener acts on none of them, so the item is
+    /// greyed rather than offering a click that would be a silent no-op. Keep this list in
+    /// step with the union in use-tauri-backend.ts.
     #[test]
     fn a_status_the_tray_cannot_act_on_greys_the_toggle() {
         for status in [
@@ -2802,10 +2802,9 @@ mod tests {
         }
     }
 
-    /// The status arrives as whatever string the webview sent, so a frontend bundle
-    /// older or newer than this binary can reach the command with something that is not
-    /// a status at all. Match the whole string: a prefix or a case fold would let
-    /// "run" read as an offer to stop a server that is not running.
+    /// The status is whatever string the webview sent, so a mismatched bundle can pass
+    /// something that is not a status at all. Match the whole string: a prefix or a case
+    /// fold would let "run" read as an offer to stop a server that is not running.
     #[test]
     fn an_unrecognised_status_greys_the_toggle_rather_than_guessing() {
         for status in ["", " ", "Running", "RUNNING", "running ", "run", "{}"] {
