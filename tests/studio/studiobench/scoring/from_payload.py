@@ -172,6 +172,7 @@ def _frame_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]:
     deltas: list[float] = []
     window_ms = 0.0
     truncated = 0
+    frameless = 0
     attempted_any = False
     max_frame: float | None = None
 
@@ -190,6 +191,7 @@ def _frame_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]:
             continue
         gaps = frames.get("frame_gaps_ms")
         if not gaps:
+            frameless += 1
             continue
         deltas.extend(float(g) for g in gaps)
         window_ms += float(w.get("duration_ms") or 0.0)
@@ -197,6 +199,25 @@ def _frame_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]:
     if not attempted_any:
         reason = "no window in this cell had the frame recorder installed"
         return {k: Measure.not_attempted(unit_by_key[k], reason) for k in FRAME_METRICS}
+
+    if frameless:
+        # ONE WINDOW THAT SAW NOTHING POISONS THE POOL, IT DOES NOT DROP OUT OF IT.
+        #
+        # A window whose recorder was installed and exported no deltas at all is the rAF-
+        # unscheduled trap, and `compute_frame_stats` already refuses to score it: a single such
+        # window reads `Measure.failed` on every metric with `no_frames_recorded` set, never zero
+        # jank. Pooled, the same window was skipped by the `continue` above -- it contributed no
+        # deltas, no wall time and (its `max_frame_ms` being null) no worst frame -- so the
+        # REMAINING windows answered for the whole cell and a complete freeze during one action
+        # came back as clean numbers: a 4 s frozen window beside a smooth one scored 0.0% time in
+        # jank and a 40 ms worst frame, byte-identical to the cell without the freeze in it.
+        # An unmeasured window is not an absent one, so the cell's frame metrics fail here for
+        # the same reason and in the same shape as the single-window path.
+        reason = (
+            f"{frameless} window(s) recorded no frames at all (rAF may be unscheduled), so the "
+            "pooled frame metrics would describe only the windows that were measured"
+        )
+        return {k: Measure.failed(unit_by_key[k], reason) for k in FRAME_METRICS}
 
     out: dict[str, Measure] = {}
     out["max_frame_ms"] = (

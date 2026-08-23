@@ -151,6 +151,45 @@ def test_recorder_never_installed_reads_not_attempted():
     assert "frame recorder" in m["jank_index"].note
 
 
+def test_a_window_that_recorded_no_frames_fails_the_pool_instead_of_dropping_out():
+    """A complete freeze during one action must not be answered for by the windows beside it.
+
+    `compute_frame_stats` already calls a single attempted-but-frameless window a failed
+    measurement. Pooled, that window used to be skipped, and the cell came back with the
+    remaining window's clean numbers.
+    """
+    normal = _window("c1", [16.0] * 50 + [40.0], duration_ms = 1000.0)
+    frozen = _window("c1", [], duration_ms = 4000.0)
+    m = measures_from_records([_cell(), normal, frozen])[10_000]
+    for key in ("time_in_jank_pct", "jank_index", "max_frame_ms"):
+        assert m[key].attempted is True
+        assert m[key].value is None
+        assert "no frames at all" in m[key].note
+    # and the giveaway: without the fix these were byte-identical to the cell without the freeze
+    alone = measures_from_records([_cell(), normal])[10_000]
+    assert alone["max_frame_ms"].value == pytest.approx(40.0)
+
+
+def test_a_window_the_recorder_was_never_installed_in_is_still_only_skipped():
+    """The control. Not-attempted is an absent instrument, not an unmeasured window."""
+    normal = _window("c1", [16.0] * 50 + [40.0], duration_ms = 1000.0)
+    never = _window("c1", [], duration_ms = 4000.0, attempted = False)
+    m = measures_from_records([_cell(), normal, never])[10_000]
+    assert m["max_frame_ms"].value == pytest.approx(40.0)
+    assert m["jank_index"].value is not None
+    assert m["time_in_jank_pct"].value is not None
+
+
+def test_a_pool_where_every_window_has_frames_is_unaffected():
+    """The other control: the ordinary multi-window cell still pools as before."""
+    a = _window("c1", [16.0] * 50 + [40.0], duration_ms = 1000.0)
+    b = _window("c1", [16.0] * 20 + [900.0], duration_ms = 2000.0)
+    m = measures_from_records([_cell(), a, b])[10_000]
+    assert m["max_frame_ms"].value == pytest.approx(900.0)
+    assert m["jank_index"].value is not None and m["jank_index"].value > 0
+    assert m["time_in_jank_pct"].value is not None
+
+
 def test_truncated_window_refuses_a_number_rather_than_scoring_the_fast_frames():
     """A capped window exports no deltas at all, and must not become a clean reading."""
     w = _window("c1", [16.0], duration_ms = 1000.0)
