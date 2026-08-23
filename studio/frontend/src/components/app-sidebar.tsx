@@ -2325,25 +2325,20 @@ export function AppSidebar() {
 
   /** The chat as markdown, on the clipboard rather than in a download. */
   async function copyChatItemAsMarkdown(item: SidebarItem) {
-    const threadIds = getSidebarItemThreadIds(item);
     const empty = { value: false };
     // The read runs inside the write: Safari drops the gesture across an
     // await, and a chord has no second one to fall back on.
     const copied = await copyToClipboardFrom(async () => {
-      const { buildConversationMarkdownForThread } = await import(
+      const { buildChatItemMarkdown } = await import(
         "@/features/chat/prompt-storage/prompt-storage-dialog"
       );
-      // A compare row is two threads: keep both, labelled.
-      const parts: string[] = [];
-      for (const threadId of threadIds) {
-        const markdown = await buildConversationMarkdownForThread(threadId);
-        if (markdown) parts.push(markdown);
-      }
-      if (parts.length === 0) {
+      // A compare row is two threads: keep both, each under its model's name.
+      const markdown = await buildChatItemMarkdown(item);
+      if (!markdown) {
         empty.value = true;
         throw new Error("nothing to copy");
       }
-      return parts.join("\n---\n\n");
+      return markdown;
     });
     if (copied) {
       toast.success("Chat copied as Markdown");

@@ -60,6 +60,7 @@ import { toolResultModelText } from "../api/chat-adapter";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
 import {
+  buildNamedConversationsMarkdown,
   createConversationMarkdownBuilder,
   createConversationMarkdownExporter,
 } from "../utils/conversation-markdown-export";
@@ -521,6 +522,27 @@ export async function saveChatItemAsProjectSource(
   else if (saved > 1) {
     toast.success(`Saved ${saved} chats to project sources.`);
   }
+}
+
+/**
+ * A sidebar row as one markdown document, for the "Copy as Markdown" shortcut.
+ * The halves of a compare pair are named the way saving them to project sources
+ * names them, after their models: the two arrive in whichever order they last
+ * answered in, so position alone would label them wrong.
+ */
+export async function buildChatItemMarkdown(item: {
+  id: string;
+  title: string;
+  type: string;
+}): Promise<string> {
+  const plans = planChatItemSources(
+    item,
+    item.type === "single" ? [] : await listStoredChatThreads({ pairId: item.id }),
+  );
+  return buildNamedConversationsMarkdown(
+    plans,
+    buildConversationMarkdownForThread,
+  );
 }
 
 export type ConvExportFormat = "jsonl-raw" | "csv" | "sharegpt";
