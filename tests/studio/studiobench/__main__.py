@@ -831,6 +831,9 @@ def run(args, ab_ref = None) -> int:
                 log = _log,
                 cadence = args.cadence,
                 image_path = image_path,
+                parity_raw = args.parity_raw,
+                parity_shots = args.parity_shots,
+                arm_label = side["label"],
             )
 
         seeder = sides[0]["seeder"]
@@ -1711,6 +1714,23 @@ def assert_liveness(args) -> int:
     per cell. This turns the README's advice to check `ran` before reading a timing into something
     a machine does, which is the only way it gets done every time.
 
+    TWO KINDS OF NOT RUN, and they are not the same finding.
+
+    A SCENE problem is the harness lying: the action was never planned, the button was not there,
+    the thread was shorter than the viewport. That is always a failure, on any machine, because it
+    means a column of the report is empty and nothing said so.
+
+    A MISSED SLOT is a fact about the machine. The scene is a fixed-duration film on the wall
+    clock (see `scene/schedule.py`), so a machine too slow to reach a slot records `slot_missed`
+    and the film rolls on BY DESIGN, precisely so a slow machine does not silently take a
+    different path through a different-length session. Failing on that turns an honest reading
+    into an error, and on a two-core shared CI runner it makes the gate a speed test of the runner.
+
+    So they are counted apart. Scene problems always fail. Missed slots are always PRINTED, and
+    fail once they pass `--allow-slot-misses`, which defaults to 0 so a measurement run on a quiet
+    machine keeps the strict behaviour and only a caller who knows its machine is contended
+    loosens it, in one visible place.
+
     Offline, so a payload from anyone's laptop or from CI checks identically.
     """
     path = Path(args.assert_liveness)
@@ -1719,7 +1739,8 @@ def assert_liveness(args) -> int:
         return 2
 
     allowed = {a.strip() for a in (args.allow_not_run or "").split(",") if a.strip()}
-    rows, problems = [], []
+    slack = max(0, int(getattr(args, "allow_slot_misses", 0) or 0))
+    rows, problems, missed = [], [], []
     for line in path.read_text(encoding = "utf-8").splitlines():
         line = line.strip()
         if not line:
@@ -1769,15 +1790,15 @@ def assert_liveness(args) -> int:
         for action in row.get("actions") or []:
             name = action.get("action") or action.get("name") or "?"
             if action.get("slot_missed"):
-                # A MISSED SLOT IS NOT AN ACTION THE PLATFORM CANNOT PERFORM, so it is checked
+                # A MISSED SLOT IS NOT AN ACTION THE PLATFORM CANNOT PERFORM, so it is classified
                 # before the allowance rather than inside it. `scene/schedule.py` records an
-                # overrun as `ran = False, slot_missed = True`, so a listed name reached the
-                # not-ran branch and inherited an excuse written for a different failure: the
-                # machine was too slow to reach a window it could otherwise have used. That is
-                # the scheduling regression this gate is for, and on the only allowance the repo
-                # actually ships it would have been the difference between a timed benchmark and
-                # an untimed one.
-                problems.append(f"{where}: {name} missed its slot")
+                # overrun as `ran = False, slot_missed = True`, so under an allowance-first order a
+                # listed name never reached this branch at all and its slot miss left the run
+                # silently: an excuse written for "the fixture cannot mount this" swallowed a fact
+                # about the machine. Ordering it first is what keeps the two buckets below honest.
+                # It is a machine-speed fact whether or not the action also reports ran=False, so
+                # it lands in `missed` and is judged against `--allow-slot-misses`, never here.
+                missed.append(f"{where}: {name} missed its slot ({action.get('reason') or '?'})")
             elif not action.get("ran"):
                 # THE ALLOWANCE IS EXACTLY WHAT ITS NAME SAYS. `--allow-not-run` excuses an action
                 # the fixture cannot mount at all; it is not a blanket exemption from the gate.
@@ -1794,6 +1815,7 @@ def assert_liveness(args) -> int:
                 # branches above and the gate exited 0. A selector regression that fails EVERY
                 # cell's assertion left the workflow green with the surface non-functional --
                 # the same "absent reported as no effect" this gate exists for, one branch over.
+                # It is a scene problem, not machine speed, so no allowance and no slack reach it.
                 problems.append(
                     f"{where}: {name} ran but its own assertion failed "
                     f"({action.get('reason') or 'no reason'})"
@@ -1805,11 +1827,22 @@ def assert_liveness(args) -> int:
         return 2
     for line in problems:
         _log(f"  {line}")
+    for line in missed:
+        _log(f"  {line}")
+    over = len(missed) > slack
     _log(
-        f"{cells} cell(s), {len(problems)} liveness problem(s)"
+        f"{cells} cell(s), {len(problems)} scene problem(s), {len(missed)} missed slot(s) "
+        f"against a slack of {slack}"
         + (f", {len(allowed)} action(s) allowed not to run" if allowed else "")
     )
-    return 1 if problems else 0
+    if missed and not over:
+        # Said out loud rather than passed over: a run with missed slots has holes in its table,
+        # and the only thing this exit code claims is that the harness was not the cause.
+        _log(
+            "  the missed slots above are machine speed, not a harness fault, but every one of "
+            "them is a hole in this run's table. Do not quote a number from this payload."
+        )
+    return 1 if (problems or over) else 0
 
 
 def parse_args(argv: list):
@@ -1878,6 +1911,18 @@ def parse_args(argv: list):
         "assertion. Use only for an action a platform genuinely cannot perform, and say "
         "which in the pull request: every name here is a hole in the gate",
     )
+    ap.add_argument(
+        "--allow-slot-misses",
+        metavar = "N",
+        dest = "allow_slot_misses",
+        type = int,
+        default = 0,
+        help = "how many MISSED SLOTS --assert-liveness tolerates before failing. A "
+        "missed slot is a fact about the machine, not about the harness, and the "
+        "film is designed to roll on through one. Default 0, which is right for a "
+        "quiet measurement machine; raise it only on a contended runner, where the "
+        "gate is proving the plumbing works rather than that the runner is fast",
+    )
     ap.add_argument("--rungs", help = "comma-separated rung override, e.g. 1K,10K")
     ap.add_argument("--reps", type = int, default = 1)
     ap.add_argument(
@@ -1923,6 +1968,23 @@ def parse_args(argv: list):
         "parity digest of each. The film covers the chat thread; this covers "
         "the rest of the app. Off by default: it costs about a minute per arm "
         "and it does not measure performance",
+    )
+    ap.add_argument(
+        "--parity-shots",
+        metavar = "DIR",
+        dest = "parity_shots",
+        help = "write a viewport PNG per action per arm into DIR, taken at the same instant as "
+        "the parity digest, so a mismatch can be SEEN rather than read as a hex pair. Off by "
+        "default",
+    )
+    ap.add_argument(
+        "--parity-raw",
+        action = "store_true",
+        dest = "parity_raw",
+        help = "record the NORMALISED signature text beside every parity digest, so "
+        "`sweep/parity_null_control.py --hunt` can name which bytes moved between two arms "
+        "instead of only that they did. Off by default: it multiplies a payload's size by "
+        "roughly a hundred, and only the hunt reads it",
     )
     ap.add_argument("--headed", action = "store_true")
     ap.add_argument("--keep-studio", action = "store_true")

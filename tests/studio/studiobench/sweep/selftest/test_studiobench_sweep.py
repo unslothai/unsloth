@@ -44,11 +44,15 @@ def payload(
     name: str,
     pairs: list[tuple[float, float]],
     tier: str = "standard",
+    corpus: str | None = "corpus0000",
 ) -> Path:
     """One shard: `pairs[i]` is (base, treatment) for repetition i."""
     out = tmp_path / name
     out.mkdir(parents = True, exist_ok = True)
-    rows: list[dict] = [{"row_type": "run_meta", "tier": tier}]
+    meta: dict = {"row_type": "run_meta", "tier": tier}
+    if corpus is not None:
+        meta["corpus_hash"] = corpus
+    rows: list[dict] = [meta]
     for i, (base, treat) in enumerate(pairs):
         rows += cell("100K", "base", f"rep{i}", {"open_close_ms": base})
         rows += cell("100K", "treatment", f"rep{i}", {"open_close_ms": treat})
@@ -296,6 +300,82 @@ def test_scoring_against_a_floor_from_another_tier_is_refused(tmp_path):
     with pytest.raises(SystemExit) as exc:
         F.render([result], "t", floors = {}, floor_tier = "standard")
     assert "different films" in str(exc.value)
+
+
+def test_pooling_across_corpora_is_refused(tmp_path):
+    # The tier fixes how long the film runs; the corpus hash fixes what is IN it. Corpus v2 added
+    # math, so a v1 payload and a v2 payload measure two different documents under one name, and
+    # pooling them would read the corpus change as a performance change.
+    one = payload(tmp_path, "one", [(1000.0, 900.0)], corpus = "aaaa1111")
+    two = payload(tmp_path, "two", [(1000.0, 900.0)], corpus = "bbbb2222")
+    with pytest.raises(SystemExit) as exc:
+        F.load([one, two])
+    assert "different corpora" in str(exc.value)
+
+
+def test_scoring_against_a_floor_from_another_corpus_is_refused(tmp_path):
+    result = payload(tmp_path, "result", [(1000.0, 100.0)] * 4, corpus = "bbbb2222")
+    with pytest.raises(SystemExit) as exc:
+        F.render([result], "t", floors = {}, floor_corpus = "aaaa1111")
+    assert "different film" in str(exc.value)
+
+
+def test_the_same_corpus_on_both_sides_pools_normally(tmp_path):
+    a = payload(tmp_path / "a", "s0", [(1000.0, 500.0)], corpus = "aaaa1111")
+    b = payload(tmp_path / "b", "s0", [(2000.0, 1000.0)], corpus = "aaaa1111")
+    pooled, _ = F.load([a, b])
+    assert len(pooled["message_menu.open_close_ms"]) == 2
+
+
+def test_a_payload_with_no_corpus_hash_is_not_silently_pooled_with_one_that_has_it(tmp_path):
+    # An older payload predating the field reads "?", which is a different value, not a wildcard.
+    # Treating it as compatible is how a v1 run would end up scored against a v2 floor.
+    old = payload(tmp_path, "old", [(1000.0, 900.0)], corpus = None)
+    new = payload(tmp_path, "new", [(1000.0, 900.0)], corpus = "bbbb2222")
+    with pytest.raises(SystemExit) as exc:
+        F.load([old, new])
+    assert "different corpora" in str(exc.value)
+
+
+def test_a_resumed_payload_carrying_two_corpora_is_refused(tmp_path):
+    # The recorder appends, so `--resume` into the same --out leaves the first run's completed
+    # cells next to a SECOND run_meta. If the corpus changed in between, that one file holds a
+    # base recorded on the old film and a treatment recorded on the new one, and `paired` matches
+    # them on (shard, rung, rep) without noticing. Reading only the first header would pass this
+    # payload and print the corpus change as a performance change.
+    out = tmp_path / "resumed"
+    out.mkdir(parents = True, exist_ok = True)
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "corpus_hash": "aaaa1111"}]
+    rows += cell("100K", "base", "rep0", {"open_close_ms": 1000.0})
+    rows += [{"row_type": "run_meta", "tier": "standard", "corpus_hash": "bbbb2222"}]
+    rows += cell("100K", "treatment", "rep0", {"open_close_ms": 100.0})
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+
+    assert F.corpora_of(F.read_rows(path)) == {"aaaa1111", "bbbb2222"}
+    with pytest.raises(SystemExit) as exc:
+        F.load([path])
+    assert "more than one corpus" in str(exc.value)
+    # And the floor-vs-result path refuses it too, rather than scoring it under the first hash.
+    with pytest.raises(SystemExit) as exc:
+        F.render([path], "t", floors = {}, floor_corpus = "aaaa1111")
+    assert "more than one corpus" in str(exc.value)
+
+
+def test_a_payload_with_repeated_headers_on_one_corpus_still_loads(tmp_path):
+    # A plain resume, nothing changed in between: two headers, one hash, no refusal.
+    out = tmp_path / "plain"
+    out.mkdir(parents = True, exist_ok = True)
+    meta = {"row_type": "run_meta", "tier": "standard", "corpus_hash": "aaaa1111"}
+    rows: list[dict] = [dict(meta)]
+    rows += cell("100K", "base", "rep0", {"open_close_ms": 1000.0})
+    rows += [dict(meta)]
+    rows += cell("100K", "treatment", "rep0", {"open_close_ms": 900.0})
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+
+    pooled, _tiers = F.load([path])
+    assert pooled["message_menu.open_close_ms"] == [(1000.0, 900.0)]
 
 
 def test_an_action_that_did_not_run_contributes_no_timing(tmp_path):
@@ -934,9 +1014,15 @@ def test_one_tier_on_each_side_still_scores_in_both_directions(tmp_path):
     assert U.main([str(regressed.parent), "--null", str(null.parent)]) == 1
 
 
-def test_a_tier_mismatch_between_two_single_tier_sets_still_only_warns(tmp_path, capsys):
-    # The other control. Two sets that each hold ONE tier are comparable enough to score; the
-    # existing warning says the derived set does not transfer, and that stays a warning.
+def test_a_tier_mismatch_between_two_single_tier_sets_is_refused(tmp_path, capsys):
+    # This used to warn and then score anyway, which is the worst of the two options: the warning
+    # said the derived set does not transfer, and then the run was scored against it regardless.
+    # A set that does not transfer is not a weaker excuse than a real one, it is an arbitrary one.
+    #
+    # Exit 2, not 1. The payload below does carry a regression, so the old assertion of exit 1 was
+    # passing for a reason unrelated to the tier check. Refusing to answer and reporting a parity
+    # failure have to be distinguishable, or a refusal sends somebody hunting for a UI change that
+    # was never measured.
     null = write(
         tmp_path,
         "null_fast",
@@ -947,8 +1033,41 @@ def test_a_tier_mismatch_between_two_single_tier_sets_still_only_warns(tmp_path,
         ],
     )
     mine = parity_run(tmp_path, "mine_standard", [("r100K", "rep0", "Q", "REGRESSED")])
-    assert U.main([str(mine.parent), "--null", str(null.parent)]) == 1
-    assert "WARNING: the null control was recorded at tier" in capsys.readouterr().out
+    assert U.main([str(mine.parent), "--null", str(null.parent)]) == 2
+    assert "REFUSING to score" in capsys.readouterr().out
+
+
+def test_a_corpus_mismatch_between_two_valid_sides_is_refused(tmp_path, capsys):
+    # The likelier of the two in practice, and the one that had no check at all: each side is a
+    # perfectly valid single corpus, so `one_corpus` passes on both, and the null's set was still
+    # applied to a payload that rendered a different thread. Which actions race is a property of
+    # the thread the film drove, so that set describes something the payload never displayed.
+    def at(name, corpus, cells):
+        rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "corpus_hash": corpus}]
+        for rung, rep, base_digest, treat_digest in cells:
+            rows.append(parity_action(f"{rung}.base.{rep}", "settings", base_digest))
+            rows.append(parity_action(f"{rung}.treatment.{rep}", "settings", treat_digest))
+        return write(tmp_path, name, rows)
+
+    null = at("null_v1", "v1", [("r100K", "rep0", "Q", "Q")])
+    same = at("mine_v1", "v1", [("r100K", "rep0", "Q", "Q")])
+    other = at("mine_v2", "v2", [("r100K", "rep0", "Q", "Q")])
+    # The control first, so the refusal cannot pass by rejecting everything.
+    assert U.main([str(same.parent), "--null", str(null.parent)]) == 0
+    assert U.main([str(other.parent), "--null", str(null.parent)]) == 2
+    assert "REFUSING to score" in capsys.readouterr().out
+
+
+def test_a_side_recorded_before_corpus_hashes_existed_is_still_scored(tmp_path, capsys):
+    # An absent hash is not a disagreement. Refusing it would reject every payload recorded before
+    # the field existed, which is the whole archive.
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "corpus_hash": "v1"}]
+    rows.append(parity_action("r100K.base.rep0", "settings", "Q"))
+    rows.append(parity_action("r100K.treatment.rep0", "settings", "Q"))
+    hashed = write(tmp_path, "hashed", rows)
+    legacy = parity_run(tmp_path, "legacy", [("r100K", "rep0", "Q", "Q")])
+    assert U.main([str(legacy.parent), "--null", str(hashed.parent)]) == 0
+    assert U.main([str(hashed.parent), "--null", str(legacy.parent)]) == 0
 
 
 def test_main_prints_a_mixed_unstable_set_without_dying(tmp_path, capsys):
