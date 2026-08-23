@@ -726,11 +726,11 @@ test("a collapsed sidebar section is not published for the chords", async () => 
   // closed counts as gone, the same as a closed project folder.
   assert.match(
     sidebar,
-    /visiblePinnedItems = useMemo\(\s*\(\) => \(pinnedOpen \? sortedPinnedChatItems : \[\]\)/,
+    /chatListsOnScreen && pinnedOpen \? sortedPinnedChatItems/,
   );
   assert.match(
     sidebar,
-    /visibleRecentItems = useMemo\(\s*\(\) => \(chatOpen \? sortedRecentChatItems : \[\]\)/,
+    /chatListsOnScreen && chatOpen \? sortedRecentChatItems/,
   );
   assert.match(sidebar, /organizeBy !== "project" \|\| !projectsOpen/);
   // And the published lists are the filtered ones.
@@ -1025,4 +1025,125 @@ test("every action has a useShortcut call site", async () => {
       joined.includes(`id={\`${slot[1]}\${slot}\` as ShortcutId}`);
     assert.ok(called || rendered, `${def.id} has no useShortcut call site`);
   }
+});
+
+// Holding a chord past the OS repeat delay resends it. A toggle would land
+// wherever the user let go, and an archive would run once per repeat.
+test("auto-repeat only reaches the actions that walk a list", async () => {
+  const read = async (path: string) =>
+    readFile(new URL(path, import.meta.url), "utf8");
+  const hook = await read("../src/features/settings/hooks/use-shortcut.ts");
+  // Suppressed after preventDefault: the chord is ours either way, so the
+  // browser must not act on the repeats we drop.
+  const at = hook.indexOf("event.preventDefault();");
+  assert.ok(at !== -1, "the hook stopped consuming the chord");
+  assert.match(
+    hook.slice(at),
+    /event\.preventDefault\(\);\n(?:\s*\/\/[^\n]*\n)*\s*if \(event\.repeat && !repeats\) return;/,
+  );
+  // Off by default, so a new call site is one-shot until it says otherwise.
+  assert.match(hook, /repeats = false \} = options;/);
+  assert.match(hook, /\[bindings, enabled, skipInTextFields, repeats\]/);
+
+  const sidebar = await read("../src/components/app-sidebar.tsx");
+  const walkers = [
+    "nextChat",
+    "previousChat",
+    "nextRecentlyViewedChat",
+    "previousRecentlyViewedChat",
+  ];
+  for (const id of walkers) {
+    const call = sidebar.indexOf(`useShortcut("${id}"`);
+    assert.ok(call !== -1, `${id} lost its call site`);
+    assert.match(
+      sidebar.slice(call, sidebar.indexOf(");", call)),
+      /repeats: true/,
+      `${id} should step while held`,
+    );
+  }
+  // Everything else is one-shot. A held toggle or archive is not a gesture.
+  const optedIn = sidebar.match(/repeats: true/g) ?? [];
+  assert.equal(optedIn.length, walkers.length);
+});
+
+// The chords read the published lists, so those have to end where the screen
+// does: whole-sidebar gates included, not just each section's disclosure.
+test("the published chat lists stop where the sidebar stops", async () => {
+  const sidebar = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  // The same two conditions the three chat groups render behind, plus the
+  // icon rail, which hides them in CSS rather than dropping them.
+  assert.match(
+    sidebar,
+    /const chatListsOnScreen =\n\s*!isStudioRoute &&\n\s*!showTrainingRecents &&\n\s*\(isMobile \|\| sidebarState !== "collapsed"\);/,
+  );
+  for (const group of [
+    /if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !projectsOpen\)/,
+    /\(chatListsOnScreen && pinnedOpen \? sortedPinnedChatItems : \[\]\)/,
+    /\(chatListsOnScreen && chatOpen \? sortedRecentChatItems : \[\]\)/,
+  ]) {
+    assert.match(sidebar, group);
+  }
+  // Select All reads the same three arrays, so it cannot reach further than
+  // the walk does.
+  const selectAll = sidebar.indexOf("const selectAllChats = useCallback(");
+  assert.ok(selectAll !== -1, "selectAllChats moved");
+  assert.match(
+    sidebar.slice(selectAll, sidebar.indexOf("\n  }, [", selectAll)),
+    /\.\.\.visiblePinnedItems,\n\s*\.\.\.renderedProjectChatItems,\n\s*\.\.\.visibleRecentItems,/,
+  );
+  // Gating the arrays is enough because nothing renders from them.
+  const rendered = sidebar.slice(sidebar.indexOf("return (", selectAll));
+  for (const name of [
+    "visiblePinnedItems",
+    "visibleRecentItems",
+    "renderedProjectChatItems",
+  ]) {
+    assert.ok(!rendered.includes(name), `${name} is read by the JSX too`);
+  }
+});
+
+// Two parked requests must count as two, or both cards claim Enter and mount
+// order picks the winner. Compare panes make that easy to get wrong: the
+// backend reuses "call_0" per response, so the store key cannot be it.
+test("a parked tool request is keyed by its own approval, not call_0", async () => {
+  const adapter = await readFile(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  // Scope first, so two panes differ even before the approval token does.
+  assert.match(
+    adapter,
+    /const toolConfirmationScopeId = resolvedThreadId\n\s*\? `\$\{sandboxSessionId \|\| "_default"\}:\$\{resolvedThreadId\}`/,
+  );
+  assert.match(adapter, /\? `\$\{toolConfirmationScopeId\}:\$\{approvalId\}`/);
+  // The other branch mints a unique part id rather than reusing the backend's.
+  assert.match(
+    adapter,
+    /\(\) => `\$\{backendToolCallId\}:\$\{crypto\.randomUUID\(\)\}`/,
+  );
+
+  const { resolveToolCallPartId } = await import(
+    "../src/features/chat/tool-call-id.ts"
+  );
+  // One run's map cannot hand another run's the same id for "call_0".
+  let minted = 0;
+  const mint = () => `call_0:${(minted += 1)}`;
+  const paneA = resolveToolCallPartId(new Map(), "call_0", undefined, "", mint);
+  const paneB = resolveToolCallPartId(new Map(), "call_0", undefined, "", mint);
+  assert.notEqual(paneA, paneB);
+  // Within a run the same backend id keeps resolving to the one card.
+  const ids = new Map<string, string>();
+  const first = resolveToolCallPartId(ids, "call_0", undefined, "", mint);
+  assert.equal(
+    resolveToolCallPartId(ids, "call_0", undefined, "", mint),
+    first,
+  );
+  // A confirmation id wins outright: that is the scoped key above.
+  assert.equal(
+    resolveToolCallPartId(ids, "call_0", "sess:thread:tok", "", mint),
+    "sess:thread:tok",
+  );
 });

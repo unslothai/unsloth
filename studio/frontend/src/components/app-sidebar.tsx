@@ -942,6 +942,14 @@ export function AppSidebar() {
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
   const isExportRoute = pathname === "/export" || pathname.startsWith("/export/");
+  // Training runs surface as sidebar "Recents" on Train/Recipes/Export, else chat recents.
+  // Read up here because the chat lists below only exist when this is off.
+  const trainingRecentsRoute = isStudioRoute || isRecipesRoute || isExportRoute;
+  const { items: runItems } = useTrainingHistorySidebarItems(
+    !chatOnly && trainingRecentsRoute,
+  );
+  const showTrainingRecents =
+    !chatOnly && trainingRecentsRoute && runItems.length > 0;
   const { displayTitle, avatarDataUrl } = useEffectiveProfile();
 
   const { projects } = useChatProjects();
@@ -1224,8 +1232,18 @@ export function AppSidebar() {
   // Recents, so without these the chords cannot see them at all. Same rule the
   // Projects section renders by, collapsed folders and the per-folder limit
   // included.
+  // All three chat groups leave the tree on Train/Recipes/Export and are hidden
+  // on the icon rail, so a chord must not reach what they hold. Same rule a
+  // collapsed section follows, read off the sidebar as a whole. The mobile
+  // sheet is not part of it: it carries no collapsible state, and gating on it
+  // would strand the chords on any window narrow enough to count as mobile.
+  const chatListsOnScreen =
+    !isStudioRoute &&
+    !showTrainingRecents &&
+    (isMobile || sidebarState !== "collapsed");
   const renderedProjectChatItems = useMemo(() => {
-    if (organizeBy !== "project" || !projectsOpen) return [];
+    if (!chatListsOnScreen || organizeBy !== "project" || !projectsOpen)
+      return [];
     const out: SidebarItem[] = [];
     for (const project of visibleProjectRecords) {
       if (collapsedProjectIds.has(project.id)) continue;
@@ -1238,6 +1256,7 @@ export function AppSidebar() {
     }
     return out;
   }, [
+    chatListsOnScreen,
     organizeBy,
     projectsOpen,
     visibleProjectRecords,
@@ -1248,12 +1267,12 @@ export function AppSidebar() {
   // A collapsed section is not on screen either, so its rows are not walked or
   // selected any more than a collapsed folder's are.
   const visiblePinnedItems = useMemo(
-    () => (pinnedOpen ? sortedPinnedChatItems : []),
-    [pinnedOpen, sortedPinnedChatItems],
+    () => (chatListsOnScreen && pinnedOpen ? sortedPinnedChatItems : []),
+    [chatListsOnScreen, pinnedOpen, sortedPinnedChatItems],
   );
   const visibleRecentItems = useMemo(
-    () => (chatOpen ? sortedRecentChatItems : []),
-    [chatOpen, sortedRecentChatItems],
+    () => (chatListsOnScreen && chatOpen ? sortedRecentChatItems : []),
+    [chatListsOnScreen, chatOpen, sortedRecentChatItems],
   );
   // Rows wanting attention, most urgent first. Same rule the Priority sort uses.
   const attentionItemIds = useMemo(
@@ -1690,13 +1709,6 @@ export function AppSidebar() {
     clearThreadsUnread,
   ]);
 
-  // Training runs surface as sidebar "Recents" on Train/Recipes/Export, else chat recents.
-  const trainingRecentsRoute = isStudioRoute || isRecipesRoute || isExportRoute;
-  const { items: runItems } = useTrainingHistorySidebarItems(
-    !chatOnly && trainingRecentsRoute,
-  );
-  const showTrainingRecents =
-    !chatOnly && trainingRecentsRoute && runItems.length > 0;
   const activeJobId = useTrainingRuntimeStore((s) => s.jobId);
   const currentRunViewActive = useTrainingRuntimeStore((s) => s.currentRunViewActive);
   const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
@@ -2502,15 +2514,25 @@ export function AppSidebar() {
     withActiveChat((item) => void copyChatSessionId(item)),
   );
 
-  useShortcut("nextChat", () => goToChat((s) => adjacentChatItem(s, 1)));
-  useShortcut("previousChat", () => goToChat((s) => adjacentChatItem(s, -1)));
+  // These four walk the list, so holding them steps through it, the way an
+  // arrow key does. The rest are one-shot and ignore auto-repeat.
+  useShortcut("nextChat", () => goToChat((s) => adjacentChatItem(s, 1)), {
+    repeats: true,
+  });
+  useShortcut("previousChat", () => goToChat((s) => adjacentChatItem(s, -1)), {
+    repeats: true,
+  });
   // The walk holds the stack still while it runs, so a modifier held down
   // reaches the third chat back and beyond; releasing it ends the walk and
   // puts the chat it landed on at the top.
   const walkRecentlyViewed = (delta: number) =>
     openChatItemById(useChatNavigationStore.getState().stepRecentlyViewed(delta));
-  useShortcut("nextRecentlyViewedChat", () => walkRecentlyViewed(1));
-  useShortcut("previousRecentlyViewedChat", () => walkRecentlyViewed(-1));
+  useShortcut("nextRecentlyViewedChat", () => walkRecentlyViewed(1), {
+    repeats: true,
+  });
+  useShortcut("previousRecentlyViewedChat", () => walkRecentlyViewed(-1), {
+    repeats: true,
+  });
   useShortcut("nextChatNeedingAttention", () =>
     goToChat(nextAttentionChatItem),
   );
