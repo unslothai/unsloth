@@ -6590,15 +6590,8 @@ const GeneratingIndicator: FC = () => {
   );
   const messageId = useAuiState(({ message }) => message.id);
   const progress = useChatRuntimeStore(
-    (state) => state.generatingStatusByMessageId[messageId],
+    (state) => state.promptProgressByMessageId[messageId],
   );
-  const [now, setNow] = useState(Date.now);
-
-  useEffect(() => {
-    if (!show || !progress) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 100);
-    return () => window.clearInterval(timer);
-  }, [show, progress]);
 
   if (!show) {
     return null;
@@ -6616,26 +6609,10 @@ const GeneratingIndicator: FC = () => {
     );
   }
 
-  const exactProgress = progress.promptProgress;
-  const exactMetrics = exactProgress
-    ? promptProgressMetrics(exactProgress)
-    : null;
-  const basePhaseLabel = {
-    preparing: "Preparing request",
-    prefill: "Processing prompt",
-    waiting: "Waiting for first token",
-    reconnecting: "Reconnecting to generation",
-  }[progress.phase];
-  const phaseLabel = exactMetrics
-    ? `${basePhaseLabel} · ${Math.round(exactMetrics.percentage)}%`
-    : basePhaseLabel;
-  const elapsedSeconds = Math.max(0, now - progress.startedAt) / 1000;
-  const tokenLabel = exactProgress
-    ? `${Math.round(exactProgress.processed).toLocaleString()} / ${Math.round(exactProgress.total).toLocaleString()} tokens`
-    : progress.estimatedPromptTokens
-      ? `~${progress.estimatedPromptTokens.toLocaleString()} input tokens`
-      : null;
-  const previousRate = progress.previousPromptTokensPerSecond;
+  const metrics = promptProgressMetrics(progress, progress.history);
+  const phaseLabel = `Processing prompt · ${Math.round(metrics.percentage)}%`;
+  const elapsedSeconds = progress.timeMs / 1000;
+  const tokenLabel = `${Math.round(progress.processed).toLocaleString()} / ${Math.round(progress.total).toLocaleString()} tokens`;
 
   return (
     <div
@@ -6650,32 +6627,22 @@ const GeneratingIndicator: FC = () => {
         <span>{phaseLabel}</span>
       </div>
       <Progress
-        indeterminate={!exactMetrics}
-        value={exactMetrics?.percentage}
-        aria-label={
-          exactMetrics
-            ? phaseLabel
-            : `${phaseLabel}, progress unavailable until prompt processing starts`
-        }
+        value={metrics.percentage}
+        aria-label={phaseLabel}
         className="mt-2 h-1"
         indicatorClassName="bg-primary/70"
       />
       <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[11px] leading-4 tabular-nums">
-        {tokenLabel && <span>{tokenLabel}</span>}
+        <span>{tokenLabel}</span>
         <span>{elapsedSeconds.toFixed(1)}s elapsed</span>
-        {exactMetrics?.tokensPerSecond !== undefined && (
+        {metrics.tokensPerSecond !== undefined && (
           <span>
-            {Math.round(exactMetrics.tokensPerSecond).toLocaleString()} tok/s
+            {Math.round(metrics.tokensPerSecond).toLocaleString()} tok/s
           </span>
         )}
-        {exactMetrics?.etaMs !== undefined && (
-          <span>~{Math.max(1, Math.ceil(exactMetrics.etaMs / 1000))}s left</span>
-        )}
-        {!exactMetrics && previousRate !== undefined && (
-          <span
-            title="Last completed prompt rate; live prefill throughput is available only after this prompt finishes"
-          >
-            previous: {Math.round(previousRate).toLocaleString()} tok/s
+        {metrics.etaMs !== undefined && (
+          <span>
+            ~{Math.max(1, Math.ceil(metrics.etaMs / 1000))}s left
           </span>
         )}
       </div>

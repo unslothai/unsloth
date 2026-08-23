@@ -2622,7 +2622,7 @@ type ChatRuntimeStore = {
    *  model, keyed by toolCallId. Set from tool_end; finished cards prefer it
    *  over the truncated result. Session-transient. */
   toolFullOutput: Record<string, string>;
-  generatingStatusByMessageId: Record<string, ChatGenerationProgress>;
+  promptProgressByMessageId: Record<string, ChatGenerationProgress>;
   autoHealToolCalls: boolean;
   nudgeToolCalls: boolean;
   maxToolCallsPerMessage: number;
@@ -2952,11 +2952,11 @@ type ChatRuntimeStore = {
   setToolFullOutput: (toolCallId: string, text: string) => void;
   /** Drop a stale preserved full output (a new run is reusing the id). */
   clearToolFullOutput: (toolCallId: string) => void;
-  setGeneratingStatus: (
+  setPromptProgress: (
     messageId: string,
-    status: ChatGenerationProgress | null,
-    runId?: string,
+    progress: ChatGenerationProgress,
   ) => void;
+  clearPromptProgress: (messageId: string, runId: string) => void;
   setActiveDiffusionCanvas: (
     threadId: string | null,
     canvas: DiffusionCanvasFrame,
@@ -3784,7 +3784,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   toolStatusByThreadId: {},
   toolLiveOutput: {},
   toolFullOutput: {},
-  generatingStatusByMessageId: {},
+  promptProgressByMessageId: {},
   activeDiffusionCanvasByThreadId: {},
   autoHealToolCalls: true,
   nudgeToolCalls: true,
@@ -5151,34 +5151,22 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       delete next[key];
       return { activeDiffusionCanvasByThreadId: next };
     }),
-  setGeneratingStatus: (messageId, generatingStatus, runId) =>
+  setPromptProgress: (messageId, progress) =>
+    set((state) => ({
+      promptProgressByMessageId: {
+        ...state.promptProgressByMessageId,
+        [messageId]: progress,
+      },
+    })),
+  clearPromptProgress: (messageId, runId) =>
     set((state) => {
-      const current = state.generatingStatusByMessageId[messageId];
-      if (generatingStatus === null) {
-        if (runId && current?.runId !== runId) {
-          return state;
-        }
-        if (!current) {
-          return state;
-        }
-        const next = { ...state.generatingStatusByMessageId };
-        delete next[messageId];
-        return { generatingStatusByMessageId: next };
-      }
-      // A delayed timer from an older retry must not replace the newer run's panel.
-      if (
-        current &&
-        current.runId !== generatingStatus.runId &&
-        current.runStartedAt > generatingStatus.runStartedAt
-      ) {
+      const current = state.promptProgressByMessageId[messageId];
+      if (!current || current.runId !== runId) {
         return state;
       }
-      return {
-        generatingStatusByMessageId: {
-          ...state.generatingStatusByMessageId,
-          [messageId]: generatingStatus,
-        },
-      };
+      const next = { ...state.promptProgressByMessageId };
+      delete next[messageId];
+      return { promptProgressByMessageId: next };
     }),
   setAutoHealToolCalls: (autoHealToolCalls) =>
     set((state) => {

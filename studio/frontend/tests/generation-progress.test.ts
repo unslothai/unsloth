@@ -5,81 +5,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  estimatePromptTokens,
-  lastMeasuredPromptRate,
   promptProgressMetrics,
+  recordPromptProgress,
 } from "../src/features/chat/utils/generation-progress.ts";
-
-test("prompt size includes messages and tool definitions", () => {
-  const messagesOnly = estimatePromptTokens({
-    messages: [{ role: "user", content: "Explain the result" }],
-  });
-  const withTool = estimatePromptTokens({
-    messages: [{ role: "user", content: "Explain the result" }],
-    tools: [
-      {
-        type: "function",
-        function: {
-          name: "lookup_result",
-          description: "Look up a stored experiment result by identifier",
-        },
-      },
-    ],
-  });
-
-  assert.ok(messagesOnly !== undefined);
-  assert.ok(withTool !== undefined);
-  assert.ok(withTool > messagesOnly);
-});
-
-test("prompt size does not treat encoded media as text tokens", () => {
-  const estimated = estimatePromptTokens({
-    messages: [
-      {
-        role: "user",
-        content: [
-          { type: "text", text: "Describe this image" },
-          Object.fromEntries([
-            ["type", "image_url"],
-            ["image_url", `data:image/png;base64,${"a".repeat(50_000)}`],
-          ]),
-        ],
-      },
-    ],
-  });
-
-  assert.ok(estimated !== undefined);
-  assert.ok(estimated < 100);
-});
-
-test("the latest valid measured prompt rate is used as a baseline", () => {
-  const rate = lastMeasuredPromptRate([
-    {
-      metadata: {
-        custom: {
-          serverTimings: Object.fromEntries([
-            ["prompt_n", 1_000],
-            ["prompt_ms", 500],
-            ["prompt_per_second", 2_000],
-          ]),
-        },
-      },
-    },
-    {
-      metadata: {
-        custom: {
-          serverTimings: Object.fromEntries([
-            ["prompt_n", 10],
-            ["prompt_ms", 0],
-            ["prompt_per_second", Number.POSITIVE_INFINITY],
-          ]),
-        },
-      },
-    },
-  ]);
-
-  assert.equal(rate, 2_000);
-});
 
 test("real prompt progress produces percentage, uncached throughput, and ETA", () => {
   const metrics = promptProgressMetrics({
@@ -92,4 +20,90 @@ test("real prompt progress produces percentage, uncached throughput, and ETA", (
   assert.equal(metrics.percentage, 60);
   assert.equal(metrics.tokensPerSecond, 2_000);
   assert.equal(metrics.etaMs, 200);
+});
+
+test("observed batch slowdown is projected across the remaining batches", () => {
+  const metrics = promptProgressMetrics(
+    { total: 900, processed: 600, cache: 0, timeMs: 992.992 },
+    [
+      { processed: 0, cache: 0, timeMs: 0 },
+      { processed: 100, cache: 0, timeMs: 100 },
+      { processed: 200, cache: 0, timeMs: 220 },
+      { processed: 300, cache: 0, timeMs: 364 },
+      { processed: 400, cache: 0, timeMs: 536.8 },
+      { processed: 500, cache: 0, timeMs: 744.16 },
+    ],
+  );
+
+  assert.ok(Math.abs((metrics.tokensPerSecond ?? 0) - 401.878) < 0.001);
+  assert.ok(Math.abs((metrics.etaMs ?? 0) - 1_086.898) < 0.001);
+});
+
+test("progress history remains owned by one run", () => {
+  const first = recordPromptProgress(
+    "run-a",
+    { total: 1_000, processed: 100, cache: 0, timeMs: 50 },
+  );
+  const second = recordPromptProgress(
+    "run-a",
+    { total: 1_000, processed: 200, cache: 0, timeMs: 110 },
+    first,
+  );
+  const retry = recordPromptProgress(
+    "run-b",
+    { total: 1_000, processed: 100, cache: 0, timeMs: 60 },
+    second,
+  );
+
+  assert.equal(second.history.length, 1);
+  assert.equal(retry.history.length, 0);
+});
+
+test("different batch sizes are compared by per-token cost", () => {
+  const metrics = promptProgressMetrics(
+    { total: 500, processed: 300, cache: 0, timeMs: 300 },
+    [
+      { processed: 0, cache: 0, timeMs: 0 },
+      { processed: 100, cache: 0, timeMs: 100 },
+    ],
+  );
+
+  assert.equal(metrics.tokensPerSecond, 1_000);
+  assert.equal(metrics.etaMs, 200);
+});
+
+test("prompt progress history stays bounded", () => {
+  let progress = recordPromptProgress(
+    "run",
+    { total: 10_000, processed: 0, cache: 0, timeMs: 0 },
+  );
+  for (let index = 1; index <= 100; index += 1) {
+    progress = recordPromptProgress(
+      "run",
+      {
+        total: 10_000,
+        processed: index * 100,
+        cache: 0,
+        timeMs: index * 10,
+      },
+      progress,
+    );
+  }
+
+  assert.equal(progress.history.length, 32);
+});
+
+test("one scheduling spike cannot make the forecast explode", () => {
+  const metrics = promptProgressMetrics(
+    { total: 700, processed: 400, cache: 0, timeMs: 1_300 },
+    [
+      { processed: 0, cache: 0, timeMs: 0 },
+      { processed: 100, cache: 0, timeMs: 100 },
+      { processed: 200, cache: 0, timeMs: 200 },
+      { processed: 300, cache: 0, timeMs: 300 },
+    ],
+  );
+
+  assert.ok(Number.isFinite(metrics.etaMs));
+  assert.ok((metrics.etaMs ?? 0) < 10_000);
 });

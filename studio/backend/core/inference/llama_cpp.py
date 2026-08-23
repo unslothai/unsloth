@@ -4368,20 +4368,13 @@ def _report_live_llama_timings(callback, chunk) -> None:
     sample = dict(timings) if isinstance(timings, dict) else {}
     # Live samples are not TTFT; terminal metadata retains prompt_ms for the fallback.
     sample.pop("prompt_ms", None)
-    progress = chunk.get("prompt_progress")
-    if isinstance(progress, dict):
-        try:
-            processed = max(0.0, float(progress.get("processed", 0)))
-            cached = max(0.0, float(progress.get("cache", 0)))
-            elapsed_ms = float(progress.get("time_ms", 0))
-            prompt_n = max(0.0, processed - cached)
-            if math.isfinite(elapsed_ms) and elapsed_ms > 0 and math.isfinite(prompt_n):
-                sample.update(
-                    prompt_n = prompt_n,
-                    prompt_per_second = prompt_n / (elapsed_ms / 1000.0),
-                )
-        except (TypeError, ValueError, OverflowError):
-            pass
+    progress = _normalized_prompt_progress(chunk)
+    if progress is not None and progress["time_ms"] > 0:
+        prompt_n = max(0.0, progress["processed"] - progress["cache"])
+        sample.update(
+            prompt_n = prompt_n,
+            prompt_per_second = prompt_n / (progress["time_ms"] / 1000.0),
+        )
     if not sample:
         return
     try:
@@ -4390,8 +4383,8 @@ def _report_live_llama_timings(callback, chunk) -> None:
         logger.debug("Ignoring API monitor throughput callback failure", exc_info = True)
 
 
-def _prompt_progress_event(chunk) -> Optional[dict]:
-    """Normalize llama-server's per-batch prompt progress for stream consumers."""
+def _normalized_prompt_progress(chunk) -> Optional[dict]:
+    """Validate llama-server's per-batch prompt progress once for every consumer."""
     if not isinstance(chunk, dict) or not isinstance(chunk.get("prompt_progress"), dict):
         return None
     progress = chunk["prompt_progress"]
@@ -4406,7 +4399,15 @@ def _prompt_progress_event(chunk) -> Optional[dict]:
         return None
     if not all(math.isfinite(value) for value in values.values()) or values["total"] <= 0:
         return None
-    return {"type": "prompt_progress", "prompt_progress": values}
+    return values
+
+
+def _prompt_progress_event(chunk) -> Optional[dict]:
+    """Normalize llama-server's per-batch prompt progress for stream consumers."""
+    progress = _normalized_prompt_progress(chunk)
+    if progress is None:
+        return None
+    return {"type": "prompt_progress", "prompt_progress": progress}
 
 
 # Host RAM to leave free on an integrated GPU, matching llama.cpp's own --fit
@@ -23447,6 +23448,7 @@ class LlamaCppBackend:
         retry_preflight_context_length = None
         if perf_callback is not None or return_progress:
             payload["return_progress"] = True
+        if perf_callback is not None:
             payload["timings_per_token"] = True
         # Per-request enable_thinking / reasoning_effort / preserve_thinking
         _reasoning_kw = self._request_reasoning_kwargs(
@@ -24264,6 +24266,7 @@ class LlamaCppBackend:
 
             if perf_callback is not None or return_progress:
                 payload["return_progress"] = True
+            if perf_callback is not None:
                 payload["timings_per_token"] = True
             # As in the passthrough builder: if every name carried markup the catalog is
             # now empty, and "tools": [] would still advertise tool use.
@@ -25821,6 +25824,7 @@ class LlamaCppBackend:
 
         if perf_callback is not None or return_progress:
             stream_payload["return_progress"] = True
+        if perf_callback is not None:
             stream_payload["timings_per_token"] = True
 
         _final_respawn_truncations: list[dict] = []

@@ -214,8 +214,6 @@ def test_plain_stream_requests_and_yields_prompt_progress(monkeypatch):
         yield type("FakeResponse", (), {"chunks": stream})(), None
 
     monkeypatch.setattr(backend, "_open_stream", fake_open_stream)
-    monkeypatch.setattr(backend, "_claim_thread_slot", lambda _thread_id: None)
-    monkeypatch.setattr(backend, "_release_thread_slot", lambda _slot: None)
 
     events = list(
         backend.generate_chat_completion(
@@ -225,7 +223,7 @@ def test_plain_stream_requests_and_yields_prompt_progress(monkeypatch):
     )
 
     assert payloads[0]["return_progress"] is True
-    assert payloads[0]["timings_per_token"] is True
+    assert "timings_per_token" not in payloads[0]
     assert events[0]["type"] == "prompt_progress"
     assert events[0]["prompt_progress"]["processed"] == 512
     assert events[1] == "OK"

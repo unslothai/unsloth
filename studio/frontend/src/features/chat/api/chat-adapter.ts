@@ -250,11 +250,7 @@ import {
   useResearchRunStore,
   watchResearchRun,
 } from "../stores/research-run-store";
-import {
-  estimatePromptTokens,
-  lastMeasuredPromptRate,
-  type ChatGenerationProgress,
-} from "../utils/generation-progress";
+import { recordPromptProgress } from "../utils/generation-progress";
 import { cancelResearchRun, createResearchRun } from "./research-api";
 
 // Small models (<=9B) answer from memory instead of calling search, so "auto"
@@ -4855,7 +4851,7 @@ export function createOpenAIStreamAdapter(
           : threadKey;
 
       // Per-run token so a delayed stop POST can't match the next run.
-      const cancelId =
+      const generationRequestId =
         typeof crypto !== "undefined" && "randomUUID" in crypto
           ? crypto.randomUUID()
           : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -4938,29 +4934,6 @@ export function createOpenAIStreamAdapter(
       let waitingFirstChunk = true;
       let firstTokenSettled = false;
       const streamStartTime = Date.now();
-      const generationProgressRunId = crypto.randomUUID();
-      const generationProgressMessageId = unstable_assistantMessageId;
-      let generationProgress: ChatGenerationProgress = {
-        runId: generationProgressRunId,
-        phase: "preparing",
-        runStartedAt: streamStartTime,
-        startedAt: streamStartTime,
-        previousPromptTokensPerSecond: lastMeasuredPromptRate(messages),
-      };
-      let generationProgressVisible = false;
-      const publishGenerationProgress = () => {
-        if (
-          generationProgressMessageId &&
-          generationProgressVisible &&
-          waitingFirstChunk &&
-          !runSignal.aborted
-        ) {
-          runtime.setGeneratingStatus(
-            generationProgressMessageId,
-            generationProgress,
-          );
-        }
-      };
       let responseModelId = externalSelection?.modelId ?? params.checkpoint;
       let firstTokenTime: number | undefined;
       let totalChunks = 0;
@@ -4985,13 +4958,6 @@ export function createOpenAIStreamAdapter(
         rejectFirstToken?.(err);
       }
 
-      const warmupDelayMs = 450;
-      const warmupTimer = setTimeout(() => {
-        if (!waitingFirstChunk) return;
-        if (runSignal.aborted) return;
-        generationProgressVisible = true;
-        publishGenerationProgress();
-      }, warmupDelayMs);
       // Flagged local/external so the model-swap gate only counts the chats a reload ends; the
       // backend leaves external-provider runs out of active_generations for the same reason.
       releaseCurrentPreStreamRun();
@@ -5265,7 +5231,9 @@ export function createOpenAIStreamAdapter(
         if ((runSignal.reason as { detach?: boolean } | undefined)?.detach) {
           return;
         }
-        const body: Record<string, string> = { cancel_id: cancelId };
+        const body: Record<string, string> = {
+          cancel_id: generationRequestId,
+        };
         if (sandboxSessionId) body.session_id = sandboxSessionId;
         // Plain fetch, not authFetch: authFetch redirects to login on
         // 401, which would kick the user out mid-stop.
@@ -5331,7 +5299,7 @@ export function createOpenAIStreamAdapter(
           finishedAt,
           durationMs: finishedAt - streamStartTime,
           ...(sandboxSessionId ? { sessionId: sandboxSessionId } : {}),
-          cancelId,
+          cancelId: generationRequestId,
           toolCalls: Array.from(
             new Set(
               toolCallParts
@@ -5745,10 +5713,12 @@ export function createOpenAIStreamAdapter(
             // Opt into the trailing usage chunk so the context-usage bar
             // and tok/s readout populate (backend gates it on include_usage).
             stream_options: { include_usage: true },
-            // llama.cpp emits one exact prompt-progress sample per processed batch.
-            ...(activeModel?.isGguf === true ? { return_progress: true } : {}),
             ...(activeModel?.isGguf === true
-              ? { context_overflow: "truncate_oldest" as const }
+              ? {
+                  // llama.cpp emits one exact prompt-progress sample per processed batch.
+                  return_progress: true,
+                  context_overflow: "truncate_oldest" as const,
+                }
               : {}),
             temperature: params.temperature,
             top_p: params.topP,
@@ -5760,7 +5730,7 @@ export function createOpenAIStreamAdapter(
             image_base64: imageBase64,
             audio_base64: audioBase64,
             video_base64: videoBase64,
-            cancel_id: cancelId,
+            cancel_id: generationRequestId,
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
             ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
@@ -5885,21 +5855,7 @@ export function createOpenAIStreamAdapter(
             }
             clearSelectedImageEditReference();
             requestedMaxTokens = requestPayload.max_tokens;
-            generationProgress = {
-              ...generationProgress,
-              estimatedPromptTokens: estimatePromptTokens({
-                messages: requestPayload.messages,
-                tools: (requestPayload as unknown as { tools?: unknown }).tools,
-              }),
-            };
-            publishGenerationProgress();
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
-            generationProgress = {
-              ...generationProgress,
-              phase: isExternalRequest ? "waiting" : "prefill",
-              startedAt: Date.now(),
-            };
-            publishGenerationProgress();
             const stream = streamChatCompletions(requestPayload, runSignal);
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
@@ -5911,26 +5867,26 @@ export function createOpenAIStreamAdapter(
               }
 
               const promptProgress = chunk.prompt_progress;
-              if (
-                promptProgress &&
-                Number.isFinite(promptProgress.total) &&
-                promptProgress.total > 0 &&
-                Number.isFinite(promptProgress.processed) &&
-                Number.isFinite(promptProgress.cache) &&
-                Number.isFinite(promptProgress.time_ms)
-              ) {
-                generationProgress = {
-                  ...generationProgress,
-                  phase: "prefill",
-                  estimatedPromptTokens: promptProgress.total,
-                  promptProgress: {
-                    total: promptProgress.total,
-                    processed: promptProgress.processed,
-                    cache: promptProgress.cache,
-                    timeMs: promptProgress.time_ms,
-                  },
-                };
-                publishGenerationProgress();
+              if (promptProgress) {
+                if (unstable_assistantMessageId && !runSignal.aborted) {
+                  const previous =
+                    useChatRuntimeStore.getState().promptProgressByMessageId[
+                      unstable_assistantMessageId
+                    ];
+                  runtime.setPromptProgress(
+                    unstable_assistantMessageId,
+                    recordPromptProgress(
+                      generationRequestId,
+                      {
+                        total: promptProgress.total,
+                        processed: promptProgress.processed,
+                        cache: promptProgress.cache,
+                        timeMs: promptProgress.time_ms,
+                      },
+                      previous,
+                    ),
+                  );
+                }
                 continue;
               }
 
@@ -6775,11 +6731,10 @@ export function createOpenAIStreamAdapter(
                 waitingFirstChunk = false;
                 firstTokenTime = Date.now() - streamStartTime;
                 settleFirstTokenOk();
-                if (generationProgressMessageId) {
-                  runtime.setGeneratingStatus(
-                    generationProgressMessageId,
-                    null,
-                    generationProgressRunId,
+                if (unstable_assistantMessageId) {
+                  runtime.clearPromptProgress(
+                    unstable_assistantMessageId,
+                    generationRequestId,
                   );
                 }
               }
@@ -7286,11 +7241,10 @@ export function createOpenAIStreamAdapter(
         for (const part of toolCallParts) {
           confirmStore.clearToolConfirmation(part.toolCallId);
         }
-        if (generationProgressMessageId) {
-          runtime.setGeneratingStatus(
-            generationProgressMessageId,
-            null,
-            generationProgressRunId,
+        if (unstable_assistantMessageId) {
+          runtime.clearPromptProgress(
+            unstable_assistantMessageId,
+            generationRequestId,
           );
         }
         // Scoped by thread AND by run: a global clear wiped every other running chat's badge,
@@ -7312,7 +7266,6 @@ export function createOpenAIStreamAdapter(
         // Drop the transient denoising canvas so the finished bubble shows only the committed
         // answer. Scoped: a global clear wiped another denoising chat's frame.
         runtime.clearActiveDiffusionCanvasForThread(cleanupKey);
-        clearTimeout(warmupTimer);
         if (waitingFirstChunk) {
           if (firstTokenSettled) {
             settleFirstTokenOk();
