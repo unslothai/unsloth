@@ -172,6 +172,22 @@ GPU: 2
         TARGET_GRAPHICS_VERSION: gfx1201
 EOF
 # amd-smi 6.1.1 has MARKET_NAME and no TARGET_GRAPHICS_VERSION, so the name picks the wheel.
+cat > "$WORK/smi_e_two_identity" <<'EOF'
+GPU: 0
+    HIP_ID: 0
+GPU: 1
+    HIP_ID: 1
+EOF
+# Two of the same card on an amd-smi with no TARGET_GRAPHICS_VERSION: the names match, so
+# whichever ordinal wins infers the same arch. Not ambiguous, so not declined.
+cat > "$WORK/smi_two_same_nogfx" <<'EOF'
+GPU: 0
+    ASIC:
+        MARKET_NAME: AMD Instinct MI300X
+GPU: 1
+    ASIC:
+        MARKET_NAME: AMD Instinct MI300X
+EOF
 cat > "$WORK/smi_two_nogfx" <<'EOF'
 GPU: 0
     ASIC:
@@ -316,7 +332,12 @@ assert_eq "an out-of-range mask falls back to adapter 0" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three" 9)"
 # No gfx token anywhere: the name is all there is, so it must be the selected card's.
 assert_eq "a nameless-arch build still names the selected adapter" \
-    "|AMD Radeon AI PRO R9700" "$(summary "$WORK/empty" "$WORK/smi_two_nogfx" 1)"
+    "|AMD Radeon AI PRO R9700" \
+    "$(STUB_AMDSMI_E="$WORK/smi_e_two_identity" summary "$WORK/empty" "$WORK/smi_two_nogfx" 1)"
+assert_eq "and declines without a map, since the name is what the arch comes from" "|" \
+    "$(summary "$WORK/empty" "$WORK/smi_two_nogfx" 1)"
+assert_eq "two archless adapters of the same model are not ambiguous" \
+    "|AMD Instinct MI300X" "$(summary "$WORK/empty" "$WORK/smi_two_same_nogfx" 1)"
 assert_eq "neither tool installed reports nothing" "|" "$(summary - -)"
 assert_eq "both installed but silent reports nothing" "|" "$(summary "$WORK/empty" "$WORK/empty")"
 

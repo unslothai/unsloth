@@ -2237,13 +2237,16 @@ if [ "$_setup_nvidia_usable" != true ]; then
                 | _setup_amd_smi_hip_order "$_setup_amd_records" || true)
             _setup_amd_space=$(printf '%s\n' "$_setup_amd_smi_out" | head -n 1)
             _setup_amd_records=$(printf '%s\n' "$_setup_amd_smi_out" | tail -n +2)
-            # No map, and the adapters do not agree on an arch: the mask indexes HIP order
-            # and these records are in discovery order, so any ordinal is a guess. Decline
+            # No map, and the adapters are not interchangeable: the mask indexes HIP order
+            # while these records are in discovery order, so any ordinal is a guess. Decline
             # rather than forward a guessed --rocm-gfx to the llama.cpp and whisper
-            # prebuilts. Identical adapters are unaffected, since every ordinal yields the
-            # same arch either way, and UNSLOTH_ROCM_GFX_ARCH still overrides below.
+            # prebuilts. amd-smi 6.1.1 reports no TARGET_GRAPHICS_VERSION at all and the
+            # arch is then inferred from the name, so an archless record is compared on its
+            # name instead. Interchangeable adapters are unaffected: every ordinal gives the
+            # same answer, and UNSLOTH_ROCM_GFX_ARCH still overrides below.
             if [ "$_setup_amd_space" != hip ] && \
-               [ "$(printf '%s\n' "$_setup_amd_records" | awk -F'|' 'NF { print $1 }' \
+               [ "$(printf '%s\n' "$_setup_amd_records" \
+                    | awk -F'|' 'NF { print ($1 != "" ? $1 : "name:" $2) }' \
                     | sort -u | wc -l)" -gt 1 ]; then
                 _setup_amd_records=""
                 _setup_gfx_all=""

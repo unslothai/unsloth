@@ -4861,12 +4861,15 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
                 | _amd_smi_hip_order "$_gpu_disp_smi_records" || true)
             _gpu_disp_smi_space=$(printf '%s\n' "$_gpu_disp_smi_out" | head -n 1)
             _gpu_disp_smi_records=$(printf '%s\n' "$_gpu_disp_smi_out" | tail -n +2)
-            # No map, and the adapters do not agree on an arch: the mask indexes HIP order
-            # and these records are in discovery order, so any ordinal is a guess. Report
-            # nothing rather than name one card and route another. Identical adapters are
-            # unaffected, since every ordinal yields the same arch either way.
+            # No map, and the adapters are not interchangeable: the mask indexes HIP order
+            # while these records are in discovery order, so any ordinal is a guess. Report
+            # nothing rather than name one card while the mask selects another. amd-smi
+            # 6.1.1 reports no TARGET_GRAPHICS_VERSION at all and the arch is then inferred
+            # from the name, so an archless record is compared on its name instead.
+            # Interchangeable adapters are unaffected: every ordinal gives the same answer.
             if [ "$_gpu_disp_smi_space" != hip ] && \
-               [ "$(printf '%s\n' "$_gpu_disp_smi_records" | awk -F'|' 'NF { print $1 }' \
+               [ "$(printf '%s\n' "$_gpu_disp_smi_records" \
+                    | awk -F'|' 'NF { print ($1 != "" ? $1 : "name:" $2) }' \
                     | sort -u | wc -l)" -gt 1 ]; then
                 _gpu_disp_smi_records=""
                 _gpu_disp_gfx_all=""
