@@ -228,6 +228,13 @@ def test_inadequate_stack_warning_names_the_floors_not_the_install_pins(monkeypa
         stdout = ""
 
     warnings = []
+    # Pin both, or this test measures the host. attempt_mlx_repair returns early
+    # when _uv_executable() finds nothing, long before the message under test, so
+    # on a machine without uv the warning list comes back empty and the unpack
+    # below fails rather than the assertion. That is what took CI red while this
+    # passed locally.
+    monkeypatch.setattr(mr, "_uv_executable", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(mr, "_transformers_constraint_args", lambda: ([], None))
     monkeypatch.setattr(mr.subprocess, "run", lambda *a, **k: _Result())
     monkeypatch.setattr(mr, "mlx_stack_available", lambda: False)
     monkeypatch.setattr(mr.logger, "warning", lambda msg, *args, **kw: warnings.append(msg % args))
