@@ -1151,8 +1151,8 @@ def _run_venv_chain(studio_home, redirect = "default"):
         # Mirrors the `if [ ! -x "$VENV_DIR/bin/python" ]` create gate below the chain.
         + 'if [ -x "$VENV_DIR/bin/python" ]; then echo UV=skipped_migrated\n'
         + 'elif [ -d "$VENV_DIR" ] && [ -n "$(ls -A "$VENV_DIR" 2>/dev/null)" ]; then\n'
-        + '    echo UV=would_fail_dir_not_empty\n'
-        + 'else echo UV=would_create_ok; fi\n'
+        + "    echo UV=would_fail_dir_not_empty\n"
+        + "else echo UV=would_create_ok; fi\n"
     )
     return subprocess.run(
         ["bash", "-c", script],
@@ -1239,13 +1239,17 @@ def test_occupied_venv_dir_still_wins_over_legacy_migration(tmp_path):
 def test_install_sh_reports_a_failed_venv_move(tmp_path):
     """A failed move must say so, matching install.ps1's Exit-InstallFailure on the same step."""
     src = INSTALL_SH.read_text(encoding = "utf-8")
-    assert 'if ! _start_studio_venv_replacement "$VENV_DIR"; then' in src, (
-        "install.sh must check the replacement helper rather than relying on bare set -e"
-    )
+    assert (
+        'if ! _start_studio_venv_replacement "$VENV_DIR"; then' in src
+    ), "install.sh must check the replacement helper rather than relying on bare set -e"
     assert "could not move $VENV_DIR aside to reinstall" in src
 
 
-def _dir_has_entries_says(tmp_path, target, pre = ""):
+def _dir_has_entries_says(
+    tmp_path,
+    target,
+    pre = "",
+):
     """Run the real _dir_has_entries from install.sh against one directory."""
     script = (
         _extract_install_sh_function("_dir_has_entries")
@@ -1253,7 +1257,10 @@ def _dir_has_entries_says(tmp_path, target, pre = ""):
         + f'if _dir_has_entries "{target}"; then echo yes; else echo no; fi\n'
     )
     res = subprocess.run(
-        ["bash", "-c", script], env = {"PATH": "/usr/bin:/bin"}, text = True, capture_output = True,
+        ["bash", "-c", script],
+        env = {"PATH": "/usr/bin:/bin"},
+        text = True,
+        capture_output = True,
     )
     assert res.returncode == 0, f"stderr={res.stderr!r}"
     return res.stdout.strip()
@@ -1270,9 +1277,9 @@ def test_dir_has_entries_survives_noglob_in_the_caller(tmp_path):
 
     empty = tmp_path / "empty"
     empty.mkdir()
-    assert _dir_has_entries_says(tmp_path, empty, pre = "set -f") == "no", (
-        "an empty directory must still be left for uv to create into"
-    )
+    assert (
+        _dir_has_entries_says(tmp_path, empty, pre = "set -f") == "no"
+    ), "an empty directory must still be left for uv to create into"
 
 
 def test_dir_has_entries_restores_the_callers_noglob_setting(tmp_path):
@@ -1283,13 +1290,16 @@ def test_dir_has_entries_restores_the_callers_noglob_setting(tmp_path):
         _extract_install_sh_function("_dir_has_entries")
         + "set -f\n"
         + f'_dir_has_entries "{empty}" || true\n'
-        + 'case $- in *f*) echo NOGLOB_KEPT ;; *) echo NOGLOB_LOST ;; esac\n'
+        + "case $- in *f*) echo NOGLOB_KEPT ;; *) echo NOGLOB_LOST ;; esac\n"
         + "set +f\n"
         + f'_dir_has_entries "{empty}" || true\n'
-        + 'case $- in *f*) echo GLOB_LOST ;; *) echo GLOB_KEPT ;; esac\n'
+        + "case $- in *f*) echo GLOB_LOST ;; *) echo GLOB_KEPT ;; esac\n"
     )
     res = subprocess.run(
-        ["bash", "-c", script], env = {"PATH": "/usr/bin:/bin"}, text = True, capture_output = True,
+        ["bash", "-c", script],
+        env = {"PATH": "/usr/bin:/bin"},
+        text = True,
+        capture_output = True,
     )
     assert "NOGLOB_KEPT" in res.stdout, "the caller's `set -f` must be restored"
     assert "GLOB_KEPT" in res.stdout, "a caller without `set -f` must not gain it"
