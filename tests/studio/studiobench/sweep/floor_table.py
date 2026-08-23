@@ -607,7 +607,23 @@ def partial_censoring(paths: list[Path]) -> dict[str, str]:
         # row whose `expect_ok` is False, and `censored_metrics` counts that as a censored cell --
         # so reading the raw file here would mark a metric partially censored on the strength of an
         # attempt that contributed nothing to the mean. The two readers have to see one payload.
-        everything += list(latest_attempt_rows(read_rows(path)))
+        #
+        # NAMESPACED BY SHARD, for the same reason `paired` keys on it: sharding restarts the
+        # repetition counter, so `r500K.base.rep0` names a DIFFERENT cell in each shard. Merged on
+        # the bare id, the completed-cell filter below stops separating them -- one shard's failed
+        # cell and another shard's successful one become a single id that is both censored and
+        # completed, and a metric nothing censored anywhere is refused as partially censored on
+        # the strength of a cell that contributed nothing to the mean. That is the very case the
+        # paragraph above drops superseded attempts to avoid, arriving one file over.
+        #
+        # SUFFIXED rather than prefixed, so `refuse_partial_censoring` still reads the rung off
+        # `cell_id.split(".", 1)[0]` and its message names rungs rather than directories.
+        shard = str(path.parent.name)
+        for row in latest_attempt_rows(read_rows(path)):
+            row = dict(row)
+            if row.get("cell_id") is not None:
+                row["cell_id"] = f"{row['cell_id']}@{shard}"
+            everything.append(row)
     out: dict[str, str] = {}
     for metric in sorted(censorable_metrics(everything)):
         why = payload_rules.refuse_partial_censoring(everything, metric)
