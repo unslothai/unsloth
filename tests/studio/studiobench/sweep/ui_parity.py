@@ -720,11 +720,7 @@ def report(
                 # regression shape that leaves no digest to differ, so a broken composer taking
                 # `keystroke` down on the treatment arm in both repetitions exited 0. `scroll_after`
                 # was exempt without even having a `not_run` path to reach.
-                (
-                    one_sided_unstable
-                    if action in P.RACY_EXECUTION
-                    else one_sided
-                ).append(entry)
+                (one_sided_unstable if action in P.RACY_EXECUTION else one_sided).append(entry)
             else:
                 idle.append(entry)
             continue
