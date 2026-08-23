@@ -119,6 +119,17 @@ def _blame_latest_turn(context_tokens: int):
     latest_turn = _int(refusal.get("latest_turn_tokens"))
     if irreducible <= 0 or latest_turn <= 0:
         return None
+    # Both numbers price a whole rendered PROMPT, so both carry the same floor: the
+    # template's wrapper and, on a tool-enabled request, the entire tool catalogue
+    # rendered into the system turn. Left in, that floor swamps the comparison -- a
+    # 6,000-token MCP catalogue makes a 20-token "hi" 97% of the irreducible prompt, and
+    # this would tell the user to send that "hi" in smaller pieces when the only thing
+    # that would help is advertising fewer tools. Off BOTH sides, so what is compared is
+    # what the turn contributed against what the rest of the conversation contributed.
+    shared = _int(refusal.get("shared_prompt_tokens"))
+    shared = max(0, min(shared, latest_turn - 1, irreducible - 1))
+    latest_turn -= shared
+    irreducible -= shared
     if latest_turn < _TURN_DOMINATES * irreducible:
         return None
     # The WINDOW, not the fit's `prompt_target`. The hard wordings below say the turn is
@@ -133,6 +144,11 @@ def _blame_latest_turn(context_tokens: int):
     #
     # `>=`, not `>`, to match that check: a turn exactly the size of the window is
     # refused by llama-server too.
+    #
+    # The turn WITHOUT the shared floor, against the whole window: the hard wording is a
+    # claim about the turn's own size, and a turn that clears the window only once a tool
+    # catalogue is standing beside it is not a turn the window cannot hold. Halving such a
+    # turn does make it fit, so it keeps the soft wording, whose lever still works.
     window = recorded_context or context_tokens
     # Not defaulted to "user": a role we cannot name is a turn we cannot give advice
     # about, and `describe_oversize` falls back to the generic wording for it.

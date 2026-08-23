@@ -14,6 +14,7 @@ sent at all.
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -24,6 +25,7 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from core.inference import context_refusal  # noqa: E402
+from core.inference.context_window import fit_rolling_context  # noqa: E402
 from routes.inference import (  # noqa: E402
     _accumulate_context_truncation,
     _context_truncated_sse_chunk,
@@ -238,6 +240,149 @@ def test_a_diagnosis_for_a_different_window_is_ignored():
     # window the server did not just refuse, so it must not narrate this one.
     context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800, context_length = 8192))
     assert "shorten the conversation" in _friendly_error(ValueError(_SERVER_ERROR))
+
+
+# ------------------------------------------------- the floor both counts stand on
+
+
+def _tool_catalogue_counter(catalogue_tokens: int):
+    """`count_chat_tokens(fitted, None, safe_tools)` in miniature.
+
+    The real counter renders a PROMPT: llama-server's /apply-template writes the tool
+    catalogue into the system turn of whatever messages it is handed, so the catalogue is
+    a constant on top of any slice -- including the one-message slice the fit prices to
+    find the newest turn.
+    """
+
+    def count(messages):
+        body = sum(max(1, len(json.dumps(message, ensure_ascii = False)) // 4) for message in messages)
+        return body + catalogue_tokens
+
+    return count
+
+
+def _thread(*, system_tokens: int, turn_tokens: int, role: str = "user", history_turns: int = 6):
+    messages = [{"role": "system", "content": "s" * (system_tokens * 4)}]
+    for index in range(history_turns):
+        messages.append({"role": "user", "content": f"q{index} " + "x" * 1200})
+        messages.append({"role": "assistant", "content": f"a{index} " + "y" * 1200})
+    messages.append({"role": role, "content": "z" * (turn_tokens * 4)})
+    return messages
+
+
+def _refuse_and_explain(*, window: int, catalogue: int, system_tokens: int, turn_tokens: int, role: str = "user"):
+    """Drive the real path: fit -> recorded diagnosis -> the message the user reads."""
+    _, truncation = fit_rolling_context(
+        _thread(system_tokens = system_tokens, turn_tokens = turn_tokens, role = role),
+        context_length = window,
+        max_tokens = None,
+        count_tokens = _tool_catalogue_counter(catalogue),
+    )
+    assert truncation is not None and not truncation["fits"]
+    _context_truncated_sse_chunk("cmpl-1", "model", truncation)
+    return truncation, _friendly_error(
+        ValueError(f"the request (9000 tokens) exceeds the available context size ({window} tokens)")
+    )
+
+
+def test_a_tool_catalogue_is_not_the_message_just_sent():
+    """A 20-token "hi" beside a large MCP catalogue is not what the user should shorten.
+
+    Both counts in the diagnosis price a whole prompt, so both carry the catalogue: the
+    turn reads as 97% of the irreducible prompt while contributing 20 tokens of it. The
+    remedy is fewer tools or a bigger window, and neither is "send it in smaller pieces".
+    """
+    truncation, message = _refuse_and_explain(
+        window = 8192, catalogue = 6000, system_tokens = 200, turn_tokens = 20
+    )
+    # The raw counts really are that lopsided; the floor is what makes them so.
+    assert truncation["latest_turn_tokens"] > 0.9 * truncation["irreducible_tokens"]
+    assert truncation["shared_prompt_tokens"] == 6000
+    assert "shorten the conversation" in message
+    assert "message just sent" not in message
+
+
+def test_a_catalogue_bigger_than_the_window_never_makes_a_tiny_turn_unsendable():
+    # The false claim, not merely the unhelpful one: a catalogue over the window makes
+    # the one-message count clear the window on its own, so the turn is reported as
+    # impossible to send when it is twenty tokens.
+    truncation, message = _refuse_and_explain(
+        window = 4096, catalogue = 4200, system_tokens = 200, turn_tokens = 20
+    )
+    assert truncation["latest_turn_tokens"] > truncation["context_length"]
+    assert "does not fit on its own" not in message
+    assert "shorten the conversation" in message
+
+
+@pytest.mark.parametrize(
+    "turn_tokens,expected",
+    [
+        # Still the bulk of what is left once the catalogue is off both sides.
+        (5000, "Most of this prompt is the message just sent"),
+        # And still bigger than the window on its own, catalogue or no catalogue.
+        (8300, "does not fit on its own"),
+    ],
+)
+def test_a_catalogue_does_not_cost_a_turn_that_really_is_the_problem(turn_tokens, expected):
+    _, message = _refuse_and_explain(
+        window = 8192, catalogue = 1500, system_tokens = 200, turn_tokens = turn_tokens
+    )
+    assert expected in message
+
+
+def test_a_tool_result_beside_a_catalogue_is_judged_on_its_own_size():
+    # The same trap on the role the user cannot edit: a small tool result must not be
+    # reported as a tool returning more than the window can hold.
+    _, small = _refuse_and_explain(
+        window = 8192, catalogue = 6000, system_tokens = 200, turn_tokens = 20, role = "tool"
+    )
+    assert "tool result" not in small and "shorten the conversation" in small
+    _, large = _refuse_and_explain(
+        window = 8192, catalogue = 1500, system_tokens = 200, turn_tokens = 5000, role = "tool"
+    )
+    assert "Most of this prompt is a single tool result" in large
+
+
+def test_the_floor_is_never_all_of_either_count():
+    # A counter that cannot price an empty prompt, or one whose floor is nonsense, must
+    # not drive either side to zero and invent a ratio.
+    context_refusal.record_fit(
+        _refusal(irreducible = 5120, latest_turn = 5000) | {"shared_prompt_tokens": 99999}
+    )
+    assert "shorten the conversation" in _friendly_error(ValueError(_SERVER_ERROR))
+    for bad in (None, "", -5, "junk"):
+        context_refusal.record_fit(_refusal(irreducible = 5120, latest_turn = 3500) | {"shared_prompt_tokens": bad})
+        assert "Most of this prompt is the message just sent" in _friendly_error(
+            ValueError(_SERVER_ERROR)
+        )
+
+
+def test_an_unrenderable_turn_records_no_floor_to_subtract():
+    """The estimate fallback prices the message's own JSON and no catalogue.
+
+    Strict templates reject a lone tool result, which is exactly the shape a tool loop
+    refuses on, so the fit falls back to the estimator for that turn. There is no shared
+    floor inside that number, so none is recorded, and the count stays comparable to
+    nothing -- which lands on the generic advice rather than a wrong blame.
+    """
+
+    def _rejects_a_lone_tool_result(messages):
+        if len(messages) == 1 and messages[0].get("role") == "tool":
+            raise RuntimeError("template rejected the message")
+        return sum(max(1, len(json.dumps(m, ensure_ascii = False)) // 4) for m in messages) + 6000
+
+    _, truncation = fit_rolling_context(
+        _thread(system_tokens = 200, turn_tokens = 20, role = "tool"),
+        context_length = 8192,
+        max_tokens = None,
+        count_tokens = _rejects_a_lone_tool_result,
+    )
+    assert truncation is not None and not truncation["fits"]
+    assert truncation["shared_prompt_tokens"] == 0
+    _context_truncated_sse_chunk("cmpl-1", "model", truncation)
+    assert "shorten the conversation" in _friendly_error(
+        ValueError("the request (9000 tokens) exceeds the available context size (8192 tokens)")
+    )
 
 
 def test_a_diagnosis_with_no_window_recorded_is_still_usable():

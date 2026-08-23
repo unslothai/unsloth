@@ -215,19 +215,75 @@ def prompt_budget(context_length: int, max_tokens: Optional[int]) -> int:
     return context_length - min(requested, max(1, context_length // 4))
 
 
-def _latest_turn_tokens(messages: list[dict], count_tokens: Callable[[list[dict]], int]) -> int:
-    """Tokens in the newest message, estimated if the template refuses to render it.
+def _latest_turn_count(
+    messages: list[dict], count_tokens: Callable[[list[dict]], int]
+) -> tuple[int, bool]:
+    """`(tokens, exact)` for the newest message, estimated if the template refuses it.
 
     A tool loop can reach the does-not-fit diagnosis with a tool result last, which strict
     templates reject on its own; letting that raise would abort the fit and tell the user
-    nothing. An approximate number beats a diagnosis that never arrives.
+    nothing. An approximate number beats a diagnosis that never arrives -- but the caller
+    has to know which it got, because only the counted one carries the prompt's floor.
     """
     if not messages:
-        return 0
+        return 0, False
     try:
-        return count_tokens(messages[-1:])
+        return int(count_tokens(messages[-1:])), True
     except Exception:
-        return estimate_messages_tokens(messages[-1:])
+        return int(estimate_messages_tokens(messages[-1:])), False
+
+
+def _shared_prompt_tokens(count_tokens: Callable[[list[dict]], int]) -> int:
+    """What a rendered prompt costs before any message at all.
+
+    The counter prices a whole PROMPT, not a bag of messages: the template's own wrapper
+    and, on a request that advertises tools, the entire tool catalogue rendered into the
+    system turn. So that constant sits inside every count the fit takes, including the
+    one-message slice above -- on the GGUF tool loop the counters pass `safe_tools` to
+    `count_chat_tokens`, which puts the schemas in the prompt it measures, and a couple
+    of MCP servers is thousands of tokens of them.
+
+    Measured on the empty prompt rather than estimated: this number is subtracted from
+    the two counts that decide which part of the prompt gets named, and a subtraction
+    that is only roughly right moves the blame instead of removing it. One extra count,
+    taken only on the branch that has already decided to refuse the request.
+    """
+    try:
+        return max(0, int(count_tokens([])))
+    except Exception:
+        # A counter that will not price an empty prompt tells us nothing about the floor;
+        # zero leaves the diagnosis exactly as it was before this was measured.
+        return 0
+
+
+def turn_diagnosis(
+    messages: list[dict],
+    count_tokens: Callable[[list[dict]], int],
+    *,
+    irreducible_tokens: int,
+) -> dict[str, Any]:
+    """The fields that say WHICH part of a refused prompt is which.
+
+    `shared_prompt_tokens` is the floor both `latest_turn_tokens` and
+    `irreducible_tokens` carry, so a consumer comparing the two can take it off both
+    sides and compare what the turn actually contributed against what the rest of the
+    conversation did. Zero when the turn was estimated rather than counted: that estimate
+    prices the message's own JSON and no catalogue, so it has no floor to remove.
+    """
+    if not messages:
+        return {"latest_turn_tokens": 0, "latest_turn_role": "", "shared_prompt_tokens": 0}
+    latest, exact = _latest_turn_count(messages, count_tokens)
+    shared = _shared_prompt_tokens(count_tokens) if exact else 0
+    # Never all of either side. A floor at or above the numbers it belongs to is a
+    # measurement that does not describe them, and clamping keeps the ratio a ratio.
+    shared = max(0, min(shared, latest - 1, int(irreducible_tokens) - 1))
+    return {
+        "latest_turn_tokens": latest,
+        # ...and whose message that is. In a tool loop the last message is often a
+        # tool result, which the user did not write and cannot shorten.
+        "latest_turn_role": str(messages[-1].get("role") or ""),
+        "shared_prompt_tokens": shared,
+    }
 
 
 def fit_rolling_context(
@@ -329,10 +385,7 @@ def fit_rolling_context(
             # Floor for the conversation, and how much of it is the message just sent:
             # together they say whether the chat or the single message is the problem.
             "irreducible_tokens": current_tokens,
-            "latest_turn_tokens": _latest_turn_tokens(messages, count_tokens),
-            # ...and whose message that is. In a tool loop the last message is often a
-            # tool result, which the user did not write and cannot shorten.
-            "latest_turn_role": str(messages[-1].get("role") or "") if messages else "",
+            **turn_diagnosis(messages, count_tokens, irreducible_tokens = current_tokens),
             "context_length": context_length,
             "prompt_target": prompt_target,
         }

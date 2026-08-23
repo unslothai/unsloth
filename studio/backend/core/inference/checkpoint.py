@@ -507,15 +507,14 @@ def fit_checkpoint_context(
         # Refused, returning the ORIGINAL messages as the rolling fit does: the request
         # fails either way, so dropping turns off a doomed request loses them for nothing.
         # Same keys, because every consumer gates on `fits`.
-        from core.inference.context_window import _latest_turn_tokens  # noqa: PLC0415
+        from core.inference.context_window import turn_diagnosis  # noqa: PLC0415
         return messages, {
             "fits": False,
             "dropped_messages": 0,
             "prompt_tokens_before": initial_tokens,
             "prompt_tokens_after": initial_tokens,
             "irreducible_tokens": current_tokens,
-            "latest_turn_tokens": _latest_turn_tokens(messages, count_tokens),
-            "latest_turn_role": str(messages[-1].get("role") or "") if messages else "",
+            **turn_diagnosis(messages, count_tokens, irreducible_tokens = current_tokens),
             "context_length": context_length,
             "prompt_target": prompt_target,
         }
