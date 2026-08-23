@@ -59,6 +59,7 @@ from core.inference.audio_errors import (
     AudioBackendUnsupportedError,
     AudioGenerationCancelledError,
 )
+from core.inference import context_refusal
 from core.inference.context_window import (
     estimate_message_tokens as _estimate_message_tokens,
     estimate_messages_tokens as _estimate_messages_tokens,
@@ -263,11 +264,9 @@ def _friendly_error(exc: Exception) -> str:
         msg,
     )
     if m:
-        return (
-            f"Message too long: {m.group(1)} tokens exceeds the {m.group(2)}-token "
-            f"context window. Try increasing the Context Length in Model settings, "
-            f"or shorten the conversation."
-        )
+        # llama-server knows only the prompt total, so its "shorten the conversation" is
+        # wrong for a single oversized turn: let the fit's diagnosis pick the wording.
+        return context_refusal.describe_oversize(int(m.group(1)), int(m.group(2)))
     if "Lost connection to llama-server" in msg:
         return _LOST_CONNECTION_MSG
     template_msg = _template_raise_message(msg, _loaded_chat_template())
@@ -686,6 +685,9 @@ def _overflow_truncation_requested(payload) -> bool:
 
 
 def _context_truncated_sse_chunk(completion_id: str, model_name: str, truncation: dict) -> str:
+    # Every streaming route passes through here, so record the refusal `_friendly_error`
+    # will read. See `context_refusal`.
+    context_refusal.record_fit(truncation)
     data = {
         "id": completion_id,
         "object": "chat.completion.chunk",
@@ -699,6 +701,9 @@ def _context_truncated_sse_chunk(completion_id: str, model_name: str, truncation
 
 def _accumulate_context_truncation(current: Optional[dict], event: dict) -> dict:
     incoming = {key: value for key, value in event.items() if key != "type"}
+    # The drains accumulate rather than forwarding each event, so record here. The per-fit
+    # event, not `combined`, which sums counters across a tool loop.
+    context_refusal.record_fit(incoming)
     if current is None:
         return incoming
     combined = {**current, **incoming}
@@ -15865,6 +15870,14 @@ async def openai_chat_completions(
                 try:
                     yield _chat_role_chunk(completion_id, created, model_name)
 
+                    # In this generator's own context, before the per-event task and
+                    # thread below each get a COPY of it. The forwarded events record
+                    # into the parent already, but only when there are any: a prompt
+                    # that fit leaves no slot, and then the respawn refit -- which runs
+                    # inside the worker, not out here -- records into a copy that dies
+                    # with it, so the except-clause below builds its message from
+                    # nothing. See `context_refusal`, and the two non-streaming drains.
+                    context_refusal.open_slot()
                     # Iterate the sync generator in a thread so the event loop
                     # stays free for disconnect detection.
                     gen = gguf_generate_with_tools()
@@ -16342,6 +16355,9 @@ async def openai_chat_completions(
                     request = request,
                     cancel_event = cancel_event,
                 )
+                # In the request's own context: the task and thread below each get a
+                # context COPY, so only a slot opened first reaches `_friendly_error`.
+                context_refusal.open_slot()
                 drain_task = asyncio.create_task(asyncio.to_thread(_drain_gguf_tool_loop))
                 (
                     full_text,
@@ -17041,6 +17057,8 @@ async def openai_chat_completions(
                         _context_truncation,
                     )
 
+                # See the tool-loop drain: the slot has to exist before the copies.
+                context_refusal.open_slot()
                 drain_task = asyncio.create_task(asyncio.to_thread(_drain_gguf_choices))
                 (
                     _n,
@@ -22453,6 +22471,10 @@ async def _anthropic_tool_stream(
             # stall window still gets one though its events are dropped.
             _last_drop_keepalive = time.monotonic()
 
+            # See the GGUF tool stream: this loop drives the same tool generator, and its
+            # respawn refit records the refusal from inside the worker thread, so the slot
+            # has to exist out here before the per-event copies are taken.
+            context_refusal.open_slot()
             gen = run_gen()
             _next_task = None
             # Watcher to cancel on disconnect: the in-loop poll fires only between events,
