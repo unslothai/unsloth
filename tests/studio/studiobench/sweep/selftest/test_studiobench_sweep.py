@@ -958,14 +958,23 @@ def two_tier_parity(tmp_path: Path, name: str, fast: tuple[str, str], standard: 
 
 
 def test_a_null_control_holding_two_tiers_is_refused_before_the_set_is_derived(tmp_path):
-    # One differing 100K pair from the fast film and one matching 100K pair from the standard film
-    # are pooled by `derive_unstable` into two observations of one action at one rung, which is
-    # exactly `min_observations`, so `settings` is marked unstable at 100K on the strength of two
-    # different films. That is the pooling, stated so the refusal below is not vacuous.
+    # THE POOLING THIS USED TO DEMONSTRATE IS GONE, and it was fixed underneath rather than here.
+    # The setup assertion used to be `("r100K", "settings") in unstable`: one differing 100K pair
+    # from the fast film and one matching 100K pair from the standard film pooled into exactly
+    # `min_observations`, marking the action unstable on the strength of two different films.
+    #
+    # `latest_attempt_rows` now keys an attempt on any attempt-stamped row rather than on the
+    # terminal cell row alone, and the two films write the SAME cell ids, so they are read as two
+    # attempts of one cell and the superseded one is dropped before pairing. Only the standard
+    # film's matching pair survives, so there is one observation and nothing is derived. Asserting
+    # the old pooling here would be asserting a bug that no longer exists.
     null = two_tier_parity(tmp_path, "null_mixed", ("X", "Y"), ("Q", "Q"))
     unstable, _derived, _checks = U.unstable_set([null])
-    assert ("r100K", "settings") in unstable
+    assert ("r100K", "settings") not in unstable
 
+    # The refusal is kept regardless, as the layer that does not depend on the two films colliding
+    # on a cell id. Two tiers that walk different ladders need not collide at all, and a set
+    # derived across films is wrong whether or not de-duplication happened to absorb it.
     with pytest.raises(SystemExit) as exc:
         U.main([str(tmp_path / "mine_any"), "--null", str(null.parent)])
     assert "more than one tier" in str(exc.value)
@@ -1005,9 +1014,15 @@ def test_one_tier_on_each_side_still_scores_in_both_directions(tmp_path):
     assert U.main([str(regressed.parent), "--null", str(null.parent)]) == 1
 
 
-def test_a_tier_mismatch_between_two_single_tier_sets_still_only_warns(tmp_path, capsys):
-    # The other control. Two sets that each hold ONE tier are comparable enough to score; the
-    # existing warning says the derived set does not transfer, and that stays a warning.
+def test_a_tier_mismatch_between_two_single_tier_sets_is_refused(tmp_path, capsys):
+    # This used to warn and then score anyway, which is the worst of the two options: the warning
+    # said the derived set does not transfer, and then the run was scored against it regardless.
+    # A set that does not transfer is not a weaker excuse than a real one, it is an arbitrary one.
+    #
+    # Exit 2, not 1. The payload below does carry a regression, so the old assertion of exit 1 was
+    # passing for a reason unrelated to the tier check. Refusing to answer and reporting a parity
+    # failure have to be distinguishable, or a refusal sends somebody hunting for a UI change that
+    # was never measured.
     null = write(
         tmp_path,
         "null_fast",
@@ -1018,8 +1033,41 @@ def test_a_tier_mismatch_between_two_single_tier_sets_still_only_warns(tmp_path,
         ],
     )
     mine = parity_run(tmp_path, "mine_standard", [("r100K", "rep0", "Q", "REGRESSED")])
-    assert U.main([str(mine.parent), "--null", str(null.parent)]) == 1
-    assert "WARNING: the null control was recorded at tier" in capsys.readouterr().out
+    assert U.main([str(mine.parent), "--null", str(null.parent)]) == 2
+    assert "REFUSING to score" in capsys.readouterr().out
+
+
+def test_a_corpus_mismatch_between_two_valid_sides_is_refused(tmp_path, capsys):
+    # The likelier of the two in practice, and the one that had no check at all: each side is a
+    # perfectly valid single corpus, so `one_corpus` passes on both, and the null's set was still
+    # applied to a payload that rendered a different thread. Which actions race is a property of
+    # the thread the film drove, so that set describes something the payload never displayed.
+    def at(name, corpus, cells):
+        rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "corpus_hash": corpus}]
+        for rung, rep, base_digest, treat_digest in cells:
+            rows.append(parity_action(f"{rung}.base.{rep}", "settings", base_digest))
+            rows.append(parity_action(f"{rung}.treatment.{rep}", "settings", treat_digest))
+        return write(tmp_path, name, rows)
+
+    null = at("null_v1", "v1", [("r100K", "rep0", "Q", "Q")])
+    same = at("mine_v1", "v1", [("r100K", "rep0", "Q", "Q")])
+    other = at("mine_v2", "v2", [("r100K", "rep0", "Q", "Q")])
+    # The control first, so the refusal cannot pass by rejecting everything.
+    assert U.main([str(same.parent), "--null", str(null.parent)]) == 0
+    assert U.main([str(other.parent), "--null", str(null.parent)]) == 2
+    assert "REFUSING to score" in capsys.readouterr().out
+
+
+def test_a_side_recorded_before_corpus_hashes_existed_is_still_scored(tmp_path, capsys):
+    # An absent hash is not a disagreement. Refusing it would reject every payload recorded before
+    # the field existed, which is the whole archive.
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "corpus_hash": "v1"}]
+    rows.append(parity_action("r100K.base.rep0", "settings", "Q"))
+    rows.append(parity_action("r100K.treatment.rep0", "settings", "Q"))
+    hashed = write(tmp_path, "hashed", rows)
+    legacy = parity_run(tmp_path, "legacy", [("r100K", "rep0", "Q", "Q")])
+    assert U.main([str(legacy.parent), "--null", str(hashed.parent)]) == 0
+    assert U.main([str(hashed.parent), "--null", str(legacy.parent)]) == 0
 
 
 def test_main_prints_a_mixed_unstable_set_without_dying(tmp_path, capsys):

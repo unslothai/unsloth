@@ -38,6 +38,11 @@ def _target(label):
     return Target(label = label, ref = label, base_url = f"http://x/{label}", seeder = None, runner = None)
 
 
+#: Each rung needs its OWN token count: `measures_by_cell` keys on `(rung_tokens, rep)`, so two
+#: rungs sharing one number collapse into one pair and a two-rung table renders as a one-rung one.
+RUNG_TOKENS = {"1K": 1_000, "10K": 10_000, "100K": 100_000, "500K": 500_000, "1M": 1_000_000}
+
+
 def _work(reps = 1, rungs = ("10K",)):
     """The real `interleave` over real cells: exactly what `run()` iterates."""
 
@@ -49,7 +54,7 @@ def _work(reps = 1, rungs = ("10K",)):
                     Cell(
                         cell_id = make_cell_id(rung, "A0", rep),
                         rung = rung,
-                        rung_tokens = 10_000,
+                        rung_tokens = RUNG_TOKENS.get(rung, 10_000),
                         rep = rep,
                     ),
                     None,
@@ -62,6 +67,7 @@ def _cell_row(
     cell_id,
     arm,
     rep = 0,
+    tokens = 10_000,
 ):
     return {
         "row_type": "cell",
@@ -69,7 +75,7 @@ def _cell_row(
         "cell": {"arm": arm, "rep": rep},
         "completed": True,
         "fidelity": "ok",
-        "target_tokens": 10_000,
+        "target_tokens": tokens,
     }
 
 
@@ -106,11 +112,35 @@ def test_a_pair_recorded_on_both_arms_is_skipped():
     assert skippable_cells(work, done) == done
 
 
-def test_only_the_whole_pairs_are_skipped():
+def test_a_comparison_with_work_left_re_runs_every_pair():
+    """A COMPLETE PAIR FROM THE OLD SESSION IS AS UNUSABLE AS A LONE ARM, and this asserted the
+    opposite until a resumed standard tier published `VERDICT: IMPROVED (20.0% faster)` off its
+    100K pair while the 10K pair it had already measured -- a 30% regression, complete, in session
+    one -- was dropped by the session filter with nothing in `ab.md` naming the missing rung.
+
+    The rule the module already argues for a half-finished pair is the rule for a half-finished
+    table: re-run both arms of every pair, adjacent in time, in one session.
+    """
+
     work = _work(reps = 2)
     done = {"r10K.base.rep0", "r10K.treatment.rep0", "r10K.base.rep1"}
 
-    assert skippable_cells(work, done) == {"r10K.base.rep0", "r10K.treatment.rep0"}
+    assert skippable_cells(work, done) == set()
+
+
+def test_a_comparison_with_nothing_left_still_skips_everything():
+    """The control that keeps `--resume` on a finished A/B free: nothing runs, and `_render_ab`
+    keeps the table that run already wrote rather than replacing it with NO READING."""
+
+    work = _work(reps = 2)
+    done = {
+        "r10K.base.rep0",
+        "r10K.treatment.rep0",
+        "r10K.base.rep1",
+        "r10K.treatment.rep1",
+    }
+
+    assert skippable_cells(work, done) == done
 
 
 def test_a_run_without_ab_skips_exactly_what_it_recorded():
@@ -171,5 +201,107 @@ def test_without_pair_granularity_the_same_resume_reports_nothing(tmp_path):
     assert "VERDICT: NO READING" in table
 
 
+def _two_rung_resumed_table(tmp_path, *, whole_table: bool) -> str:
+    """The same drive over TWO rungs, with the first pair fully recorded in session one.
+
+    10K measured base 100 ms against treatment 130 ms -- a 30% regression, complete, beyond the
+    noise floor. The run then died inside the 100K pair, where the treatment is the faster side.
+    """
+
+    paths = Paths.under(tmp_path / "out")
+    interrupted = Recorder(paths.payload_jsonl, "sess-1")
+    for cell_id, arm, rung, p95 in (
+        ("r10K.base.rep0", "base", "10K", 100.0),
+        ("r10K.treatment.rep0", "treatment", "10K", 130.0),
+        ("r100K.base.rep0", "base", "100K", 100.0),
+    ):
+        interrupted.emit(_cell_row(cell_id, arm, tokens = RUNG_TOKENS[rung]))
+        interrupted.emit(_keystroke(cell_id, p95))
+    interrupted.close()
+
+    work = _work(rungs = ("10K", "100K"))
+    recorded = _resume_set(paths)
+    if whole_table:
+        done = skippable_cells(work, recorded)
+    else:
+        # THE PRE-FIX RULE, inline so the contrast is the change itself: skip any pair whose every
+        # arm is already recorded, and let the rest of the table be whatever is left.
+        by_pair: dict = {}
+        for _t, cell, _p in work:
+            by_pair.setdefault((cell.rung, cell.rep), []).append(cell.cell_id)
+        done = {cid for ids in by_pair.values() if all(c in recorded for c in ids) for cid in ids}
+
+    resumed = Recorder(paths.payload_jsonl, "sess-2")
+    for target, cell, _plan in work:
+        if cell.cell_id in done:
+            continue
+        resumed.emit(_cell_row(cell.cell_id, target.label, tokens = RUNG_TOKENS[cell.rung]))
+        p95 = 100.0 if target.label == "base" else (130.0 if cell.rung == "10K" else 80.0)
+        resumed.emit(_keystroke(cell.cell_id, p95))
+    resumed.close()
+
+    _render_ab(paths, SIDES, "sess-2", "c0ffee")
+    return (paths.out / "ab.md").read_text(encoding = "utf-8")
+
+
+def test_a_resumed_comparison_publishes_a_verdict_over_every_rung(tmp_path):
+    """THE CONSEQUENCE. Both pairs are re-measured in the new session, so both are in the table
+    and the verdict is computed over the ladder rather than over its remainder."""
+
+    table = _two_rung_resumed_table(tmp_path, whole_table = True)
+
+    assert "keystroke_p95_ms         2" in table, table
+    assert "0.800-1.300" in table, table
+    assert "VERDICT: IMPROVED" not in table, table
+
+
+def test_skipping_the_recorded_pair_publishes_a_verdict_over_the_remainder(tmp_path):
+    """What the fix is for, driven through the same path. The 30% regression the run had already
+    measured is dropped by the session filter and nothing in the file mentions the missing rung."""
+
+    table = _two_rung_resumed_table(tmp_path, whole_table = False)
+
+    assert "keystroke_p95_ms         1" in table, table
+    assert "VERDICT: IMPROVED" in table, table
+    assert "10K" not in table
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_a_resume_killed_inside_a_cell_does_not_read_as_a_finished_run(tmp_path):
+    """THE CONSEQUENCE, through `_resume_set` and `skippable_cells` together.
+
+    Session one failed the 10K base arm. The resume repaired the 10K pair, then was hard-killed
+    inside the 100K base arm: its action and window rows are on disk, fsynced, but the terminal
+    cell row that `CellRunner.run` writes in a `finally` never was. Keyed on cell rows alone, the
+    older completed 100K attempt stayed the latest, every cell read as done across two sessions,
+    and the next `--resume` ran nothing and exited 0 over a stale table.
+    """
+
+    paths = Paths.under(tmp_path / "out")
+    first = Recorder(paths.payload_jsonl, "sess-1")
+    first.emit({**_cell_row("r10K.base.rep0", "base"), "completed": False})
+    first.emit(_keystroke("r10K.base.rep0", 40.0))
+    first.emit(_cell_row("r10K.treatment.rep0", "treatment"))
+    first.emit(_keystroke("r10K.treatment.rep0", 41.0))
+    for arm in ("base", "treatment"):
+        cid = f"r100K.{arm}.rep0"
+        first.emit(_cell_row(cid, arm, tokens = RUNG_TOKENS["100K"]))
+        first.emit(_keystroke(cid, 50.0))
+    first.close()
+
+    killed = Recorder(paths.payload_jsonl, "sess-2")
+    for arm in ("base", "treatment"):
+        cid = f"r10K.{arm}.rep0"
+        killed.emit(_cell_row(cid, arm))
+        killed.emit(_keystroke(cid, 42.0))
+    killed.emit(_keystroke("r100K.base.rep0", 900.0))  # killed here: no cell row follows
+    killed.close()
+
+    done = _resume_set(paths)
+    assert "r100K.base.rep0" not in done
+
+    work = _work(rungs = ("10K", "100K"))
+    assert skippable_cells(work, done) == set()

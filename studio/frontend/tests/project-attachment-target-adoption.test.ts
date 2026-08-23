@@ -141,7 +141,9 @@ test("the run keeps the project it started in", () => {
   );
   assert.match(
     source,
-    /const composerProjectIdAtSend =\s*useChatRuntimeStore\.getState\(\)\.activeProjectId \?\? null;\s*await useChatRuntimeStore\.getState\(\)\.hydratePersistedSettings\(\);/,
+    // Whichever await comes first: the property is that the read is the run's
+    // last synchronous statement, not which call follows it.
+    /const composerProjectIdAtSend =\s*useChatRuntimeStore\.getState\(\)\.activeProjectId \?\? null;\s*(?:\/\/[^\n]*\n\s*)*await /,
     "captured before the first await",
   );
   assert.match(

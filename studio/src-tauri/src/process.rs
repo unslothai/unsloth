@@ -64,6 +64,7 @@ pub(crate) fn scrub_appimage_python_env(cmd: &mut Command) {
 // Restore a host-safe environment before launching browsers and file managers.
 #[cfg(target_os = "linux")]
 const APPIMAGE_GUI_ONLY_VARS: &[&str] = &[
+    "FONTCONFIG_FILE",
     "GIO_MODULE_DIR",
     "GIO_EXTRA_MODULES",
     "GTK_PATH",
@@ -313,7 +314,8 @@ mod appimage_environment_tests {
         );
         std::env::set_var("PATH", "/tmp/.mount_Unsloth/usr/bin:/usr/bin:/bin");
         let mut cmd = Command::new("/usr/bin/env");
-        cmd.env("GTK_PATH", "/tmp/.mount_Unsloth/usr/lib/gtk-3.0")
+        cmd.env("FONTCONFIG_FILE", "/tmp/.mount_Unsloth/usr/etc/fonts/fonts.conf")
+            .env("GTK_PATH", "/tmp/.mount_Unsloth/usr/lib/gtk-3.0")
             .env("QT_PLUGIN_PATH", "/tmp/.mount_Unsloth/usr/lib/qt5/plugins")
             .env("PYTHONPATH", "/tmp/.mount_Unsloth/usr/share/pyshared");
         scrub_appimage_launcher_env(&mut cmd);
@@ -322,6 +324,7 @@ mod appimage_environment_tests {
         // The host's own GLib binaries must win, and the bundled tools stay last.
         assert!(env.contains("LD_LIBRARY_PATH=/opt/cuda/lib64"));
         assert!(env.contains("PATH=/usr/bin:/bin:/tmp/.mount_Unsloth/usr/bin"));
+        assert!(!env.contains("FONTCONFIG_FILE="));
         assert!(!env.contains("GTK_PATH="));
         assert!(!env.contains("QT_PLUGIN_PATH="));
         assert!(!env.contains("PYTHONPATH="));

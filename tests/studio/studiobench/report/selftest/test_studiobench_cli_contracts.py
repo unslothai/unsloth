@@ -31,9 +31,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from studiobench.__main__ import (  # noqa: E402
     completion_exit_code,
     engines_installed,
+    _ab_label,
     is_null_control,
     main,
     parse_args,
+    planned_rungs,
     recorded_ladder,
     side_home,
     side_specs,
@@ -41,8 +43,17 @@ from studiobench.__main__ import (  # noqa: E402
 )
 
 
-def _side(label, ref, url, owns):
-    return {"label": label, "ref": ref, "base_url": url, "owns": owns}
+def _side(
+    label,
+    ref,
+    url,
+    owns,
+    commit = None,
+):
+    side = {"label": label, "ref": ref, "base_url": url, "owns": owns}
+    if commit is not None:
+        side["commit"] = commit
+    return side
 
 
 # ── the null control ────────────────────────────────────────────────────────────────────────
@@ -250,6 +261,103 @@ def test_a_single_side_is_never_refused():
     assert stream_cost_injection_problem(side_specs(args, None), 3.0) is None
 
 
+def test_one_attached_studio_driven_twice_under_two_labels_is_still_a_null_control():
+    """`--attach U --attach-b U --branch main --ab fix`: one server, two names it cannot check.
+
+    The URL rule was stated and then not applied -- the ref comparison ran first, so the unequal
+    labels returned False before the equal URL was reached. One Studio measured against itself was
+    rendered as an ordinary A/B, free to publish temporal noise as an improvement, with
+    `noise_floor_from_null_control` skipped so nothing downstream had a floor to refuse it with.
+    With `--attach` the refs are free-form strings; only the URL names the deployed build.
+    """
+
+    sides = [
+        _side("base", "main", "http://127.0.0.1:5401", False),
+        _side("treatment", "fix", "http://127.0.0.1:5401", False),
+    ]
+    assert is_null_control(sides) is True
+
+
+def test_an_attached_treatment_pointed_at_the_installed_base_is_a_null_control():
+    """The mixed form of the same thing: `--attach-b` naming the Studio this run just launched."""
+
+    sides = [
+        _side("base", "main", "http://127.0.0.1:5399", True, commit = "a" * 40),
+        _side("treatment", "fix", "http://127.0.0.1:5399", False),
+    ]
+    assert is_null_control(sides) is True
+
+
+def test_two_owned_installs_of_different_refs_are_still_an_ordinary_ab():
+    """The control for the reorder: owned sides get `port` and `port + 1`, so they never collide
+    on a URL and the ref and commit comparisons below still decide them."""
+
+    sides = [
+        _side("base", "main", "http://127.0.0.1:5399", True, commit = "a" * 40),
+        _side("treatment", "fix", "http://127.0.0.1:5400", True, commit = "b" * 40),
+    ]
+    assert is_null_control(sides) is False
+
+
+def test_a_ref_that_moved_between_the_two_installs_is_not_a_null_control():
+    """`--branch main --ab main` where `main` advanced during the base's install.
+
+    The two sides are cloned into separate repos and fetched one after the other, with a whole
+    clone, build and launch between them. The refs still match; the builds do not. Classified as a
+    null control, `compare` voids the run and empties `regressions`, and
+    `noise_floor_from_null_control` republishes the real delta as this machine's noise floor -- so
+    a 12% regression is erased AND becomes the floor every later A/B on that machine is judged
+    against.
+    """
+
+    sides = [
+        _side("base", "main", "http://127.0.0.1:5399", True, commit = "a" * 40),
+        _side("treatment", "main", "http://127.0.0.1:5400", True, commit = "b" * 40),
+    ]
+    assert is_null_control(sides) is False
+
+
+def test_two_installs_of_one_ref_that_resolved_to_one_commit_are_a_null_control():
+    """The control: the calibration run this tool exists to support still classifies."""
+
+    sides = [
+        _side("base", "main", "http://127.0.0.1:5399", True, commit = "a" * 40),
+        _side("treatment", "main", "http://127.0.0.1:5400", True, commit = "a" * 40),
+    ]
+    assert is_null_control(sides) is True
+
+
+def test_a_side_with_no_commit_to_declare_is_judged_as_before():
+    """An empty commit on either side is not a difference -- the rule `commit_problems` already
+    states. Nothing behind an attached URL declares a commit, and neither does a payload written
+    before commits were recorded, so the build check must not start refusing them."""
+
+    sides = [
+        _side("base", "main", "http://127.0.0.1:5399", True, commit = "a" * 40),
+        _side("treatment", "main", "http://127.0.0.1:5400", True, commit = ""),
+    ]
+    assert is_null_control(sides) is True
+
+
+def test_the_table_names_both_builds_when_one_ref_resolved_to_two():
+    """ "main -> main" over two different commits would read as a null control on a screenshot."""
+
+    sides = [
+        _side("base", "main", "http://127.0.0.1:5399", True, commit = "a" * 40),
+        _side("treatment", "main", "http://127.0.0.1:5400", True, commit = "b" * 40),
+    ]
+    label = _ab_label(sides, is_null_control(sides))
+    assert label == "main aaaaaaaaaaaa -> bbbbbbbbbbbb"
+
+
+def test_a_null_control_states_the_commit_it_compared_with_itself():
+    sides = [
+        _side("base", "main", "http://127.0.0.1:5399", True, commit = "a" * 40),
+        _side("treatment", "main", "http://127.0.0.1:5400", True, commit = "a" * 40),
+    ]
+    assert _ab_label(sides, True) == "null control: main @ aaaaaaaaaaaa vs itself"
+
+
 # ── one password per side ───────────────────────────────────────────────────────────────────
 
 
@@ -453,6 +561,57 @@ def test_an_explicit_tier_still_wins(tmp_path):
     assert "100,000" not in summary and "100K" not in summary
 
 
+# ── --rungs is normalised and checked before anything is acquired ────────────────────────────
+
+
+def _rungs(value):
+    return planned_rungs(parse_args(["--tier", "standard", "--rungs", value]))
+
+
+def test_a_space_after_the_comma_is_the_same_ladder():
+    """`--rungs "1K, 10K"` used to split to `[\"1K\", \" 10K\"]`.
+
+    Not a late crash only: `run_meta` records the rungs the run PROMISED before `build_cells`
+    reaches `RUNGS[rung]`, and `recorded_ladder` folds every header, so a resume mistyped this way
+    left a rung nothing can satisfy in a payload that was complete.
+    """
+
+    assert _rungs("1K, 10K") == ["1K", "10K"]
+    assert _rungs(" 1K , 10K ") == ["1K", "10K"]
+
+
+def test_a_lowercase_suffix_is_the_same_ladder():
+    assert _rungs("1k,10k") == ["1K", "10K"]
+    assert _rungs("10k, 1m") == ["10K", "1M"]
+
+
+def test_an_empty_field_is_not_a_rung():
+    """A trailing or doubled comma is a typo, not a request for a nameless rung."""
+
+    assert _rungs("1K,,10K") == ["1K", "10K"]
+    assert _rungs("1K,10K,") == ["1K", "10K"]
+
+
+def test_a_label_that_is_not_a_rung_is_refused_by_name():
+    for value in ("1X", "2K", "1K,20K"):
+        with pytest.raises(SystemExit) as excinfo:
+            _rungs(value)
+        assert "is not a rung" in str(excinfo.value)
+
+
+def test_a_value_naming_no_rung_at_all_is_refused():
+    for value in (",", " "):
+        with pytest.raises(SystemExit) as excinfo:
+            _rungs(value)
+        assert "names nothing" in str(excinfo.value)
+
+
+def test_the_tier_still_supplies_the_ladder_when_rungs_is_not_given():
+    """The control: normalising the override may not disturb the default path."""
+
+    assert planned_rungs(parse_args(["--tier", "standard"])) == ["1K", "10K", "100K"]
+    assert planned_rungs(parse_args(["--tier", "fast"])) == ["100K"]
+
+
 if __name__ == "__main__":
-    import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))
