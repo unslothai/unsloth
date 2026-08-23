@@ -254,7 +254,7 @@ def test_the_workflow_illustrates_at_the_same_threshold_it_scores_at():
     # another.
     text = (
         Path(__file__).resolve().parents[5] / ".github/workflows/studiobench-ui-parity.yml"
-    ).read_text()
+    ).read_text(encoding = "utf-8")
     verdict = text.split("- name: The verdict", 1)[1]
     evidence = text.split("- name: Draw the before/after pairs", 1)[1]
     assert "--min-reps 2" in verdict.split("- name:", 1)[0]

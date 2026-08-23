@@ -45,8 +45,13 @@
 # AND IT MUST FAIL IF THE SCENES DID NOT RUN. Three separate times this harness
 # produced a confident "no effect" from code that could never fire, including
 # four scene actions recording NOT RUN on 312 of 312 attempts, every one exiting
-# 0. Two blank pages have identical digests. `--assert-liveness` runs on BOTH
-# payloads, before either is read, and this job cannot report parity without it.
+# 0. Two blank pages have identical digests, so a run that drove nothing is the
+# easiest possible pass. That discipline is kept and RE-EXPRESSED: for a job that
+# reads no timings, an action reached late costs nothing, and an action never
+# compared costs coverage. So the floor is on how much was actually COMPARED
+# (`--min-compared`), checked in the verdict job where both arms are visible, and
+# each arm refuses to hand up a payload with no completed cell. The reasoning,
+# and the mutation study behind it, is at the step that replaced the old gate.
 
 name: studiobench UI parity
 
@@ -412,34 +417,53 @@ jobs:
             --parity-shots "$SHOT_DIR" \
             --out "$OUT_DIR"
 
-      # THE GATE, and it runs on the null arm exactly as it runs on the result
-      # arm. A null control that never opened a surface reports that surface as
-      # blind rather than as stable, so the unstable set derived from it is
-      # narrower than the truth and the result arm then raises a false alarm --
-      # loud, but wrong, and a gate that cries wolf is the failure mode this
-      # whole file is written against. image_upload is the one excused name:
-      # this fixture loads no model, so Studio never mounts the attachments
-      # button. Every name here is a hole in the gate.
-      - name: Every scheduled action ran
+      # WHAT REPLACED THE SLOT-BUDGET LIVENESS GATE, and why it is not a relaxation.
+      #
+      # studiobench's `--assert-liveness` fails a run when an action was REACHED LATER than its
+      # scheduled slot. That gate is right for the measurement studiobench was built for, where an
+      # action reached late produces a timing that means nothing. This job reads no timings. It
+      # compares per-action DOM digests, and a missed slot there does not produce a wrong number,
+      # it produces NO number: `analysis/parity.compare_rows` returns NOT_EXERCISED when either
+      # arm did not run, and `report` files that under NOT EXERCISED, never under the stable
+      # differences the exit code is taken from.
+      #
+      # That was measured rather than reasoned. Taking the upstream run that raised this and
+      # marking action rows not-run to simulate missed slots, over 18 mutations at 2/4/6/10/16/24
+      # missed slots and three seeds each, the verdict NEVER gained a red it did not have -- down
+      # to 9 of 32 pairs still compared. A missed slot on the result cannot corrupt this verdict.
+      # It can only cost COVERAGE, and coverage is defended below by a floor, in the units that
+      # actually matter here, instead of by punctuality, which costs this job nothing.
+      #
+      # The one place a missed slot CAN move the verdict is the null control: `derive_unstable`
+      # counts a not-run pair as blind rather than as an observation, so a missed slot there
+      # blinds an action, which narrows the excuse set, which is how a result's ordinary noise
+      # starts reading as a regression. That path is real and it is gated -- by the null audit in
+      # the verdict job, which fires on exactly that condition and named it on the first try,
+      # while the slot gate could only say "6 missed slots against a slack of 2".
+      #
+      # So the slack is NOT being raised. A gate that fires on a condition proven unable to affect
+      # this job's answer is replaced by two that fire on the conditions that can.
+      - name: The payload records a session at all
         run: |
-          python -m tests.studio.studiobench \
-            --assert-liveness "$OUT_DIR/payload.jsonl" \
-            --allow-not-run image_upload \
-            --allow-slot-misses 2
+          test -s "$OUT_DIR/payload.jsonl"
+          python - "$OUT_DIR/payload.jsonl" <<'PY'
+          import json
+          import sys
 
-      # PRUNED HERE, not in the verdict job, because the images are the only thing in this
-      # payload that is big. A clean run keeps nothing: an action whose two arms produced the
-      # same digest has two identical pictures and no reader will ever want them. What survives
-      # is only the actions whose arms DISAGREED -- which this job can decide on its own, since
-      # it holds both arms. Whether a disagreement is EXCUSED needs the null control and is the
-      # verdict job's call, so a few excused pairs ride along and are dropped there.
-      - name: Keep only the shots whose two arms differed
-        if: always()
-        run: |
-          set -uo pipefail
-          python -m tests.studio.studiobench.sweep.parity_shots --prune \
-            --payload "$OUT_DIR" --shots "$SHOT_DIR" || true
-          du -sh "$SHOT_DIR" 2> /dev/null || true
+          cells = actions = 0
+          for line in open(sys.argv[1], encoding = "utf-8"):
+              if not line.strip():
+                  continue
+              row = json.loads(line)
+              cells += row.get("row_type") == "cell" and bool(row.get("completed"))
+              actions += row.get("row_type") == "action"
+          print(f"  {cells} completed cell(s), {actions} action row(s)")
+          if not cells or not actions:
+              # An empty payload compares nothing and would sail through every check downstream,
+              # because nothing is exactly what they all agree about.
+              print("::error::this arm recorded no completed cell. There is nothing to compare.")
+              sys.exit(1)
+          PY
 
       - name: Stop both Studios
         if: always()
@@ -552,6 +576,13 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # SCOPED TO WHAT THE RESULT COMPARED. The null exists to excuse the result's noise, so an
+      # action the result never exercised needs no excuse from it, and demanding one turns a slow
+      # runner into a red build: both arms lose the same actions, so an unscoped audit fails on
+      # machine speed. On the upstream run that raised this, three actions were undecided in the
+      # null and only two of them were ever compared in the result; `copy_markdown` was the third
+      # and was NOT EXERCISED on the result as well, so nothing anywhere needed its verdict.
+      #
       # THE ONE WAY THIS JOB CAN LOOK LIKE IT WORKED AND BE WORTH NOTHING.
       # `derive_unstable` needs two comparable observations of a (rung, action)
       # before it will decide anything about it. Below that every action comes
@@ -582,6 +613,7 @@ jobs:
         run: |
           python -m tests.studio.studiobench.sweep.ui_parity \
             --audit-null --allow-undecided image_upload \
+            --compared-in outputs/parity-result \
             outputs/parity-null-control
 
       # Exit 1 when a STABLE action rendered differently in BOTH repetitions, 2
@@ -620,6 +652,7 @@ jobs:
           set -uo pipefail
           python -m tests.studio.studiobench.sweep.ui_parity \
             --min-reps 2 \
+            --min-compared 16 \
             --null outputs/parity-null-control \
             outputs/parity-result > verdict.txt 2>&1
           rc=$?

@@ -402,3 +402,86 @@ def test_one_corpus_across_several_shards_is_fine(tmp_path):
 def test_a_payload_predating_corpus_hashes_is_not_refused(tmp_path):
     old = null_run(tmp_path, "nohash", two_reps("settings", "A", "B"))
     assert U.one_corpus([old], "null control") == set()
+
+
+# ── a missed slot costs coverage, not correctness ────────────────────
+
+
+def not_run_row(cid: str, action: str) -> dict:
+    row = action_row(cid, action, "SAME")
+    row["ran"] = False
+    row["reason"] = "the slot opened at 33000ms and was reached at 33872ms"
+    return row
+
+
+def test_a_missed_slot_on_both_arms_cannot_turn_a_clean_verdict_red(tmp_path):
+    # The measured claim, in miniature. Over 18 mutations of a real payload at 2 to 24 missed
+    # slots, the verdict never gained a red; NOT_EXERCISED is filed under coverage, never under
+    # the stable differences the exit code is taken from.
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            cid = f"r100K.{arm}.{rep}"
+            rows.append(action_row(cid, "settings", "SAME"))
+            rows.append(not_run_row(cid, "copy_markdown"))
+            rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+    out = tmp_path / "missed"
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    assert U.report([path], "t", frozenset(), min_reps = 2) == 0
+
+
+def test_a_run_that_compared_almost_nothing_does_not_pass(tmp_path, capsys):
+    # The other half, and the reason the slot gate could not simply be deleted. Two blank pages
+    # have identical digests, so a film that ran nothing is the easiest possible pass.
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            cid = f"r100K.{arm}.{rep}"
+            rows.append(action_row(cid, "settings", "SAME"))
+            rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+    out = tmp_path / "thin"
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    assert U.report([path], "t", frozenset(), min_reps = 2, min_compared = 0) == 0
+    assert U.report([path], "t", frozenset(), min_reps = 2, min_compared = 16) == 3
+    assert "TOO LITTLE COMPARED" in capsys.readouterr().out
+
+
+# ── the null need only decide what the result compared ───────────────
+
+
+def test_the_audit_ignores_an_action_the_result_never_compared(tmp_path):
+    # `copy_markdown` is undecided in the null AND not exercised on the result, so nothing
+    # anywhere needs its verdict. Demanding it turns machine speed into a red build.
+    null = null_run(
+        tmp_path,
+        "n",
+        two_reps("settings", "SAME", "SAME") + [("r100K", "rep0", "copy_markdown", "A", "B")],
+    )
+    result = null_run(tmp_path, "r", two_reps("settings", "SAME", "SAME"))
+
+    assert U.audit_null([null], frozenset())[0] == 1  # unscoped: copy_markdown undecided
+    scope = U.compared_actions([result])
+    assert "copy_markdown" not in scope
+    assert U.audit_null([null], frozenset(), scope)[0] == 0  # scoped: nobody needed it
+
+
+def test_the_audit_still_fails_on_an_action_the_result_did_compare(tmp_path):
+    # The other direction, so scoping cannot pass by excusing everything: an action the result
+    # put a verdict on, that the null could not decide, is exactly the unscored case.
+    null = null_run(
+        tmp_path,
+        "n2",
+        two_reps("settings", "SAME", "SAME") + [("r100K", "rep0", "thread_reopen", "A", "B")],
+    )
+    result = null_run(
+        tmp_path,
+        "r2",
+        two_reps("settings", "SAME", "SAME") + two_reps("thread_reopen", "A", "A"),
+    )
+    scope = U.compared_actions([result])
+    assert "thread_reopen" in scope
+    assert U.audit_null([null], frozenset(), scope)[0] == 1

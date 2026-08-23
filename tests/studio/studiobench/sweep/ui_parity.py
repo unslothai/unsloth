@@ -241,7 +241,17 @@ def unstable_label(entry) -> str:
     return entry if isinstance(entry, str) else f"{entry[1]}@{entry[0]}"
 
 
-def audit_null(paths: list[Path], allow_undecided: frozenset = frozenset()) -> tuple[int, dict]:
+def compared_actions(paths: list[Path]) -> set[str]:
+    """Actions the result put a real verdict on. Not the ones it scheduled."""
+    results, _ = compare_all(paths)
+    return {a for a, _s, _c, r in results if r["verdict"] in (P.MATCH, P.DIFFER)}
+
+
+def audit_null(
+    paths: list[Path],
+    allow_undecided: frozenset = frozenset(),
+    scope: set[str] | None = None,
+) -> tuple[int, dict]:
     """Did this base-vs-base run DECIDE the actions it exercised? Not: did it find any.
 
     A caller that is about to score a result against `--null` needs to know that the null control
@@ -265,6 +275,15 @@ def audit_null(paths: list[Path], allow_undecided: frozenset = frozenset()) -> t
     permanently undecided for an honest reason. Those names are excused by `allow_undecided`, and
     every one of them is a hole, so they are printed.
 
+    SCOPED TO WHAT THE RESULT COMPARED, when a scope is given, and this is the difference between
+    a gate that means something and one that fails on a slow machine. The null control exists to
+    excuse the result's noise. An action the result never exercised needs no excuse, so demanding
+    that the null decide it is a requirement with nothing behind it -- and on a contended runner
+    both arms lose the same actions, so an unscoped audit turns machine speed into a red build.
+    Measured on the upstream run that raised this: three actions were undecided in the null, and
+    only two of them were ever compared in the result. `copy_markdown` was the third, and it was
+    NOT EXERCISED on the result too, so nothing anywhere needed its verdict.
+
     Returns `(exit code, report)`. 0 decided, 1 undecided beyond the excused names, 2 no data.
     """
     results, _got = compare_all(paths, require_complete = True)
@@ -280,7 +299,10 @@ def audit_null(paths: list[Path], allow_undecided: frozenset = frozenset()) -> t
         for action, row in sorted(P.derive_unstable(pairs).items()):
             entry = (rung, action)
             if row["undetermined"]:
-                (excused if action in allow_undecided else undecided).append(entry)
+                if action in allow_undecided or (scope is not None and action not in scope):
+                    excused.append(entry)
+                else:
+                    undecided.append(entry)
                 continue
             decided.append(entry)
             if row["unstable"]:
@@ -423,6 +445,7 @@ def report(
     label: str,
     unstable: frozenset,
     min_reps: int = 1,
+    min_compared: int = 0,
 ) -> int:
     results, got = compare_all(paths)
     if not results:
@@ -486,6 +509,21 @@ def report(
         f"  style probe differing:      {len(style_bad)}  (advisory: display/visibility/"
         f"pointer-events)"
     )
+
+    scored = matched + len(stable_bad) + len(uncorroborated) + len(unstable_bad)
+    if min_compared and scored < min_compared:
+        # NOT a detection threshold. This is the "did the film actually run" floor, and it is the
+        # thing that replaces a slot-budget liveness gate for a job that reads no timings: a
+        # missed slot costs COVERAGE, and coverage is what has to be defended, not punctuality.
+        # Healthy runs measured here compared 22, 25 and 26 of 32 scheduled pairs; a payload
+        # mutated until 24 slots were missed compared 9 and still produced a correct verdict, so
+        # the floor sits between "lost some to a slow machine" and "did not run the film".
+        print(
+            f"\n  TOO LITTLE COMPARED: {scored} of {len(results)} pair(s) carry a verdict, "
+            f"below the floor of {min_compared}. A run that compared almost nothing passes"
+            f"\n  trivially, and this is that run. Nothing below is a pass."
+        )
+        return 3
 
     if stable_bad:
         print("\n  UI PARITY DIFFERENCES ON STABLE ACTIONS -- these need explaining:")
@@ -651,6 +689,15 @@ def main(argv: list[str] | None = None) -> int:
         "measured false alarm has been",
     )
     ap.add_argument(
+        "--min-compared",
+        type = int,
+        default = 0,
+        dest = "min_compared",
+        help = "fail unless at least this many action pairs carry a real verdict. Defends "
+        "COVERAGE, which is what a missed slot actually costs a job that reads no timings, "
+        "rather than punctuality, which costs it nothing",
+    )
+    ap.add_argument(
         "--audit-null",
         action = "store_true",
         dest = "audit_null",
@@ -658,6 +705,16 @@ def main(argv: list[str] | None = None) -> int:
         "DECIDED every action it exercised. Asks whether the null control was capable of an "
         "opinion, not whether it happened to find one: a null in which nothing differed is the "
         "best one obtainable and must pass",
+    )
+    ap.add_argument(
+        "--compared-in",
+        metavar = "OUTDIR",
+        action = "append",
+        default = [],
+        dest = "compared_in",
+        help = "with --audit-null: the RESULT run, so the audit only requires the null to have "
+        "decided the actions the result actually compared. An action nobody compared needs no "
+        "excuse",
     )
     ap.add_argument(
         "--allow-undecided",
@@ -671,6 +728,19 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.audit_null:
         allow = frozenset(a.strip() for a in args.allow_undecided.split(",") if a.strip())
+        scope = None
+        if args.compared_in:
+            scope_paths: list[Path] = []
+            for pattern in args.compared_in:
+                scope_paths.extend(shards_of(pattern))
+            if not scope_paths:
+                print(f"--compared-in matched no payload: {args.compared_in}")
+                return 2
+            scope = compared_actions(scope_paths)
+            print(
+                f"auditing against the {len(scope)} action(s) the result compared: "
+                f"{', '.join(sorted(scope))}"
+            )
         worst = 0
         for pattern in args.payloads:
             paths = shards_of(pattern)
@@ -680,7 +750,7 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             one_tier(paths, "null control")
             one_corpus(paths, "null control")
-            rc, report_ = audit_null(paths, allow)
+            rc, report_ = audit_null(paths, allow, scope)
             print(f"\nauditing {pattern} as a null control")
             print_null_audit(rc, report_, allow)
             worst = max(worst, rc)
@@ -723,7 +793,10 @@ def main(argv: list[str] | None = None) -> int:
                 f"this payload at {sorted(tiers)}. Which actions are unstable depends on the "
                 f"film's slot spacing, so this unstable set does not transfer."
             )
-        worst = max(worst, report(paths, f"UI PARITY: {pattern}", unstable, args.min_reps))
+        worst = max(
+            worst,
+            report(paths, f"UI PARITY: {pattern}", unstable, args.min_reps, args.min_compared),
+        )
     return worst
 
 
