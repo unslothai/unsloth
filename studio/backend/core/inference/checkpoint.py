@@ -117,6 +117,7 @@ def _pick(
     max_tokens: int,
     max_items: int,
     reserve_oldest: bool = False,
+    reserve_leading: int = 0,
 ) -> list[str]:
     """The selection itself, over positions that are either (text, cost) or not an item.
 
@@ -136,8 +137,22 @@ def _pick(
     newest-first afterwards, so a later change of direction is kept too, and rendering is
     oldest-first either way.
 
-    The opening item is reserved TOGETHER WITH the next one, both or neither. See
-    `_reserved_order` for why.
+    It reserves the opening item TOGETHER WITH the next one, both or neither, because the
+    turn right after the opening is the one that can contradict it without any newer turn
+    showing that it did. See `_reserved_order` for why.
+
+    `reserve_leading` is the same rule for a list whose first N entries arrived as one
+    already-rendered block, where WHICH of them is the successor cannot be recovered. The
+    block is oldest-first by the position of each item's NEWEST copy, so a successor the
+    user restated later renders after the turns that came between: a perfectly valid block
+    reads [opening, intervening rule, successor, newest], and reserving its first two
+    entries pairs the opening with the intervening rule and lets the walk drop the actual
+    correction ("Build Tetris", "Dark theme", "Add music!" carried at a 60-token cap while
+    "Actually scrap that and build a Flappy Bird clone instead" was dropped). So the whole
+    block is reserved as ONE unit instead of guessing: the successor is somewhere in it,
+    whichever entry it is, and an abandoned opening is always the FIRST entry, since an
+    opening the user restated is not abandoned and renders at the restatement. Keep the
+    unit whole or drop its first entry -- no bullet has to be identified.
     """
 
     def _item(index: int) -> Optional[tuple[str, int]]:
@@ -191,20 +206,37 @@ def _pick(
         return [item for _, item in sorted(picked)]
 
     plain = list(reversed(range(len(entries))))
-    if not reserve_oldest:
-        return _walk(plain)
-
-    oldest = next((i for i in range(len(entries)) if _item(i)), None)
-    if oldest is None:
-        return _walk(plain)
-    # The turn the user sent RIGHT AFTER the opening one. It is reserved with the opening
-    # turn, because it is the turn that can contradict it without any newer turn showing
-    # that it did.
-    successor = next((i for i in range(oldest + 1, len(entries)) if _item(i)), None)
 
     def _takeable(index: int) -> bool:
         found = _item(index)
         return found is not None and found[1] <= max_tokens
+
+    # `unit` is oldest-first, which is how the tail reads it: its first entry is the one an
+    # abandoned opening can only be. `spend` is the order the walk charges it in, and for a
+    # whole carried block that is newest-first like everything else, so a budget that
+    # shrank mid-thread (the user changed model) spends what is left on the block's newest
+    # bullets rather than filling up on its oldest ones and dropping the rest.
+    if reserve_leading > 0:
+        # The already-rendered block, in full. Every entry of it, not the first two.
+        unit = [index for index in range(reserve_leading) if _item(index) is not None]
+        spend = list(reversed(unit))
+    elif reserve_oldest:
+        oldest = next((i for i in range(len(entries)) if _item(i)), None)
+        # The turn the user sent RIGHT AFTER the opening one, reserved with it.
+        successor = (
+            None
+            if oldest is None
+            else next((i for i in range(oldest + 1, len(entries)) if _item(i)), None)
+        )
+        unit = [] if oldest is None else [oldest] if successor is None else [oldest, successor]
+        # The pair is charged opening first, as it always was: two entries, and the tail
+        # takes them whole or neither way round.
+        spend = unit
+    else:
+        unit = []
+        spend = unit
+    if not unit:
+        return _walk(plain)
 
     def _reserved_order() -> list[int]:
         """The walk order with the opening PAIR slotted in behind the newest usable turn.
@@ -231,34 +263,36 @@ def _pick(
         "Actually build Tetris", then an oversized pasted request carried only Flappy Bird
         at a 153-token cap.
         """
-        pair = [oldest] if successor is None else [oldest, successor]
-        rest = [index for index in plain if index not in pair]
+        held = set(unit)
+        rest = [index for index in plain if index not in held]
         newest = next((index for index in rest if _takeable(index)), None)
         if newest is None:
-            return pair + rest
+            return spend + rest
         at = rest.index(newest) + 1
-        return rest[:at] + pair + rest[at:]
+        return rest[:at] + spend + rest[at:]
 
     chosen = _walk(_reserved_order())
-    if successor is None:
+    if len(unit) < 2:
         # Nothing followed the opening turn, so nothing can be hidden behind it.
         return chosen
-    opening_text = _item(oldest)[0]
-    successor_text = _item(successor)[0]
-    if opening_text not in chosen or successor_text in chosen:
+    opening_text = _item(unit[0])[0]
+    if opening_text not in chosen:
         return chosen
-    if not _takeable(successor):
-        # The successor costs more than the entire budget, so no ordering carries it and
-        # there was never a pair to take. Dropping the opening here buys nothing: on the
-        # threads where this happens the opening is usually the ONLY turn that fits, so
+    missing = [index for index in unit[1:] if _item(index)[0] not in chosen]
+    if not missing:
+        return chosen
+    if not any(_takeable(index) for index in missing):
+        # What is missing costs more than the entire budget, so no ordering carries it and
+        # there was never a whole unit to take. Dropping the opening here buys nothing: on
+        # the threads where this happens the opening is usually the ONLY turn that fits, so
         # the block would go out empty, and an empty block is the case this whole pass
         # exists to stop -- the model told the conversation was compacted and handed none
         # of it. Measured on the campaign's headline thread: a 43-token standing
         # instruction followed by eight 160-token sections under a 100-token budget, where
         # the instruction is the only affordable turn in the epoch.
         return chosen
-    # Both or neither. The successor was affordable and the pair still did not fit whole
-    # (a cap of one or two slots, or the budget already spent), and half a pair is the bug
+    # Whole or nothing. Something affordable was left behind and the unit still did not fit
+    # (a cap of one or two slots, or the budget already spent), and half of it is the bug
     # itself: the abandoned request carried with the correction to it dropped. So the
     # reservation is abandoned and the newest-first walk decides, which keeps the newest
     # direction the user gave.
@@ -272,8 +306,9 @@ def _pick(
     #
     # Only that one turn is excluded, by position and not by text: a user who RESTATES the
     # opening request later has not abandoned it, and that newer copy is still free to be
-    # selected.
-    return _walk([index for index in plain if index != oldest])
+    # selected. The fallback is kept only if it has something to say, since the walk that
+    # produced `chosen` is the one that already refused to go out empty.
+    return _walk([index for index in plain if index != unit[0]]) or chosen
 
 
 def _select_items(
@@ -410,28 +445,31 @@ def _recap(
     *,
     max_tokens: int,
     max_items: int,
-    reserve_pair: bool = False,
+    carried: int = 0,
 ) -> list[str]:
     """Re-apply the caps to a merged list. Newest-first selection, oldest-first render.
 
     Repeats collapse to their newest copy: an instruction can be carried, evicted and
     re-selected, and newest wins, which is the order the walk already runs in.
 
-    `reserve_pair` says the two OLDEST entries are the opening pair a previous pass
-    reserved, so this walk owes them the same both-or-neither rule. Without it the merge
-    re-created the exact output the pair exists to prevent, one compaction later: a block
-    holding "Build Flappy Bird" and its "actually build Tetris" correction, merged with
-    the increments evicted since, spends the budget newest-first, skips the long
+    `carried` is how many of the leading entries arrived as one already-rendered block, so
+    this walk owes them the same rule the fresh walk owes the opening pair. Without it the
+    merge re-created the exact output the pair exists to prevent, one compaction later: a
+    block holding "Build Flappy Bird" and its "actually build Tetris" correction, merged
+    with the increments evicted since, spends the budget newest-first, skips the long
     correction and then still affords the short opening, so the block tells the model to
-    build the game the user cancelled and to apply every later increment to it. The pair
-    was only ever enforced over evicted turns; the merged list is strings, and the caller
-    knows which of them arrived as the prior block.
+    build the game the user cancelled and to apply every later increment to it.
+
+    A COUNT rather than a pair, because which two bullets were the pair does not survive
+    the render: the block is ordered by each item's newest copy, so the successor of a
+    restated correction sits behind the turns that came between. The block is held whole
+    or its first bullet is dropped, which needs no bullet to be identified. See `_pick`.
     """
     return _pick(
         [(item, estimate_message_tokens({"role": "user", "content": item})) for item in items],
         max_tokens = max_tokens,
         max_items = max_items,
-        reserve_oldest = reserve_pair,
+        reserve_leading = carried,
     )
 
 
@@ -534,17 +572,16 @@ def fit_checkpoint_context(
             )
         )
         if prior:
-            # The pair rule travels with the merge. The prior block's own two oldest
-            # bullets are the pair the pass that rendered it reserved, and re-capping them
-            # with a plain newest-first walk could take the opening and drop the successor
-            # that qualifies it. Claimed only when the block actually holds two bullets:
-            # with one there is no pair, and pairing it with a freshly evicted turn would
-            # invent a relationship the transcript never had.
+            # The pair rule travels with the merge. Re-capping the block with a plain
+            # newest-first walk could take its opening request and drop the correction that
+            # qualifies it, which is the output the pair exists to prevent. Which bullets
+            # were the pair is not recoverable from rendered text, so the block goes in as
+            # one unit: whichever bullet the correction is, it is inside it.
             items = _recap(
                 prior + items,
                 max_tokens = budget,
                 max_items = MAX_ITEMS,
-                reserve_pair = len(prior) >= 2,
+                carried = len(prior),
             )
         if not items:
             # Nothing to carry, so nothing to claim: do not pay for the probe. The old

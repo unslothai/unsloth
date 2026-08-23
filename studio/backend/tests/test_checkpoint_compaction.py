@@ -2272,9 +2272,7 @@ def test_the_merged_recap_abandons_the_pair_the_same_way_the_fresh_walk_does():
     correction = "Actually scrap that and build Flappy Bird instead, same single HTML file please."
     newest = "Add music and a score counter to it now."
 
-    merged = checkpoint._recap(
-        [opening, correction, newest], max_tokens = 40, max_items = 8, reserve_pair = True
-    )
+    merged = checkpoint._recap([opening, correction, newest], max_tokens = 40, max_items = 8, carried = 2)
 
     assert merged == [newest], "the abandoned opening must not outlive the correction"
     assert merged == carried_forward_items(_user_turns(opening, correction, newest), max_tokens = 40)
@@ -2294,21 +2292,21 @@ def test_the_merged_recap_never_empties_a_block_it_could_have_filled():
     opening = "Build Tetris"
     correction = "Actually scrap that and build Flappy Bird instead, same single HTML file please."
 
-    assert checkpoint._recap(
-        [opening, correction], max_tokens = 30, max_items = 8, reserve_pair = True
-    ) == [correction]
-    assert checkpoint._recap(
-        [opening, correction], max_tokens = 20, max_items = 8, reserve_pair = True
-    ) == [opening]
+    assert checkpoint._recap([opening, correction], max_tokens = 30, max_items = 8, carried = 2) == [
+        correction
+    ]
+    assert checkpoint._recap([opening, correction], max_tokens = 20, max_items = 8, carried = 2) == [
+        opening
+    ]
 
 
 def test_a_one_bullet_block_is_not_paired_with_a_turn_it_never_preceded():
-    """The merge claims a pair only where the block actually holds one.
+    """The unit is the BLOCK, so a one-bullet block is never held to a partner.
 
-    A block with a single bullet says nothing about what followed that instruction, so
-    pairing it with the oldest freshly evicted turn would invent a relationship the
-    transcript never had, and then drop the bullet whenever the invented partner did not
-    fit. That bullet is the only copy of it left anywhere in the request.
+    A block with a single bullet says nothing about what followed that instruction, and a
+    rule that reached past it into the freshly evicted turns for a partner would invent a
+    relationship the transcript never had, then drop the bullet whenever the invented
+    partner did not fit. That bullet is the only copy of it left anywhere in the request.
     """
     carried = (
         "Build Tetris as a single HTML file with canvas rendering, keyboard controls for "
@@ -2351,3 +2349,98 @@ def test_a_one_bullet_block_is_not_paired_with_a_turn_it_never_preceded():
     # 358 tokens: the newest turn (94) and the carried bullet (75), never the 279-token
     # spec. Pairing the bullet with the spec would drop the bullet along with it.
     assert items == [carried, newest]
+
+
+def _restated_correction_block():
+    """A VALID block whose bullets are not [opening, successor, ...].
+
+    The user restated the correction after an intervening rule, and the block renders each
+    item at its newest copy, so the correction sits behind the rule that came between it
+    and the opening. Nothing here is malformed: the fresh walk reserved the pair and took
+    it whole, and this is what that looks like once rendered.
+    """
+    opening = "Build Tetris"
+    correction = "Actually scrap that and build a Flappy Bird clone instead, please now."
+    intervening = "Dark theme"
+    newest = "Add music!"
+    prior = carried_forward_items(
+        _user_turns(opening, correction, intervening, correction, newest), max_tokens = 60
+    )
+    assert prior == [opening, intervening, correction, newest]
+    return opening, correction, prior
+
+
+def test_a_correction_restated_out_of_order_is_not_dropped_by_the_merge():
+    """The merge must not decide which bullets were the pair by counting from the front.
+
+    The block reads [opening, intervening rule, correction, newest], so reserving its
+    first TWO bullets reserves the opening and the intervening rule and lets the walk drop
+    the correction: measured at a 60-token budget with two 10-token instructions evicted
+    since, the block came back as "Build Tetris", "Dark theme", "Add music!", "Add a
+    menu", "Add a timer" -- the abandoned game carried, the correction to it gone, and
+    WORSE than no reservation at all, which keeps the correction here.
+    """
+    opening, correction, prior = _restated_correction_block()
+    messages = [
+        {"role": "system", "content": "you are helpful\n\n" + checkpoint.render_checkpoint(prior)}
+    ]
+    for text in ("Add a menu", "Add a timer"):
+        messages += [
+            {"role": "user", "content": text},
+            {"role": "assistant", "content": "ok. " + "r " * 260},
+        ]
+    messages += [{"role": "user", "content": "Here is the console trace. " + "z " * 600}]
+
+    fitted, truncation = _fit(messages, context_length = 800, max_tokens = 200)
+    items = checkpoint._block_items(fitted[0]["content"])
+
+    assert truncation["fits"] is True
+    assert items == ["Dark theme", correction, "Add music!", "Add a timer"]
+    assert opening not in items, "the abandoned request must not outlive its correction"
+    # Paid for by an older increment, never by the newest direction the user gave.
+    assert items[-1] == "Add a timer"
+
+
+def test_the_merge_never_states_the_abandoned_task_whichever_bullet_corrects_it():
+    """The invariant, stated without naming the successor: the block's first bullet is
+    never carried while any affordable bullet beside it is dropped.
+
+    Both positional readings fail this on their own. The plain newest-first re-cap keeps
+    the cheap opening and the cheap intervening rule and drops the 25-token correction
+    ("Build Tetris", "Dark theme", "Add music!" plus three increments at a 60-token
+    budget), and reserving the first two bullets does the same thing one increment
+    earlier. Holding the block WHOLE or dropping its first bullet needs neither reading.
+    """
+    opening, correction, prior = _restated_correction_block()
+    fresh = ["Add a menu", "Add a timer", "Add a pause"]
+
+    merged = checkpoint._recap(prior + fresh, max_tokens = 60, max_items = 8, carried = len(prior))
+
+    assert merged == ["Dark theme", correction, "Add music!", fresh[-1]]
+    assert opening not in merged, "the abandoned request must not outlive its correction"
+    # Never at the cost of the newest direction, and never empty.
+    assert merged[-1] == fresh[-1]
+    # The plain walk is not the safe fallback here: it states the abandoned task itself,
+    # so "stop reserving on the merged path" would not have fixed this.
+    plain = checkpoint._recap(prior + fresh, max_tokens = 60, max_items = 8)
+    assert opening in plain and correction not in plain
+
+
+def test_holding_the_block_whole_does_not_freeze_it_on_the_first_epoch():
+    """The unit is reserved BEHIND the newest usable item and abandoned when it will not
+    fit whole, so a block cannot take every slot forever and starve the newer rules.
+
+    Without that the merge would be sticky-oldest: eight carried bullets would hold all
+    eight slots on every later compaction and no instruction the user gave afterwards
+    could ever enter the block the model is shown.
+    """
+    block = [f"standing rule {index} " + "w " * 20 for index in range(1, 5)]
+    seen_rounds = []
+    for round_index in range(1, 7):
+        fresh = [f"new rule {round_index}{side} " + "w " * 20 for side in ("a", "b")]
+        block = checkpoint._recap(block + fresh, max_tokens = 200, max_items = 8, carried = len(block))
+        assert block[-1] == fresh[-1], "the newest rule is always carried"
+        seen_rounds.append(sum(1 for item in block if item.startswith("standing rule")))
+
+    assert seen_rounds[0] == 4, "the carried block survives while it fits"
+    assert seen_rounds[-1] == 0, "and ages out instead of holding every slot forever"
