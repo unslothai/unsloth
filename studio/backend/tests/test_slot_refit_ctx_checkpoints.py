@@ -192,9 +192,7 @@ class TestTheRefitDoesNotSpendTheReserve:
         assert got["reserve_bytes"] > 0
 
     def test_a_build_without_the_flag_is_not_charged(self, tmp_path):
-        """The argv builder drops the request on such a build, so the child
-        allocates nothing: pricing it would cost slots and context for bytes no
-        process holds."""
+        """The argv builder drops the request, so the child allocates nothing."""
         supported = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = 32)
         skipped = _plan(
             tmp_path,

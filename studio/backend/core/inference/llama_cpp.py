@@ -15653,10 +15653,9 @@ class LlamaCppBackend:
                 # typed --ctx-checkpoints is what the child allocates. Only an
                 # explicit request counts at all: the estimator has always charged 0,
                 # and adopting llama.cpp's default of 32 would move the fit for every
-                # model. Gated on the same capability the argv builder emits the flag
-                # on: a build with neither alias never allocates a snapshot, and the
-                # request is logged and dropped there, so pricing it would reserve
-                # bytes no child holds and cost slots and context for nothing.
+                # model. Gated on the capability the argv builder emits the flag on:
+                # a build with neither alias allocates nothing, so pricing it costs
+                # slots and context for bytes no child holds.
                 _effective_ctx_checkpoints = (
                     resolve_ctx_checkpoints(extra_args, ctx_checkpoints)
                     if server_caps.get("ctx_checkpoints_flag")
