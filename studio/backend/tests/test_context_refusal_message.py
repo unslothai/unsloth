@@ -186,9 +186,7 @@ def test_a_turn_that_merely_dominates_hedges_its_advice():
 
 
 def test_a_dominating_tool_result_hedges_the_same_way():
-    context_refusal.record_fit(
-        _refusal(irreducible = 5120, latest_turn = 3500, role = "tool")
-    )
+    context_refusal.record_fit(_refusal(irreducible = 5120, latest_turn = 3500, role = "tool"))
     message = _friendly_error(ValueError(_SERVER_ERROR))
     assert "Most of this prompt is a single tool result" in message
     assert "shortening the conversation will not help much" in message
