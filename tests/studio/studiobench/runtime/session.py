@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from ..fixture.corpus import Corpus, RungPlan, plan_rung
+from ..fixture.corpus import PROVISIONAL_CHARS_PER_TOKEN, Corpus, RungPlan, plan_rung
 from ..instruments import build as build_instruments
 from ..instruments import import_errors
 from ..pacer import Pacer, check_planned_streams
@@ -706,6 +706,75 @@ def make_context(
     return ctx, Session(ctx = ctx, instruments = instruments)
 
 
+#: The sources that may SIZE a rung. `measure_chars_per_token` also has a last-resort
+#: whitespace-and-punctuation estimate, which it labels itself as "off by tens of percent on dense
+#: code" -- and this corpus is mostly dense code, where that estimate reads 6.7 against tiktoken's
+#: 3.3. Sizing the ladder from it would not make the axis honest, it would move the error and, past
+#: `MANIFEST_CHARS_PER_TOKEN`, make `plan_rung` refuse the whole run on any machine with no
+#: tokeniser. A real tokeniser sizes the rungs; the estimate is still measured and still reported.
+LADDER_RATIO_SOURCES = ("tiktoken/cl100k", "studio /api/inference/chat/count_tokens")
+
+
+def _corpus_sample(corpus: Corpus, chars: int = 200_000) -> str:
+    """A prefix of the frozen corpus, in the order a thread receives it."""
+    out: list[str] = []
+    size = 0
+    for entry in corpus.manifest["units"]:
+        unit = corpus.unit(entry["index"])
+        out.append(unit.reasoning + unit.content)
+        size += unit.chars
+        if size >= chars:
+            break
+    return "".join(out)[:chars]
+
+
+def ladder_chars_per_token(
+    corpus: Corpus,
+    base_url: str = "",
+    auth: Optional[StudioAuth] = None,
+    model_id: str = "",
+    log: Callable[[str], None] = lambda _m: None,
+) -> dict:
+    """The ratio THE RUNGS ARE SIZED BY, measured on the corpus BEFORE anything is planned.
+
+    A rung is named in tokens and the corpus is built in characters, so the ratio is what makes the
+    two the same claim. `PROVISIONAL_CHARS_PER_TOKEN` is what a rung is planned with when nothing
+    has been tokenised yet, and it was previously what EVERY production rung was planned with: the
+    per-cell measurement runs after the thread is already seeded and its result is recorded and
+    nothing else, so a cell labelled 1M tokens carried 4,000,000 characters of a corpus that
+    tiktoken reads at 3.34 -- about 1.2M tokens, a fifth over its own label, on the axis the onset
+    headline is quoted against.
+
+    Measured once for the whole ladder rather than per rung: the per-cell number is taken from that
+    rung's streamed unit alone, which is 6,000 characters of either reasoning or code and swings
+    between 3.2 and 4.9 by which kind the rung happens to land on. The axis needs the corpus's
+    ratio, not one turn's.
+    """
+    got = measure_chars_per_token(_corpus_sample(corpus), base_url, auth, model_id)
+    measured = got.get("chars_per_token")
+    source = got.get("source")
+    if measured and measured > 0 and source in LADDER_RATIO_SOURCES:
+        used, reason = float(measured), None
+    else:
+        used = PROVISIONAL_CHARS_PER_TOKEN
+        reason = (
+            f"no tokeniser answered (source {source!r}), so the rungs keep the provisional "
+            f"{PROVISIONAL_CHARS_PER_TOKEN} rather than being sized from an estimate"
+        )
+    log(
+        f"  ladder sized at {used} chars per token "
+        f"(measured {measured} via {source}){'; ' + reason if reason else ''}"
+    )
+    return {
+        "chars_per_token": used,
+        "measured": measured,
+        "source": source,
+        "provisional": reason is not None,
+        "reason": reason,
+        "detail": got,
+    }
+
+
 def build_cells(
     rungs: list[str],
     corpus: Corpus,
@@ -713,11 +782,31 @@ def build_cells(
     session_id: str,
     instrument_level: int,
     reps: int = 1,
-    chars_per_token: float = 4.0,
+    chars_per_token: Optional[float] = None,
+    base_url: str = "",
+    auth: Optional[StudioAuth] = None,
+    model_id: str = "",
+    log: Callable[[str], None] = lambda _m: None,
 ) -> list[tuple[Cell, RungPlan]]:
+    """The ladder's cells, sized by the MEASURED ratio unless a caller names one.
+
+    `chars_per_token = None` means "measure the corpus first", which is what the production caller
+    does. The ratio that sized the ladder travels on every cell's `meta` so a reader of the payload
+    can see which one it was and whether a tokeniser answered.
+    """
+    if chars_per_token is None:
+        ratio = ladder_chars_per_token(corpus, base_url, auth, model_id, log)
+    else:
+        ratio = {
+            "chars_per_token": float(chars_per_token),
+            "measured": None,
+            "source": "caller",
+            "provisional": False,
+            "reason": None,
+        }
     out: list[tuple[Cell, RungPlan]] = []
     for rung in rungs:
-        plan = plan_rung(corpus, rung, chars_per_token)
+        plan = plan_rung(corpus, rung, ratio["chars_per_token"])
         for rep in range(reps):
             cell = Cell(
                 cell_id = make_cell_id(rung, "A0", rep),
@@ -731,6 +820,7 @@ def build_cells(
                 seed = corpus.seed,
                 corpus_hash = corpus.corpus_hash,
                 session_id = session_id,
+                meta = {"ladder_chars_per_token": ratio},
             )
             out.append((cell, plan))
     return out

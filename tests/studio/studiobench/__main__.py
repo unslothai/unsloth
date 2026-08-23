@@ -804,9 +804,24 @@ def run(args, ab_ref = None) -> int:
         if args.surfaces:
             _sweep_surfaces(sides, ctx, paths)
 
+        # The ladder is sized by the ratio MEASURED on this corpus, not by the provisional 4.0.
+        # Measured here, before any cell is built, because a rung named in tokens is planned in
+        # characters and the ratio is what makes those the same claim.
         cells = build_cells(
-            rungs, corpus, args.tier, ctx.session_id, args.instrument_level, reps = args.reps
+            rungs,
+            corpus,
+            args.tier,
+            ctx.session_id,
+            args.instrument_level,
+            reps = args.reps,
+            base_url = sides[0]["base_url"],
+            auth = seeder.auth,
+            model_id = model_id,
+            log = _log,
         )
+        if cells:
+            ladder_ratio = cells[0][0].meta["ladder_chars_per_token"]
+            rec.gate("ladder_ratio_measured", not ladder_ratio["provisional"], ladder_ratio)
 
         done = _resume_set(paths) if args.resume else set()
 
