@@ -226,9 +226,7 @@ def test_inadequate_stack_warning_names_the_floors_not_the_install_pins(monkeypa
     warnings = []
     monkeypatch.setattr(mr.subprocess, "run", lambda *a, **k: _Result())
     monkeypatch.setattr(mr, "mlx_stack_available", lambda: False)
-    monkeypatch.setattr(
-        mr.logger, "warning", lambda msg, *args, **kw: warnings.append(msg % args)
-    )
+    monkeypatch.setattr(mr.logger, "warning", lambda msg, *args, **kw: warnings.append(msg % args))
     assert mr.attempt_mlx_repair() is False
     (message,) = [w for w in warnings if "incomplete or too-old" in w]
     for name, floor in mr._MLX_MIN_VERSIONS.items():
