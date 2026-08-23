@@ -22,10 +22,10 @@ import {
   ComputerTerminal01Icon,
   CpuIcon,
   DatabaseSettingIcon,
+  EnergyRectangleIcon,
   Globe02Icon,
   HelpCircleIcon,
   HomeWifiIcon,
-  KeyboardIcon,
   Message01Icon,
   PaintBrush02Icon,
   Search01Icon,
@@ -55,7 +55,7 @@ import {
   type SettingsTab,
   useSettingsDialogStore,
 } from "./stores/settings-dialog-store";
-// Statically imported, all twelve panels ran before first paint even though the dialog
+// Statically imported, every panel ran before first paint even though the dialog
 // starts closed. Load each on first view instead; this map also drives the prefetch.
 const TAB_LOADERS = {
   general: () => import("./tabs/general-tab").then((m) => ({ default: m.GeneralTab })),
@@ -167,7 +167,6 @@ const TABS: TabDef[] = [
     id: "profile",
     labelKey: "settings.tabs.profile",
     icon: UserIcon,
-    badgeKey: "common.new",
   },
   {
     id: "appearance",
@@ -193,6 +192,7 @@ const TABS: TabDef[] = [
     id: "remote-lan",
     labelKey: "settings.tabs.remoteLan",
     icon: HomeWifiIcon,
+    badgeKey: "common.new",
   },
   {
     id: "connections",
@@ -203,24 +203,22 @@ const TABS: TabDef[] = [
     id: "agents",
     labelKey: "settings.tabs.agents",
     icon: BotIcon,
-    badgeKey: "common.new",
   },
   {
     id: "voice",
     labelKey: "settings.tabs.voice",
     iconComponent: MicIcon,
-    badgeKey: "common.new",
   },
   {
     id: "data",
     labelKey: "settings.tabs.data",
     icon: DatabaseSettingIcon,
-    badgeKey: "common.new",
   },
   {
     id: "keyboard-shortcuts",
     labelKey: "settings.tabs.keyboardShortcuts",
-    icon: KeyboardIcon,
+    icon: EnergyRectangleIcon,
+    badgeKey: "common.new",
   },
   {
     id: "debugging",

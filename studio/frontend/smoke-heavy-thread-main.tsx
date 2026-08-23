@@ -585,11 +585,20 @@ const EXPECTED_PER_CYCLE: Record<string, number> = {
   artifactCards: 2,
   // python, typescript, json, svg, the html document, and the two tool result panes.
   codeBlocks: 7,
-  // Shiki is async and per block, so a <pre> exists long before it is highlighted. A floor under
-  // the token count is what tells a finished thread apart from one still building itself; a
-  // settled-looking count of 577 against the 3216 a whole cycle produces is a real measured
-  // failure of the naive "it stopped moving" gate.
-  highlightedTokens: 2500,
+  /*
+   * THE CODE ITSELF, in characters: the one size measure deferral cannot move.
+   *
+   * This was a floor of 2,500 highlighted tokens, doing two jobs at once. Off-screen fences now
+   * render as a plain shell, so tokens partly measure where the viewport is: the same fixture
+   * renders 1,322 per cycle where it rendered 3,216. Characters do not move, because the shell
+   * carries the same text node: 12,660 for one cycle and 51,081 for four (2 of 5 and 15 of 20
+   * fences deferred), and Chromium, Firefox and WebKit each report 12,660 to the character.
+   *
+   * Floor 12,000 against 12,660; a cycle is seven blocks averaging ~1,800 chars, so losing any one
+   * block still fails. The other job, telling a settled thread from one still building itself, is
+   * now `unhighlightedMountedFences`, asked per block.
+   */
+  codeChars: 12000,
 };
 
 /**
@@ -781,6 +790,33 @@ function HeavyThreadApi({
           domNodes: document.getElementsByTagName("*").length,
           codeBlocks: document.querySelectorAll("pre").length,
           highlightedTokens: document.querySelectorAll("pre code span").length,
+          /*
+           * HOW MUCH CODE IS ON THE PAGE. `highlightedTokens` cannot answer that any more: a
+           * deferred fence renders as a plain shell, so tokens measure where the reader is
+           * looking. The shell holds the same text node the highlighted block holds (which is
+           * also why selection, clipboard and find-in-page are identical across the two states),
+           * so characters read the same either way and still drop if the fixture loses code.
+           */
+          codeChars: Array.from(document.querySelectorAll("pre code")).reduce(
+            (total, node) => total + (node.textContent?.length ?? 0),
+            0,
+          ),
+          fenceBlocks: document.querySelectorAll('[data-streamdown="code-block"]').length,
+          deferredFences: document.querySelectorAll("[data-unsloth-fence-deferred]").length,
+          /*
+           * A fence that is NEITHER deferred NOR highlighted, at rest: the settlement half of the
+           * old token floor, asked per block. Streamdown mounts a code block on its own
+           * unhighlighted fallback and colours it from a passive effect, so this state exists for
+           * a frame on any build and a settled thread must hold none. Stronger than a floor on
+           * the total, which one stuck block passes as long as the others make up the count.
+           */
+          unhighlightedMountedFences: Array.from(
+            document.querySelectorAll('[data-streamdown="code-block"]'),
+          ).filter(
+            (block) =>
+              !block.hasAttribute("data-unsloth-fence-deferred") &&
+              block.querySelector("pre code span") === null,
+          ).length,
           toolParts: document.querySelectorAll(".aui-tool-fallback-root").length,
           // The collapsible CONTENT ELEMENT, which Radix keeps in the tree for its collapse
           // animation. It is present whether the card is open or shut, so it counts cards, not
