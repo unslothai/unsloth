@@ -43,7 +43,7 @@ test("a tool call is left to the wire shape, not counted as payload up front", (
   const end = adapter.indexOf("function hasReplayContent(");
   assert.ok(start > 0 && end > start);
   // A call the replay can carry already leaves tool_calls on the wire; one it cannot carry
-  // reaches the provider as nothing, and short-circuiting here would keep the empty turn the
+  // reaches the provider as nothing; short-circuiting here would keep the empty turn the
   // backend drops, stranding the pair this prune exists to repair.
   assert.doesNotMatch(adapter.slice(start, end), /part\.type === "tool-call"/);
 });

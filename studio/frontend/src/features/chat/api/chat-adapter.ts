@@ -1388,39 +1388,36 @@ function toOpenAIMessages(
   ];
 }
 
-/** Payload the turn carries in its own parts, before the replay serialiser decides how much
- * of it fits back on the wire. A turn holding any of this is real history even when the
- * serialiser emits nothing for it, so pruning it would delete a user prompt that was answered.
+/** Payload the turn carries in its own parts, so that a turn holding real history is kept
+ * even when the replay serialiser emits nothing for it.
  *
- * Tool calls are deliberately absent. A call the serialiser can carry already leaves
- * `tool_calls` on the wire and is caught by the shape check below; a call it cannot carry --
- * a local call Stopped before its result arrived, which OpenAI forbids replaying without a
- * responding `role="tool"` message -- reaches the provider as nothing at all. Counting the
- * second as payload keeps a turn the backend then drops (`_drop_empty_assistant_sentinels`),
- * putting the two user turns back together for `_coalesce_consecutive_user_turns` to merge,
- * which resends the cancelled prompt and invites the tool request again. */
+ * Tool calls are deliberately absent. A call the serialiser can carry leaves `tool_calls` on
+ * the wire and is caught by the shape check below; a call it cannot carry (a local call
+ * Stopped before its result arrived, which OpenAI forbids replaying without a responding
+ * `role="tool"` message) reaches the provider as nothing. Counting the second as payload keeps
+ * a turn the backend then drops (`_drop_empty_assistant_sentinels`), so
+ * `_coalesce_consecutive_user_turns` merges the two user turns, resending the cancelled
+ * prompt and inviting the tool request again. */
 function assistantTurnCarriesPayload(message: RunMessage): boolean {
   for (const part of message.content ?? []) {
-    // sanitizeAssistantReplayText only substitutes (an audio data URI becomes "[audio]"),
-    // so it can never empty text that had any. Reading the raw part keeps the scan off that
-    // regex for every turn of a long thread.
+    // sanitizeAssistantReplayText only substitutes, never empties, so the raw part is
+    // equivalent here and keeps the scan off that regex.
     if (part.type === "text" && part.text.trim().length > 0) return true;
   }
   if (collectImageParts(message).length > 0) return true;
   return "attachments" in message && (message.attachments?.length ?? 0) > 0;
 }
 
-/** Whether a serialised turn still says something once the backend is done with it. The
- * external-provider translator drops any assistant turn whose string content trims away
- * (`_build_external_messages` in studio/backend/routes/inference.py), so treating
- * whitespace as content here would keep a pair the backend then splits apart again. */
+/** Whitespace is not content: `_build_external_messages` (studio/backend/routes/inference.py)
+ * drops any assistant turn whose string content trims away, so counting it here would keep a
+ * pair the backend then splits apart again. */
 function hasReplayContent(content: OpenAIMessageContent | null): boolean {
   if (typeof content === "string") return content.trim().length > 0;
   return Boolean(content);
 }
 
-/** A turn that stopped before it was done. `status` is session state only (a reloaded thread
- * comes back stamped complete), so the persisted marker is read alongside it. */
+/** `status` is session state only (a reloaded thread comes back stamped complete), so the
+ * persisted marker is read alongside it. */
 function assistantTurnEndedEarly(message: RunMessage): boolean {
   return (
     message.status?.type === "incomplete" ||
@@ -1436,9 +1433,8 @@ function isAbandonedAssistantTurn(
 ): boolean {
   if (message.role !== "assistant") return false;
   if (assistantTurnCarriesPayload(message)) return false;
-  // Reasoning goes unreplayed only when the turn was cut short. A turn that finished on
-  // reasoning alone is a reply, and on an external request it serialises empty purely
-  // because reasoning is stripped there, which must not read as abandoned.
+  // A turn that finished on reasoning alone is a reply; on an external request it serialises
+  // empty only because reasoning is stripped there, which must not read as abandoned.
   if (
     !assistantTurnEndedEarly(message) &&
     (message.content ?? []).some((part) => part.type === "reasoning")
@@ -1465,9 +1461,8 @@ function pruneOutboundHistory(
   const abandoned = history.map((message) =>
     isAbandonedAssistantTurn(message, includeReasoningContent),
   );
-  // A prompt is only stranded next to another user turn when something survives after it.
-  // A thread whose last turn was abandoned still ends on its own prompt, which is exactly
-  // the history the next send needs, so that prompt stays.
+  // A prompt is only stranded when something survives after it, so a thread whose last turn
+  // was abandoned keeps its trailing prompt: that is the history the next send needs.
   let lastSurviving = -1;
   for (let index = history.length - 1; index >= 0; index -= 1) {
     if (!abandoned[index] && !isAnthropicRefusalMessage(history[index])) {
