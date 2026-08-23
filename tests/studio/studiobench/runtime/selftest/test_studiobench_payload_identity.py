@@ -32,6 +32,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from studiobench.__main__ import (  # noqa: E402
+    TOOL_VERSION,
     _resume_set,
     archive_payload,
     parse_args,
@@ -52,7 +53,7 @@ def _run_meta(tier, ref, rungs, **extra):
     row = {
         "row_type": "run_meta",
         "tier": tier,
-        "tool_version": "0.1.0",
+        "tool_version": TOOL_VERSION,
         "corpus_hash": CORPUS,
         "studio_ref": ref,
         "bundle": {"production": True},
@@ -280,7 +281,7 @@ def test_a_payload_that_never_recorded_an_axis_still_resumes(tmp_path):
     legacy = {
         "row_type": "run_meta",
         "tier": "standard",
-        "tool_version": "0.0.9",
+        "tool_version": TOOL_VERSION,
         "corpus_hash": CORPUS,
         "studio_ref": "main",
         "bundle": {"production": True},
@@ -319,6 +320,57 @@ def test_resuming_an_ab_payload_as_a_single_build_run_is_refused(tmp_path):
         )
 
     assert "mode" in str(excinfo.value)
+
+
+def test_resuming_a_payload_measured_by_another_instrument_version_is_refused(tmp_path):
+    """A harness upgrade mid-campaign is the one identity change nobody has to type.
+
+    `TOOL_VERSION` is bumped when what an instrument MEASURES changes and for no other reason: at
+    0.2.0 `reasoning_toggle.open_ms` terminates on a settled mount rather than on the `data-state`
+    flip, which is a different quantity under the same name. None of that moves a cell id, so
+    `--resume` into a half-finished 0.1.0 payload from an upgraded tree kept the old completed
+    cells and appended new ones measured by the new instruments. `merged_run_meta` names that
+    mixture, but plain `--report` never calls it -- it reads the FIRST header and pools both.
+    """
+
+    paths = Paths.under(tmp_path / "upgraded")
+    _record(
+        paths,
+        "sess-old",
+        [
+            {**_run_meta("standard", "main", ["10K"]), "tool_version": "0.1.0"},
+            _cell("r10K.A0.rep0", 10_000),
+            _keystroke("r10K.A0.rep0", 9),
+        ],
+    )
+    args = parse_args(["--tier", "standard", "--branch", "main", "--rungs", "10K,100K", "--resume"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+        )
+
+    assert "tool_version" in str(excinfo.value)
+    assert TOOL_VERSION in str(excinfo.value)
+
+
+def test_a_payload_recorded_by_this_version_still_resumes(tmp_path):
+    """The control: the axis must refuse an upgrade, not every resume."""
+
+    paths = Paths.under(tmp_path / "same")
+    _record(
+        paths,
+        "sess-1",
+        [_run_meta("standard", "main", ["10K"]), _cell("r10K.A0.rep0", 10_000)],
+    )
+    args = parse_args(["--tier", "standard", "--branch", "main", "--rungs", "10K,100K", "--resume"])
+
+    assert (
+        prepare_payload(
+            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+        )
+        is None
+    )
 
 
 def test_an_ab_payload_that_never_recorded_a_treatment_url_still_resumes(tmp_path):
@@ -779,7 +831,7 @@ def test_the_skip_rule_still_holds_for_an_axis_that_really_did_decline_to_say(tm
             {
                 "row_type": "run_meta",
                 "tier": "standard",
-                "tool_version": "0.0.9",
+                "tool_version": TOOL_VERSION,
                 "corpus_hash": CORPUS,
                 "studio_ref": "main",
                 "bundle": {"production": True},

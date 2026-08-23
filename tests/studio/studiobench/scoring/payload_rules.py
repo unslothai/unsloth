@@ -327,6 +327,24 @@ def comparability_fields(run_meta: dict) -> dict:
         # comparison was the place it was missing.
         "system": platform.get("system"),
         "machine": platform.get("machine"),
+        # AND WHICH PHYSICAL MACHINE, because the two fields above cannot say. `platform.machine()`
+        # is the ARCHITECTURE, not a machine identifier: on two ordinary Linux x86_64 hosts it
+        # returns `x86_64` on both while `system` returns `Linux` on both, so the pair that was
+        # added here to stand for the host caught only the cross-OS case -- a tester's Mac against
+        # the Linux dev box -- and left the commonest one, a dev box against a CI runner or a
+        # second dev box, hashing identically. `platform.node()` is the host's network name and is
+        # the field that separates them.
+        #
+        # This is the axis with the least slack in it: `floor_table.render` refuses a floor whose
+        # comparability fields differ from the payload's, in the words "a floor is the scatter of
+        # THIS measurement on THIS machine", and that refusal is computed from this dict. Without
+        # the host in it a null control measured on one machine certifies a result measured on
+        # another, which is the one comparison the report text says never travels.
+        #
+        # A payload recorded before this field existed carries None and is therefore not comparable
+        # with one that carries a host. That is the honest reading rather than a cost: such a
+        # payload does not record which machine produced it, so nothing can show it was this one.
+        "node": platform.get("node"),
         # WHICH BROWSER BINARY DREW THE FRAMES, which `engine` does not settle. Since Playwright
         # 1.57 headed and headless default to different executables -- `chrome` against
         # `chrome-headless-shell` -- and headless falls back to software rendering for

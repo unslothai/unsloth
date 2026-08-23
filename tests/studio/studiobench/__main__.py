@@ -1011,6 +1011,15 @@ def run(args, ab_ref = None) -> int:
             "platform": {
                 "system": platform.system(),
                 "machine": platform.machine(),
+                # WHICH PHYSICAL MACHINE, which `system` and `machine` do not answer between
+                # them. `platform.machine()` is the ARCHITECTURE -- "the machine type, e.g.
+                # 'AMD64'" -- so two ordinary Linux x86_64 boxes report `Linux` and `x86_64`
+                # alike, and every number this tool produces is machine-local: `report/render.py`
+                # says so in its own words, "machine-local; does not travel between machines".
+                # `platform.node()` is the computer's network name, which is the only thing
+                # recorded here that differs between two such hosts. Empty when it cannot be
+                # determined, exactly as the other two are.
+                "node": platform.node(),
                 "python": sys.version.split()[0],
                 "engine": bundle.engine,
                 "engine_note": bundle.engine_note,
@@ -1631,6 +1640,17 @@ IDENTITY_AXES = (
     "tier",
     "cadence",
     "engine",
+    # THE INSTRUMENTS THEMSELVES. `TOOL_VERSION` is bumped when what an instrument MEASURES
+    # changes and for no other reason -- this commit bumped it to 0.2.0 because
+    # `reasoning_toggle.open_ms` now terminates on a settled mount rather than on the `data-state`
+    # flip, which makes it a different quantity under the same name. None of that moves a cell id,
+    # so `--resume` into a half-finished 0.1.0 payload from an upgraded tree skipped the completed
+    # cells and appended the rest measured by 0.2.0: one ladder built from two instruments, which
+    # is the same failure the tier and the corpus are on this list for. `merged_run_meta` names the
+    # mixture afterwards, but only `--compare` and a floor-gated `floor_table.render` call it --
+    # plain `--report` takes the FIRST header and pools the two quantities without a word. Refused
+    # here instead, before anything is installed and before anything is measured.
+    "tool_version",
     "instrument_level",
     "corpus_hash",
     "studio_ref",
@@ -1753,6 +1773,9 @@ def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
     return {
         "tier": args.tier,
         "cadence": args.cadence,
+        # THE INSTRUMENTS THIS TREE CARRIES, as a module constant rather than anything the caller
+        # can ask for. A payload recorded by another version was measured by other instruments.
+        "tool_version": TOOL_VERSION,
         # THE ENGINE THAT WILL RENDER, not the flag that asked for it. `--engine` defaults to
         # nothing and `browser.launch` resolves the platform's desktop webview family, so the
         # requested value has to be resolved the same way `launch` resolves it -- otherwise the
@@ -2305,6 +2328,7 @@ def compare_payloads(args) -> int:
     is how a withdrawn number nearly propagated twice in one campaign. Quoting the comparability
     key beside a number turns that check from an act of memory into one command.
     """
+    from .report.payload import read_records
     from .scoring import payload_rules
 
     metas = []
@@ -2320,11 +2344,20 @@ def compare_payloads(args) -> int:
         # the file has since outgrown, and declares a resumed payload comparable with the one-rung
         # run it started as. `floor_table.tiers_of` and `corpora_of` were both fixed for exactly
         # this; `--compare` was the reader left behind.
-        records = []
-        for line in path.read_text(errors = "ignore").splitlines():
-            if not line.strip():
-                continue
-            records.append(json.loads(line))
+        #
+        # READ THE WAY EVERY OTHER READER IN THIS TOOL READS. The payload is append-only and every
+        # row is flushed as it is written, so a run killed during its last append leaves valid rows
+        # followed by a torn one -- the failure this format is chosen to survive, and the reason
+        # `report.read_records` counts a malformed line instead of raising. `recorded_identities`
+        # and `_resume_set` skip one too. Parsing it here with a bare `json.loads` made `--compare`
+        # the only reader that answered an interrupted payload with a JSONDecodeError traceback
+        # rather than with the check it was asked for.
+        records, discarded = read_records(path)
+        if discarded:
+            print(
+                f"  {path}: {discarded} malformed line(s) skipped, which is what a run killed "
+                f"mid-append leaves. The check below reads the intact records."
+            )
         meta, conflicts = payload_rules.merged_run_meta(records)
         if meta is None:
             print(f"{path} carries no run_meta row, so it cannot be checked at all")
