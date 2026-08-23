@@ -195,6 +195,7 @@ export const en = {
       connections: "Connections",
       data: "Data",
       apiKeys: "API",
+      remoteLan: "Remote & LAN",
       agents: "Agents",
       keyboardShortcuts: "Shortcuts",
       debugging: "Logs",
@@ -281,6 +282,16 @@ export const en = {
         engineModel: "Local transcription",
         engineModelDescription:
           "Runs a speech-to-text (STT) model locally and works offline. Download, load, then unloads after inactivity.",
+        engineCustom: "Custom endpoint",
+        engineCustomDescription:
+          "Sends recorded audio to an OpenAI-compatible STT server from your Connections.",
+        connectionLabel: "Connection",
+        connectionDescription:
+          "Add an OpenAI-compatible server and optional API key in Connections.",
+        connectionPlaceholder: "Select a connection",
+        connectionEmpty: "No connections available",
+        customModelLabel: "Model",
+        customModelDescription: "Model name sent to /v1/audio/transcriptions.",
         sttModelLabel: "Speech recognition model",
         sttModelDescription: "Choose or search a STT model to run locally.",
         sttModelSearchPlaceholder: "Search any model on HF",
@@ -338,6 +349,7 @@ export const en = {
         languageLabel: "Dictation language",
         languageDescription: "Language to recognize",
         languageAuto: "Auto (browser language)",
+        languageAutoDetect: "Auto (detect language)",
       },
       dictionary: {
         sectionTitle: "Dictation dictionary",
@@ -563,6 +575,7 @@ export const en = {
         embeddingModel: "Embedding model",
         embeddingModelDescription:
           "Hugging Face model or local path used to index and search your documents. Default is {defaultModel}.",
+        searchPlaceholder: "Search embedding models",
         reindexWarning:
           "Only affects newly indexed documents. Re-upload existing ones after changing the model.",
         emptyError: "Enter a Hugging Face model id or local path.",
@@ -1025,6 +1038,10 @@ export const en = {
         asSubagent:
           "Keep the parent on its current model and register Unsloth as a local subagent (Claude Code, Codex, and OpenCode).",
         apiKey: "Provide your Unsloth API key (or set UNSLOTH_API_KEY).",
+        reasoning:
+          "Use reasoning in the chat: on, off, or auto. Auto follows the model's chat template, which usually means on.",
+        reasoningEffort:
+          "Reasoning effort passed to the model's chat template, e.g. medium. Levels are per model, so use one that model accepts. Unset keeps the template's own.",
         yolo: "Skip approval prompts. Use only in trusted environments.",
       },
       remote: {
@@ -1220,6 +1237,11 @@ export const en = {
     connections: {
       title: "Connections",
       description: "Manage providers and external connections.",
+    },
+    remoteLan: {
+      title: "Remote & LAN",
+      description:
+        "Reach this Unsloth from your other devices, over your local network or a temporary public URL.",
     },
     apiKeys: {
       title: "API",

@@ -823,11 +823,14 @@ def _scan_custom_folder(
                 selectable.append(model)
         elif detect_gguf_model(model.path, model_root = str(folder_path)) is not None:
             selectable.append(model)
+    remaining = _MAX_MODELS_PER_CUSTOM_FOLDER - len(selectable)
+    if remaining > 0:
+        selectable.extend(scan_ollama_dir(folder_path, limit = remaining))
     return selectable[:_MAX_MODELS_PER_CUSTOM_FOLDER]
 
 
 def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:
-    if model.source == "hf_cache":
+    if model.source in {"hf_cache", "ollama"}:
         return model
     return model.model_copy(
         update = {

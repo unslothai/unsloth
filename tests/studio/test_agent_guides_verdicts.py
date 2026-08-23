@@ -119,3 +119,10 @@ def test_guide_fail_still_names_the_recipe() -> None:
     """It is the right message for the case it is now reserved for."""
     body = _block("guide_fail")
     assert "guide drift" in body and "CONNECT_REF" in body
+
+
+def test_opencode_v2_guide_moves_standalone_after_run() -> None:
+    """Appending run to the bare V2 recipe must keep standalone a run option."""
+    body = _block("invoke_via_connect")
+    assert '[[ "$cmd" == *" --standalone" ]]' in body
+    assert 'set -- run --standalone "${@:2}"' in body

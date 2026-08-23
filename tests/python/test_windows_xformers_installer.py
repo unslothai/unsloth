@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from unsloth_pwsh_runner import run_pwsh
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -53,7 +54,10 @@ def _selector_harness() -> str:
 
 
 def _run_pwsh(script: str) -> str:
-    result = subprocess.run(
+    # run_pwsh, not subprocess.run: a pwsh killed by a signal never ran this script, and
+    # `check = True` would report that as a CalledProcessError carrying the whole excerpt,
+    # which reads as the selector being wrong. See tests/_shared/unsloth_pwsh_runner.py.
+    result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         check = True,
         capture_output = True,

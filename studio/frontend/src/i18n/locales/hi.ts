@@ -196,6 +196,7 @@ export const hi = {
       chat: "चैट",
       connections: "कनेक्शन",
       apiKeys: "API",
+      remoteLan: "रिमोट और LAN",
       about: "परिचय",
       data: "डेटा",
       agents: "एजेंट",
@@ -282,6 +283,17 @@ export const hi = {
         engineModel: "लोकल ट्रांसक्रिप्शन",
         engineModelDescription:
           "स्पीच-टू-टेक्स्ट (STT) मॉडल लोकली चलाता है और ऑफ़लाइन काम करता है। डाउनलोड करें, लोड करें; कुछ देर उपयोग न होने पर यह अनलोड हो जाता है।",
+        engineCustom: "कस्टम एंडपॉइंट",
+        engineCustomDescription:
+          "आपके कनेक्शन से रिकॉर्ड किया गया ऑडियो OpenAI-संगत STT सर्वर को भेजता है।",
+        connectionLabel: "कनेक्शन",
+        connectionDescription:
+          "कनेक्शन में OpenAI-संगत सर्वर और वैकल्पिक API कुंजी जोड़ें।",
+        connectionPlaceholder: "कनेक्शन चुनें",
+        connectionEmpty: "कोई कनेक्शन उपलब्ध नहीं है",
+        customModelLabel: "मॉडल",
+        customModelDescription:
+          "/v1/audio/transcriptions को भेजा जाने वाला मॉडल नाम।",
         sttModelLabel: "स्पीच रिकग्निशन मॉडल",
         sttModelDescription: "लोकली चलाने के लिए STT मॉडल चुनें या खोजें।",
         sttModelSearchPlaceholder: "मॉडल खोजें",
@@ -340,6 +352,7 @@ export const hi = {
         languageLabel: "डिक्टेशन की भाषा",
         languageDescription: "पहचानी जाने वाली भाषा",
         languageAuto: "स्वतः (ब्राउज़र की भाषा)",
+        languageAutoDetect: "स्वतः (भाषा पहचानें)",
       },
       dictionary: {
         sectionTitle: "डिक्टेशन शब्दकोश",
@@ -564,6 +577,7 @@ export const hi = {
         embeddingModel: "एम्बेडिंग मॉडल",
         embeddingModelDescription:
           "आपके दस्तावेज़ों को इंडेक्स और खोजने के लिए उपयोग किया जाने वाला Hugging Face मॉडल या स्थानीय पथ। डिफ़ॉल्ट {defaultModel} है।",
+        searchPlaceholder: "एम्बेडिंग मॉडल खोजें",
         reindexWarning:
           "केवल नए इंडेक्स किए गए दस्तावेज़ों को प्रभावित करता है। मॉडल बदलने के बाद मौजूदा दस्तावेज़ फिर से अपलोड करें।",
         emptyError: "एक Hugging Face मॉडल id या स्थानीय पथ दर्ज करें।",
@@ -1034,6 +1048,10 @@ export const hi = {
           "मूल एजेंट को उसके मौजूदा मॉडल पर रखता है और Unsloth को लोकल सबएजेंट के रूप में दर्ज करता है (Claude Code, Codex और OpenCode)।",
         apiKey:
           "आपकी Unsloth API key लेता है (या UNSLOTH_API_KEY सेट करें)।",
+        reasoning:
+          "चैट में रीज़निंग इस्तेमाल करें: on, off या auto। Auto मॉडल के चैट टेम्पलेट के अनुसार चलता है, जो आम तौर पर on होता है।",
+        reasoningEffort:
+          "मॉडल के चैट टेम्पलेट को दिया जाने वाला रीज़निंग एफ़र्ट, जैसे medium। स्तर हर मॉडल के अपने होते हैं, इसलिए वही दें जो वह मॉडल स्वीकार करता है। खाली छोड़ने पर टेम्पलेट का स्तर रहता है।",
         yolo:
           "मंज़ूरी के प्रॉम्प्ट छोड़ देता है। केवल भरोसेमंद वातावरण में उपयोग करें।",
       },
@@ -1232,6 +1250,11 @@ export const hi = {
     connections: {
       title: "कनेक्शन",
       description: "प्रदाता और बाहरी कनेक्शन प्रबंधित करें।",
+    },
+    remoteLan: {
+      title: "रिमोट और LAN",
+      description:
+        "इस Unsloth तक अपने दूसरे डिवाइस से पहुँचें, अपने लोकल नेटवर्क या एक अस्थायी सार्वजनिक URL से।",
     },
     apiKeys: {
       title: "API",
