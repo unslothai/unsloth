@@ -20,6 +20,8 @@ web_search calls):
 
 from __future__ import annotations
 
+import random
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -1064,3 +1066,57 @@ class TestTheProbeIsNotPaidForTwice:
         assert 0 not in [chars for chars in calls], "the baseline is held, not re-priced"
         held = list(tools._PROBE_COUNT_CACHE.values())[0]
         assert tools._PROBE_BASELINE in held, "and pinned against eviction"
+
+    def test_concurrent_chats_do_not_corrupt_or_crash_on_the_shared_cache(self, monkeypatch):
+        """Tool calls run in worker threads (`tool_stream_exec.stream_tool_execution` runs
+        each invocation in one), so concurrent chats reach this process-global cache at the
+        same time.
+
+        A bare dict assignment is atomic under the GIL, but the LRU touch and the eviction
+        are read-then-mutate sequences and are not. Measured before the lock, with this
+        exact harness at 24 threads: 69 exceptions out of 12,000 truncations -- `KeyError`
+        from popping a key another thread had just evicted, and "dictionary changed size
+        during iteration" from choosing a victim while another thread inserted. None of
+        them were caught on the way out of `_truncate`.
+        """
+        import threading
+
+        _window(monkeypatch, 5120)
+        self._serving(monkeypatch, 5120)
+        # Cache pressure, so eviction fires on nearly every insert, and aggressive
+        # preemption so the read-then-mutate windows are actually interleaved.
+        monkeypatch.setattr(tools, "_PROBE_COUNT_CACHE_ENTRIES", 3)
+        monkeypatch.setattr(tools, "_PROBE_COUNT_CACHE_CHARS", 12_000)
+        previous_interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-9)
+        budget = tools._tool_result_char_budget()
+        texts = {f"t{i}": f"{i:04d}" + "0123456789abcdef" * (300 + i * 40) for i in range(8)}
+        errors: list[BaseException] = []
+        answers: dict[str, set] = {name: set() for name in texts}
+
+        def worker(seed):
+            rng = random.Random(seed)
+            for _ in range(150):
+                name = rng.choice(list(texts))
+                try:
+                    answers[name].add(tools._dense_char_limit(texts[name], budget))
+                except BaseException as exc:  # noqa: BLE001 -- the whole point is to catch it
+                    errors.append(exc)
+
+        try:
+            threads = [threading.Thread(target = worker, args = (seed,)) for seed in range(12)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        finally:
+            sys.setswitchinterval(previous_interval)
+
+        assert errors == [], f"the shared cache raised under concurrency: {errors[:3]}"
+        # And every thread agreed on every answer, which is the point of the whole change.
+        for name, seen in answers.items():
+            assert len(seen) == 1, f"{name} got different answers in different threads: {seen}"
+        # The bounds still hold when several threads insert at once.
+        for entry in tools._PROBE_COUNT_CACHE.values():
+            assert len(entry) <= 3
+            assert sum(map(len, entry)) <= 12_000

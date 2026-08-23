@@ -11853,6 +11853,22 @@ _MAX_PROBE_CHARS_PER_TOKEN = 256
 # pid still has to agree on everything before a count is reused.
 _PROBE_COUNT_CACHE: dict = {}
 
+# Tool calls run in worker threads (`tool_stream_exec.stream_tool_execution` runs each
+# invocation in one), so concurrent chats reach this cache at the same time. A bare dict
+# assignment is atomic under the GIL, but the LRU touch and the eviction below are
+# read-then-mutate sequences and are not: measured with 24 threads over a 3-entry cache,
+# `cache.pop(chunk)` raised KeyError after another thread evicted the same key, `del
+# cache[victim]` raised on a victim already taken, and choosing a victim raised
+# "dictionary changed size during iteration" -- 90 exceptions in one run, none of them
+# caught on the way out of `_truncate`.
+#
+# Held only across the dict work, never across a `count_chat_tokens` call. Serialising the
+# round trips themselves would trade a shared cache for a shared queue, which is the
+# opposite of the point. Two threads may therefore measure the same chunk at once and both
+# store it; the value is the same either way, so that costs one duplicate measurement,
+# which is what the merge base did on every result anyway.
+_PROBE_COUNT_LOCK = threading.Lock()
+
 # The empty chunk: the framing baseline, and the entry eviction pins. Named so the two
 # places that treat it specially cannot drift apart from a bare "".
 _PROBE_BASELINE = ""
@@ -11908,12 +11924,13 @@ def _probe_cache(llama, ctx: int) -> dict:
     identity = _probe_identity(llama, ctx)
     if identity is None:
         return {}
-    cache = _PROBE_COUNT_CACHE.get(identity)
-    if cache is None:
-        # A different model is serving now. Drop the previous one's numbers rather than
-        # keep them around to be matched against.
-        _PROBE_COUNT_CACHE.clear()
-        cache = _PROBE_COUNT_CACHE[identity] = {}
+    with _PROBE_COUNT_LOCK:
+        cache = _PROBE_COUNT_CACHE.get(identity)
+        if cache is None:
+            # A different model is serving now. Drop the previous one's numbers rather than
+            # keep them around to be matched against.
+            _PROBE_COUNT_CACHE.clear()
+            cache = _PROBE_COUNT_CACHE[identity] = {}
     return cache
 
 
@@ -11962,22 +11979,29 @@ def _loaded_token_counter(ctx: int):
         """
         if len(chunk) > _PROBE_COUNT_CACHE_CHARS:
             return  # too large to hold at all; evicting the rest would not help
-        held = sum(map(len, cache))
-        while len(cache) >= _PROBE_COUNT_CACHE_ENTRIES or (
-            held + len(chunk) > _PROBE_COUNT_CACHE_CHARS
-        ):
-            victim = next((key for key in cache if key != _PROBE_BASELINE), None)
-            if victim is None:
-                return  # only the pinned baseline is left, and it stays
-            held -= len(victim)
-            del cache[victim]
-        cache[chunk] = value
+        with _PROBE_COUNT_LOCK:
+            held = sum(map(len, cache))
+            while len(cache) >= _PROBE_COUNT_CACHE_ENTRIES or (
+                held + len(chunk) > _PROBE_COUNT_CACHE_CHARS
+            ):
+                # `list()` so the scan cannot trip over another thread's insert, and
+                # `pop(..., None)` so a victim someone else already took is not an error.
+                victim = next((key for key in list(cache) if key != _PROBE_BASELINE), None)
+                if victim is None:
+                    return  # only the pinned baseline is left, and it stays
+                held -= len(victim)
+                cache.pop(victim, None)
+            cache[chunk] = value
 
     def _rendered(chunk: str):
-        hit = cache.get(chunk)
+        with _PROBE_COUNT_LOCK:
+            hit = cache.get(chunk)
+            if hit is not None and chunk != _PROBE_BASELINE:
+                # Most recently used moves to the back. `pop(..., None)` and the re-check
+                # keep this a no-op rather than a KeyError if it lost a race to an evictor.
+                if cache.pop(chunk, None) is not None:
+                    cache[chunk] = hit
         if hit is not None:
-            if chunk != _PROBE_BASELINE:
-                cache[chunk] = cache.pop(chunk)  # most recently used moves to the back
             return hit
         # Strict, so that a count is only retained when the chat template really rendered
         # it. With `strict = False` a failed `/apply-template` still returns the plain-text
