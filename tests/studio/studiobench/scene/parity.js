@@ -926,6 +926,11 @@
           // The queued-idle interval itself, recorded rather than resolved away, so a reader can
           // tell why a capture with `streaming: true` placed no message in flight.
           queued_idle: Boolean(running && !generating),
+          // The composer's run-state slot, as a token. Carried so the comparison layer can tell a
+          // scaffold that differs because the two arms were at different points in one turn from a
+          // scaffold that differs because something was rendered differently. See
+          // `dom.runStateControl` and `analysis/parity.generation_disagrees`.
+          composer_control: dom.runStateControl ? dom.runStateControl() : null,
           messages,
           overlays,
           styles,

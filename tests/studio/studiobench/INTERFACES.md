@@ -593,23 +593,33 @@ it for the exit code, so anything swallowed by it leaves the run green. Three re
   treatment that renders the live assistant row as `data-role="user"` is reported rather than
   elided with the transient content digest.
 
-**The SCAFFOLD is deliberately not among them**, and this is the boundary that is easy to get
-wrong. `ThreadPrimitive.Root` wraps `ThreadComposerDock`, so the composer is inside the thread root
-and inside the scaffold, and the composer is exactly the surface that changes when a reply starts
-and stops. Measured on two byte-identical threads differing only in the composer control: Stop
-against Send moves the scaffold from 373 to 381 characters and changes its digest, with no message
-content involved. On the pair the refusal is about -- one arm generating with a quiet hook, the
-other finished -- the scaffold therefore differs BECAUSE one arm is generating, and reporting that
-would manufacture the wall-clock false alarm this mode exists to remove. Pinned by
-`test_the_scaffold_is_not_an_independent_surface_and_here_is_why`, which fails the day the composer
-leaves the thread root.
+**The SCAFFOLD is readable only when the two arms rendered the same composer control.**
+`ThreadPrimitive.Root` wraps `ThreadComposerDock`, so the composer is inside the thread root and
+inside `digest_scaffold`, and `ComposerRightControls` puts exactly one control in its run-state slot:
+Send when nothing is happening, Stop while a reply is written, Queue while one is queued or while
+text sits in the box mid-reply, and the research pair. Those are different subtrees. Measured on two
+byte-identical threads differing only in that slot: Stop against Send moves the scaffold from 373 to
+381 characters and changes its digest, with no message content involved.
 
-**What this gives up, measured on a live-DOM battery of 11 injected rendering differences at one
-stream point:** 10 still report `DIFFER`; a reorder that moves the streamed message past another
-message of the same role is demoted to `NOT COMPARABLE`, because the per-message rows are keyed by
-mounted index and both indices are then in flight on one side or the other. Nothing is demoted to
-`MATCH`. On the same fixtures the null -- one build, one document, six points in one stream, 15
-pairs -- goes from **15 of 15 reported as a UI change to 0**, all refused.
+So the capture carries `composer_control`, the token naming which control was in that slot, and the
+comparison asks whether the two arms agree on it. `streaming` is too coarse to ask with: it is
+`isRunning()`, true for Stop AND for Queue, so a queued-idle arm and a streaming arm agree on it
+while rendering two different subtrees.
+
+- **The arms agree on the token:** the scaffold is comparable, and a scaffolding change is reported
+  as it always was -- including inside the blind-probe refusal, alongside the overlays.
+- **They disagree, and the scaffold is the ONLY thing that moved:** `NOT_COMPARABLE`. The pair this
+  whole mode exists for is one arm that has finished its reply against one still writing it; its
+  messages are withheld correctly and its composer used to make it `DIFFER` with the single claim
+  `thread scaffolding outside any message (373->381c)`. Withheld rather than ignored: calling it
+  `MATCH` would hide a genuine composer regression, and `NOT_COMPARABLE` is not a pass.
+- **They disagree and something else also moved:** reported exactly as before. The withholding is
+  not a blanket.
+
+**The PR's own null battery could not see this**, which is why it survived a 15-of-15-to-0 null: the
+null is one build against itself at six points in ONE stream, so both arms are generating and both
+render Stop. The bias is symmetric within the control and cancels exactly. A flat null proves
+repeatability, never comparability.
 
 ### The two boundary decisions in visible-region parity
 

@@ -45,6 +45,18 @@
   // The two hooks the app publishes a part's progress through: assistant-ui's `data-status` on a
   // text part (markdown-text.tsx) and `aria-busy` on the reasoning content (reasoning.tsx). Named
   // once because the streaming scan and the control on it must never drift apart.
+  // Every control ComposerRightControls can put in the run-state slot, in no significant order.
+  // "Stop research" / "Stopping research" are included because they are the same slot, even though
+  // nothing in this benchmark can reach a research run today.
+  const RUN_STATE_CONTROLS = [
+    "Stop generating",
+    "Stop queued message",
+    "Stop research",
+    "Stopping research",
+    "Queue message",
+    "Send message",
+  ];
+
   const STATUS_HOOK = '[data-status], [data-slot="reasoning-content"][aria-busy]';
 
   const byName = (sel, name, root) =>
@@ -77,6 +89,24 @@
     },
     isRunning() {
       return Boolean(D.stopButton() || D.queueButton());
+    },
+    // WHICH RUN-STATE CONTROL THE COMPOSER IS RENDERING, as a token.
+    //
+    // `ComposerRightControls` renders exactly one of these at a time and which one is a function
+    // of the run state: Send when nothing is happening, Stop while a reply is being written, Queue
+    // while one is queued or while text sits in the box mid-reply, and the research pair while a
+    // research run is going. They are DIFFERENT SUBTREES, and the composer dock is inside
+    // `.aui-thread-root`, so `digest_scaffold` carries whichever one is up.
+    //
+    // Two arms showing different tokens differ in the scaffold FOR THAT REASON, with no rendering
+    // difference between them. `isRunning()` is too coarse to say so: it is true for Stop AND for
+    // Queue, so a queued-idle arm and a streaming arm agree on it while rendering different
+    // controls. The token is the thing the scaffold actually contains.
+    runStateControl() {
+      for (const name of RUN_STATE_CONTROLS) {
+        if (byName("button", name)) return name;
+      }
+      return "";
     },
     // THE PROMPT QUEUE'S OWN SURFACE. `PromptQueueStack` renders the waiting prompts inside the
     // composer root with the accessible name "Prompt queue, <n> of <m>", and that is the only

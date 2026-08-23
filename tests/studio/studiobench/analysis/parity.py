@@ -384,6 +384,44 @@ def compare_styles(base: dict, treat: dict) -> tuple[str, str]:
     return DIFFER, f"display/visibility/pointer-events differ over {bs.get('elements')} elements"
 
 
+def generation_disagrees(base: dict, treat: dict) -> bool:
+    """Was one arm running a reply while the other was not, at the moment each was digested?
+
+    THE COMPOSER IS A FUNCTION OF THIS, and the composer is inside `.aui-thread-root`:
+    `ThreadPrimitive.Root` wraps `ThreadComposerDock`, so `digest_scaffold` carries whichever
+    control the run state selected. Stop, Queue and Send are different subtrees, so two arms that
+    disagree about generation disagree about the scaffold FOR THAT REASON, with no rendering
+    difference between them.
+
+    Read from `composer_control`, the TOKEN naming which control the composer put in that slot, and
+    not from `streaming`. `streaming` is `isRunning()`, which is true for Stop and for Queue alike,
+    so a queued-idle arm and a streaming arm agree on it while rendering two different subtrees --
+    and the scaffold is exactly what those subtrees are in. Captures taken before the token existed
+    fall back to `streaming`, and captures older than that report neither and are scored as they
+    always were.
+    """
+    bc, tc = base.get("composer_control"), treat.get("composer_control")
+    if bc is not None and tc is not None:
+        return bc != tc
+    return bool(base.get("streaming")) != bool(treat.get("streaming"))
+
+
+def _messages_moved(base: dict, treat: dict, skip: Optional[set[int]] = None) -> bool:
+    """The message half of `_any_moved`, on its own."""
+    skip = skip or set()
+    bm, tm = _messages(base), _messages(treat)
+    # A message PRESENT ON ONE ARM ONLY is a difference whether or not it was streaming. Being
+    # mid-reply excuses a digest, never an absence.
+    if set(bm) != set(tm):
+        return True
+    return any(bm[i].get("digest") != tm[i].get("digest") for i in bm if i not in skip)
+
+
+def scaffold_moved(base: dict, treat: dict) -> bool:
+    """Did the thread scaffolding -- viewport, composer, empty state -- move?"""
+    return _scaffold(base)[0] != _scaffold(treat)[0]
+
+
 def _any_moved(
     base: dict,
     treat: dict,
@@ -415,12 +453,7 @@ def _any_moved(
         (o.get("sel"), o.get("digest")) for o in to
     ]:
         return True
-    bm, tm = _messages(base), _messages(treat)
-    # A message PRESENT ON ONE ARM ONLY is a difference whether or not it was streaming. Being
-    # mid-reply excuses a digest, never an absence.
-    if set(bm) != set(tm):
-        return True
-    return any(bm[i].get("digest") != tm[i].get("digest") for i in bm if i not in skip)
+    return _messages_moved(base, treat, skip)
 
 
 def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
@@ -478,6 +511,13 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
         # generating, and reporting that as a rendering difference would manufacture the wall-clock
         # false alarm this whole file exists to remove.
         independent = overlays_moved(base, treat)
+        # AND THE SCAFFOLD, but only when the two arms agree about whether a reply was running.
+        # The composer is inside the scaffold and is a function of exactly that, so the scaffold is
+        # readable here when they agree and meaningless when they do not. That is the correct form
+        # of the half of this refusal that measurement did not support.
+        if scaffold_moved(base, treat) and not generation_disagrees(base, treat):
+            bc, tc = _scaffold(base)[1], _scaffold(treat)[1]
+            independent = independent + [f"thread scaffolding outside any message ({bc}->{tc}c)"]
         if independent:
             return {
                 "verdict": DIFFER,
@@ -544,6 +584,46 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
     #    not go green on it -- and the only shape that reaches it needs the streamed message not to
     #    be the last one, which the app does not do today.
     streaming = in_flight(base, treat)
+    # ── THE COMPOSER IS NOT A RENDERING DIFFERENCE ──────────────────────────────────────────────
+    #
+    # The pair this whole change is about is one arm that has finished its reply against one that
+    # is still writing it. Its MESSAGES are withheld correctly. Its COMPOSER is not: the dock is
+    # inside `.aui-thread-root`, so `digest_scaffold` carries Stop on the arm that is generating
+    # and Send on the arm that is not, and `_any_moved` then reports the pair as DIFFER with the
+    # single claim `thread scaffolding outside any message (373->381c)`. Measured on exactly that
+    # pair, with every settled message row byte-identical across the two arms.
+    #
+    # THE NULL BATTERY CANNOT SEE THIS, which is why it survived a 15-of-15-to-0 null. The null is
+    # one build against itself at six points in ONE stream, so BOTH arms are generating and both
+    # render Stop; the bias is symmetric within the control and cancels exactly. A flat null proves
+    # repeatability, never comparability.
+    #
+    # WITHHELD RATHER THAN IGNORED. If a message or an overlay also moved, that is reported as
+    # usual and this never runs. It is only when the scaffold is the ONLY thing that moved, and the
+    # arms disagree about generation, that the reading has no defined moment -- and then the honest
+    # answer is a refusal, not a pass. Calling it MATCH would hide a genuine composer regression.
+    if (
+        generation_disagrees(base, treat)
+        and scaffold_moved(base, treat)
+        and not overlays_moved(base, treat)
+        and not _messages_moved(base, treat, streaming)
+    ):
+        bc, tc = _scaffold(base)[1], _scaffold(treat)[1]
+        return {
+            "verdict": NOT_COMPARABLE,
+            "reason": (
+                "the only difference is the thread scaffolding "
+                f"({bc}->{tc}c), and one arm was running a reply while the other was not. The "
+                "composer dock is inside the thread root and renders Stop or Queue while a reply "
+                "is running and Send when it is not, so the scaffolding differs BECAUSE the two "
+                "arms were at different points in the same turn. Every message and every overlay "
+                "agreed. Nothing here is a pass"
+            ),
+            "moved": [],
+            "in_flight": sorted(streaming),
+            "style_verdict": style_verdict,
+            "style_reason": style_reason,
+        }
     if not _any_moved(base, treat, streaming):
         bm, tm = _messages(base), _messages(treat)
         unsettled = sorted(

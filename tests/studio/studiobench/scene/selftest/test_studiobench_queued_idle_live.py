@@ -350,3 +350,107 @@ def test_the_scaffold_is_not_an_independent_surface_and_here_is_why(page):
         "if this ever holds, the composer has left the thread root and the scaffold may be "
         "consulted beside the overlays"
     )
+
+
+# ── the composer is not a rendering difference ───────────────────────
+#
+# The pair this whole change is about: one arm has finished its reply, the other is still writing
+# it. Its messages are withheld correctly. Its COMPOSER was not, because the dock is inside
+# `.aui-thread-root` and the scaffold therefore carries Stop on one arm and Send on the other.
+
+_SETTLED_STATUSES = ["complete", "complete", "complete", "complete"]
+_STREAMING_STATUSES = ["complete", "complete", "complete", "running"]
+
+
+def _finished(**kw):
+    return dict(control = _SEND_BUTTON, queue_stack = False, statuses = _SETTLED_STATUSES, **kw)
+
+
+def _writing(**kw):
+    return dict(control = _STOP_BUTTON, queue_stack = False, statuses = _STREAMING_STATUSES, **kw)
+
+
+def test_a_scaffold_only_difference_across_a_finished_and_a_running_arm_is_refused(page):
+    """THE REGRESSION, on the pair this mode exists for.
+
+    Every settled message row is byte-identical; the only thing that moved is the composer, and it
+    moved because one arm was generating. Reported as DIFFER this read as a rendering change, with
+    the single claim `thread scaffolding outside any message (373->381c)`.
+    """
+    base = _capture_html(page, _page(tail = "arrived at last", **_finished()))
+    treat = _capture_html(page, _page(tail = "arr", **_writing()))
+    assert base["streaming"] is False and treat["streaming"] is True
+    assert treat["in_flight"] == [3] and treat["in_flight_unplaced"] is False
+    assert [m["digest"] for m in base["messages"][:3]] == [m["digest"] for m in treat["messages"][:3]]
+    assert base["digest_scaffold"] != treat["digest_scaffold"]
+    got = P.compare(base, treat)
+    assert got["verdict"] == P.NOT_COMPARABLE, got
+    assert "composer dock is inside the thread root" in got["reason"]
+    assert got["moved"] == []
+
+
+def test_the_same_two_stream_positions_with_both_arms_running_are_unchanged(page):
+    """WHY THE NULL COULD NOT SEE IT. One build against itself at two points in one stream: both
+    arms render Stop, the scaffolds match, and the bias cancels inside the control."""
+    a = _capture_html(page, _page(tail = "arrived at last", **_writing()))
+    b = _capture_html(page, _page(tail = "arr", **_writing()))
+    assert a["digest_scaffold"] == b["digest_scaffold"]
+    assert P.compare(a, b)["verdict"] == P.NOT_COMPARABLE
+
+
+def test_a_real_message_difference_is_still_reported_across_a_generation_disagreement(page):
+    """The withholding is not a blanket. It applies only when the scaffold is the ONLY thing that
+    moved; a settled message that differs is reported exactly as before."""
+    base = _capture_html(page, _page(tail = "arrived at last", **_finished()))
+    treat_statuses = list(_STREAMING_STATUSES)
+    treat = _capture_html(page, _page(
+        tail = "arr",
+        control = _STOP_BUTTON,
+        queue_stack = False,
+        statuses = treat_statuses,
+        overlay = "",
+    ))
+    # Change a SETTLED message on the treatment arm as well.
+    treat2 = _capture_html(page, _page(
+        tail = "arr", control = _STOP_BUTTON, queue_stack = False,
+        statuses = treat_statuses,
+    ).replace("reply 1 ", "reply 1 rewritten "))
+    assert treat["messages"][1]["digest"] != treat2["messages"][1]["digest"]
+    got = P.compare(base, treat2)
+    assert got["verdict"] == P.DIFFER, got
+    assert any(m.startswith("msg1(") for m in got["moved"]), got["moved"]
+
+
+def test_a_scaffold_difference_with_both_arms_agreeing_is_still_a_difference(page):
+    """And the coverage this must not cost: when the arms agree about generation, the composer is
+    comparable again and a scaffolding change is reported."""
+    base = _capture_html(page, _page(tail = "same", **_finished()))
+    treat = _capture_html(page, _page(tail = "same", **_finished()).replace(
+        ">typed while it ran<", ">a different draft left in the box<",
+    ))
+    assert base["streaming"] == treat["streaming"]
+    got = P.compare(base, treat)
+    assert got["verdict"] == P.DIFFER, got
+    assert got["moved"] == [
+        "thread scaffolding outside any message (%d->%dc)" % (
+            base["chars_scaffold"], treat["chars_scaffold"])
+    ], got["moved"]
+
+
+def test_the_blind_branch_reads_the_scaffold_when_the_arms_agree_about_generation(page):
+    """The correct form of the scaffold half of the earlier review item.
+
+    Refused there because the composer is a function of generation. When both arms are generating,
+    that objection does not apply and a scaffolding change is a finding even though the stream
+    could not be placed.
+    """
+    base = _capture_html(page, _page(tail = "same", **BLIND))
+    treat = _capture_html(page, _page(tail = "same", **BLIND).replace(
+        '<textarea aria-label="Message input">typed while it ran</textarea>',
+        '<textarea aria-label="Message input">typed while it ran, differently</textarea>',
+    ))
+    assert base["in_flight_unplaced"] is True and treat["in_flight_unplaced"] is True
+    assert base["streaming"] == treat["streaming"]
+    got = P.compare(base, treat)
+    assert got["verdict"] == P.DIFFER, got
+    assert any("thread scaffolding" in m for m in got["moved"]), got["moved"]
