@@ -8930,7 +8930,10 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
                 os.rename(target, detached)
             except OSError:
                 shutil.rmtree(target, ignore_errors = True)
-                return not os.path.isdir(target)
+                gone = not os.path.isdir(target)
+                if gone:
+                    _forget_spill_record(forget_record)
+                return gone
             _queue_detached_delete(detached)
             _forget_spill_record(forget_record)
             return True

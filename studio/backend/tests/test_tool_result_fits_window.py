@@ -1358,6 +1358,22 @@ class TestARemovedSandboxTakesItsRecordWithIt:
 
         assert not os.path.exists(record)
 
+    def test_the_fallback_deletion_takes_it_too(self, tmp_path, monkeypatch):
+        """The rename can fail (a cross-device sandbox root, a locked tree on Windows), and
+        the rmtree that stands in for it deletes just as much, so it has to forget just as
+        much."""
+        workdir, record = self._sandbox(tmp_path, monkeypatch, "__LOCALID_spill444")
+
+        def _no_rename(*args, **kwargs):
+            raise OSError("rename unavailable")
+
+        monkeypatch.setattr(tools.os, "rename", _no_rename)
+
+        assert tools.remove_session_sandbox("__LOCALID_spill444", delete_files = True) is True
+
+        assert not os.path.exists(workdir)
+        assert not os.path.exists(record)
+
     def test_a_sandbox_that_stays_keeps_its_record(self, tmp_path, monkeypatch):
         """The control: the files are the user's, the sandbox stays, and so does the
         record of what in it is Studio's."""
