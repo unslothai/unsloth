@@ -14064,9 +14064,7 @@ def _spill_full_output(text: str, workdir: str | None) -> "str | None":
         # "\n" to os.linesep, which on Windows writes an extra byte per line, and the
         # byte offset in the continuation hint is counted from the untranslated text --
         # so a mid-line resume would start one byte early for every preceding newline.
-        with open(
-            os.path.join(target_dir, name), "w", encoding = "utf-8", newline = ""
-        ) as handle:
+        with open(os.path.join(target_dir, name), "w", encoding = "utf-8", newline = "") as handle:
             handle.write(text)
         _prune_spills(target_dir)
         # Relative, so the command works from the cwd the tools already run in, and so

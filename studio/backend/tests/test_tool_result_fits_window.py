@@ -279,7 +279,12 @@ class TestPagingTheRest:
         seen = {}
         real_open = builtins.open
 
-        def _recording_open(path, mode = "r", *args, **kwargs):
+        def _recording_open(
+            path,
+            mode = "r",
+            *args,
+            **kwargs,
+        ):
             if "w" in mode and str(path).endswith(".txt"):
                 seen.update(kwargs)
             return real_open(path, mode, *args, **kwargs)
@@ -304,8 +309,9 @@ class TestPagingTheRest:
         # Distinct bodies, so each really is a new spill: identical output is content
         # addressed onto one file and would never exercise the prune at all.
         for n in range(tools._SPILL_KEEP + 6):
-            tools._truncate(f"run {n}\n" + "\n".join(str(i) for i in range(5_000)),
-                            200, workdir = str(tmp_path))
+            tools._truncate(
+                f"run {n}\n" + "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path)
+            )
 
         kept = os.listdir(tmp_path / tools._SPILL_DIR)
         assert len(kept) <= tools._SPILL_KEEP
