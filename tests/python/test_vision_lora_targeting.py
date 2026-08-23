@@ -201,7 +201,8 @@ def test_ensure_weight_tying_covers_callers_that_pass_modules_to_save_themselves
     from unsloth.models._utils import _redirect_embedding_targets, _resolve_ensure_weight_tying
 
     target_modules, modules_to_save, moved = _redirect_embedding_targets(
-        ["q_proj"], ["embed_tokens", "lm_head"],
+        ["q_proj"],
+        ["embed_tokens", "lm_head"],
     )
     assert moved == ()
     assert _resolve_ensure_weight_tying(_Model(tie = True), modules_to_save, None) is True
@@ -210,7 +211,6 @@ def test_ensure_weight_tying_covers_callers_that_pass_modules_to_save_themselves
 @pytest.mark.parametrize("modules_to_save", [None, [], ["embed_tokens"], ["lm_head"], ["score"]])
 def test_ensure_weight_tying_stays_off_without_both_names(modules_to_save):
     from unsloth.models._utils import _resolve_ensure_weight_tying
-
     assert _resolve_ensure_weight_tying(_Model(tie = True), modules_to_save, None) is False
 
 
@@ -225,7 +225,6 @@ def test_explicit_ensure_weight_tying_always_wins(requested):
 
 def test_ensure_weight_tying_handles_models_without_a_config():
     from unsloth.models._utils import _resolve_ensure_weight_tying
-
     class Bare:
         pass
 
@@ -235,13 +234,11 @@ def test_ensure_weight_tying_handles_models_without_a_config():
 def test_target_parameters_alone_is_a_valid_lora_target():
     """PEFT accepts target_parameters with no target_modules (lora/model.py _prepare_adapter_config)."""
     from unsloth.models._utils import _raise_if_no_lora_targets_left
-
     _raise_if_no_lora_targets_left([], ("embed_tokens", "lm_head"), ["experts.gate_up_proj"])
 
 
 @pytest.mark.parametrize("target_parameters", [None, []])
 def test_empty_target_parameters_still_raises(target_parameters):
     from unsloth.models._utils import _raise_if_no_lora_targets_left
-
     with pytest.raises(RuntimeError, match = "target_modules` is now empty"):
         _raise_if_no_lora_targets_left([], ("embed_tokens",), target_parameters)

@@ -4483,12 +4483,21 @@ def _redirect_embedding_targets(
     return remaining, saved, tuple(moved)
 
 
-def _raise_if_no_lora_targets_left(target_modules, moved, target_parameters = None):
+def _raise_if_no_lora_targets_left(
+    target_modules,
+    moved,
+    target_parameters = None,
+):
     """embed_tokens/lm_head go to modules_to_save, so they cannot be the only targets.
 
     PEFT accepts `target_parameters` (fused MoE experts) with no target_modules at all.
     """
-    if moved and type(target_modules) in (list, tuple) and not target_modules and not target_parameters:
+    if (
+        moved
+        and type(target_modules) in (list, tuple)
+        and not target_modules
+        and not target_parameters
+    ):
         raise RuntimeError(
             f"Unsloth: {', '.join(moved)} are trained as full modules via `modules_to_save`, "
             "not as LoRA targets, so `target_modules` is now empty.\n"

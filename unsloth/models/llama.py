@@ -3320,10 +3320,14 @@ class FastLlamaModel:
             modules_to_save,
         )
         _raise_if_no_lora_targets_left(
-            target_modules, _moved_embedding_modules, target_parameters,
+            target_modules,
+            _moved_embedding_modules,
+            target_parameters,
         )
         ensure_weight_tying = _resolve_ensure_weight_tying(
-            model, modules_to_save, ensure_weight_tying,
+            model,
+            modules_to_save,
+            ensure_weight_tying,
         )
         for module in _moved_embedding_modules:
             if module == "embed_tokens":

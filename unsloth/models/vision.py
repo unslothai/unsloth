@@ -1937,7 +1937,9 @@ class FastBaseModel:
         )
         _raise_if_no_lora_targets_left(target_modules, _moved, target_parameters)
         ensure_weight_tying = _resolve_ensure_weight_tying(
-            model, modules_to_save, ensure_weight_tying,
+            model,
+            modules_to_save,
+            ensure_weight_tying,
         )
         if _moved:
             logger.warning_once(
