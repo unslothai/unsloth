@@ -171,27 +171,27 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   def("nextRecentlyViewedChat", "Ctrl+Tab", {
     nonMacDefaultBinding: "Mod+Tab",
   }),
-  // The ⌥⌘→ pair is macOS only: Ctrl+Alt+Arrow is desktop switching on GNOME
-  // and KDE and screen rotation on Intel graphics, both taken before us.
-  def("nextChat", "Mod+Shift+BracketRight", {
-    defaultAlternateBinding: "Mod+Alt+ArrowRight",
-    nonMacDefaultAlternateBinding: null,
-  }),
+  // No arrow alternate: ⌥⌘→ is Chrome's own next tab, and off macOS the same
+  // chord reads as Ctrl+Alt+→, desktop switching on GNOME and KDE and screen
+  // rotation on Intel graphics. Taken on every platform, so the bracket pair
+  // carries these alone.
+  def("nextChat", "Mod+Shift+BracketRight"),
   def("nextChatNeedingAttention", "Mod+Alt+KeyA"),
   def("previousRecentlyViewedChat", "Ctrl+Shift+Tab", {
     nonMacDefaultBinding: "Mod+Shift+Tab",
   }),
-  def("previousChat", "Mod+Shift+BracketLeft", {
-    defaultAlternateBinding: "Mod+Alt+ArrowLeft",
-    nonMacDefaultAlternateBinding: null,
-  }),
+  def("previousChat", "Mod+Shift+BracketLeft"),
   ...RECENT_SLOT_DEFS,
 
   // -- Workspaces ---------------------------------------------------------
   ...WORKSPACE_DEFS,
 
   // -- Panels and app-level actions ---------------------------------------
-  def("toggleApiMonitor", "Mod+Alt+KeyU"),
+  // ⌥⌘U is view source on macOS, so U keeps its mnemonic on ⌃⇧ there instead,
+  // the same swap the composer pair below makes.
+  def("toggleApiMonitor", "Ctrl+Shift+KeyU", {
+    nonMacDefaultBinding: "Mod+Alt+KeyU",
+  }),
   def("toggleSidebar", "Mod+KeyB"),
   def("openMcpServers", null),
   // ⇧Esc is Chrome's and Edge's task manager off macOS.
@@ -223,7 +223,11 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
 
   // -- Chat actions -------------------------------------------------------
   def("copyChatAsMarkdown", null),
-  def("copySessionId", "Mod+Alt+KeyC"),
+  // ⌥⌘C is Firefox's element picker and Safari's console, so C moves the same
+  // way U did above.
+  def("copySessionId", "Ctrl+Shift+KeyC", {
+    nonMacDefaultBinding: "Mod+Alt+KeyC",
+  }),
   def("forkChat", null),
   // ⇧⌘P is the usual command-menu chord, and the search dialog is that surface.
   def("searchChats", "Mod+KeyK", { defaultAlternateBinding: "Mod+Shift+KeyP" }),
@@ -291,6 +295,28 @@ const BROWSER_RESERVED_VALUES = new Set<string>([
   ...Array.from({ length: 9 }, (_, i) => `Mod+Digit${i + 1}`),
 ]);
 
+/**
+ * Owned on macOS only, where ⌥⌘ is the browsers' own run. From Chrome's
+ * shortcut list: U view source, I dev tools, J console, B bookmarks, N split
+ * view, F search, and the arrows for tabs and toolbar focus. Firefox adds C,
+ * its element picker, and K, its console. Off macOS the same values read as
+ * Ctrl+Alt, which none of them claim.
+ */
+const MAC_RESERVED_VALUES = new Set<string>([
+  "Mod+Alt+KeyU",
+  "Mod+Alt+KeyI",
+  "Mod+Alt+KeyJ",
+  "Mod+Alt+KeyB",
+  "Mod+Alt+KeyN",
+  "Mod+Alt+KeyF",
+  "Mod+Alt+KeyC",
+  "Mod+Alt+KeyK",
+  "Mod+Alt+ArrowLeft",
+  "Mod+Alt+ArrowRight",
+  "Mod+Alt+ArrowUp",
+  "Mod+Alt+ArrowDown",
+]);
+
 /** Owned off macOS only: Chrome's task manager, and Firefox on Alt. */
 const NON_MAC_RESERVED_VALUES = new Set<string>([
   "Shift+Escape",
@@ -307,7 +333,9 @@ export function isBrowserReservedBinding(
 ): boolean {
   if (value === null) return false;
   if (BROWSER_RESERVED_VALUES.has(value)) return true;
-  return !mac && NON_MAC_RESERVED_VALUES.has(value);
+  return mac
+    ? MAC_RESERVED_VALUES.has(value)
+    : NON_MAC_RESERVED_VALUES.has(value);
 }
 
 /**

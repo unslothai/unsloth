@@ -295,6 +295,64 @@ test("the tab-search chord counts as browser-owned on both platforms", () => {
   assert.ok(isBrowserReservedBinding("Mod+Shift+KeyA", false));
 });
 
+test("the browsers' own run on macOS is reserved there and only there", () => {
+  // ⌥⌘ is where Chrome keeps view source, dev tools, the console, bookmarks,
+  // split view, web search and tab switching, and Firefox its element picker
+  // and console. Off macOS the same values read as Ctrl+Alt, which none of
+  // them claim, so warning there would be a warning about nothing.
+  const macOwned = [
+    "Mod+Alt+KeyU",
+    "Mod+Alt+KeyI",
+    "Mod+Alt+KeyJ",
+    "Mod+Alt+KeyB",
+    "Mod+Alt+KeyN",
+    "Mod+Alt+KeyF",
+    "Mod+Alt+KeyC",
+    "Mod+Alt+KeyK",
+    "Mod+Alt+ArrowLeft",
+    "Mod+Alt+ArrowRight",
+    "Mod+Alt+ArrowUp",
+    "Mod+Alt+ArrowDown",
+  ];
+  for (const value of macOwned) {
+    assert.ok(isBrowserReservedBinding(value, true), `${value} unflagged`);
+    assert.equal(
+      isBrowserReservedBinding(value, false),
+      false,
+      `${value} warns off macOS for nothing`,
+    );
+  }
+  // The letters left on that run stay usable, or the chat chords lose the
+  // family they are built on.
+  for (const value of [
+    "Mod+Alt+KeyE",
+    "Mod+Alt+KeyO",
+    "Mod+Alt+KeyP",
+    "Mod+Alt+KeyS",
+    "Mod+Alt+KeyA",
+    "Mod+Alt+KeyR",
+    "Mod+Alt+Digit1",
+  ]) {
+    assert.equal(isBrowserReservedBinding(value, true), false, value);
+  }
+});
+
+// The two that moved keep their letter, on the run the composer pair already
+// uses, so the mnemonic survives the platform swap.
+test("view source and the element picker do not carry Studio actions", () => {
+  for (const [id, mac, other] of [
+    ["toggleApiMonitor", "Ctrl+Shift+KeyU", "Mod+Alt+KeyU"],
+    ["copySessionId", "Ctrl+Shift+KeyC", "Mod+Alt+KeyC"],
+  ] as const) {
+    const def = SHORTCUT_DEFS.find((d) => d.id === id);
+    assert.ok(def);
+    assert.equal(defaultBindingFor(def, "primary", true), mac);
+    assert.equal(defaultBindingFor(def, "primary", false), other);
+    assert.equal(isBrowserReservedBinding(mac, true), false);
+    assert.equal(isBrowserReservedBinding(other, false), false);
+  }
+});
+
 test("no default takes a chord the browser owns without a reason", () => {
   // The exceptions are the spec chords Studio keeps for the desktop build,
   // where they work; everything else has to be reachable on the web.
@@ -438,18 +496,23 @@ test("both slots resolve together", () => {
   });
 });
 
-test("the arrow alternates ship on macOS only", () => {
-  // Ctrl+Alt+Arrow is desktop switching on GNOME and KDE, so the pair is
-  // macOS only. defaultBindingFor takes the platform, resolveBinding reads it.
+test("the chat walk ships no arrow alternate on either platform", () => {
+  // ⌥⌘→ is Chrome's own next tab, and the same chord off macOS is Ctrl+Alt+→,
+  // desktop switching on GNOME and KDE. Taken everywhere, so the bracket pair
+  // carries these alone.
   for (const id of ["nextChat", "previousChat"] as const) {
     const def = SHORTCUT_DEFS.find((d) => d.id === id);
     assert.ok(def);
+    for (const mac of [true, false]) {
+      assert.equal(defaultBindingFor(def, "alternate", mac), null);
+    }
     assert.match(
-      String(defaultBindingFor(def, "alternate", true)),
-      /^Mod\+Alt\+Arrow(Left|Right)$/,
+      String(defaultBindingFor(def, "primary", true)),
+      /^Mod\+Shift\+Bracket(Left|Right)$/,
     );
-    assert.equal(defaultBindingFor(def, "alternate", false), null);
   }
+  assert.ok(isBrowserReservedBinding("Mod+Alt+ArrowRight", true));
+  assert.ok(isBrowserReservedBinding("Mod+Alt+ArrowLeft", true));
 });
 
 test("a slot reports whether it carries an edit", () => {
