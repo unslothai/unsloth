@@ -3950,7 +3950,14 @@ exit 0
     # hidden entries and treats wildcard characters in the path literally.
     function Test-DirectoryHasEntries {
         param([Parameter(Mandatory = $true)][string]$Path)
-        if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
+        if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+            # Not a directory, but still something: a file, a link to one, or a
+            # link whose target is gone. CreateDirectory answers
+            # ERROR_ALREADY_EXISTS for all three, so uv cannot create here either
+            # and the path has to be moved aside. -PathType Container follows the
+            # link and reports false, so ask Get-Item, which sees the link itself.
+            return ($null -ne (Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue))
+        }
         try {
             foreach ($entry in [System.IO.Directory]::EnumerateFileSystemEntries($Path)) {
                 if ($entry) { return $true }

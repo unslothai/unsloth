@@ -1335,3 +1335,76 @@ def test_dir_has_entries_still_answers_no_for_a_searchable_empty_dir(tmp_path):
         assert _dir_has_entries_says(tmp_path, empty) == "no"
     finally:
         empty.chmod(0o700)
+
+
+# uv creates a venv only into a path that is absent or an empty directory; every
+# other shape is EEXIST/ERROR_ALREADY_EXISTS. Measured against uv 0.12.1, the
+# version install.sh pins. _dir_has_entries has to agree, or the repair loop the
+# widened branch is meant to end simply continues for the shapes it misses.
+_UV_REFUSES = [
+    ("occupied real dir", "fulldir", True),
+    ("regular file", "plainfile", True),
+    ("dangling symlink", "dangling", True),
+    ("symlink to a file", "link_to_file", True),
+    ("symlink to an occupied dir", "link_to_full", True),
+    ("absent path", "absent", False),
+    ("empty real dir", "emptydir", False),
+    ("symlink to an empty dir", "link_to_empty", False),
+]
+
+
+def _make_uv_shape(root, shape):
+    if shape == "absent":
+        return root / "absent"
+    if shape == "emptydir":
+        (root / "emptydir").mkdir()
+        return root / "emptydir"
+    if shape == "fulldir":
+        (root / "fulldir").mkdir()
+        (root / "fulldir" / "x").write_text("x")
+        return root / "fulldir"
+    if shape == "plainfile":
+        (root / "plainfile").write_text("x")
+        return root / "plainfile"
+    if shape == "dangling":
+        (root / "dangling").symlink_to(root / "gone")
+        return root / "dangling"
+    if shape == "link_to_file":
+        (root / "target_file").write_text("x")
+        (root / "link_to_file").symlink_to(root / "target_file")
+        return root / "link_to_file"
+    if shape == "link_to_full":
+        (root / "target_full").mkdir()
+        (root / "target_full" / "x").write_text("x")
+        (root / "link_to_full").symlink_to(root / "target_full")
+        return root / "link_to_full"
+    if shape == "link_to_empty":
+        (root / "target_empty").mkdir()
+        (root / "link_to_empty").symlink_to(root / "target_empty")
+        return root / "link_to_empty"
+    raise AssertionError(shape)
+
+
+@pytest.mark.parametrize(
+    "label,shape,uv_refuses",
+    _UV_REFUSES,
+    ids = [row[1] for row in _UV_REFUSES],
+)
+def test_dir_has_entries_matches_what_uv_refuses(tmp_path, label, shape, uv_refuses):
+    """The predicate must answer uv's question, not "is this a non-empty directory"."""
+    target = _make_uv_shape(tmp_path, shape)
+    answer = _dir_has_entries_says(tmp_path, target)
+    assert answer == ("yes" if uv_refuses else "no"), (
+        f"{label}: uv {'refuses' if uv_refuses else 'creates into'} this path, "
+        f"so the replacement branch must {'run' if uv_refuses else 'be skipped'}"
+    )
+
+
+def test_install_ps1_helper_answers_on_the_link_itself():
+    """install.ps1 must match: -PathType Container follows a link and misses a dangling one."""
+    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    helper_start = src.index("function Test-DirectoryHasEntries")
+    helper = src[helper_start : src.index("function Clear-MigrationTargetDirectory", helper_start)]
+    assert "Get-Item -LiteralPath $Path -Force" in helper, (
+        "a dangling link is invisible to -PathType Container but still blocks uv"
+    )

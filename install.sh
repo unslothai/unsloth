@@ -684,7 +684,16 @@ _start_studio_venv_replacement() {
 # uv refuses to create a venv in an occupied directory. Include hidden entries
 # and dangling symlinks in that check.
 _dir_has_entries() {  # dir
-    [ -d "$1" ] || return 1
+    if [ ! -d "$1" ]; then
+        # Not a directory, but still something: a regular file, a symlink to one,
+        # or a symlink whose target is gone. mkdir(2) answers EEXIST for all three
+        # -- "pathname already exists (not necessarily as a directory)", which the
+        # man page states covers a symbolic link "dangling or not" -- so uv cannot
+        # create here either and the path has to be moved aside. -d follows the
+        # link, and -e alone misses a dangling one, hence the -L.
+        { [ -e "$1" ] || [ -L "$1" ]; } && return 0
+        return 1
+    fi
     # Not enumerable: without read the globs cannot expand, and without search
     # the -e/-L tests below fail on every name, so either way the directory would
     # be reported empty and handed to uv to fail on. Call it occupied instead,
