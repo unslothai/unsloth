@@ -1817,9 +1817,7 @@ class TestACounterThatCannotAnswerIsNotACounter:
         """A backend that exposes a counter and can never price anything with it."""
         monkeypatch.setattr(tools, "_loaded_token_counter", lambda ctx: (lambda chunk: None))
 
-    def test_a_counter_that_measures_nothing_gets_the_conservative_margin(
-        self, monkeypatch
-    ):
+    def test_a_counter_that_measures_nothing_gets_the_conservative_margin(self, monkeypatch):
         _window(monkeypatch, 4096)
         _room(200)
         text = _dense(100_000)
