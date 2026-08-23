@@ -330,7 +330,12 @@ test("syntactic fence openness is independent from stream and action state", () 
     block,
     /!messageHasRenderableRenderHtmlTool &&\s*!isFenceOpen &&\s*!props\.isIncomplete/,
   );
-  assert.match(block, /disabled=\{actionsDisabled \?\? props\.isIncomplete\}/);
+  // The action bar moved inside `FenceBlock` when the fence branch was composed with the
+  // off-screen deferral gate; the state it is driven from did not.
+  assert.match(
+    block,
+    /actionsDisabled=\{actionsDisabled \?\? props\.isIncomplete\}/,
+  );
 
   const persistentStart = markdownSource.indexOf(
     "function PersistentOversizedCodeRenderer",

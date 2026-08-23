@@ -36,9 +36,10 @@ _HELPERS=$(mktemp)
     sed -n '/^_start_studio_venv_replacement()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_discard_venv_for_recreate()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_restore_studio_venv_replacement()/,/^}/p' "$INSTALL_SH"
+    sed -n '/^_uv_venv_requested()/,/^}/p' "$INSTALL_SH"
 } > "$_HELPERS"
 for _needed in _python_skip_applies _python_is_skipped _python_request _start_studio_venv_replacement \
-               _discard_venv_for_recreate _restore_studio_venv_replacement; do
+               _discard_venv_for_recreate _restore_studio_venv_replacement _uv_venv_requested; do
     grep -q "^$_needed()" "$_HELPERS" || {
         echo "  FAIL: could not extract $_needed from install.sh"
         exit 1

@@ -294,7 +294,8 @@ def test_generated_download_buttons_use_the_native_save_boundary():
     assert 'rust: "rs"' in markdown
     assert "downloadUrl(part.image, filename)" in image
     assert "urlToBlob(part.image)" in image
-    assert 'downloadUrl(src, "generated-audio.wav")' in audio
+    assert "downloadUrl(src, filename)" in audio
+    assert 'filename = "generated-audio.wav"' in audio
 
     tauri_config = (REPO / "studio/src-tauri/tauri.conf.json").read_text(encoding = "utf-8")
     assert "connect-src 'self' ipc: http://ipc.localhost" in tauri_config

@@ -64,7 +64,6 @@ export {
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
 export {
   preferFullToolOutput,
-
   preferSanitizedFullToolOutput,
   toolOutputKey,
   toolThreadScope,
@@ -172,6 +171,17 @@ export {
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+export {
+  type AttachmentText,
+  assertDocumentAttachmentSize,
+  attachmentAudioSrc,
+  attachmentTextLanguage,
+  countAttachmentTextLines,
+  isAudioAttachment,
+  parseAttachmentText,
+  readAttachmentText,
+  truncateAttachmentPreviewText,
+} from "./attachment-content";
 export { ApiProviderLogo } from "./api-provider-logo";
 export { useExternalProvidersStore } from "./stores/external-providers-store";
 export { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
