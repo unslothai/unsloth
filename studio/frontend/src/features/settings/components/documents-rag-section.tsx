@@ -8,70 +8,64 @@ import { toast } from "@/lib/toast";
 import { type ReactElement, useEffect, useState } from "react";
 import {
   EmbeddingModelBlockedError,
-  type EmbeddingModelSettings,
   EmbeddingModelVerificationError,
-  loadEmbeddingModelSettings,
   resetEmbeddingModelSettings,
   updateEmbeddingModelSettings,
 } from "../api/embedding-model";
+import { useEmbeddingModelStore } from "../stores/embedding-model-store";
 import { EmbeddingModelCombobox } from "./embedding-model-combobox";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
 /**
- * Which model indexes uploaded documents. Rendered in both General and Data:
- * each mount loads the setting, so the two never disagree.
+ * Which model indexes uploaded documents. Rendered in both General and Data,
+ * off one shared store, so a save on one is what the other reads.
  */
 export function DocumentsRagSection(): ReactElement {
   const t = useT();
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
-  const [embeddingModel, setEmbeddingModel] =
-    useState<EmbeddingModelSettings | null>(null);
-  const [draftEmbeddingModel, setDraftEmbeddingModel] = useState("");
-  const [embeddingModelError, setEmbeddingModelError] = useState<string | null>(
-    null,
-  );
+  const embeddingModel = useEmbeddingModelStore((s) => s.settings);
+  const loadError = useEmbeddingModelStore((s) => s.loadError);
+  const save = useEmbeddingModelStore((s) => s.save);
+  // Null until the user edits, so the field follows a save made on the other
+  // surface instead of pinning whatever this mount first read.
+  const [draftOverride, setDraftOverride] = useState<string | null>(null);
+  const draftEmbeddingModel =
+    draftOverride ?? embeddingModel?.embeddingModel ?? "";
+  const [saveError, setSaveError] = useState<string | null>(null);
+  // The store carries the backend's reason; an unreadable failure has none.
+  const loadFailure =
+    loadError === null
+      ? null
+      : loadError || t("settings.general.rag.loadError");
+  const embeddingModelError = saveError ?? loadFailure;
   // Set after a 409 (unverifiable model); offers "Save anyway".
   const [embeddingModelNeedsForce, setEmbeddingModelNeedsForce] =
     useState(false);
   const [isSavingEmbeddingModel, setIsSavingEmbeddingModel] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
-    void loadEmbeddingModelSettings()
-      .then((settings) => {
-        if (cancelled) return;
-        setEmbeddingModel(settings);
-        setDraftEmbeddingModel(settings.embeddingModel);
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        setEmbeddingModelError(
-          error instanceof Error
-            ? error.message
-            : t("settings.general.rag.loadError"),
-        );
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [t]);
+    void useEmbeddingModelStore.getState().load();
+  }, []);
 
   const saveEmbeddingModel = async (force: boolean) => {
     const trimmed = draftEmbeddingModel.trim();
     if (!trimmed) {
-      setEmbeddingModelError(t("settings.general.rag.emptyError"));
+      setSaveError(t("settings.general.rag.emptyError"));
       return;
     }
     setIsSavingEmbeddingModel(true);
-    setEmbeddingModelError(null);
+    setSaveError(null);
     try {
-      const settings = await updateEmbeddingModelSettings(trimmed, {
-        hfToken: hfToken || undefined,
-        force,
-      });
-      setEmbeddingModel(settings);
-      setDraftEmbeddingModel(settings.embeddingModel);
+      const stood = await save(() =>
+        updateEmbeddingModelSettings(trimmed, {
+          hfToken: hfToken || undefined,
+          force,
+        }),
+      );
+      // A later save owns the field now, so this answer says nothing current.
+      if (!stood) return;
+      setDraftOverride(null);
       setEmbeddingModelNeedsForce(false);
       toast.success(t("settings.general.rag.saved"), {
         description: t("settings.general.rag.reindexWarning"),
@@ -83,7 +77,7 @@ export function DocumentsRagSection(): ReactElement {
       } else if (error instanceof EmbeddingModelVerificationError) {
         setEmbeddingModelNeedsForce(true);
       }
-      setEmbeddingModelError(
+      setSaveError(
         error instanceof Error
           ? error.message
           : t("settings.general.rag.saveError"),
@@ -95,14 +89,13 @@ export function DocumentsRagSection(): ReactElement {
 
   const resetEmbeddingModel = async () => {
     setIsSavingEmbeddingModel(true);
-    setEmbeddingModelError(null);
+    setSaveError(null);
     setEmbeddingModelNeedsForce(false);
     try {
-      const settings = await resetEmbeddingModelSettings();
-      setEmbeddingModel(settings);
-      setDraftEmbeddingModel(settings.embeddingModel);
+      if (!(await save(resetEmbeddingModelSettings))) return;
+      setDraftOverride(null);
     } catch (error) {
-      setEmbeddingModelError(
+      setSaveError(
         error instanceof Error
           ? error.message
           : t("settings.general.rag.saveError"),
@@ -126,9 +119,9 @@ export function DocumentsRagSection(): ReactElement {
             <EmbeddingModelCombobox
               value={draftEmbeddingModel}
               onChange={(next) => {
-                setDraftEmbeddingModel(next);
+                setDraftOverride(next);
                 setEmbeddingModelNeedsForce(false);
-                setEmbeddingModelError(null);
+                setSaveError(null);
               }}
               accessToken={hfToken || undefined}
               disabled={!embeddingModel}
