@@ -431,10 +431,37 @@ def _mlx_rng_key_words():
             len(words),
         )
         return None
-    # Masked, not just converted: mx.random.seed takes a uint64 and raises
-    # outside [0, 2**64), and that raise would land in the probe's finally and
-    # replace the probe's own outcome. A no-op for real uint32 keys.
-    return (int(words[0]) & 0xFFFFFFFF, int(words[1]) & 0xFFFFFFFF)
+    return _as_uint32_pair(int(words[0]), int(words[1]))
+
+
+def _as_uint32_pair(high, low):
+    """Both words as uint32, or None if either is not a 32-bit word at all.
+
+    mx.random.seed takes a uint64 and raises outside [0, 2**64); that raise would
+    land in the probe's finally and replace the probe's own outcome. So the words
+    are range-checked here rather than passed through, which is what lets the
+    rewind below stay unguarded.
+
+    Range-checked and not simply masked, though. A negative reads as the two's
+    complement of the uint32 mlx stores, so reinterpreting it loses nothing. A
+    value at or above 2**32 is not a 32-bit word under any reading, and masking
+    it would turn a key we cannot represent into a plausible wrong one: (2**32, 0)
+    would restore as (0, 0), the probe would report success, and sampling would
+    silently diverge from an unprobed run. Decline instead, which is the outcome
+    the caller already handles.
+    """
+    converted = []
+    for word in (high, low):
+        if not -(2**31) <= word < 2**32:
+            logger.warning(
+                "MLX exposed a random key word of %d, which is not a 32-bit "
+                "word; the KV quantization probe will not restore the PRNG and "
+                "sampling after a load may differ from an unprobed run.",
+                word,
+            )
+            return None
+        converted.append(word & 0xFFFFFFFF)
+    return (converted[0], converted[1])
 
 
 def _restore_mlx_rng_key(words):
@@ -444,16 +471,15 @@ def _restore_mlx_rng_key(words):
     mx.random.key packs a seed as its two 32-bit halves, so reseeding with a
     key's own words restores it exactly, over the whole unsigned 64-bit range.
 
-    Unguarded on purpose: the masking above removes the only way this can raise,
-    so there is no failure to swallow, and a blanket except here would be a
-    failure indistinguishable from an intentional no-op.
+    Unguarded on purpose: the range check in _as_uint32_pair removes the only way
+    this can raise, so there is no failure to swallow, and a blanket except here
+    would be a failure indistinguishable from an intentional no-op.
     """
     import mlx.core as mx
 
     if words is None:
         return
-    high = int(words[0]) & 0xFFFFFFFF
-    low = int(words[1]) & 0xFFFFFFFF
+    high, low = words
     mx.random.seed((high << 32) | low)
 
 

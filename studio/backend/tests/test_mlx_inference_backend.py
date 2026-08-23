@@ -2929,24 +2929,7 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
     assert backend._processor.chat_template == "{{ native }}"
 
 
-@pytest.mark.parametrize(
-    "words,expected",
-    [
-        ((-1, -2), (0xFFFFFFFF, 0xFFFFFFFE)),
-        ((-2147483648, 5), (0x80000000, 5)),
-        ((0, -1), (0, 0xFFFFFFFF)),
-        ((2**32, 0), (0, 0)),
-        ((0, 2**32), (0, 0)),
-    ],
-)
-def test_rng_capture_masks_words_that_would_make_seed_raise(monkeypatch, words, expected):
-    """mx.random.seed takes a uint64 and raises outside [0, 2**64).
-
-    The rewind is deliberately unguarded, which only holds if the words cannot
-    put it out of range; capture does not type-check the state, so the masking is
-    what makes that true. A raise would land in the probe's finally and replace
-    the probe's own outcome, the failure shape #9478 set out to remove.
-    """
+def _fake_rng_state(monkeypatch, words):
     from core.inference import mlx_inference
 
     _install_fake_mlx(monkeypatch)
@@ -2956,6 +2939,30 @@ def test_rng_capture_masks_words_that_would_make_seed_raise(monkeypatch, words, 
         state = _SentinelRandomState(words),
         seed = lambda value: seeded.append(value),
     )
+    return mlx_inference, seeded
+
+
+@pytest.mark.parametrize(
+    "words,expected",
+    [
+        ((-1, -2), (0xFFFFFFFF, 0xFFFFFFFE)),
+        ((-2147483648, 5), (0x80000000, 5)),
+        ((0, -1), (0, 0xFFFFFFFF)),
+        ((0, 0), (0, 0)),
+        ((0xFFFFFFFF, 0xFFFFFFFF), (0xFFFFFFFF, 0xFFFFFFFF)),
+    ],
+)
+def test_rng_capture_reinterprets_signed_words(monkeypatch, words, expected):
+    """A negative word is the two's complement of the uint32 mlx stores.
+
+    Reinterpreting it loses nothing, and it is what keeps the seed inside the
+    uint64 domain. The rewind is deliberately unguarded, which only holds if the
+    words cannot put it out of range; capture does not type-check the state, so
+    this conversion is what makes that true. A raise would land in the probe's
+    finally and replace the probe's own outcome, the failure shape #9478 set out
+    to remove.
+    """
+    mlx_inference, seeded = _fake_rng_state(monkeypatch, words)
 
     captured = mlx_inference._mlx_rng_key_words()
     assert captured == expected
@@ -2963,6 +2970,28 @@ def test_rng_capture_masks_words_that_would_make_seed_raise(monkeypatch, words, 
     mlx_inference._restore_mlx_rng_key(captured)
     assert seeded == [(expected[0] << 32) | expected[1]]
     assert 0 <= seeded[0] < 2**64
+
+
+@pytest.mark.parametrize(
+    "words", [(2**32, 0), (0, 2**32), (2**63, 1), (-(2**31) - 1, 0), (0, -(2**40))]
+)
+def test_rng_capture_declines_words_that_are_not_32_bit(monkeypatch, words):
+    """Masking these would be worse than declining them.
+
+    (2**32, 0) masks to (0, 0): a key we cannot represent becomes a plausible
+    wrong one, the probe reports success, and sampling silently diverges from an
+    unprobed run. Declining is the outcome the caller already handles, and it is
+    the only one that says so out loud.
+    """
+    mlx_inference, seeded = _fake_rng_state(monkeypatch, words)
+    warnings = _capture_rng_warnings(monkeypatch, mlx_inference)
+
+    assert mlx_inference._mlx_rng_key_words() is None
+    assert any("32-bit word" in w for w in warnings), warnings
+
+    # The rewind must stay a no-op on the value capture actually returns.
+    mlx_inference._restore_mlx_rng_key(None)
+    assert seeded == []
 
 
 def _capture_rng_warnings(monkeypatch, mlx_inference):
