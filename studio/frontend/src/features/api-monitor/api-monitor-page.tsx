@@ -356,7 +356,9 @@ function PayloadBlock({
           ) : null}
         </div>
       </div>
+      {/* Prompt and reply bodies, so keep them out of the reload snapshot. */}
       <pre
+        data-reload-snapshot-sensitive
         className={cn(
           "max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50 p-3 text-ui-11 leading-[1.55]",
           tone === "error" && "bg-red-500/5 text-red-700 dark:text-red-400",

@@ -274,7 +274,12 @@
     overlay.style.pointerEvents = "none";
     overlay.style.background = "var(--background)";
     overlay.setAttribute("aria-hidden", "true");
+    // inert is what keeps the copy from taking clicks: the host is
+    // pointer-events: none, but the copy carries the app's own
+    // pointer-events-auto classes. The property is a silent expando where it is
+    // unsupported, so set the attribute too.
     overlay.inert = true;
+    overlay.setAttribute("inert", "");
     // A closed shadow tree keeps the copy out of every document query. The
     // markup is a duplicate of the live shell, so leaving it in the page tree
     // makes `#root textarea` (and the UI tests that wait on one) ambiguous.
@@ -332,6 +337,9 @@
     shellRoot.appendChild(shellBody);
     shell.appendChild(shellRoot);
     document.documentElement.appendChild(overlay);
+    // Arm the fail-open timeout before anything else can throw. Once the host
+    // is in the document, a throw below would otherwise strand it.
+    removalTimer = setTimeout(removeOverlay, 5000);
     if (fontLoads.length) {
       var revealShell = function () {
         shellRoot.style.visibility = "visible";
@@ -356,7 +364,6 @@
     if (pendingLinkedStyles > 0) {
       setTimeout(restoreAfterLinkedStyles, retainedStyleWaitMs);
     }
-    removalTimer = setTimeout(removeOverlay, 5000);
   }
 
   // React drives value/checked/selected as DOM properties and cloneNode copies
@@ -572,7 +579,8 @@
   }
 
   function hasSensitiveUrl(value) {
-    return /[?&](?:access_token|auth|authorization|sig|signature|token|x-amz-signature)=/i.test(
+    // Dropping a URL only costs the copy an image, so err towards dropping.
+    return /[?&](?:access_token|api[-_]?key|apikey|auth|authorization|code|credential|key|secret|sig|signature|token|x-amz-credential|x-amz-signature|x-goog-signature)=/i.test(
       value,
     );
   }
@@ -737,17 +745,28 @@
         // SVG fill="url(#gradient-id)" and aria-labelledby.
         element.removeAttribute("autofocus");
         element.removeAttribute("srcdoc");
-        ["src", "srcset", "poster", "href", "action", "formaction"].forEach(
-          function (name) {
-            var value = element.getAttribute(name);
-            if (
-              value &&
-              (value.indexOf("blob:") !== -1 || hasSensitiveUrl(value))
-            ) {
-              element.removeAttribute(name);
-            }
-          },
-        );
+        // SVG <use> carries the same URLs on xlink:href, which a plain `href`
+        // lookup misses. javascript: cannot be activated on an inert copy, but
+        // it has no reason to be stored either.
+        [
+          "src",
+          "srcset",
+          "poster",
+          "href",
+          "xlink:href",
+          "action",
+          "formaction",
+        ].forEach(function (name) {
+          var value = element.getAttribute(name);
+          if (
+            value &&
+            (value.indexOf("blob:") !== -1 ||
+              /^\s*javascript:/i.test(value) ||
+              hasSensitiveUrl(value))
+          ) {
+            element.removeAttribute(name);
+          }
+        });
         Array.from(element.attributes).forEach(function (attribute) {
           if (attribute.name.toLowerCase().startsWith("on")) {
             element.removeAttribute(attribute.name);
@@ -816,5 +835,10 @@
     });
   });
 
-  restoreSnapshot();
+  // Fail open: the copy is a nicety, the real document is not.
+  try {
+    restoreSnapshot();
+  } catch (error) {
+    removeOverlay();
+  }
 })();
