@@ -2103,6 +2103,14 @@ export function useChatModelRuntime() {
           bytes: number,
           total: number,
         ): { rate: number; eta: number; stable: boolean } {
+          if (typeof document !== "undefined" && document.hidden) {
+            // This poller is a 2s interval, which browsers clamp to about once
+            // a minute while the tab is hidden. Those gaps time the poller, not
+            // the transfer, and the estimator reads gaps as the burst cadence.
+            // The hub poll loop and the voice poller drop them the same way.
+            samples.length = 0;
+            return { rate: 0, eta: 0, stable: false };
+          }
           appendSample(samples, Date.now() / 1000, bytes);
           const stats = computeTransferStats(samples, total);
           return {
