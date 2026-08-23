@@ -369,6 +369,23 @@ def evaluate(probe: dict, previous: Optional[dict], expected_messages: int, mode
             probe.get("from_bottom") is not None and probe["from_bottom"] <= BOTTOM_TOLERANCE_PX
         )
         out["anchored_at_end"] = bool(app_bottom) if app_bottom is not None else near_bottom
+        # THE VIEWPORT ITSELF, ASSERTED RATHER THAN INFERRED. Every windowed condition above is
+        # about what is inside the scroller, and each one degrades to a pass when the scroller is
+        # not there: `from_bottom` is null so the arithmetic is skipped, and the app's own answer
+        # is read off `.aui-thread-scroll-to-bottom`, which is a DESCENDANT of the viewport but is
+        # looked up at DOCUMENT scope. So renaming the viewport class while leaving that control
+        # mounted leaves `app_says_at_bottom` true, `anchored_at_end` true, and the cell admitted
+        # with no viewport at all.
+        #
+        # What follows a cell admitted that way is silent in every direction: the completeness
+        # probe returns `probe_attempted: false`, the scroll actions return `not_run` and a not-run
+        # action blanks only its own timings, and the census viewport fields go null. Nothing
+        # refuses, so the film is scored without the surface it was measuring.
+        #
+        # The signal is already probed and costs nothing to read. It is asserted only here because
+        # a fully mounted arm that scrolls the window instead of a div is a shape this harness
+        # supports, and `MODE_FULL` must not start requiring a scroller it never needed.
+        out["viewport_present"] = bool(probe.get("viewport_present"))
         # And the pin must have FINISHED. `--aui-scroll-stabilizer` is on the viewport while
         # use-intent-aware-autoscroll is still pinning and comes off when it settles, so a page
         # carrying it is mid-scroll no matter what its scrollTop says.

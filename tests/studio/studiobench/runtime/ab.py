@@ -270,7 +270,15 @@ def failed_invalidating_gates(records: Sequence[Mapping[str, Any]]) -> dict[str,
         # `record_completeness_gate` deliberately refuses to score a cell whose probe RAN and could
         # not answer, because "we could not tell" must not be recorded as "it was fine". The case
         # skipped here is the probe never having run at all.
-        if detail.get("follow_attempted") is False or detail.get("probe_attempted") is False:
+        #
+        # NARROWED TO THE INSTRUMENT, because `probe_attempted: False` has two producers and only
+        # one of them is an absent instrument. `window.__sb.dom is not installed` is the harness
+        # not being loaded and is waived here. `no thread viewport` is the ARM missing the surface
+        # the film measures, which is a defect about the build, and waiving it let a real failure
+        # ride the instrument allowance. Readiness now refuses that cell outright, so this is the
+        # second of two doors on the same hole.
+        unmeasured = detail.get("follow_attempted") is False or detail.get("probe_attempted") is False
+        if unmeasured and "viewport" not in str(detail.get("reason") or "").lower():
             continue
         why = detail.get("reason") or detail.get("coverage_reason") or "the cell's own self-check"
         failed.setdefault(cell_id, f"gate {name}: {why}")
