@@ -242,7 +242,7 @@ export const ru = {
         },
         logOut: {
           label: "Выйти",
-          description: "Выйти из Unsloth Studio",
+          description: "Выйти из Unsloth",
         },
         approveToolRequest: {
           label: "Одобрить запрос",

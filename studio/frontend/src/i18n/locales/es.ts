@@ -243,7 +243,7 @@ export const es = {
         },
         logOut: {
           label: "Cerrar sesión",
-          description: "Salir de Unsloth Studio",
+          description: "Salir de Unsloth",
         },
         approveToolRequest: {
           label: "Aprobar solicitud",

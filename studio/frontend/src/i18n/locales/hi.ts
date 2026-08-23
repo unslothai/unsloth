@@ -243,7 +243,7 @@ export const hi = {
         },
         logOut: {
           label: "लॉग आउट",
-          description: "Unsloth Studio से साइन आउट करें",
+          description: "Unsloth से साइन आउट करें",
         },
         approveToolRequest: {
           label: "अनुरोध स्वीकारें",

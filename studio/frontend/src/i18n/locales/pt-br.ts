@@ -242,7 +242,7 @@ export const ptBR = {
         },
         logOut: {
           label: "Sair",
-          description: "Sair do Unsloth Studio",
+          description: "Sair do Unsloth",
         },
         approveToolRequest: {
           label: "Aprovar solicitação",

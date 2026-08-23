@@ -242,7 +242,7 @@ export const ja = {
         },
         logOut: {
           label: "ログアウト",
-          description: "Unsloth Studio からサインアウトします",
+          description: "Unsloth からサインアウトします",
         },
         approveToolRequest: {
           label: "リクエストを承認",

@@ -240,7 +240,7 @@ export const ar = {
         },
         logOut: {
           label: "تسجيل الخروج",
-          description: "تسجيل الخروج من Unsloth Studio",
+          description: "تسجيل الخروج من Unsloth",
         },
         approveToolRequest: {
           label: "الموافقة على الطلب",

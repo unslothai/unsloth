@@ -244,7 +244,7 @@ export const de = {
         },
         logOut: {
           label: "Abmelden",
-          description: "Von Unsloth Studio abmelden",
+          description: "Von Unsloth abmelden",
         },
         approveToolRequest: {
           label: "Anfrage genehmigen",

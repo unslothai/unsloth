@@ -208,7 +208,7 @@ export const it = {
         },
         logOut: {
           label: "Esci",
-          description: "Esci da Unsloth Studio",
+          description: "Esci da Unsloth",
         },
         approveToolRequest: {
           label: "Approva la richiesta",

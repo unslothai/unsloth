@@ -238,7 +238,7 @@ export const zhCN = {
         },
         logOut: {
           label: "退出登录",
-          description: "退出 Unsloth Studio",
+          description: "退出 Unsloth",
         },
         approveToolRequest: {
           label: "批准请求",

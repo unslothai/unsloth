@@ -240,7 +240,7 @@ export const ko = {
         },
         logOut: {
           label: "로그아웃",
-          description: "Unsloth Studio에서 로그아웃합니다",
+          description: "Unsloth에서 로그아웃합니다",
         },
         approveToolRequest: {
           label: "요청 승인",

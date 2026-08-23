@@ -244,7 +244,7 @@ export const fr = {
         },
         logOut: {
           label: "Se déconnecter",
-          description: "Se déconnecter d’Unsloth Studio",
+          description: "Se déconnecter d’Unsloth",
         },
         approveToolRequest: {
           label: "Approuver la demande",

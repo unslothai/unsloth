@@ -417,22 +417,39 @@ test("an override wins, and null means unassigned", () => {
     resolveBinding({ toggleSidebar: { primary: null } }, "toggleSidebar"),
     null,
   );
-  // Overriding one slot leaves the other on its shipped chord.
+  // Overriding one slot leaves the other on its shipped chord. newChat, not
+  // nextChat: the ⌥⌘→ pair is macOS only, and resolveBinding reads the host's
+  // platform, so asserting it here would pass on a Mac and fail on CI.
   assert.equal(
-    resolveBinding({ nextChat: { primary: null } }, "nextChat", "alternate"),
-    "Mod+Alt+ArrowRight",
+    resolveBinding({ newChat: { primary: null } }, "newChat", "alternate"),
+    "Mod+KeyN",
   );
 });
 
 test("both slots resolve together", () => {
-  assert.deepEqual(resolveBindings({}, "nextChat"), {
-    primary: "Mod+Shift+BracketRight",
-    alternate: "Mod+Alt+ArrowRight",
+  // Platform-independent chords only: resolveBindings reads the host's.
+  assert.deepEqual(resolveBindings({}, "newChat"), {
+    primary: "Mod+Shift+KeyO",
+    alternate: "Mod+KeyN",
   });
   assert.deepEqual(resolveBindings({}, "archiveChat"), {
     primary: "Mod+Alt+KeyE",
     alternate: null,
   });
+});
+
+test("the arrow alternates ship on macOS only", () => {
+  // Ctrl+Alt+Arrow is desktop switching on GNOME and KDE, so the pair is
+  // macOS only. defaultBindingFor takes the platform, resolveBinding reads it.
+  for (const id of ["nextChat", "previousChat"] as const) {
+    const def = SHORTCUT_DEFS.find((d) => d.id === id);
+    assert.ok(def);
+    assert.match(
+      String(defaultBindingFor(def, "alternate", true)),
+      /^Mod\+Alt\+Arrow(Left|Right)$/,
+    );
+    assert.equal(defaultBindingFor(def, "alternate", false), null);
+  }
 });
 
 test("a slot reports whether it carries an edit", () => {
