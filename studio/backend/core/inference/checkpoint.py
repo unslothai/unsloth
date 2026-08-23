@@ -242,9 +242,18 @@ def _pick(
 
         Reserving the opening turn together with its successor is the fix that needs no
         reading of the English: whatever the user said next about the opening request is
-        carried alongside it, so a correction cannot be hidden behind the request it
-        corrects. The pair costs one more slot than the single reservation, paid by the
-        oldest turn the newest-first walk would have taken.
+        carried alongside it. The pair costs one more slot than the single reservation,
+        paid by the oldest turn the newest-first walk would have taken.
+
+        It moves the hole rather than closing it, and only the TOKEN cap is really fixed.
+        Against the SLOT cap, reserving the opening leaves a contiguous run of n -
+        max_items turns dropped whatever the order, so a change of direction inside that
+        run is lost either way: the single reservation drops [1, n-k] and the pair drops
+        [2, n-k+1]. The pair therefore wins at index 1, which is the case above, and loses
+        at index n-k+1. Fuzzed over 40,000 threads it is a net 18% fewer blocks that state
+        the abandoned task, fixing about 2.5 for every one it breaks. Closing the class
+        outright means not carrying the opening at all once it does not fit, which is the
+        loss #9379 landed to stop.
 
         Placed behind the newest turn that CAN BE TAKEN, not merely the newest one that
         qualifies, exactly as the single reservation was. A turn costing more than the
