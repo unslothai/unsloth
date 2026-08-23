@@ -2160,8 +2160,19 @@ if [ "$_setup_nvidia_usable" != true ]; then
         _setup_gfx_all=$(_setup_run_smi amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         [ -z "$_setup_gfx_all" ] && \
             _setup_gfx_all=$(_setup_run_smi amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-        _setup_mkt=$(_setup_run_smi amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
-            '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+        # amd-smi upper-cases every key in its human-readable output (amdsmi_logger.py
+        # _capitalize_keys), so the field is MARKET_NAME, which /[Mm]arket.?[Nn]ame/ could
+        # never match: the fallback printed nothing on a real host. Matched case-folded, and
+        # read past the FIRST colon only, so "MARKET_NAME: AMD Instinct MI300X OAM: 750W SKU"
+        # survives -- the same truncation the rocminfo parser above already fixed.
+        # Keep in sync with install.sh.
+        _setup_mkt=$(_setup_run_smi amd-smi static --asic 2>/dev/null | awk \
+            'tolower($0) ~ /market.?name/ {
+                 v = $0
+                 sub(/^[^:]*:[[:space:]]*/, "", v)
+                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+                 if (v != "") { print v; exit }
+             }' || true)
     elif [ -e /dev/kfd ] && \
          awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
              /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then

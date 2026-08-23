@@ -20,8 +20,20 @@ _FUNC_FILE=$(mktemp)
 . "$_FUNC_FILE"
 rm -f "$_FUNC_FILE"
 
-# The visible-device pick both scripts apply to the record list.
-_pick() { awk -v idx="$1" 'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }'; }
+# The visible-device pick both scripts apply to the record list, read OUT OF the
+# scripts rather than restated here: a restated copy cannot fail when the real one
+# changes, and re-adding the old `!seen[$0]++` dedup to production used to leave
+# this file green while collapsing duplicate-arch ordinals.
+_extract_pick() { awk '/_[a-z_]*record=\$\(printf/ {
+                           getline
+                           sub(/^[[:space:]]*'"'"'/, "")
+                           sub(/'"'"'\)$/, "")
+                           print; exit
+                       }' "$1"; }
+_PICK_PROG=$(_extract_pick "$INSTALL_SH")
+_PICK_PROG_SETUP=$(_extract_pick "$SETUP_SH")
+[ -n "$_PICK_PROG" ] || { echo "FATAL: no record selector found in $INSTALL_SH" >&2; exit 1; }
+_pick() { awk -v idx="$1" "$_PICK_PROG"; }
 
 assert_eq() {
     _label="$1"; _expected="$2"; _actual="$3"
@@ -36,6 +48,10 @@ assert_eq() {
 _body_install=$(sed -n '/^_rocminfo_gpu_records()/,/^}/p' "$INSTALL_SH" | tail -n +2)
 _body_setup=$(sed -n '/^_setup_rocminfo_gpu_records()/,/^}/p' "$SETUP_SH" | tail -n +2)
 assert_eq "install.sh and setup.sh parsers are identical" "$_body_install" "$_body_setup"
+# The parser is only half the contract: the two scripts must also select the same
+# record from it, or one names the card the other does not.
+assert_eq "install.sh and setup.sh record selectors are identical" \
+    "$_PICK_PROG" "$_PICK_PROG_SETUP"
 
 # Strix Halo lists the misleading CPU marketing name first.
 STRIX=$(cat <<'EOF'
@@ -195,6 +211,70 @@ Agent 1
   Device Type:             CPU
 EOF
 )
+# The ISA section repeats the agent's target id verbatim. Rejecting it is what the
+# leading ^ in the gfx match does; without the anchor, `match` would find gfx90a at
+# offset 20 of "amdgcn-amd-amdhsa--gfx90a:sramecc+:xnack-" while substr() still cuts
+# from RLENGTH+1, emitting a bogus "amdgcn" device and shifting every later ordinal.
+ISA_TARGET_ID=$(cat <<'EOF'
+Agent 1
+*******
+  Name:                    AMD EPYC 9654 96-Core Processor
+  Marketing Name:          AMD EPYC 9654 96-Core Processor
+  Vendor Name:             CPU
+  Device Type:             CPU
+*******
+Agent 2
+*******
+  Name:                    gfx90a:sramecc+:xnack-
+  Marketing Name:          AMD Instinct MI210
+  Vendor Name:             AMD
+  Device Type:             GPU
+  ISA Info:
+    ISA 1
+      Name:                    amdgcn-amd-amdhsa--gfx90a:sramecc+:xnack-
+*******
+Agent 3
+*******
+  Name:                    gfx1100
+  Marketing Name:          AMD Radeon RX 7900 XTX
+  Vendor Name:             AMD
+  Device Type:             GPU
+  ISA Info:
+    ISA 1
+      Name:                    amdgcn-amd-amdhsa--gfx1100
+EOF
+)
+echo "=== ISA lines repeating a target id ==="
+assert_eq "an ISA target id adds no device" \
+    "gfx90a|AMD Instinct MI210 gfx1100|AMD Radeon RX 7900 XTX" \
+    "$(printf '%s\n' "$ISA_TARGET_ID" | _rocminfo_gpu_records | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "so device 1 is still the second card" \
+    "gfx1100|AMD Radeon RX 7900 XTX" \
+    "$(printf '%s\n' "$ISA_TARGET_ID" | _rocminfo_gpu_records | _pick 1)"
+
+# Every ISA ROCr can report today has at most four characters after "gfx"
+# (ROCR-Runtime's processor table tops out at gfx1201 / gfx1310), so the width cap
+# costs nothing now. If AMD ever ships a longer one, the trailing-character guard
+# must drop the device rather than report a silently truncated arch that would route
+# the wrong wheel.
+WIDE=$(cat <<'EOF'
+Agent 1
+*******
+  Name:                    AMD EPYC 9654 96-Core Processor
+  Marketing Name:          AMD EPYC 9654 96-Core Processor
+  Device Type:             CPU
+*******
+Agent 2
+*******
+  Name:                    gfx12500
+  Marketing Name:          AMD Future Accelerator
+  Device Type:             GPU
+EOF
+)
+echo "=== arch wider than the cap ==="
+assert_eq "an over-long gfx token is dropped, not truncated" \
+    "|AMD EPYC 9654 96-Core Processor" "$(printf '%s\n' "$WIDE" | _rocminfo_gpu_records)"
+
 echo "=== no GPU agent ==="
 assert_eq "falls back to the first marketing name with no arch" \
     "|AMD Ryzen 7 5700U with Radeon Graphics" "$(printf '%s\n' "$APU" | _rocminfo_gpu_records)"

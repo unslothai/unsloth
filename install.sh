@@ -4803,9 +4803,20 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
             'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
     fi
     # Use the unindexed amd-smi name only when no rocminfo records are in use.
+    # amd-smi upper-cases every key in its human-readable output (amdsmi_logger.py
+    # _capitalize_keys), so the field is MARKET_NAME, which /[Mm]arket.?[Nn]ame/ could
+    # never match: the fallback printed nothing on a real host. Matched case-folded, and
+    # read past the FIRST colon only, so "MARKET_NAME: AMD Instinct MI300X OAM: 750W SKU"
+    # survives -- the same truncation the rocminfo parser above already fixed.
+    # Keep in sync with studio/setup.sh.
     if [ -z "$_gpu_disp_mkt" ] && [ -z "$_gpu_disp_records" ] && command -v amd-smi >/dev/null 2>&1; then
-        _gpu_disp_mkt=$(amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
-            '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+        _gpu_disp_mkt=$(amd-smi static --asic 2>/dev/null | awk \
+            'tolower($0) ~ /market.?name/ {
+                 v = $0
+                 sub(/^[^:]*:[[:space:]]*/, "", v)
+                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+                 if (v != "") { print v; exit }
+             }' || true)
     fi
     # UNSLOTH_ROCM_GFX_ARCH env override (mirrors install.ps1)
     if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then

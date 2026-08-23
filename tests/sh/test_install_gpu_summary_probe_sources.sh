@@ -33,11 +33,15 @@ cat > "$WORK/roc/rocminfo" <<'STUB'
 [ -s "$STUB_ROCMINFO" ] || exit 1
 cat "$STUB_ROCMINFO"
 STUB
+# `amd-smi list` prints BDF / UUID / KFD_ID / NODE_ID / PARTITION_ID and no gfx
+# token, so the arch always has to come from `static --asic`. The stub used to leak
+# TARGET_GRAPHICS_VERSION into `list`, which meant the fallthrough between the two
+# subcommands was never exercised.
 cat > "$WORK/smi/amd-smi" <<'STUB'
 #!/bin/sh
 [ -s "$STUB_AMDSMI" ] || exit 1
 case "$1" in
-    list)   sed -n '/^GPU/p;/TARGET_GRAPHICS_VERSION/p' "$STUB_AMDSMI" ;;
+    list)   sed -n 's/^\(GPU: [0-9]*\).*/\1  BDF: 0000:03:00.0  UUID: aaaa-bbbb  KFD_ID: 1/p' "$STUB_AMDSMI" ;;
     static) cat "$STUB_AMDSMI" ;;
 esac
 STUB
@@ -58,10 +62,12 @@ summary() {
     _path="$WORK/base"
     [ "$1" != "-" ] && _path="$WORK/roc:$_path"
     [ "$2" != "-" ] && _path="$WORK/smi:$_path"
+    # install.sh runs this block under `set -e`; match it so a guard that aborts the
+    # installer cannot pass here.
     env -i PATH="$_path" \
         STUB_ROCMINFO="$1" STUB_AMDSMI="$2" \
         ${3:+HIP_VISIBLE_DEVICES="$3"} \
-        /bin/bash -c '. "$1"; printf "%s|%s\n" "$_gpu_disp_gfx" "$_gpu_disp_mkt"' _ "$WORK/block.sh"
+        /bin/bash -c 'set -eu; . "$1"; printf "%s|%s\n" "$_gpu_disp_gfx" "$_gpu_disp_mkt"' _ "$WORK/block.sh"
 }
 
 cat > "$WORK/roc_gpu" <<'EOF'
@@ -118,12 +124,83 @@ Agent 3
   Marketing Name:          AMD Radeon RX 7900 XTX
   Device Type:             GPU
 EOF
-# "Market Name" with a space is the spelling install.sh's amd-smi parser matches.
+# amd-smi upper-cases every key in its human-readable output, so MARKET_NAME is what
+# a real host prints. The old fixture spelled it "Market Name" -- the one spelling the
+# parser happened to match -- so the naming path was green here and dead in production.
 cat > "$WORK/smi_fixture" <<'EOF'
+GPU: 0
+    ASIC:
+        MARKET_NAME: AMD Radeon RX 7900 XTX
+        TARGET_GRAPHICS_VERSION: gfx1100
+EOF
+# Older amd-smi builds print it title-cased; both spellings must still work.
+cat > "$WORK/smi_titlecase" <<'EOF'
 GPU: 0
     ASIC:
         Market Name: 		 AMD Radeon RX 7900 XTX
         TARGET_GRAPHICS_VERSION: gfx1100
+EOF
+# The Instinct OAM SKUs put ": " inside the name, which -F'[:|]' truncated.
+cat > "$WORK/smi_colon" <<'EOF'
+GPU: 0
+    ASIC:
+        MARKET_NAME: AMD Instinct MI300X OAM: 750W SKU
+        TARGET_GRAPHICS_VERSION: gfx942
+EOF
+# The #7307 reporter's shape: a Ryzen iGPU plus two IDENTICAL R9700s. The two dGPU
+# records are byte-identical, so a selector that folds duplicate lines away resolves
+# device 2 back to ordinal 0 -- the iGPU.
+cat > "$WORK/roc_twins" <<'EOF'
+Agent 1
+*******
+  Name:                    AMD Ryzen 9 9950X 16-Core Processor
+  Marketing Name:          AMD Ryzen 9 9950X 16-Core Processor
+  Device Type:             CPU
+*******
+Agent 2
+*******
+  Name:                    gfx1036
+  Marketing Name:          AMD Radeon Graphics
+  Device Type:             GPU
+*******
+Agent 3
+*******
+  Name:                    gfx1201
+  Marketing Name:          AMD Radeon AI PRO R9700
+  Device Type:             GPU
+*******
+Agent 4
+*******
+  Name:                    gfx1201
+  Marketing Name:          AMD Radeon AI PRO R9700
+  Device Type:             GPU
+EOF
+# Three devices, two sharing an arch: the ordinal past the duplicate is the one the
+# old deduplicating selector could not reach.
+cat > "$WORK/roc_three_dup" <<'EOF'
+Agent 1
+*******
+  Name:                    AMD EPYC 9654 96-Core Processor
+  Marketing Name:          AMD EPYC 9654 96-Core Processor
+  Device Type:             CPU
+*******
+Agent 2
+*******
+  Name:                    gfx90a:sramecc+:xnack-
+  Marketing Name:          AMD Instinct MI210
+  Device Type:             GPU
+*******
+Agent 3
+*******
+  Name:                    gfx1100
+  Marketing Name:          AMD Radeon RX 7900 XTX
+  Device Type:             GPU
+*******
+Agent 4
+*******
+  Name:                    gfx1100
+  Marketing Name:          AMD Radeon PRO W7900
+  Device Type:             GPU
 EOF
 : > "$WORK/empty"
 
@@ -146,8 +223,13 @@ assert_eq "keeps its arch and stays unnamed" \
     "gfx1030|" "$(summary "$WORK/roc_blank_name" "$WORK/smi_fixture")"
 
 echo "=== amd-smi only ==="
+# The arch comes from `static --asic`: `amd-smi list` carries no gfx token at all.
 assert_eq "arch and name both come from amd-smi" \
     "gfx1100|AMD Radeon RX 7900 XTX" "$(summary "$WORK/empty" "$WORK/smi_fixture")"
+assert_eq "an older title-cased Market Name still works" \
+    "gfx1100|AMD Radeon RX 7900 XTX" "$(summary "$WORK/empty" "$WORK/smi_titlecase")"
+assert_eq "an amd-smi name survives a colon in the middle" \
+    "gfx942|AMD Instinct MI300X OAM: 750W SKU" "$(summary "$WORK/empty" "$WORK/smi_colon")"
 assert_eq "neither tool installed reports nothing" "|" "$(summary - -)"
 assert_eq "both installed but silent reports nothing" "|" "$(summary "$WORK/empty" "$WORK/empty")"
 
@@ -156,6 +238,16 @@ assert_eq "device 0" \
     "gfx90a|AMD Instinct MI210" "$(summary "$WORK/roc_two_gpus" "$WORK/empty" 0)"
 assert_eq "device 1" \
     "gfx1100|AMD Radeon RX 7900 XTX" "$(summary "$WORK/roc_two_gpus" "$WORK/empty" 1)"
+# Driven through the real block, not a restated selector: a deduplicating selector
+# resolves both gfx1100 slots to one entry and sends device 2 back to device 0.
+assert_eq "an ordinal past a duplicated arch still selects its own device" \
+    "gfx1100|AMD Radeon PRO W7900" "$(summary "$WORK/roc_three_dup" "$WORK/empty" 2)"
+assert_eq "and the duplicate before it keeps its own name" \
+    "gfx1100|AMD Radeon RX 7900 XTX" "$(summary "$WORK/roc_three_dup" "$WORK/empty" 1)"
+# Two of the same card produce two byte-identical records; the second one must still
+# be a device, not a duplicate line to be folded away.
+assert_eq "two identical cards are still two devices" \
+    "gfx1201|AMD Radeon AI PRO R9700" "$(summary "$WORK/roc_twins" "$WORK/empty" 2)"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
