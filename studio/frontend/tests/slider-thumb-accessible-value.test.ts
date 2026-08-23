@@ -1,23 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What a slider says to a screen reader, which is not what it shows on screen.
+// What the slider says to a screen reader. Two gaps a sighted reviewer cannot see:
 //
-// Two separate gaps, both invisible to a sighted reviewer:
+// 1. Radix puts role="slider" on the Thumb while the wrapper spreads props onto
+//    Root, so an aria-label reached a plain div and the control was unnamed. Radix
+//    only synthesises its own label for multi-thumb ranges.
+// 2. Radix does not synthesise aria-valuetext, so the Auto position announced as
+//    "0" -- the one stop on that track whose number is not a context length.
 //
-// 1. Radix puts role="slider" on the Thumb, but the wrapper spreads its props
-//    onto Root. An aria-label passed to <Slider> therefore landed on a plain div
-//    and the actual control had no accessible name at all, since Radix only
-//    synthesises a label of its own for multi-thumb ranges.
-//
-// 2. Radix does not synthesise aria-valuetext. A slider whose positions mean
-//    something other than their number announces the number and nothing else.
-//    The context slider's leftmost position means Auto, so without value text it
-//    reads as "0" -- a context length no model has, and the one position on that
-//    track whose number is not a context at all.
-//
-// Source-level assertions, because the failure is a missing attribute on an
-// element node:test cannot render.
+// Asserted on source: the failure is a missing attribute on an element node:test
+// cannot render.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -55,8 +48,7 @@ test("the wrapper can express a spoken value for a position", () => {
 });
 
 test("the context slider says Auto rather than zero", () => {
-  // The number Auto landed on is the point of the setting, so it has to be
-  // spoken too; aria-valuenow can only carry the raw slider position.
+  // aria-valuenow carries the raw position, so the number Auto chose needs saying.
   assert.match(panel, /thumbValueText=\{\(v\) =>/);
   assert.match(
     panel,
@@ -66,9 +58,7 @@ test("the context slider says Auto rather than zero", () => {
 });
 
 test("no slider is left announcing a bare number for a named position", () => {
-  // A guard against the next slider that gives a position a meaning: if the
-  // wrapper ever stops forwarding value text, every such caller regresses at
-  // once and silently.
+  // If the wrapper stops forwarding value text, every such caller regresses at once.
   assert.ok(
     slider.includes("aria-valuetext"),
     "the shared Slider must keep forwarding aria-valuetext to the thumb",

@@ -3,16 +3,13 @@
 
 // Hydration must be able to CLEAR a local record, not only overwrite one.
 //
-// The panel writes the resolved server row into browser storage so the load paths
-// that never open the panel see the shared settings. savePerModelConfig expresses
-// "no settings" by deleting the entry, so a merge that comes out default is the
-// only way a clear travels. Skipping the write in exactly that case leaves the
-// stale local record in place, and model-selector's quick select reads it through
-// resolveInitialConfig without any hydration, so a flag cleared on another origin
-// is handed straight back to the next launch.
+// savePerModelConfig says "no settings" by deleting the entry, so a merge that comes
+// out default IS the clear. Skipping the write there strands the old value, and
+// model-selector's quick select reads it via resolveInitialConfig without opening the
+// panel, handing a flag cleared on another origin back to the next launch.
 //
-// The reachable shape is an arguments-only record: clearing the one setting a model
-// had leaves the row as an explicit empty list, which is a default config.
+// Reachable shape: a model whose only setting is its extra arguments. Clearing them
+// leaves an explicit empty list, which is a default config.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

@@ -2,19 +2,17 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // S2 for the llama-server tuning group: no user setting may be lost on any upgrade
-// or downgrade path, and no client may destroy a record it cannot read.
+// or downgrade path, and no client may destroy a record it cannot read. Hidden is
+// acceptable, lost is not.
 //
-// Two things changed direction at once here. The four fields (load mode, draft KV
-// dtype, checkpoints, cache RAM) stopped being judged default, so they now reach
-// storage at all; and the server row became authoritative on panel open, so what a
-// browser shows is no longer only what that browser wrote. Together they move data
-// across builds, across origins and into a one-time backfill that used to skip it.
+// Two directions changed at once. The four fields (load mode, draft KV dtype,
+// checkpoints, cache RAM) stopped being judged default, so they reach storage at
+// all; and the server row became authoritative on panel open. Together they move
+// data across builds, across origins, and into a backfill that used to skip it.
 //
-// The store has no migration step, so every direction has to hold on its own: the
-// version stamp is a downgrade LOCK, not an upgrade marker, and it is only correct
-// while toStoredConfig stamps the OLDEST version that understands the record.
-//
-// Hidden is acceptable, lost is not.
+// There is no migration step, so each direction holds on its own: the version stamp
+// is a downgrade LOCK, correct only while toStoredConfig stamps the OLDEST version
+// that understands the record.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
