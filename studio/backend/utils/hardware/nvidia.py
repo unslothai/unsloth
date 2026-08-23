@@ -223,9 +223,8 @@ def get_visible_gpu_utilization(
             )
         )
 
-    # nvidia-smi emits physical row order, so a reordering mask ("1,0" or two
-    # UUIDs) would otherwise hand back devices whose position contradicts their
-    # visible_ordinal. Sort so position and ordinal always agree.
+    # nvidia-smi emits physical row order, so a reordering mask would hand back
+    # devices whose position contradicts their own visible_ordinal.
     devices.sort(key = lambda d: d["visible_ordinal"])
 
     return {

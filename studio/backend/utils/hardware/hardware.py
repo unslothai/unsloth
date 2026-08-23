@@ -866,9 +866,8 @@ def _rocm_visibility_masks_are_stacked() -> bool:
 def _rocm_device_ordinal_active() -> bool:
     """Whether GPU_DEVICE_ORDINAL renumbers HIP devices.
 
-    It sits at the ROCclr layer, so it applies on Windows too, and no visibility
-    spec here reads it: a torch ordinal cannot be paired with a physical id while
-    it is set.
+    ROCclr-layer, so it applies on Windows too, and no visibility spec here reads
+    it: a torch ordinal cannot be paired with a physical id while it is set.
     """
     return bool(os.environ.get("GPU_DEVICE_ORDINAL", "").strip())
 
@@ -876,12 +875,11 @@ def _rocm_device_ordinal_active() -> bool:
 def _cuda_order_matches_smi() -> bool:
     """Whether torch ordinals and nvidia-smi rows share one index space.
 
-    CUDA enumerates FASTEST_FIRST by default while nvidia-smi always reports PCI
-    order, and this module only sets PCI_BUS_ID as a *default* (line 52), so an
-    explicit override survives and the two disagree. Equal-sized cards defeat the
-    total-scope check, so the mismatch has to be caught here. Same gate the
-    llama.cpp SM probe applies. A single-GPU host is exempt: every ordering is
-    the identity there. ROCm does not use this variable.
+    CUDA enumerates FASTEST_FIRST by default and nvidia-smi reports PCI order;
+    PCI_BUS_ID is only a setdefault here, so an explicit override survives and
+    the two disagree. Equal-sized cards defeat the total-scope check, so nothing
+    else catches it. Same gate the llama.cpp SM probe applies. One GPU is exempt:
+    every ordering is the identity there.
     """
     if IS_ROCM or os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID":
         return True
@@ -934,10 +932,9 @@ def _amd_smi_ids_for_hip_ids(hip_ids: Optional[list[int]]) -> Optional[list[int]
 def _free_in_torch_scope(total_bytes: int, used_gb: float) -> int:
     """Driver used-memory turned into free bytes, in torch's allocatable scope.
 
-    Subtract from torch's total, never the driver's. NVIDIA's total also spans a
-    reserved framebuffer that is not counted in ``used`` and that torch can never
-    hand out (726 MiB on a B200), so ``driver_total - used`` overstates free by
-    exactly that reservation -- enough to report a full card as having room.
+    Subtract from torch's total, never the driver's: NVIDIA's total also spans a
+    reserved framebuffer that ``used`` excludes and torch can never hand out
+    (726 MiB on a B200), so ``driver_total - used`` reports a full card as free.
     """
     return max(0, total_bytes - round(used_gb * (1024**3)))
 
@@ -1005,10 +1002,8 @@ def _context_free_cuda_memory_info(idx: int, total_bytes: int) -> Optional[int]:
 
     # Native Windows ROCm exposes per-adapter dedicated usage without entering
     # HIP. Reuse the same conservative mapping as the System telemetry route.
-    # Decline under GPU_DEVICE_ORDINAL for the same reason amd-smi does: it
-    # renumbers torch ordinals but not the visible spec, so device_ids[idx] would
-    # be a different card. The Linux path above already declines via
-    # _rocm_visibility_mask_active.
+    # GPU_DEVICE_ORDINAL renumbers torch ordinals but not the visible spec, so
+    # device_ids[idx] would be a different card; the Linux path declines already.
     if platform.system() == "Windows" and not _rocm_device_ordinal_active():
         numeric_ids = parent_visible_spec.get("numeric_ids")
         device_ids = (
@@ -1046,11 +1041,10 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             allocated = torch.cuda.memory_allocated(idx)
             reserved = torch.cuda.memory_reserved(idx)
 
-            # Driver-level free includes torch's cache and other processes. Use
-            # context-free native telemetry first: mem_get_info permanently pins
-            # a primary context in this long-lived backend. A ROCm APU is the one
-            # exception because its allocatable GTT total is unavailable from the
-            # context-free dedicated-memory probes.
+            # Driver-level free includes torch's cache and other processes. Try
+            # context-free telemetry first: mem_get_info pins a primary context
+            # for the life of this backend. A ROCm APU is the exception, its GTT
+            # total is unavailable from the context-free probes.
             driver_total_needed = _rocm_props_total_is_carve_out(props)
             free = None
             if not driver_total_needed:
