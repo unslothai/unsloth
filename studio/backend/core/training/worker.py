@@ -749,10 +749,9 @@ def _finetune_selectors(config: dict) -> tuple[bool, bool, bool, bool]:
     """(vision, language, attention, mlp), read exactly the way the consumers read them.
 
     A guard that models the run differently from the code it guards rejects runs that would
-    have trained. Every default here is the CUDA consumer's own default for a config that
-    omits the key -- 4d passes finetune_vision_layers through config.get(..., True), and
-    _build_training_worker_config fills the same True. Only the MLX consumer defaults vision
-    False, and _check_mlx_finetune_targets discards the vision element, so True is safe there.
+    have trained, so every default here is the CUDA consumer's own default for an omitted key.
+    Only the MLX consumer defaults vision False, and _check_mlx_finetune_targets discards the
+    vision element, so True is safe there too.
     """
     return (
         bool(config.get("finetune_vision_layers", True)),
@@ -765,12 +764,10 @@ def _finetune_selectors(config: dict) -> tuple[bool, bool, bool, bool]:
 def _requests_all_linear(config: dict) -> bool:
     """Whether target_modules is PEFT's bare "all-linear" keyword rather than a leaf list.
 
-    prepare_model_for_training collapses a lone "all-linear" entry to the bare string before
-    calling get_peft_model, which then forces every selector True for it, so a run that asks
-    for all-linear with the selectors off trains every linear layer today. Rejecting it would
-    break exactly the requests the four selectors are not consulted for. A list that names
-    all-linear alongside other leaves is not the keyword -- the caller strips it and the
-    remaining names go through the normal scoped path, where the selectors do apply.
+    get_peft_model forces every selector True for the keyword, so all-linear with the
+    selectors off trains every linear layer today and rejecting it would break the very
+    requests the selectors are not consulted for. A list naming all-linear alongside other
+    leaves is not the keyword: the caller strips it and the rest take the scoped path.
     """
     target_modules = config.get("target_modules")
     if isinstance(target_modules, str):
@@ -782,10 +779,9 @@ def _requests_all_linear(config: dict) -> bool:
 
 def _check_finetune_targets_after_detect(trainer, config: dict) -> None:
     """Reject a LoRA run that selects no adapter layers, once detection has settled which
-    branch it takes. The request model cannot decide this: is_audio_vlm reads all four
-    selectors while the codec/ASR branches (csm, snac, whisper, bicodec, dac) ignore them,
-    is_vlm needs a vision-capable model and not just an image-tagged dataset, and only the
-    probe in pre_detect separates those. Running here keeps the error early -- pre_detect is
+    branch it takes. The request model cannot decide this: the codec/ASR branches ignore the
+    selectors that is_audio_vlm reads, is_vlm needs a vision-capable model and not just an
+    image-tagged dataset, and only the probe in pre_detect separates those. pre_detect is
     config/tokenizer only, so this still fires before any weights load, instead of surfacing
     as get_peft_regex's "No layers to finetune" with the model already in memory."""
     if config.get("training_type", "LoRA/QLoRA") != "LoRA/QLoRA":
@@ -804,17 +800,15 @@ def _check_mlx_finetune_targets(config: dict) -> None:
     """MLX equivalent, called from the LoRA branch of the MLX worker.
 
     Two things differ from the CUDA path. FastMLXModel.get_peft_model is handed these
-    selectors for text models too, not only VLMs, so there is no is_vlm gate here. And the
-    caller back-fills finetune_language_layers whenever a module type is on, so an empty
-    layer family cannot survive -- only an empty module selection can, which leaves
-    target_modules empty after filtering ("target_modules became empty after filtering").
+    selectors for text models too, so there is no is_vlm gate. And the caller back-fills
+    finetune_language_layers whenever a module type is on, so only an empty module selection
+    can survive here.
 
-    The filter only drops names it recognises as attention or MLP leaves, so a request that
-    names anything else -- lm_head, embed_tokens, a fused qkv under an architecture-specific
-    name, all-linear -- still has targets left with both module types off, and trains. Only
-    the default seven leaves are wholly attention and MLP, so refuse just the runs that let
-    the default stand. An explicit list that does filter down to nothing still gets the
-    loader's own message, which names the two flags."""
+    The filter only drops names it recognises as attention or MLP leaves, so a request naming
+    anything else (lm_head, embed_tokens, a fused qkv, all-linear) still has targets left with
+    both module types off, and trains. Only the default seven leaves are wholly attention and
+    MLP, so refuse just the runs that let the default stand; an explicit list that does filter
+    down to nothing still gets the loader's own message, which names the two flags."""
     if config.get("target_modules"):
         return
     _, _, attention, mlp = _finetune_selectors(config)
@@ -2754,8 +2748,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     is_dataset_image = bool(config.get("is_dataset_image", False))
     training_type = config.get("training_type", "LoRA/QLoRA")
     use_lora = training_type == "LoRA/QLoRA"
-    # Before the download/load below: this needs none of the model, unlike the CUDA path's
-    # equivalent, which has to wait for pre_detect to say which branch the run takes.
+    # Before the download/load below: unlike the CUDA path, this needs none of the model.
     if use_lora:
         _check_mlx_finetune_targets(config)
     # Normalize seed; explicit None must not reach the seed chain.

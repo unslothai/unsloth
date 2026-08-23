@@ -30,8 +30,7 @@ from models import TrainingStartRequest
 TRAINING_TYPES = ("LoRA/QLoRA", "Full Finetuning", "Continued Pretraining")
 
 # The branch pre_detect settles on. Only "vlm" and "audio_vlm" forward the selectors on CUDA;
-# see trainer.prepare_model_for_training, whose codec/whisper/snac/text arms pass target_modules
-# and never the four.
+# prepare_model_for_training's other arms pass target_modules and never the four.
 BRANCHES = ("text", "vlm", "audio_vlm", "codec", "whisper", "snac")
 _CUDA_BRANCHES_READING_SELECTORS = ("vlm", "audio_vlm")
 

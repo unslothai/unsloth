@@ -26,10 +26,8 @@ def test_lora_targets_default_on():
 
 
 def test_request_layer_does_not_guess_the_branch():
-    # Whether these four are read at all depends on the model, which the request cannot see:
-    # a vision-capable model makes it a VLM run, a plain text model does not, and an audio
-    # dataset may be an audio VLM or a codec. Every combination is accepted here and settled
-    # in the worker once detection has run (tests below).
+    # Whether these four are read at all depends on the model, which the request cannot see,
+    # so every combination is accepted here and settled in the worker after detection.
     for flags in (
         {},
         {"is_dataset_image": True},
@@ -148,9 +146,8 @@ def test_worker_exempts_full_finetuning():
 
 
 def test_worker_rejection_is_not_mistaken_for_a_cache_problem():
-    # _pre_detect_training_model's caller funnels exceptions through the incomplete-cache
-    # fallback when the model is local-only. This error must not look like a cache artifact
-    # error, or a nothing-to-train run would be retried as a corrupt-download instead.
+    # The caller funnels exceptions through the incomplete-cache fallback for a local-only
+    # model, so a nothing-to-train run must not read as a corrupt download and get retried.
     from core.training.worker import _is_model_cache_artifact_error
     error = ValueError(
         "Nothing to train: select at least one layer family (finetune_language_layers or "
