@@ -941,9 +941,12 @@ def test_the_verdict_confines_the_imported_set_when_driven_through_main(tmp_path
     result = _arm_payload(tmp_path, "result", regress = "reasoning_toggle", self_race = None)
     rc = U.main(
         [
-            "--min-reps", "2",
-            "--min-compared", "16",
-            "--null", str(null.parent),
+            "--min-reps",
+            "2",
+            "--min-compared",
+            "16",
+            "--null",
+            str(null.parent),
             str(result.parent),
         ]
     )
