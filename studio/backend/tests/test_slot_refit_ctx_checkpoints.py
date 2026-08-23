@@ -51,6 +51,7 @@ def _plan(
     ctx_checkpoints,
     vram_mib = CARD_MIB,
     cache_type_kv = "q8_0",
+    ctx_checkpoints_flag = "--ctx-checkpoints",
 ):
     """Return the generated plan plus what its own context really costs."""
     memory = [(0, vram_mib, vram_mib)]
@@ -69,8 +70,8 @@ def _plan(
         "spec_draft_n_max_flag": "--spec-draft-n-max",
         "supports_kv_unified": True,
         "supports_fit_ctx": True,
-        "supports_ctx_checkpoints": True,
-        "ctx_checkpoints_flag": "--ctx-checkpoints",
+        "supports_ctx_checkpoints": ctx_checkpoints_flag is not None,
+        "ctx_checkpoints_flag": ctx_checkpoints_flag,
     }
     launched = _launch(
         backend,
@@ -189,6 +190,23 @@ class TestTheRefitDoesNotSpendTheReserve:
         assert got["fit"] == "off"
         assert got["ctx"] > 0
         assert got["reserve_bytes"] > 0
+
+    def test_a_build_without_the_flag_is_not_charged(self, tmp_path):
+        """The argv builder drops the request on such a build, so the child
+        allocates nothing: pricing it would cost slots and context for bytes no
+        process holds."""
+        supported = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = 32)
+        skipped = _plan(
+            tmp_path,
+            weights_mib = 9_200,
+            n_parallel = 4,
+            ctx_checkpoints = 32,
+            ctx_checkpoints_flag = None,
+        )
+        none_asked = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = 0)
+        assert skipped["checkpoints"] is None  # not emitted
+        assert (skipped["ctx"], skipped["slots"]) == (none_asked["ctx"], none_asked["slots"])
+        assert skipped["ctx"] > supported["ctx"]
 
     def test_no_checkpoints_is_unchanged(self, tmp_path):
         """The default (0) has to plan exactly as it did before."""
