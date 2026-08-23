@@ -799,6 +799,22 @@ test("the new-chat chords stay out of the auth flow", async () => {
   }
 });
 
+test("switching back to Chat lands on the view the user left", async () => {
+  const root = await readFile(
+    new URL("../src/app/routes/__root.tsx", import.meta.url),
+    "utf8",
+  );
+  // ChatPage renders the frozen search while off-route, and a bare /chat is a
+  // fresh chat, so the chord has to hand that search back to the router.
+  const at = root.indexOf('"switchToChat"');
+  assert.ok(at !== -1, "switchToChat is registered");
+  const call = root.slice(at, root.indexOf("\n  );", at) + 5);
+  assert.match(call, /navigate\(\{ to: "\/chat", search: chatSearch \}\)/);
+  assert.match(call, /enabled: !isAuthFlowRoute/);
+  // The other workspaces keep the bare helper; only chat carries a search.
+  assert.match(root, /useShortcut\("switchToImages", goTo\("\/images"\)/);
+});
+
 test("opening a chat by chord drops the selection, as clicking a row does", async () => {
   const sidebar = await readFile(
     new URL("../src/components/app-sidebar.tsx", import.meta.url),

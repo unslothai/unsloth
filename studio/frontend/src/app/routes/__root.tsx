@@ -380,7 +380,13 @@ function RootLayout() {
 
   // Workspaces. The shell is mounted on every route, so the chords live here.
   const goTo = (to: string) => () => void navigate({ to });
-  useShortcut("switchToChat", goTo("/chat"), { enabled: !isAuthFlowRoute });
+  // Carry the frozen search back: a bare /chat is a fresh chat, so switching
+  // away and back would drop the thread, compare pair or project.
+  useShortcut(
+    "switchToChat",
+    () => void navigate({ to: "/chat", search: chatSearch }),
+    { enabled: !isAuthFlowRoute },
+  );
   useShortcut("switchToProjects", goTo("/projects"), {
     enabled: !isAuthFlowRoute,
   });
