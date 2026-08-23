@@ -92,11 +92,27 @@ def _has_specific_yaml(model_identifier: str) -> bool:
     )
 
 
-def load_inference_config(model_identifier: str) -> Dict[str, Any]:
+def _sampling_mode_params(params: Dict[str, Any], thinking_mode: Optional[bool]) -> Dict[str, Any]:
+    """Optional sampling overrides for an explicitly selected reasoning mode."""
+    if thinking_mode is None or not isinstance(params, dict):
+        return {}
+    modes = params.get("sampling_modes")
+    if not isinstance(modes, dict):
+        return {}
+    selected = modes.get("thinking" if thinking_mode else "non_thinking")
+    return dict(selected) if isinstance(selected, dict) else {}
+
+
+def load_inference_config(
+    model_identifier: str, *, thinking_mode: Optional[bool] = None
+) -> Dict[str, Any]:
     """Load inference params for a model.
 
     Priority: model-specific YAML, then family defaults (inference_defaults.json),
-    then default.yaml. Returns a dict of temperature/top_p/top_k/min_p/etc.
+    then default.yaml. When ``thinking_mode`` is explicitly true or false, an
+    optional mode-specific block at the same priority tier overrides that tier's
+    flat values. An absent mode keeps the historical flat resolution unchanged.
+    Returns a dict of temperature/top_p/top_k/min_p/etc.
     """
     model_defaults = load_model_defaults(model_identifier)
 
@@ -116,8 +132,10 @@ def load_inference_config(model_identifier: str) -> Dict[str, Any]:
 
     # Family-based defaults from inference_defaults.json.
     family_params = get_family_inference_params(model_identifier)
+    family_mode_params = _sampling_mode_params(family_params, thinking_mode)
 
     model_inference = model_defaults.get("inference", {})
+    model_mode_params = _sampling_mode_params(model_inference, thinking_mode)
 
     # Model's own YAML beats family defaults; if it only fell back to
     # default.yaml, family defaults win.
@@ -125,15 +143,24 @@ def load_inference_config(model_identifier: str) -> Dict[str, Any]:
 
     def _get_param(key, hardcoded_default):
         if has_own_yaml:
-            # Model-specific YAML wins, then family fills gaps, then default.yaml.
+            # Model-specific mode + flat values win, then the family mode + flat
+            # values fill gaps, then default.yaml.
+            val = model_mode_params.get(key)
+            if val is not None and isinstance(val, (int, float)):
+                return val
             val = model_inference.get(key)
             if val is not None and isinstance(val, (int, float)):
                 return val
+            if key in family_mode_params:
+                return family_mode_params[key]
             if key in family_params:
                 return family_params[key]
             return default_inference.get(key, hardcoded_default)
         else:
-            # No model-specific YAML: family wins, then default.yaml.
+            # No model-specific YAML: the selected family mode wins over its
+            # historical flat values, then default.yaml.
+            if key in family_mode_params:
+                return family_mode_params[key]
             if key in family_params:
                 return family_params[key]
             return default_inference.get(key, hardcoded_default)
@@ -228,7 +255,7 @@ def _operator_sampling_override(field: str):
 
 
 @lru_cache(maxsize = 128)
-def _recommended_sampling(model_id: str) -> Dict[str, Any]:
+def _recommended_sampling(model_id: str, thinking_mode: Optional[bool] = None) -> Dict[str, Any]:
     """Per-model recommended sampling, resolved through the SAME path the Unsloth Chat UI uses.
 
     The Chat UI seeds its sampling from the ``.inference`` block of the load/status responses,
@@ -241,7 +268,14 @@ def _recommended_sampling(model_id: str) -> Dict[str, Any]:
     if not model_id:
         return {}
     try:
-        cfg = load_inference_config(model_id) or {}
+        # Keep the historical one-argument call for the absent-mode path. Besides
+        # making the compatibility promise explicit, this keeps lightweight callers
+        # that patch the loader with a one-argument test double working unchanged.
+        cfg = (
+            load_inference_config(model_id)
+            if thinking_mode is None
+            else load_inference_config(model_id, thinking_mode = thinking_mode)
+        ) or {}
     except Exception as e:
         logger.debug(f"Could not load recommended sampling for '{model_id}': {e}")
         return {}
@@ -258,6 +292,7 @@ def resolve_effective_sampling(
     explicit: Dict[str, Any],
     *,
     fill_defaults: bool = True,
+    thinking_mode: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Resolve the effective sampling params for a request.
 
@@ -270,8 +305,11 @@ def resolve_effective_sampling(
     per-model recommendation is omitted from the result instead of set to the static
     schema default, so a raw proxy body (``/v1/completions``) keeps llama-server's own
     default for that field rather than being forced onto this schema's value.
+
+    ``thinking_mode`` is deliberately three-valued: True and False select optional
+    per-mode model recommendations, while None preserves the historical flat preset.
     """
-    recommended = _recommended_sampling(model_id or "")
+    recommended = _recommended_sampling(model_id or "", thinking_mode)
     effective: Dict[str, Any] = {}
     for field, (_env, default, _lo, _hi, _int) in _SAMPLING_FIELDS.items():
         override = _operator_sampling_override(field)

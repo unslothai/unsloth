@@ -17825,6 +17825,27 @@ async def delete_openai_container(
         await client.close()
 
 
+def _normalized_sampling_thinking_mode(payload) -> Optional[bool]:
+    """Three-valued reasoning mode used only to select sampling recommendations.
+
+    Internal ``enable_thinking`` has highest request-level precedence, then the
+    OpenAI reasoning-effort convention (``none`` means off), then Anthropic's
+    native ``thinking`` block. ChatCompletionRequest already maps the last form
+    onto ``enable_thinking``; retaining the fallback also covers /v1/messages.
+    """
+    enable_thinking = getattr(payload, "enable_thinking", None)
+    if enable_thinking is not None:
+        return bool(enable_thinking)
+    reasoning_effort = getattr(payload, "reasoning_effort", None)
+    if reasoning_effort is not None:
+        return str(reasoning_effort).lower() != "none"
+    thinking = getattr(payload, "thinking", None)
+    thinking_type = getattr(thinking, "type", None)
+    if thinking_type is not None:
+        return str(thinking_type).lower() != "disabled"
+    return None
+
+
 def _fill_recommended_sampling_openai(payload, model_id) -> None:
     """Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to a
     ChatCompletionRequest in place.
@@ -17840,7 +17861,11 @@ def _fill_recommended_sampling_openai(payload, model_id) -> None:
         f: (getattr(payload, f) if f in payload.model_fields_set else None)
         for f in SAMPLING_FIELD_NAMES
     }
-    effective = resolve_effective_sampling(model_id, explicit)
+    effective = resolve_effective_sampling(
+        model_id,
+        explicit,
+        thinking_mode = _normalized_sampling_thinking_mode(payload),
+    )
     for field, value in effective.items():
         setattr(payload, field, value)
 
@@ -18132,6 +18157,8 @@ async def openai_chat_completions(
         _tpl_kw = _extra.get("chat_template_kwargs")
         if isinstance(_tpl_kw, dict) and "enable_thinking" in _tpl_kw:
             payload.enable_thinking = bool(_tpl_kw["enable_thinking"])
+    if payload.enable_thinking is None and payload.reasoning_effort is not None:
+        payload.enable_thinking = payload.reasoning_effort != "none"
 
     # ── Determine which backend is active ─────────────────────
     # Single-model server: any model name serves the loaded model (drop-in
@@ -25368,6 +25395,7 @@ async def anthropic_messages(
             "repetition_penalty": payload.repetition_penalty,
             "presence_penalty": payload.presence_penalty,
         },
+        thinking_mode = _normalized_sampling_thinking_mode(payload),
     )
     temperature = _anthropic_sampling["temperature"]
     top_p = _anthropic_sampling["top_p"]
