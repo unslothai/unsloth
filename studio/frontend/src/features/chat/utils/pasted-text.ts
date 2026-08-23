@@ -49,11 +49,17 @@ type PlainPasteKeyEvent = {
   readonly altKey: boolean;
 };
 
+// Resolved once: the chord below is read on every keydown in the composer, and
+// the platform cannot change under a live document.
+let macPlatform: boolean | null = null;
+
 function isMacPlatform(): boolean {
+  if (macPlatform !== null) return macPlatform;
   if (typeof navigator === "undefined") return false;
-  return /mac|iphone|ipad|ipod/i.test(
+  macPlatform = /mac|iphone|ipad|ipod/i.test(
     `${navigator.platform ?? ""} ${navigator.userAgent ?? ""}`,
   );
+  return macPlatform;
 }
 
 /**
