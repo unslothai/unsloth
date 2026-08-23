@@ -1350,6 +1350,7 @@ def run_safetensors_tool_loop(
                     # evict it.
                     if context_length and _accepts_kwarg(execute_tool, "result_budget_tokens"):
                         from core.inference.context_window import (
+                            estimate_messages_tokens_conservative as _spent_tokens,
                             estimate_messages_tokens_dense as _dense_tokens,
                             tool_result_budget,
                         )
@@ -1383,8 +1384,14 @@ def run_safetensors_tool_loop(
                         kwargs["result_budget_tokens"] = tool_result_budget(
                             int(context_length),
                             max_tokens,
-                            _dense_tokens(conversation)
-                            + _dense_tokens(tools or [])
+                            # Conservative for the thread as a whole, not only for the
+                            # tool turns doubled below: a user or assistant turn can hold
+                            # a pasted blob or a block of minified JSON, and priced at the
+                            # English rate it reports a third of what it costs. Nothing
+                            # here can measure exactly, and the room this produces is what
+                            # the next result is admitted against.
+                            _spent_tokens(conversation)
+                            + _spent_tokens(tools or [])
                             + _dense_tokens(results)
                             # Doubled for the same reason the results above are: a pending
                             # call can carry base64, minified JSON or a block of code, and

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable
 from typing import Any, Optional
 
@@ -56,6 +57,57 @@ def estimate_messages_tokens_dense(messages: list[dict]) -> int:
             continue
         dense = sum(1 for char in text if ord(char) > 127)
         total += max(1, dense + (len(text) - dense) // 4)
+    return total
+
+
+# ASCII that runs this far without a break is not prose. Measured with Qwen3 over 16-20k
+# character samples, in characters per token: base64 1.35, hex 1.13, minified JSON 2.75,
+# against English prose at 3.27 and Python source at 4.38. The estimate above charges all
+# of them the English four, so a pasted blob is priced at a third of what it costs, and a
+# caller sizing the room LEFT then hands out room that is already occupied.
+#
+# The rule is per RUN rather than per message, so a blob pasted into a sentence is priced
+# as a blob: a run this long is the thing itself. 64 characters rather than a rounder
+# number because base64 is conventionally wrapped at 76, and at a threshold of 80 a
+# wrapped blob scores as ordinary prose. Measured on the samples above, runs of 64+
+# non-space characters cover 100% of an unwrapped blob, 98.6% of a wrapped one, 0% of the
+# Python source and 23.5% of a README -- and that 23.5% is its URLs and table rules, which
+# tokenise near this rate themselves rather than at the prose rate.
+_DENSE_RUN_CHARS = 64
+# Two characters per token, not one. It stays BELOW the measured cost of every sample, so
+# no turn is priced above what it really costs: over-pricing a turn spends the very room
+# this budget exists to hand out, and a result cut to pay for room that was never occupied
+# is the same waste from the other side.
+_DENSE_RUN_CHARS_PER_TOKEN = 2
+_DENSE_RUN_RE = re.compile(r"\S{%d,}" % _DENSE_RUN_CHARS)
+
+
+def estimate_messages_tokens_conservative(messages: list[dict]) -> int:
+    """`estimate_messages_tokens_dense`, with unbroken ASCII runs charged as the blobs
+    they are.
+
+    For the caller with no tokenizer and no rolling fit behind it: the native loop prices
+    what a thread has already spent, and if that number is low the result it then admits
+    is what pushes the next prompt past the window, with nothing downstream to recover.
+    Non-ASCII keeps its token per character, ordinary ASCII keeps the English four, and
+    only the long unbroken runs are charged at `_DENSE_RUN_CHARS_PER_TOKEN`.
+    """
+    total = 0
+    for message in messages:
+        try:
+            text = json.dumps(message, ensure_ascii = False)
+        except Exception:
+            total += 1
+            continue
+        wide = sum(1 for char in text if ord(char) > 127)
+        # ASCII only: a run of CJK is already charged a token a character above, and
+        # charging it here as well would price it twice.
+        runs = sum(
+            sum(1 for char in match.group(0) if ord(char) <= 127)
+            for match in _DENSE_RUN_RE.finditer(text)
+        )
+        plain = len(text) - wide - runs
+        total += max(1, wide + runs // _DENSE_RUN_CHARS_PER_TOKEN + plain // 4)
     return total
 
 

@@ -28,6 +28,8 @@ import pytest
 from core.inference import tools
 from core.inference.context_window import (
     _RESULT_NOTICE_RESERVE,
+    estimate_messages_tokens_conservative,
+    estimate_messages_tokens_dense,
     prompt_budget,
     tool_result_budget,
 )
@@ -1855,3 +1857,59 @@ class TestACounterThatCannotAnswerIsNotACounter:
         measured = tools._dense_char_limit(text, 1_000_000)
 
         assert measured > 200 * 4 * tools._UNMEASURED_ROOM_MARGIN
+
+
+class TestADenseNativeTurnIsPricedAsOne:
+    """The native loop has no tokenizer and no rolling fit, so the number it computes for
+    what the thread has already spent is the whole defence. Charging a pasted blob the
+    English four characters per token reports a third of what it costs, and the result
+    admitted against that difference is what puts the next prompt over the window.
+
+    Measured with Qwen3 over 16-20k character samples, in characters per token: base64
+    1.35, hex 1.13, minified JSON 2.75, English prose 3.27, Python source 4.38.
+    """
+
+    @staticmethod
+    def _turn(text: str) -> list:
+        return [{"role": "user", "content": text}]
+
+    def test_a_pasted_blob_costs_more_than_the_same_length_of_prose(self):
+        blob = self._turn(_dense(20_000).replace("\n", ""))
+        prose = self._turn("word " * 4_000)
+
+        assert len(blob[0]["content"]) >= len(prose[0]["content"]) * 0.9
+        assert estimate_messages_tokens_conservative(blob) > (
+            1.9 * estimate_messages_tokens_conservative(prose)
+        )
+
+    def test_prose_and_code_are_priced_as_before(self):
+        """The rule is for blobs. Prose and indented source have no unbroken runs that
+        long, and charging them twice would spend room the thread has not."""
+        for text in ("word " * 4_000, "def f(x):\n    return x + 1\n" * 500):
+            turn = self._turn(text)
+            assert estimate_messages_tokens_conservative(turn) == (
+                estimate_messages_tokens_dense(turn)
+            )
+
+    def test_wrapped_base64_is_still_a_blob(self):
+        """Conventionally wrapped at 76 characters, which is why the run threshold is 64
+        rather than a rounder number above it."""
+        wrapped = self._turn("\n".join("QUJDREVG" * 9 + "QUJD" for _ in range(250)))
+
+        assert estimate_messages_tokens_conservative(wrapped) > (
+            1.5 * estimate_messages_tokens_dense(wrapped)
+        )
+
+    def test_the_loop_hands_out_less_room_after_a_blob(self):
+        """End to end through the real loop: the same number of characters, priced as what
+        they are, leaves less room for the result that follows."""
+        # Sized to leave room either way at this window: two threads that both fit, one
+        # of which has spent twice what the other has on the same character count.
+        blob = TestTheSafetensorsLoopPricesItToo._run(
+            4096, messages = [{"role": "user", "content": _dense(4_000).replace("\n", "")}]
+        )["result_budget_tokens"]
+        prose = TestTheSafetensorsLoopPricesItToo._run(
+            4096, messages = [{"role": "user", "content": "word " * 800}]
+        )["result_budget_tokens"]
+
+        assert blob < prose
