@@ -307,7 +307,8 @@ def _decision(result):
     """
     stdout = result.stdout.decode(errors = "replace")
     marked = [
-        line.strip() for line in stdout.splitlines()
+        line.strip()
+        for line in stdout.splitlines()
         if line.strip().startswith(stack._AMD_FASTPATH_DECISION_MARKER)
     ]
     assert len(marked) == 1, f"expected one decision line, got {marked!r} in {stdout!r}"

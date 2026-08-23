@@ -58,7 +58,6 @@ def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
     file, and an autouse fixture must not depend on where in the module it is defined.
     """
     from installer_venv_root import contain_installer_venv_root
-
     contain_installer_venv_root(monkeypatch, tmp_path_factory)
 
 
