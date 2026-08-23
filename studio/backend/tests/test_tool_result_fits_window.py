@@ -864,13 +864,14 @@ class TestOneChatsOutputStaysItsOwn:
 
         assert self._spill_args(monkeypatch, tmp_path, session)["scope"] is None
 
-    def test_two_project_chats_get_different_scopes(self, monkeypatch, tmp_path):
+    def test_a_project_chat_retains_nothing_even_with_a_thread(self, monkeypatch, tmp_path):
+        """A sub-directory is not access control, it is a name: every sibling chat in the
+        project has a terminal in that same sandbox and can read and prune whatever is in
+        it. So a project chat truncates with a notice and no continuation."""
         session = tools.project_session_id("proj-1")
 
-        first = self._spill_args(monkeypatch, tmp_path, session, "chat-a")["scope"]
-        second = self._spill_args(monkeypatch, tmp_path, session, "chat-b")["scope"]
-
-        assert first and second and first != second
+        assert self._spill_args(monkeypatch, tmp_path, session, "chat-a")["scope"] is None
+        assert self._spill_args(monkeypatch, tmp_path, session, "chat-b")["scope"] is None
 
     def test_a_private_session_still_spills(self, monkeypatch, tmp_path):
         """The control: the feature has to keep working where the sandbox is the
@@ -1316,12 +1317,12 @@ class TestConcurrentSpillsKeepTheirRecords:
         swapped = tmp_path / "scope"
         swapped.symlink_to(outside, target_is_directory = True)
 
-        assert tools._write_spill_file(str(swapped), "abcdef123456.txt", "x" * 100) is False
+        assert tools._write_spill_file(str(swapped), "abcdef123456.txt", "x" * 100) is None
         assert list(outside.iterdir()) == [], "the spill was written outside the sandbox"
 
     def test_the_writer_still_works_on_a_real_directory(self, tmp_path):
         """The control, so the refusal above is not simply "never writes"."""
-        assert tools._write_spill_file(str(tmp_path), "abcdef123456.txt", "x" * 100) is True
+        assert tools._write_spill_file(str(tmp_path), "abcdef123456.txt", "x" * 100)
 
         assert (tmp_path / "abcdef123456.txt").read_text() == "x" * 100
 
@@ -1466,7 +1467,7 @@ class TestInstallingASpillNeverReplacesAnything:
         theirs = tmp_path / "abcdef123456.txt"
         theirs.write_text("the user's own data")
 
-        assert tools._write_spill_file(str(tmp_path), theirs.name, "x" * 100) is False
+        assert tools._write_spill_file(str(tmp_path), theirs.name, "x" * 100) is None
 
         assert theirs.read_text() == "the user's own data"
 
@@ -1489,3 +1490,20 @@ class TestInstallingASpillNeverReplacesAnything:
         monkeypatch.setattr(tools, "_write_spill_file", _refuse)
 
         assert tools._truncate(text, 200, workdir = str(tmp_path)) == first
+
+    def test_the_record_names_what_was_installed_not_what_is_there_now(self, tmp_path):
+        """Between the install and the record, another call sharing the sandbox can replace
+        the file. Stating the path then records THAT content as Studio's, and a later prune
+        or cleanup deletes the user's data on the strength of it."""
+        root = _own(tmp_path)
+        name = "abcdef123456.txt"
+        stamp = tools._write_spill_file(str(root), name, "the spill")
+        # The replacement, in the window the record must not read across.
+        (root / name).write_text("the user's own data")
+
+        tools._record_spill(str(root), name, stamp, hashlib.sha256(b"the spill").hexdigest())
+
+        assert not tools._is_recorded_spill(
+            str(root), str(root / name), tools._spill_manifest(str(root))
+        )
+        assert not tools._holds_no_user_files(str(tmp_path))

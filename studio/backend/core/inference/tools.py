@@ -14361,7 +14361,7 @@ _DIR_FD_WRITES = (
 )
 
 
-def _write_spill_file(target_dir: str, name: str, body: str) -> bool:
+def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
     """Write one spill into ``target_dir``, without following a link at any point.
 
     The directory is opened ONCE, O_NOFOLLOW, and every step after that is relative to
@@ -14379,6 +14379,10 @@ def _write_spill_file(target_dir: str, name: str, body: str) -> bool:
     which on POSIX replaces silently. The caller checks the destination first, but between
     that check and this write another call sharing the workspace can put a file there, and
     a rename would then destroy it.
+
+    Returns the stamp of what was installed, or None if nothing was. The stamp is taken
+    here rather than re-read from the path afterwards, because by then another call can
+    have replaced the file and the record would name its content as Studio's.
     """
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if not _DIR_FD_WRITES:
@@ -14391,13 +14395,14 @@ def _write_spill_file(target_dir: str, name: str, body: str) -> bool:
                 newline = "",
             ) as handle:
                 handle.write(body)
-            os.link(tmp, os.path.join(target_dir, name))
+            installed = os.path.join(target_dir, name)
+            os.link(tmp, installed)
             _quiet_unlink(tmp)
-            return True
+            return _spill_stamp(installed)
         except OSError:
             logger.debug("tool result spill write failed", exc_info = True)
             _quiet_unlink(tmp)
-            return False
+            return None
     dir_fd = None
     tmp_name = f".tmp-{uuid.uuid4().hex[:12]}.txt"
     try:
@@ -14411,12 +14416,20 @@ def _write_spill_file(target_dir: str, name: str, body: str) -> bool:
         # EEXIST instead, which is the answer this wants.
         os.link(tmp_name, name, src_dir_fd = dir_fd, dst_dir_fd = dir_fd)
         _quiet_unlink(tmp_name, dir_fd = dir_fd)
-        return True
+        # Through the same descriptor, so it is the file just linked rather than whatever
+        # the name resolves to by the time this returns.
+        stat = os.stat(name, dir_fd = dir_fd, follow_symlinks = False)
+        return ":".join(
+            str(part)
+            for part in (
+                stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+            )
+        )
     except OSError:
         logger.debug("tool result spill write failed", exc_info = True)
         if dir_fd is not None:
             _quiet_unlink(tmp_name, dir_fd = dir_fd)
-        return False
+        return None
     finally:
         if dir_fd is not None:
             os.close(dir_fd)
@@ -14544,12 +14557,14 @@ def _write_spill_manifest(
                 pass
 
 
-def _record_spill(root: str, relative: str) -> None:
-    """Append one written spill, with its stamp and digest. See `_spill_record`."""
-    path = os.path.join(root, *relative.split("/"))
-    stamp, digest = _spill_stamp(path), _file_digest(path)
-    if stamp is None or digest is None:
-        return
+def _record_spill(root: str, relative: str, stamp: str, digest: str) -> None:
+    """Append one written spill, with the stamp and digest of what was INSTALLED.
+
+    Not re-read from the path: between the install and this, another call sharing the
+    sandbox can replace the file, and stating the path then records that call's content as
+    Studio's, which a later prune or cleanup would delete. The writer knows what it put
+    there, so it says so.
+    """
     try:
         with _spill_lock(root):
             with open(_spill_record_path(root), "a", encoding = "utf-8") as handle:
@@ -14559,20 +14574,24 @@ def _record_spill(root: str, relative: str) -> None:
 
 
 def _spill_scope(session_id: "str | None", thread_id: "str | None") -> "str | None":
-    """The sub-directory this call's spills belong in, or None for "retain nothing".
+    """Where this call's spills belong, or None for "retain nothing".
 
-    A project's chats share one sandbox session by design (`project_session_id`), and a
-    call with no session at all lands in the shared `_default` one. Retaining a result
-    unscoped in either means another chat can list `.unsloth_tool_output`, read output
-    that existed only in the first chat's response, and prune the very files that chat was
-    told to page through. A per-thread sub-directory keeps them apart; a private session
-    with no thread id keeps today's flat layout.
+    Nothing is retained in a sandbox that more than one chat runs in. A project's chats
+    share one session by design (`project_session_id`) and a call with no session lands in
+    the shared `_default` one, and in both the sandbox is a directory every sibling chat's
+    model has a terminal in: a sub-directory is not access control, it is a name. Writing
+    a result there puts output that existed only in one chat's response on disk where the
+    next chat can read it, and lets that chat prune the files this one was told to page
+    through.
+
+    So the trade is stated rather than hidden: in a project, a large result is truncated
+    with a notice and no continuation. Only a chat with a sandbox of its own gets paging.
+    ``thread_id`` is taken and unused for that reason -- it identifies the chat, which is
+    not the thing that has to be separate.
     """
-    if not session_id:
+    if not session_id or session_id.startswith(_PROJECT_SESSION_PREFIX):
         return None
-    if thread_id:
-        return hashlib.sha256(thread_id.encode("utf-8", "surrogatepass")).hexdigest()[:12]
-    return None if session_id.startswith(_PROJECT_SESSION_PREFIX) else ""
+    return ""
 
 
 def _spill_phrase(spill: str, complete: bool) -> str:
@@ -14677,9 +14696,15 @@ def _spill_full_output(
             # Not ours: the user's code put something at that path, and the install below
             # would replace it.
             return None, True
-        if not _write_spill_file(target_dir, name, body):
+        stamp = _write_spill_file(target_dir, name, body)
+        if stamp is None:
             return None, True
-        _record_spill(os.path.join(workdir, _SPILL_DIR), f"{scope}/{name}" if scope else name)
+        _record_spill(
+            os.path.join(workdir, _SPILL_DIR),
+            f"{scope}/{name}" if scope else name,
+            stamp,
+            hashlib.sha256(body.encode("utf-8", "surrogatepass")).hexdigest(),
+        )
         _prune_spills(target_dir, os.path.join(workdir, _SPILL_DIR))
         # Relative, so the command works from the cwd the tools already run in, and so
         # the absolute sandbox path never reaches the model.
