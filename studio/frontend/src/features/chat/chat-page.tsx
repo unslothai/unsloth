@@ -602,6 +602,7 @@ function ComparePane({
   handleName,
   header,
   borderClassName,
+  onInitialHistoryReady,
 }: {
   modelType: "base" | "lora" | "model1" | "model2";
   pairId: string;
@@ -610,7 +611,15 @@ function ComparePane({
   handleName: string;
   header: ReactElement;
   borderClassName?: string;
+  onInitialHistoryReady?: (pane: string) => void;
 }): ReactElement {
+  const signalInitialHistoryReady = useMemo(
+    () =>
+      onInitialHistoryReady
+        ? () => onInitialHistoryReady(modelType)
+        : undefined,
+    [modelType, onInitialHistoryReady],
+  );
   return (
     <div
       className={cn(
@@ -626,12 +635,39 @@ function ComparePane({
           projectId={projectId}
           initialThreadId={initialThreadId}
           syncActiveThreadId={false}
+          onInitialHistoryReady={signalInitialHistoryReady}
         >
           <RegisterCompareHandle name={handleName} />
           <Thread hideComposer={true} hideWelcome={true} />
         </ChatRuntimeProvider>
       </div>
     </div>
+  );
+}
+
+function useCompareReloadReadiness(pairId: string): (pane: string) => void {
+  const stateRef = useRef({
+    pairId,
+    panes: new Set<string>(),
+    sent: false,
+  });
+  if (stateRef.current.pairId !== pairId) {
+    stateRef.current = { pairId, panes: new Set<string>(), sent: false };
+  }
+  return useCallback(
+    (pane: string) => {
+      const state = stateRef.current;
+      if (state.pairId !== pairId || state.sent) {
+        return;
+      }
+      state.panes.add(pane);
+      if (state.panes.size < 2) {
+        return;
+      }
+      state.sent = true;
+      window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+    },
+    [pairId],
   );
 }
 
@@ -691,6 +727,8 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
+  const [threadsSettled, setThreadsSettled] = useState(false);
+  const markInitialHistoryReady = useCompareReloadReadiness(pairId);
   const active = useChatActive();
 
   const compareRunning = useChatRuntimeStore(
@@ -700,6 +738,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
   useEffect(() => {
     if (compareRunning) return;
     let isActive = true;
+    setThreadsSettled(false);
     listStoredChatThreads({ pairId })
       .then((threads) => {
         if (!isActive) return;
@@ -710,11 +749,25 @@ const LoraCompareContent = memo(function LoraCompareContent({
         if (!isExpectedBackgroundChatStorageError(error)) {
           throw error;
         }
+      })
+      .finally(() => {
+        if (isActive) setThreadsSettled(true);
       });
     return () => {
       isActive = false;
     };
   }, [pairId, compareRunning]);
+
+  useEffect(() => {
+    if (!threadsSettled) return;
+    if (!baseThreadId) markInitialHistoryReady("base");
+    if (!loraThreadId) markInitialHistoryReady("lora");
+  }, [
+    baseThreadId,
+    loraThreadId,
+    markInitialHistoryReady,
+    threadsSettled,
+  ]);
 
   return (
     <CompareShell
@@ -739,6 +792,9 @@ const LoraCompareContent = memo(function LoraCompareContent({
           projectId={projectId}
           initialThreadId={baseThreadId}
           handleName="base"
+          onInitialHistoryReady={
+            threadsSettled ? markInitialHistoryReady : undefined
+          }
           header={
             <div className="shrink-0 px-3 py-1.5">
               <span className="text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
@@ -753,6 +809,9 @@ const LoraCompareContent = memo(function LoraCompareContent({
           projectId={projectId}
           initialThreadId={loraThreadId}
           handleName="lora"
+          onInitialHistoryReady={
+            threadsSettled ? markInitialHistoryReady : undefined
+          }
           borderClassName="border-t border-border/60 md:border-t-0 md:border-l"
           header={
             <div className="shrink-0 px-3 py-1.5 text-start md:text-end md:pr-[calc(4rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
@@ -866,6 +925,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [model1ThreadId, setModel1ThreadId] = useState<string>();
   const [model2ThreadId, setModel2ThreadId] = useState<string>();
+  const [threadsSettled, setThreadsSettled] = useState(false);
+  const markInitialHistoryReady = useCompareReloadReadiness(pairId);
 
   const globalCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const globalGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
@@ -901,6 +962,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   useEffect(() => {
     if (compareRunning) return;
     let isActive = true;
+    setThreadsSettled(false);
     listStoredChatThreads({ pairId })
       .then((threads) => {
         if (!isActive) return;
@@ -919,11 +981,25 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
         if (!isExpectedBackgroundChatStorageError(error)) {
           throw error;
         }
+      })
+      .finally(() => {
+        if (isActive) setThreadsSettled(true);
       });
     return () => {
       isActive = false;
     };
   }, [pairId, compareRunning]);
+
+  useEffect(() => {
+    if (!threadsSettled) return;
+    if (!model1ThreadId) markInitialHistoryReady("model1");
+    if (!model2ThreadId) markInitialHistoryReady("model2");
+  }, [
+    markInitialHistoryReady,
+    model1ThreadId,
+    model2ThreadId,
+    threadsSettled,
+  ]);
 
   return (
     <CompareShell
@@ -950,6 +1026,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           projectId={projectId}
           initialThreadId={model1ThreadId}
           handleName="model1"
+          onInitialHistoryReady={
+            threadsSettled ? markInitialHistoryReady : undefined
+          }
           header={
             <GeneralCompareHeader
               side="left"
@@ -981,6 +1060,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           projectId={projectId}
           initialThreadId={model2ThreadId}
           handleName="model2"
+          onInitialHistoryReady={
+            threadsSettled ? markInitialHistoryReady : undefined
+          }
           borderClassName="border-t border-sidebar-border md:border-t-0 md:border-l"
           header={
             <GeneralCompareHeader
@@ -1113,12 +1195,19 @@ function ProjectLanding({
   items,
   newThreadNonce,
   rotateNewThreadNonce,
+  dataLoaded,
+  runtimeReady,
 }: {
   projectId: string;
   projectName: string;
   items: SidebarItem[];
   newThreadNonce: string;
   rotateNewThreadNonce: () => void;
+  dataLoaded: boolean;
+  // #9251 holds the reload shell until the landing can be drawn in full. The signal used
+  // to come from this component's own ChatRuntimeProvider; that provider is hoisted above
+  // the view switch now (#8908), so the owner of the hoisted one reports it down instead.
+  runtimeReady: boolean;
 }): ReactElement {
   const navigate = useNavigate();
   // Gates body-portaled surfaces so they can't linger or act while the landing
@@ -1145,6 +1234,7 @@ function ProjectLanding({
   const [previews, setPreviews] = useState<
     Record<string, { snippet: string; date: string }>
   >({});
+  const reloadReadySent = useRef(false);
   // Inline rename, mirroring the sidebar recent-row UX: edit the title in place,
   // commit on Enter/blur, cancel on Escape. Reuses the projectId-agnostic
   // renameChatItem so behavior matches the sidebar.
@@ -1468,6 +1558,20 @@ function ProjectLanding({
       cancelled = true;
     };
   }, [items]);
+
+  useEffect(() => {
+    const previewsReady = items.every((item) => previews[item.id] !== undefined);
+    if (
+      !dataLoaded ||
+      !runtimeReady ||
+      !previewsReady ||
+      reloadReadySent.current
+    ) {
+      return;
+    }
+    reloadReadySent.current = true;
+    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+  }, [dataLoaded, items, previews, runtimeReady]);
 
   return (
     <>
@@ -2088,9 +2192,10 @@ export function ChatPage({
   const currentProject = currentProjectId
     ? (projects.find((project) => project.id === currentProjectId) ?? null)
     : null;
-  const { items: currentProjectItems } = useChatSidebarItems({
+  const { items: currentProjectItems, loaded: currentProjectItemsLoaded } =
+    useChatSidebarItems({
     projectId: currentProjectId ?? "__no_project_selected__",
-  });
+    });
   const currentChatTitle = activeThreadId
     ? currentProjectItems.find((item) => item.id === activeThreadId)?.title
     : undefined;
@@ -2559,6 +2664,23 @@ export function ChatPage({
   const baseAttachmentTargetKey =
     keptBaseViewRef.current?.attachmentTargetKey ?? artifactViewKey;
   const baseBackgrounded = view.mode === "compare";
+
+  // #9251's reload gate, re-homed. Its runtime signal used to come from ProjectLanding's
+  // own ChatRuntimeProvider; that provider is hoisted above the view switch now, so the
+  // signal is taken here and reported down. Stored AS the project it belongs to rather
+  // than as a boolean, because the hoisted provider is not remounted when the project
+  // changes and a plain flag would stay true and release the shell for the next landing
+  // before it has drawn.
+  const projectLandingId =
+    baseView?.mode === "project" ? baseView.projectId : null;
+  const [projectRuntimeReadyFor, setProjectRuntimeReadyFor] = useState<
+    string | null
+  >(null);
+  const markProjectRuntimeReady = useCallback(() => {
+    setProjectRuntimeReadyFor(projectLandingId);
+  }, [projectLandingId]);
+  const projectRuntimeReady =
+    projectLandingId !== null && projectRuntimeReadyFor === projectLandingId;
 
   useEffect(() => {
     clearAutoOpenedArtifacts();
@@ -3818,6 +3940,11 @@ export function ChatPage({
                 }
                 listThreads={false}
                 backgrounded={baseBackgrounded}
+                onInitialHistoryReady={
+                  baseView.mode === "project"
+                    ? markProjectRuntimeReady
+                    : undefined
+                }
               >
                 {baseView.mode === "project" ? (
                   <ProjectLanding
@@ -3827,6 +3954,8 @@ export function ChatPage({
                     items={currentProjectItems}
                     newThreadNonce={projectNewThreadNonce}
                     rotateNewThreadNonce={rotateProjectNewThreadNonce}
+                    dataLoaded={currentProjectItemsLoaded && !projectsLoading}
+                    runtimeReady={projectRuntimeReady}
                   />
                 ) : (
                   <NativeAttachmentTargetContext.Provider

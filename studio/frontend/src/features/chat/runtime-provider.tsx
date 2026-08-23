@@ -1136,6 +1136,8 @@ function createPersistedRunAdapter(
 function useStudioRuntimeAdapters(
   modelType: ModelType,
   pairId?: string,
+  reloadReadyThreadId?: string,
+  onInitialHistoryReady?: () => void,
 ): StudioRuntimeAdapters {
   const aui = useAui();
 
@@ -1301,9 +1303,25 @@ function useStudioRuntimeAdapters(
   const history = useMemo<ThreadHistoryAdapter>(
     () => ({
       async load() {
+        const completeLoad = <T,>(result: T, loadedThreadId?: string): T => {
+          // A runtime bootstraps on an empty thread before switching to the
+          // requested one, so an unrequested load is not readiness.
+          const loadedTheRequestedThread =
+            !reloadReadyThreadId || loadedThreadId === reloadReadyThreadId;
+          if (onInitialHistoryReady) {
+            if (loadedTheRequestedThread) onInitialHistoryReady();
+          } else if (
+            modelType === "base" &&
+            !pairId &&
+            loadedTheRequestedThread
+          ) {
+            window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+          }
+          return result;
+        };
         const { remoteId } = aui.threadListItem().getState();
         if (!remoteId) {
-          return { messages: [] };
+          return completeLoad({ messages: [] });
         }
         const roleOrder: Record<string, number> = {
           system: 0,
@@ -1410,18 +1428,24 @@ function useStudioRuntimeAdapters(
         const hasParentIds = msgs.some((m) => m.parentId != null);
         if (hasParentIds) {
           let previousId: string | null = null;
-          return {
-            messages: msgs.map((m) => {
-              const parentId = m.parentId != null ? m.parentId : previousId;
-              previousId = m.id;
-              return {
-                parentId,
-                message: toThreadMessage(m),
-              };
-            }),
-          };
+          return completeLoad(
+            {
+              messages: msgs.map((m) => {
+                const parentId = m.parentId != null ? m.parentId : previousId;
+                previousId = m.id;
+                return {
+                  parentId,
+                  message: toThreadMessage(m),
+                };
+              }),
+            },
+            remoteId,
+          );
         }
-        return ExportedMessageRepository.fromArray(msgs.map(toThreadMessage));
+        return completeLoad(
+          ExportedMessageRepository.fromArray(msgs.map(toThreadMessage)),
+          remoteId,
+        );
       },
 
       append({ parentId, message }: ExportedMessageRepositoryItem) {
@@ -1526,7 +1550,13 @@ function useStudioRuntimeAdapters(
         return trackHistoryAppend(message.id, write);
       },
     }),
-    [aui, modelType, pairId],
+    [
+      aui,
+      modelType,
+      onInitialHistoryReady,
+      pairId,
+      reloadReadyThreadId,
+    ],
   );
 
   // Always register the adapter so the mic stays clickable for any engine. The
@@ -1576,8 +1606,15 @@ function useStudioRuntimeAdapters(
 function useRuntimeHook(
   modelType: ModelType,
   pairId?: string,
+  reloadReadyThreadId?: string,
+  onInitialHistoryReady?: () => void,
 ): ReturnType<typeof useLocalRuntime> {
-  const adapters = useStudioRuntimeAdapters(modelType, pairId);
+  const adapters = useStudioRuntimeAdapters(
+    modelType,
+    pairId,
+    reloadReadyThreadId,
+    onInitialHistoryReady,
+  );
   const persistedChatAdapter = useMemo(
     () =>
       createPersistedRunAdapter(
@@ -1588,11 +1625,21 @@ function useRuntimeHook(
   return useLocalRuntime(persistedChatAdapter, { adapters });
 }
 
-function createRuntimeHook(modelType: ModelType, pairId?: string) {
+function createRuntimeHook(
+  modelType: ModelType,
+  pairId?: string,
+  reloadReadyThreadId?: string,
+  onInitialHistoryReady?: () => void,
+) {
   return function useConfiguredRuntimeHook(): ReturnType<
     typeof useLocalRuntime
   > {
-    return useRuntimeHook(modelType, pairId);
+    return useRuntimeHook(
+      modelType,
+      pairId,
+      reloadReadyThreadId,
+      onInitialHistoryReady,
+    );
   };
 }
 
@@ -1637,11 +1684,13 @@ function ThreadAutoSwitch({
   syncActiveThreadId = true,
   paused,
   newThreadSwitchStateRef,
+  onSwitchFailed,
 }: {
   threadId: string;
   syncActiveThreadId?: boolean;
   paused: boolean;
   newThreadSwitchStateRef: { current: NewThreadSwitchState };
+  onSwitchFailed?: () => void;
 }): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
@@ -1694,6 +1743,11 @@ function ThreadAutoSwitch({
           },
           () => {
             claim.settled = true;
+            // Before the staleness guard, and deliberately not behind it (#9251). This
+            // releases the retained reload shell, which is waiting to be told the initial
+            // switch is over; a superseded attempt is still over, and returning early
+            // would leave the shell showing its snapshot for ever.
+            onSwitchFailed?.();
             // Only if this switch is still the current one. Unguarded, a rejection landing
             // after the user moved to a project landing cleared the active id that view had
             // just set, detaching a chat this failure has nothing to do with.
@@ -1713,6 +1767,7 @@ function ThreadAutoSwitch({
     isLoading,
     mainThreadId,
     newThreadSwitchStateRef,
+    onSwitchFailed,
     paused,
     syncActiveThreadId,
     threadId,
@@ -2451,6 +2506,7 @@ export function ChatRuntimeProvider({
   syncActiveThreadId = true,
   listThreads = true,
   backgrounded = false,
+  onInitialHistoryReady,
 }: {
   children: ReactNode;
   modelType?: ModelType;
@@ -2464,15 +2520,29 @@ export function ChatRuntimeProvider({
   // runtime stays alive; everything driving the shared single-chat state (active thread,
   // context bar, thread-scoped settings) stands down so it can't fight the visible view.
   backgrounded?: boolean;
+  onInitialHistoryReady?: () => void;
 }): ReactElement {
   const runtimeHook = useMemo(
-    () => createRuntimeHook(modelType, pairId),
-    [modelType, pairId],
+    () =>
+      createRuntimeHook(
+        modelType,
+        pairId,
+        initialThreadId,
+        onInitialHistoryReady,
+      ),
+    [initialThreadId, modelType, onInitialHistoryReady, pairId],
   );
   const runtime = useRemoteThreadListRuntime({
     runtimeHook,
     adapter: createStudioDbAdapter(modelType, pairId, projectId, listThreads),
   });
+  const signalFailedInitialSwitchReady = useCallback(() => {
+    if (onInitialHistoryReady) {
+      onInitialHistoryReady();
+    } else if (modelType === "base" && !pairId) {
+      window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+    }
+  }, [modelType, onInitialHistoryReady, pairId]);
 
   const aui = useAui({});
   const newThreadSwitchStateRef = useRef<NewThreadSwitchState>({
@@ -2540,6 +2610,7 @@ export function ChatRuntimeProvider({
             syncActiveThreadId={syncActiveThreadId && !backgrounded}
             paused={backgrounded}
             newThreadSwitchStateRef={newThreadSwitchStateRef}
+            onSwitchFailed={signalFailedInitialSwitchReady}
           />
         )}
         {!initialThreadId && newThreadNonce && (

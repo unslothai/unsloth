@@ -224,6 +224,10 @@ class ExportGGUFRequest(BaseModel):
         None,
         description = "Path to a custom imatrix file; overrides the auto-download when set.",
     )
+    private: bool = Field(
+        False,
+        description = "If True, create a private Hugging Face Hub repository",
+    )
 
 
 class ExportLoRAAdapterRequest(ExportCommonOptions):

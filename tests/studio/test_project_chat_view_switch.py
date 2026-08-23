@@ -65,6 +65,7 @@ BOUND_NAMES = {
     "newThreadNonce",
     "newThreadSwitchStateRef",
     "nonce",
+    "onSwitchFailed",
     "paused",
     "runActive",
     "syncActiveThreadId",
@@ -179,6 +180,9 @@ export const world: any = {
   clearAttachmentsRejects: false,
   // switchToNewThread() calls still awaiting the gate. Must return to 0.
   pendingNewThreadSwitches: 0,
+  // #9251's shell-release signal, counted so a superseded failure can be shown to still
+  // fire it.
+  switchFailedSignals: 0,
   // Which component's effects are replaying right now, so a module-level call can be
   // attributed to a caller. Set by the emulator, never read by the sliced source.
   component: "none",
@@ -377,6 +381,17 @@ const aui = auiFixture;
 
 // Each component's effect list is rebuilt per render so the sliced bodies close over that
 // render's props, the way the real closures do. The memo arrays outlive the call.
+// #9251: releases the retained reload shell. The provider hands this to the base pane's
+// ThreadAutoSwitch, and a failed switch has to fire it whether or not a newer switch has
+// superseded this one -- the shell is waiting either way.
+//
+// Module scope, because it is a dependency of the switch effect and the real one is a
+// useCallback. A fresh closure per render would re-run that effect every time and start a
+// switch per render, which is the emulator lying rather than the component misbehaving.
+const onSwitchFailed = () => {
+  world.switchFailedSignals += 1;
+};
+
 function renderThreadAutoSwitch(props: any): void {
   const threadId: string = props.initialThreadId;
   const syncActiveThreadId = (props.syncActiveThreadId ?? true) && !props.backgrounded;
@@ -389,6 +404,7 @@ function renderThreadAutoSwitch(props: any): void {
     isLoading,
     mainThreadId,
     newThreadSwitchStateRef,
+    onSwitchFailed,
     paused,
     syncActiveThreadId,
     threadId,
@@ -2248,5 +2264,53 @@ def test_a_stale_arrival_reattaches_the_chat_the_user_started():
     assert out["owned"] == "remote-1", (
         "and the record follows the thread through materialization, which is why the "
         "reattach can name the persisted id rather than the local one it opened"
+    )
+    assert out["unhandled"] == 0
+
+
+def test_a_superseded_failure_still_releases_the_reload_shell():
+    """#9251 holds a retained shell over a reload until the initial switch reports in, and
+    releases it from ThreadAutoSwitch's rejection arm. This PR added a staleness guard to
+    that arm, so the signal has to sit AHEAD of it: a switch that lost the race is still a
+    switch that ended, and returning early would leave the shell showing its snapshot for
+    ever.
+
+    Cross-PR, and the reason it is asserted here: nothing in #9251's own tests exercises a
+    superseded switch, because before this PR there was no guard to be superseded by.
+    """
+    out = _run(
+        "renderProvider, renderSettled, snapshot, world",
+        """
+        await renderSettled({ newThreadNonce: "n1" });
+
+        // A saved switch that will fail, held open.
+        let release: any;
+        world.switchToThreadGate = new Promise((resolve) => { release = resolve; });
+        world.switchToThreadRejects = true;
+        renderProvider({ initialThreadId: "thread-a" });
+        await tick();
+
+        // The route moves on, so a newer switch owns the runtime and supersedes it.
+        world.switchToThreadGate = null;
+        world.switchToThreadRejects = false;
+        renderProvider({ newThreadNonce: "n1" });
+        await tick();
+        const signalsBefore = world.switchFailedSignals;
+
+        release();
+        await tick();
+        await tick();
+
+        console.log(JSON.stringify({
+          signalsBefore,
+          signals: world.switchFailedSignals,
+          unhandled: unhandled.length,
+        }));
+        """,
+    )
+    assert out["signalsBefore"] == 0, "nothing had failed yet"
+    assert out["signals"] == 1, (
+        "a superseded failure must still release the reload shell, or a reload that races "
+        "a view change hangs on the retained snapshot"
     )
     assert out["unhandled"] == 0

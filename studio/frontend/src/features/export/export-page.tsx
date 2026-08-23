@@ -363,6 +363,19 @@ export function ExportPage() {
     };
   }, []);
 
+  const reloadReadySent = useRef(false);
+  useEffect(() => {
+    if (
+      loadingCheckpoints ||
+      isLoadingLocalModels ||
+      reloadReadySent.current
+    ) {
+      return;
+    }
+    reloadReadySent.current = true;
+    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+  }, [isLoadingLocalModels, loadingCheckpoints]);
+
   // ---- Derived state ----
   const selectedModelData = useMemo(
     () =>

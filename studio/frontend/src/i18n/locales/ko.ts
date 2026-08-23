@@ -518,7 +518,7 @@ export const ko = {
           "유휴 해제 전에 KV 캐시를 저장해, 이어서 하는 채팅이 기록을 다시 읽지 않도록 합니다. 디스크를 최대 10GB 사용합니다.",
         apiOnly: "API가 불러온 모델만 해제",
         apiOnlyDescription:
-          "유휴 해제 시 Studio에서 직접 불러온 모델은 메모리에 남기고, API 요청이 불러온 모델만 해제합니다.",
+          "유휴 해제 시 Unsloth에서 직접 불러온 모델은 메모리에 남기고, API 요청이 불러온 모델만 해제합니다.",
       },
       previewSharing: {
         sectionTitle: "미리보기 공유",
@@ -1006,7 +1006,7 @@ export const ko = {
       quickstart: {
         title: "명령 만들기",
         description:
-          "Studio에 현재 로드된 모델로 에이전트를 실행합니다. 먼저 모델을 로드한 다음 claude를 아래 지원되는 에이전트로 바꾸세요.",
+          "Unsloth에 현재 로드된 모델로 에이전트를 실행합니다. 먼저 모델을 로드한 다음 claude를 아래 지원되는 에이전트로 바꾸세요.",
         noneDetected: "PATH에서 지원되는 에이전트 CLI를 찾지 못했습니다.",
         installed: "설치됨",
       },
@@ -1027,7 +1027,7 @@ export const ko = {
         description:
           "Unsloth 플래그가 먼저 처리되고, 인식되지 않은 값은 그대로 에이전트에 전달됩니다.",
         model:
-          "모델을 선택합니다. --model이 없으면 unsloth start는 Studio에 현재 로드된 모델을 사용하며, 로드된 모델이 없으면 오류가 납니다.",
+          "모델을 선택합니다. --model이 없으면 unsloth start는 Unsloth에 현재 로드된 모델을 사용하며, 로드된 모델이 없으면 오류가 납니다.",
         contextLength:
           "요청할 컨텍스트 길이를 설정합니다(별칭: --max-seq-length).",
         ggufVariant: "GGUF 양자화 변형을 선택합니다.",
@@ -1048,9 +1048,9 @@ export const ko = {
         yolo: "승인 확인을 건너뜁니다. 신뢰할 수 있는 환경에서만 사용하세요.",
       },
       remote: {
-        title: "원격 Studio에 연결",
+        title: "원격 Unsloth Studio에 연결",
         description:
-          "실행 전에 다음을 설정하면 unsloth start를 다른 곳에서 실행 중인 Studio로 연결할 수 있습니다(또는 --api-key를 직접 전달):",
+          "실행 전에 다음을 설정하면 unsloth start를 다른 곳에서 실행 중인 Unsloth Studio로 연결할 수 있습니다(또는 --api-key를 직접 전달):",
       },
       passthrough: {
         title: "에이전트에 인자 전달",
@@ -1107,6 +1107,12 @@ export const ko = {
         collapseByDefault: "기본적으로 사고 과정 접기",
         collapseByDefaultDescription:
           "모델이 생각하는 동안 사고 과정을 자동으로 펼치지 않고 접어 둡니다. 읽으려면 블록을 펼치세요.",
+      },
+      webSearch: {
+        title: "웹 검색",
+        images: "웹 검색 이미지 표시",
+        imagesDescription:
+          "웹 검색이 이미지를 반환하고, 답변에 나열된 항목마다 하나씩 가져옵니다. 썸네일은 Studio가 가져와 축소하므로 브라우저가 이미지 호스트에 접속하지 않습니다.",
       },
       artifacts: {
         title: "Canvas",
