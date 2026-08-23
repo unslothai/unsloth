@@ -297,19 +297,53 @@ def test_a_reply_that_finished_with_no_text_at_all_is_still_abandoned():
     assert out["kept"] == ["user"]
 
 
-def test_a_tool_call_the_replay_cannot_carry_keeps_its_prompt():
-    """A resultless call that cannot replay without role=tool is dropped by the serialiser.
+def test_a_tool_call_the_replay_cannot_carry_prunes_with_its_prompt():
+    """A resultless local call is dropped by the serialiser, so the turn carries nothing.
 
-    The turn then serialises empty, but the model did call the tool, so the prompt that asked
-    for it is history and must not be deleted along with it.
+    OpenAI rejects an assistant ``tool_calls`` turn whose ids have no responding ``role="tool"``
+    message, so the serialiser cannot rescue this by emitting the call -- it skips it, and the
+    turn reaches the provider as the same lone empty assistant message a Stop with no output
+    produces. Treating the call as payload only moved the defect one hop: the backend drops the
+    empty assistant (``_drop_empty_assistant_sentinels``) and then merges the two user turns
+    that are left touching (``_coalesce_consecutive_user_turns``), which resends the cancelled
+    prompt glued to the next one and invites the tool request the user Stopped.
     """
-    unreplayable = (
-        '{ role: "assistant", content: [{ type: "tool-call", toolCallId: "call_1",'
-        ' toolName: "web_search", args: "{}" }] }'
+    stopped = (
+        ', status: { type: "incomplete" },'
+        ' metadata: { custom: { incomplete: { reason: "cancelled" } } } }'
     )
-    out = _run(_script(f"[{_user('first')}, {unreplayable}, {_user('second')}]"))
+    for marker in (stopped, " }"):
+        unreplayable = (
+            '{ role: "assistant", content: [{ type: "tool-call", toolCallId: "call_1",'
+            ' toolName: "delete_file", args: "{}" }]' + marker
+        )
+        out = _run(_script(f"[{_user('first')}, {unreplayable}, {_user('second')}]"))
+        assert out["kept"] == ["user"], marker
+        assert out["keptText"] == ["second"]
+        assert out["wire"] == ["user"]
+        assert out["wireBefore"] == ["user", "user"], (
+            "the refusal-only prune must still strand the pair here, or this case has stopped "
+            "measuring the defect it was written for"
+        )
+
+
+def test_a_resultless_call_that_replays_without_role_tool_keeps_its_prompt():
+    """Resultless is not the test; unreplayable is.
+
+    Provider-native builtin cards replay through ``extra_content``/native parts and never
+    produce a ``role="tool"`` message, so ``canReplayToolCallWithoutRoleTool`` lets the
+    serialiser emit the call with no result. That call does reach the provider, so the prompt
+    that asked for it is history and pruning the pair would delete it.
+    """
+    builtin = (
+        '{ role: "assistant", content: [{ type: "tool-call", toolCallId: "call_1",'
+        ' toolName: "web_search", args: "{}", canReplay: true }],'
+        ' status: { type: "incomplete" } }'
+    )
+    out = _run(_script(f"[{_user('first')}, {builtin}, {_user('second')}]"))
     assert out["kept"] == ["user", "assistant", "user"]
     assert out["keptText"] == ["first", "second"]
+    assert out["wire"] == ["user", "assistant", "user"]
 
 
 def test_a_trailing_abandoned_turn_keeps_the_prompt_it_followed():

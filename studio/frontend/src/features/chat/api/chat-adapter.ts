@@ -1390,10 +1390,17 @@ function toOpenAIMessages(
 
 /** Payload the turn carries in its own parts, before the replay serialiser decides how much
  * of it fits back on the wire. A turn holding any of this is real history even when the
- * serialiser emits nothing for it, so pruning it would delete a user prompt that was answered. */
+ * serialiser emits nothing for it, so pruning it would delete a user prompt that was answered.
+ *
+ * Tool calls are deliberately absent. A call the serialiser can carry already leaves
+ * `tool_calls` on the wire and is caught by the shape check below; a call it cannot carry --
+ * a local call Stopped before its result arrived, which OpenAI forbids replaying without a
+ * responding `role="tool"` message -- reaches the provider as nothing at all. Counting the
+ * second as payload keeps a turn the backend then drops (`_drop_empty_assistant_sentinels`),
+ * putting the two user turns back together for `_coalesce_consecutive_user_turns` to merge,
+ * which resends the cancelled prompt and invites the tool request again. */
 function assistantTurnCarriesPayload(message: RunMessage): boolean {
   for (const part of message.content ?? []) {
-    if (part.type === "tool-call") return true;
     // sanitizeAssistantReplayText only substitutes (an audio data URI becomes "[audio]"),
     // so it can never empty text that had any. Reading the raw part keeps the scan off that
     // regex for every turn of a long thread.
