@@ -1644,21 +1644,25 @@ function ThreadAutoSwitch({
       return;
     }
     newThreadSwitchStateRef.current.activeNonce = null;
-    // Read, not bumped. switchToThread resolves asynchronously and this provider is shared,
-    // so by the time it settles the view may have moved on to a project landing whose own
-    // switch owns the runtime. That switch bumps the attempt, which is how the arms below
-    // tell they have been superseded.
-    const attemptAtStart = newThreadSwitchStateRef.current.attempt;
     if (mainThreadId !== threadId) {
+      // Bumped, not merely read. switchToThread resolves asynchronously and this provider
+      // is shared, so by the time it settles the view may have moved on to a landing, or
+      // to ANOTHER saved chat, whose own switch owns the runtime. Only new-chat switches
+      // used to advance this, so two saved switches shared one token: a first saved chat
+      // rejecting after a second had settled passed the guard below and cleared the active
+      // id, detaching the chat on screen from its thread-scoped settings and context.
+      const attemptAtStart = (newThreadSwitchStateRef.current.attempt += 1);
+      // One entry per switch STARTED, duplicates included. Opening A, then B, then A again
+      // before any settles really does start two A switches, and both can land; recording
+      // the id once would let the first stale arrival spend the only claim and the second
+      // be accepted beneath the project composer. Each arrival spends exactly one entry.
       const claims = newThreadSwitchStateRef.current.pendingSavedThreadIds;
-      if (!claims.includes(threadId)) {
-        claims.push(threadId);
-        // Bounded because a claim is only spent when its id arrives, and a switch that
-        // never settles never spends one. Oldest first: the longest-outstanding switch is
-        // the least likely to still be able to take a view.
-        if (claims.length > MAX_PENDING_SAVED_THREAD_SWITCHES) {
-          claims.splice(0, claims.length - MAX_PENDING_SAVED_THREAD_SWITCHES);
-        }
+      claims.push(threadId);
+      // Bounded because a claim is only spent when its id arrives, and a switch that
+      // never settles never spends one. Oldest first: the longest-outstanding switch is
+      // the least likely to still be able to take a view.
+      if (claims.length > MAX_PENDING_SAVED_THREAD_SWITCHES) {
+        claims.splice(0, claims.length - MAX_PENDING_SAVED_THREAD_SWITCHES);
       }
       // Saved chats keep running in the background, but a temporary chat is
       // unreachable after this switch and must not retain an active queue.

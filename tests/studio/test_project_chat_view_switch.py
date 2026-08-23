@@ -959,7 +959,7 @@ def test_opening_a_saved_thread_releases_the_nonce_so_the_same_one_switches_agai
     assert out["opened"]["state"] == {
         "activeNonce": None,
         "hasSwitched": True,
-        "attempt": 1,
+        "attempt": 2,
         "pendingSavedThreadIds": [],
     }
     assert out["opened"]["switchedTo"] == ["thread-a"]
@@ -967,7 +967,7 @@ def test_opening_a_saved_thread_releases_the_nonce_so_the_same_one_switches_agai
     assert out["state"] == {
         "activeNonce": "n1",
         "hasSwitched": True,
-        "attempt": 2,
+        "attempt": 3,
         "pendingSavedThreadIds": [],
     }
 
@@ -1359,7 +1359,7 @@ def test_a_late_failure_cannot_release_a_nonce_a_newer_attempt_owns():
         // thread arrive. Rendering once leaves the switch looking permanently in flight.
         await renderSettled({ initialThreadId: "thread-a" });
 
-        // Back to the same New Chat: attempt 2 for n1, and this one succeeds.
+        // Back to the same New Chat: a third attempt for n1, and this one succeeds.
         renderProvider({ newThreadNonce: "n1" });
         await tick();
         const beforeFailure = {
@@ -1368,7 +1368,7 @@ def test_a_late_failure_cannot_release_a_nonce_a_newer_attempt_owns():
           mainThreadId: world.mainThreadId,
         };
 
-        // Only now does attempt 1 fail.
+        // Only now does the first attempt fail.
         release();
         await tick();
         await tick();
@@ -1404,18 +1404,18 @@ def test_a_late_failure_cannot_release_a_nonce_a_newer_attempt_owns():
         "state": {
             "activeNonce": "n1",
             "hasSwitched": True,
-            "attempt": 2,
+            "attempt": 3,
             "pendingSavedThreadIds": [],
         },
         "switched": 2,
         "mainThreadId": "local-2",
-    }, "two attempts for one nonce, the second of which opened the thread on screen"
+    }, "two new-chat attempts for one nonce, the second of which opened the thread on screen, plus the saved detour between them"
     assert out["afterFailure"]["state"] == {
         "activeNonce": "n1",
         "hasSwitched": True,
-        "attempt": 2,
+        "attempt": 3,
         "pendingSavedThreadIds": [],
-    }, "attempt 1's failure must not release a nonce attempt 2 owns"
+    }, "the first attempt's failure must not release a nonce a later one owns"
     assert (
         out["afterFailure"]["mainThreadId"] == "local-2"
     ), "and must not disturb the thread attempt 2 opened"
@@ -1424,7 +1424,7 @@ def test_a_late_failure_cannot_release_a_nonce_a_newer_attempt_owns():
         "state": {
             "activeNonce": "n1",
             "hasSwitched": True,
-            "attempt": 2,
+            "attempt": 3,
             "pendingSavedThreadIds": [],
         },
         "switched": 2,
@@ -1434,7 +1434,7 @@ def test_a_late_failure_cannot_release_a_nonce_a_newer_attempt_owns():
         "state": {
             "activeNonce": None,
             "hasSwitched": True,
-            "attempt": 3,
+            "attempt": 4,
             "pendingSavedThreadIds": [],
         },
         "switched": 3,
@@ -1452,9 +1452,9 @@ def test_a_late_deferred_clear_cannot_wipe_an_attachment_a_newer_attempt_staged(
     keyed on the nonce alone reads its own nonce back and clears the composer the newer
     attempt is using, taking an attachment staged in it.
 
-    The complement is asserted on the same shared state: a detour nulls the nonce without
-    bumping the attempt, and that must still cancel a pending deferred clear, so the nonce
-    check cannot simply be replaced by the attempt check."""
+    The complement is asserted on the same shared state: a detour nulls the nonce, and that
+    must still cancel a pending deferred clear on its own, so the nonce check cannot simply
+    be replaced by the attempt check."""
     out = _run(
         "renderProvider, renderSettled, switchState, world",
         """
@@ -1495,12 +1495,12 @@ def test_a_late_deferred_clear_cannot_wipe_an_attachment_a_newer_attempt_staged(
     assert out["armed"]["state"] == {
         "activeNonce": "n1",
         "hasSwitched": True,
-        "attempt": 2,
+        "attempt": 3,
         "pendingSavedThreadIds": [],
     }, "the detour must leave the nonce released so this switch arms the deferred clear"
     assert (
-        out["beforeLate"]["state"]["attempt"] == 3
-    ), "the second detour plus the return must start a newer attempt for the same nonce"
+        out["beforeLate"]["state"]["attempt"] == 4
+    ), "the return after the second detour must start a newer attempt for the same nonce"
     assert (
         out["afterLate"]["cleared"] == out["beforeLate"]["cleared"]
     ), "the older switch's deferred clear must not wipe the composer the newer attempt opened"
@@ -1512,7 +1512,11 @@ def test_every_switch_the_effect_starts_bumps_the_attempt_exactly_once():
     """``attempt`` is what tells two in-flight switches apart, so it has to advance once
     per switch actually started and never on a render that returned at a guard. Driven
     across the whole mix: a first mount, a repeat render, a rotation, a pause, a resume, a
-    saved-thread detour and a return."""
+    saved-thread detour and a return.
+
+    Saved-thread switches count too. They used not to, which left two of them sharing one
+    token, so a first saved chat rejecting after a second had settled read as current and
+    detached the chat on screen."""
     out = _run(
         "renderSettled, switchState, world",
         """
@@ -1527,18 +1531,21 @@ def test_every_switch_the_effect_starts_bumps_the_attempt_exactly_once():
         console.log(JSON.stringify({
           state: switchState(),
           switched: world.switchedToNewThread,
+          switchedToSaved: world.switchedToThread.length,
         }));
         """,
     )
     assert out["switched"] == 4, "n1, n2, n3 and the return to n3 after the saved chat"
-    assert out["state"]["attempt"] == out["switched"], (
-        "attempt must count switches started, not renders: a bump on a render that "
-        "returned at a guard would let a stale rejection think it is current"
+    assert out["switchedToSaved"] == 1, "the saved-thread detour"
+    assert out["state"]["attempt"] == out["switched"] + out["switchedToSaved"], (
+        "attempt must count switches started, of either kind, and not renders: a bump on a "
+        "render that returned at a guard would let a stale rejection think it is current, "
+        "and a switch that does not bump would let one think it is current too"
     )
     assert out["state"] == {
         "activeNonce": "n3",
         "hasSwitched": True,
-        "attempt": 4,
+        "attempt": 5,
         "pendingSavedThreadIds": [],
     }
 
@@ -1652,9 +1659,9 @@ def test_a_backgrounded_saved_thread_switch_stops_nothing_and_pays_on_resume():
     assert out["state"] == {
         "activeNonce": None,
         "hasSwitched": False,
-        "attempt": 0,
+        "attempt": 1,
         "pendingSavedThreadIds": [],
-    }, "the nonce reset is deferred with the rest of the effect"
+    }, "the nonce reset is deferred with the rest of the effect, and so is the bump"
 
 
 def test_a_failed_saved_thread_switch_retries_only_while_the_view_is_on_screen():
@@ -1747,9 +1754,9 @@ def test_a_hundred_and_twenty_view_switches_stay_bounded():
     assert out["state"] == {
         "activeNonce": None,
         "hasSwitched": True,
-        "attempt": 60,
+        "attempt": 2 * passes,
         "pendingSavedThreadIds": [],
-    }
+    }, "one bump per switch started, of either kind, and none per render"
     assert out["unhandled"] == 0
 
 
@@ -1985,4 +1992,109 @@ def test_outstanding_claims_stay_bounded():
     assert out["started"] == 40, "every switch really was started"
     assert len(out["claims"]) == 16, "the claim list is capped"
     assert out["claims"][-1] == "thread-39", "and it keeps the newest, dropping the oldest"
+    assert out["unhandled"] == 0
+
+
+def test_the_same_saved_thread_opened_twice_is_corrected_twice():
+    """Deduplicating the claim by id loses one of two outstanding switches for that id.
+
+    A, then B, then A again before any settles: both A switches are really started, so both
+    can land. The first stale A arrival spends the single claim and the second is accepted
+    beneath the project composer, which is the same wrong-conversation bug one layer down.
+    A claim belongs to a switch, not to a thread id.
+    """
+    out = _run(
+        "renderProvider, renderSettled, switchState, world",
+        """
+        await renderSettled({ newThreadNonce: "n1" });
+
+        let releaseA1: any, releaseB: any, releaseA2: any;
+        world.switchToThreadGate = new Promise((resolve) => { releaseA1 = resolve; });
+        renderProvider({ initialThreadId: "thread-a" });
+        await tick();
+        world.switchToThreadGate = new Promise((resolve) => { releaseB = resolve; });
+        renderProvider({ initialThreadId: "thread-b" });
+        await tick();
+        world.switchToThreadGate = new Promise((resolve) => { releaseA2 = resolve; });
+        renderProvider({ initialThreadId: "thread-a" });
+        await tick();
+
+        // Back to the project landing with all three out.
+        world.switchToThreadGate = null;
+        renderProvider({ newThreadNonce: "n1" });
+        await tick();
+
+        for (const release of [releaseA1, releaseB, releaseA2]) {
+          release();
+          await tick();
+          await tick();
+          renderProvider({ newThreadNonce: "n1" });
+          await tick();
+          await tick();
+        }
+
+        console.log(JSON.stringify({
+          mainThreadId: world.mainThreadId,
+          switchedTo: world.switchedToThread,
+          state: switchState(),
+          unhandled: unhandled.length,
+        }));
+        """,
+    )
+    assert out["switchedTo"] == ["thread-a", "thread-b", "thread-a"], "all three really started"
+    assert out["mainThreadId"] != "thread-a", (
+        "the second arrival for the same id must be corrected too, or the visible landing is "
+        "left pointed at the saved chat"
+    )
+    assert out["state"]["activeNonce"] == "n1"
+    assert out["unhandled"] == 0
+
+
+def test_a_saved_switch_failing_late_does_not_detach_the_saved_chat_that_replaced_it():
+    """Only new-chat switches advanced the attempt, so two saved switches shared one token.
+
+    A is still loading when the user opens B. B settles and owns the view. A then rejects,
+    finds the attempt unchanged, passes the staleness guard and clears the active thread id
+    -- detaching the visible B chat from its thread-scoped settings and context state.
+    """
+    out = _run(
+        "renderProvider, renderSettled, snapshot, world",
+        """
+        await renderSettled({ newThreadNonce: "n1" });
+
+        let releaseA: any;
+        world.switchToThreadGate = new Promise((resolve) => { releaseA = resolve; });
+        world.switchToThreadRejects = true;
+        renderProvider({ initialThreadId: "thread-a" });
+        await tick();
+
+        // B opens while A is still out, and succeeds.
+        let releaseB: any;
+        world.switchToThreadGate = new Promise((resolve) => { releaseB = resolve; });
+        world.switchToThreadRejects = false;
+        renderProvider({ initialThreadId: "thread-b" });
+        await tick();
+        releaseB();
+        await tick();
+        await tick();
+        renderProvider({ initialThreadId: "thread-b" });
+        await tick();
+        const beforeFailure = snapshot().activeThreadId;
+
+        // Only now does A fail.
+        releaseA();
+        await tick();
+        await tick();
+
+        console.log(JSON.stringify({
+          beforeFailure,
+          activeThreadId: snapshot().activeThreadId,
+          unhandled: unhandled.length,
+        }));
+        """,
+    )
+    assert out["beforeFailure"] == "thread-b", "B really owned the active id before A failed"
+    assert out["activeThreadId"] == "thread-b", (
+        "a superseded saved switch failing must not detach the saved chat now on screen"
+    )
     assert out["unhandled"] == 0
