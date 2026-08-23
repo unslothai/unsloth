@@ -13968,13 +13968,13 @@ def _truncate(
     # user saw the full output.
     if len(text) <= limit:
         return text
-    spill = _spill_full_output(text, workdir)
+    spill, complete = _spill_full_output(text, workdir)
     if limit <= 0:
         # No room for a body, so no room for the usual notice either: at this point the
         # notice IS the message, and the full one costs ~90 tokens of a budget that just
         # reported none. Kept to a line so the thread stays servable and the next fit can
         # evict older turns and recover, which is the whole reason a stub beats a refusal.
-        located = f", saved to {spill}" if spill else ""
+        located = f", {_spill_phrase(spill, complete).lower()}" if spill else ""
         stub = f"(output omitted: {len(text)} chars, no context room left{located})"
         # A short result costs less than the notice explaining it is gone, and replacing
         # "done" with a longer sentence saves nothing and loses the answer.
@@ -13991,7 +13991,12 @@ def _truncate(
     # into paging. Truncating without one is what makes a model re-run the same command
     # and truncate identically.
     if on_boundary:
-        shown = head.count("\n") + 1 if head else 0
+        # No "+1" when the head already ends in a newline: the count is of the lines
+        # SHOWN, and a trailing break closes the last one rather than opening another.
+        # Reachable at a limit of 1 on output that starts with a blank line, where the
+        # head is "\n" alone and a count of two makes the hint resume at line 3, skipping
+        # the first line the reader never saw.
+        shown = 0 if not head else head.count("\n") + (0 if head.endswith("\n") else 1)
         total = text.count("\n") + 1
         resume = f"sed -n '{shown + 1},{shown + max(1, shown)}p' {spill}"
         where = f"showing lines 1-{shown} of {total}"
@@ -14007,8 +14012,8 @@ def _truncate(
     # CODE wrote, not the spill, and it is the only thing telling the model those survive.
     common = (
         f"\n\n... (truncated to {limit} chars for the model; {where}, {len(text)} chars "
-        f"total. Full output saved to {spill}, and any files the code wrote persist in "
-        "the working directory"
+        f"total. {_spill_phrase(spill, complete)}, and any files the code wrote persist "
+        "in the working directory"
     )
     if not _posix_tools_available():
         # A cmd-only Windows host has none of sed, tail or head, so the command would fail
@@ -14110,6 +14115,13 @@ def _posix_tools_available() -> bool:
 # name here would put a phantom artifact beside every truncated result.
 _SPILL_DIR = ".unsloth_tool_output"
 _SPILL_KEEP = 20
+# A result reaches here whole, so one `cat` of a multi-gigabyte file would be retained in
+# full and twenty of them would fill the host's disk. The subprocess file-size limit does
+# not apply: this output came through a pipe, not a file the sandbox wrote. A spill exists
+# so the model can page through what it was shown, and 8 MB is already far more of that
+# than any window can consume.
+_SPILL_MAX_BYTES = 8 * 1024 * 1024
+_SPILL_MAX_TOTAL_BYTES = 64 * 1024 * 1024
 # Exactly the names `_spill_full_output` generates: twelve hex characters of a content
 # digest. The prune below deletes what it matches, and the sandbox is the user's own
 # directory -- a session may open on one that already holds a folder of this name, and
@@ -14117,18 +14129,37 @@ _SPILL_KEEP = 20
 _SPILL_NAME_RE = re.compile(r"[0-9a-f]{12}\.txt")
 
 
-def _spill_full_output(text: str, workdir: str | None) -> "str | None":
-    """Write the untruncated result into the sandbox; return its relative path.
+def _spill_phrase(spill: str, complete: bool) -> str:
+    """How the notice names the spill, which depends on whether all of it got there."""
+    if complete:
+        return f"Full output saved to {spill}"
+    return f"The first {_SPILL_MAX_BYTES} bytes are saved to {spill}"
 
-    None whenever it cannot be done -- no workdir, a read-only mount, a full disk. The
-    caller then falls back to the plain notice, because a hint naming a file that is not
-    there is worse than admitting the output is gone.
+
+def _spill_full_output(text: str, workdir: str | None) -> "tuple[str | None, bool]":
+    """Write the result into the sandbox; return its relative path and whether it is whole.
+
+    ``(None, True)`` whenever it cannot be done -- no workdir, a read-only mount, a full
+    disk, a path that is not what it claims to be. The caller then falls back to the plain
+    notice, because a hint naming a file that is not there is worse than admitting the
+    output is gone.
     """
     if not workdir or not os.path.isdir(workdir):
-        return None
+        return None, True
     try:
         target_dir = os.path.join(workdir, _SPILL_DIR)
+        # The sandbox is a directory the model runs commands in, so `.unsloth_tool_output`
+        # may already be a symlink it made, or one that came with a project opened as the
+        # workdir. makedirs(exist_ok=True) and a plain open() both follow it, which writes
+        # this result outside the sandbox with the backend's own permissions and then lets
+        # the prune delete files there. Refuse instead: no spill means a notice without a
+        # continuation hint, which is a great deal better than a write out of bounds.
+        if os.path.islink(target_dir):
+            return None, True
         os.makedirs(target_dir, exist_ok = True)
+        expected = os.path.join(os.path.realpath(workdir), _SPILL_DIR)
+        if os.path.realpath(target_dir) != expected:
+            return None, True
         # Named from the CONTENT, not at random. The result has to come back byte-identical
         # with and without an output_callback (the streaming invariant asserted by
         # test_truncated_result_identical_and_notice_neutral_with_streaming), and a random
@@ -14138,23 +14169,36 @@ def _spill_full_output(text: str, workdir: str | None) -> "str | None":
         # about.
         digest = hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:12]
         name = f"{digest}.txt"
+        # Bounded before it is written rather than after: pruning by count alone still
+        # lets one enormous result through, and by then it is already on the disk.
+        blob = text.encode("utf-8", "surrogatepass")
+        complete = len(blob) <= _SPILL_MAX_BYTES
+        # Cut on a character boundary, so what lands is still decodable text.
+        body = text if complete else blob[:_SPILL_MAX_BYTES].decode("utf-8", "ignore")
         # newline="" so the bytes on disk are the bytes measured. The default translates
         # "\n" to os.linesep, which on Windows writes an extra byte per line, and the
         # byte offset in the continuation hint is counted from the untranslated text --
         # so a mid-line resume would start one byte early for every preceding newline.
-        with open(os.path.join(target_dir, name), "w", encoding = "utf-8", newline = "") as handle:
-            handle.write(text)
+        path = os.path.join(target_dir, name)
+        # O_NOFOLLOW is the same refusal as the islink check above, applied to the final
+        # component: an existing symlink there raises rather than being written through.
+        # Windows has no such flag, so the explicit check stands in for it.
+        if os.path.islink(path):
+            return None, True
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+        with os.fdopen(os.open(path, flags, 0o600), "w", encoding = "utf-8", newline = "") as handle:
+            handle.write(body)
         _prune_spills(target_dir)
         # Relative, so the command works from the cwd the tools already run in, and so
         # the absolute sandbox path never reaches the model.
-        return f"{_SPILL_DIR}/{name}"
+        return f"{_SPILL_DIR}/{name}", complete
     except Exception:
         logger.debug("tool result spill failed", exc_info = True)
-        return None
+        return None, True
 
 
 def _prune_spills(target_dir: str) -> None:
-    """Keep only the newest ``_SPILL_KEEP`` spills, and delete nothing else.
+    """Keep the newest spills within both the count and the byte budget, delete nothing else.
 
     A long session prints many large results and each one is retained in full; without
     this the sandbox grows without bound for output the model has almost certainly
@@ -14169,10 +14213,20 @@ def _prune_spills(target_dir: str) -> None:
             os.path.join(target_dir, name)
             for name in os.listdir(target_dir)
             if _SPILL_NAME_RE.fullmatch(name)
+            and not os.path.islink(os.path.join(target_dir, name))
         ]
-        if len(entries) <= _SPILL_KEEP:
-            return
-        for path in sorted(entries, key = os.path.getmtime)[: len(entries) - _SPILL_KEEP]:
+        # Newest first, kept while BOTH budgets hold. A count bounds nothing in bytes, and
+        # twenty large-but-legal spills are still tens of gigabytes of a disk the host
+        # needs for models.
+        kept, total = 0, 0
+        for path in sorted(entries, key = os.path.getmtime, reverse = True):
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            if kept < _SPILL_KEEP and total + size <= _SPILL_MAX_TOTAL_BYTES:
+                kept, total = kept + 1, total + size
+                continue
             try:
                 os.remove(path)
             except OSError:

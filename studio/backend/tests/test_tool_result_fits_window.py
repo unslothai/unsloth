@@ -19,6 +19,7 @@ newest turn, so compaction may not drop the very result that does not fit.
 
 from __future__ import annotations
 
+import hashlib
 import os
 
 import pytest
@@ -278,22 +279,17 @@ class TestPagingTheRest:
         not translate: comparing the file here would pass with or without the fix and
         prove nothing about the platform the bug is on.
         """
-        import builtins
-
         seen = {}
-        real_open = builtins.open
+        real_fdopen = os.fdopen
 
-        def _recording_open(
-            path,
-            mode = "r",
-            *args,
-            **kwargs,
-        ):
-            if "w" in mode and str(path).endswith(".txt"):
+        def _recording_fdopen(fd, mode = "r", *args, **kwargs):
+            # os.fdopen since the spill is opened O_NOFOLLOW by descriptor; the kwarg the
+            # newline behaviour rides on is the same one either way.
+            if "w" in mode:
                 seen.update(kwargs)
-            return real_open(path, mode, *args, **kwargs)
+            return real_fdopen(fd, mode, *args, **kwargs)
 
-        monkeypatch.setattr(builtins, "open", _recording_open)
+        monkeypatch.setattr(os, "fdopen", _recording_fdopen)
         text = "\n".join(f"line {i}" for i in range(1, 200))
         tools._truncate(text, 120, workdir = str(tmp_path))
 
@@ -567,3 +563,98 @@ class TestTheFrontendEnvelopeSurvivesTheCap:
         out = self._mcp(monkeypatch, _dense(40_000) + "\n__MCP_IMAGES__: see the docs")
 
         _within_room(out, 120)
+
+
+class TestTheSpillStaysInsideTheSandbox:
+    """The workdir is a directory the model runs commands in, and can be a project the
+    user opened. Anything there may be a symlink it made or one that came with the
+    project, and following it writes this result outside the sandbox with the backend's
+    own permissions."""
+
+    def test_a_symlinked_spill_directory_is_refused(self, tmp_path):
+        workdir = tmp_path / "sandbox"
+        workdir.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (workdir / tools._SPILL_DIR).symlink_to(outside, target_is_directory = True)
+
+        out = tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir = str(workdir))
+
+        assert list(outside.iterdir()) == [], "the spill was written outside the sandbox"
+        # Refused, not crashed: the notice is still served, just without a paging hint.
+        assert "truncated to" in out
+        assert "saved to" not in out
+
+    def test_a_symlinked_spill_file_is_refused(self, tmp_path):
+        workdir = tmp_path / "sandbox"
+        workdir.mkdir()
+        victim = tmp_path / "victim.txt"
+        victim.write_text("do not overwrite me")
+        text = "\n".join(str(i) for i in range(5_000))
+        target = workdir / tools._SPILL_DIR
+        target.mkdir()
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+        (target / f"{digest}.txt").symlink_to(victim)
+
+        out = tools._truncate(text, 200, workdir = str(workdir))
+
+        assert victim.read_text() == "do not overwrite me"
+        assert "saved to" not in out
+
+    def test_pruning_does_not_follow_symlinks_either(self, tmp_path):
+        target = tmp_path / tools._SPILL_DIR
+        target.mkdir()
+        victim = tmp_path / "victim.txt"
+        victim.write_text("keep me")
+        for i in range(tools._SPILL_KEEP + 5):
+            (target / f"{i:012x}.txt").write_text("spill")
+        # Oldest by mtime, so a prune that follows links would unlink it first.
+        (target / ("f" * 12 + ".txt")).symlink_to(victim)
+        os.utime(target / ("f" * 12 + ".txt"), (0, 0), follow_symlinks = False)
+
+        tools._prune_spills(str(target))
+
+        # os.remove would only unlink the link, so the file it points at is safe either
+        # way; what the filter buys is that a name Studio did not write is left alone.
+        assert (target / ("f" * 12 + ".txt")).is_symlink()
+        assert victim.read_text() == "keep me"
+
+
+class TestSpillsAreBoundedInBytes:
+    def test_one_enormous_result_is_capped_on_disk(self, tmp_path, monkeypatch):
+        """The result arrives here whole, and the sandbox file-size limit does not apply to
+        output that came through a pipe. Without a byte cap a single `cat` of a huge file
+        is retained in full."""
+        monkeypatch.setattr(tools, "_SPILL_MAX_BYTES", 4_096)
+        text = _dense(50_000)
+
+        out = tools._truncate(text, 200, workdir = str(tmp_path))
+
+        spill = tmp_path / _spill_path(out)
+        assert spill.stat().st_size <= 4_096
+        # And the notice says so rather than promising the whole thing.
+        assert "Full output saved to" not in out
+        assert "first 4096 bytes" in out
+
+    def test_the_directory_is_bounded_in_bytes_not_just_in_files(self, tmp_path, monkeypatch):
+        """Twenty large-but-legal spills are still tens of gigabytes of the host's disk."""
+        monkeypatch.setattr(tools, "_SPILL_MAX_TOTAL_BYTES", 20_000)
+        for n in range(10):
+            tools._truncate(f"run {n}\n" + _dense(9_000), 200, workdir = str(tmp_path))
+
+        spills = list((tmp_path / tools._SPILL_DIR).iterdir())
+        assert sum(p.stat().st_size for p in spills) <= 20_000
+        assert spills, "the newest spill has to survive; it is the one just named"
+
+
+class TestTheHintCountsTheLinesItShowed:
+    def test_a_head_ending_in_a_newline_does_not_claim_an_extra_line(self, tmp_path):
+        """At a limit of 1 on output starting with a blank line the head is "\\n" alone:
+        one line shown, so the hint has to resume at line 2. Counting two skips a line the
+        reader never saw."""
+        text = "\n" + "\n".join(f"line {i}" for i in range(2, 400))
+
+        out = tools._truncate(text, 1, workdir = str(tmp_path))
+
+        assert "showing lines 1-1 of" in out
+        assert "sed -n '2," in out
