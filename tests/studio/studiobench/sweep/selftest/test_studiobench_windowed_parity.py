@@ -1569,11 +1569,18 @@ def test_the_declaration_still_decides_the_run_that_made_it(tmp_path):
 # ── a visible floor measured on another film tier is not this payload's floor ──
 
 
-def _tiered_visible_shard(tmp_path, name, tier, differ_actions, windowed):
-    """A visible-region payload that records the FILM TIER it was shot on, as `run_meta` does."""
+def _tiered_visible_shard(tmp_path, name, tier, differ_actions, windowed, corpus = ""):
+    """A visible-region payload that records the FILM TIER it was shot on, as `run_meta` does.
+
+    `corpus` is the `corpus_hash` of the thread the film drove, written by the same row. Left out
+    by default: a payload recorded before corpus hashes existed declares none, and that is the
+    shape the tier tests below are about.
+    """
     import json
 
     rows = [{"row_type": "run_meta", "tier": tier}]
+    if corpus:
+        rows[0]["corpus_hash"] = corpus
     for action in ("copy_markdown", "select_text"):
         for rep in range(2):
             for side in ("base", "treatment"):
@@ -1634,6 +1641,54 @@ def test_a_visible_floor_from_the_SAME_tier_still_applies(tmp_path, capsys):
         tmp_path, "null_std", "standard", {"copy_markdown"}, windowed = False
     )
     arm = _tiered_visible_shard(tmp_path, "arm_std", "standard", {"copy_markdown"}, windowed = True)
+    code = U.main([str(arm), "--null", str(null)])
+    out = capsys.readouterr().out
+    assert "FLOOR REFUSED" not in out, out
+    assert "differ against an identical build" in out, out
+    assert code == 0, out
+
+
+def test_a_visible_floor_from_another_corpus_is_not_applied(tmp_path, capsys):
+    """THE OTHER AXIS OF THE SAME INCOMPARABLE CONTROL, and the quieter one. Which actions differ
+    against an identical build is a property of the thread the film drove, not only of the film's
+    spacing, so a null control recorded against corpus `c1` describes a thread a `c2` payload
+    never rendered. The ordinary way in is a corpus revision landing while an older null control
+    is still sitting in the directory the workflow globs.
+
+    `cross_side_mismatch` already refuses this, but only in the structural section, and an
+    ALL-WINDOWED payload -- which is every payload under `--mode visible` -- returns before it,
+    so the wrong-corpus floor silenced the payload's real visible difference and the command
+    exited 0 without a word about the corpus.
+    """
+    from studiobench.sweep import ui_parity as U
+
+    null = _tiered_visible_shard(
+        tmp_path, "null_c1", "standard", {"copy_markdown"}, windowed = False, corpus = "c1"
+    )
+    arm = _tiered_visible_shard(
+        tmp_path, "arm_c2", "standard", {"copy_markdown"}, windowed = True, corpus = "c2"
+    )
+    assert U.visible_unstable_set(U.shards_of(str(null))) == frozenset({("r100K", "copy_markdown")})
+
+    code = U.main([str(arm), "--null", str(null)])
+    out = capsys.readouterr().out
+    assert "FLOOR REFUSED" in out, out
+    assert "corpus" in out, out
+    assert "DIFFERENCES INSIDE THE VIEWPORT" in out, out
+    assert code == 1, out
+
+
+def test_a_visible_floor_from_the_SAME_corpus_still_applies(tmp_path, capsys):
+    """The positive control for the corpus axis: a null control recorded against the same thread
+    still silences the action it measured differing against itself."""
+    from studiobench.sweep import ui_parity as U
+
+    null = _tiered_visible_shard(
+        tmp_path, "null_same", "standard", {"copy_markdown"}, windowed = False, corpus = "c1"
+    )
+    arm = _tiered_visible_shard(
+        tmp_path, "arm_same", "standard", {"copy_markdown"}, windowed = True, corpus = "c1"
+    )
     code = U.main([str(arm), "--null", str(null)])
     out = capsys.readouterr().out
     assert "FLOOR REFUSED" not in out, out

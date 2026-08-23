@@ -1799,6 +1799,7 @@ def main(argv: list[str] | None = None) -> int:
     scored_windowed = 0
     vis_unstable: Optional[frozenset[tuple[str, str]]] = None
     vis_null_tiers: set[str] = set()
+    vis_null_corpora: set[str] = set()
     for entry in plan:
         win, struct = entry["windowed"], entry["structural"] or set()
         if not win and not entry.get("forced"):
@@ -1838,27 +1839,35 @@ def main(argv: list[str] | None = None) -> int:
                     vis_null.extend(shards_of(pat))
                 vis_unstable = visible_unstable_set(vis_null)
                 vis_null_tiers = one_tier(vis_null, "null control")
-            # A FLOOR FROM ANOTHER FILM TIER IS NOT THIS PAYLOAD'S FLOOR. `tier_of` states the
-            # mechanism: the slot spacing decides which actions land inside a live stream and so
-            # differ against themselves, and `--tier fast` then `--tier standard` is the documented
-            # way to work, which is exactly how a stale fast null control ends up on the command
-            # line of a standard run. `one_tier` above refuses a null control that is internally
-            # mixed; this refuses one that is internally consistent but belongs to a different
-            # film. The structural section further down says this out loud, and an ALL-WINDOWED
-            # payload returns before it ever reaches that warning -- so a floor measured on the
-            # wrong film silenced a real visible difference and the command exited 0 without a
-            # word about it. Refused rather than applied: an unfloored report says what it is
-            # missing, a wrongly floored one does not.
+                vis_null_corpora = one_corpus(vis_null, "null control")
+            # A FLOOR FROM ANOTHER FILM IS NOT THIS PAYLOAD'S FLOOR, ON EITHER AXIS. `tier_of`
+            # states the mechanism for the film: the slot spacing decides which actions land
+            # inside a live stream and so differ against themselves, and `--tier fast` then
+            # `--tier standard` is the documented way to work, which is exactly how a stale fast
+            # null control ends up on the command line of a standard run. `one_corpus` states the
+            # same mechanism one level down for the thread the film drove, and that axis is the
+            # quieter of the two: a corpus revision lands, the payload is re-recorded against it,
+            # and an older null control is still sitting in the directory the workflow globs.
+            # `one_tier` and `one_corpus` above refuse a null control that is internally mixed;
+            # `cross_side_mismatch` refuses one that is internally consistent but belongs to a
+            # different film or a different thread. The structural section further down says both
+            # out loud, and an ALL-WINDOWED payload -- which is every payload under
+            # `--mode visible` -- returns before it ever reaches that warning, so a floor measured
+            # on the wrong film or the wrong corpus silenced a real visible difference and the
+            # command exited 0 without a word about it. Refused rather than applied: an unfloored
+            # report says what it is missing, a wrongly floored one does not.
             floor = vis_unstable
-            payload_tiers = one_tier(paths, "payload")
-            if floor and vis_null_tiers and payload_tiers and vis_null_tiers != payload_tiers:
+            mismatch = cross_side_mismatch(
+                one_tier(paths, "payload"),
+                vis_null_tiers,
+                one_corpus(paths, "payload"),
+                vis_null_corpora,
+            )
+            if floor and mismatch:
                 print(
-                    f"\n  FLOOR REFUSED: the null control was recorded at tier "
-                    f"{sorted(vis_null_tiers)} and this payload at {sorted(payload_tiers)}. Which "
-                    f"actions differ against an identical build depends on the film's slot "
-                    f"spacing, so this floor does not transfer and is NOT applied. The visible "
-                    f"differences below are unfloored: record a null control at "
-                    f"{sorted(payload_tiers)} before reading them as findings."
+                    f"\n  FLOOR REFUSED: {mismatch} It is NOT applied, and the visible differences "
+                    f"below are unfloored: record a null control alongside this payload before "
+                    f"reading them as findings."
                 )
                 floor = frozenset()
             worst = max(
