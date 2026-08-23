@@ -650,7 +650,7 @@ def test_txt2img_capable_model_passes_the_gate(monkeypatch):
 
 
 def test_backend_reporting_no_repo_id_still_generates(monkeypatch):
-    # An engine whose status() carries no repo_id pins nothing; it must generate, not refuse.
+    # An engine reporting no repo_id still pins its base and family, and still generates.
     backend = _FakeBackend(repo_id = None)
     cli, _ = _replacement_client(monkeypatch, backend)
     assert cli.post("/v1/images/generations", json = {"prompt": "p"}).status_code == 200
@@ -658,10 +658,8 @@ def test_backend_reporting_no_repo_id_still_generates(monkeypatch):
 
 
 def test_same_repo_reloaded_under_a_different_base_is_a_replacement(monkeypatch):
-    # /images/load takes base_repo independently of the path, so one local checkpoint reloads
-    # under a different base, and the route derives steps/guidance from base_repo whenever
-    # repo_id names no known model. Pinning repo_id alone let that through: FLUX.1-dev's
-    # 28 steps / 3.5 guidance reached a schnell pipeline.
+    # base_repo is settable per load, and decides steps/guidance when repo_id names nothing
+    # known. Pinning repo_id alone let FLUX.1-dev's 28 steps / 3.5 reach a schnell pipeline.
     local = "/models/my-ckpt"
     dev, schnell = "black-forest-labs/FLUX.1-dev", "black-forest-labs/FLUX.1-schnell"
     assert default_generation_params(local, dev) != default_generation_params(local, schnell)

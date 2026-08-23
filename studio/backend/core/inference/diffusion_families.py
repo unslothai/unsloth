@@ -34,15 +34,14 @@ DIFFUSION_CANCELLED_MSG = "Diffusion generation was cancelled."
 class LoadIdentity:
     """What a caller's derived request parameters depend on, as one comparable value.
 
-    ``repo_id`` alone is NOT a load identity: /images/load takes ``base_repo`` and
-    ``family_override`` independently of the path, so the same local checkpoint reloads
-    under a different base or family. The OpenAI images route derives steps/guidance from
-    ``base_repo`` whenever ``repo_id`` names no known model, and its edit-only verdict from
-    the family, so both belong in the pin (#9448). Two loads agreeing on all three derive
-    identical parameters, which is exactly when accepting one for the other is correct.
+    ``repo_id`` alone is not one: /images/load takes ``base_repo`` and ``family_override``
+    independently of the path, so a local checkpoint reloads as a different model while the
+    path stays put, and the images route derives steps/guidance from ``base_repo`` and its
+    edit-only verdict from the family (#9448). Loads agreeing on all three derive identical
+    parameters, which is exactly when accepting one for the other is correct.
 
-    A distinct type, not a tuple: a caller who pins a bare repo id compares unequal and is
-    refused, rather than matching some other shape by accident.
+    A type rather than a tuple, so pinning a bare repo id compares unequal and is refused
+    instead of matching some other shape by accident.
     """
 
     repo_id: str

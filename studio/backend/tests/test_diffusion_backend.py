@@ -851,10 +851,8 @@ def test_generate_refuses_a_replacement_that_committed_while_it_waited(fake_runt
 def test_the_same_path_reloaded_under_a_different_base_is_a_replacement(fake_runtime, tmp_path):
     """repo_id is not a load identity (#9448).
 
-    /images/load takes base_repo and family_override independently of the path, so one local
-    checkpoint reloads as a different model. The route derives steps/guidance from base_repo
-    whenever repo_id names nothing known, so pinning the path alone let a FLUX.1-dev request
-    reach a schnell pipeline.
+    base_repo and family_override are settable per load, so one local checkpoint reloads as a
+    different model. Pinning the path alone let a FLUX.1-dev request reach a schnell pipeline.
     """
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
