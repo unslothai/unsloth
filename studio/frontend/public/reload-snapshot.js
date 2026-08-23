@@ -18,13 +18,11 @@
   var overlay = null;
   var retainedSnapshot = null;
   var removalTimer = null;
-  // Appearance reaches the page as inline custom properties on <html> plus
-  // these gate attributes (theme-boot.js for the palette,
+  // Appearance is inline custom properties on <html> plus these gate
+  // attributes, written by theme-boot.js (mode and palette) and
   // applyCustomizationToDocument in
-  // src/features/settings/stores/appearance-custom-store.ts for the rest).
-  // theme-boot.js resolves only mode and palette, so without carrying them
-  // across the reload the restored shell paints in stock colors and restyles
-  // once React runs.
+  // src/features/settings/stores/appearance-custom-store.ts (the rest).
+  // Uncarried, the copy paints in stock colors until React restyles it.
   var appearanceAttributes = [
     "data-chat-font",
     "data-code-font-size",
@@ -152,9 +150,8 @@
     });
   }
 
-  // React re-applies every one of these once it mounts, so writing them onto
-  // the live <html> only brings that forward; nothing here has to be undone
-  // when the overlay goes.
+  // React re-applies all of these on mount, so this only brings that forward.
+  // Nothing here needs undoing when the overlay goes.
   function applyAppearance(appearance) {
     if (!appearance) return;
     var root = document.documentElement;
@@ -274,10 +271,9 @@
     overlay.style.pointerEvents = "none";
     overlay.style.background = "var(--background)";
     overlay.setAttribute("aria-hidden", "true");
-    // inert is what keeps the copy from taking clicks: the host is
-    // pointer-events: none, but the copy carries the app's own
-    // pointer-events-auto classes. The property is a silent expando where it is
-    // unsupported, so set the attribute too.
+    // pointer-events: none on the host is not enough, since the copy carries
+    // the app's own pointer-events-auto classes. inert is. The property is a
+    // silent expando where unsupported, so set the attribute too.
     overlay.inert = true;
     overlay.setAttribute("inert", "");
     // A closed shadow tree keeps the copy out of every document query. The
@@ -329,9 +325,8 @@
         shellRoot.style.setProperty(name, tokens[name]);
       }
     });
-    // Global typography and foreground styles are applied to body, not html.
-    // Recreate that inheritance boundary inside the shadow tree rather than
-    // hanging the app subtree directly off the synthetic html element.
+    // Global typography and foreground styles hang off body, not html, so the
+    // copy needs that inheritance boundary rather than a bare html root.
     shellBody = document.createElement("body");
     shellBody.innerHTML = snapshot.html;
     shellRoot.appendChild(shellBody);
@@ -590,11 +585,10 @@
     var source = original.currentSrc || original.getAttribute("src") || "";
     if (source.slice(0, 5) !== "blob:" && !hasSensitiveUrl(source)) return;
 
-    // Audio controls remain a useful visual shell without their expiring or
-    // bearer-bypassing source. Images and video frames can additionally carry
-    // their rendered pixels through a bounded data URL; cross-origin frames
-    // may refuse canvas capture, in which case the protected URL is still
-    // removed rather than persisted.
+    // Audio controls still read as a shell without their expiring source.
+    // Images and video can carry rendered pixels as a bounded data URL; a
+    // cross-origin frame may refuse canvas capture, and then the protected URL
+    // is removed rather than persisted.
     if (tag !== "IMG" && tag !== "VIDEO") {
       cloned.removeAttribute("src");
       return;
@@ -634,10 +628,9 @@
     );
   }
 
-  // Materialized pixels are rasterized at devicePixelRatio, so the same page
-  // costs 4x on a 2x display and can pass the cap on its own. Dropping them
-  // leaves the layout intact, which is the point of the copy; dropping the
-  // whole snapshot puts the blank flash back.
+  // Pixels are rasterized at devicePixelRatio, so one page costs 4x on a 2x
+  // display and can pass the cap alone. Dropping them keeps the layout, which
+  // is the point of the copy; dropping the snapshot puts the blank flash back.
   function dropMaterializedMedia(clone) {
     var dropped = 0;
     clone.querySelectorAll("[src], [poster], [style]").forEach(function (el) {
