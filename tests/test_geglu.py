@@ -16,14 +16,14 @@ pytestmark = pytest.mark.skipif(
 
 def _reference_exact_forward(gate, up):
     f = 0.5 * gate.float() * (1.0 + torch.erf(gate.float() * (1.0 / math.sqrt(2.0))))
-    return (f.to(up.dtype) * up)
+    return f.to(up.dtype) * up
 
 
 def _reference_approx_forward(gate, up):
     x = gate.float()
     s = math.sqrt(2.0 / math.pi)
     f = 0.5 * x * (1.0 + torch.tanh(s * x * (1.0 + 0.044715 * x * x)))
-    return (f.to(up.dtype) * up)
+    return f.to(up.dtype) * up
 
 
 @pytest.fixture(params = [torch.float16, torch.bfloat16])
