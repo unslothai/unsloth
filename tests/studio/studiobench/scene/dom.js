@@ -42,6 +42,11 @@
     return (el.textContent || "").trim();
   };
 
+  // The two hooks the app publishes a part's progress through: assistant-ui's `data-status` on a
+  // text part (markdown-text.tsx) and `aria-busy` on the reasoning content (reasoning.tsx). Named
+  // once because the streaming scan and the control on it must never drift apart.
+  const STATUS_HOOK = '[data-status], [data-slot="reasoning-content"][aria-busy]';
+
   const byName = (sel, name, root) =>
     qa(sel, root).find((el) => nameOf(el) === name) || null;
 
@@ -128,6 +133,38 @@
       return qa("[data-role]").filter(
         (m) => m.querySelector('[data-status="running"], [aria-busy="true"]') !== null,
       );
+    },
+    // ── IS THE STREAMING PROBE BLIND, OR IS THERE SIMPLY NOTHING FOR IT TO SEE ──────────
+    //
+    // `streamingMessages()` returning nothing has three completely different causes, and the
+    // positive control on it is only worth having if they are told apart.
+    //
+    //   THE HOOK IS GONE          a build renamed or dropped `data-status`. It is one line in
+    //                             markdown-text.tsx and it is rendered for `complete` parts as
+    //                             well as `running` ones, so on a working build EVERY assistant
+    //                             message that has rendered a part carries it, and on a blinded
+    //                             build none does.
+    //   THE ROW IS NOT MOUNTED    a windowed arm scrolled away from the tail has unmounted the
+    //                             message it is writing into. That is what windowing is for.
+    //   THE ROW HAS NO PARTS YET  between the send being accepted and the reply's first part
+    //                             arriving, the assistant message is mounted with zero content
+    //                             parts and thread.tsx renders "Generating..." in its place. It
+    //                             publishes no status because it has nothing to publish yet, and
+    //                             `send_turn` returns the instant `isRunning()` flips, so a
+    //                             capture lands here twice a film.
+    //
+    // Scoped to ASSISTANT messages throughout: a user message never publishes `data-status` even
+    // on a perfectly working build, because only the assistant parts are rendered through
+    // `MarkdownText` (thread.tsx `ASSISTANT_PART_COMPONENTS`). A window holding only user rows
+    // would otherwise read as a build with no hook.
+    statusHookPresent() {
+      return D.assistantMessages().some((m) => m.querySelector(STATUS_HOOK) !== null);
+    },
+    // Whether the message a reply would be written INTO is publishing parts this probe can read.
+    // False means it has none yet, which is the third case above and not a broken instrument.
+    lastAssistantPublishesStatus() {
+      const last = D.lastAssistantMessage();
+      return Boolean(last && last.querySelector(STATUS_HOOK));
     },
     messages() {
       return qa("[data-role]");

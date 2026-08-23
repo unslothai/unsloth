@@ -90,7 +90,14 @@ _QUEUE_STACK = """
 """
 
 
-def _page(*, control: str, queue_stack: bool, statuses: list[str | None], tail: str) -> str:
+def _page(
+    *,
+    control: str,
+    queue_stack: bool,
+    statuses: list[str | None],
+    tail: str,
+    overlay: str = "",
+) -> str:
     """A thread, a composer, and one composer control. `statuses` is per assistant message, and
     None renames the hook the probe walks -- which is what going blind looks like."""
     messages = []
@@ -111,7 +118,7 @@ def _page(*, control: str, queue_stack: bool, statuses: list[str | None], tail: 
     <textarea aria-label="Message input">typed while it ran</textarea>
     {control}
   </div>
-</div>"""
+</div>{overlay}"""
 
 
 STREAMING = dict(
@@ -270,3 +277,76 @@ def test_the_shipped_composer_still_renders_the_two_queue_buttons():
         "queued-idle interval is indistinguishable again"
     )
     assert 'aria-label="Stop queued message"' in src
+
+
+# ── what the blind-probe refusal may NOT take out with it ────────────
+
+#: An overlay is walked from `document`, OUTSIDE `.aui-thread-root`. Its digest therefore carries
+#: neither the streamed message nor the composer, which is what makes it readable on a pair whose
+#: stream could not be placed.
+_MENU = '<div role="menu"><div class="item">Rename</div></div>'
+_MENU_CHANGED = '<div role="menu"><div class="item">Rename thread</div></div>'
+#: The composer of a thread that is NOT generating. `_STOP_BUTTON` is the same composer generating.
+_SEND_BUTTON = (
+    '<button class="aui-composer-send" aria-label="Send message">'
+    '<span class="aui-sr-only">Send message</span></button>'
+)
+
+
+def _capture_html(page, html: str) -> dict:
+    """`_capture`, for a page built outside the `STATE` dictionaries."""
+    page.set_content(html)
+    page.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
+    page.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+    got = page.evaluate("() => window.__sb.parity.capture()")
+    assert got.get("parity_attempted") is True, got
+    return got
+
+
+def test_an_overlay_difference_survives_the_blind_probe_refusal(page):
+    """A menu that changed while the stream could not be placed is still a finding.
+
+    Without this the refusal took it out, and `structural_report` buckets a refusal as blind and
+    never consults it for the exit code, so a real menu or dialog regression went green.
+    """
+    base = _capture_html(page, _page(tail = "same", overlay = _MENU, **BLIND))
+    treat = _capture_html(page, _page(tail = "same", overlay = _MENU_CHANGED, **BLIND))
+    assert base["in_flight_unplaced"] is True and treat["in_flight_unplaced"] is True
+    assert len(base["overlays"]) == len(treat["overlays"]) == 1
+    got = P.compare(base, treat)
+    assert got["verdict"] == P.DIFFER, got
+    assert len(got["moved"]) == 1 and got["moved"][0].startswith('overlay0[[role="menu"]]'), got
+    assert "walked outside the thread root" in got["reason"]
+
+
+def test_matching_overlays_still_leave_the_blind_pair_refused(page):
+    """The narrowing is not a hole: with nothing independent to say, the refusal stands."""
+    base = _capture_html(page, _page(tail = "alpha", overlay = _MENU, **BLIND))
+    treat = _capture_html(page, _page(tail = "omega", overlay = _MENU, **BLIND))
+    assert base["digest"] != treat["digest"]
+    got = P.compare(base, treat)
+    assert got["verdict"] == P.NOT_COMPARABLE, got
+    assert got["moved"] == []
+
+
+def test_the_scaffold_is_not_an_independent_surface_and_here_is_why(page):
+    """WHY the scaffold is deliberately NOT consulted beside the overlays.
+
+    `ThreadPrimitive.Root` wraps `ThreadComposerDock` (thread.tsx), so the composer is inside
+    `.aui-thread-root` and inside the scaffold, and the composer is exactly what changes when a
+    reply starts and stops. On the pair the refusal is about -- one arm generating with a quiet
+    hook, the other finished -- the scaffold therefore differs BECAUSE one arm is generating, and
+    reporting that as a rendering difference would manufacture the wall-clock false alarm this file
+    exists to remove.
+
+    Two threads with identical messages, differing only in the composer control.
+    """
+    settled = dict(QUEUED_IDLE, control = _SEND_BUTTON, queue_stack = False)
+    generating = dict(settled, control = _STOP_BUTTON)
+    a = _capture_html(page, _page(tail = "same", **settled))
+    b = _capture_html(page, _page(tail = "same", **generating))
+    assert [m["digest"] for m in a["messages"]] == [m["digest"] for m in b["messages"]]
+    assert a["digest_scaffold"] != b["digest_scaffold"], (
+        "if this ever holds, the composer has left the thread root and the scaffold may be "
+        "consulted beside the overlays"
+    )

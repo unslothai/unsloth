@@ -686,10 +686,35 @@
         const generating = dom.generating
           ? Boolean(dom.generating())
           : Boolean(dom.isRunning && dom.isRunning());
+        // WHY THE PROBE IS QUIET, which is three questions and not one. See
+        // `dom.statusHookPresent` / `dom.lastAssistantPublishesStatus`.
+        //
+        //   the last assistant message IS publishing parts and none of them says running
+        //     -> the hook's VOCABULARY changed. Blind, unless this arm is windowing, in which case
+        //        the message being written may not be the last one mounted and nothing here can
+        //        tell the two apart.
+        //   the last assistant message publishes NOTHING
+        //     -> it has no parts yet, which is ordinary -- unless no assistant message anywhere
+        //        publishes anything, and then the hook itself is gone. Blind on any arm, windowed
+        //        or not, because a settled message would still be carrying it.
+        const lastPublishes = dom.lastAssistantPublishesStatus
+          ? Boolean(dom.lastAssistantPublishesStatus())
+          : false;
+        const anyPublishes = dom.statusHookPresent ? Boolean(dom.statusHookPresent()) : true;
+        const windowedArm = dom.isWindowed ? Boolean(dom.isWindowed()) : false;
+        const probeBlind = lastPublishes ? !windowedArm : !anyPublishes;
         return {
           visible_attempted: true,
           streaming: generating,
-          in_flight_unplaced: Boolean(generating && live.size === 0),
+          // Carried so a reader can tell the two zero-in-flight readings apart in the record, not
+          // only in the verdict: a stream this capture could not see, versus a hook that is gone.
+          status_hook_present: anyPublishes,
+          // `hookGone` and not merely "nothing is running": see `dom.statusHookPresent`. A windowed
+          // arm scrolled away from the tail can UNMOUNT the message being written, and
+          // `streamingMessages()` can only scan mounted DOM, so `live.size` is zero on a build
+          // whose hooks are perfectly intact. That is the ordinary state this mode exists to
+          // score, and refusing it would discard the settled rows that WERE on screen.
+          in_flight_unplaced: Boolean(generating && live.size === 0 && probeBlind),
           // Every ordinal the viewport ever showed during the window, INCLUDING any that have
           // since been unmounted. The gap between this and `messages` is the honest measure of
           // what a windowed arm could not be asked about at capture time.
@@ -804,6 +829,26 @@
         // `isRunning()` is true whenever the composer is refusing a fresh send, and a prompt
         // waiting in the queue on an IDLE thread refuses one too. See `dom.generating`.
         const generating = dom.generating ? Boolean(dom.generating()) : running;
+        // Whether the app still publishes the status contract at all. See
+        // `dom.statusHookPresent`: a hook that is GONE is a blind instrument, a hook that is
+        // present with nothing running is an ordinary settled or not-yet-mounted thread.
+        // WHY THE PROBE IS QUIET, which is three questions and not one. See
+        // `dom.statusHookPresent` / `dom.lastAssistantPublishesStatus`.
+        //
+        //   the last assistant message IS publishing parts and none of them says running
+        //     -> the hook's VOCABULARY changed. Blind, unless this arm is windowing, in which case
+        //        the message being written may not be the last one mounted and nothing here can
+        //        tell the two apart.
+        //   the last assistant message publishes NOTHING
+        //     -> it has no parts yet, which is ordinary -- unless no assistant message anywhere
+        //        publishes anything, and then the hook itself is gone. Blind on any arm, windowed
+        //        or not, because a settled message would still be carrying it.
+        const lastPublishes = dom.lastAssistantPublishesStatus
+          ? Boolean(dom.lastAssistantPublishesStatus())
+          : false;
+        const anyPublishes = dom.statusHookPresent ? Boolean(dom.statusHookPresent()) : true;
+        const windowedArm = dom.isWindowed ? Boolean(dom.isWindowed()) : false;
+        const probeBlind = lastPublishes ? !windowedArm : !anyPublishes;
         const whole = signature(root);
         const scaffold = signature(root, undefined, new Set(nodes));
         const messages = [];
@@ -869,7 +914,15 @@
           // would report the instrument as broken to say it. That is this file's own failure
           // mode: reading at a moment whose meaning is not stable across the things being
           // compared. See `dom.generating`.
-          in_flight_unplaced: Boolean(generating && inFlightNodes.length === 0),
+          //
+          // AND IT REQUIRES THE HOOK TO BE GONE, not merely quiet. `streamingMessages()` scans
+          // MOUNTED DOM, so it also returns nothing in the gap between a send being accepted and
+          // the reply's first part rendering, and on an arm that has unmounted the message it is
+          // writing into. Neither is a broken instrument. See `dom.statusHookPresent`.
+          in_flight_unplaced: Boolean(
+            generating && inFlightNodes.length === 0 && probeBlind
+          ),
+          status_hook_present: anyPublishes,
           // The queued-idle interval itself, recorded rather than resolved away, so a reader can
           // tell why a capture with `streaming: true` placed no message in flight.
           queued_idle: Boolean(running && !generating),

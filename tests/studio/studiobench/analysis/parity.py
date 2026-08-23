@@ -149,6 +149,25 @@ def _overlays(capture: dict) -> list[dict]:
     return list(capture.get("overlays") or [])
 
 
+def overlays_moved(base: dict, treat: dict) -> list[str]:
+    """The overlay rows that differ, as claims. Empty when the two arms agree about every overlay.
+
+    THE ONE SURFACE IN THE STRUCTURAL CAPTURE THAT A STREAM CANNOT REACH. An overlay -- an open
+    dialog, a menu, the model picker -- is walked from `document`, outside `.aui-thread-root`
+    entirely, so its digest carries neither the streamed message nor the composer that reflects
+    whether a reply is running. That makes it readable on a pair whose stream could not be placed,
+    which is why it is factored out of `localise` and consulted before the refusal in `compare`.
+    """
+    bo, to = _overlays(base), _overlays(treat)
+    if len(bo) != len(to):
+        return [f"overlays {len(bo)}->{len(to)}"]
+    return [
+        f"overlay{k}[{b.get('sel')}]:{b.get('chars')}->{t.get('chars')}c"
+        for k, (b, t) in enumerate(zip(bo, to))
+        if b.get("digest") != t.get("digest")
+    ]
+
+
 def windowed_mount(capture: Optional[dict]) -> bool:
     """Did this capture come from a thread that mounts a WINDOW rather than the whole thing?
 
@@ -316,13 +335,7 @@ def localise(
                 f"msg{i}({bm[i].get('role', '?')}):" f"{bm[i].get('chars')}->{tm[i].get('chars')}c"
             )
 
-    bo, to = _overlays(base), _overlays(treat)
-    if len(bo) != len(to):
-        moved.append(f"overlays {len(bo)}->{len(to)}")
-    else:
-        for k, (b, t) in enumerate(zip(bo, to)):
-            if b.get("digest") != t.get("digest"):
-                moved.append(f"overlay{k}[{b.get('sel')}]:{b.get('chars')}->{t.get('chars')}c")
+    moved.extend(overlays_moved(base, treat))
 
     if not moved:
         # The whole-thread digest moved but no message and no overlay did. That is the thread
@@ -447,6 +460,36 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
     style_verdict, style_reason = compare_styles(base, treat)
     blind = streaming_probe(base, treat)
     if blind is not None:
+        # THE REFUSAL MUST NOT SWALLOW A READING THAT DOES NOT DEPEND ON THE STREAM. An overlay is
+        # walked from `document`, outside the thread root, so a dialog that mounted when it should
+        # not, or one whose contents were rewritten, is a finding whether or not the streamed
+        # message could be identified. Without this it went out with the refusal, and
+        # `structural_report` buckets a refusal as blind and never consults it for the exit code,
+        # so the run went green on it.
+        #
+        # THE SCAFFOLD IS DELIBERATELY NOT CONSULTED HERE, and this is the part of the review item
+        # that measurement does not support. `ThreadPrimitive.Root` wraps `ThreadComposerDock`
+        # (thread.tsx), so the composer is inside `.aui-thread-root` and inside the scaffold -- and
+        # the composer is exactly the surface that changes when a reply starts and stops. Measured
+        # on two byte-identical threads differing only in the composer control: Stop against Send
+        # moves the scaffold from 373 to 381 characters and changes its digest, with no message
+        # content involved at all. On the very pair this branch is about -- one arm generating with
+        # a quiet hook, the other finished -- the scaffold therefore differs BECAUSE one arm is
+        # generating, and reporting that as a rendering difference would manufacture the wall-clock
+        # false alarm this whole file exists to remove.
+        independent = overlays_moved(base, treat)
+        if independent:
+            return {
+                "verdict": DIFFER,
+                "reason": (
+                    "the streamed message could not be identified on one arm, but the OVERLAYS "
+                    "differ, and an overlay is walked outside the thread root: its digest carries "
+                    f"neither the stream nor the composer. {blind}"
+                ),
+                "moved": independent,
+                "style_verdict": style_verdict,
+                "style_reason": style_reason,
+            }
         return {
             "verdict": NOT_COMPARABLE,
             "reason": blind,
@@ -842,10 +885,24 @@ def compare_visible(base: Optional[dict], treat: Optional[dict]) -> dict:
     # never counted as agreement: this is the residue of comparing a windowed arm at one instant.
     uncomparable = sorted(int(o) for o in map(str, sorted(bev)) if o not in bmsg or o not in tmsg)
     moved = []
+    # The subset of `moved` that CANNOT be a point in a stream, kept so the blind-probe refusal
+    # below does not take it out with the rest. See each `settled.append` for why that row is
+    # provably not the reply being written.
+    settled: list[str] = []
     for ordinal in sorted(bev):
         key = str(ordinal)
         b, t = bmsg.get(key), tmsg.get(key)
         if b is None or t is None:
+            continue
+        # A ROLE IS NOT A POSITION IN A STREAM. It is captured beside the digest rather than inside
+        # it, and how far a reply has arrived says nothing about whether it is the assistant's. So
+        # a row that changed role is reported even while that row is in flight, where the digest
+        # itself is withheld: a treatment that renders the live assistant row as `data-role="user"`
+        # is a structural regression that used to leave here as NOT COMPARABLE.
+        if b.get("role") != t.get("role"):
+            claim = f"ordinal {ordinal}:role {b.get('role')}->{t.get('role')}"
+            moved.append(claim)
+            settled.append(claim)
             continue
         if b.get("digest") != t.get("digest"):
             if b.get("in_flight") or t.get("in_flight"):
@@ -857,7 +914,14 @@ def compare_visible(base: Optional[dict], treat: Optional[dict]) -> dict:
                 # disagree about which readings have a defined moment.
                 uncomparable.append(ordinal)
                 continue
-            moved.append(f"ordinal {ordinal}({b.get('role')}):{b.get('chars')}->{t.get('chars')}c")
+            claim = f"ordinal {ordinal}({b.get('role')}):{b.get('chars')}->{t.get('chars')}c"
+            moved.append(claim)
+            # A USER ROW IS NEVER THE REPLY BEING WRITTEN. Both arms agree this ordinal is the
+            # user's, and a stream writes into an assistant message, so this difference survives
+            # the blind-probe refusal below. The two arms agreeing is what makes it provable: a
+            # row whose role DISAGREES is reported above as a role change, not silently trusted.
+            if b.get("role") == "user":
+                settled.append(claim)
     # Ordinals that were unmounted before the capture and ordinals that were still streaming are
     # the same kind of residue and are counted once each.
     uncomparable = sorted(set(uncomparable))
@@ -905,6 +969,24 @@ def compare_visible(base: Optional[dict], treat: Optional[dict]) -> dict:
     # that loses the thread while a reply runs stays a finding rather than a shrug.
     blind = streaming_probe(base, treat)
     if blind is not None:
+        # SAME RULE AS `compare`: the refusal covers the rows whose meaning depends on where the
+        # stream had got to, and nothing else. `settled` holds the rows that provably cannot be the
+        # reply being written -- a row both arms call the user's, and a row whose role itself
+        # changed -- and those are reported rather than discarded. Without this a changed user
+        # message left here as NOT COMPARABLE with an empty `moved`, and `visible_report` buckets
+        # a refusal as blind and never consults it for the exit code.
+        if settled:
+            return {
+                "verdict": DIFFER,
+                "reason": (
+                    f"{len(settled)} visible message(s) rendered differently on rows that cannot "
+                    "be the reply being written (a user row, or a row whose role changed), so "
+                    f"they are reported even though the stream could not be placed. {blind}"
+                ),
+                "moved": settled,
+                "claim": CLAIM_VISIBLE,
+                "not_digested": uncomparable,
+            }
         return {
             "verdict": NOT_COMPARABLE,
             "reason": blind,

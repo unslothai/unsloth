@@ -556,6 +556,54 @@ AND a reply streaming AND text in the composer, the control is not armed for tha
 under-claims rather than over-claims, and probe blindness is a renamed selector, so it is global
 and the run's other captures still catch it.
 
+**A quiet scan has three causes and only one of them is a broken instrument.**
+`streamingMessages()` scans MOUNTED DOM, so it returns nothing when a windowed arm has unmounted
+the message it is writing into (which is what windowing is for, and is reachable the moment
+`scroll_during_generation` leaves the tail off screen while later slots run), and it returns nothing
+in the gap between a send being accepted and the reply's first part arriving, where the assistant
+message is mounted with zero parts and thread.tsx renders "Generating..." in place of any hook --
+`send_turn` returns the instant `isRunning()` flips, so a capture lands there twice a film. So the
+control asks for evidence of blindness rather than for silence:
+
+| the last assistant message | and | conclusion |
+| --- | --- | --- |
+| publishes parts, none running | the arm mounts the whole thread | **blind.** The row cannot be missing, so a quiet scan is the only explanation left. This is what catches a build that changed the status VALUE rather than the attribute. |
+| publishes parts, none running | the arm is windowing | not blind. The message being written may not be the last one mounted, and nothing here can tell that from a changed value. |
+| publishes nothing | some other assistant message does | not blind. It has no parts yet, which is ordinary. |
+| publishes nothing | no assistant message does | **blind.** `data-status` is one line in markdown-text.tsx, rendered for `complete` parts too, so a settled message would still be carrying it. Fires on a windowed arm as well. |
+
+All of it is scoped to ASSISTANT messages, because a user message never publishes `data-status` even
+on a working build -- only assistant parts render through `MarkdownText`. The capture carries
+`status_hook_present` so the readings are distinguishable in the record and not only in the verdict.
+What the second row gives up is pinned by `test_what_the_windowed_narrowing_gives_up`: a windowed arm
+whose status vocabulary changed is not caught, though the same build trips on any full-mount pair.
+It under-claims rather than over-claims.
+
+**The refusal covers the readings that depend on where the stream had got to, and nothing else.**
+A refusal is bucketed as `blind` by `structural_report` and `visible_report`, and neither consults
+it for the exit code, so anything swallowed by it leaves the run green. Three readings survive it:
+
+- **the overlays**, in `compare`. A dialog, a menu or the model picker is walked from `document`,
+  outside `.aui-thread-root`, so its digest carries neither the streamed message nor the composer.
+- **a user row**, in `compare_visible`, when BOTH arms call that ordinal the user's. A reply is
+  written into an assistant message, so that row cannot be the stream. The two arms having to agree
+  is what makes it provable rather than trusted.
+- **a role change**, in `compare_visible`, even on a row that is in flight. The role is captured
+  beside the digest, and how far a reply has arrived says nothing about whose message it is, so a
+  treatment that renders the live assistant row as `data-role="user"` is reported rather than
+  elided with the transient content digest.
+
+**The SCAFFOLD is deliberately not among them**, and this is the boundary that is easy to get
+wrong. `ThreadPrimitive.Root` wraps `ThreadComposerDock`, so the composer is inside the thread root
+and inside the scaffold, and the composer is exactly the surface that changes when a reply starts
+and stops. Measured on two byte-identical threads differing only in the composer control: Stop
+against Send moves the scaffold from 373 to 381 characters and changes its digest, with no message
+content involved. On the pair the refusal is about -- one arm generating with a quiet hook, the
+other finished -- the scaffold therefore differs BECAUSE one arm is generating, and reporting that
+would manufacture the wall-clock false alarm this mode exists to remove. Pinned by
+`test_the_scaffold_is_not_an_independent_surface_and_here_is_why`, which fails the day the composer
+leaves the thread root.
+
 **What this gives up, measured on a live-DOM battery of 11 injected rendering differences at one
 stream point:** 10 still report `DIFFER`; a reorder that moves the streamed message past another
 message of the same role is demoted to `NOT COMPARABLE`, because the per-message rows are keyed by
