@@ -14212,8 +14212,7 @@ def _prune_spills(target_dir: str) -> None:
         entries = [
             os.path.join(target_dir, name)
             for name in os.listdir(target_dir)
-            if _SPILL_NAME_RE.fullmatch(name)
-            and not os.path.islink(os.path.join(target_dir, name))
+            if _SPILL_NAME_RE.fullmatch(name) and not os.path.islink(os.path.join(target_dir, name))
         ]
         # Newest first, kept while BOTH budgets hold. A count bounds nothing in bytes, and
         # twenty large-but-legal spills are still tens of gigabytes of a disk the host

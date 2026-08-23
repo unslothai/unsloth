@@ -282,7 +282,12 @@ class TestPagingTheRest:
         seen = {}
         real_fdopen = os.fdopen
 
-        def _recording_fdopen(fd, mode = "r", *args, **kwargs):
+        def _recording_fdopen(
+            fd,
+            mode = "r",
+            *args,
+            **kwargs,
+        ):
             # os.fdopen since the spill is opened O_NOFOLLOW by descriptor; the kwarg the
             # newline behaviour rides on is the same one either way.
             if "w" in mode:
