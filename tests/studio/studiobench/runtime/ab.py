@@ -24,6 +24,7 @@ printing. That check is the whole reason this file interleaves at all.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
 from typing import Any, Callable, Optional
 
 from ..fixture.corpus import Corpus, RungPlan
@@ -198,8 +199,11 @@ def order_is_balanced(plan: list[tuple[Target, Cell, RungPlan]]) -> bool:
 INVALIDATING_CELL_GATES: frozenset[str] = frozenset({"thread_complete", "follows_the_stream"})
 
 
-def _failed_cell_gates(records: list[dict]) -> dict[str, set[str]]:
-    """`{cell_id: {gate name}}` for every cell carrying a FAILED INVALIDATING per-cell gate row.
+def failed_invalidating_gates(records: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """`{cell_id: why}` for every cell carrying a FAILED INVALIDATING per-cell gate row.
+
+    Shared with `report/build.py` and `sweep/floor_table.py`, which are the other two scorers that
+    admit a cell, so the three cannot drift into disagreeing about what invalidates one.
 
     RUN-LEVEL GATES ARE NOT IN HERE. `production_build` and `reportable_tier` are emitted without a
     `cell_id`, and they are properties of the whole run: reading them as per-cell would empty both
@@ -219,19 +223,35 @@ def _failed_cell_gates(records: list[dict]) -> dict[str, set[str]]:
         if row.get("row_type") == "cell" and row.get("cell_id") is not None:
             winning[str(row.get("cell_id"))] = row.get("session_id")
 
-    failed: dict[str, set[str]] = {}
+    failed: dict[str, str] = {}
     for row in records:
         if row.get("row_type") != "gate" or row.get("passed") is not False:
             continue
-        if str(row.get("name")) not in INVALIDATING_CELL_GATES:
-            continue
-        if row.get("cell_id") is None:
+        name = str(row.get("name"))
+        if name not in INVALIDATING_CELL_GATES or row.get("cell_id") is None:
             continue
         cell_id = str(row.get("cell_id"))
         keep = winning.get(cell_id)
         if keep is not None and row.get("session_id") not in (None, keep):
             continue
-        failed.setdefault(cell_id, set()).add(str(row.get("name")))
+        detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+        # NOT MEASURED IS NOT FAILED, and both of these gates report the two as one value.
+        # `_read_follow` returns `{"follow_attempted": False}` when the page-side sampler is not
+        # installed, and `probe_thread_completeness` returns `{"probe_attempted": False}` when
+        # `window.__sb.dom` is not; `pinned`/`coverage` are then None and the gate row says
+        # `passed: False`. That is an absent INSTRUMENT, not a film that went wrong -- the same
+        # thing `timer_clamp` is kept off this list for -- and reading it as fatal would mark every
+        # cell of every run unusable anywhere the sampler is missing, which is a far larger blast
+        # radius than the defect being closed.
+        #
+        # This does NOT relax the `unmeasured` verdict, which is a different value and stays fatal.
+        # `record_completeness_gate` deliberately refuses to score a cell whose probe RAN and could
+        # not answer, because "we could not tell" must not be recorded as "it was fine". The case
+        # skipped here is the probe never having run at all.
+        if detail.get("follow_attempted") is False or detail.get("probe_attempted") is False:
+            continue
+        why = detail.get("reason") or detail.get("coverage_reason") or "the cell's own self-check"
+        failed.setdefault(cell_id, f"gate {name}: {why}")
     return failed
 
 
@@ -279,7 +299,7 @@ def readings_by_arm(
     # by `cell_id` alone, and a resumed retry reuses the cell id of the attempt that died. Without
     # this the completed-cell filter admitted the dead attempt's windows into the retry's reading.
     records = list(latest_attempt_rows(records))
-    failed_gates = _failed_cell_gates(records)
+    failed_gates = failed_invalidating_gates(records)
 
     arms: dict[str, list[dict]] = {}
     cell_ids: dict[str, set[str]] = {}

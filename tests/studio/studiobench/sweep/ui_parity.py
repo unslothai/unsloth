@@ -88,6 +88,36 @@ MODE_WINDOWED = "windowed"
 #: Matched as a literal string for the same reason `WINDOWED_GATE` is.
 COMPLETENESS_GATE = "thread_complete"
 
+#: THE CELL'S OWN VERDICT THAT IT STOPPED FOLLOWING THE REPLY IT WAS MEASURING. `runtime/session`
+#: writes this row, against the cell, when the thread did not stay pinned for enough of the
+#: streaming phase or too little of that phase had the stream attached at all. It belongs beside
+#: the completeness gate rather than in a category of its own, because it invalidates the same
+#: thing: a reply that scrolled out of the viewport and was unmounted by a windowed arm stops
+#: costing anything to render, and the action rows measured around it are a reading of an arm that
+#: was not showing the thing under test. `select_text` counts and bottom rows can still match
+#: across such a pair, so `--mode auto` printed a behavioural pass and exited 0 over a payload
+#: that had already recorded the arm losing the stream. Matched as a literal string for the same
+#: reason the two gates above it are.
+FOLLOW_GATE = "follows_the_stream"
+
+#: The per-cell gates whose failure means this cell's action rows are not a reading of the build.
+#: A gate that only qualifies one column -- `timer_clamp`, whose failure leaves every column but
+#: `busy_pct` standing -- is deliberately NOT here; see `runtime/ab.py::INVALIDATING_CELL_GATES`,
+#: which is the same list for the performance side.
+INVALIDATING_GATES: tuple[str, ...] = (COMPLETENESS_GATE, FOLLOW_GATE)
+
+#: How each is named and what its failure means, for the refusal a reader actually sees. The gate
+#: is described rather than spelled with its row name, because this string is read by somebody
+#: deciding whether a run is usable, not by a parser.
+_GATE_LABEL: dict[str, str] = {
+    COMPLETENESS_GATE: "completeness",
+    FOLLOW_GATE: "stream-follow",
+}
+_GATE_REASON: dict[str, str] = {
+    COMPLETENESS_GATE: "the arm is not holding the whole conversation",
+    FOLLOW_GATE: "the arm stopped following the streamed reply",
+}
+
 #: How one action pair is scored. PER PAIR, never per payload: the readiness gate deliberately
 #: permits a payload to hold fully mounted small rungs and windowed large ones, so a payload-wide
 #: decision lets one windowed 100K capture suppress the structural digest on every fully mounted 1K
@@ -125,7 +155,7 @@ def rung_of(cell_id: str) -> str:
 
 
 def incomplete_cells(paths: list[Path]) -> dict[str, str]:
-    """{cell_id: why} for every cell whose `thread_complete` gate FAILED.
+    """{cell_id: why} for every cell that FAILED one of the gates in `INVALIDATING_GATES`.
 
     THE PAYLOAD ALREADY KNOWS. `probe_thread_completeness` scrolls the whole thread before the
     film and `record_completeness_gate` writes the verdict against the cell, so a windowed arm
@@ -161,7 +191,8 @@ def incomplete_cells(paths: list[Path]) -> dict[str, str]:
         for r in payload:
             if r.get("row_type") != "gate" or r.get("passed") is not False:
                 continue
-            if str(r.get("name") or "") != COMPLETENESS_GATE:
+            name = str(r.get("name") or "")
+            if name not in INVALIDATING_GATES:
                 continue
             cid = str(r.get("cell_id") or "")
             if not cid:
@@ -170,9 +201,21 @@ def incomplete_cells(paths: list[Path]) -> dict[str, str]:
             if keep is not None and r.get("session_id") not in (None, keep):
                 continue
             detail = r.get("detail") if isinstance(r.get("detail"), dict) else {}
+            # NOT MEASURED IS NOT FAILED. An absent page-side sampler or dom helper makes both of
+            # these gates say `passed: False` with `follow_attempted` / `probe_attempted` False,
+            # which is a missing instrument rather than an arm that lost something. Refusing every
+            # pair on it would withhold a verdict from a whole run over the harness not being
+            # loaded. The `unmeasured` coverage verdict is a different value and stays fatal; see
+            # `runtime/ab.py::failed_invalidating_gates`, which draws the same line.
+            if detail.get("follow_attempted") is False or detail.get("probe_attempted") is False:
+                continue
+            # FIRST FAILURE WINS, so a cell that failed both is not relabelled by whichever row
+            # happens to come second in the file.
+            if cid in out:
+                continue
             out[cid] = (
-                f"cell {cid} FAILED its completeness gate: "
-                f"{detail.get('reason') or detail.get('coverage_reason') or 'the arm is not holding the whole conversation'}"
+                f"cell {cid} FAILED its {_GATE_LABEL[name]} gate: "
+                f"{detail.get('reason') or detail.get('coverage_reason') or _GATE_REASON[name]}"
             )
     return out
 

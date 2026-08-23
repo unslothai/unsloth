@@ -39,6 +39,7 @@ if __package__ in (None, ""):  # pragma: no cover
     # bad first minute.
     sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
+from tests.studio.studiobench.runtime.ab import failed_invalidating_gates  # noqa: E402
 from tests.studio.studiobench.scoring.from_payload import (  # noqa: E402
     ACTION_SOURCES,
     FRAME_METRICS,
@@ -106,9 +107,28 @@ def cell_metrics(records: list[dict]) -> dict[str, dict[str, float]]:
     frame metrics dilutes `time_in_jank_pct` and `jank_index` away from the film that was measured.
     A metric here has to be the same quantity the rest of the tool calls by that name.
     """
+    # A CELL THAT FAILED AN INVALIDATING GATE IS NOT A READING, HERE EITHER. Both gates are
+    # advisory where they are emitted, so such a cell arrives `completed=True` with a full set of
+    # timings that are CHEAPER than a correct cell's, and this table is where a floor is built and
+    # where a result is scored against it. `paired` divides treatment by base per pair, so a
+    # one-sided failure is not cancelled by the null control being same-build: it lands in
+    # `delta_pct` and `spread_pct` directly. On the result side it is worse, because a gate-failed
+    # treatment cell pairs against a clean base cell and prints as `faster`.
+    #
+    # This is not hypothetical. The virtualization negative result recorded in CONTRIBUTING-perf.md
+    # was measured through this workflow and contains both facts at once: the treatment arm's
+    # census going from 12 mounted messages to 0 and never recovering, and a headline of 28.2%
+    # faster weighted. Nothing between the two noticed.
+    #
+    # Scoped by hand, because this module never calls `latest_attempt_rows` -- it scopes attempts
+    # itself, below -- and a gate row is not one of the row types that function covers anyway.
+    gate_failures = failed_invalidating_gates(records)
+
     out: dict[str, dict[str, float]] = {}
     for row in records:
         if row.get("row_type") != "cell" or not row.get("completed"):
+            continue
+        if str(row.get("cell_id")) in gate_failures:
             continue
         cid = row["cell_id"]
         # Scoped to this cell's OWN attempt: `--resume` re-runs a died cell under a new
