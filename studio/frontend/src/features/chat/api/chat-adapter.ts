@@ -564,8 +564,7 @@ export function useThreadAutosaveHandle(): ThreadAutosaveHandle {
  *   2. The friendly rewrite from
  *      ``backend/routes/inference.py::_friendly_error``: "Message too long:
  *      ... context window. ..." (the one most users see on the streaming GGUF
- *      path). Its advice branches on conversation vs single oversized turn, so
- *      only the lead-in is stable to match on.
+ *      path). Its advice branches, so only the lead-in is stable to match on.
  *
  * Match substrings, not full regexes: both layers have drifted across
  * versions (llama.cpp phrasing and _friendly_error copy edits).

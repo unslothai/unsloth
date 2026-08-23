@@ -251,8 +251,7 @@ def _shared_prompt_tokens(count_tokens: Callable[[list[dict]], int]) -> int:
     try:
         return max(0, int(count_tokens([])))
     except Exception:
-        # A counter that will not price an empty prompt tells us nothing about the floor;
-        # zero leaves the diagnosis exactly as it was before this was measured.
+        # No measurable floor; zero leaves the diagnosis as it was before this existed.
         return 0
 
 
@@ -271,13 +270,11 @@ def turn_diagnosis(
         return {"latest_turn_tokens": 0, "latest_turn_role": "", "shared_prompt_tokens": 0}
     latest, exact = _latest_turn_count(messages, count_tokens)
     shared = _shared_prompt_tokens(count_tokens) if exact else 0
-    # Never all of either side. A floor at or above the numbers it belongs to is a
-    # measurement that does not describe them, and clamping keeps the ratio a ratio.
+    # Never all of either side: a floor at or above them would leave no ratio to compare.
     shared = max(0, min(shared, latest - 1, int(irreducible_tokens) - 1))
     return {
         "latest_turn_tokens": latest,
-        # ...and whose message that is. In a tool loop the last message is often a
-        # tool result, which the user did not write and cannot shorten.
+        # Whose message it is: often a tool result the user cannot shorten.
         "latest_turn_role": str(messages[-1].get("role") or ""),
         "shared_prompt_tokens": shared,
     }
