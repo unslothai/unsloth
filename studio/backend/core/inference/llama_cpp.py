@@ -458,6 +458,7 @@ _REASONING_FLAG = "--reasoning"
 _REASONING_ON = "on"
 _REASONING_OFF = "off"
 _CHAT_TEMPLATE_KWARGS_FLAG = "--chat-template-kwargs"
+_LLAMA_REASONING_ENV = "LLAMA_ARG_REASONING"
 
 # Floor for a GGUF TTS read, scaled by requested tokens at the call site. This backend
 # decodes in seconds; the subprocess one needs minutes, so they do not share a base.
@@ -6683,7 +6684,8 @@ class LlamaCppBackend:
             and _ENABLE_THINKING_KWARG in reasoning_kwargs
         ):
             enabled = reasoning_kwargs.pop(_ENABLE_THINKING_KWARG)
-            cmd.extend([_REASONING_FLAG, _REASONING_ON if enabled else _REASONING_OFF])
+            if not os.environ.get(_LLAMA_REASONING_ENV, "").strip():
+                cmd.extend([_REASONING_FLAG, _REASONING_ON if enabled else _REASONING_OFF])
         if self._supports_preserve_thinking:
             reasoning_kwargs[_PRESERVE_THINKING_KWARG] = self._preserve_thinking_default
         if reasoning_kwargs:
