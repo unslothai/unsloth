@@ -211,7 +211,7 @@ class TestOffloadedLayerFraction:
     def test_zero_layers_is_cpu_only(self):
         assert ri._gguf_offloaded_layer_fraction("manual", 0, 65) == 0.0
 
-    def test_auto_honours_a_layer_count_from_the_extras(self):
+    def test_a_layer_count_in_the_extras_wins_in_either_mode(self):
         # Auto emits -ngl -1 and the extras are appended after it, so a user count
         # last-wins at the child; the loader reads it back with the same parser
         # (llama_cpp.py:6841, the non-manual arm). Treating Auto as always fully
@@ -225,8 +225,13 @@ class TestOffloadedLayerFraction:
         assert ri._gguf_offloaded_layer_fraction("auto", None, 12, ["-ngl", "999"]) == 1.0
         # Malformed is llama-server's to reject; it names it better than a guess here.
         assert ri._gguf_offloaded_layer_fraction("auto", None, 12, ["-ngl", "abc"]) == 1.0
-        # Manual strips the flag from the extras, so the field still owns placement.
-        assert ri._gguf_offloaded_layer_fraction("manual", 0, 12, ["-ngl", "999"]) == 0.0
+        # Manual does strip the flag, but only after translating its last-wins value
+        # into the load field (routes/inference.py, the manual branch of /load and of
+        # the validate path), so the extras count is what the child runs there too.
+        assert ri._gguf_offloaded_layer_fraction("manual", 0, 12, ["-ngl", "999"]) == 1.0
+        assert ri._gguf_offloaded_layer_fraction("manual", 12, 12, ["-ngl", "0"]) == 0.0
+        # And with nothing in the extras the field still owns it.
+        assert ri._gguf_offloaded_layer_fraction("manual", 0, 12, ["--top-k", "40"]) == 0.0
 
 
 # B. _gguf_runtime_bytes against real GGUF headers
@@ -352,6 +357,36 @@ class TestKvGbWrapperCompatibility:
         # become a refusal on its own, so it contributes nothing.
         assert ri._estimate_gguf_kv_gb(dimless_gguf, 32768) == 0.0
 
+    def test_the_guard_keeps_the_larger_context_the_panel_does_not(self, gqa_gguf):
+        """A smaller ``-c`` in the extras is what the launch runs, not what the
+        guard reserves against. The guard deliberately takes the maximum, since a
+        request that later drops the flag must not have been admitted against the
+        smaller cache; the panel is quoting a number to a user and takes the launch
+        value (``resolve_requested_ctx``, load_model's own resolver).
+        """
+        smaller = ["-c", "8192"]
+        guard = ri._gguf_runtime_bytes(gqa_gguf, 131072, smaller)
+        panel = ri._gguf_runtime_bytes(gqa_gguf, 131072, smaller, ctx_last_wins = True)
+        assert guard.n_ctx == 131072
+        assert panel.n_ctx == 8192
+        assert panel.kv_bytes < guard.kv_bytes
+        # The wrapper the guard calls must still be the maximum arm, unchanged.
+        assert ri._estimate_gguf_kv_gb(gqa_gguf, 131072, llama_extra_args = smaller) == pytest.approx(
+            (guard.kv_bytes + guard.compute_bytes) / _GIB
+        )
+        # A larger override is the same either way, and -c 0 means the model's own
+        # trained context in llama.cpp rather than the panel's number.
+        larger = ["-c", "262144"]
+        assert (
+            ri._gguf_runtime_bytes(gqa_gguf, 131072, larger, ctx_last_wins = True).n_ctx
+            == ri._gguf_runtime_bytes(gqa_gguf, 131072, larger).n_ctx
+            == 262144
+        )
+        assert (
+            ri._gguf_runtime_bytes(gqa_gguf, 131072, ["-c", "0"], ctx_last_wins = True).n_ctx
+            == _GQA_FIELDS["context_length"]
+        )
+
 
 # D. _gguf_resident_file_gb and _gguf_memory_breakdown
 
@@ -453,6 +488,27 @@ class TestMemoryBreakdown:
         assert on_cpu.gpu_bytes == full.gpu_bytes - (
             self.MAIN_BYTES + full.kv_bytes + full.compute_bytes
         )
+
+    def test_a_smaller_ctx_override_is_the_context_priced(self, config, gqa_gguf):
+        # The panel reports what the launch runs, so a -c below the Context Length
+        # control prices the smaller cache and says so in n_ctx.
+        b = ri._gguf_memory_breakdown(
+            config, gqa_gguf, n_ctx = 131072, llama_extra_args = ["-c", "8192"]
+        )
+        bigger = ri._gguf_memory_breakdown(config, gqa_gguf, n_ctx = 131072)
+        assert b.n_ctx == 8192
+        assert b.kv_bytes < bigger.kv_bytes
+
+    def test_a_manual_layer_count_in_the_extras_is_priced(self, config, gqa_gguf):
+        # /load translates the last -ngl into the manual field before stripping the
+        # flag, so the field alone was the wrong thing to price.
+        manual = dict(gpu_memory_mode = "manual", gpu_layers = 0, n_ctx = 8192)
+        field_only = ri._gguf_memory_breakdown(config, gqa_gguf, **manual)
+        overridden = ri._gguf_memory_breakdown(
+            config, gqa_gguf, llama_extra_args = ["-ngl", "999"], **manual
+        )
+        assert field_only.gpu_bytes < overridden.gpu_bytes
+        assert overridden.gpu_bytes == overridden.total_bytes
 
     def test_an_extras_split_mode_decides_the_priced_mode(self, config, gqa_gguf):
         # A --split-mode in the extras last-wins over the toggle at launch, and the
@@ -840,6 +896,28 @@ class TestEstimateMemoryRoute:
         resp = _estimate(model_path = "org/model", gguf_variant = "Q4_K_M")
         assert resp.available is False
         assert resp.reason == "not_downloaded"
+
+    def test_expert_offload_from_the_extras_is_declared_unmodelled(self, monkeypatch, gqa_gguf):
+        # --n-cpu-moe moves individual expert tensors, which the layer fraction
+        # cannot express, so the row has to say so. /load strips those flags only on
+        # the Manual branch, where the field owns them; anywhere else they reach the
+        # child and the estimate reads high without qualification.
+        config = SimpleNamespace(identifier = "local/model", gguf_file = gqa_gguf, is_gguf = True)
+        monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: 2.0)
+
+        def flagged(**kw):
+            return _estimate(model_path = gqa_gguf, n_ctx = 8192, **kw).moe_offload_unmodelled
+
+        assert flagged(gpu_memory_mode = "auto", llama_extra_args = ["--n-cpu-moe", "8"]) is True
+        assert flagged(gpu_memory_mode = "auto", llama_extra_args = ["-cmoe"]) is True
+        assert flagged(gpu_memory_mode = "auto", llama_extra_args = ["-ot", "exps=CPU"]) is True
+        # Zero places nothing, and an unrelated flag is not an offload.
+        assert flagged(gpu_memory_mode = "auto", llama_extra_args = ["-ncmoe", "0"]) is False
+        assert flagged(gpu_memory_mode = "auto", llama_extra_args = ["--top-k", "40"]) is False
+        # Manual strips them, so only its own field speaks there.
+        assert flagged(gpu_memory_mode = "manual", llama_extra_args = ["-ncmoe", "8"]) is False
+        assert flagged(gpu_memory_mode = "manual", n_cpu_moe = 8) is True
 
     def test_the_device_count_uses_the_effective_split_mode(self, monkeypatch, gqa_gguf):
         # A layer split across pinned cards is counted differently from a tensor

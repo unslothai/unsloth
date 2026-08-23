@@ -7033,6 +7033,7 @@ def _gguf_runtime_bytes(
     ctx_checkpoints: Optional[int] = None,
     n_devices: int = 1,
     is_diffusion: bool = False,
+    ctx_last_wins: bool = False,
 ) -> _GgufRuntimeBytes:
     """KV-cache and compute-buffer VRAM (bytes) at the larger of max_seq_length and
     any `--ctx-size`/`-c` override, over n_parallel slots at the effective
@@ -7041,11 +7042,17 @@ def _gguf_runtime_bytes(
     mode reserves them on every device, a multi-GPU layer split replicates the
     context-linear term; ``is_diffusion`` skips them, since the diffusion
     runner ignores the llama-server batch flags. All-zero and not estimable if
-    metadata is unreadable."""
+    metadata is unreadable.
+
+    ``ctx_last_wins`` swaps that maximum for what the launch will really run
+    (``resolve_requested_ctx``). The default is the coexistence guard's rule, which
+    over-reserves on purpose; a panel quoting a number to a user wants the other
+    one, since a smaller ``-c`` in the extras is the context the user gets."""
     try:
         from core.inference.llama_server_args import (
             parse_ctx_override,
             resolve_ctx_checkpoints,
+            resolve_requested_ctx,
         )
 
         probe = LlamaCppBackend()
@@ -7063,7 +7070,18 @@ def _gguf_runtime_bytes(
             ctx_override = parse_ctx_override(llama_extra_args) or 0
         except Exception:
             ctx_override = 0  # malformed extras are rejected upstream; fall back
-        ctx = max(max_seq_length or 0, ctx_override) or (probe._context_length or 0)
+        if ctx_last_wins:
+            # What the launch runs, through load_model's own resolver: the extras
+            # value wins whichever way it moves. The maximum below is the coexistence
+            # guard's conservative rule, and quoting it to a user prices a context a
+            # smaller -c means they will never get.
+            try:
+                ctx = resolve_requested_ctx(llama_extra_args, max_seq_length or 0)
+            except Exception:
+                ctx = max_seq_length or 0
+            ctx = ctx or (probe._context_length or 0)
+        else:
+            ctx = max(max_seq_length or 0, ctx_override) or (probe._context_length or 0)
         if ctx <= 0:
             return unknown
         slots = max(1, n_parallel or 1)
@@ -7735,23 +7753,30 @@ def _gguf_offloaded_layer_fraction(
     """Share of the weights the requested offload keeps on the GPU, in [0, 1].
 
     Auto is 1.0: it asks llama.cpp to fit the whole model, so the useful number to
-    show is what a successful load costs. Unless the extras carry their own count:
-    Auto emits ``-ngl -1`` and the extras are appended after it, so a user count
-    last-wins at the child and the loader reads it back the same way. Manual strips
-    the flag instead, which is why the field owns placement there.
+    show is what a successful load costs.
+
+    A count in the extras wins in either mode, by two different routes: Auto emits
+    ``-ngl -1`` and appends the extras after it, so the user's count last-wins at the
+    child, and Manual translates that same count into the load field before stripping
+    the raw flag. Pricing the field alone read ``--gpu-layers 0`` with ``-ngl 999``
+    as a CPU-only load.
 
     Manual scales by ``--gpu-layers`` over ``block_count + 1``, the ceiling the
     slider uses (the extra one is the output layer). ``--n-cpu-moe`` is NOT modelled
     -- it moves individual expert tensors, not whole blocks -- so a manual MoE
     offload reads high here, which the panel says out loud.
     """
-    if gpu_memory_mode != "manual":
-        from core.inference.llama_server_args import parse_gpu_layers_override
-        try:
-            gpu_layers = parse_gpu_layers_override(extras)
-        except ValueError:
-            # Malformed value: llama-server names it better than a guess here would.
-            gpu_layers = None
+    from core.inference.llama_server_args import parse_gpu_layers_override
+
+    try:
+        override = parse_gpu_layers_override(extras)
+    except ValueError:
+        # Malformed value: llama-server names it better than a guess here would.
+        override = None
+    if override is not None:
+        gpu_layers = override
+    elif gpu_memory_mode != "manual":
+        return 1.0
     if gpu_layers is None or gpu_layers < 0:
         return 1.0
     if not layer_count or layer_count <= 0:
@@ -8066,6 +8091,9 @@ def _gguf_memory_breakdown(
         ctx_checkpoints = ctx_checkpoints,
         n_devices = n_devices,
         is_diffusion = is_diffusion,
+        # The panel prices the launch, not the admission guard: a smaller -c in the
+        # extras is the context the user gets, not one to over-reserve against.
+        ctx_last_wins = True,
     )
     files_gb = _gguf_resident_file_gb(
         config,
@@ -11735,6 +11763,7 @@ async def estimate_memory(
     fourfold on the cache dtype alone. Where the header cannot supply the dims this
     answers ``kv_estimable = false`` rather than quoting an assumed total.
     """
+    from core.inference.llama_cpp import _args_place_tensors_on_cpu
     from core.inference.llama_server_args import _effective_tensor_parallel
 
     if is_ollama_manifest_ref(request.model_path):
@@ -11829,7 +11858,15 @@ async def estimate_memory(
             layer_count = breakdown.layer_count,
             gpu_layers = breakdown.gpu_layers,
             moe_offload_unmodelled = bool(
-                request.gpu_memory_mode == "manual" and (request.n_cpu_moe or 0) > 0
+                (request.gpu_memory_mode == "manual" and (request.n_cpu_moe or 0) > 0)
+                # Outside Manual the extras keep their expert-placement flags: /load
+                # strips those only on the Manual branch, where the field owns them.
+                # Same predicate the loader's own host-residency gate uses, so -ncmoe,
+                # -cmoe and an -ot pattern all say it out loud.
+                or (
+                    request.gpu_memory_mode != "manual"
+                    and _args_place_tensors_on_cpu(request.llama_extra_args)
+                )
             ),
         )
 
