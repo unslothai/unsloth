@@ -17797,11 +17797,9 @@ class LlamaCppBackend:
                                         _lo = _mid + 1
                                 return _best
 
-                            # The launch may only grow the context on the cards the
-                            # reduction just chose. Searching every GPU again buys context
-                            # by pulling in another device: the layer split this path
-                            # prefers fewer GPUs to avoid, and one a request started at
-                            # the final slot count never makes.
+                            # Only the cards the reduction chose. Searching every GPU
+                            # again buys context by pulling in another device -- the layer
+                            # split this path avoids, and one a direct request never makes.
                             _kept = set(_gi_slots or ())
                             _plan_gpus = [g for g in gpus if g[0] in _kept]
                             _refit = _largest_ctx(_plan_gpus)
