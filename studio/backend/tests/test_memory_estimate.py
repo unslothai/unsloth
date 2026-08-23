@@ -211,6 +211,23 @@ class TestOffloadedLayerFraction:
     def test_zero_layers_is_cpu_only(self):
         assert ri._gguf_offloaded_layer_fraction("manual", 0, 65) == 0.0
 
+    def test_auto_honours_a_layer_count_from_the_extras(self):
+        # Auto emits -ngl -1 and the extras are appended after it, so a user count
+        # last-wins at the child; the loader reads it back with the same parser
+        # (llama_cpp.py:6841, the non-manual arm). Treating Auto as always fully
+        # resident put a GPU-exceeds warning on a load running on the CPU.
+        assert ri._gguf_offloaded_layer_fraction("auto", None, 12, ["-ngl", "0"]) == 0.0
+        assert ri._gguf_offloaded_layer_fraction(
+            "auto", None, 12, ["--gpu-layers", "6"]
+        ) == pytest.approx(6 / 13)
+        # -1 is "all layers", and above the count clamps rather than exceeding.
+        assert ri._gguf_offloaded_layer_fraction("auto", None, 12, ["-ngl", "-1"]) == 1.0
+        assert ri._gguf_offloaded_layer_fraction("auto", None, 12, ["-ngl", "999"]) == 1.0
+        # Malformed is llama-server's to reject; it names it better than a guess here.
+        assert ri._gguf_offloaded_layer_fraction("auto", None, 12, ["-ngl", "abc"]) == 1.0
+        # Manual strips the flag from the extras, so the field still owns placement.
+        assert ri._gguf_offloaded_layer_fraction("manual", 0, 12, ["-ngl", "999"]) == 0.0
+
 
 # B. _gguf_runtime_bytes against real GGUF headers
 
@@ -417,6 +434,45 @@ class TestMemoryBreakdown:
         assert b.gpu_bytes == b.total_bytes
         assert b.kv_on_gpu is True
         assert b.gpu_layers is None
+
+    def test_an_auto_load_with_an_extras_ngl_is_not_fully_resident(self, config, gqa_gguf):
+        # The one thing that overrides Auto: the child takes the last -ngl, so
+        # -ngl 0 runs on the CPU however the panel's own mode reads.
+        full = ri._gguf_memory_breakdown(config, gqa_gguf, n_ctx = 8192, gpu_memory_mode = "auto")
+        on_cpu = ri._gguf_memory_breakdown(
+            config,
+            gqa_gguf,
+            n_ctx = 8192,
+            gpu_memory_mode = "auto",
+            llama_extra_args = ["-ngl", "0"],
+        )
+        assert on_cpu.total_bytes == full.total_bytes
+        assert on_cpu.kv_on_gpu is False
+        # The main weight, its cache and its compute all leave the GPU; whatever is
+        # placed by its own flag (a projector here would be) does not.
+        assert on_cpu.gpu_bytes == full.gpu_bytes - (
+            self.MAIN_BYTES + full.kv_bytes + full.compute_bytes
+        )
+
+    def test_an_extras_split_mode_decides_the_priced_mode(self, config, gqa_gguf):
+        # A --split-mode in the extras last-wins over the toggle at launch, and the
+        # compute buffers differ by mode, so pricing the toggle priced a launch that
+        # does not happen. Two devices, since one device splits nothing.
+        def priced(extras, toggle):
+            return ri._gguf_memory_breakdown(
+                config,
+                gqa_gguf,
+                n_ctx = 32768,
+                llama_extra_args = extras,
+                tensor_parallel = toggle,
+                n_devices = 2,
+            ).compute_bytes
+
+        layer, tensor = priced(None, False), priced(None, True)
+        assert layer != tensor, "fixture must separate the two modes for this to prove anything"
+        assert priced(["--split-mode", "tensor"], False) == tensor
+        # And the reverse: the extras can turn it off as well as on.
+        assert priced(["--split-mode", "layer"], True) == layer
 
     def test_manual_split_divides_the_weights_but_not_the_cache(self, config, gqa_gguf):
         # llama.cpp keeps the whole KV cache on the GPU under a partial layer
@@ -784,6 +840,33 @@ class TestEstimateMemoryRoute:
         resp = _estimate(model_path = "org/model", gguf_variant = "Q4_K_M")
         assert resp.available is False
         assert resp.reason == "not_downloaded"
+
+    def test_the_device_count_uses_the_effective_split_mode(self, monkeypatch, gqa_gguf):
+        # A layer split across pinned cards is counted differently from a tensor
+        # split, so the device count has to be asked the same question the pricing
+        # is: the toggle alone is not the mode the launch runs.
+        config = SimpleNamespace(identifier = "local/model", gguf_file = gqa_gguf, is_gguf = True)
+        monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: 2.0)
+        asked: list[bool] = []
+
+        def _count(
+            gpu_ids,
+            _unused,
+            *,
+            tensor_parallel = False,
+        ):
+            asked.append(tensor_parallel)
+            return 2
+
+        monkeypatch.setattr(ri, "_guard_device_count", _count)
+        _estimate(
+            model_path = gqa_gguf,
+            n_ctx = 8192,
+            tensor_parallel = False,
+            llama_extra_args = ["--split-mode", "tensor"],
+        )
+        assert asked == [True]
 
     def test_unresolvable_config_is_unsizable(self, monkeypatch):
         monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: None)

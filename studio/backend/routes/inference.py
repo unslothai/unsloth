@@ -7727,19 +7727,32 @@ class _GgufMemoryBreakdown(NamedTuple):
 
 
 def _gguf_offloaded_layer_fraction(
-    gpu_memory_mode: Optional[str], gpu_layers: Optional[int], layer_count: Optional[int]
+    gpu_memory_mode: Optional[str],
+    gpu_layers: Optional[int],
+    layer_count: Optional[int],
+    extras: Optional[list[str]] = None,
 ) -> float:
     """Share of the weights the requested offload keeps on the GPU, in [0, 1].
 
     Auto is 1.0: it asks llama.cpp to fit the whole model, so the useful number to
-    show is what a successful load costs.
+    show is what a successful load costs. Unless the extras carry their own count:
+    Auto emits ``-ngl -1`` and the extras are appended after it, so a user count
+    last-wins at the child and the loader reads it back the same way. Manual strips
+    the flag instead, which is why the field owns placement there.
 
     Manual scales by ``--gpu-layers`` over ``block_count + 1``, the ceiling the
     slider uses (the extra one is the output layer). ``--n-cpu-moe`` is NOT modelled
     -- it moves individual expert tensors, not whole blocks -- so a manual MoE
     offload reads high here, which the panel says out loud.
     """
-    if gpu_memory_mode != "manual" or gpu_layers is None or gpu_layers < 0:
+    if gpu_memory_mode != "manual":
+        from core.inference.llama_server_args import parse_gpu_layers_override
+        try:
+            gpu_layers = parse_gpu_layers_override(extras)
+        except ValueError:
+            # Malformed value: llama-server names it better than a guess here would.
+            gpu_layers = None
+    if gpu_layers is None or gpu_layers < 0:
         return 1.0
     if not layer_count or layer_count <= 0:
         # No dims to scale against; 1.0 keeps it consistent with Auto.
@@ -8035,6 +8048,12 @@ def _gguf_memory_breakdown(
     since they do not move while the panel is open, and the KV cache plus compute
     buffers, re-derived every call because that is the half that does.
     """
+    from core.inference.llama_server_args import _effective_tensor_parallel
+
+    # A --split-mode in the extras last-wins over the toggle, and an inherited tensor
+    # LLAMA_ARG_SPLIT_MODE turns it on: the same helper load_model budgets with, so a
+    # launch that runs tensor is not priced as a layer split.
+    tensor_parallel = _effective_tensor_parallel(llama_extra_args, tensor_parallel)
     runtime = _gguf_runtime_bytes(
         gguf_path,
         n_ctx,
@@ -8150,7 +8169,7 @@ def _gguf_memory_breakdown(
     runtime_bytes = runtime.kv_bytes + runtime.compute_bytes + drafter_runtime_bytes
 
     layer_count = runtime.layer_count
-    gpu_fraction = _gguf_offloaded_layer_fraction(gpu_memory_mode, gpu_layers, layer_count)
+    gpu_fraction = _gguf_offloaded_layer_fraction(gpu_memory_mode, gpu_layers, layer_count, extras)
 
     # Only the main weight is split by --gpu-layers. A projector and a drafter are
     # placed by their own flags, so scaling them by the model's layer fraction let
@@ -11716,6 +11735,8 @@ async def estimate_memory(
     fourfold on the cache dtype alone. Where the header cannot supply the dims this
     answers ``kv_estimable = false`` rather than quoting an assumed total.
     """
+    from core.inference.llama_server_args import _effective_tensor_parallel
+
     if is_ollama_manifest_ref(request.model_path):
         # Resolving one writes a .gguf link to disk; that belongs to the load path.
         return EstimateMemoryResponse(available = False, reason = "unsupported_source")
@@ -11778,7 +11799,11 @@ async def estimate_memory(
             n_devices = _guard_device_count(
                 request.selected_gpu_ids or None,
                 None,
-                tensor_parallel = bool(request.tensor_parallel),
+                # Same resolution the breakdown prices with: an extras --split-mode
+                # decides the mode, not the toggle alone.
+                tensor_parallel = _effective_tensor_parallel(
+                    request.llama_extra_args, bool(request.tensor_parallel)
+                ),
             ),
             disable_vision = bool(request.disable_vision),
             gpu_memory_mode = request.gpu_memory_mode,
