@@ -418,7 +418,11 @@ def _gemma_style_counter(catalogue_tokens: int):
     return count
 
 
-def _tool_loop_thread(turn_tokens: int, system_tokens: int = 200, history_turns: int = 6):
+def _tool_loop_thread(
+    turn_tokens: int,
+    system_tokens: int = 200,
+    history_turns: int = 6,
+):
     """A tool loop caught mid-flight: the result of the call just made is last."""
     messages = [{"role": "system", "content": "s" * (system_tokens * 4)}]
     for index in range(history_turns):
