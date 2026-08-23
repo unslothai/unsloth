@@ -8651,6 +8651,53 @@ class LlamaCppBackend:
             "UNSLOTH_ALLOW_HOST_OFFLOAD=1 to load it anyway."
         )
 
+    def _fits_without_paging(
+        self,
+        footprint_bytes: Optional[int],
+        detected_gpus: Iterable[tuple],
+        *,
+        gpu_indices: Optional[Iterable[int]] = None,
+        shared_gpu_ids: Iterable[int] = (),
+        avail_mib: Optional[int] = None,
+        headroom_mib: int = _HOST_RAM_HEADROOM_MIB,
+    ) -> Optional[bool]:
+        """Whether the whole load fits in VRAM, or in VRAM plus host RAM (else False;
+        None when it cannot be told). This is the ``--load-mode`` question: mmap earns
+        its keep by demand-paging a footprint the machine cannot hold, so a load that
+        fits never needs it.
+
+        ``footprint_bytes`` is weights + KV + scratch, not weights alone. The refusal
+        guards next door deliberately price weights only, because understating there
+        can only fail to refuse a load that would have worked. Here the bias runs the
+        other way: understating would claim a fit that isn't one and hand the load a
+        loader that cannot page, so every term the launch knows about is charged.
+
+        Shared iGPU memory is not added on top of host RAM (it IS host RAM), so those
+        devices are dropped from the VRAM term and their weights are carried by the RAM
+        term, the same split ``_launch_host_shortfall_message`` uses. ``gpu_indices``
+        narrows the VRAM term to the devices this launch actually pins; unpinned cards
+        hold nothing for it. Unreadable RAM answers None rather than guessing, which
+        keeps the caller on llama.cpp's own default.
+        """
+        if not footprint_bytes or footprint_bytes <= 0:
+            return None
+        shared = set(shared_gpu_ids or ())
+        pinned = None if gpu_indices is None else {int(idx) for idx in gpu_indices}
+        free_vram_mib = sum(
+            max(0, row[1])
+            for row in (detected_gpus or ())
+            if row[0] not in shared and (pinned is None or row[0] in pinned)
+        )
+        free_vram_bytes = free_vram_mib * 1024 * 1024
+        if footprint_bytes <= free_vram_bytes:
+            return True
+        avail = self._available_system_memory_mib() if avail_mib is None else avail_mib
+        if avail is None:
+            return None
+        # Same headroom the host-offload refusal keeps free for the rest of the system:
+        # filling RAM to the last byte is the paging case this is trying to avoid.
+        return (footprint_bytes - free_vram_bytes) <= max(0, avail - headroom_mib) * 1024 * 1024
+
     METAL_CTX_OVERCOMMIT_ENV = "UNSLOTH_ALLOW_METAL_CTX_OVERCOMMIT"
 
     @staticmethod
@@ -16020,6 +16067,11 @@ class LlamaCppBackend:
                 _placement_verdict_partial = False
                 total_by_idx: dict[int, int] = {}
                 model_size = None  # set in the fit try; used by the APU RAM guard
+                # "none" once the fit proves the load needs no demand paging, else None
+                # for llama.cpp's own default. Bound before the try like the verdict
+                # flags above: the except path (--fit on) falls through to the launch,
+                # which reads it, and a failed fit proves nothing either way.
+                _fit_load_mode: Optional[str] = None
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
                 # before the try so the --fit-on except path still has it (no UnboundLocal).
                 _layer_min_gpus = 1
@@ -18019,12 +18071,61 @@ class LlamaCppBackend:
                     # is a partial-placement verdict. Set last, so any early
                     # return or raise above leaves it False.
                     _placement_verdict_partial = bool(_detected_gpus) and bool(use_fit)
+
+                    # Load mode, from the same numbers the placement just used.
+                    # mmap exists to demand-page a footprint the machine cannot
+                    # hold, and llama.cpp builds its async pinned-buffer upload
+                    # path ONLY when mmap is off (llama-model-loader.cpp,
+                    # upload_backend), so a load that fits wants "none": same
+                    # residency, faster load, no model-sized mapping left behind.
+                    # Anything that does not fit -- or that cannot be priced --
+                    # keeps llama.cpp's "auto", where the mapping is what stops
+                    # an over-committed load from being killed outright.
+                    #
+                    # Charged over the WHOLE footprint, weights and KV and
+                    # scratch, because an understated one would claim a fit that
+                    # is not there. An unsized KV abstains for the same reason:
+                    # the estimator returns 0 without the dims, and a 0 KV term
+                    # on a large-context load is exactly the missing term that
+                    # would turn a paging load into "none".
+                    if self._can_estimate_kv():
+                        _fit_devices = max(1, len(gpu_indices or ()) or len(gpus))
+                        _fit_footprint = (
+                            (model_size or 0)
+                            # Left model_size when the projector was pinned to the
+                            # CPU, but it is still resident, and this term is a
+                            # footprint rather than a VRAM budget.
+                            + _mmproj_pinned_bytes
+                            + kv_cache_bytes
+                            + _mtp_bytes(effective_ctx)
+                            + _compute_buffer_pipeline
+                            + _cc_bytes(effective_ctx, _fit_devices)
+                            + max(0, _soft_overhead)
+                        )
+                        # `gpus`, not `_detected_gpus`: the arch gate empties this
+                        # one when it forces the child onto the CPU with
+                        # "--device none", and crediting VRAM the child never
+                        # reaches would claim a fit that has to come from RAM.
+                        if self._fits_without_paging(
+                            _fit_footprint,
+                            gpus,
+                            gpu_indices = gpu_indices,
+                            shared_gpu_ids = _shared_gpu_ids,
+                        ):
+                            _fit_load_mode = "none"
+                            logger.info(
+                                "Load mode: the whole load (%.1f GB) fits without "
+                                "paging, using --load-mode none.",
+                                _fit_footprint / (1024**3),
+                            )
                 except Exception as e:
                     logger.warning(f"GPU selection failed ({e}), using --fit on")
                     gpu_indices, use_fit = None, True
                     # Not a verdict: this arm never priced anything. Explicit, so
                     # the flag cannot survive from a previous load.
                     _placement_verdict_partial = False
+                    # Same reasoning: an unpriced load keeps llama.cpp's default.
+                    _fit_load_mode = None
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
 
@@ -18990,11 +19091,19 @@ class LlamaCppBackend:
                 # After Model Memory and on the extras it returned, because it
                 # defers to those settings: while either one owns host placement
                 # the per-model pick emits nothing at all.
+                #
+                # The fit's "none" only fills in for a model with no pick of its
+                # own. It sits here rather than inside the policy so the whole
+                # precedence chain stays in one place and unchanged: an explicit
+                # per-model mode wins over the fit, the Model Memory settings win
+                # over both, and a hand-typed flag in the extras still wins by
+                # last-arg because the managed block is emitted ahead of them.
+                _resolved_load_mode = load_mode or _fit_load_mode
                 _load_mode_managed, _mem_extras = apply_load_mode_policy(
                     _mem_extras,
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),
                     weights_in_host_memory = _mem_host_resident,
-                    requested_load_mode = load_mode,
+                    requested_load_mode = _resolved_load_mode,
                 )
                 # Remembered so the reload hint and the duplicate-load comparator do
                 # not demand an mlock this launch deliberately skipped.
