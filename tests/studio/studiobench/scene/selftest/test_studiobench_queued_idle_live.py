@@ -48,7 +48,12 @@ from studiobench.analysis import parity as P  # noqa: E402
 _DOM_JS = _STUDIO_TESTS / "studiobench" / "scene" / "dom.js"
 _PARITY_JS = _STUDIO_TESTS / "studiobench" / "scene" / "parity.js"
 _THREAD_TSX = (
-    _STUDIO_TESTS.parents[1] / "studio" / "frontend" / "src" / "components" / "assistant-ui"
+    _STUDIO_TESTS.parents[1]
+    / "studio"
+    / "frontend"
+    / "src"
+    / "components"
+    / "assistant-ui"
     / "thread.tsx"
 )
 
@@ -91,7 +96,11 @@ def _page(*, control: str, queue_stack: bool, statuses: list[str | None], tail: 
     messages = []
     for i, status in enumerate(statuses):
         role = "user" if i % 2 == 0 else "assistant"
-        body = "the prompt" if role == "user" else f"reply {i} {tail if i == len(statuses) - 1 else ''}"
+        body = (
+            "the prompt"
+            if role == "user"
+            else f"reply {i} {tail if i == len(statuses) - 1 else ''}"
+        )
         attr = 'data-state="running"' if status is None else f'data-status="{status}"'
         messages.append(f'<div data-role="{role}"><div {attr}>{body}</div></div>')
     return f"""<!doctype html><meta charset="utf-8">
@@ -160,7 +169,11 @@ def page(browser):
     pg.close()
 
 
-def _capture(page, state: dict, tail: str = "settled") -> dict:
+def _capture(
+    page,
+    state: dict,
+    tail: str = "settled",
+) -> dict:
     page.set_content(_page(tail = tail, **state))
     # After the content, not before it: `set_content` does not reliably run init scripts, and the
     # symptom is `window.__sb` simply not existing, which reads like a broken instrument.
