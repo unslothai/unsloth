@@ -111,8 +111,7 @@ def test_embed_lm_head_target_redirect(new_model_path: bool, target_modules):
 
 @pytest.mark.slow
 def test_a_repeat_call_with_the_same_targets_still_passes_through():
-    """On a tied model PEFT moves lm_head to modules_to_tie, so the stored config no longer
-    names it while the caller's list still does; the equality check has to count it."""
+    """A tied lm_head lands in modules_to_tie, which the equality check has to count."""
     from unsloth import FastLanguageModel
 
     model, _ = FastLanguageModel.from_pretrained(

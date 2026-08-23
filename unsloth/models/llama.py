@@ -3179,13 +3179,10 @@ class FastLlamaModel:
                 modules_to_save = {}
             modules_to_save = list(modules_to_save)
             old_target_modules += modules_to_save
-            # ensure_weight_tying moves the tied counterpart (lm_head) out of
-            # modules_to_save into modules_to_tie, so the stored config names it on
-            # neither list. Add it to both sides, or a repeat call with identical
-            # arguments reports "parameters are different" -- whether the caller passed
-            # it in target_modules or in modules_to_save, since the latter was just
-            # overwritten by the stored list. Read it off the config object:
-            # to_dict() drops modules_to_tie.
+            # ensure_weight_tying moves the tied counterpart (lm_head) into
+            # modules_to_tie, so the stored config names it on neither list above. Add it
+            # to both sides or a repeat call reports "parameters are different". Read it
+            # off the config object: to_dict() drops modules_to_tie.
             modules_to_tie = list(
                 getattr(model.peft_config["default"], "modules_to_tie", None) or []
             )

@@ -927,9 +927,8 @@ def _full_weight_embedding_elements(arch: ModelArchConfig, target_modules) -> in
 def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: list) -> int:
     all_linear = _targets_all_linear(target_modules)
     selected_modules = list(DEFAULT_TARGET_MODULES) if all_linear else target_modules
-    # An embedding-only request trains no projection at all, so Studio's CPT path swaps in
-    # the default projections (worker.py). Estimate those adapters too, or the request
-    # under-counts and can pick a GPU that then OOMs.
+    # Studio's CPT path swaps an embedding-only list for the default projections
+    # (worker.py); count those adapters too, or the estimate picks a GPU that then OOMs.
     if (
         not all_linear
         and _full_weight_embedding_elements(arch, target_modules)
