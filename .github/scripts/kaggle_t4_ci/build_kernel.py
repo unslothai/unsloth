@@ -505,6 +505,7 @@ def build_driver(
     after_gpu: str | None = None,
     prefetch_repos: tuple[str, ...] = (),
     vram_source: dict | None = None,
+    after_gpu_concurrent: bool = False,
 ) -> dict:
     """Kernel notebook that runs the payloads across the session's GPUs.
 
@@ -547,6 +548,14 @@ def build_driver(
     # Per-payload VRAM for the admission check. Off-queue payloads are absent
     # on purpose: neither takes a card, so neither has a budget to consume.
     vram_gb = {name: float(getattr(leg, "vram_gb", 1.0)) for name, leg in vram_source.items()}
+    # Studio's halves are not legs and have no Leg record. The test half is the
+    # only one that takes a card, and it is priced from what it loads: a 2B
+    # chat model at UD-Q4_K_XL plus a 0.5B LoRA. Deliberately generous -- an
+    # under-price here is what would let it share with something that does not
+    # fit, and the whole admission check is only as honest as its inputs.
+    for name in (cpu_lane, after_gpu):
+        if name:
+            vram_gb.setdefault(name, 2.2)
     prefetch_blob = ""
     if prefetch_repos:
         prefetch_blob = _encode_bytes(
@@ -613,6 +622,15 @@ ORDER = {order!r}
 # was.
 CPU_LANE = {cpu_lane!r}
 AFTER_GPU = {after_gpu!r}
+# When true, AFTER_GPU does not wait for the cards to drain. It is admitted to
+# a card by the same VRAM check the legs use, so it runs BESIDE a light leg
+# rather than behind the last one.
+#
+# Worth ~211s in simulation, because Studio's install-then-test chain is the
+# critical path while the legs have slack. What it costs is real and is why it
+# is a flag and not the default: Studio then sees ONE card instead of two, and
+# its own device selection is part of what it exists to prove.
+AFTER_GPU_CONCURRENT = {after_gpu_concurrent!r}
 
 # Measured peak_reserved_gb per payload (legs.Leg.vram_gb), and the budget a
 # single card will admit. A T4 reports 14.56 GB usable; the budget is 13.0 so
@@ -936,19 +954,70 @@ for gpu_index in range(N_GPU):
         t = threading.Thread(target=worker, args=(gpu_index, seed), daemon=False)
         t.start()
         threads.append(t)
+def _after_gpu_blocked():
+    """The install half must have SUCCEEDED before the test half is worth
+    running: it is what puts the interpreter and the llama.cpp on disk, so
+    without it this half dies on a missing venv and reports that as a Studio
+    regression."""
+    prior = results.get(CPU_LANE) if CPU_LANE else None
+    return bool(CPU_LANE) and (prior is None or prior.get("returncode") != 0)
+
+
+def _after_gpu_skip():
+    results[AFTER_GPU] = {{
+        "returncode": None, "gpu": None, "seconds": 0.0,
+        "error": "the install lane did not succeed, so there is nothing "
+                 "installed to test",
+        "kernel": None, "output_exists": False,
+    }}
+    print("{DRIVER_SENTINEL}_SKIPPED " + json.dumps({{AFTER_GPU: results[AFTER_GPU]}}),
+          flush=True)
+
+
+# Concurrent placement: AFTER_GPU takes a card as soon as its install lane is
+# done and some card has the VRAM, rather than waiting for the whole queue.
+after_thread = None
+if AFTER_GPU and AFTER_GPU_CONCURRENT:
+    def _after_gpu_lane():
+        if cpu_thread is not None:
+            cpu_thread.join()
+        if _after_gpu_blocked():
+            _after_gpu_skip()
+            return
+        chosen = None
+        while chosen is None:
+            with pending_lock:
+                for g in range(N_GPU):
+                    if _admit(g, AFTER_GPU):
+                        chosen = g
+                        break
+            if chosen is None:
+                # Every card is full. Something is running or the legs would
+                # have finished, so wait for a release rather than spin.
+                time.sleep(1.0)
+        try:
+            print("{DRIVER_SENTINEL}_AFTER_GPU_SHARED " + json.dumps(
+                {{"payload": AFTER_GPU, "gpu": chosen}}), flush=True)
+            run_one(AFTER_GPU, chosen, len(ORDER) + 1)
+        finally:
+            _release(chosen, AFTER_GPU)
+    after_thread = threading.Thread(target = _after_gpu_lane, daemon = False)
+    after_thread.start()
+
 for t in threads:
     t.join()
 
-# AFTER_GPU wants every card, so it waits for the queue to drain rather than
-# taking one from it. Studio's own driver keeps both T4s visible on purpose --
-# "Studio's own device selection is part of what is under test; masking one
-# would test a machine nobody has" -- and that stays true here.
+# On the NON-concurrent path AFTER_GPU wants every card, so it waits for the
+# queue to drain. Studio's driver keeps both T4s visible on purpose -- "Studio's
+# own device selection is part of what is under test; masking one would test a
+# machine nobody has" -- and that stays true here.
 if cpu_thread is not None:
     cpu_thread.join()
+if after_thread is not None:
+    after_thread.join()
 
-if AFTER_GPU:
-    prior = results.get(CPU_LANE) if CPU_LANE else None
-    if CPU_LANE and (prior is None or prior.get("returncode") != 0):
+if AFTER_GPU and not AFTER_GPU_CONCURRENT:
+    if _after_gpu_blocked():
         # Do NOT run it. The install half is what puts the interpreter and the
         # llama.cpp on disk, so without it this half fails on a missing venv
         # and reports that as a Studio regression. Recording the skip keeps the
@@ -959,8 +1028,7 @@ if AFTER_GPU:
                      "installed to test",
             "kernel": None, "output_exists": False,
         }}
-        print("{DRIVER_SENTINEL}_SKIPPED " + json.dumps({{AFTER_GPU: results[AFTER_GPU]}}),
-              flush=True)
+        _after_gpu_skip()
     else:
         run_one(AFTER_GPU, None, len(ORDER) + 1)
 
@@ -1089,6 +1157,7 @@ def build_kernel(
     skip_reference: bool = False,
     studio: dict | None = None,
     prefetch_repos: tuple[str, ...] = (),
+    after_gpu_concurrent: bool = False,
 ) -> dict:
     payloads = {}
     isolation = {}
@@ -1133,6 +1202,7 @@ def build_kernel(
         after_gpu = after_gpu,
         prefetch_repos = prefetch_repos,
         vram_source = legs_by_payload,
+        after_gpu_concurrent = after_gpu_concurrent,
     )
 
 
@@ -1171,6 +1241,13 @@ def main() -> int:
         help = "build with no band check at all. Only for the one run that recaptures a reference",
     )
     ap.add_argument("--per-run-timeout", type = int, default = 2400)
+    ap.add_argument(
+        "--studio-concurrent",
+        action = "store_true",
+        help = "let the Studio GPU half share a card with a light training leg "
+        "instead of waiting for the queue to drain. Faster, but Studio then "
+        "sees one T4 rather than two, which narrows what it proves",
+    )
     ap.add_argument(
         "--no-prefetch",
         action = "store_true",
@@ -1244,6 +1321,7 @@ def main() -> int:
             # load -- which would be pure network cost, on a lane whose entire
             # justification is that it is free.
             prefetch_repos = () if args.no_prefetch else PREFETCH_REPOS,
+            after_gpu_concurrent = args.studio_concurrent,
         )
         out.parent.mkdir(parents = True, exist_ok = True)
         out.write_text(json.dumps(driver, indent = 1), encoding = "utf-8")

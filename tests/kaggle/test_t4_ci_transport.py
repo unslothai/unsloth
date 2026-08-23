@@ -271,6 +271,7 @@ def _drive_packed(
     studio = None,
     prefetch_repos = (),
     hub = None,
+    after_gpu_concurrent = False,
 ):
     driver = build_kernel.build_kernel(
         SMOKE_DIR,
@@ -282,6 +283,7 @@ def _drive_packed(
         skip_reference = True,
         studio = studio,
         prefetch_repos = prefetch_repos,
+        after_gpu_concurrent = after_gpu_concurrent,
     )
     stub = _PackedStub(
         gpus = gpus,
@@ -2343,9 +2345,14 @@ def test_the_prefetch_list_matches_the_models_the_legs_actually_load():
     assert set(PREFETCH_REPOS) == defaults, (
         f"prefetching {sorted(set(PREFETCH_REPOS))} but the legs load {sorted(defaults)}"
     )
-    # gpt-oss first: ~12 GB against ~1 GB, and it is the leg the whole start
-    # order is arranged around, so it is the one that needs the head start.
-    assert "gpt-oss" in PREFETCH_REPOS[0], PREFETCH_REPOS
+    # Qwen FIRST, and the reasoning inverted once the schedule was simulated
+    # end to end. gpt-oss is bigger, but it is wanted by ONE leg whose setup
+    # does not finish until ~160s anyway, whereas the small model gates THREE
+    # legs and costs ~20s. Fetching the big one first pushes the small one out
+    # past the moment the first leg is ready and delays three legs to give one
+    # a head start it did not need.
+    assert "Qwen" in PREFETCH_REPOS[0], PREFETCH_REPOS
+    assert "gpt-oss" in PREFETCH_REPOS[-1], PREFETCH_REPOS
 
 
 def test_the_generated_prefetch_cell_runs_not_merely_compiles():
@@ -2579,3 +2586,101 @@ def test_the_declared_vram_matches_what_the_legs_reported():
         # ...and not so far above it that the budget stops admitting anything.
         assert declared <= peak + 1.5, (name, declared, peak)
     assert measured["card_total_gb"] > 13.0, measured
+
+
+# ------------------------------------------------- Studio sharing a card
+
+
+def test_studio_waits_for_the_queue_by_default(tmp_path, monkeypatch):
+    """The default keeps both T4s visible to Studio.
+
+    Sharing is faster and narrower, so it must be something someone turned on,
+    not something that arrived with an unrelated change.
+    """
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", AMBIENT_CUDA)
+    durations = {f"t4_{n}.ipynb": 0.4 for n in ALL_FOUR}
+    durations[STUDIO_INSTALL] = 0.1
+    driven = _drive_packed(
+        tmp_path, ALL_FOUR, gpus = 2, studio = STUDIO, durations = durations
+    )
+    calls = {c["notebook"]: c for c in driven["stub"].papermill}
+    assert calls[STUDIO_TEST]["cuda"] == AMBIENT_CUDA, calls[STUDIO_TEST]
+    legs = [(c["notebook"], c["cuda"]) for c in driven["stub"].papermill
+            if c["notebook"].startswith("t4_")]
+    assert len(legs) == len(ALL_FOUR)
+
+
+def test_studio_concurrent_takes_a_card_gptoss_is_not_on(tmp_path):
+    """--studio-concurrent trades coverage for time and must pay honestly.
+
+    Two things have to hold. Studio is PINNED to a card, because sharing means
+    it is no longer choosing between two. And it is admitted by the same VRAM
+    check the legs use, so it can never land beside gptoss: 12.78 + 2.2 is
+    14.98 on a card budgeted to 13.0, which is the pairing that came back as an
+    OOM reading like a code failure.
+
+    Driven with gptoss as the ONLY leg, so the placement is deterministic
+    rather than a race between the stub's durations. An earlier version used
+    all four legs and asserted on recorded overlaps; the small legs finished
+    while Studio was still building its venv, so no overlap was ever recorded
+    and deleting the VRAM check left the test green.
+    """
+    driven = _drive_packed(
+        tmp_path, ["gptoss"], gpus = 2, studio = STUDIO,
+        durations = {"t4_gptoss.ipynb": 4.0, STUDIO_INSTALL: 0.05},
+        after_gpu_concurrent = True,
+    )
+    calls = {c["notebook"]: c for c in driven["stub"].papermill}
+    assert STUDIO_TEST in calls, sorted(calls)
+    assert calls[STUDIO_TEST]["cuda"] in ("0", "1"), calls[STUDIO_TEST]
+    assert calls["t4_gptoss.ipynb"]["cuda"] in ("0", "1"), calls["t4_gptoss.ipynb"]
+    assert calls[STUDIO_TEST]["cuda"] != calls["t4_gptoss.ipynb"]["cuda"], (
+        f"Studio was put on the same card as gptoss "
+        f"({calls[STUDIO_TEST]['cuda']}): 12.78 + 2.2 GB on a 13.0 GB budget"
+    )
+    for card, peak in driven["stub"].peak_card_gb.items():
+        assert peak <= 13.0, (card, peak, driven["stub"].same_card_overlaps)
+
+
+def test_studio_concurrent_still_skips_when_its_install_failed(tmp_path):
+    """The dependency survives the faster path.
+
+    Running the assertions against a half-built tree fails on a missing venv,
+    which reads like the code under test broke rather than like the install
+    did -- and on this path the test half is started from its own thread, so
+    the gate had to be re-implemented rather than inherited.
+    """
+    class _InstallFails(_PackedStub):
+        def run(self, cmd, **kw):
+            cmd = [str(c) for c in cmd]
+            if "papermill" in cmd and STUDIO_INSTALL in " ".join(cmd):
+                self.papermill.append({"notebook": STUDIO_INSTALL, "cuda": None,
+                                       "kernel": None, "compile_location": None})
+                Path(cmd[cmd.index("papermill") + 2]).write_text("{}", encoding = "utf-8")
+                return types.SimpleNamespace(returncode = 1, stdout = "", stderr = "")
+            return super().run(cmd, **kw)
+
+    driver = build_kernel.build_kernel(
+        SMOKE_DIR, ALL_FOUR, unsloth_ref = "main", zoo_ref = "main", extra_args = (),
+        per_run_timeout = 60, skip_reference = True, studio = STUDIO,
+        after_gpu_concurrent = True,
+    )
+    stub = _InstallFails(gpus = 2, durations = {f"t4_{n}.ipynb": 0.3 for n in ALL_FOUR})
+    stub.root = tmp_path
+    stub.venv_root = tmp_path / "venvs"
+    saved = sys.modules["subprocess"]
+    sys.modules["subprocess"] = stub
+    namespace: dict = {}
+    try:
+        for cell in driver["cells"][:2]:
+            source = ("".join(cell["source"])
+                      .replace("/tmp/t4ci_venvs", str(tmp_path / "venvs"))
+                      .replace("/kaggle/working", str(tmp_path)))
+            exec(compile(source, "<driver-cell>", "exec"), namespace)
+    finally:
+        sys.modules["subprocess"] = saved
+    results = namespace.get("results") or {}
+    assert STUDIO_TEST in results, sorted(results)
+    assert results[STUDIO_TEST]["returncode"] is None, results[STUDIO_TEST]
+    assert "install lane did not succeed" in results[STUDIO_TEST]["error"]
+    assert STUDIO_TEST not in [c["notebook"] for c in stub.papermill]
