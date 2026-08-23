@@ -20,6 +20,7 @@ SKIP=0
     sed -n '/^_setup_run_smi()/,/^}/p'              "$SETUP_SH"
     sed -n '/^_setup_rocminfo_gpu_records()/,/^}/p' "$SETUP_SH"
     sed -n '/^_setup_amd_smi_gpu_records()/,/^}/p'  "$SETUP_SH"
+    sed -n '/^_setup_amd_smi_hip_order()/,/^}/p'  "$SETUP_SH"
     # The real initialiser group, not a restated one. Seeding these here would hide the
     # thing that matters under `set -u`: a variable the selection block reads but no arm
     # assigns aborts `unsloth studio update` outright.
@@ -35,6 +36,8 @@ grep -q '_setup_amd_record=' "$WORK/block.sh" || {
     echo "FATAL: AMD detection/selection block not found in $SETUP_SH" >&2; exit 1; }
 grep -q '_setup_amd_smi_gpu_records' "$WORK/block.sh" || {
     echo "FATAL: the amd-smi record parser is not wired into the block" >&2; exit 1; }
+grep -q '_setup_amd_smi_hip_order' "$WORK/block.sh" || {
+    echo "FATAL: the amd-smi HIP reorder is not wired into the block" >&2; exit 1; }
 bash -n "$WORK/block.sh" || { echo "FATAL: extracted block does not parse" >&2; exit 1; }
 
 # The same two halves, split, for the arms that reach selection without probing anything.
@@ -65,14 +68,17 @@ echo "rocminfo" >> "$PROBE_LOG"
 cat "$STUB_ROCMINFO"
 STUB
 # `amd-smi list` carries no gfx token; keeping the subcommands distinct tests that.
+# `list -e` is a third answer again: it carries HIP_ID and nothing else of interest, and
+# an older CLI rejects the flag outright, which is the STUB_AMDSMI_E="" case.
 cat > "$WORK/smi/amd-smi" <<'STUB'
 #!/bin/sh
-echo "amd-smi $1" >> "$PROBE_LOG"
+echo "amd-smi $*" >> "$PROBE_LOG"
 [ -s "$STUB_AMDSMI" ] || exit 1
-case "$1" in
-    list)   sed -n 's/^\(GPU: [0-9]*\).*/\1  BDF: 0000:03:00.0  UUID: aaaa-bbbb  KFD_ID: 1/p' "$STUB_AMDSMI" ;;
+case "$1 $2" in
+    "list -e") [ -z "${STUB_AMDSMI_E:-}" ] || cat "$STUB_AMDSMI_E" ;;
+    "list "*)  sed -n 's/^\(GPU: [0-9]*\).*/\1  BDF: 0000:03:00.0  UUID: aaaa-bbbb  KFD_ID: 1/p' "$STUB_AMDSMI" ;;
     # A driver that answers `list` but not `static --asic`: detected, zero records.
-    static) [ -n "${STUB_AMDSMI_MUTE_STATIC:-}" ] || cat "$STUB_AMDSMI" ;;
+    "static "*) [ -n "${STUB_AMDSMI_MUTE_STATIC:-}" ] || cat "$STUB_AMDSMI" ;;
 esac
 STUB
 chmod +x "$WORK/roc/rocminfo" "$WORK/smi/amd-smi"
@@ -97,6 +103,7 @@ summary() {
     env -i PATH="$_path" PROBE_LOG="$WORK/probes" \
         STUB_ROCMINFO="$1" STUB_AMDSMI="$2" \
         ${STUB_AMDSMI_MUTE_STATIC:+STUB_AMDSMI_MUTE_STATIC=1} \
+        ${STUB_AMDSMI_E:+STUB_AMDSMI_E="$STUB_AMDSMI_E"} \
         ${3:+HIP_VISIBLE_DEVICES="$3"} \
         /bin/bash -c 'set -euo pipefail; . "$1"; printf "%s|%s\n" "$_setup_gfx" "$_setup_mkt"' \
         _ "$WORK/block.sh"
@@ -116,7 +123,9 @@ kfd_shape_summary() {
         _ "$WORK/init.sh" "$WORK/select.sh" 2>&1
 }
 # grep -c prints 0 and exits 1 when there is no match, so the status is discarded.
-probe_count() { _n=$(grep -c "^$1" "$WORK/probes" 2>/dev/null) || true; echo "${_n:-0}"; }
+# Anchored at both ends: `amd-smi list` must not also count `amd-smi list -e`.
+probe_count() { _n=$(grep -c "^$1\$" "$WORK/probes" 2>/dev/null) || true; echo "${_n:-0}"; }
+probe_prefix_count() { _n=$(grep -c "^$1" "$WORK/probes" 2>/dev/null) || true; echo "${_n:-0}"; }
 
 cat > "$WORK/roc_gpu" <<'EOF'
 Agent 1
@@ -240,7 +249,7 @@ echo "=== rocminfo enumerates the device ==="
 assert_eq "the GPU agent names the GPU, not the processor" \
     "gfx1151|AMD Radeon Graphics" "$(summary "$WORK/roc_gpu" "$WORK/empty")"
 assert_eq "rocminfo is run once, not once per field" 1 "$(probe_count rocminfo)"
-assert_eq "and amd-smi is not consulted at all" 0 "$(probe_count amd-smi)"
+assert_eq "and amd-smi is not consulted at all" 0 "$(probe_prefix_count amd-smi)"
 assert_eq "the same answer with amd-smi installed and disagreeing" \
     "gfx1151|AMD Radeon Graphics" "$(summary "$WORK/roc_gpu" "$WORK/smi_fixture")"
 
@@ -268,8 +277,10 @@ assert_eq "amd-smi supplies both the arch and the name" \
 # `static --asic` parse yields both fields. Pinned: the counts move if an arm is
 # reordered or the parse is split again.
 assert_eq "list is asked first, and carries no gfx" 2 "$(probe_count 'amd-smi list')"
+assert_eq "and list -e is asked once, for the HIP mapping" \
+    1 "$(probe_count 'amd-smi list -e')"
 assert_eq "one static --asic parse supplies both the arch and the name" \
-    1 "$(probe_count 'amd-smi static')"
+    1 "$(probe_count 'amd-smi static --asic')"
 
 echo "=== a device that reported no name of its own ==="
 assert_eq "keeps its arch and stays unnamed" \
@@ -296,6 +307,64 @@ else
     assert_eq "neither tool installed reports nothing" "|" "$(summary - -)"
     assert_eq "both installed but silent reports nothing" "|" "$(summary "$WORK/empty" "$WORK/empty")"
 fi
+
+# amd-smi discovery order is not HIP order; `amd-smi list -e` publishes HIP_ID as the map.
+# On this host discovery 0/1/2 is HIP 2/1/0, so an untranslated mask picks the wrong arch,
+# and _setup_gfx is what becomes --rocm-gfx.
+cat > "$WORK/smi_e_reversed" <<'EOF'
+GPU: 0
+    HIP_ID: 2
+GPU: 1
+    HIP_ID: 1
+GPU: 2
+    HIP_ID: 0
+EOF
+cat > "$WORK/smi_e_identity" <<'EOF'
+GPU: 0
+    HIP_ID: 0
+GPU: 1
+    HIP_ID: 1
+GPU: 2
+    HIP_ID: 2
+EOF
+# hip_id reads N/A when the library cannot reach a device's KFD node. A partial map is
+# not a mapping, so discovery order is kept rather than half-translated.
+cat > "$WORK/smi_e_partial" <<'EOF'
+GPU: 0
+    HIP_ID: 2
+GPU: 1
+    HIP_ID: N/A
+GPU: 2
+    HIP_ID: 0
+EOF
+# Two devices claiming one HIP id describe something other than a 1:1 device mapping.
+cat > "$WORK/smi_e_collide" <<'EOF'
+GPU: 0
+    HIP_ID: 1
+GPU: 1
+    HIP_ID: 1
+GPU: 2
+    HIP_ID: 0
+EOF
+
+echo "=== amd-smi ordinals are translated into HIP order ==="
+assert_eq "HIP 0 is discovery 2" "gfx1201|AMD Radeon AI PRO R9700" \
+    "$(STUB_AMDSMI_E="$WORK/smi_e_reversed" summary "$WORK/empty" "$WORK/smi_three" 0)"
+assert_eq "HIP 2 is discovery 0" "gfx90a|AMD Instinct MI210" \
+    "$(STUB_AMDSMI_E="$WORK/smi_e_reversed" summary "$WORK/empty" "$WORK/smi_three" 2)"
+assert_eq "the middle device is unmoved" "gfx1100|AMD Radeon RX 7900 XTX" \
+    "$(STUB_AMDSMI_E="$WORK/smi_e_reversed" summary "$WORK/empty" "$WORK/smi_three" 1)"
+assert_eq "an identity map changes nothing" "gfx90a|AMD Instinct MI210" \
+    "$(STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three" 0)"
+assert_eq "an older CLI that rejects -e keeps discovery order" "gfx90a|AMD Instinct MI210" \
+    "$(summary "$WORK/empty" "$WORK/smi_three" 0)"
+assert_eq "a partial map is declined, not half-applied" "gfx90a|AMD Instinct MI210" \
+    "$(STUB_AMDSMI_E="$WORK/smi_e_partial" summary "$WORK/empty" "$WORK/smi_three" 0)"
+assert_eq "colliding hip ids are declined" "gfx90a|AMD Instinct MI210" \
+    "$(STUB_AMDSMI_E="$WORK/smi_e_collide" summary "$WORK/empty" "$WORK/smi_three" 0)"
+# rocminfo is an HSA client, so its agent list is already in ROCr order.
+assert_eq "the rocminfo path is not reordered by a HIP map" "gfx1100|AMD Radeon RX 7900 XTX" \
+    "$(STUB_AMDSMI_E="$WORK/smi_e_reversed" summary "$WORK/roc_three_dup" "$WORK/empty" 1)"
 
 echo "=== detected, but no arm produced a record ==="
 # Under `set -euo pipefail` an unassigned variable is not an empty string, it is a fatal

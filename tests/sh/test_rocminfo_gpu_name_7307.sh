@@ -53,6 +53,37 @@ assert_eq "install.sh and setup.sh record selectors are identical" \
 _smi_install=$(sed -n '/^_amd_smi_gpu_records()/,/^}/p' "$INSTALL_SH" | tail -n +2)
 _smi_setup=$(sed -n '/^_setup_amd_smi_gpu_records()/,/^}/p' "$SETUP_SH" | tail -n +2)
 assert_eq "install.sh and setup.sh amd-smi parsers are identical" "$_smi_install" "$_smi_setup"
+# So does the amd-smi-to-HIP reorder: it decides which record the mask lands on.
+_hip_install=$(sed -n '/^_amd_smi_hip_order()/,/^}/p' "$INSTALL_SH" | tail -n +2)
+_hip_setup=$(sed -n '/^_setup_amd_smi_hip_order()/,/^}/p' "$SETUP_SH" | tail -n +2)
+assert_eq "install.sh and setup.sh amd-smi HIP reorders are identical" "$_hip_install" "$_hip_setup"
+[ -n "$_hip_install" ] || { echo "FATAL: no amd-smi HIP reorder found" >&2; exit 1; }
+
+# POSIX awk forbids a physical newline in a -v value, and gawk --posix makes it fatal, so
+# the multi-line record list has to reach awk some other way. Run the real helper under a
+# strict awk when the host has one; a host without it records a skip rather than a pass.
+if gawk --posix 'BEGIN { exit 0 }' >/dev/null 2>&1; then
+    _POSIX_AWK_DIR=$(mktemp -d)
+    printf '#!/bin/sh\nexec %s --posix "$@"\n' "$(command -v gawk)" > "$_POSIX_AWK_DIR/awk"
+    chmod +x "$_POSIX_AWK_DIR/awk"
+    _HIP_FILE=$(mktemp)
+    sed -n '/^_amd_smi_hip_order()/,/^}/p' "$INSTALL_SH" > "$_HIP_FILE"
+    # shellcheck disable=SC1090
+    . "$_HIP_FILE"
+    _RECS="gfx90a|AMD Instinct MI210
+gfx1100|AMD Radeon RX 7900 XTX"
+    echo "=== strict awk ==="
+    assert_eq "the HIP reorder runs under a POSIX awk" \
+        "gfx1100|AMD Radeon RX 7900 XTX gfx90a|AMD Instinct MI210" \
+        "$(printf 'GPU: 0\n    HIP_ID: 1\nGPU: 1\n    HIP_ID: 0\n' \
+           | PATH="$_POSIX_AWK_DIR:$PATH" _amd_smi_hip_order "$_RECS" | tr '\n' ' ' | sed 's/ $//')"
+    assert_eq "and declines cleanly there too, rather than dying" \
+        "gfx90a|AMD Instinct MI210 gfx1100|AMD Radeon RX 7900 XTX" \
+        "$(printf '' | PATH="$_POSIX_AWK_DIR:$PATH" _amd_smi_hip_order "$_RECS" | tr '\n' ' ' | sed 's/ $//')"
+    rm -rf "$_POSIX_AWK_DIR" "$_HIP_FILE"
+else
+    echo "  SKIP: no gawk --posix on this host, strict-awk check not run"
+fi
 [ -n "$_smi_install" ] || { echo "FATAL: no amd-smi record parser found" >&2; exit 1; }
 
 # Strix Halo lists the misleading CPU marketing name first.

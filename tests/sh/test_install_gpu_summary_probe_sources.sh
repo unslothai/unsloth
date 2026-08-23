@@ -14,6 +14,7 @@ FAIL=0
 {
     sed -n '/^_rocminfo_gpu_records()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_amd_smi_gpu_records()/,/^}/p' "$INSTALL_SH"
+    sed -n '/^_amd_smi_hip_order()/,/^}/p'  "$INSTALL_SH"
     echo ""
     # Extract the probe and selection block.
     awk '/^    _gpu_disp_gfx_all=""/ {on=1}
@@ -24,6 +25,8 @@ grep -q '_gpu_disp_record=' "$WORK/block.sh" || {
     echo "FATAL: GPU summary probe block not found in $INSTALL_SH" >&2; exit 1; }
 grep -q '_amd_smi_gpu_records' "$WORK/block.sh" || {
     echo "FATAL: the amd-smi record parser is not wired into the block" >&2; exit 1; }
+grep -q '_amd_smi_hip_order' "$WORK/block.sh" || {
+    echo "FATAL: the amd-smi HIP reorder is not wired into the block" >&2; exit 1; }
 
 # Build PATH from scratch so host AMD tools cannot leak into the test.
 mkdir -p "$WORK/base" "$WORK/roc" "$WORK/smi"
@@ -41,9 +44,12 @@ STUB
 cat > "$WORK/smi/amd-smi" <<'STUB'
 #!/bin/sh
 [ -s "$STUB_AMDSMI" ] || exit 1
-case "$1" in
-    list)   sed -n 's/^\(GPU: [0-9]*\).*/\1  BDF: 0000:03:00.0  UUID: aaaa-bbbb  KFD_ID: 1/p' "$STUB_AMDSMI" ;;
-    static) cat "$STUB_AMDSMI" ;;
+case "$1 $2" in
+    # `list -e` carries HIP_ID and nothing else of interest; an older CLI rejects the
+    # flag outright, which is the STUB_AMDSMI_E="" case.
+    "list -e")  [ -z "${STUB_AMDSMI_E:-}" ] || cat "$STUB_AMDSMI_E" ;;
+    "list "*)   sed -n 's/^\(GPU: [0-9]*\).*/\1  BDF: 0000:03:00.0  UUID: aaaa-bbbb  KFD_ID: 1/p' "$STUB_AMDSMI" ;;
+    "static "*) cat "$STUB_AMDSMI" ;;
 esac
 STUB
 chmod +x "$WORK/roc/rocminfo" "$WORK/smi/amd-smi"
@@ -66,6 +72,7 @@ summary() {
     # install.sh runs this block under `set -e`; match it.
     env -i PATH="$_path" \
         STUB_ROCMINFO="$1" STUB_AMDSMI="$2" \
+        ${STUB_AMDSMI_E:+STUB_AMDSMI_E="$STUB_AMDSMI_E"} \
         ${3:+HIP_VISIBLE_DEVICES="$3"} \
         /bin/bash -c 'set -eu; . "$1"; printf "%s|%s\n" "$_gpu_disp_gfx" "$_gpu_disp_mkt"' _ "$WORK/block.sh"
 }
@@ -285,6 +292,36 @@ assert_eq "and the duplicate before it keeps its own name" \
 # The second identical card must still be a device, not a line to fold away.
 assert_eq "two identical cards are still two devices" \
     "gfx1201|AMD Radeon AI PRO R9700" "$(summary "$WORK/roc_twins" "$WORK/empty" 2)"
+
+# amd-smi discovery order is not HIP order; `amd-smi list -e` publishes HIP_ID as the map.
+# Discovery 0/1/2 is HIP 2/1/0 here, so an untranslated mask names the wrong card.
+cat > "$WORK/smi_e_reversed" <<'EOF'
+GPU: 0
+    HIP_ID: 2
+GPU: 1
+    HIP_ID: 1
+GPU: 2
+    HIP_ID: 0
+EOF
+# A partial map (hip_id reads N/A when a KFD node is unreachable) is not a mapping.
+cat > "$WORK/smi_e_partial" <<'EOF'
+GPU: 0
+    HIP_ID: 2
+GPU: 1
+    HIP_ID: N/A
+GPU: 2
+    HIP_ID: 0
+EOF
+
+echo "=== amd-smi ordinals are translated into HIP order ==="
+assert_eq "HIP 0 is discovery 2" "gfx1201|AMD Radeon AI PRO R9700" \
+    "$(STUB_AMDSMI_E="$WORK/smi_e_reversed" summary "$WORK/empty" "$WORK/smi_three" 0)"
+assert_eq "HIP 2 is discovery 0" "gfx90a|AMD Instinct MI210" \
+    "$(STUB_AMDSMI_E="$WORK/smi_e_reversed" summary "$WORK/empty" "$WORK/smi_three" 2)"
+assert_eq "an older CLI that rejects -e keeps discovery order" "gfx90a|AMD Instinct MI210" \
+    "$(summary "$WORK/empty" "$WORK/smi_three" 0)"
+assert_eq "a partial map is declined, not half-applied" "gfx90a|AMD Instinct MI210" \
+    "$(STUB_AMDSMI_E="$WORK/smi_e_partial" summary "$WORK/empty" "$WORK/smi_three" 0)"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
