@@ -235,26 +235,51 @@ def compare_rows(base_row: Optional[dict], treat_row: Optional[dict]) -> dict:
     state. That is not worthless, but it is not coverage of the named action and must not be
     counted as it. So it gets its own verdict, and an action that never ran on either arm can no
     longer contribute a pass to anything.
+
+    WHICH SIDE WENT IDLE IS PART OF THE READING, and `one_sided` carries it. Both arms failing to
+    reach a slot costs coverage and nothing else -- that is the missed-slot case the mutation study
+    measured, and it cannot move a verdict. ONE arm running an action the other could not is a
+    different fact entirely: the two builds behaved differently, which is the question this whole
+    instrument asks. A control that no longer opens is exactly that shape, and it is the one
+    regression class that produces no digest to differ. So the asymmetry is named here rather than
+    flattened into the same bucket, and the caller decides what to do with it.
     """
+    ran: dict[str, bool] = {}
     for label, row in (("base", base_row), ("treatment", treat_row)):
         if not isinstance(row, dict):
             return {
                 "verdict": NOT_COMPARABLE,
                 "reason": f"the {label} arm has no row for this action",
                 "moved": [],
+                "one_sided": "",
                 "style_verdict": NOT_COMPARABLE,
                 "style_reason": "",
             }
-        if not row.get("ran"):
-            reason = row.get("reason") or "no reason recorded"
-            return {
-                "verdict": NOT_EXERCISED,
-                "moved": [],
-                "reason": f"the action did not run on the {label} arm ({reason}), so any "
-                "agreement here is about a surface nothing touched",
-                "style_verdict": NOT_EXERCISED,
-                "style_reason": "",
-            }
+        ran[label] = bool(row.get("ran"))
+    if not all(ran.values()):
+        # Named after the arm that DID run, so an empty string is the symmetric case.
+        live = [label for label in ("base", "treatment") if ran[label]]
+        label = "base" if not ran["base"] else "treatment"
+        row = base_row if label == "base" else treat_row
+        assert isinstance(row, dict)
+        reason = row.get("reason") or "no reason recorded"
+        detail = (
+            f"the action did not run on the {label} arm ({reason}), so any "
+            "agreement here is about a surface nothing touched"
+        )
+        if live:
+            detail = (
+                f"the action RAN on the {live[0]} arm and did not run on the {label} arm "
+                f"({reason}), so the two builds did not behave the same way"
+            )
+        return {
+            "verdict": NOT_EXERCISED,
+            "moved": [],
+            "one_sided": live[0] if live else "",
+            "reason": detail,
+            "style_verdict": NOT_EXERCISED,
+            "style_reason": "",
+        }
     assert base_row is not None and treat_row is not None
     return compare(base_row.get("parity"), treat_row.get("parity"))
 

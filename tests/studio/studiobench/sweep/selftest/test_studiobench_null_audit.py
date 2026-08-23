@@ -534,3 +534,145 @@ def test_the_refusal_exits_two_not_one_through_the_cli(tmp_path, monkeypatch, ca
     )
     assert U.main() == 2
     assert "REFUSING to score" in capsys.readouterr().out
+
+
+# ── an action that ran on one arm and not the other ──────────────────
+
+
+def one_sided_payload(tmp_path: Path, name: str, action: str, reps: tuple[str, ...]) -> Path:
+    """A film where `action` runs on base and cannot be performed on treatment, in `reps`.
+
+    Everything else matches on both arms in both repetitions, so the ONLY thing wrong with this
+    run is that the head build could not open one control. Sixteen filler actions keep the run
+    well above any coverage floor, because "the film barely ran" is the other failure and the two
+    must not be able to stand in for each other.
+    """
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            cid = f"r100K.{arm}.{rep}"
+            for i in range(16):
+                rows.append(action_row(cid, f"filler{i}", "SAME"))
+            if arm == "treatment" and rep in reps:
+                row = action_row(cid, action, "SAME")
+                row["ran"] = False
+                row["reason"] = "the control never became visible"
+                rows.append(row)
+            else:
+                rows.append(action_row(cid, action, "SAME"))
+            rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+    out = tmp_path / name
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    return path
+
+
+def test_an_action_the_head_can_no_longer_perform_fails_the_verdict(tmp_path, capsys):
+    # THE HOLE THIS CLOSES. A control that stops opening is the one user-visible regression that
+    # leaves no digest to differ: the head arm records `ran: false`, the pair is NOT_EXERCISED,
+    # and filing that under coverage meant a button that no longer opens shipped green with 64 of
+    # 68 pairs still compared -- comfortably above the workflow's --min-compared 16, so the
+    # coverage floor could never catch it either.
+    path = one_sided_payload(tmp_path, "regressed", "settings", ("rep0", "rep1"))
+    assert U.report([path], "t", frozenset(), min_reps = 2, min_compared = 16) == 1
+    printed = capsys.readouterr().out
+    assert "RAN ON ONE ARM ONLY" in printed
+    assert "settings" in printed
+
+
+def test_one_arms_missed_slot_in_one_repetition_is_still_only_a_warning(tmp_path, capsys):
+    # The other half, and the reason this is not simply failed on sight. A contended runner can
+    # lose one arm's slot once, and both arms are driven from one script in one session, so the
+    # loss is not always symmetric. Held to the SAME corroboration bar as a differing digest: a
+    # build that cannot open a control cannot open it on either pass.
+    path = one_sided_payload(tmp_path, "flake", "settings", ("rep0",))
+    assert U.report([path], "t", frozenset(), min_reps = 2, min_compared = 16) == 0
+    assert "UNCORROBORATED one-arm-only" in capsys.readouterr().out
+
+
+def test_an_action_expected_to_vary_is_not_failed_for_reaching_one_arm_only(tmp_path, capsys):
+    # `stop_generation` runs only while a stream is live, so which arm reached it before the
+    # stream ended is the same race its UNSTABLE_ACTIONS entry already describes. Scoring that as
+    # a build difference would red the job on stream timing.
+    path = one_sided_payload(tmp_path, "racy", "stop_generation", ("rep0", "rep1"))
+    assert U.report([path], "t", U.UNSTABLE_ACTIONS, min_reps = 2, min_compared = 16) == 0
+    assert "expected to vary between runs" in capsys.readouterr().out
+
+
+def test_both_arms_missing_the_same_action_is_coverage_and_not_a_verdict(tmp_path):
+    # Unchanged, and pinned so the fix above cannot creep into the missed-slot case the mutation
+    # study measured: NEITHER arm running an action is lost coverage in both builds.
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            cid = f"r100K.{arm}.{rep}"
+            rows.append(action_row(cid, "settings", "SAME"))
+            rows.append(not_run_row(cid, "copy_markdown"))
+            rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+    out = tmp_path / "symmetric"
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    assert U.report([path], "t", frozenset(), min_reps = 2) == 0
+
+
+# ── the audit's scope: what an excuse would actually move ─────────────
+
+
+def test_an_undecided_action_the_result_only_matched_does_not_fail_the_audit(tmp_path):
+    # THE CI FAILURE THIS FIXES. The null lost one arm's slot on `settings`, so it has a single
+    # observation and cannot decide it. The result MATCHED on `settings` in both repetitions, and
+    # no entry in the unstable set can turn a match into anything, so the null was never going to
+    # be asked. Requiring an opinion here is what made the gate unsatisfiable on a shared runner.
+    result = null_run(tmp_path, "result", two_reps("settings", "SAME", "SAME"))
+    null = null_run(tmp_path, "null", [("r100K", "rep0", "settings", "SAME", "SAME")])
+    scope = U.actions_needing_an_excuse([result], min_reps = 2)
+    assert scope == set()
+    rc, _ = U.audit_null([null], frozenset(), scope)
+    assert rc == 0
+
+
+def test_the_audit_still_fails_on_an_undecided_action_the_result_kept_differing_on(tmp_path):
+    # THE SAFETY DIRECTION, and the whole reason the scope is not simply dropped. `settings`
+    # differed in BOTH repetitions, so it is scored as a regression unless the unstable set
+    # excuses it -- and an undecided null excuses it from the DECLARED list, unmeasured, which is
+    # the fiction this job exists to replace. Narrowing the scope must not reach this case.
+    result = null_run(tmp_path, "result", two_reps("settings", "AAA", "BBB"))
+    null = null_run(tmp_path, "null", [("r100K", "rep0", "settings", "SAME", "SAME")])
+    scope = U.actions_needing_an_excuse([result], min_reps = 2)
+    assert scope == {"settings"}
+    rc, report_ = U.audit_null([null], frozenset(), scope)
+    assert rc == 1
+    assert ("r100K", "settings") in report_["undecided"]
+
+
+def test_a_difference_in_one_repetition_only_needs_no_excuse(tmp_path):
+    # `corroborated` already reports this without counting it, so no excuse can move it and the
+    # scope is threaded with the verdict's own --min-reps rather than a number of its own.
+    result = null_run(
+        tmp_path,
+        "result",
+        [("r100K", "rep0", "settings", "AAA", "BBB"), ("r100K", "rep1", "settings", "SAME", "SAME")],
+    )
+    assert U.actions_needing_an_excuse([result], min_reps = 2) == set()
+
+
+def test_a_corroborated_one_arm_only_action_still_needs_the_null_to_decide_it(tmp_path):
+    # The other shape the unstable set is load bearing for: `report` excuses a one-arm-only action
+    # when it is in the unstable set, so an undecided null hands out that excuse on the declared
+    # list alone. Scoped in for exactly the same reason a corroborated difference is.
+    result = one_sided_payload(tmp_path, "result", "settings", ("rep0", "rep1"))
+    null = null_run(tmp_path, "null", [("r100K", "rep0", "settings", "SAME", "SAME")])
+    scope = U.actions_needing_an_excuse([result], min_reps = 2)
+    assert "settings" in scope
+    rc, _ = U.audit_null([null], frozenset(), scope)
+    assert rc == 1
+
+
+def test_the_workflow_scopes_the_audit_with_the_verdicts_own_threshold(tmp_path):
+    # An audit scoped by a different --min-reps than the verdict is auditing a verdict nobody runs.
+    wf = WORKFLOW.read_text(encoding = "utf-8")
+    audit = wf.split("--audit-null", 1)[1].split("outputs/parity-null-control", 1)[0]
+    assert "--compared-in outputs/parity-result" in audit
+    assert "--min-reps 2" in audit

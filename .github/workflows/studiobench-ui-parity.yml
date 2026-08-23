@@ -99,6 +99,14 @@ on:
       # which is what --min-compared exists to catch after the fact. Better to
       # run the gate.
       - 'studio/backend/routes/chat_history.py'
+      # The rows the `model_change` action clicks. runtime/lifecycle.py creates
+      # the test provider over POST /api/providers/ because localStorage seeding
+      # alone renders the model as "No longer offered", and the frontend reads
+      # the same GET /api/providers/ back through providers-api.ts to populate
+      # the picker menu -- which parity.js digests by name as an overlay
+      # (`.unsloth-model-selector-menu`). So this route both shapes the measured
+      # picker and can stop the scripted chat from sending at all.
+      - 'studio/backend/routes/providers.py'
       # Decides WHICH dist is served and rewrites the HTML on the way out.
       - 'studio/backend/main.py'
       - 'studio/backend/run.py'
@@ -433,9 +441,15 @@ jobs:
       # scheduled slot. That gate is right for the measurement studiobench was built for, where an
       # action reached late produces a timing that means nothing. This job reads no timings. It
       # compares per-action DOM digests, and a missed slot there does not produce a wrong number,
-      # it produces NO number: `analysis/parity.compare_rows` returns NOT_EXERCISED when either
-      # arm did not run, and `report` files that under NOT EXERCISED, never under the stable
-      # differences the exit code is taken from.
+      # it produces NO number: `analysis/parity.compare_rows` returns NOT_EXERCISED when NEITHER
+      # arm ran, and `report` files that under NOT EXERCISED, never under the stable differences
+      # the exit code is taken from.
+      #
+      # ONE arm is the exception, and it is not the same fact. An action that runs on one build
+      # and cannot be performed on the other is the two builds behaving differently -- a control
+      # that no longer opens produces exactly that and leaves no digest to differ -- so `report`
+      # counts it, under the same corroboration bar as a differing digest, and a single arm's
+      # missed slot stays a warning.
       #
       # That was measured rather than reasoned. Taking the upstream run that raised this and
       # marking action rows not-run to simulate missed slots, over 18 mutations at 2/4/6/10/16/24
@@ -480,6 +494,29 @@ jobs:
         run: |
           kill "${STUDIO_a_PID:-0}" 2> /dev/null || true
           kill "${STUDIO_b_PID:-0}" 2> /dev/null || true
+
+      # THE SHOTS ARE THE ONLY LARGE THING THIS JOB PRODUCES, and on a clean run every one of
+      # them is a picture of two pages that matched. `--parity-shots` writes one viewport PNG per
+      # action, per arm, per repetition -- 18 x 2 x 2 = 72 per job -- and the upload below is
+      # `if: always()`, so without this step a green run ships all of them and keeps them for a
+      # week. The evidence step in the verdict job needs only the pairs that DIFFER.
+      #
+      # Decided on the arm because it needs only the arm's own payload: the question here is "did
+      # the two arms differ", not "was the difference excused", and the second one needs the null
+      # control and belongs to the verdict. So a few excused pairs survive this and are dropped
+      # there, which is the right way round -- erasing an image here cannot be undone, and the
+      # verdict job can always ignore one. An action with no digest on one side is KEPT, because
+      # a missing capture is exactly the case a reader needs the picture for.
+      #
+      # `if: always()` and never fatal: this is a size optimisation, and a run whose measurement
+      # is fine must not go red because a PNG could not be deleted.
+      - name: Drop the shots of actions whose two arms matched
+        if: always()
+        continue-on-error: true
+        run: |
+          python -m tests.studio.studiobench.sweep.parity_shots \
+            --prune --payload "$OUT_DIR" --shots "$SHOT_DIR"
+          echo "  $(find "$SHOT_DIR" -name '*.png' 2> /dev/null | wc -l) screenshot(s) left to upload"
 
       # Always, not on failure: the verdict job is a different runner and the
       # payload is the only thing it can read.
@@ -586,12 +623,19 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # SCOPED TO WHAT THE RESULT COMPARED. The null exists to excuse the result's noise, so an
-      # action the result never exercised needs no excuse from it, and demanding one turns a slow
-      # runner into a red build: both arms lose the same actions, so an unscoped audit fails on
-      # machine speed. On the upstream run that raised this, three actions were undecided in the
-      # null and only two of them were ever compared in the result; `copy_markdown` was the third
-      # and was NOT EXERCISED on the result as well, so nothing anywhere needed its verdict.
+      # SCOPED TO WHAT THE EXCUSE CHANGES, which is why --min-reps is passed here and has to be
+      # the same value the verdict below uses. The null exists to excuse the result's noise, so
+      # the only actions it owes an opinion on are the ones an excuse would move: a CORROBORATED
+      # difference and a CORROBORATED one-arm-only action. A match, or anything seen in one
+      # repetition only, is already reported without counting, so no excuse can change it.
+      #
+      # Scoping to what the result merely COMPARED was the first attempt and it was still not
+      # satisfiable on a shared runner. An observation needs BOTH arms to reach the slot and the
+      # arms miss slots independently, so at --reps 2 there is no slack: one missed slot on one
+      # arm in one repetition blinds that action for good. This job lost 3 of 18 actions per cell
+      # and came back undecided on 3 of the 14 actions the result compared -- on a wave whose
+      # verdict, run by hand afterwards, was a clean pass with zero stable differences. A gate
+      # that needs a flawless null control is a gate that reports the weather.
       #
       # THE ONE WAY THIS JOB CAN LOOK LIKE IT WORKED AND BE WORTH NOTHING.
       # `derive_unstable` needs two comparable observations of a (rung, action)
@@ -624,6 +668,7 @@ jobs:
           python -m tests.studio.studiobench.sweep.ui_parity \
             --audit-null --allow-undecided image_upload \
             --compared-in outputs/parity-result \
+            --min-reps 2 \
             outputs/parity-null-control
 
       # Exit 1 when a STABLE action rendered differently in BOTH repetitions, 2
@@ -676,8 +721,10 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
 
-      # ONLY ON FAILURE, which is what keeps a green run fast: a passing run uploads no images
-      # at all, and the arms have already deleted every shot whose two sides matched.
+      # ONLY ON FAILURE, which is what keeps a green run cheap: a passing run publishes no
+      # evidence artifact, and each arm has already deleted every shot whose two sides matched
+      # before its own upload, so what survives a green run is the handful of pairs the null
+      # control went on to excuse.
       #
       # A red verdict without these is a hex pair and a character count, which cannot answer the
       # one question a reader has -- is this real -- so the job gets re-run instead of read. The

@@ -247,6 +247,44 @@ def compared_actions(paths: list[Path]) -> set[str]:
     return {a for a, _s, _c, r in results if r["verdict"] in (P.MATCH, P.DIFFER)}
 
 
+def actions_needing_an_excuse(paths: list[Path], min_reps: int) -> set[str]:
+    """Actions of the result whose verdict the unstable set actually decides.
+
+    SCOPED TO WHAT THE EXCUSE CHANGES, which is narrower than what the result compared, and the
+    difference between a gate that is satisfiable and one that is not. Requiring the null to
+    decide every action the result COMPARED sounds conservative and is not reachable: it demands
+    a flawless null control. `derive_unstable` needs two comparable observations, an observation
+    needs BOTH arms to reach the slot, and the arms miss slots independently, so with `--reps 2`
+    there is no slack anywhere -- one missed slot on one arm in one repetition blinds that action
+    for good. Measured on the run that raised this: 3 of 18 actions were lost per cell, and 3 of
+    the 14 actions the result compared came back undecided in the null. Compounded over 14
+    actions a clean sweep is not something a contended runner produces, so the audit failed a
+    wave whose verdict, when finally run by hand, was a clean pass with zero stable differences.
+
+    So the question is not which actions were compared but which ones the unstable set is load
+    bearing for, and there are exactly two shapes. A CORROBORATED differing action is scored as a
+    regression unless the unstable set excuses it. A CORROBORATED one-arm-only action is scored
+    the same way, for the same reason. Everything else -- a match, or a difference seen in one
+    repetition only -- is already reported without counting, so the unstable set cannot move it
+    and the null owes it no opinion. `min_reps` is threaded through rather than assumed because
+    the verdict's own threshold is what decides corroboration, and an audit scoped by a different
+    number is auditing a verdict nobody is going to run.
+
+    The safety direction is unchanged. Anything the unstable set can excuse still has to be
+    MEASURED before it excuses it, so an undecided action that would have been waved through on
+    the declared list still fails the audit. What no longer fails it is an action nothing was
+    going to ask the null about.
+    """
+    results, _ = compare_all(paths)
+    differing = [e for e in results if e[3]["verdict"] == P.DIFFER]
+    one_sided = [
+        e for e in results if e[3]["verdict"] == P.NOT_EXERCISED and e[3].get("one_sided")
+    ]
+    firm_differing, _ = corroborated(differing, min_reps)
+    firm_one_sided, _ = corroborated(one_sided, min_reps)
+    return {e[0] for e in firm_differing} | {e[0] for e in firm_one_sided}
+
+
 def audit_null(
     paths: list[Path],
     allow_undecided: frozenset = frozenset(),
@@ -275,14 +313,14 @@ def audit_null(
     permanently undecided for an honest reason. Those names are excused by `allow_undecided`, and
     every one of them is a hole, so they are printed.
 
-    SCOPED TO WHAT THE RESULT COMPARED, when a scope is given, and this is the difference between
-    a gate that means something and one that fails on a slow machine. The null control exists to
-    excuse the result's noise. An action the result never exercised needs no excuse, so demanding
-    that the null decide it is a requirement with nothing behind it -- and on a contended runner
-    both arms lose the same actions, so an unscoped audit turns machine speed into a red build.
-    Measured on the upstream run that raised this: three actions were undecided in the null, and
-    only two of them were ever compared in the result. `copy_markdown` was the third, and it was
-    NOT EXERCISED on the result too, so nothing anywhere needed its verdict.
+    SCOPED TO WHAT THE EXCUSE CHANGES, when a scope is given, and this is the difference between
+    a gate that means something and one no runner can satisfy. The null control exists to excuse
+    the result's noise, so the only actions it owes an opinion on are the ones an excuse would
+    move: `actions_needing_an_excuse` builds that set and the reasoning lives there. Scoping to
+    what the result merely COMPARED was the first attempt and it was still unsatisfiable -- with
+    `--reps 2` a single missed slot on one arm blinds an action permanently, and the run that
+    raised this lost 3 of 18 actions per cell, leaving 3 of the 14 compared actions undecided on
+    a wave whose verdict was a clean pass.
 
     Returns `(exit code, report)`. 0 decided, 1 undecided beyond the excused names, 2 no data.
     """
@@ -294,15 +332,19 @@ def audit_null(
     for action, _shard, cell, r in results:
         by_rung[rung_of_cell(cell)].append((action, r))
 
-    decided, undecided, differed, excused = [], [], [], []
+    decided, undecided, differed, excused, out_of_scope = [], [], [], [], []
     for rung, pairs in sorted(by_rung.items()):
         for action, row in sorted(P.derive_unstable(pairs).items()):
             entry = (rung, action)
+            # OUT OF SCOPE IS NOT AN EXCUSE, and conflating the two is what made the empty scope
+            # read as a vacuous audit below. An excused action is one the fixture cannot perform
+            # and it is a HOLE in a question that was asked. An out-of-scope action is a question
+            # nobody asked, because no excuse could have changed the result's verdict for it.
+            if scope is not None and action not in scope:
+                out_of_scope.append(entry)
+                continue
             if row["undetermined"]:
-                if action in allow_undecided or (scope is not None and action not in scope):
-                    excused.append(entry)
-                else:
-                    undecided.append(entry)
+                (excused if action in allow_undecided else undecided).append(entry)
                 continue
             decided.append(entry)
             if row["unstable"]:
@@ -312,8 +354,16 @@ def audit_null(
         "decided": decided,
         "undecided": undecided,
         "excused": excused,
+        "out_of_scope": out_of_scope,
         "differed": differed,
     }
+    # NOTHING TO DECIDE IS A PASS, and only when a scope said so. A result whose every action
+    # matched asks the null for no excuses at all, and there is no way to fail a question that
+    # was never put. This is not the vacuous case guarded below: the scope was computed from the
+    # result, so an empty one is a statement about the result rather than about the null.
+    if scope is not None and not scope:
+        report_["reason"] = "the result needs no excuse from this null control"
+        return 0, report_
     # Everything excused is not a decided null control, it is a null control that measured
     # nothing while naming a reason for each blank. Passing it would let the excuse list grow
     # until the audit is vacuous.
@@ -338,11 +388,24 @@ def print_null_audit(rc: int, report_: dict, allow_undecided: frozenset) -> None
     print(f"  decided (rung, action):     {len(report_['decided'])}")
     print(f"  of which differed:          {len(report_['differed'])}  (the MEASURED unstable set)")
     print(f"  undecided:                  {len(report_['undecided'])}")
-    if allow_undecided:
+    if allow_undecided and report_["excused"]:
         print(
             f"  excused as undecided:       {len(report_['excused'])}  "
             f"({', '.join(sorted(allow_undecided))}) -- each one a hole"
         )
+    if report_.get("out_of_scope"):
+        # Counted apart from the excused, because it is not a hole: no excuse could have moved
+        # the result's verdict on these, so the null was never asked about them.
+        print(
+            f"  not audited, out of scope:  {len(report_['out_of_scope'])}  "
+            "(the result's verdict for these does not turn on an excuse)"
+        )
+    if rc == 0 and report_.get("reason") == "the result needs no excuse from this null control":
+        print(
+            "\n  The result matched on everything the unstable set could have moved, so it asked"
+            "\n  this null control for no excuses and there was nothing for the audit to require."
+        )
+        return
     if rc == 0 and not report_["differed"]:
         # Said explicitly, because this is the reading a naive gate treats as breakage.
         print(
@@ -459,10 +522,25 @@ def report(
         return 2
 
     stable_bad, unstable_bad, blind, style_bad, idle = [], [], [], [], []
+    one_sided, one_sided_unstable = [], []
     matched = 0
     for action, shard, cell, r in results:
         if r["verdict"] == P.NOT_EXERCISED:
-            idle.append((action, shard, cell, [r.get("reason", "")]))
+            entry = (action, shard, cell, [r.get("reason", "")])
+            if r.get("one_sided"):
+                # ONE ARM RAN IT AND THE OTHER COULD NOT, which is not the missed-slot case.
+                # A missed slot is a runner losing a race and it costs coverage; an action that
+                # RUNS on one build and cannot be performed on the other is the two builds
+                # behaving differently, and it is the one regression shape that leaves no digest
+                # to differ. A control that stopped opening produces exactly this and nothing
+                # else, so filing it under coverage is how "the button no longer works" ships
+                # green. Held to the SAME corroboration bar as a differing digest below rather
+                # than failed on sight, because a contended runner can lose one arm's slot once.
+                (one_sided_unstable if is_unstable(unstable, action, cell) else one_sided).append(
+                    entry
+                )
+            else:
+                idle.append(entry)
             continue
         if r["verdict"] == P.NOT_COMPARABLE:
             blind.append((action, shard, cell, [r.get("reason", "")]))
@@ -479,6 +557,7 @@ def report(
     # of 0 is how a reader concludes the tool is lying to them; the headline number has to be the
     # one the exit code is taken from.
     stable_bad, uncorroborated = corroborated(stable_bad, min_reps)
+    one_sided, one_sided_weak = corroborated(one_sided, min_reps)
 
     print(f"\n{label}")
     print(f"  {len(results)} action pairs across {len(paths)} shard(s)")
@@ -502,6 +581,10 @@ def report(
             f"  uncorroborated:             {len(uncorroborated)}  (a stable action that differed "
             f"in fewer than {min_reps} repetitions; reported, not counted)"
         )
+    print(
+        f"  ran on ONE arm only:        {len(one_sided)}"
+        + (f"  (in >= {min_reps} repetitions)" if min_reps > 1 else "")
+    )
     print(f"  unstable actions differing: {len(unstable_bad)}  (expected to vary; not a verdict)")
     print(f"  NOT COMPARABLE:             {len(blind)}  (never measured; not a pass)")
     print(f"  NOT EXERCISED:              {len(idle)}  (the action did not run; not coverage)")
@@ -524,6 +607,30 @@ def report(
             f"\n  trivially, and this is that run. Nothing below is a pass."
         )
         return 3
+
+    if one_sided:
+        print(
+            "\n  RAN ON ONE ARM ONLY -- one build could perform these and the other could not,"
+            "\n  in every repetition. That is a difference between the builds, not lost coverage:"
+        )
+        for action, shard, cell, why in one_sided:
+            print(f"    {action:<26} {shard} {cell}: {why[0]}")
+
+    if one_sided_weak:
+        print(
+            f"\n  UNCORROBORATED one-arm-only -- ran on one arm in fewer than {min_reps} "
+            f"repetitions; reported, not counted:"
+        )
+        for action, shard, cell, why in one_sided_weak[:8]:
+            print(f"    {action:<26} {shard} {cell}: {why[0]}")
+
+    if one_sided_unstable:
+        print(
+            "\n  (reported, not counted) one-arm-only on an action expected to vary between runs"
+            "\n  of any build, so which arm reached its slot is a race rather than a signal:"
+        )
+        for action, shard, cell, why in one_sided_unstable[:8]:
+            print(f"    {action:<26} {shard} {cell}: {why[0]}")
 
     if stable_bad:
         print("\n  UI PARITY DIFFERENCES ON STABLE ACTIONS -- these need explaining:")
@@ -569,7 +676,7 @@ def report(
         print("\n  (reported, not counted) actions that vary between runs of any build:")
         for action, shard, cell, moved in unstable_bad[:8]:
             print(f"    {action:<26} {shard} {cell}: {', '.join(moved[:3])}")
-    return 1 if stable_bad else 0
+    return 1 if (stable_bad or one_sided) else 0
 
 
 def tier_of(paths: list[Path]) -> set[str]:
@@ -753,8 +860,9 @@ def main(argv: list[str] | None = None) -> int:
         default = [],
         dest = "compared_in",
         help = "with --audit-null: the RESULT run, so the audit only requires the null to have "
-        "decided the actions the result actually compared. An action nobody compared needs no "
-        "excuse",
+        "decided the actions whose verdict the unstable set actually changes -- the corroborated "
+        "differences and the corroborated one-arm-only actions. An action nothing was going to "
+        "excuse needs no excuse. Uses --min-reps, so pass the verdict's own value",
     )
     ap.add_argument(
         "--allow-undecided",
@@ -776,10 +884,11 @@ def main(argv: list[str] | None = None) -> int:
             if not scope_paths:
                 print(f"--compared-in matched no payload: {args.compared_in}")
                 return 2
-            scope = compared_actions(scope_paths)
+            scope = actions_needing_an_excuse(scope_paths, args.min_reps)
             print(
-                f"auditing against the {len(scope)} action(s) the result compared: "
-                f"{', '.join(sorted(scope))}"
+                f"auditing against the {len(scope)} action(s) whose verdict the unstable set "
+                f"decides, of the {len(compared_actions(scope_paths))} the result compared: "
+                f"{', '.join(sorted(scope)) or '(none -- nothing needs an excuse)'}"
             )
         worst = 0
         for pattern in args.payloads:

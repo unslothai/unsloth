@@ -306,7 +306,14 @@ def main(argv: list[str] | None = None) -> int:
     if not (args.result and args.out):
         ap.error("--result and --out are required without --prune")
     return build(
-        Path(args.result), Path(args.null) if args.null else None, Path(args.shots), Path(args.out)
+        Path(args.result),
+        Path(args.null) if args.null else None,
+        Path(args.shots),
+        Path(args.out),
+        # FORWARDED, and the omission here was the whole bug: the workflow passes --min-reps 2 to
+        # match the verdict, `build` defaulted it back to 1, and the artifact then carried
+        # composites of one-repetition flakes beside the change that actually failed the job.
+        min_reps = args.min_reps,
     )
 
 

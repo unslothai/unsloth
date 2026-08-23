@@ -259,3 +259,54 @@ def test_the_workflow_illustrates_at_the_same_threshold_it_scores_at():
     evidence = text.split("- name: Draw the before/after pairs", 1)[1]
     assert "--min-reps 2" in verdict.split("- name:", 1)[0]
     assert "--min-reps 2" in evidence.split("- name:", 1)[0]
+
+
+def test_the_cli_forwards_the_threshold_it_was_given(tmp_path, capsys):
+    # `build` takes min_reps and `main` parses --min-reps, and between the two the value was
+    # dropped: the workflow asked for 2, `build` defaulted back to 1, and the artifact carried a
+    # one-repetition flake beside the change that actually failed the job. Driven through main()
+    # rather than build(), because build() was never the half that was wrong.
+    shots = tmp_path / "shots"
+    rows = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for act, td in (("settings", "B"), ("thread_reopen", "B" if rep == "rep0" else "A")):
+            bf, tf = f"{act}_{rep}_b.png", f"{act}_{rep}_t.png"
+            png(shots / bf, 200, 120, (10, 60, 10))
+            png(shots / tf, 200, 120, (60, 10, 10))
+            rows.append(action(f"r100K.base.{rep}", act, "A", bf))
+            rows.append(action(f"r100K.treatment.{rep}", act, td, tf))
+    result = write(tmp_path, "result", rows)
+    null = quiet_null(tmp_path, "null", ["settings", "thread_reopen"])
+    out = tmp_path / "out"
+    assert (
+        S.main(
+            [
+                "--result",
+                str(result),
+                "--null",
+                str(null),
+                "--shots",
+                str(shots),
+                "--min-reps",
+                "2",
+                "--out",
+                str(out),
+            ]
+        )
+        == 0
+    )
+    names = sorted(p.name for p in out.glob("*composite*"))
+    assert any("settings" in n for n in names)
+    assert not any("thread_reopen" in n for n in names), names
+
+
+def test_the_workflow_actually_runs_the_prune_it_documents():
+    # The images are the only large thing this job produces and the payload upload is
+    # `if: always()`, so a green run shipped every one of them -- 18 actions x 2 arms x 2
+    # repetitions per job -- while the step below it claimed the arms had already deleted the
+    # matching ones. A command nobody invokes cannot be the reason a claim is true.
+    text = (
+        Path(__file__).resolve().parents[5] / ".github/workflows/studiobench-ui-parity.yml"
+    ).read_text(encoding = "utf-8")
+    prune, upload = text.index("--prune"), text.index("- name: Upload the payload")
+    assert prune < upload, "the prune has to happen BEFORE the upload it exists to shrink"
