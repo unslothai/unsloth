@@ -313,9 +313,10 @@
   // subtree is skipped, so observing with it neither forces rendering nor perturbs the decision.
   // NOTHING in this section may call a geometry method on a candidate element.
   const VIS = {
-    obs: null, mut: null, ever: new Set(), seen: new WeakSet(), watching: false,
-    // Nodes already counted in `unplaced`. Separate from `seen` because an unplaced row stays
-    // eligible to be placed by a later batch; see `observeOne`.
+    obs: null, mut: null, ever: new Set(), watching: false,
+    // Nodes already counted in `unplaced`, so a row offered and refused several times before it
+    // mounts does not inflate the diagnostic. NOT a "do not look at this again" set: placement is
+    // re-read on every offer, because a recycled row changes position. See `observeOne`.
     unplacedSeen: new WeakSet(),
     // Rows that were observed and could NOT be placed in the thread at all: no `aria-posinset`
     // and not among the messages the DOM currently holds. Such a row is stamped with no ordinal,
@@ -389,14 +390,33 @@
   //: knows it -- the full scan below holds the whole ordered list and needs no index. Left
   //: undefined, the position is resolved from the index, and only when no ordinal was published.
   const observeOne = (el, position) => {
-    if (!VIS.obs || VIS.seen.has(el)) return;
+    if (!VIS.obs) return;
     let ord = ordinalOf(el, typeof position === "number" ? position : null);
     if (ord === null) ord = positionIndex().get(el) || 0;
     // The ordinal is stamped on the node, because by the time an entry is delivered the node may
     // have been unmounted and `closest()` would return nothing.
     if (ord > 0) {
-      VIS.seen.add(el);
+      // RE-READ RATHER THAN WRITE ONCE. A placed node used to be marked `seen` and skipped for the
+      // rest of the window, which assumed a row's position in the thread cannot change while the
+      // node lives. A virtualizer that RECYCLES rows breaks that assumption on purpose: it hands
+      // the same node to another item and renumbers it. The stamp then stayed at the old ordinal
+      // for the rest of the run, so the row's content was digested under a position it no longer
+      // held, and the message it now showed was never reported visible at all.
+      //
+      // Re-reading is bounded work. The full scan runs once; every other call arrives from
+      // `observeAdded`, which walks only what a mutation added, and `positionIndex` is built at
+      // most once per batch.
+      const had = el.__sbOrdinal;
       el.__sbOrdinal = ord;
+      if (typeof had === "number" && had !== ord) {
+        // A RENUMBERED ROW THAT NEVER STOPPED INTERSECTING REPORTS NOTHING. IntersectionObserver
+        // delivers on a CHANGE of intersection, and this node's intersection did not change --
+        // only its identity did -- so `ever` would never learn the new ordinal. Re-registering the
+        // target makes the observer deliver an initial entry for it, which is the documented
+        // behaviour of `observe()` and the only way to ask "is this thing on screen right now"
+        // without calling a geometry method, which this section may not do.
+        VIS.obs.unobserve(el);
+      }
     } else {
       // NO ORDINAL RATHER THAN A MADE-UP ONE. A row that publishes nothing and is not in the
       // thread's message list has no position this instrument can honestly claim, and a guessed
@@ -456,6 +476,19 @@
     // the wrong answer -- the same class of mistake as the lifetime counter this replaced.
     VIS.index = null;
     for (const rec of records) {
+      // A RENUMBERED ROW ARRIVES AS ITS OWN TARGET, not in anybody's `addedNodes`. The ordinal
+      // lives on `[aria-posinset]`, which `ordinalOf` reaches with `closest()`, so the row that
+      // has to be re-placed is the target's message descendant, or the target itself when the
+      // attribute is on the message.
+      if (rec.type === "attributes") {
+        const t = rec.target;
+        if (!t || t.nodeType !== 1) continue;
+        if (t.hasAttribute && t.hasAttribute("data-role")) observeOne(t);
+        if (t.querySelectorAll) {
+          for (const inner of t.querySelectorAll("[data-role]")) observeOne(inner);
+        }
+        continue;
+      }
       const added = rec.addedNodes;
       for (let i = 0; i < added.length; i++) {
         const node = added[i];
@@ -482,7 +515,6 @@
         if (!vp) return { visible_attempted: false, reason: "no thread viewport" };
         if (VIS.watching) return { visible_attempted: true, already: true };
         VIS.ever = new Set();
-        VIS.seen = new WeakSet();
         VIS.unplacedSeen = new WeakSet();
         VIS.unplaced = 0;
         VIS.index = null;
@@ -494,12 +526,24 @@
           }
         }, { root: vp, threshold: 0 });
         observeAll();
-        // childList only, and no attribute or character-data records: a row ENTERING the DOM is
-        // the only thing that needs observing, and a row leaving it has already contributed to
+        // childList, plus ONE attribute by name, and no character-data records. A row ENTERING the
+        // DOM is most of what needs observing, and a row leaving it has already contributed to
         // `ever`. Text changing inside a mounted row -- which is what a stream is -- must not
-        // reach this callback at all.
+        // reach this callback at all, and with `attributeFilter` naming a single attribute it
+        // cannot: a stream mutates text, not `aria-posinset`.
+        //
+        // `aria-posinset` is here because it is the one attribute whose change means the row is a
+        // DIFFERENT MESSAGE. A virtualizer that recycles a still-connected row renumbers it in
+        // place, which is not a childList mutation, so without this the renumbering is invisible
+        // and the node keeps a stamp that now names the wrong message. Filtered to that name the
+        // callback fires when a windowed arm re-uses a row and at no other time.
         VIS.mut = new MutationObserver(observeAdded);
-        VIS.mut.observe(vp, { childList: true, subtree: true });
+        VIS.mut.observe(vp, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ["aria-posinset"],
+        });
         VIS.watching = true;
         return { visible_attempted: true, already: false };
       } catch (e) {

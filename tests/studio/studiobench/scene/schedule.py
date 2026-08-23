@@ -286,7 +286,11 @@ class SceneRunner:
             pass
 
     def _visible(self) -> dict:
-        """The visible-region capture, taken at the close alongside the census and the digest."""
+        """The visible-region capture, taken at the close and BEFORE the census and the digest.
+
+        It closes an accumulating observation rather than reading a static DOM, so it goes first;
+        see the comment at the call site for what its tail costs when it does not.
+        """
         try:
             got = self.page.evaluate("async () => await window.__sb.parityVisible.capture()")
             self.page.evaluate("() => window.__sb.parityVisible.stop()")
@@ -429,9 +433,29 @@ class SceneRunner:
         window_closed_at = time.monotonic()
         over_ms = ((window_closed_at - t0) * 1000) - deadline_ms
 
+        # THE VISIBLE CAPTURE GOES FIRST, AND THE ORDER IS THE MEASUREMENT. The other two read a
+        # DOM that is sitting still; this one CLOSES an observation that has been accumulating
+        # since `_watch_visible`, and every millisecond it stays open is another millisecond in
+        # which a row can scroll into view and be counted as having been visible during the
+        # action. Taken after the census and the digest, that tail was as long as those two probes
+        # take -- and they are the one thing on this path whose cost is proportional to the arm.
+        #
+        # A fully mounted arm serialises the whole thread, a windowed arm serialises the dozen
+        # rows it has mounted, so the two arms' observers stayed open for materially different
+        # intervals: the numbers above this comment are 14.3 fps against 49.0, which is the same
+        # asymmetry expressed as time. With streaming and autoscroll still running at the close of
+        # `scroll_during_generation`, the mounted arm had the longer tail in which to admit an
+        # ordinal the windowed arm never saw, and `compare_visible` has no tolerance for that --
+        # it returns DIFFER on strict set inequality of `ever_visible`. The null control cannot
+        # absorb it either, being same-build against same-build, where both sides pay the same
+        # digest and the asymmetry does not exist.
+        #
+        # Taking it first does not make the tail zero: `capture()` still waits two frames, on
+        # purpose, so a quiet action does not report an empty viewport. It makes the tail the SAME
+        # ON BOTH ARMS, which is the property the comparison actually needs.
+        visible = self._visible()
         census = self._census()
         parity = self._parity()
-        visible = self._visible()
         # The observations DO consume wall clock before the next slot, so their cost is recorded
         # rather than dropped -- it is simply recorded as theirs.
         observation_ms = (time.monotonic() - window_closed_at) * 1000

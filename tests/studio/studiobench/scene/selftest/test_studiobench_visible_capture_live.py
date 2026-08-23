@@ -672,3 +672,58 @@ def test_a_recycled_row_is_placed_when_it_finally_mounts(browser):
 
     # Mounted into an empty viewport, so it is message 1 and it is on screen.
     assert got["ever_visible"] == [1], got
+
+
+#: A row that is RENUMBERED IN PLACE. It stays connected, stays intersecting, and is handed to
+#: another message -- which is what a virtualizer that recycles its row nodes does, and it is not a
+#: childList mutation, so nothing about it reaches a childList-only observer.
+RENUMBER_FIXTURE = """
+<!doctype html><meta charset="utf-8">
+<style>
+  body { margin: 0; }
+  .aui-thread-viewport { height: 400px; overflow-y: auto; }
+  [data-role] { height: 100px; }
+</style>
+<div class="aui-thread-root">
+  <div class="aui-thread-viewport" id="vp">
+    <div aria-posinset="1"><div data-role="user" id="row">message 1</div></div>
+  </div>
+</div>
+<script>
+  window.__renumber = () => {
+    const holder = document.getElementById("row").parentElement;
+    holder.setAttribute("aria-posinset", "42");
+    document.getElementById("row").textContent = "message 42";
+  };
+</script>
+"""
+
+
+def test_a_row_renumbered_in_place_is_restamped_and_reported(browser):
+    """REGRESSION. A placed row used to be marked `seen` and never looked at again, which assumed
+    a row's position in the thread cannot change while the node lives. A recycling virtualizer
+    breaks that on purpose.
+
+    The node kept its original `__sbOrdinal`, so the message it now showed was never reported
+    visible, and its content was digested under the position it no longer held: `ever_visible` said
+    [1] and `messages["1"]` carried message 42's digest. Because the row never stopped intersecting
+    the IntersectionObserver had no change to report, and because the mutation observer took
+    childList records only, the renumbering was invisible to every path at once.
+    """
+
+    pg = browser.new_page(viewport = {"width": 800, "height": 600})
+    try:
+        pg.set_content(RENUMBER_FIXTURE)
+        pg.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
+        pg.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+        _watch(pg)
+        pg.evaluate("() => window.__renumber()")
+        got = _capture(pg)
+    finally:
+        pg.close()
+
+    # The row is still on screen, so BOTH the position it held and the one it holds now were shown.
+    assert 42 in got["ever_visible"], got["ever_visible"]
+    # And its content is filed under the position it actually holds.
+    assert "42" in got["messages"], got["messages"]
+    assert got["unplaced_rows"] == 0, got
