@@ -907,6 +907,21 @@ def _lora_mlp_elements(
     return total
 
 
+def _full_weight_embedding_elements(arch: ModelArchConfig, target_modules) -> int:
+    """embed_tokens/lm_head cost a full matrix each, not a low-rank pair.
+
+    Unsloth redirects them out of target_modules into modules_to_save, and PEFT's
+    ModulesToSaveWrapper keeps an independent trainable copy per module, so tied
+    models pay for both (measured on Qwen2.5-0.5B: 136M + 136M trainable).
+    """
+    if isinstance(target_modules, str):
+        return 0
+    targets = set(target_modules or [])
+    return arch.vocab_size * arch.hidden_size * len(
+        targets & {"embed_tokens", "lm_head"}
+    )
+
+
 def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: list) -> int:
     all_linear = _targets_all_linear(target_modules)
     selected_modules = list(DEFAULT_TARGET_MODULES) if all_linear else target_modules
@@ -972,7 +987,12 @@ def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: l
                 mlp_total = moe_mlp * n_moe + dense_only
         else:
             mlp_total = structured_dense_mlp
-        return attn_total + mlp_total + _per_layer_input_lora_params(arch, r, target_modules)
+        return (
+            attn_total
+            + mlp_total
+            + _per_layer_input_lora_params(arch, r, target_modules)
+            + _full_weight_embedding_elements(arch, selected_modules)
+        )
     elif n_experts > 1:
         attn_total = _lora_attn_elements(arch, r, selected_modules) * n_layers
         n_dense = arch.num_dense_layers
@@ -1024,7 +1044,12 @@ def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: l
             * n_layers
         )
 
-    return attn_total + mlp_total + _per_layer_input_lora_params(arch, r, target_modules)
+    return (
+        attn_total
+        + mlp_total
+        + _per_layer_input_lora_params(arch, r, target_modules)
+        + _full_weight_embedding_elements(arch, selected_modules)
+    )
 
 
 def compute_lora_adapter_bytes(lora_params: int) -> int:

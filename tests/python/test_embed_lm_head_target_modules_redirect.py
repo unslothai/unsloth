@@ -59,8 +59,9 @@ def _run_redirect_check(new_model_path: bool, target_modules):
         config = model.peft_config["default"]
         saved_modules = config.modules_to_save or []
         state = dict(model.named_parameters())
-        assert "embed_tokens" in saved_modules, saved_modules
-        assert "lm_head" in saved_modules, saved_modules
+        tied = bool(getattr(model.config, "tie_word_embeddings", False))
+
+        assert any("embed_tokens" in m for m in saved_modules), saved_modules
 
         # target_modules should no longer carry the embedding modules
         assert "embed_tokens" not in config.target_modules, config.target_modules
@@ -74,10 +75,17 @@ def _run_redirect_check(new_model_path: bool, target_modules):
             "embed_tokens.modules_to_save.default.weight" in k and v.requires_grad
             for k, v in state.items()
         )
-        assert any(
-            "lm_head.modules_to_save.default.weight" in k and v.requires_grad
-            for k, v in state.items()
-        )
+        if tied:
+            # ensure_weight_tying keeps ONE trainable matrix: PEFT holds lm_head in
+            # tied_weights_keys instead of giving it a second, divergent copy.
+            assert "lm_head" not in saved_modules, saved_modules
+            assert model.get_output_embeddings().weight.requires_grad
+        else:
+            assert "lm_head" in saved_modules, saved_modules
+            assert any(
+                "lm_head.modules_to_save.default.weight" in k and v.requires_grad
+                for k, v in state.items()
+            )
         assert not any("embed_tokens.lora_A" in k for k in state)
         assert not any("lm_head.lora_A" in k for k in state)
     finally:

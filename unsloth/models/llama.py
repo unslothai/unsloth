@@ -3084,7 +3084,7 @@ class FastLlamaModel:
         temporary_location = "_unsloth_temporary_saved_buffers",
         qat_scheme = None,
         target_parameters = None,  # For MoE expert layers (nn.Parameter)
-        ensure_weight_tying = False,
+        ensure_weight_tying = None,  # None = auto (tie when we redirect a tied pair)
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
@@ -3320,6 +3320,9 @@ class FastLlamaModel:
             modules_to_save,
         )
         _raise_if_no_lora_targets_left(target_modules, _moved_embedding_modules)
+        ensure_weight_tying = _resolve_ensure_weight_tying(
+            model, _moved_embedding_modules, ensure_weight_tying,
+        )
         for module in _moved_embedding_modules:
             if module == "embed_tokens":
                 train_embed_tokens = True
@@ -3454,6 +3457,9 @@ class FastLlamaModel:
             ensure_weight_tying = ensure_weight_tying,
             **kwargs,
         )
+        # Older PEFT has no `ensure_weight_tying`; passing it would TypeError.
+        if "ensure_weight_tying" not in inspect.signature(LoraConfig).parameters:
+            del arguments["ensure_weight_tying"]
         if not SUPPORTS_LOFTQ:
             del arguments["loftq_config"]
         if not SUPPORTS_RSLORA:

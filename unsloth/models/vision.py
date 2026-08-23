@@ -1873,7 +1873,7 @@ class FastBaseModel:
         temporary_location = "_unsloth_temporary_saved_buffers",
         qat_scheme = None,
         target_parameters = None,  # For MoE expert layers (nn.Parameter)
-        ensure_weight_tying = False,  # [TODO] Add `ensure_weight_tying` for `modules_to_save` for vision models
+        ensure_weight_tying = None,  # None = auto (tie when we redirect a tied pair)
         finetune_audio_layers = False,  # placed last to preserve existing positional argument order
         **kwargs,
     ):
@@ -1937,6 +1937,7 @@ class FastBaseModel:
             allow_redirect = finetune_language_layers,
         )
         _raise_if_no_lora_targets_left(target_modules, _moved)
+        ensure_weight_tying = _resolve_ensure_weight_tying(model, _moved, ensure_weight_tying)
         if _moved:
             logger.warning_once(
                 f"Unsloth: Moved {', '.join(_moved)} from `target_modules` to "

@@ -95,6 +95,7 @@ __all__ = [
     "_select_moe_detection_targets",
     "_redirect_embedding_targets",
     "_raise_if_no_lora_targets_left",
+    "_resolve_ensure_weight_tying",
     "_raise_if_fast_inference_modules_to_save",
     "make_fast_generate_wrapper",
     "_mark_unsloth_disable_data_parallel",
@@ -4497,6 +4498,22 @@ def _raise_if_no_lora_targets_left(target_modules, moved):
             '`target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", '
             '"gate_proj", "up_proj", "down_proj"]`.'
         )
+
+
+def _resolve_ensure_weight_tying(model, moved, requested):
+    """Default `ensure_weight_tying` to True when we redirected a tied embedding pair.
+
+    PEFT gives each `modules_to_save` entry its own copy, so on a tied model the
+    two copies diverge during training and the merged checkpoint keeps only one of
+    them (measured: the trained lm_head is dropped). PEFT warns about this and
+    documents `ensure_weight_tying` as the fix, so opt in when we caused it.
+    Only applies when the caller left it unset.
+    """
+    if requested is not None:
+        return bool(requested)
+    if len(moved) < 2:
+        return False
+    return bool(getattr(getattr(model, "config", None), "tie_word_embeddings", False))
 
 
 def _raise_if_fast_inference_modules_to_save(model, modules_to_save):
