@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+import sysconfig
 
 import pytest
 
@@ -50,6 +51,16 @@ def install_root(tmp_path: pathlib.Path) -> pathlib.Path:
     return root
 
 
+def _write_dist_metadata(site: pathlib.Path, name: str, version: str) -> None:
+    stem = name.replace("-", "_")
+    info = site / f"{stem}-{version}.dist-info"
+    info.mkdir(parents = True)
+    (info / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+        encoding = "utf-8",
+    )
+
+
 def test_parse_requirement_line_handles_the_shapes_studio_txt_uses():
     assert im._parse_requirement_line("structlog>=24.1.0") == ("structlog", "", ">=24.1.0")
     assert im._parse_requirement_line("matplotlib==3.10.9") == ("matplotlib", "", "==3.10.9")
@@ -66,6 +77,168 @@ def test_parse_requirement_line_handles_the_shapes_studio_txt_uses():
     assert name == "pywin32"
     assert "sys_platform" in marker
     assert specifier == ""
+
+
+def test_installed_versions_reports_every_canonical_metadata_record(tmp_path, monkeypatch):
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo_pkg", "1.0")
+    _write_dist_metadata(site, "demo-pkg", "2.0")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    assert im.installed_versions("demo.pkg") == ["1.0", "2.0"]
+    assert im._installed_version("demo-pkg") is None
+
+
+def test_installed_versions_ignores_malformed_unrelated_metadata(tmp_path, monkeypatch):
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "1.0")
+    _write_dist_metadata(site, "demo", "2.0")
+    malformed = site / "unrelated-1.0.dist-info"
+    malformed.mkdir()
+    (malformed / "METADATA").write_bytes(b"\xff\xfe")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    assert im.installed_versions("demo") == ["1.0", "2.0"]
+
+
+def test_installed_versions_marks_malformed_matching_metadata_as_a_conflict(tmp_path, monkeypatch):
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "1.0")
+    malformed = site / "demo-2.0.dist-info"
+    malformed.mkdir()
+    (malformed / "METADATA").write_bytes(b"\xff\xfe")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    versions = im.installed_versions("demo")
+    assert versions == ["", "1.0"]
+    assert im.invalid_metadata_paths("demo") == [malformed]
+    assert im.metadata_conflict(versions) is True
+    assert im._installed_version("demo") is None
+
+
+def test_a_pip_tilde_backup_is_named_as_a_backup(tmp_path, monkeypatch):
+    """pip's AdjacentTempDirectory leftover counts as a duplicate but pip will
+    not uninstall it, so the repair has to find it by directory name."""
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "2.0")
+    backup = site / "~emo-1.0.dist-info"
+    backup.mkdir()
+    (backup / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: demo\nVersion: 1.0\n", encoding = "utf-8"
+    )
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    assert im.installed_versions("demo") == ["1.0", "2.0"]
+    assert im.pip_backup_metadata_paths("demo") == [backup]
+    # A healthy record must never be mistaken for one.
+    assert im.pip_backup_metadata_paths("demo") != [site / "demo-2.0.dist-info"]
+
+
+def test_a_sole_pip_backup_is_reported_as_a_conflict(tmp_path, monkeypatch):
+    """pip killed after moving the old record aside leaves one readable version,
+    so a version count sees nothing wrong while the package is really gone."""
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    backup = site / "~emo-1.0.dist-info"
+    backup.mkdir()
+    (backup / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: demo\nVersion: 1.0\n", encoding = "utf-8"
+    )
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    assert im.metadata_conflict(im.installed_versions("demo")) is False
+    assert im.installed_version_probe("demo") == ("1.0", True)
+    assert im.installed_version_probe("other", ("demo",))[1] is True
+
+
+def test_a_healthy_install_has_no_pip_backups(tmp_path, monkeypatch):
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "2.0")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    assert im.pip_backup_metadata_paths("demo") == []
+
+
+def test_single_malformed_matching_metadata_is_a_conflict(tmp_path, monkeypatch):
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    malformed = site / "demo_pkg-2.0.dist-info"
+    malformed.mkdir()
+    (malformed / "METADATA").write_bytes(b"\xff\xfe")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    versions = im.installed_versions("demo-pkg")
+    assert versions == [""]
+    assert im.invalid_metadata_paths("demo-pkg") == [malformed]
+    assert im.metadata_conflict(versions) is True
+
+
+def test_nameless_matching_metadata_is_a_conflict(tmp_path, monkeypatch):
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "1.0")
+    nameless = site / "demo-2.0.dist-info"
+    nameless.mkdir()
+    (nameless / "METADATA").write_text("Metadata-Version: 2.1\nVersion: 2.0\n", encoding = "utf-8")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    versions = im.installed_versions("demo")
+    assert versions == ["", "1.0"]
+    assert im.invalid_metadata_paths("demo") == [nameless]
+    assert im.metadata_conflict(versions) is True
+
+
+def test_malformed_matching_metadata_invalidates_the_manifest(
+    tmp_path, monkeypatch, install_root, req_root
+):
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "1.0")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "demo")
+
+    malformed = site / "demo-2.0.dist-info"
+    malformed.mkdir()
+    (malformed / "METADATA").write_bytes(b"\xff\xfe")
+
+    state = im.verify_install(root = install_root, req_root = req_root, package_name = "demo")
+    assert state["manifest_ok"] is False
+    assert state["reason"] == "studio_install_metadata_conflict"
+
+
+def test_duplicate_package_metadata_invalidates_the_manifest(
+    tmp_path, monkeypatch, install_root, req_root
+):
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "1.0")
+    _write_dist_metadata(site, "demo", "2.0")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "demo")
+    state = im.verify_install(root = install_root, req_root = req_root, package_name = "demo")
+    assert state["manifest_ok"] is False
+    assert state["reason"] == "studio_install_metadata_conflict"
+
+
+def test_duplicate_zoo_metadata_invalidates_a_core_package_manifest(
+    tmp_path, monkeypatch, install_root, req_root
+):
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "1.0")
+    _write_dist_metadata(site, "unsloth-zoo", "1.0")
+    _write_dist_metadata(site, "unsloth-zoo", "2.0")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "demo")
+    state = im.verify_install(root = install_root, req_root = req_root, package_name = "demo")
+    assert state["reason"] == "studio_install_metadata_conflict"
 
 
 def test_missing_requirements_rejects_an_incompatible_installed_version(tmp_path):
@@ -187,6 +360,21 @@ def test_verify_follows_the_package_the_manifest_names(install_root, req_root):
     assert state["manifest_ok"] is True
 
 
+@pytest.mark.parametrize("conflict", ["pytest", "unsloth-zoo"])
+def test_foreign_metadata_conflicts_invalidate_the_manifest(install_root, req_root, conflict):
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    state = im.verify_install(
+        root = install_root,
+        req_root = req_root,
+        package_name = "pytest",
+        installed = {"pytest": pytest.__version__},
+        installed_conflicts = {conflict},
+    )
+
+    assert state["manifest_ok"] is False
+    assert state["reason"] == "studio_install_metadata_conflict"
+
+
 def test_edited_requirements_invalidate_the_manifest(install_root, req_root):
     # The --local dev path: an edited studio.txt must re-run the dependency
     # pass, not sit behind setup.sh's "up to date" fast path.
@@ -278,6 +466,67 @@ def test_set_no_torch_marker_clears_itself_and_never_raises(install_root):
 
     # Absent directory: must degrade quietly, it runs mid-install.
     im.set_no_torch_marker(True, root = install_root / "does" / "not" / "exist")
+
+
+def test_scan_paths_dedupes_a_lib64_symlink(tmp_path, monkeypatch):
+    """purelib hardcodes `lib`, platlib follows sys.platlibdir.
+
+    On a lib64 build (Fedora, SuSE) venv creates lib64 as a symlink to lib, so
+    the two schemes name ONE directory by two paths. Scanning both reported
+    every installed package twice, which made metadata_conflict() true for a
+    perfectly healthy environment and sent the installer into a repair it could
+    never finish.
+    """
+    real = tmp_path / "lib" / "python3.13" / "site-packages"
+    real.mkdir(parents = True)
+    (tmp_path / "lib64").symlink_to("lib")
+    alias = tmp_path / "lib64" / "python3.13" / "site-packages"
+
+    # install_manifest imports sysconfig inside the function, so patch the module.
+    monkeypatch.setattr(
+        sysconfig, "get_paths", lambda *a, **k: {"purelib": str(real), "platlib": str(alias)}
+    )
+
+    assert im._metadata_scan_paths() == [str(real)]
+
+
+def test_scan_paths_keeps_genuinely_separate_roots(tmp_path, monkeypatch):
+    pure = tmp_path / "purelib"
+    plat = tmp_path / "platlib"
+    pure.mkdir()
+    plat.mkdir()
+
+    monkeypatch.setattr(
+        sysconfig, "get_paths", lambda *a, **k: {"purelib": str(pure), "platlib": str(plat)}
+    )
+
+    assert im._metadata_scan_paths() == [str(pure), str(plat)]
+
+
+def test_a_record_outside_this_interpreters_scheme_is_not_installed(tmp_path, monkeypatch):
+    """The scan is purelib/platlib only, so a user site or an inherited
+    PYTHONPATH entry is invisible. _installed_version used to answer from all of
+    sys.path, so this narrows it deliberately: every caller runs against the
+    managed venv, where those trees are either disabled or someone else's. A
+    duplicate the venv does not own must not make the venv look damaged.
+    """
+    scheme = tmp_path / "site-packages"
+    scheme.mkdir()
+    elsewhere = tmp_path / "user-site"
+    elsewhere.mkdir()
+    record = elsewhere / "demo-1.0.dist-info"
+    record.mkdir()
+    (record / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: demo\nVersion: 1.0\n", encoding = "utf-8"
+    )
+
+    monkeypatch.setattr(
+        sysconfig, "get_paths", lambda *a, **k: {"purelib": str(scheme), "platlib": str(scheme)}
+    )
+    monkeypatch.syspath_prepend(str(elsewhere))
+
+    assert im.installed_versions("demo") == []
+    assert im.installed_version_probe("demo") == ("", False)
 
 
 def _fake_venv(root, files):

@@ -361,7 +361,7 @@ jobs:
         # packages. windows-latest ships the system frameworks
         # Chromium needs (Edge / WebView2) already.
         run: |
-          python -m pip install 'playwright>=1.45'
+          python -m pip install 'playwright>=1.45,<2'
           python -m playwright install chromium
 
       # Two lanes, concurrently, on one runner.
@@ -380,28 +380,120 @@ jobs:
       # split and why there are two lanes and not five. Wait on BOTH before
       # failing: backgrounding defeats `set -e`, and without an explicit
       # wait-and-collect one lane's breakage hides the other's.
+      #
+      # AND BOUND BOTH. Nothing here used to have a deadline shorter than the
+      # job's own 45 minutes. Every wait inside the suites is per-operation --
+      # 60s default, 540s a turn, 1080s for the rapid-submit predicate -- and
+      # five turns of a stalled model reach the job cap before any single one of
+      # them fires. On the #9425 branch this step started at 04:33:01 and never
+      # returned; the runner killed the job at its cap and GitHub recorded the
+      # result as "cancelled", which `gh pr checks` renders as a failure and
+      # which reads exactly like ordinary concurrency supersession. See
+      # studio-backend-ci.yml, wedged the same way and bounded the same way.
+      #
+      # And it left nothing to read. The lane .out files are only cat'ed after
+      # both `wait`s return, so a stalled step prints NOTHING while it stalls;
+      # the `if: always()` artifact upload does not run when the runner kills
+      # the job at its cap; and Python block-buffers stdout into a file, so the
+      # buffer went down with the process. 48 minutes, no logs, no artifacts.
+      #
+      # So: `timeout` per lane, a heartbeat while they run, unbuffered stdout so
+      # what they printed survives being killed, and the server log tailed next
+      # to the lane log because a lane killed mid-turn is usually explained by
+      # the llama-server it was driving. A lane that wedges now fails, names
+      # itself, and leaves evidence, and its sibling still reports its own
+      # result instead of being buried with it.
       - name: Drive the UI suites in two parallel lanes
+        # Bounds the whole step below the job's 45m cap even if `timeout` itself
+        # is defeated, and -- the point -- leaves room for "Upload Playwright
+        # artifacts" to actually run. ~7m of prologue precedes this step.
+        timeout-minutes: 28
         env:
           GGUF_REPO: ${{ env.GGUF_REPO }}
           GGUF_VARIANT: ${{ env.GGUF_VARIANT }}
+          # Block-buffered stdout is discarded when a wedged lane is killed,
+          # which is the one run whose output is worth having.
+          PYTHONUNBUFFERED: '1'
         run: |
           mkdir -p logs
+          # The backstop, not the first line of defence: the suites' own wall
+          # watchdogs should fire first and say which step they died on. 1500s
+          # is 3.6x the measured lane wall (375s chat, 413s extra) and 3x the
+          # slowest this step has ever been while succeeding (508s over 521
+          # runs). The failures it is here for sat at 2900s. SIGINT first so a
+          # suite can unwind and print the wait it was stuck on; SIGKILL 60s
+          # later for the native Windows processes MSYS cannot signal politely.
+          #
+          lane_timeout=1500
+
+          # Which `timeout` matters here. C:\Windows\System32\timeout.exe is on
+          # PATH too, with entirely different semantics (`timeout /t N`), and
+          # this job prepends a shim directory to GITHUB_PATH -- so the bare
+          # name is not safe to resolve. Prefer the absolute coreutils path,
+          # accept a bare one that proves itself with --version (which System32
+          # does not answer), and fail loudly rather than silently running the
+          # lanes unbounded again: MinGit trims usr/bin, so this is worth
+          # checking rather than assuming.
+          lane_timeout_bin=""
+          for candidate in /usr/bin/timeout timeout; do
+            if "$candidate" --version >/dev/null 2>&1; then
+              lane_timeout_bin="$candidate"
+              break
+            fi
+          done
+          if [ -z "$lane_timeout_bin" ]; then
+            echo "::error::no GNU coreutils timeout on this runner; the UI lanes would run unbounded and a wedge would burn the whole job again. Install coreutils or bound the lanes another way."
+            exit 1
+          fi
+          echo "[lanes] bounding each lane with $lane_timeout_bin at ${lane_timeout}s"
+
           pids=""
           for lane in chat extra; do
-            bash .github/scripts/run-studio-ui-lane.sh "$lane" \
+            "$lane_timeout_bin" --signal=INT --kill-after=60 "$lane_timeout" \
+              bash .github/scripts/run-studio-ui-lane.sh "$lane" \
               >"logs/lane-$lane.out" 2>&1 &
             pids="$pids $!:$lane"
           done
+
+          # Without this the step is silent for its entire duration, so a stall
+          # is indistinguishable from progress while it is happening.
+          (
+            while sleep 60; do
+              for lane in chat extra; do
+                [ -f "logs/lane-$lane.out" ] || continue
+                echo "[heartbeat ${SECONDS}s] $lane: $(tail -n 1 "logs/lane-$lane.out" 2>/dev/null)"
+              done
+            done
+          ) &
+          heartbeat=$!
+
           rc=0
           for entry in $pids; do
-            if ! wait "${entry%%:*}"; then
-              echo "::error::Windows UI lane ${entry##*:} failed"
-              rc=1
-            fi
+            lane="${entry##*:}"
+            status=0
+            wait "${entry%%:*}" || status=$?
+            [ "$status" -eq 0 ] && continue
+            rc=1
+            case "$status" in
+              124|137)
+                echo "::error::Windows UI lane $lane did not finish within ${lane_timeout}s and was killed. Its last output and its server log are below, and in the uploaded artifacts."
+                ;;
+              *)
+                echo "::error::Windows UI lane $lane failed (exit $status)"
+                ;;
+            esac
           done
+          kill "$heartbeat" 2>/dev/null || true
+
           for f in logs/lane-*.out; do
             echo "::group::$f"
             cat "$f"
+            echo "::endgroup::"
+          done
+          for f in logs/studio-lane-*.log; do
+            [ -f "$f" ] || continue
+            echo "::group::$f (tail)"
+            tail -n 80 "$f"
             echo "::endgroup::"
           done
           exit "$rc"

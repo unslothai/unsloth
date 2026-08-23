@@ -52,7 +52,7 @@ function mergeRegions(
  * Find code-block regions (``` ... ```, ~~~ ... ~~~, and ` ... `) to skip.
  * Returns a sorted, non-overlapping array of [start, end] index pairs.
  */
-function findCodeBlockRegions(content: string): Array<[number, number]> {
+export function findCodeBlockRegions(content: string): Array<[number, number]> {
   // Fenced code blocks: ```...``` and ~~~...~~~ (both are code in GFM)
   const fenced: Array<[number, number]> = [];
   const fencedRe = /```[\s\S]*?```|~~~[\s\S]*?~~~/g;
@@ -116,7 +116,7 @@ function findLinkDestinationRegions(content: string): Array<[number, number]> {
  * Binary search to check if a position falls inside any region. Regions must be
  * sorted by start and non-overlapping.
  */
-function isInRegion(
+export function isInRegion(
   position: number,
   regions: Array<[number, number]>,
 ): boolean {

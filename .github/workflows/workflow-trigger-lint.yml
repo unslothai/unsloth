@@ -154,6 +154,7 @@ jobs:
             tests/studio/test_main_runs_survive_merge_bursts.py \
             tests/studio/test_pester_bootstrap_hardening.py \
             tests/studio/test_playwright_suites_run_in_ci.py \
+            tests/studio/test_sdk_installs_are_major_bounded.py \
             tests/studio/test_short_job_absorption.py \
             tests/studio/test_smoke_workflows_share_one_script.py \
             tests/studio/test_stt_model_search_locator_contract.py \
