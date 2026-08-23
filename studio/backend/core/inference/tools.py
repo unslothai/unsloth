@@ -8773,6 +8773,12 @@ def _is_spill_artifact(sandbox: str, parent: str, name: str) -> bool:
     root = os.path.join(sandbox, _SPILL_DIR)
     if parent != root and os.path.dirname(parent) != root:
         return False
+    if not os.path.isfile(os.path.join(root, _SPILL_OWNER_MARKER)):
+        # See `_SPILL_OWNER_MARKER`: unmarked, so this directory is the user's and so is
+        # everything in it, however the files are named.
+        return False
+    if parent == root and name == _SPILL_OWNER_MARKER:
+        return True
     return bool(_SPILL_NAME_RE.fullmatch(name)) and not os.path.islink(os.path.join(parent, name))
 
 
@@ -12248,9 +12254,9 @@ def _dense_char_limit(text: str, max_chars: int) -> int:
     """
     ctx = _window_context_tokens()
     room = _request_result_room()
-    if not ctx or (len(text) <= _MIN_PAGE_CHARS and room is None):
+    if room is None and (not ctx or len(text) <= _MIN_PAGE_CHARS):
         return max_chars
-    if room is not None and _loaded_token_counter(ctx) is None:
+    if room is not None and _loaded_token_counter(ctx or 0) is None:
         # Nothing here can measure this model's tokens: `_loaded_token_counter` answers
         # only for a resident GGUF, and a native safetensors model is served through a
         # loop with no rolling fit to recover if the estimate is wrong. The estimate below
@@ -12261,8 +12267,9 @@ def _dense_char_limit(text: str, max_chars: int) -> int:
         # wrong on when being wrong the other way is an unrecoverable turn.
         room = int(room * _UNMEASURED_ROOM_MARGIN)
     # Kept a float, so English text lands on exactly the character budget rather than
-    # one character short of it.
-    share = ctx * _PAGE_CONTEXT_SHARE
+    # one character short of it. Unknown window, known room: the room is the whole answer,
+    # which is the native case where nothing here can see a context length.
+    share = float(ctx * _PAGE_CONTEXT_SHARE) if ctx else float(room)
     if room is not None:
         # The share is a fraction of the WINDOW and does not fall as the thread fills, so
         # on its own it lets the last result before an overflow claim as much as the
@@ -12280,6 +12287,10 @@ def _dense_char_limit(text: str, max_chars: int) -> int:
         # about a third more than the room holds. Bottomed at one character rather than
         # the legacy floor, since going below it is the point.
         room_chars = _dense_prefix_chars(text, float(room))
+        if not ctx:
+            # No window to measure against, so the estimate above is the answer, already
+            # halved for being unmeasurable.
+            return min(max_chars, room_chars)
         # Bottomed at ZERO, not at one character. A thread at its budget measures a room of
         # zero, and a real tokenizer charges for the framing around even an empty string,
         # so the exact fit lands on nothing fitting. One character here is not a rounding
@@ -14191,6 +14202,34 @@ _SPILL_MAX_TOTAL_BYTES = 64 * 1024 * 1024
 # directory -- a session may open on one that already holds a folder of this name, and
 # anything in it that Studio did not write is not Studio's to remove.
 _SPILL_NAME_RE = re.compile(r"[0-9a-f]{12}\.txt")
+# Written once, when this process creates the spill directory. Ownership is RECORDED
+# rather than inferred from the names inside: a sandbox can be a project the user opened,
+# a directory of this name in it may be theirs, and a file name proves nothing about who
+# wrote it. Without the marker nothing here writes, prunes or discounts anything there.
+_SPILL_OWNER_MARKER = ".studio-owned"
+
+
+def _own_spill_root(root: str) -> bool:
+    """Whether the spill directory is one this process made, creating it if it is absent.
+
+    See `_SPILL_OWNER_MARKER`. A pre-existing directory of that name without the marker is
+    the user's: this returns False and the caller falls back to a notice with no spill,
+    which is the same fallback as a read-only mount.
+    """
+    marker = os.path.join(root, _SPILL_OWNER_MARKER)
+    if os.path.islink(root):
+        return False
+    if not os.path.isdir(root):
+        if os.path.exists(root):
+            return False
+        os.makedirs(root, exist_ok = True)
+    if not os.path.isfile(marker):
+        if os.listdir(root):
+            # Not ours and not empty, so it came with the sandbox.
+            return False
+        with open(marker, "w", encoding = "utf-8") as handle:
+            handle.write("Unsloth Studio truncated tool output. Safe to delete.\n")
+    return True
 
 
 def _spill_scope(session_id: "str | None", thread_id: "str | None") -> "str | None":
@@ -14247,6 +14286,8 @@ def _spill_full_output(
     if not workdir or not os.path.isdir(workdir) or scope is None:
         return None, True
     try:
+        if not _own_spill_root(os.path.join(workdir, _SPILL_DIR)):
+            return None, True
         relative = f"{_SPILL_DIR}/{scope}" if scope else _SPILL_DIR
         target_dir = os.path.join(workdir, *relative.split("/"))
         # The sandbox is a directory the model runs commands in, so `.unsloth_tool_output`
@@ -14344,6 +14385,9 @@ def _prune_spills(target_dir: str, root: "str | None" = None) -> None:
     however many there are.
     """
     try:
+        if not os.path.isfile(os.path.join(root or target_dir, _SPILL_OWNER_MARKER)):
+            # Unowned: whatever is in there came with the sandbox, whatever it is called.
+            return
         # Newest first within this scope, so the count keeps the ones still being paged.
         for extra in sorted(_spill_files(target_dir), key = os.path.getmtime, reverse = True)[
             _SPILL_KEEP:

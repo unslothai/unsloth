@@ -52,6 +52,24 @@ def _spill_path(out: str) -> str:
     return out.split("saved to ")[1].split(" ")[0].rstrip(".,)")
 
 
+def _own(workdir) -> "os.PathLike":
+    """The spill directory as Studio itself would leave it: created, and marked as ours.
+
+    Tests that pre-create it are standing in for a sandbox this process has already
+    spilled into; without the marker it is a directory that came with the sandbox, which
+    is the case `_own_spill_root` deliberately refuses.
+    """
+    root = workdir / tools._SPILL_DIR
+    root.mkdir(exist_ok = True)
+    (root / tools._SPILL_OWNER_MARKER).write_text("owned")
+    return root
+
+
+def _spills(directory) -> list:
+    """Everything in a spill directory except Studio's own marker."""
+    return [p for p in directory.iterdir() if p.name != tools._SPILL_OWNER_MARKER]
+
+
 def _room(value):
     tools._REQUEST_RESULT_BUDGET.set(value)
 
@@ -147,10 +165,21 @@ class TestTheCharacterCapHonoursIt:
 
         assert after == before
 
-    def test_an_unknown_window_still_keeps_the_caller_cap(self, monkeypatch):
-        """No window means no share to take, with or without a room."""
-        _room(50)
+    def test_an_unknown_window_with_no_room_keeps_the_caller_cap(self):
+        """Nothing measured at all, so there is nothing to lower the cap with."""
         assert tools._dense_char_limit(_dense(40_000), 9_000) == 9_000
+
+    def test_a_known_room_holds_even_with_an_unknown_window(self, monkeypatch):
+        """The native case: no resident GGUF, so `_window_context_tokens` sees nothing,
+        while the loop that called it knows exactly how full the thread is. Reading the
+        window as "no limits" there leaves every result uncapped on the one path with no
+        rolling fit to recover."""
+        monkeypatch.setattr(tools, "_loaded_token_counter", lambda ctx: None)
+        _room(50)
+
+        limit = tools._dense_char_limit(_dense(40_000), 9_000)
+
+        assert 0 < limit <= 50 * 4 * tools._UNMEASURED_ROOM_MARGIN
 
 
 class TestPagingTheRest:
@@ -296,11 +325,10 @@ class TestPagingTheRest:
 
         monkeypatch.setattr(os, "fdopen", _recording_fdopen)
         text = "\n".join(f"line {i}" for i in range(1, 200))
-        tools._truncate(text, 120, workdir = str(tmp_path))
+        out = tools._truncate(text, 120, workdir = str(tmp_path))
 
         assert seen.get("newline") == "", f"spill opened with newline={seen.get('newline')!r}"
-        spill = next((tmp_path / tools._SPILL_DIR).iterdir())
-        assert spill.read_bytes() == text.encode("utf-8")
+        assert (tmp_path / _spill_path(out)).read_bytes() == text.encode("utf-8")
 
     def test_no_workdir_falls_back_to_the_plain_notice(self):
         """A hint naming a file that is not there is worse than admitting it is gone."""
@@ -318,8 +346,7 @@ class TestPagingTheRest:
                 f"run {n}\n" + "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path)
             )
 
-        kept = os.listdir(tmp_path / tools._SPILL_DIR)
-        assert len(kept) <= tools._SPILL_KEEP
+        assert len(_spills(tmp_path / tools._SPILL_DIR)) <= tools._SPILL_KEEP
 
     def test_the_same_output_twice_reuses_one_spill(self, tmp_path):
         """Content addressed, so the notice is identical between the streaming and
@@ -331,7 +358,7 @@ class TestPagingTheRest:
         second = tools._truncate(text, 200, workdir = str(tmp_path))
 
         assert first == second
-        assert len(os.listdir(tmp_path / tools._SPILL_DIR)) == 1
+        assert len(_spills(tmp_path / tools._SPILL_DIR)) == 1
 
 
 # Three characters per token, which is what the code tools actually print: minified HTML,
@@ -492,8 +519,7 @@ class TestPruningOnlyTouchesStudioSpills:
     def test_files_studio_did_not_write_are_left_alone(self, tmp_path):
         """The sandbox can be a directory the user already had, including one that already
         holds a `.unsloth_tool_output`. Pruning by extension deletes their files."""
-        target = tmp_path / tools._SPILL_DIR
-        target.mkdir()
+        target = _own(tmp_path)
         mine = [target / f"{i:012x}.txt" for i in range(tools._SPILL_KEEP + 5)]
         for path in mine:
             path.write_text("spill")
@@ -507,6 +533,38 @@ class TestPruningOnlyTouchesStudioSpills:
         assert len([p for p in target.iterdir() if p.name.endswith(".txt")]) == (
             tools._SPILL_KEEP + len(theirs)
         )
+
+    def test_an_unowned_directory_is_not_pruned_at_all(self, tmp_path):
+        """A name proves nothing about who wrote it. Without the marker this directory came
+        with the sandbox, and every file in it is the user's however it is named."""
+        target = tmp_path / tools._SPILL_DIR
+        target.mkdir()
+        theirs = [target / f"{i:012x}.txt" for i in range(tools._SPILL_KEEP + 5)]
+        for path in theirs:
+            path.write_text("mine")
+
+        tools._prune_spills(str(target))
+
+        assert all(path.exists() for path in theirs)
+
+    def test_an_unowned_directory_is_never_written_to(self, tmp_path):
+        """And nothing is added to it either, so the notice falls back to no paging hint
+        rather than putting Studio's files among the user's."""
+        (tmp_path / tools._SPILL_DIR).mkdir()
+        (tmp_path / tools._SPILL_DIR / "notes.txt").write_text("mine")
+
+        out = tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path))
+
+        assert "saved to" not in out
+        assert [p.name for p in (tmp_path / tools._SPILL_DIR).iterdir()] == ["notes.txt"]
+
+    def test_a_file_named_like_a_spill_in_an_unowned_directory_is_user_content(self, tmp_path):
+        """And the cleanup reads it the same way, so deleting the chat does not take it."""
+        target = tmp_path / tools._SPILL_DIR
+        target.mkdir()
+        (target / "abcdef123456.txt").write_text("mine")
+
+        assert not tools._holds_no_user_files(str(tmp_path))
 
 
 class TestTheFrontendEnvelopeSurvivesTheCap:
@@ -596,8 +654,7 @@ class TestTheSpillStaysInsideTheSandbox:
         victim = tmp_path / "victim.txt"
         victim.write_text("do not overwrite me")
         text = "\n".join(str(i) for i in range(5_000))
-        target = workdir / tools._SPILL_DIR
-        target.mkdir()
+        target = _own(workdir)
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
         (target / f"{digest}.txt").symlink_to(victim)
 
@@ -611,8 +668,7 @@ class TestTheSpillStaysInsideTheSandbox:
         assert spill.read_text().startswith("0\n1\n")
 
     def test_pruning_does_not_follow_symlinks_either(self, tmp_path):
-        target = tmp_path / tools._SPILL_DIR
-        target.mkdir()
+        target = _own(tmp_path)
         victim = tmp_path / "victim.txt"
         victim.write_text("keep me")
         for i in range(tools._SPILL_KEEP + 5):
@@ -696,8 +752,7 @@ class TestTheSpillCannotBeAimedElsewhere:
         victim = tmp_path / "victim.txt"
         victim.write_text("do not overwrite me")
         text = "\n".join(str(i) for i in range(5_000))
-        target = workdir / tools._SPILL_DIR
-        target.mkdir()
+        target = _own(workdir)
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
         os.link(victim, target / f"{digest}.txt")
 
@@ -710,7 +765,7 @@ class TestTheSpillCannotBeAimedElsewhere:
     def test_no_temporary_file_is_left_behind(self, tmp_path):
         tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path))
 
-        names = os.listdir(tmp_path / tools._SPILL_DIR)
+        names = [p.name for p in _spills(tmp_path / tools._SPILL_DIR)]
         assert all(tools._SPILL_NAME_RE.fullmatch(n) for n in names), names
 
 
@@ -888,6 +943,11 @@ class TestTheSafetensorsLoopPricesItToo:
 
         assert isinstance(room, int)
         assert 0 < room < prompt_budget(4096, 512)
+
+    def test_it_passes_the_window_as_well_as_the_room(self):
+        """A room with no window to size against is not a cap: `_dense_char_limit` has no
+        share to take and hands back the window-independent constant."""
+        assert self._run(4096).get("context_tokens") == 4096
 
     def test_an_unknown_window_prices_nothing(self):
         """The same leg the GGUF loop takes: no window, no budget, today's behaviour."""
