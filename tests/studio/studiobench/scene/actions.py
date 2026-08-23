@@ -946,6 +946,12 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
             "copy_ms": round(copy_ms, 1),
             "total_ms": round((time.monotonic() - started) * 1000, 1),
         },
+        # `expect_ok` stays `chars > 0` deliberately. Within ONE run there is nothing to compare
+        # against: the selection is taken over the viewport's DOM, so if the DOM is windowed the
+        # selection and every DOM-derived reference shrink together and agree with each other.
+        # An absolute floor would need calibrating per rung and per platform, and would still be a
+        # guess. The count below is the real check, and it is paired against the other arm.
+        counts = {"selected_chars": raw["chars"]},
         reason = None if ok else "select-all selected nothing",
     )
 

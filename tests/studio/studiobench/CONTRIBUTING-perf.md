@@ -11,20 +11,60 @@ answer was produced by not having it.
 ## The loop
 
 ```
-1. Screen    python -m tests.studio.studiobench --tier fast    ~5 min, direction only
-2. Confirm   python -m tests.studio.studiobench --tier standard --reps 4    ~1 h, ~2 h for an A/B
-3. Gate      per-metric floor, sign consistency, stability
-4. Parity    prove you did not change what is rendered
-5. Read      python -m tests.studio.studiobench --report <out>/payload.jsonl --tier standard
+# 1. Screen: about 5 minutes, direction only
+python -m tests.studio.studiobench --tier fast --ab YOUR_REF --out outputs/screen
+
+# 2. Confirm: about 1 hour, and about 2 hours for an A/B. A NEW --out: the payload is
+#    append-only, so writing a standard run into the screen's directory leaves one file
+#    holding two films.
+python -m tests.studio.studiobench --tier standard --reps 4 --ab YOUR_REF --out outputs/mine
+
+# ... and the same film with BOTH arms on the base, as your null control. --ab sets the
+#    TREATMENT ref only; --branch is the base arm and defaults to main, so passing --ab BASE_REF
+#    alone measures main against BASE_REF and calls the difference noise.
+python -m tests.studio.studiobench --tier standard --reps 4 \
+    --branch BASE_REF --ab BASE_REF --out outputs/null
+
+# ... and, before you read any timing at all, that the runs actually ran. Here rather than at
+#    the end: floor_table DROPS a repetition whose action did not run instead of refusing it, so
+#    a missed slot leaves the paired table quietly and the repetitions that survive print as a
+#    clean win on a smaller n.
+python -m tests.studio.studiobench --assert-liveness outputs/mine/payload.jsonl
+
+# ... BOTH payloads. The null control is the one people forget, and a hole there is worse: the
+#    floor is max(|null delta|, null spread) over the repetitions that SURVIVED pairing, so a
+#    slot the null run missed drops its noisiest repetition and tightens the bar your result is
+#    then measured against. Your own payload passes this gate while it happens.
+python -m tests.studio.studiobench --assert-liveness outputs/null/payload.jsonl
+
+# 3. Gate: per-metric floor, sign consistency, stability
+python -m tests.studio.studiobench.sweep.floor_table --floor outputs/null outputs/mine
+
+# 4. Parity: prove you did not change what is rendered
+python -m tests.studio.studiobench.sweep.ui_parity --null outputs/null outputs/mine
+
+# 5. Read the payload back as a scored report. No Studio, no browser, no network.
+python -m tests.studio.studiobench --report outputs/mine/payload.jsonl --tier standard
 ```
 
-Every step above except the last drives a real Studio and therefore needs credentials. The
-commands are written short here; see **"You need a Studio, and you need its password"** in
-[README.md](README.md) before you run the first one, because a missing `--password` fails as an
-HTTP 401 only after the browser has started, and `--doctor` reports PASS on that configuration.
-Step 5 needs neither Studio nor network.
+The three commands in steps 1 and 2 drive a real Studio and therefore need credentials. The rest
+read a payload that already exists: `--assert-liveness`, `floor_table`, `ui_parity` and `--report`
+run offline, with no Studio, no browser and no network.
+See **"You need a Studio, and you need its password"** in [README.md](README.md) before you
+run the first one: a missing `--password` fails as an HTTP 401 only after the browser has
+already started, and `--doctor` reports PASS on that exact configuration. If you drive the wave
+against Studios you started yourself rather than letting studiobench install them, `--ab` needs
+`--attach` **and** `--attach-b`, one URL per arm, or it exits before measuring anything.
 
-Steps 3 and 4 are not optional extras. A number that has not cleared them is not evidence.
+`--assert-liveness` is strict on purpose and an action that could not run is a real finding, not
+noise. But two of the eighteen are unreachable on a fixture that loads no model (`image_upload`
+has no attachments button, `message_menu` no More button), and a small tier can leave others with
+nothing to act on. Read the reasons it prints before you reach for `--allow-not-run`, and name
+only the actions you have understood.
+
+Steps 3 and 4 are not optional extras. A number that has not cleared them is not evidence, and
+`floor_table` will tell you so: run without `--floor` and it prints the deltas followed by a
+refusal to call any of them a result.
 
 ## 1. Screen on the fast tier
 
@@ -57,7 +97,7 @@ A result must clear all three. Failing any one makes it **void**, not "a small w
 You need a **null control**: the same build against itself, base versus base, producing a delta that
 you know is exactly zero in truth. Whatever it reports is your noise.
 
-Two rules about it, both learned the hard way:
+Three rules about it, all learned the hard way:
 
 - **The floor is per metric, not global.** A single global floor derived from the frame tail says
   nothing about whether `settings.open_ms` can resolve 5%. Each metric gets its own floor from the
@@ -66,6 +106,12 @@ Two rules about it, both learned the hard way:
   A floor measured on a quiet machine does not transfer to a busy one. Session-to-session drift on
   this metric set is about 8%, which is larger than most real effects, so a floor from yesterday's
   run is not a floor.
+- **A hole in the null control tightens the floor**, so the null gets `--assert-liveness` too. The
+  floor is computed from the repetitions that survived pairing, and the repetition a null run drops
+  is the one that was slow enough to miss a slot, which is the noisiest one it had. Four null
+  repetitions reading 1.000, 1.002, 0.999 and 1.300 set a 30.1% floor on
+  `message_menu.open_close_ms` and void a 10% result; lose the fourth to a missed slot and the same
+  three survivors set a 0.3% floor and the same 10% prints as `faster`.
 
 The floor for a metric is `max(|null delta|, spread)`. The null control's own systematic bias has to
 be cleared as well as its scatter.
@@ -97,6 +143,29 @@ So a change to `content-visibility`, `contain-intrinsic-size`, transforms or pai
 parity-clean and still visibly wrong. **If you touched CSS, take screenshots as well.**
 
 `NOT EXERCISED` is not a pass. An action that never ran is not evidence that it is stable.
+
+### The digest cannot judge a change that alters the DOM on purpose
+
+Virtualization, windowing and progressive mount all change what is mounted by design, so the digest
+reports differences everywhere and proves nothing. For those changes parity means screenshots at
+matched scroll positions plus the behavioural invariants below.
+
+## 5. Invariant counts: the metrics whose sign means the opposite
+
+Rows named `action.count.key` are correctness invariants, not timings, and the table scores them
+with the same paired arithmetic and the opposite sign. A timing falling is the result a change is
+trying to produce. A count falling is a regression, and a count is often the only thing that can see
+it.
+
+`select_all_copy.count.selected_chars` is the case this exists for. The selection is taken over the
+viewport's DOM, and the action's own assertion is only that the character count is above zero, so
+anything that stops mounting the whole thread truncates the clipboard from roughly 400,000
+characters to a few thousand while every timing improves and the action still reports `expect_ok`.
+Scored as a timing that reads `faster`; scored as an invariant it reads `LOST (invariant fell)`.
+
+The comparison is against the other arm rather than an absolute threshold, so no per-rung
+calibration is needed: both arms seed a byte-identical thread. A count on an action that did not run
+is dropped like any other reading from an action that did not run.
 
 ## Before you trust any number at all
 
