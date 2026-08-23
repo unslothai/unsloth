@@ -1305,12 +1305,16 @@ function useStudioRuntimeAdapters(
     () => ({
       async load() {
         const completeLoad = <T,>(result: T, loadedThreadId?: string): T => {
+          // A runtime bootstraps on an empty thread and only switches to the
+          // requested one afterwards, so an unrequested load is not readiness.
+          const loadedTheRequestedThread =
+            !reloadReadyThreadId || loadedThreadId === reloadReadyThreadId;
           if (onInitialHistoryReady) {
-            onInitialHistoryReady();
+            if (loadedTheRequestedThread) onInitialHistoryReady();
           } else if (
             modelType === "base" &&
             !pairId &&
-            (!reloadReadyThreadId || loadedThreadId === reloadReadyThreadId)
+            loadedTheRequestedThread
           ) {
             window.dispatchEvent(new Event("unsloth:app-shell-ready"));
           }

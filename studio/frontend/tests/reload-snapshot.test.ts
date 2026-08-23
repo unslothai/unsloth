@@ -838,9 +838,17 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
     runtimeProviderSource,
     /createRuntimeHook\([\s\S]*?modelType,[\s\S]*?pairId,[\s\S]*?initialThreadId,[\s\S]*?onInitialHistoryReady/,
   );
+  // A compare pane reports readiness through onInitialHistoryReady, and its
+  // runtime bootstraps on an empty thread before switching to the requested
+  // one, so this branch has to check the thread too or both panes go ready
+  // while their conversations are still loading.
   assert.match(
     runtimeProviderSource,
-    /if \(onInitialHistoryReady\) \{\s*onInitialHistoryReady\(\)/,
+    /const completeLoad =[\s\S]*?if \(onInitialHistoryReady\) \{\s*if \(loadedTheRequestedThread\) onInitialHistoryReady\(\);/,
+  );
+  assert.match(
+    runtimeProviderSource,
+    /const signalFailedInitialSwitchReady = useCallback[\s\S]*?if \(onInitialHistoryReady\) \{\s*onInitialHistoryReady\(\);/,
   );
   assert.match(
     chatPageSource,
