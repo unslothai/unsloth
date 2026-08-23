@@ -399,9 +399,7 @@ def test_a_floor_under_the_window_keeps_the_advice_that_still_works():
 def test_a_diagnosis_for_a_different_window_claims_nothing_about_the_floor():
     # A reload between the fit and the error: that floor was measured elsewhere, so the
     # "cannot be shortened" claim has no evidence behind it either.
-    context_refusal.record_fit(
-        _refusal(irreducible = 9000, latest_turn = 300, context_length = 8192)
-    )
+    context_refusal.record_fit(_refusal(irreducible = 9000, latest_turn = 300, context_length = 8192))
     message = _friendly_error(ValueError(_SERVER_ERROR))
     assert "shorten the conversation" in message
     assert "Even with every earlier turn dropped" not in message
