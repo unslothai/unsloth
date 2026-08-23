@@ -12190,8 +12190,16 @@ async def openai_audio_speech(
         messages = [{"role": "user", "content": body.input}],
         max_tokens = AUDIO_GENERATION_MAX_TOKENS,
     )
+    # Same reason the image route sanitizes its opening label: model is informational here
+    # and is echoed verbatim into the row, so a failure before the relabel below (no audio
+    # model loaded, a busy backend) leaves the raw client string on a terminal row that
+    # goes out over the tunnel. An absolute path is ordinary input for a local
+    # OpenAI-compatible server, so redact it up front rather than only on success.
     async with _monitored_media_request(
-        request, model = body.model, prompt = body.input, subject = current_subject
+        request,
+        model = public_model_id(body.model) or body.model,
+        prompt = body.input,
+        subject = current_subject,
     ) as monitor_id:
         wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
             body.input, payload, request, current_subject
@@ -12341,9 +12349,13 @@ async def openai_audio_transcriptions(
     if isinstance(provider_id, str):
         # The proxied path is traffic through this server too, so it opens the same row the
         # sidecar path does; without this a saved STT connection is still invisible.
+        # Path-free like the sidecar relabel below: this path never relabels at all, so
+        # the client's raw string is what the row keeps for its whole life. Provider ids
+        # ("whisper-1", "openai/whisper-large-v3") are returned unchanged.
+        _requested = (model or "").strip()
         async with _monitored_media_request(
             request,
-            model = (model or "").strip(),
+            model = public_model_id(_requested) or _requested,
             prompt = file.filename or "audio",
             subject = current_subject,
         ) as monitor_id:
@@ -12389,9 +12401,12 @@ async def openai_audio_transcriptions(
         )
     # openai's whisper-1 placeholder means the default transcription model, not a sidecar id
     sidecar_model = None if model in (None, "", "whisper-1") else model
+    # The relabel below only lands on success; a sidecar failure would otherwise strand the
+    # raw client string, which may be a host path, on the terminal row.
+    _opening_label = sidecar_model or "whisper-1"
     async with _monitored_media_request(
         request,
-        model = sidecar_model or "whisper-1",
+        model = public_model_id(_opening_label) or _opening_label,
         prompt = file.filename or "audio",
         subject = current_subject,
     ) as monitor_id:

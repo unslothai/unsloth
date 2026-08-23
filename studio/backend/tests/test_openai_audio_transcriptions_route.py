@@ -869,3 +869,44 @@ def test_the_provider_client_sends_granularities_as_a_repeated_field(monkeypatch
         )
     )
     assert sent["data"]["timestamp_granularities[]"] == ["word"]
+
+
+@pytest.mark.parametrize(
+    "requested, expected",
+    [
+        ("/home/ana/models/whisper-large-v3", "whisper-large-v3"),
+        (r"C:\Users\ana\models\whisper-large-v3", "whisper-large-v3"),
+        (r"\\fileserver\share\models\whisper-large-v3", "whisper-large-v3"),
+    ],
+)
+def test_a_sidecar_failure_does_not_leak_the_requested_path(monkeypatch, requested, expected):
+    """The relabel only lands on success, so a sidecar failure kept the raw client string
+    on the terminal row. Windows and UNC forms are covered because os.path.basename alone
+    would not split either one on a Linux host."""
+
+    async def _boom(raw):
+        raise HTTPException(status_code = 409, detail = "Model is busy.")
+
+    cli, calls = _make_client(monkeypatch, transcribe = _boom)
+    api_monitor.clear()
+    assert _post(cli, data = {"model": requested}).status_code == 409
+    row = api_monitor.snapshot(include_details = False)[0]
+    assert row["status"] == "error"
+    assert row["model"] == expected
+    assert "/" not in row["model"] and "\\" not in row["model"]
+    # The redaction is for the monitor label only; the engine still gets what was asked for.
+    assert calls[0]["model"] == requested
+
+
+def test_the_proxied_row_never_carries_a_local_path(monkeypatch):
+    """The proxied arm never relabels at all, so whatever it opens with is what the row
+    keeps for its whole life, success included."""
+    cli, _sidecar_calls = _make_client(monkeypatch)
+    _client_args, transcription_calls, _creds = _install_external(monkeypatch)
+    api_monitor.clear()
+    resp = _post(cli, data = {"provider_id": "conn-1", "model": "/home/ana/models/whisper-v3"})
+    assert resp.status_code == 200
+    row = api_monitor.snapshot(include_details = False)[0]
+    assert row["model"] == "whisper-v3"
+    # Only the label is redacted; the provider is still asked for what the client sent.
+    assert transcription_calls[-1]["model"] == "/home/ana/models/whisper-v3"
