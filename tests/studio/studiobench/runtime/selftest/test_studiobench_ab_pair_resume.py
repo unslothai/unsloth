@@ -188,7 +188,10 @@ def _resumed_table(tmp_path, *, pair_granular: bool) -> str:
 def test_the_resumed_session_measures_both_arms_and_gets_a_table(tmp_path):
     table = _resumed_table(tmp_path, pair_granular = True)
 
-    assert "VERDICT: IMPROVED" in table
+    # Both arms measured, so the pair exists and the table has a reading. One pair carries no
+    # bootstrap CI, so the verdict is INCONCLUSIVE; the contrast with the test below, where the
+    # arms never pair at all and the table says NO READING, is the thing under test.
+    assert "VERDICT: INCONCLUSIVE" in table
     assert "NO READING" not in table
 
 
@@ -262,7 +265,10 @@ def test_skipping_the_recorded_pair_publishes_a_verdict_over_the_remainder(tmp_p
     table = _two_rung_resumed_table(tmp_path, whole_table = False)
 
     assert "keystroke_p95_ms         1" in table, table
-    assert "VERDICT: IMPROVED" in table, table
+    # The remainder is a single pair, so it can no longer be published as a direction; the bug
+    # this documents is unchanged and is the two assertions around this one: the 30% regression
+    # is gone from the table and nothing names the rung it came from.
+    assert "VERDICT: INCONCLUSIVE" in table, table
     assert "10K" not in table
 
 
