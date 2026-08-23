@@ -240,6 +240,16 @@ def test_context_free_rocm_smi_translates_hip_ordinals(monkeypatch):
 
     gib = 1 << 30
     monkeypatch.setattr(hw, "IS_ROCM", True)
+    # The visibility vars are read from the real environment on the way through,
+    # so a runner that exports one (a CI job pinning a GPU beside this test) can
+    # change the outcome. Its siblings already isolate; this one did not.
+    for name in (
+        "GPU_DEVICE_ORDINAL",
+        "ROCR_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+    ):
+        monkeypatch.delenv(name, raising = False)
     monkeypatch.setattr(
         hw,
         "_get_parent_visible_gpu_spec",
@@ -635,6 +645,28 @@ def test_context_free_rocm_smi_declines_whole_gpu_metrics_for_a_partition(monkey
             "available": True,
             "devices": [{"visible_ordinal": 0, "vram_used_gb": 70.0, "vram_total_gb": 80.0}],
         },
+    )
+    # amd-smi is only the first probe. Leaving the Linux sysfs branch to the real
+    # host made this vacuous exactly where it matters: where sysfs is unreachable
+    # the branch never runs, and where it IS reachable the inventory was built
+    # from the host's own card rather than the partition, so the totals matched
+    # and a figure came back. Pin the whole path, sysfs included.
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        hw,
+        "_torch_get_device_module",
+        lambda: (
+            types.SimpleNamespace(
+                get_device_properties = lambda _o: _FakeProps("MI300X partition", 10 * gib)
+            ),
+            "cuda",
+        ),
+    )
+    monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
+    monkeypatch.setattr(hw, "_rocm_visibility_mask_active", lambda: False)
+    # sysfs speaks for the whole 80 GiB card, which is not this partition's pool.
+    monkeypatch.setattr(
+        hw, "_rocm_linux_sysfs_vram_by_pci_gb", lambda: {"0000:03:00.0": (70.0, 80.0)}
     )
 
     assert hw._context_free_cuda_memory_info(0, 10 * gib) is None
