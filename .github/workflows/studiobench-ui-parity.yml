@@ -164,6 +164,23 @@ jobs:
     # one browser session on purpose, and `sweep/ui_parity.py` refuses to pair
     # two arms recorded under different session ids, so a run split across two
     # machines produces NOT COMPARABLE for every action rather than a verdict.
+    #
+    # WHAT THE SPLIT COSTS, and it is not nothing. GitHub gives each matrix entry
+    # its own runner and does not start them together: across four consecutive
+    # waves the two arms drew different runner ids every time, with start-time
+    # staggers from 1s to 6m30. So the exemptions the verdict applies were
+    # measured on a machine and at a moment the result never touched, and they
+    # describe timing races -- the one class of thing that does not transfer. On
+    # run 32648192384 the null derived three and the scored runner reproduced
+    # ONE; `reasoning_toggle@r100K` is not on the declared list, so it was
+    # excused solely by the other machine's race. The null cannot see this: it is
+    # one machine agreeing with itself.
+    #
+    # Rather than pay double wall clock to co-locate, `ui_parity` confines the
+    # imported set to what the SCORED runner reproduces, using side A of the
+    # result arm -- the same build in every repetition, so comparing it across
+    # repetitions is a base-vs-base null in the same session, free. See
+    # `in_arm_repeatability` and `confine_to_runner`.
     name: ${{ matrix.label }}
     runs-on: ubuntu-latest
     # Backstop only. Every blocking step below carries its own cap, and they sum

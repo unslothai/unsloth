@@ -417,3 +417,38 @@ def test_the_workflow_runs_the_gate_on_the_routes_the_measurement_depends_on():
     ).read_text(encoding = "utf-8")
     for route in ("inference.py", "auth.py", "chat_history.py", "providers.py"):
         assert f"studio/backend/routes/{route}" in text, route
+
+
+def test_the_evidence_uses_the_same_confined_set_the_verdict_scored_with(tmp_path):
+    """A finding the verdict keeps must get a picture.
+
+    The verdict confines the imported exemptions to what the scored runner reproduces, so an
+    evidence step reading the raw imported set goes back out of step with the job it illustrates:
+    the run reds on an action and the artifact has no composite for it. That is the same defect
+    as publishing no evidence at all, one round after it was fixed the first time.
+    """
+    shots = tmp_path / "shots"
+    # The null raced on `settings`. This runner did not: side A is identical across both
+    # repetitions, and head differs in both.
+    null_rows = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            null_rows.append(action(f"r100K.{arm}.{rep}", "settings", f"RACE_{arm}_{rep}", None))
+            null_rows.append({"row_type": "cell", "cell_id": f"r100K.{arm}.{rep}",
+                              "completed": True})
+    null = write(tmp_path, "null", null_rows)
+
+    rows = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm, digest in (("base", "SAME"), ("treatment", "HEAD_IS_DIFFERENT")):
+            f = f"settings_{rep}_{arm}.png"
+            png(shots / f, 200, 120, (10, 60, 10) if arm == "base" else (60, 10, 10))
+            rows.append(action(f"r100K.{arm}.{rep}", "settings", digest, f))
+            rows.append({"row_type": "cell", "cell_id": f"r100K.{arm}.{rep}", "completed": True})
+    result = write(tmp_path, "result", rows)
+
+    diffs = S.differing_actions(S.shards_of(str(result)), S.shards_of(str(null)), min_reps = 2)
+    assert [d["action"] for d in diffs] == ["settings", "settings"], diffs
+    out = tmp_path / "out"
+    assert S.build(result, null, shots, out, min_reps = 2) == 0
+    assert any("settings" in p.name for p in out.glob("*composite*"))

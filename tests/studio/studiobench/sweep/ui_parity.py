@@ -495,6 +495,90 @@ def unstable_set(paths: list[Path] | None) -> tuple[frozenset, dict, dict]:
     return frozenset(measured) | frozenset(UNSTABLE_ACTIONS), derived, checks
 
 
+def in_arm_repeatability(paths: list[Path]) -> tuple[set, set]:
+    """A base-vs-base null taken ON THE RUNNER BEING SCORED, at no extra cost.
+
+    Returns `(unstable, stable)` as `(rung, action)` sets. An action seen in fewer than two
+    repetitions of side A is in NEITHER: undecided is not stable.
+
+    WHY THIS EXISTS. The excuse set is measured by a different job. GitHub gives each matrix
+    entry its own runner, and it does not start them together: across four consecutive waves of
+    this workflow the two arms drew different runner ids every time, and the stagger between
+    their start times ran from 1 second to 6 minutes 30. So the exemptions the verdict applies
+    are a property of a machine and a moment that the result never touched, and the instability
+    mechanisms they describe are timing races -- the one class of thing that does not transfer.
+    The null cannot notice this: it is one machine measuring itself, and it agrees with itself.
+
+    WHAT SIDE A GIVES US FOR FREE. The result arm is merge_base vs head, so side A is the SAME
+    build in every repetition. Comparing side A at rep0 against side A at rep1 is therefore a
+    base-vs-base comparison in the same session, on the same runner, minutes from the digests it
+    is going to excuse. No extra install, no extra film, no change to what the job schedules.
+
+    WHY IT IS THE RIGHT ANALOGUE, checked rather than argued. The cross-job null derives its set
+    across ARMS within a repetition; this derives across REPETITIONS within an arm. On the null
+    control's own payload, where both constructs can be computed, they name the same three
+    actions at r100K -- keystroke, reasoning_toggle, scroll_during_generation -- so the axis is
+    not what the measurement is picking up.
+    """
+    got = collect(paths, require_complete = True)
+    # (shard, rung, session, action) -> {rep: side A row}
+    side_a: dict[tuple, dict] = collections.defaultdict(dict)
+    for (shard, rung, rep, sid, action), sides in got["pairs"].items():
+        row = sides.get("base")
+        if isinstance(row, dict):
+            side_a[(shard, rung, sid, action)][rep] = row
+    unstable: set = set()
+    stable: set = set()
+    for (_shard, rung, _sid, action), by_rep in side_a.items():
+        reps = sorted(by_rep)
+        if len(reps) < 2:
+            continue
+        verdicts = [
+            P.compare(by_rep[reps[0]].get("parity"), by_rep[r].get("parity"))["verdict"]
+            for r in reps[1:]
+        ]
+        # A capture that failed is blind, not agreement. Only a real MATCH earns "stable".
+        if any(v == P.DIFFER for v in verdicts):
+            unstable.add((rung, action))
+        elif all(v == P.MATCH for v in verdicts):
+            stable.add((rung, action))
+    return unstable, stable
+
+
+def confine_to_runner(
+    unstable: frozenset,
+    local_unstable: set,
+    local_stable: set,
+) -> tuple[frozenset, list]:
+    """Drop an IMPORTED exemption the scored runner positively contradicts. Returns (set, dropped).
+
+    ONE-SIDED ON PURPOSE, and the asymmetry is the whole safety argument. An exemption is removed
+    only when this runner measured that (rung, action) and found it REPEATABLE -- two matching
+    observations of one build. An action the local signal could not decide keeps its exemption,
+    because "we did not look" must never read as "it is stable"; that is the direction which turns
+    a quiet moment into a red job, and the false-alarm data this gate was tuned on says a null
+    quieter than the result it scores is the failure mode that actually happens.
+
+    So the only findings this can newly surface are ones where the scored runner ran the action
+    twice against one build, got the same DOM both times, and then got a different DOM from head
+    in both repetitions. That is not a race. That is a build difference.
+
+    The DECLARED entries -- plain action names rather than `(rung, action)` -- are never touched.
+    They are a standing claim about the app, not a measurement of a machine, so a machine cannot
+    contradict them.
+    """
+    kept, dropped = set(), []
+    for entry in unstable:
+        if not isinstance(entry, tuple):
+            kept.add(entry)
+            continue
+        if entry in local_stable and entry not in local_unstable:
+            dropped.append(entry)
+            continue
+        kept.add(entry)
+    return frozenset(kept), sorted(dropped)
+
+
 def corroborated(entries: list[tuple], min_reps: int) -> tuple[list[tuple], list[tuple]]:
     """Split stable differences into those that REPEATED and those seen in one repetition only.
 
@@ -963,9 +1047,25 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\n  REFUSING to score {pattern}: {mismatch}")
             worst = max(worst, 2)
             continue
+        # CONFINED TO THE RUNNER BEING SCORED, and only ever downward. The exemptions above were
+        # measured in the other matrix job, on another machine, minutes away; side A of THIS
+        # payload is the same build in every repetition, so it can say whether this machine
+        # reproduces them. One that it positively contradicts is dropped, one it could not decide
+        # is kept.
+        effective = unstable
+        if derived:
+            local_unstable, local_stable = in_arm_repeatability(paths)
+            effective, dropped = confine_to_runner(unstable, local_unstable, local_stable)
+            if dropped:
+                print(
+                    f"\n  {len(dropped)} imported exemption(s) DROPPED: this runner ran "
+                    f"{'them' if len(dropped) > 1 else 'it'} twice against one build and got the "
+                    f"same DOM, so the null's race did not reproduce here: "
+                    f"{', '.join(unstable_label(e) for e in dropped)}"
+                )
         worst = max(
             worst,
-            report(paths, f"UI PARITY: {pattern}", unstable, args.min_reps, args.min_compared),
+            report(paths, f"UI PARITY: {pattern}", effective, args.min_reps, args.min_compared),
         )
     return worst
 

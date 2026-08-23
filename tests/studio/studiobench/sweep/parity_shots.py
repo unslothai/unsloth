@@ -44,7 +44,9 @@ from tests.studio.studiobench.analysis import parity as P  # noqa: E402
 from tests.studio.studiobench.scoring.from_payload import latest_attempt_rows  # noqa: E402
 from tests.studio.studiobench.sweep.ui_parity import (  # noqa: E402
     compare_all,
+    confine_to_runner,
     corroborated,
+    in_arm_repeatability,
     is_unstable,
     shards_of,
     unstable_set,
@@ -125,7 +127,13 @@ def differing_actions(
     deliberately kept those shots for it. The two selections are held to the same bar as the
     report's -- excused by the null control, then corroborated at the verdict's own `--min-reps`.
     """
-    unstable, _derived, _checks = unstable_set(null_paths or None)
+    unstable, derived, _checks = unstable_set(null_paths or None)
+    # THE SAME EFFECTIVE SET THE VERDICT SCORED WITH. The verdict confines the imported
+    # exemptions to what the scored runner reproduces, so reading the raw imported set here would
+    # put the artifact back out of step with the job it illustrates -- an action the verdict
+    # failed on would have no picture, which is the same defect as publishing none at all.
+    if derived:
+        unstable, _dropped = confine_to_runner(unstable, *in_arm_repeatability(result_paths))
     out = []
     # `compare_all` returns (results, capture tally); only the results are wanted here.
     results, _tally = compare_all(result_paths)

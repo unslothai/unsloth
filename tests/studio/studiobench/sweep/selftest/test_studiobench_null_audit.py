@@ -815,3 +815,139 @@ def test_an_interrupted_retry_does_not_inherit_the_completion_it_superseded(tmp_
 
     unstable, _derived, _checks = U.unstable_set([path])
     assert ("r100K", "settings") not in unstable, unstable
+
+
+# ── an exemption measured on another machine is not an exemption here ──
+
+
+def _arm_payload(tmp_path: Path, name: str, regress: str | None, self_race: str | None) -> Path:
+    """One arm's payload. `regress` differs base-vs-head in BOTH reps; `self_race` differs base
+    against ITSELF in both reps, which is what makes an action look unstable."""
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            cid = f"r100K.{arm}.{rep}"
+            for i in range(16):
+                rows.append(action_row(cid, f"filler{i}", "SAME"))
+            for act in ("reasoning_toggle", "settings"):
+                digest = "SAME"
+                if act == regress and arm == "treatment":
+                    digest = "HEAD_IS_DIFFERENT"
+                if act == self_race:
+                    # Racing against itself: side A does not even reproduce between repetitions.
+                    digest = f"RACE_{arm}_{rep}"
+                rows.append(action_row(cid, act, digest))
+            rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+    out = tmp_path / name
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    return path
+
+
+def test_the_other_runners_race_does_not_excuse_a_regression_on_this_one(tmp_path, capsys):
+    """The hole the two-runner matrix leaves open, in miniature, and it is not hypothetical.
+
+    On run 32648192384 of this workflow the two arms drew runner ids 1000628315 and 1000628341
+    and started 2m18s apart. The null derived three exemptions; the runner the result was measured
+    on reproduced exactly ONE of them. `reasoning_toggle@r100K` was not on the declared list, so
+    it was excused solely by a race on a machine the result never touched -- and a corroborated
+    head regression there would have shipped green.
+    """
+    # The null raced on reasoning_toggle. The result's own runner did not: side A renders the
+    # same DOM in both repetitions, and head renders a different one in both.
+    null = _arm_payload(tmp_path, "null", regress = None, self_race = "reasoning_toggle")
+    result = _arm_payload(tmp_path, "result", regress = "reasoning_toggle", self_race = None)
+
+    imported, derived, _ = U.unstable_set([null])
+    assert ("r100K", "reasoning_toggle") in imported, imported
+    assert derived
+
+    # Scored against the imported set as it stands, the regression is excused and the job is GREEN.
+    assert U.report([result], "imported", imported, min_reps = 2, min_compared = 16) == 0
+
+    # Confined to the runner being scored, the exemption does not survive and the job is RED.
+    local_unstable, local_stable = U.in_arm_repeatability([result])
+    assert ("r100K", "reasoning_toggle") in local_stable
+    assert ("r100K", "reasoning_toggle") not in local_unstable
+    effective, dropped = U.confine_to_runner(imported, local_unstable, local_stable)
+    assert dropped == [("r100K", "reasoning_toggle")], dropped
+    assert U.report([result], "confined", effective, min_reps = 2, min_compared = 16) == 1
+    assert "reasoning_toggle" in capsys.readouterr().out
+
+
+def test_an_exemption_this_runner_reproduces_is_kept(tmp_path):
+    # The other direction, and the one that keeps the gate usable. When the scored runner races on
+    # the same action, the exemption is doing real work and removing it would red a sound run.
+    null = _arm_payload(tmp_path, "null", regress = None, self_race = "reasoning_toggle")
+    result = _arm_payload(tmp_path, "result", regress = None, self_race = "reasoning_toggle")
+    imported, _derived, _ = U.unstable_set([null])
+    effective, dropped = U.confine_to_runner(imported, *U.in_arm_repeatability([result]))
+    assert dropped == []
+    assert ("r100K", "reasoning_toggle") in effective
+
+
+def test_an_action_this_runner_could_not_decide_keeps_its_exemption(tmp_path):
+    # UNDECIDED IS NOT STABLE. One repetition of side A is one observation, and reading it as
+    # "this runner says the action is repeatable" would turn a lost slot into a red job -- the
+    # exact direction the false-alarm data says actually happens.
+    null = _arm_payload(tmp_path, "null", regress = None, self_race = "reasoning_toggle")
+    rows = [
+        json.loads(line)
+        for line in _arm_payload(tmp_path, "result", regress = None, self_race = None)
+        .read_text(encoding = "utf-8")
+        .splitlines()
+    ]
+    # Drop side A's reasoning_toggle in rep1, leaving a single observation of it on this runner.
+    rows = [
+        r
+        for r in rows
+        if not (
+            r.get("row_type") == "action"
+            and r.get("action") == "reasoning_toggle"
+            and r.get("cell_id") == "r100K.base.rep1"
+        )
+    ]
+    out = tmp_path / "thin"
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+
+    local_unstable, local_stable = U.in_arm_repeatability([path])
+    assert ("r100K", "reasoning_toggle") not in local_stable
+    assert ("r100K", "reasoning_toggle") not in local_unstable
+    imported, _derived, _ = U.unstable_set([null])
+    effective, dropped = U.confine_to_runner(imported, local_unstable, local_stable)
+    assert dropped == []
+    assert ("r100K", "reasoning_toggle") in effective
+
+
+def test_a_declared_exemption_is_never_dropped_by_a_runner_measurement(tmp_path):
+    # The declared list is a standing claim about the app, not a measurement of a machine, so a
+    # machine cannot contradict it. Only the `(rung, action)` entries are runner-derived.
+    null = _arm_payload(tmp_path, "null", regress = None, self_race = "reasoning_toggle")
+    result = _arm_payload(tmp_path, "result", regress = None, self_race = None)
+    imported, _derived, _ = U.unstable_set([null])
+    effective, _dropped = U.confine_to_runner(imported, *U.in_arm_repeatability([result]))
+    assert U.UNSTABLE_ACTIONS <= effective
+
+
+def test_the_verdict_confines_the_imported_set_when_driven_through_main(tmp_path, capsys):
+    # Driven through main() rather than report(), because the failure this guards against is not
+    # a wrong confinement, it is a correct one that never reaches the verdict. That exact shape --
+    # a value computed or parsed and then not forwarded -- has already shipped once in this file's
+    # neighbour, where --min-reps was parsed and never passed to build().
+    null = _arm_payload(tmp_path, "null", regress = None, self_race = "reasoning_toggle")
+    result = _arm_payload(tmp_path, "result", regress = "reasoning_toggle", self_race = None)
+    rc = U.main(
+        [
+            "--min-reps", "2",
+            "--min-compared", "16",
+            "--null", str(null.parent),
+            str(result.parent),
+        ]
+    )
+    out = capsys.readouterr().out
+    assert "imported exemption(s) DROPPED" in out, out
+    assert "reasoning_toggle" in out
+    assert rc == 1, "the regression the other runner's race was excusing must red the job"
