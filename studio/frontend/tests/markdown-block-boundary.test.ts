@@ -455,3 +455,15 @@ test("the boundary does not retry the import it caught", () => {
     "the boundary resets itself from props, which on a streaming reply means throwing and catching on every chunk for an import that can never succeed again",
   );
 });
+
+test("a carriage return only closes a fence as the closing line's last character", () => {
+  // A rewrite of the closing-fence scan once accepted a CR ANYWHERE in the tail,
+  // silently closing fences on 393,620 inputs of a differential corpus. Nothing
+  // failed, because nothing asserted the rule.
+  const trailing = markdownBlockFallback("```py\nx\n```\r ");
+  assert.equal(trailing.text, "x\n```\r ", "a CR before other tail text does not close the fence");
+  assert.equal(trailing.fenced, true);
+
+  const closing = markdownBlockFallback("```py\nx\n```\r");
+  assert.equal(closing.text, "x", "a CR as the closing line's last character does close it");
+});
