@@ -937,3 +937,130 @@ class TestTheProbeIsNotPaidForTwice:
         assert tools._dense_char_limit(text, budget) == first
         assert len(calls) == spent
         assert not tools._PROBE_COUNT_CACHE
+
+    def _template_down(
+        self,
+        monkeypatch,
+        ctx,
+        rate = None,
+        fallback_rate = None,
+    ):
+        """`/apply-template` is down but `/tokenize` is not.
+
+        `count_chat_tokens(strict = False)` then returns the plain-text fallback, which
+        prices the bytes but drops the template's role markers and special tokens.
+        """
+        rate = self._RATE if rate is None else rate
+        calls = []
+
+        def count_chat_tokens(messages, *a, **k):
+            body = "".join(m["content"] for m in messages)
+            calls.append((len(body), bool(k.get("strict"))))
+            if k.get("strict"):
+                raise RuntimeError("llama-server could not render the chat template")
+            return int(len(body) / (fallback_rate or rate)) or 1  # no framing: the fallback
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            context_length = ctx,
+            count_chat_tokens = count_chat_tokens,
+            _process = SimpleNamespace(pid = 77),
+            model_identifier = "Qwen3-4B",
+            _gguf_load_identity = (("/models/qwen3-4b.gguf", 66306, 4242, 1),),
+            _chat_template_override = None,
+            _extra_args = None,
+        )
+        monkeypatch.setattr("routes.inference.get_llama_cpp_backend", lambda: backend)
+        return calls
+
+    def test_a_plain_text_fallback_count_is_used_but_never_retained(self, monkeypatch):
+        """The count is still used: it tokenizes the real bytes, which is what catches
+        dense ASCII, and the estimate it would otherwise fall back to undercharges base64
+        several fold. It is simply not KEPT -- it prices a prompt the model will never be
+        sent, so caching it would let one bad moment under-count that prefix for the life
+        of the process.
+        """
+        _window(monkeypatch, 5120)
+        calls = self._template_down(monkeypatch, 5120)
+        text = "0123456789abcdef" * 2000
+        budget = tools._tool_result_char_budget()
+
+        kept = tools._dense_char_limit(text, budget)
+
+        assert kept < budget, "the fallback still measured the bytes"
+        assert not any(cache for cache in tools._PROBE_COUNT_CACHE.values())
+        # And a later result re-measures rather than trusting it.
+        calls.clear()
+        tools._dense_char_limit(text, budget)
+        assert calls
+
+    def test_the_strict_attempt_is_made_once_per_result_not_once_per_probe(self, monkeypatch):
+        """A template that will not render is not going to start mid-result, so asking
+        again would spend round trips on a settled question. One extra attempt for the
+        first probe, not one for every probe."""
+        _window(monkeypatch, 5120)
+        calls = self._template_down(monkeypatch, 5120)
+
+        tools._dense_char_limit("0123456789abcdef" * 2000, tools._tool_result_char_budget())
+
+        assert sum(1 for _, strict in calls if strict) == 1
+        assert len(calls) > 2, "and the result really did take several passes"
+
+    def test_a_healthy_template_pays_nothing_for_the_strict_check(self, monkeypatch):
+        """Strict costs the same two llama-server calls as non-strict when the template
+        renders, so verification is free in the case that matters."""
+        _window(monkeypatch, 5120)
+        calls, _ = self._serving(monkeypatch, 5120, rate = 4.2)
+        text = ("The build finished and the archive was uploaded to the release bucket. ") * 400
+        budget = tools._tool_result_char_budget()
+
+        assert tools._dense_char_limit(text, budget) == budget
+        assert len(calls) == 1
+
+    def test_a_full_cache_evicts_rather_than_refusing_every_later_result(self, monkeypatch):
+        """Refusing new entries once full was worse than not caching at all: most tool
+        results are one-offs, so the first 64 distinct prefixes froze the cache on text
+        nothing would ask about again."""
+        _window(monkeypatch, 5120)
+        calls, _ = self._serving(monkeypatch, 5120)
+        budget = tools._tool_result_char_budget()
+        for index in range(tools._PROBE_COUNT_CACHE_ENTRIES + 10):
+            tools._dense_char_limit(f"{index:04d}" + "0123456789abcdef" * 2000, budget)
+
+        repeated = "ZZZZ" + "0123456789abcdef" * 2000
+        tools._dense_char_limit(repeated, budget)
+        calls.clear()
+        tools._dense_char_limit(repeated, budget)
+
+        assert calls == [], "a recently measured result is still answered from the cache"
+
+    def test_the_baseline_survives_a_cache_full_of_one_off_results(self, monkeypatch):
+        """The sharp edge. The baseline is only priced when a count comes in OVER budget,
+        so a process that handled 64 results that FIT first could never get it in at all,
+        and every later dense result paid for it again -- the merge base's cost, for the
+        life of the process. Measured before the fix: 4 counter calls (8 HTTP) every time.
+        """
+        _window(monkeypatch, 5120)
+        budget = tools._tool_result_char_budget()
+
+        # 64 English results, each of which fits on its first count, so `_framing()` never
+        # runs and the baseline is never offered to the cache.
+        self._serving(monkeypatch, 5120, rate = 4.2)
+        for index in range(tools._PROBE_COUNT_CACHE_ENTRIES):
+            tools._dense_char_limit(
+                f"{index:04d}" + ("The build finished and the archive was uploaded. ") * 400,
+                budget,
+            )
+        held = list(tools._PROBE_COUNT_CACHE.values())[0]
+        assert len(held) == tools._PROBE_COUNT_CACHE_ENTRIES, "the cache really is full"
+        assert tools._PROBE_BASELINE not in held, "and the baseline really is not in it"
+
+        # Now dense results arrive. The first pays for the baseline; the rest must not.
+        calls, _ = self._serving(monkeypatch, 5120, rate = 1.33)
+        tools._dense_char_limit("D1" + "0123456789abcdef" * 2000, budget)
+        calls.clear()
+        tools._dense_char_limit("D2" + "0123456789abcdef" * 2000, budget)
+
+        assert 0 not in [chars for chars in calls], "the baseline is held, not re-priced"
+        held = list(tools._PROBE_COUNT_CACHE.values())[0]
+        assert tools._PROBE_BASELINE in held, "and pinned against eviction"

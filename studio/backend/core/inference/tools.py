@@ -11816,6 +11816,10 @@ _MAX_PROBE_CHARS_PER_TOKEN = 256
 # pid still has to agree on everything before a count is reused.
 _PROBE_COUNT_CACHE: dict = {}
 
+# The empty chunk: the framing baseline, and the entry eviction pins. Named so the two
+# places that treat it specially cannot drift apart from a bare "".
+_PROBE_BASELINE = ""
+
 # One model's counts at a time (a new identity clears the map). Ten times the worst case
 # for one result: `_EXACT_FIT_PASSES` prefixes plus the baseline.
 _PROBE_COUNT_CACHE_ENTRIES = 64
@@ -11900,26 +11904,77 @@ def _loaded_token_counter(ctx: int):
         return None
 
     cache = _probe_cache(llama, ctx)
+    # Whether anything said here will outlive this call, and whether `/apply-template` has
+    # already refused once. Both only gate the strict attempt, never a returned value.
+    retained = bool(_probe_identity(llama, ctx))
+    template_down: list[bool] = []
+
+    def _remember(chunk: str, value: int) -> None:
+        """Hold `value` for `chunk`, evicting least-recently-used entries to stay in bounds.
+
+        Refusing new entries once full was worse than not caching at all. Most tool results
+        are one-offs, so the first `_PROBE_COUNT_CACHE_ENTRIES` distinct prefixes froze the
+        cache on text that would never be asked about again -- and because the baseline is
+        only priced when a count comes in OVER budget, a process that handled 64 results
+        that FIT first locked it out for good. Measured: after 64 English results, every
+        later dense result paid 4 counter calls (8 HTTP) again, exactly the merge base's
+        cost, for the life of the process.
+
+        So evict, and pin the baseline: it is 0 characters, it is the same number for every
+        result this process truncates, and it is the one entry a bounded cache most needs.
+        """
+        if len(chunk) > _PROBE_COUNT_CACHE_CHARS:
+            return  # too large to hold at all; evicting the rest would not help
+        held = sum(map(len, cache))
+        while len(cache) >= _PROBE_COUNT_CACHE_ENTRIES or (
+            held + len(chunk) > _PROBE_COUNT_CACHE_CHARS
+        ):
+            victim = next((key for key in cache if key != _PROBE_BASELINE), None)
+            if victim is None:
+                return  # only the pinned baseline is left, and it stays
+            held -= len(victim)
+            del cache[victim]
+        cache[chunk] = value
 
     def _rendered(chunk: str):
         hit = cache.get(chunk)
         if hit is not None:
+            if chunk != _PROBE_BASELINE:
+                cache[chunk] = cache.pop(chunk)  # most recently used moves to the back
             return hit
-        try:
-            spent = counter([{"role": _PROBE_ROLE, "content": chunk}], None, None, strict = False)
-        except Exception:  # noqa: BLE001 -- same rule: fall back to the estimate
-            logger.debug("result budget: exact count failed", exc_info = True)
-            return None
+        # Strict, so that a count is only retained when the chat template really rendered
+        # it. With `strict = False` a failed `/apply-template` still returns the plain-text
+        # fallback, which drops role markers and special tokens -- fine as a one-off answer,
+        # but it prices a prompt the model will never be sent, and caching it would let one
+        # bad moment quietly under-count that prefix for the life of the process.
+        #
+        # Asked at most once per counter, and not at all when nothing would be retained
+        # anyway. Strictness exists only to decide whether a count may be KEPT, so paying
+        # for it twice would spend round trips to answer a question already settled: a
+        # template that would not render is not going to start, and this whole change is
+        # about not making calls that cannot change an answer. So a template outage costs
+        # one extra attempt for the first probe of a result rather than one for every probe.
+        message = [{"role": _PROBE_ROLE, "content": chunk}]
+        rendered = False
+        if retained and not template_down:
+            try:
+                spent = counter(message, None, None, strict = True)
+                rendered = True
+            except Exception:  # noqa: BLE001 -- not fatal: the fallback still prices bytes
+                template_down.append(True)
+        if not rendered:
+            try:
+                spent = counter(message, None, None, strict = False)
+            except Exception:  # noqa: BLE001 -- now it is: fall back to the estimate
+                logger.debug("result budget: exact count failed", exc_info = True)
+                return None
         value = int(spent) if isinstance(spent, (int, float)) and spent > 0 else None
-        # Only a real count is remembered. A failure is a property of the moment, not of
-        # the text, so caching one would turn a busy server into a permanent estimate.
-        # Bounded by entries and by characters held; the keys ARE the measured prefixes.
-        if (
-            value is not None
-            and len(cache) < _PROBE_COUNT_CACHE_ENTRIES
-            and sum(map(len, cache)) + len(chunk) <= _PROBE_COUNT_CACHE_CHARS
-        ):
-            cache[chunk] = value
+        # The fallback's count is USED, exactly as before -- it still tokenizes the real
+        # bytes, which is what catches dense ASCII, and the estimate it would otherwise fall
+        # back to undercharges base64 several fold. It is simply not retained: like a
+        # failure, it is a property of the moment rather than of the text.
+        if value is not None and rendered:
+            _remember(chunk, value)
         return value
 
     # What the turn costs with nothing in it: the baseline the guard measures growth
@@ -11932,7 +11987,7 @@ def _loaded_token_counter(ctx: int):
 
     def _framing() -> int:
         if not baseline:
-            baseline.append(_rendered("") or 0)
+            baseline.append(_rendered(_PROBE_BASELINE) or 0)
         return baseline[0]
 
     def _count(chunk: str, token_budget: float = 0.0):
