@@ -8,8 +8,7 @@ from pathlib import Path
 
 import pytest
 
-# Both for_training sites must survive a PEFT wrapper that delegates the flag read
-# but owns nothing to delete. See issue #2490.
+# Both for_training sites must survive a delegating PEFT wrapper. See issue #2490.
 SITES = [("llama.py", "FastLlamaModel"), ("vision.py", "FastBaseModel")]
 
 
