@@ -572,3 +572,58 @@ def test_a_versionless_local_record_is_reported_as_a_conflict(tmp_path, monkeypa
 
     assert len(conflicts) == 1
     assert "unreadable metadata" in conflicts[0]
+
+
+def test_an_interrupted_upgrades_tilde_orphan_is_a_conflict(tmp_path, monkeypatch, deps):
+    """pip renames the outgoing distribution to a `~` prefixed sibling during an
+    upgrade (AdjacentTempDirectory) and a kill mid-operation keeps both. pip has
+    no duplicate detection of its own, so nothing upstream clears it. The orphan
+    still parses and still says Name: unsloth, so it is a second record for the
+    same project: a conflict, not a file the newer release deleted.
+    """
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    for name, version in (
+        ("unsloth-2026.8.15.dist-info", "2026.8.15"),
+        ("~nsloth-2026.8.12.dist-info", "2026.8.12"),
+    ):
+        entry = site / name
+        entry.mkdir()
+        (entry / "METADATA").write_text(
+            f"Metadata-Version: 2.1\nName: unsloth\nVersion: {version}\n", encoding = "utf-8"
+        )
+
+    monkeypatch.setattr(deps, "_scan_paths", lambda: {"path": [str(site)]})
+
+    conflicts = deps.installed_metadata_conflicts(names = ("unsloth",))
+
+    assert len(conflicts) == 1
+    assert "unsloth: multiple metadata records" in conflicts[0]
+
+
+def test_an_editable_checkouts_egg_info_is_not_a_second_record(tmp_path, monkeypatch, deps):
+    """A setuptools editable install legitimately resolves to two records, a
+    dist-info in site-packages and an egg-info in the source tree. Only the
+    first is in this interpreter's scheme, and scanning purelib/platlib rather
+    than all of sys.path is what keeps a developer checkout from failing the
+    update it is running.
+    """
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    entry = site / "unsloth-2026.8.15.dist-info"
+    entry.mkdir()
+    (entry / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.8.15\n", encoding = "utf-8"
+    )
+    checkout = tmp_path / "src"
+    egg = checkout / "unsloth.egg-info"
+    egg.mkdir(parents = True)
+    (egg / "PKG-INFO").write_text(
+        "Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.8.15\n", encoding = "utf-8"
+    )
+    (site / "__editable__.unsloth.pth").write_text(str(checkout) + "\n", encoding = "utf-8")
+
+    monkeypatch.setattr(deps, "_scan_paths", lambda: {"path": [str(site)]})
+    monkeypatch.syspath_prepend(str(checkout))
+
+    assert deps.installed_metadata_conflicts(names = ("unsloth",)) == []
