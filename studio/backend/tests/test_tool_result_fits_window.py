@@ -1416,3 +1416,41 @@ class TestARemovedSandboxTakesItsRecordWithIt:
         recorded = set(tools._spill_manifest(str(root)))
         on_disk = {p.name for p in root.iterdir()}
         assert on_disk and on_disk <= recorded, "a spill on disk that the record disowned"
+
+
+class TestTheContinuationChunkDecodes:
+    """`head -c` counts bytes. A round number of them lands inside a code point on any
+    mixed-width text, and the terminal runner decodes with errors="replace", so the
+    continuation the notice advertises would hand back a mangled character every time."""
+
+    @staticmethod
+    def _resume(out: str) -> "tuple[int, int]":
+        """The byte offset and chunk size out of a `tail -c +N | head -c M` hint."""
+        tail, _, head = out.rsplit("tail -c +", 1)[1].partition(" | head -c ")
+        return int(tail.split()[0]), int(head.rstrip(")").strip())
+
+    def test_the_chunk_ends_on_a_character_boundary(self, tmp_path):
+        # One long line, so the cut is mid-line and the hint is byte-based. 299 ASCII
+        # characters and then three-byte ones: the head is 302 bytes, and 302 bytes of
+        # what follows is 100 characters plus two bytes of the next.
+        text = "a" * 299 + "€" * 4_000
+
+        out = tools._truncate(text, 300, workdir = str(tmp_path))
+        offset, span = self._resume(out)
+
+        blob = (tmp_path / _spill_path(out)).read_bytes()
+        chunk = blob[offset - 1 : offset - 1 + span]
+        # Strict, because errors="replace" is exactly what hides this.
+        assert chunk.decode("utf-8")
+
+    def test_the_chunk_resumes_where_the_head_stopped(self, tmp_path):
+        text = "a" * 299 + "€" * 4_000
+
+        out = tools._truncate(text, 300, workdir = str(tmp_path))
+        offset, span = self._resume(out)
+
+        shown = out.split("\n\n... (")[0]
+        blob = (tmp_path / _spill_path(out)).read_bytes()
+        assert blob[offset - 1 : offset - 1 + span].decode("utf-8") == text[
+            len(shown) : len(shown) + len(shown)
+        ]

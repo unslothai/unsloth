@@ -14125,7 +14125,14 @@ def _truncate(
         # where this stopped. Measured in bytes, not characters, because that is what
         # `tail -c` counts and the two differ on any non-ASCII text.
         offset = len(head.encode("utf-8", "surrogatepass"))
-        resume = f"tail -c +{offset + 1} {spill} | head -c {max(1, offset)}"
+        # The chunk is as many BYTES as the next `len(head)` characters actually occupy,
+        # not as many bytes as this one did. `head -c` counts bytes, and a round number of
+        # them lands inside a code point on any mixed-width text, so the model would read
+        # back a mangled character at the end of every chunk (the runner decodes with
+        # errors="replace"). The text is here, so the boundary is not a guess.
+        chunk = text[len(head) : len(head) * 2 or None]
+        span = len(chunk.encode("utf-8", "surrogatepass"))
+        resume = f"tail -c +{offset + 1} {spill} | head -c {max(1, span)}"
         where = f"showing the first {len(head)} chars of {len(text)}"
     # The workdir sentence stays whatever else the notice says: it is about the files the
     # CODE wrote, not the spill, and it is the only thing telling the model those survive.
