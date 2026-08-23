@@ -3,15 +3,10 @@
 
 """Every link in the PR template has to survive being pasted into a pull request body.
 
-The template is not rendered from `.github/`. GitHub copies it verbatim into the PR
-description, which is rendered at `/<owner>/<repo>/pull/<number>`, so a DOCUMENT-relative
-target is resolved from THAT path. `../CONTRIBUTING.md` becomes `/<owner>/<repo>/CONTRIBUTING.md`,
-which is not a repository route and 404s for every contributor who clicks it.
-
-A ROOT-relative target is a different case and is safe: a leading slash discards the current
-path entirely and resolves against the host, so `/<owner>/<repo>/blob/main/CONTRIBUTING.md`
-reaches the same page the absolute URL does, from any PR at any number. The base this guard
-exists to warn about is the one a leading slash throws away.
+GitHub copies the template verbatim into the PR description, rendered at
+`/<owner>/<repo>/pull/<number>`, so a DOCUMENT-relative target resolves from THAT path:
+`../CONTRIBUTING.md` becomes `/<owner>/<repo>/CONTRIBUTING.md`, which 404s. A ROOT-relative
+target is safe, since the leading slash discards the PR path and resolves against the host.
 """
 
 from __future__ import annotations
@@ -23,14 +18,12 @@ import pytest
 
 TEMPLATE = Path(__file__).resolve().parents[2] / ".github" / "PULL_REQUEST_TEMPLATE.md"
 
-# [text](target), ignoring images. The inline destination carries the same optional <> wrapper a
-# reference definition does, and the wrapper is not part of the URI, so a guard that kept the
-# angle brackets would read `<https://...>` as relative and fail CI on a link that is absolute.
+# [text](target), ignoring images. The <> wrapper is not part of the URI (CommonMark 0.31.2
+# section 6.3), so keeping the brackets would read an absolute `<https://...>` as relative.
 LINK = re.compile(r"(?<!!)\[[^\]]*\]\(<?([^)<>\s]+)>?")
-# [label]: target -- the reference-style definition. It carries a target exactly as an inline link
-# does, and resolves against the same wrong base, so a guard that reads only the inline form would
-# pass a template whose links all 404. The optional <> wrapper and the trailing title are both
-# standard and must not end up in the target.
+# [label]: target -- reference definitions resolve against the same wrong base, so a guard reading
+# only the inline form would pass a template whose links all 404. The optional <> wrapper and the
+# trailing title must not end up in the target.
 REF_DEF = re.compile(r"^[ ]{0,3}\[[^\]]+\]:[ \t]*<?([^>\s]+)>?", re.MULTILINE)
 
 
@@ -41,8 +34,8 @@ def _targets(text: str) -> list[str]:
 def _resolves_off_the_pr_path(target: str) -> bool:
     """True when GitHub would resolve `target` from `/<owner>/<repo>/pull/<number>`.
 
-    A leading slash is NOT such a target: it resolves against the host, which is the whole
-    point of the form, so it lands on the same page as the absolute URL.
+    A leading slash is NOT such a target: it resolves against the host, landing on the same
+    page as the absolute URL.
     """
     if target.startswith(("http://", "https://", "mailto:", "#", "/")):
         return False
@@ -74,8 +67,8 @@ def test_no_relative_link_targets_in_the_pr_template() -> None:
         ("../CONTRIBUTING.md", True),
         ("CONTRIBUTING.md", True),
         ("./docs/CONTRIBUTING.md", True),
-        # Root-relative: the leading slash drops the PR path, so this reaches the repository
-        # page exactly as the absolute URL does. Rejecting it would fail CI on a valid link.
+        # Root-relative: the leading slash drops the PR path, so rejecting it would fail CI
+        # on a valid link.
         ("/unslothai/unsloth/blob/main/CONTRIBUTING.md", False),
         ("https://github.com/unslothai/unsloth/blob/main/CONTRIBUTING.md", False),
         ("#testing", False),
@@ -86,8 +79,7 @@ def test_the_guard_classifies_targets_the_way_github_resolves_them(
 ) -> None:
     """The guard itself, against the shapes it has to separate.
 
-    Without this the test above passes for a template with no links at all, which is exactly
-    the state it is supposed to catch on the way back.
+    Without this the test above also passes for a template with no links at all.
     """
     found = _targets(f"See [CONTRIBUTING.md]({target}) for the full rule.")
     assert found == [target]
@@ -103,11 +95,8 @@ def test_the_guard_classifies_targets_the_way_github_resolves_them(
     ],
 )
 def test_the_scan_unwraps_angle_bracketed_inline_destinations(target: str) -> None:
-    """`[text](<target>)` is the same link as `[text](target)`.
-
-    The pointy brackets are a wrapper around the destination, not part of the URI, so a guard
-    that kept them would read an absolute `<https://...>` as relative and fail CI on a link
-    that resolves correctly from any PR path.
+    """`[text](<target>)` is the same link as `[text](target)`: the brackets wrap the
+    destination and are not part of the URI.
     """
     found = _targets(f"See [CONTRIBUTING.md](<{target}>) for the full rule.")
     assert found == [target]
@@ -126,10 +115,9 @@ def test_the_scan_unwraps_angle_bracketed_inline_destinations(target: str) -> No
     ],
 )
 def test_the_scan_reads_reference_definitions_as_well_as_inline_links(body, caught) -> None:
-    """A reference-style link resolves against the same wrong base as an inline one.
-
-    Without this the guard read only `[text](target)`, so a template that moved to
-    `[guidelines][contrib]` would have passed while every rendered link still 404'd.
+    """A reference-style link resolves against the same wrong base as an inline one, so a
+    template that moved to `[guidelines][contrib]` would have passed while every rendered
+    link 404'd.
     """
     relative = [
         t for t in _targets(body) if not t.startswith(("http://", "https://", "mailto:", "#"))
