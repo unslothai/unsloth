@@ -45,19 +45,38 @@ test("a steady transfer reports its true rate", () => {
   assert.ok(Math.abs(rate - 20 * MB) < 1);
 });
 
-test("bursty byte observations stay close to the underlying transfer rate", () => {
+/** Steady ``rate`` whose observed counter only advances every ``burst`` seconds. */
+function burstyRates(burst: number, rate: number, until = 300): number[] {
   const samples: TransferSample[] = [];
-  const rates: number[] = [];
-  // Model a steady 100 MB/s transfer whose on-disk counter only becomes visible
-  // in 1 GB allocation/write bursts every 10 seconds.
-  for (let t = 0; t <= 60; t++) {
-    const observedBytes = Math.floor(t / 10) * 1_000 * MB;
-    const rate = publishedRate(samples, t, observedBytes);
-    if (t >= 20 && rate > 0) rates.push(rate);
+  const published: number[] = [];
+  for (let t = 0; t <= until; t++) {
+    const observed = Math.floor(t / burst) * burst * rate;
+    const seen = publishedRate(samples, t, observed);
+    if (t >= 3 * burst && seen > 0) published.push(seen);
   }
-  assert.ok(rates.length > 0);
-  assert.ok(Math.min(...rates) > 75 * MB);
-  assert.ok(Math.max(...rates) < 125 * MB);
+  return published;
+}
+
+// Sparse-file allocation and buffered writes make a steady transfer show up as
+// plateaus and large jumps, so pricing the window endpoints turned observation
+// timing into swings between "very slow, hours left" and several hundred MB/s.
+test("bursty byte observations report the underlying transfer rate", () => {
+  for (const burst of [2, 5, 10, 15, 20, 30, 45]) {
+    const rates = burstyRates(burst, 100 * MB);
+    assert.ok(rates.length > 0, `no rate published for ${burst}s bursts`);
+    for (const rate of rates) {
+      assert.ok(
+        Math.abs(rate - 100 * MB) < 5 * MB,
+        `${burst}s bursts published ${(rate / MB).toFixed(1)} MB/s`,
+      );
+    }
+  }
+});
+
+// Two jumps are the minimum that carries any timing; below that the honest
+// answer is no rate, not a number derived from where the window happens to cut.
+test("bursts too far apart to measure publish no rate at all", () => {
+  assert.equal(burstyRates(90, 100 * MB, 600).length, 0);
 });
 
 test("a stall reports no rate instead of carrying an old window forward", () => {
@@ -66,6 +85,19 @@ test("a stall reports no rate instead of carrying an old window forward", () => 
   let rate = 0;
   for (let t = 11; t <= 26; t++) rate = publishedRate(samples, t, 10 * 20 * MB);
   assert.equal(rate, 0);
+});
+
+// The chat toast, model-load UI and training-start overlay share this estimator
+// on dense feeds, so the burst handling must not slow their reaction down.
+test("a dense feed still tracks a rate change within the smoothing span", () => {
+  const samples: TransferSample[] = [];
+  let bytes = 0;
+  let rate = 0;
+  for (let t = 0; t <= 40; t++) {
+    bytes += (t < 20 ? 200 : 50) * MB;
+    rate = publishedRate(samples, t, bytes);
+  }
+  assert.ok(Math.abs(rate - 50 * MB) < 1);
 });
 
 test("a restart drops the samples from the previous run", () => {
