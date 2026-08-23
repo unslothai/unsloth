@@ -239,8 +239,7 @@ def test_mlx_guard_only_fires_on_an_empty_module_selection(
 
     # Two rules, because the loader has two. With no explicit list the default seven are
     # wholly attention and MLP, so an empty module selection leaves nothing. With one, the
-    # module-type filter is not the only gate: the text branch also needs a layer family,
-    # and only a CPT target (embed_tokens / lm_head) trains without one.
+    # text branch also needs a layer family, and only a CPT target trains without one.
     if not targets:
         empty = not (attention or mlp)
     else:
@@ -457,9 +456,9 @@ def test_all_linear_alongside_other_leaves_is_not_the_keyword():
 
 @pytest.mark.parametrize("target_modules", [["lm_head"], ["embed_tokens"], ["lm_head", "Wqkv"]])
 def test_mlx_keeps_a_target_the_loader_trains_whatever_the_flags_say(target_modules):
-    """embed_tokens and lm_head go down get_peft_model's CPT path, where the full module and
-    the head adapter are applied without consulting the layer families. Something trains, so
-    the preflight must not refuse these however the four selectors are set."""
+    """embed_tokens and lm_head go down get_peft_model's CPT path, applied without consulting
+    the layer families. Something trains, so the preflight must not refuse these however the
+    four selectors are set."""
     config = _request_config("LoRA/QLoRA", "text", SELECTOR_CASES["all_false"], target_modules)
 
     _check_mlx_finetune_targets(config)
@@ -516,9 +515,9 @@ def test_mlx_reads_the_vision_selector_with_the_mlx_default_not_the_cuda_one():
     """A config that never carried the selectors at all must not be waved through.
 
     `_finetune_selectors` answers an omitted key with the CUDA consumer's default, and for
-    vision that is True. The MLX call site defaults it False and forces it False outright
-    for a text model, so taking True from a missing key would let every legacy config -- the
-    ones written before these fields existed -- past the guard with nothing to train.
+    vision that is True. The MLX call site defaults it False and forces it False for a text
+    model, so taking True from a missing key would let every config written before these
+    fields existed past the guard with nothing to train.
     """
     config = {
         "training_type": "LoRA/QLoRA",

@@ -796,8 +796,8 @@ def _check_finetune_targets_after_detect(trainer, config: dict) -> None:
         raise ValueError(_NOTHING_TO_TRAIN)
 
 
-# Targets the MLX loader trains regardless of the layer-family flags: embed_tokens becomes a
-# full trainable module and lm_head its own adapter, both on the CPT path.
+# Targets the MLX loader trains regardless of the layer-family flags: on the CPT path
+# embed_tokens becomes a full trainable module and lm_head its own adapter.
 _CPT_TARGET_NAMES = frozenset({"embed_tokens", "lm_head"})
 
 
@@ -821,14 +821,13 @@ def _check_mlx_finetune_targets(config: dict) -> None:
 
     Surviving the module-type filter is NOT enough to train. get_peft_model drops only the
     names it recognises as attention or MLP leaves, so a fused qkv, a c_fc or an expanded
-    all-linear does come out the other side with both module types off -- but the text branch
-    then gates the LoRA application itself on finetune_language_layers, and with all four
-    selectors off the caller's back-fill never fires. Those runs apply no adapters at all:
-    the model warns and trains nothing, and a VLM raises only once the weights are loaded.
+    all-linear survives with both module types off -- but the text branch then gates the LoRA
+    application on finetune_language_layers, and with all four selectors off the caller's
+    back-fill never fires. Those runs apply no adapters at all: the model warns and trains
+    nothing, and a VLM raises only once the weights are loaded.
 
-    The exception is a target the loader handles independently of the layer families. Naming
-    embed_tokens or lm_head puts it on the CPT path, where the full module or the head adapter
-    trains whatever the flags say, so such a request is left alone.
+    The exception is a target the loader handles independently of the layer families: naming
+    embed_tokens or lm_head puts it on the CPT path, which trains whatever the flags say.
 
     An explicit list that merely filters down to nothing still gets the loader's own message,
     which names the two flags."""
@@ -839,15 +838,14 @@ def _check_mlx_finetune_targets(config: dict) -> None:
         _, language, attention, mlp = _finetune_selectors(config)
         # Vision read the way the MLX call site reads it, NOT the way _finetune_selectors
         # does: that helper carries the CUDA consumer's defaults, where an omitted vision
-        # selector means True, while MLX defaults it False and forces it False outright for
-        # a text model. Taking True from an omitted key here would wave through every legacy
-        # config that never sent the selectors at all.
+        # selector means True, while MLX defaults it False and forces it False for a text
+        # model. Taking True from an omitted key would wave through every legacy config
+        # that never sent the selectors at all.
         vision = bool(config.get("finetune_vision_layers", False))
         # Any one of them leaves something that can train, or leaves the loader to say so
-        # with a better message than this one. Vision counts because this runs BEFORE
-        # detection, so a VLM whose vision tower is the only thing selected must not be
-        # refused here; _check_mlx_effective_targets catches the text case once is_vlm is
-        # known, which is the earliest it can be told apart.
+        # with a better message. Vision counts because this runs BEFORE detection, so a VLM
+        # whose vision tower is the only selection must not be refused here;
+        # _check_mlx_effective_targets catches the text case once is_vlm is known.
         if attention or mlp or language or vision:
             return
         raise ValueError(_NOTHING_TO_TRAIN)
@@ -865,10 +863,10 @@ def _check_mlx_effective_targets(
     from a text model and has to let a vision-only selection through. The call site can: it
     has forced vision to False for a text model and applied the language back-fill, so if
     both layer families are still off here, no adapter is coming and the run would train
-    nothing but its own warning. Raise instead, with the message that names the four fields.
+    nothing but its own warning.
 
-    Later than the preflight, and deliberately so -- this is the first point the answer is
-    knowable. It is still before the trainer is built and before a single step runs."""
+    Later than the preflight deliberately: this is the first point the answer is knowable,
+    and it is still before the trainer is built and before a single step runs."""
     if finetune_language or finetune_vision:
         return
     if _names_a_cpt_target(config.get("target_modules") or ()):
@@ -2945,8 +2943,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         if (finetune_attention or finetune_mlp) and not finetune_language and not finetune_vision:
             finetune_language = True
 
-        # is_vlm is known now, and so is the back-fill's outcome, which is what the preflight
-        # could only guess at.
+        # is_vlm and the back-fill's outcome are known now; the preflight could only guess.
         _check_mlx_effective_targets(
             config,
             finetune_language = finetune_language,
