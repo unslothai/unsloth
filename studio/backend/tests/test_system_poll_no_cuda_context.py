@@ -512,6 +512,59 @@ def test_context_free_keeps_smi_on_a_single_gpu_under_fastest_first(monkeypatch)
     assert hw._context_free_cuda_memory_info(0, 24 * gib) == 22 * gib
 
 
+def test_context_free_uuid_mask_skips_the_cuda_order_gate(monkeypatch):
+    from utils.hardware import nvidia
+
+    # A UUID mask names its devices absolutely and CUDA enumerates them in the
+    # order listed, so FASTEST_FIRST changes nothing. Declining here would spend
+    # the ~612 MiB primary context this whole path exists to avoid.
+    gib = 1 << 30
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+    monkeypatch.setattr(hw, "IS_ROCM", False)
+    monkeypatch.setattr(hw, "get_physical_gpu_count", lambda: 2)
+    monkeypatch.setattr(
+        hw,
+        "_get_parent_visible_gpu_spec",
+        lambda: {
+            "raw": "GPU-bbbbbbbb",
+            "numeric_ids": None,
+            "supports_explicit_gpu_ids": False,
+        },
+    )
+
+    def _run(_command, **_kwargs):
+        return types.SimpleNamespace(
+            returncode = 0,
+            stdout = "\n".join(
+                [
+                    "0, GPU-aaaaaaaa-1111-2222-3333-444444444444, 5, 30, 15360, 16384, 100, 300",
+                    "1, GPU-bbbbbbbb-1111-2222-3333-444444444444, 7, 31, 2048, 98304, 120, 350",
+                ]
+            ),
+        )
+
+    monkeypatch.setattr(nvidia.subprocess, "run", _run)
+
+    assert hw._context_free_cuda_memory_info(0, 96 * gib) == 94 * gib
+
+
+def test_parent_visible_spec_ignores_a_rocr_mask_on_windows(monkeypatch):
+    # Windows HIP has no ROCr layer, so a stray ROCR var masks nothing there and
+    # must not be read as the ordinal to physical mapping.
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw, "get_physical_gpu_count", lambda: 2)
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1,0")
+
+    monkeypatch.setattr(hw.sys, "platform", "win32")
+    assert hw._get_parent_visible_gpu_spec()["numeric_ids"] == [0, 1]
+
+    # Linux does honour it, so the reordering must survive there.
+    monkeypatch.setattr(hw.sys, "platform", "linux")
+    assert hw._get_parent_visible_gpu_spec()["numeric_ids"] == [1, 0]
+
+
 def test_context_free_rocm_windows_declines_gpu_device_ordinal(monkeypatch):
     # GPU_DEVICE_ORDINAL=1 makes physical GPU 1 torch ordinal 0, but it is a
     # ROCclr-layer variable that _get_parent_visible_gpu_spec never reads, so the

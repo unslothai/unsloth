@@ -948,8 +948,12 @@ def _context_free_cuda_memory_info(idx: int, total_bytes: int) -> Optional[int]:
     visible_ids = parent_visible_spec["numeric_ids"]
     if IS_ROCM:
         visible_ids = _amd_smi_ids_for_hip_ids(visible_ids)
+    # Without numeric ids ROCm cannot map at all, while an NVIDIA UUID mask names
+    # its devices absolutely: CUDA enumerates them in the order listed, so there
+    # is no ordinal space to share and the order gate does not apply.
+    may_query = not IS_ROCM if visible_ids is None else _cuda_order_matches_smi()
     result = None
-    if (visible_ids is not None or not IS_ROCM) and _cuda_order_matches_smi():
+    if may_query:
         result = _smi_query(
             "get_visible_gpu_utilization",
             visible_ids,
@@ -2893,7 +2897,10 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
     )
     if _is_rocm_spec:
         hip_vis = os.environ.get("HIP_VISIBLE_DEVICES")
-        rocr_vis = os.environ.get("ROCR_VISIBLE_DEVICES")
+        # ROCR_VISIBLE_DEVICES is Linux-only: Windows HIP has no ROCr layer, so a
+        # stray ROCR var there masks nothing and must not be read as the
+        # ordinal->physical mapping (mirrors the llama.cpp backend).
+        rocr_vis = None if sys.platform == "win32" else os.environ.get("ROCR_VISIBLE_DEVICES")
         if hip_vis is not None:
             cuda_visible = hip_vis
         elif rocr_vis is not None:
