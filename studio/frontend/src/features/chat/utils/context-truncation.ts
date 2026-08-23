@@ -77,6 +77,9 @@ export function mergeContextTruncation(
   if (incoming.fits) {
     delete merged.irreducible_tokens;
     delete merged.latest_turn_tokens;
+    // Rides with the count it describes: alone it says nothing, and left behind it would
+    // describe a number that is no longer there.
+    delete merged.latest_turn_exact;
   }
   return merged;
 }
