@@ -1352,7 +1352,6 @@ def run_safetensors_tool_loop(
                             estimate_messages_tokens_dense as _dense_tokens,
                             tool_result_budget,
                         )
-
                         kwargs["result_budget_tokens"] = tool_result_budget(
                             int(context_length),
                             max_tokens,

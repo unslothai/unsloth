@@ -859,7 +859,9 @@ class TestTheSafetensorsLoopPricesItToo:
             if state["turns"] > 1:
                 yield "done"
                 return
-            call = '<tool_call>{"name":"terminal","arguments":{"command":"cat game.html"}}</tool_call>'
+            call = (
+                '<tool_call>{"name":"terminal","arguments":{"command":"cat game.html"}}</tool_call>'
+            )
             for n in range(1, len(call) + 1):
                 yield call[:n]
 
@@ -930,7 +932,10 @@ class TestDeletingAChatIsNotBlockedByItsSpills:
         file cards. Counted as the user's content they leave an unreachable sandbox behind,
         reported as holding files the user never created."""
         tools._truncate(
-            "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path), scope = "abc123abc123"
+            "\n".join(str(i) for i in range(5_000)),
+            200,
+            workdir = str(tmp_path),
+            scope = "abc123abc123",
         )
 
         assert tools._holds_no_user_files(str(tmp_path))
@@ -938,7 +943,6 @@ class TestDeletingAChatIsNotBlockedByItsSpills:
     def test_a_real_file_beside_them_still_counts(self):
         """The control: this must not turn into "delete any sandbox"."""
         import tempfile
-
         with tempfile.TemporaryDirectory() as workdir:
             tools._truncate(
                 "\n".join(str(i) for i in range(5_000)), 200, workdir = workdir, scope = "abc123abc123"
