@@ -130,15 +130,59 @@ def test_a_session_can_be_selected_explicitly():
     assert b["r1M.treatment.rep1"]["keystroke.p50_ms"] == 144.5
 
 
+def _two_session_no_collision() -> list[dict]:
+    """Two sessions in one payload that do NOT collide: each owns its own repetitions.
+
+    The ordinary shape of a sharded or continued run. Session A ran rep0 and rep1, session B
+    added rep2 and rep3, so no cell id ever completes twice and every repetition is a real one.
+    """
+    rows: list[dict] = []
+    for sess, reps in (("91c4d6d94da8", (0, 1)), ("430f0b831dda", (2, 3))):
+        for rep in reps:
+            rows += _cell(sess, f"r1M.base.rep{rep}", 40.0 + rep)
+            rows += _cell(sess, f"r1M.treatment.rep{rep}", 60.0 + rep)
+    return rows
+
+
 def test_paired_keys_on_the_session_and_does_not_cross_match():
-    """Pairing must not match one session's base against another session's treatment."""
-    pairs = floor_table.paired(_two_session_payload())["keystroke.p50_ms"]
-    assert sorted(pairs) == sorted([(45.0, 58.7), (51.1, 73.4), (37.9, 73.6), (47.3, 144.5)]), (
+    """Pairing must not match one session's base against another session's treatment.
+
+    Built on a payload whose sessions do not collide, because the colliding one is now refused
+    outright and a test that pooled it would be asserting the guard stays silent.
+    """
+    pairs = floor_table.paired(_two_session_no_collision())["keystroke.p50_ms"]
+    assert sorted(pairs) == sorted([(40.0, 60.0), (41.0, 61.0), (42.0, 62.0), (43.0, 63.0)]), (
         "pairing crossed the sessions. Two sessions both produce rep0, so a key without the "
         "session matches a base measured under one machine load against a treatment measured "
         "under another and calls it a repetition."
     )
     assert len(pairs) == 4
+
+
+def test_pairing_refuses_a_payload_whose_cells_completed_twice():
+    """The refusal has to sit on the path that actually pools, not only on the one nobody calls.
+
+    `paired` always selects a session, so the refusal inside `cell_metrics` was unreachable from
+    the shipped path. On the real two-launcher payload it returned four pairs drawn from two cells
+    and `summarise` reported keystroke `p50_ms` up 93.4% -- a figure neither session measured, the
+    two having read +37.0% and +149.8%, presented as four independent repetitions.
+    """
+    with pytest.raises(SystemExit) as caught:
+        floor_table.paired(_two_session_payload())
+    assert "completed under more than one session" in str(caught.value)
+
+
+def test_the_refusal_does_not_send_the_reader_to_a_function_that_also_refuses():
+    """The message used to end 'or use `paired`, which pairs within a session.'
+
+    Once `paired` refuses the same payload that sentence is a loop, and a refusal that hands the
+    reader a remedy which fails the same way is worse than one that says nothing.
+    """
+    with pytest.raises(SystemExit) as caught:
+        floor_table.cell_metrics(_two_session_payload())
+    message = str(caught.value)
+    assert "use `paired`" not in message
+    assert "Split the payload by session" in message
 
 
 def test_sessions_in_lists_only_completed_cells():

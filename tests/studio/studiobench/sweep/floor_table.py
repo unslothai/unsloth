@@ -104,6 +104,35 @@ def sessions_in(records: list[dict]) -> set[str]:
     }
 
 
+def refuse_collisions(records: list[dict]) -> None:
+    """Refuse a payload in which one cell completed under more than one session.
+
+    CALLED FROM EVERY ENTRY POINT THAT POOLS, which is the whole point. The refusal used to live
+    inside `cell_metrics` behind `session is None`, and the only production caller -- `paired` --
+    always passes a session, so nothing in the shipped path ever reached it. On the real payload
+    from two concurrent launchers it went straight through: `paired` returned four pairs from two
+    cells, and `summarise` reported keystroke `p50_ms` up 93.4% on n=4. Neither session measured
+    93.4%; they measured +37.0% and +149.8%. The pooled figure is the mean of two runs contending
+    with each other, presented as four independent repetitions.
+
+    A guard reachable only from a function nobody calls is the same defect as a guard that was
+    never wired up at all, which this branch has now hit three times.
+    """
+    collided = collided_cells(records)
+    if not collided:
+        return
+    listed = ", ".join(f"{cid} in {sorted(s)}" for cid, s in sorted(collided.items())[:4])
+    more = "" if len(collided) <= 4 else f" (and {len(collided) - 4} more)"
+    raise SystemExit(
+        f"refusing to pool {len(collided)} cell id(s) that completed under more than one "
+        f"session in this payload: {listed}{more}. `cell_id` is unique within a session, not "
+        f"across them, so keying on it alone would report whichever session was appended last, "
+        f"and pairing across them would report two contending runs as repetitions of one. Two "
+        f"concurrent runs sharing one --out is the usual cause. Split the payload by session, or "
+        f"pass `session=` to score one of them."
+    )
+
+
 def collided_cells(records: list[dict]) -> dict[str, set[str]]:
     """{cell_id: sessions} for every cell id COMPLETED under more than one session id.
 
@@ -153,17 +182,8 @@ def cell_metrics(records: list[dict], session: str | None = None) -> dict[str, d
     frame metrics dilutes `time_in_jank_pct` and `jank_index` away from the film that was measured.
     A metric here has to be the same quantity the rest of the tool calls by that name.
     """
-    collided = collided_cells(records)
-    if session is None and collided:
-        listed = ", ".join(f"{cid} in {sorted(s)}" for cid, s in sorted(collided.items())[:4])
-        more = "" if len(collided) <= 4 else f" (and {len(collided) - 4} more)"
-        raise SystemExit(
-            f"refusing to pool {len(collided)} cell id(s) that completed under more than one "
-            f"session in this payload: {listed}{more}. `cell_id` is unique within a session, not "
-            f"across them, so keying on it alone would report whichever session was appended "
-            f"last. Two concurrent runs sharing one --out is the usual cause. Pass `session=` to "
-            f"pick one, or use `paired`, which pairs within a session."
-        )
+    if session is None:
+        refuse_collisions(records)
 
     # A CELL THAT FAILED AN INVALIDATING GATE IS NOT A READING, HERE EITHER. Both gates are
     # advisory where they are emitted, so such a cell arrives `completed=True` with a full set of
@@ -267,9 +287,13 @@ def paired(records: list[dict], shard: str = "") -> dict[str, list[tuple[float, 
     # against the other's treatment -- which is a comparison between two different runs under two
     # different machine loads, reported as a repetition.
     #
-    # Looped per session rather than calling `cell_metrics(records)` once, because that call now
-    # REFUSES a multi-session payload outright. Selecting each session in turn is what makes the
-    # refusal survivable for the one caller that genuinely has to read across sessions.
+    # Looped per session because several sessions in one payload is ORDINARY -- a sharded or
+    # resumed run appends legitimately, and each session's repetitions must pair within themselves.
+    # What is never ordinary is one cell completing twice, so that is refused first, here rather
+    # than only inside `cell_metrics`: this loop always passes a session, so the refusal there was
+    # unreachable from the shipped path and a payload of two concurrent runs pooled straight
+    # through it.
+    refuse_collisions(records)
     by_key: dict[tuple[str, str, str, str], dict[str, dict[str, float]]] = collections.defaultdict(
         dict
     )
@@ -396,14 +420,22 @@ def partial_censoring(paths: list[Path]) -> dict[str, str]:
     of those under a bare metric name. On a 100K/500K/1M ladder that row is a 100K-only number
     wearing a ladder label, and the only hint is a smaller `n` sitting beside the other rows --
     indistinguishable from a metric that simply had fewer repetitions.
+
+    JUDGED OVER EVERY SHARD AT ONCE, because that is the set `summarise` pools. Asked per file,
+    a ladder split across shards escapes: the shard holding the measured 100K cells sees no
+    censoring at all, the shard holding the censored 500K cells sees censoring at every rung it
+    contains, and neither returns a refusal -- while `load()` pools them together and prints the
+    100K number under a ladder label. The same rows concatenated into one file are caught. Identical
+    data, opposite treatment, decided by which file they happened to be written to.
     """
-    out: dict[str, str] = {}
+    everything: list[dict] = []
     for path in paths:
-        records = read_rows(path)
-        for metric in sorted(censorable_metrics(records)):
-            why = payload_rules.refuse_partial_censoring(records, metric)
-            if why and metric not in out:
-                out[metric] = why
+        everything += read_rows(path)
+    out: dict[str, str] = {}
+    for metric in sorted(censorable_metrics(everything)):
+        why = payload_rules.refuse_partial_censoring(everything, metric)
+        if why:
+            out[metric] = why
     return out
 
 

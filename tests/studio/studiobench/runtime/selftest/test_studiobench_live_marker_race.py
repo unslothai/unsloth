@@ -77,9 +77,22 @@ def _contend(repo_root: str, outdir: str, index: int, start, hold, q) -> None:
             rec.close()
 
 
-def _trial(tmp_path: Path, n: int, trial: int) -> list[tuple[bool, str]]:
+def _dead_pid() -> int:
+    with open("/proc/sys/kernel/pid_max", encoding = "utf-8") as fh:
+        return int(fh.read().strip()) - 1
+
+
+def _trial(
+    tmp_path: Path,
+    n: int,
+    trial: int,
+    stale: bool = False,
+) -> list[tuple[bool, str]]:
     out = tmp_path / f"out{trial}"
     out.mkdir()
+    if stale:
+        # What a crashed run leaves behind: a marker naming a pid that is gone.
+        (out / ".running.lock").write_text(f"{_dead_pid()} crashedsession\n", encoding = "utf-8")
     ctx = mp.get_context("spawn")
     start, hold, q = ctx.Barrier(n), ctx.Barrier(n), ctx.Queue()
     procs = [
@@ -93,10 +106,14 @@ def _trial(tmp_path: Path, n: int, trial: int) -> list[tuple[bool, str]]:
     return [q.get(timeout = 10) for _ in range(n)]
 
 
-def _admissions(tmp_path: Path, n: int) -> list[int]:
+def _admissions(
+    tmp_path: Path,
+    n: int,
+    stale: bool = False,
+) -> list[int]:
     counts = []
     for trial in range(TRIALS):
-        got = _trial(tmp_path, n, trial)
+        got = _trial(tmp_path, n, trial, stale = stale)
         for ok, why in got:
             if not ok and why.startswith("UNEXPECTED"):
                 pytest.fail(f"a contender failed for the wrong reason: {why}")
@@ -140,4 +157,40 @@ def test_the_directory_is_free_again_once_the_holder_exits(tmp_path):
     from tests.studio.studiobench.runtime.types import Recorder, new_session_id
 
     rec = Recorder(tmp_path / "out0" / "payload.jsonl", new_session_id())
+    rec.close()
+
+
+def test_a_crashed_run_does_not_let_two_launchers_in_at_once(tmp_path):
+    """The reclaim path was the half the exclusive create did not fix.
+
+    A marker naming a dead pid used to be cleared by unlinking it, and two launchers meeting the
+    same stale marker both judged it dead: one unlinked and created its own, the other's unlink
+    then deleted THAT, and both were admitted. Measured on the shipped code, 23 of 200 trials with
+    two processes and 40 of 100 with four.
+
+    There is no atomic "unlink if this is still the same file", so the fix is not a better check
+    but a lock the kernel releases when the holder dies -- which leaves nothing to reclaim and no
+    reclaim path to race.
+    """
+    counts = _admissions(tmp_path, 2, stale = True)
+    assert set(counts) == {1}, (
+        f"admitted-per-trial counts were {counts} against a crashed run's marker. Two launchers "
+        f"reclaimed the same stale lock and both took the directory."
+    )
+
+
+def test_four_launchers_against_a_crashed_run_still_admit_one(tmp_path):
+    counts = _admissions(tmp_path, 4, stale = True)
+    assert set(counts) == {1}, f"admitted-per-trial counts were {counts}"
+
+
+def test_a_crashed_run_does_not_lock_the_directory_forever(tmp_path):
+    """The other direction: the refusal must not outlive the process that earned it."""
+    out = tmp_path / "solo"
+    out.mkdir()
+    (out / ".running.lock").write_text(f"{_dead_pid()} crashedsession\n", encoding = "utf-8")
+    sys.path.insert(0, str(REPO_ROOT))
+    from tests.studio.studiobench.runtime.types import Recorder, new_session_id
+
+    rec = Recorder(out / "payload.jsonl", new_session_id())
     rec.close()

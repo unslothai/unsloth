@@ -69,7 +69,28 @@ def aborted_cell_ids(records: Iterable[dict]) -> set[str]:
 
 
 def windows_of_completed_cells(records: list[dict]) -> list[dict]:
-    """Every `window` row that belongs to a cell that finished. The only windows worth pooling."""
+    """Every `window` row that belongs to a cell that finished. The only windows worth pooling.
+
+    REDUCED TO THE LATEST ATTEMPT FIRST, because a cell id is not unique across attempts. `--resume`
+    re-runs a cell that died under the SAME deterministic id in the SAME file under a new session,
+    so a completed retry puts that id in `done` and matching on the id alone hands back the dead
+    attempt's windows as well -- precisely the unfinished film this helper exists to exclude.
+
+    Measured on a payload written through the real Recorder, one aborted attempt at 28.7 fps and
+    its completed retry at 46.7 fps: the helper returned all 13 windows, and pushing its own output
+    through `_frame_measures` gave `max_frame_ms` 34.84 against the truth of 21.41, and a
+    `jank_index` of 2.719 against 0.000 -- a jank score invented entirely by the run that crashed.
+    `floor_table.cell_metrics` got this right on the same records, so the importable rule was wrong
+    where the older ad-hoc guard was right, which is the wrong way round for a module whose claim is
+    that the rules are not folklore.
+
+    `aborted_cell_ids` IS NOT A MITIGATION FOR THIS, and must not be subtracted from `done`: on that
+    payload the same cell id is in both sets, so `done - aborted` is empty and a reader who tries it
+    loses the good reading instead of the bad one.
+    """
+    from .from_payload import latest_attempt_rows
+
+    records = list(latest_attempt_rows(records))
     done = completed_cell_ids(records)
     return [r for r in records if r.get("row_type") == "window" and r.get("cell_id") in done]
 
@@ -112,25 +133,67 @@ def censored_metrics(records: Iterable[dict]) -> dict[str, set[str]]:
     return out
 
 
-def refuse_partial_censoring(records: list[dict], metric: str) -> str | None:
-    """Why `metric` must not be pooled across this payload's rungs, or None if it is safe.
+def measured_cells(records: Iterable[dict], metric: str) -> set[str]:
+    """Completed cells on which `metric` actually produced a number.
 
-    Pooling a metric that is censored at some rungs and measured at others compares the rungs that
-    could answer against the rungs that could not, under one label.
+    Resolved the way `floor_table._action_timings` resolves it -- the action ran, its own assertion
+    did not fail, and the timing is a real number -- so this is the set the pooled mean is actually
+    built from rather than a second opinion about it.
+    """
+    action, _, key = metric.partition(".")
+    done = completed_cell_ids(records)
+    out: set[str] = set()
+    for r in records:
+        if r.get("row_type") != "action" or r.get("action") != action:
+            continue
+        if r.get("cell_id") not in done or not r.get("ran") or r.get("expect_ok") is False:
+            continue
+        value = (r.get("timings") or {}).get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            out.add(r.get("cell_id"))
+    return out
+
+
+def refuse_partial_censoring(records: list[dict], metric: str) -> str | None:
+    """Why `metric` must not be pooled across this payload, or None if it is safe.
+
+    PER CELL, NOT PER RUNG NAME. Censoring is decided cell by cell against a fixed budget, on a
+    metric whose own spread is 33 to 42%, so a rung sitting near that budget censors SOME of its
+    repetitions and not others -- which is the expected shape near the boundary, not a contrived
+    one. Comparing sets of rung names cannot see it: every rung appears in both sets, the refusal
+    stays silent, and `paired()` quietly keeps only the repetitions where both arms answered.
+
+    Measured on one rung with three of four treatment repetitions censored, the surviving pair
+    reported +10.0% on n=1 with a full SLOWER verdict, counted as a metric that cleared all three
+    gates. The true paired delta over all four repetitions was +35.7%. The censored repetitions
+    were the slow ones, which is exactly why they were censored, so what survives is not a sample
+    of the effect but a selection against it.
+
+    This module's own docstring already stated the rule in cell terms -- "the cells that survive
+    are the fast ones" -- and only the implementation reduced it to rung names.
     """
     censored = censored_metrics(records).get(metric, set())
+    done = completed_cell_ids(records)
+    censored = {c for c in censored if c in done}
     if not censored:
         return None
-    done = completed_cell_ids(records)
-    rungs_censored = {c.split(".", 1)[0] for c in censored if c}
-    rungs_all = {c.split(".", 1)[0] for c in done if c}
-    if rungs_censored and rungs_censored != rungs_all:
-        return (
-            f"{metric} is censored at {sorted(rungs_censored)} and measured at "
-            f"{sorted(rungs_all - rungs_censored)}. Pooling those under one label reports the "
-            f"rungs that could answer as if they were the whole ladder."
-        )
-    return None
+    measured = measured_cells(records, metric)
+    if not measured:
+        # Censored everywhere it was attempted. Nothing survived to be biased, and there is no
+        # pooled number to refuse -- refusing here would fire on every payload that simply cannot
+        # answer, which is a different and much noisier rule than the one being enforced.
+        return None
+    rungs_censored = sorted({c.split(".", 1)[0] for c in censored if c})
+    rungs_measured = sorted({c.split(".", 1)[0] for c in measured if c})
+    where = (
+        f"at {rungs_censored} and measured at {rungs_measured}"
+        if set(rungs_censored) != set(rungs_measured)
+        else f"on {len(censored)} of {len(censored) + len(measured)} cells within {rungs_censored}"
+    )
+    return (
+        f"{metric} is censored {where}. Pooling what is left reports the cells that could answer "
+        f"as if they were the whole ladder, and the ones that could not are the slow ones."
+    )
 
 
 def refuse_uncomparable(metric: str) -> str | None:
@@ -248,6 +311,22 @@ def comparability_fields(run_meta: dict) -> dict:
         "click_probe": bool(run_meta.get("click_probe")),
         "probe_init_script": run_meta.get("probe_init_script"),
         "inject_stream_cost_ms": run_meta.get("inject_stream_cost_ms"),
+        # THE HOST, which the engine alone does not stand in for. `run_meta` records `system` and
+        # `machine` and the key took neither, so two payloads from different hardware and operating
+        # systems hashed the same and `--compare` blessed them.
+        #
+        # It needs no unusual invocation: `browser.default_engine()` returns webkit on Darwin AND
+        # on Linux, so a tester's Mac payload and the Linux dev box's payload, both with default
+        # settings, differ in `system`, `machine` and `engine_note` and were declared comparable.
+        # Only Windows was caught, and only incidentally, because its default engine differs.
+        #
+        # Nothing else in the tool refuses cross-host pooling: `floor_table.load` checks tier,
+        # corpus and probe only, and `platform` is not an identity axis. The sole existing
+        # statement is prose in `report/render.py` -- "machine-local; does not travel between
+        # machines" -- so the authors knew the hazard and the one guard meant to police a prose
+        # comparison was the place it was missing.
+        "system": platform.get("system"),
+        "machine": platform.get("machine"),
     }
 
 

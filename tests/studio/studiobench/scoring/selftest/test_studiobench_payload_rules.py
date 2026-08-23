@@ -285,15 +285,39 @@ def test_the_key_is_computed_over_the_fields_it_explains():
     """
     corpus = "ac9d5d8e37be2a3844deed559fde6070247ad2322377295fb383b60b5eec5a0c"
     a = _meta(corpus)
+    #: Fields the key reads out of the nested `platform` dict rather than off the row itself.
+    #: Written as a set rather than a single special case, because the single special case is what
+    #: had to be edited when `system` and `machine` were added -- and a test that needs editing to
+    #: keep passing when a field is added is a test that can be edited into silence instead.
+    nested = {"engine", "system", "machine"}
     for field in payload_rules.comparability_fields(a):
         b = _meta(corpus)
-        if field == "engine":
-            b["platform"] = {"engine": "webkit"}
+        if field in nested:
+            b["platform"] = dict(b.get("platform") or {})
+            b["platform"][field] = "CHANGED"
         else:
             b[field] = "CHANGED"
         assert payload_rules.comparability_key(a) != payload_rules.comparability_key(
             b
         ), f"{field} is listed in comparability_fields but does not move the key"
+
+
+def test_a_payload_from_another_host_is_not_comparable():
+    """Two machines, default settings, everything else identical.
+
+    `browser.default_engine()` returns webkit on Darwin AND on Linux, so the engine field does not
+    stand in for the host: a tester's Mac payload and the Linux dev box's payload matched on every
+    field the key covered. Only Windows was caught, and only because its default engine differs.
+    """
+    corpus = "ac9d5d8e37be2a3844deed559fde6070247ad2322377295fb383b60b5eec5a0c"
+    linux = _meta(corpus)
+    linux["platform"] = {"engine": "webkit", "system": "Linux", "machine": "x86_64"}
+    macos = _meta(corpus)
+    macos["platform"] = {"engine": "webkit", "system": "Darwin", "machine": "arm64"}
+    assert payload_rules.comparability_key(linux) != payload_rules.comparability_key(macos)
+    differ = payload_rules.explain_incomparable(linux, macos)
+    assert any(line.startswith("system:") for line in differ)
+    assert any(line.startswith("machine:") for line in differ)
 
 
 def test_a_run_from_before_the_settling_fix_is_not_comparable_with_one_from_after():
@@ -360,3 +384,86 @@ def test_the_key_moves_with_the_engine_and_the_tier():
 def test_the_key_looks_like_a_token_that_can_be_quoted():
     key = payload_rules.comparability_key(_meta("ac9d5d8e"))
     assert key.startswith("cmp:") and len(key) == len("cmp:") + 10
+
+
+# ── window rows must belong to the attempt that finished, not merely to the id ──
+
+
+def _resumed_window_payload() -> list[dict]:
+    """One cell that died at 28.7 fps and its completed retry at 46.7 fps, same cell id.
+
+    `--resume` re-runs a died cell under the SAME deterministic id into the SAME file under a new
+    session, so this is the ordinary shape of any resumed run, not a corner case.
+    """
+    cid = "r1M.treatment.rep0"
+
+    def win(session: str, i: int, fps: float, frame_ms: float) -> dict:
+        return {
+            "row_type": "window",
+            "cell_id": cid,
+            "session_id": session,
+            "name": f"stream:gap{i}",
+            "kind": "gap",
+            "t_open_ms": float(i * 100),
+            "duration_ms": 33.0,
+            "instruments": {"frames": {"fps": fps, "max_frame_ms": frame_ms, "long_frames": []}},
+        }
+
+    rows = [win("s1aborted", i, 28.7, 34.84) for i in range(7)]
+    rows.append({"row_type": "cell", "cell_id": cid, "session_id": "s1aborted", "completed": False})
+    rows.append(
+        {"row_type": "cell_aborted", "cell_id": cid, "session_id": "s1aborted", "reason": "died"}
+    )
+    rows += [win("s2resumed", i, 46.7, 21.41) for i in range(6)]
+    rows.append({"row_type": "cell", "cell_id": cid, "session_id": "s2resumed", "completed": True})
+    return rows
+
+
+def test_the_windows_of_a_dead_attempt_do_not_come_back_with_the_retry():
+    """Matching on the cell id alone hands back the very film the helper exists to exclude.
+
+    A completed retry puts the id in `completed_cell_ids`, and the aborted attempt shares that id,
+    so every one of its windows passed the filter. Pushing the helper's own output through the real
+    frame maths gave `max_frame_ms` 34.84 against a true 21.41 and a `jank_index` of 2.719 against
+    0.000 -- a jank score invented entirely by the run that crashed. `floor_table.cell_metrics` was
+    right on the same records, so the importable rule was wrong where the older ad-hoc guard was
+    right.
+    """
+    got = payload_rules.windows_of_completed_cells(_resumed_window_payload())
+    sessions = {r.get("session_id") for r in got}
+    assert sessions == {
+        "s2resumed"
+    }, f"windows came back from {sorted(sessions)}. The dead attempt's frames became the retry's."
+    assert len(got) == 6
+    fps = [r["instruments"]["frames"]["fps"] for r in got]
+    assert set(fps) == {46.7}
+
+
+def test_subtracting_the_aborted_ids_is_not_the_fix():
+    """Documented because it is the obvious wrong answer and it silently deletes a good reading.
+
+    On a resumed payload the SAME id is both completed and aborted, so `done - aborted` is empty:
+    the reader who reaches for `aborted_cell_ids` as a mitigation loses the film that finished
+    rather than the one that did not.
+    """
+    rows = _resumed_window_payload()
+    done = payload_rules.completed_cell_ids(rows)
+    aborted = payload_rules.aborted_cell_ids(rows)
+    assert done and aborted
+    assert done - aborted == set()
+
+
+def test_a_payload_with_no_resumed_attempt_is_unchanged():
+    """The reduction must not drop windows from an ordinary single-attempt payload."""
+    rows = [
+        {
+            "row_type": "window",
+            "cell_id": "r100K.base.rep0",
+            "session_id": "s1",
+            "name": "stream:gap0",
+            "kind": "gap",
+            "instruments": {"frames": {"fps": 60.0}},
+        },
+        {"row_type": "cell", "cell_id": "r100K.base.rep0", "session_id": "s1", "completed": True},
+    ]
+    assert len(payload_rules.windows_of_completed_cells(rows)) == 1

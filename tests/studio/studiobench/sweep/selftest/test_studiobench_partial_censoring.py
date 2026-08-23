@@ -256,3 +256,154 @@ def test_a_fully_measured_action_is_still_poolable(tmp_path):
     stats = floor_table.summarise([path])
     assert stats["keystroke.p50_ms"].get("poolable") is not False
     assert stats["reasoning_toggle.close_ms"].get("poolable") is not False
+
+
+def _within_rung_payload(tmp_path: Path) -> Path:
+    """ONE rung, sitting on the settle budget, so some repetitions censor and others do not.
+
+    This is the expected shape near the cutoff rather than a contrived one: censoring is decided
+    per cell against a fixed budget, and `open_ms`'s own spread is 33 to 42%. The censored
+    repetitions are the slow ones, which is exactly why they were censored.
+    """
+    rows: list[dict] = [
+        {
+            "row_type": "run_meta",
+            "tier": "standard",
+            "session_id": "s1",
+            "corpus_hash": "abc",
+            "rungs": ["500K"],
+        }
+    ]
+    for rep, (base_ms, treat_ms, censored) in enumerate(
+        (
+            (6000.0, 6600.0, False),
+            (7000.0, 9200.0, True),
+            (7500.0, 9900.0, True),
+            (6500.0, 11000.0, True),
+        )
+    ):
+        for arm, value, cens in (("base", base_ms, False), ("treatment", treat_ms, censored)):
+            cid = f"{CENSORED_RUNG}.{arm}.rep{rep}"
+            rows.append({"row_type": "cell", "cell_id": cid, "session_id": "s1", "completed": True})
+            if cens:
+                rows.append(
+                    {
+                        "row_type": "action",
+                        "cell_id": cid,
+                        "session_id": "s1",
+                        "action": "reasoning_toggle",
+                        "ran": True,
+                        "expect_ok": False,
+                        "timings": {},
+                        "counts": {},
+                        "expect": {"open_censored": True},
+                    }
+                )
+            else:
+                rows.append(
+                    {
+                        "row_type": "action",
+                        "cell_id": cid,
+                        "session_id": "s1",
+                        "action": "reasoning_toggle",
+                        "ran": True,
+                        "expect_ok": True,
+                        "timings": {"open_ms": value},
+                        "counts": {},
+                        "expect": {"open_censored": False},
+                    }
+                )
+    out = tmp_path / "sbench_within"
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows), encoding = "utf-8")
+    return path
+
+
+def test_censoring_within_a_single_rung_is_still_partial(tmp_path):
+    """Comparing sets of RUNG NAMES cannot see this, and it is the commonest shape.
+
+    Every rung appears in both the censored and the measured set, so a rung-keyed rule stays
+    silent while `paired()` keeps only the repetitions where both arms answered. The survivor
+    reported +10.0% on n=1 with a full SLOWER verdict; the true paired delta over all four
+    repetitions is +35.7%. What survives is not a sample of the effect, it is a selection against
+    it.
+    """
+    path = _within_rung_payload(tmp_path)
+    stats = floor_table.summarise([path])["reasoning_toggle.open_ms"]
+    assert stats["n"] == 1, "fixture no longer reproduces the survivorship case"
+    assert stats["poolable"] is False, (
+        "three of four treatment repetitions were censored at the only rung in the payload, and "
+        "the one surviving pair was scored as the metric. A rule keyed on rung names cannot see "
+        "censoring that happens WITHIN a rung."
+    )
+    assert "of" in stats["censoring"] and "cells" in stats["censoring"]
+
+
+def test_a_metric_measured_on_every_completed_cell_is_untouched(tmp_path):
+    """The cell-granular rule must not fire on a payload with nothing censored at all."""
+    path = _within_rung_payload(tmp_path)
+    rows = [r for r in floor_table.read_rows(path)]
+    for r in rows:
+        if r.get("row_type") == "action":
+            r["expect_ok"] = True
+            r["expect"] = {"open_censored": False}
+            r.setdefault("timings", {})["open_ms"] = 6000.0
+    assert payload_rules.refuse_partial_censoring(rows, "reasoning_toggle.open_ms") is None
+
+
+def test_a_ladder_split_across_shards_is_judged_as_one_result(tmp_path):
+    """Per-file evaluation lets a rung-disjoint shard set escape the refusal entirely.
+
+    The shard holding the measured 100K cells sees no censoring; the shard holding the censored
+    500K cells sees censoring at every rung it contains. Neither refuses on its own, and `load()`
+    pools them anyway -- so the same rows are refused in one file and blessed in two.
+    """
+
+    def shard(name: str, rung: str, censored: bool) -> Path:
+        rows: list[dict] = [
+            {
+                "row_type": "run_meta",
+                "tier": "standard",
+                "session_id": "s1",
+                "corpus_hash": "abc",
+                "rungs": ["100K", "500K"],
+            }
+        ]
+        for arm, mult in (("base", 1.0), ("treatment", 1.05)):
+            for rep in (0, 1):
+                cid = f"{rung}.{arm}.rep{rep}"
+                rows.append(
+                    {"row_type": "cell", "cell_id": cid, "session_id": "s1", "completed": True}
+                )
+                rows.append(
+                    {
+                        "row_type": "action",
+                        "cell_id": cid,
+                        "session_id": "s1",
+                        "action": "reasoning_toggle",
+                        "ran": True,
+                        "expect_ok": not censored,
+                        "timings": {} if censored else {"open_ms": 1000.0 * mult + rep},
+                        "counts": {},
+                        "expect": {"open_censored": censored},
+                    }
+                )
+        out = tmp_path / name
+        out.mkdir()
+        path = out / "payload.jsonl"
+        path.write_text("\n".join(json.dumps(r) for r in rows), encoding = "utf-8")
+        return path
+
+    measured = shard("sbench_mine.shard0", MEASURED_RUNG, False)
+    censored = shard("sbench_mine.shard1", CENSORED_RUNG, True)
+    assert floor_table.partial_censoring([measured]) == {}
+    assert floor_table.partial_censoring([censored]) == {}
+    both = floor_table.partial_censoring([measured, censored])
+    assert "reasoning_toggle.open_ms" in both, (
+        "a ladder split across shards escaped the refusal. Identical rows in one file are caught, "
+        "so the verdict depended on which file they were written to."
+    )
+    assert (
+        floor_table.summarise([measured, censored])["reasoning_toggle.open_ms"]["poolable"] is False
+    )
