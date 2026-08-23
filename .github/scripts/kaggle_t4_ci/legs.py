@@ -527,15 +527,30 @@ KERNELS: tuple[tuple[str, ...], ...] = (("canary", "control", "gptoss", "frontie
 # moment the first leg is ready, delaying three legs to give one a head start
 # it did not need.
 #
-# These MUST match the DEFAULT_MODEL of the entry scripts they are prefetching
-# for, and nothing at runtime would notice if they drifted: a prefetch of the
-# wrong repo downloads happily, warms a cache nobody reads, and reports
-# success. `test_the_prefetch_list_matches_the_models_the_legs_actually_load`
-# reads the real defaults out of the payload scripts rather than trusting this.
+# These must match what the legs LOAD, which is not the same thing as what
+# they ASK FOR, and the difference cost a whole prefetch once already. The
+# gptoss payload declares DEFAULT_MODEL = "unsloth/gpt-oss-20b", but that is an
+# MXFP4 checkpoint and sm_75 cannot read MXFP4, so unsloth redirects to
+# `-unsloth-bnb-4bit` at load time; run_gptoss_t4.py's own docstring records the
+# redirect and the leg's output on run 32667451396 shows both strings. The
+# first version of this list prefetched the declared name and therefore pulled
+# 55.1 GB of a checkpoint no leg ever opens, while the leg downloaded the real
+# one for itself exactly as before.
+#
+# Nothing at runtime notices this: a prefetch of the wrong repo downloads
+# happily, warms a cache nobody reads, and reports success. The guard that was
+# supposed to catch it compared against DEFAULT_MODEL and so agreed with the
+# bug; it now knows about the redirect.
 PREFETCH_REPOS: tuple[str, ...] = (
     "unsloth/Qwen2.5-0.5B-Instruct",
-    "unsloth/gpt-oss-20b",
+    "unsloth/gpt-oss-20b-unsloth-bnb-4bit",
 )
+
+# Declared name -> what actually gets loaded on an sm_75 card. Kept beside the
+# list it corrects so the two cannot drift apart silently.
+LOAD_REDIRECTS: dict[str, str] = {
+    "unsloth/gpt-oss-20b": "unsloth/gpt-oss-20b-unsloth-bnb-4bit",
+}
 
 
 def expand_install(

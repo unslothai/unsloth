@@ -827,6 +827,10 @@ _queue = list(enumerate(ORDER))
 # to run.
 SEEDS = _queue[:N_GPU]
 pending = _queue[N_GPU:]
+# Reserved BEFORE any worker thread exists, further down. A seat promised to a
+# seed but not taken until that worker wakes is a seat a free worker can see as
+# empty, which is exactly how run 32667451396 put gptoss and control on one
+# card. See the _admit reservation loop below the definition.
 pending_lock = threading.Lock()
 
 # What each card is currently carrying, in GB and in count. Admission is taken
@@ -870,8 +874,13 @@ def worker(gpu_index, seed):
         if gpu_index:
             time.sleep(5 * gpu_index)
         idx, name = seed
-        with pending_lock:
-            _admit(gpu_index, name)
+        # No _admit here. The seat was taken in the main thread before ANY
+        # worker started, and taking it here instead is what let gptoss onto
+        # a card that a seed had already been promised: the stagger below
+        # meant card 1 sat unreserved for 5s, a free worker looked at an
+        # apparently empty card, and 12.78 + 0.70 GB then ran on one 13.0 GB
+        # budget for 691s on run 32667451396. The old call also discarded the
+        # answer, so even once it did refuse, the leg ran anyway.
         try:
             run_one(name, gpu_index, idx)
         finally:
@@ -947,6 +956,15 @@ if CPU_LANE:
 # card pick up a second small leg beside the one it is already running; it
 # takes nothing when VRAM says no, so a card carrying gptoss behaves exactly as
 # it did when there was one worker each.
+# Take every seed's seat before a single worker exists. Each seed is the first
+# leg on an empty card, so each of these always succeeds; the point is WHEN it
+# happens, not whether. Doing it inside the seed worker left card 1 unreserved
+# for the length of its start stagger.
+for _g, _seed in enumerate(SEEDS):
+    _admit(_g, _seed[1])
+print("{DRIVER_SENTINEL}_SEEDS " + json.dumps(
+    {{str(_g): _seed[1] for _g, _seed in enumerate(SEEDS)}}), flush=True)
+
 threads = []
 for gpu_index in range(N_GPU):
     for slot in range(MAX_LEGS_PER_CARD):
