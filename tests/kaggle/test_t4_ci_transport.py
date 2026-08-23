@@ -167,7 +167,13 @@ class _PackedStub(_Stub):
     while the run is in flight.
     """
 
-    def __init__(self, *, gpus, durations = None, hold = 0.05):
+    def __init__(
+        self,
+        *,
+        gpus,
+        durations = None,
+        hold = 0.05,
+    ):
         super().__init__(gpus = gpus)
         self.durations = durations or {}
         self.hold = hold
@@ -186,9 +192,7 @@ class _PackedStub(_Stub):
             card = (kw.get("env") or {}).get("CUDA_VISIBLE_DEVICES")
             with self._lock:
                 if self._live_on_card.get(card):
-                    self.same_card_overlaps.append(
-                        (card, self._live_on_card[card], notebook)
-                    )
+                    self.same_card_overlaps.append((card, self._live_on_card[card], notebook))
                 self._live_on_card[card] = notebook
                 if self.root is not None:
                     live = len(list(self.root.glob("venv_*")))
@@ -199,7 +203,13 @@ class _PackedStub(_Stub):
         return super().run(cmd, **kw)
 
 
-def _drive_packed(tmp_path, leg_names, *, gpus, durations = None):
+def _drive_packed(
+    tmp_path,
+    leg_names,
+    *,
+    gpus,
+    durations = None,
+):
     driver = build_kernel.build_kernel(
         SMOKE_DIR,
         leg_names,
@@ -268,9 +278,9 @@ def test_the_longest_leg_starts_first_so_the_schedule_can_balance_around_it(tmp_
     driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2)
     started = [p["notebook"] for p in driven["stub"].papermill]
     assert started[0] == "t4_gptoss.ipynb", started
-    assert started != sorted(started), (
-        "payloads are running in alphabetical order, so the longest leg is last"
-    )
+    assert started != sorted(
+        started
+    ), "payloads are running in alphabetical order, so the longest leg is last"
 
 
 def test_each_leg_keeps_its_own_venv_compile_cache_and_ipykernel(tmp_path):
@@ -299,9 +309,9 @@ def test_a_finished_leg_gives_its_virtualenv_back(tmp_path):
     """
     driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2)
     stub = driven["stub"]
-    assert stub.max_live_venvs <= 2, (
-        f"{stub.max_live_venvs} virtualenvs were alive at once on a 2-card kernel"
-    )
+    assert (
+        stub.max_live_venvs <= 2
+    ), f"{stub.max_live_venvs} virtualenvs were alive at once on a 2-card kernel"
     assert list(tmp_path.glob("venv_*")) == [], "a payload left its virtualenv behind"
 
 

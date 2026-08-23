@@ -814,9 +814,9 @@ def test_the_two_kaggle_legs_fit_the_account_side_by_side():
     # one `import report` resolves to for every test that runs afterwards in
     # the same process. An earlier draft of this test did exactly that and took
     # nine unrelated summary tests down with it.
-    gate_src = (
-        REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci" / "gate.py"
-    ).read_text(encoding = "utf-8")
+    gate_src = (REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci" / "gate.py").read_text(
+        encoding = "utf-8"
+    )
     caps = re.findall(r"^MAX_CONCURRENT_GPU_KERNELS = (\d+)$", gate_src, re.MULTILINE)
     assert len(caps) == 1, caps
     MAX_CONCURRENT_GPU_KERNELS = int(caps[0])
@@ -838,8 +838,10 @@ def test_the_two_kaggle_legs_fit_the_account_side_by_side():
         assert "github.ref" not in group, group
 
     pushes = {}
-    for label, text in (("studio", WORKFLOW.read_text(encoding = "utf-8")),
-                        ("notebook", notebook_text)):
+    for label, text in (
+        ("studio", WORKFLOW.read_text(encoding = "utf-8")),
+        ("notebook", notebook_text),
+    ):
         found = {int(k) for k in re.findall(r"--kernels (\d+)", text)}
         assert len(found) == 1, (label, found)
         pushes[label] = found.pop()
