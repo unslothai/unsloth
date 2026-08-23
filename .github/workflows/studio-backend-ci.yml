@@ -476,15 +476,18 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/studio
           UNSLOTH_COMPILE_DISABLE: '1'
-        # These drive a live uvicorn server and assert upper bounds on real
-        # elapsed time: a /health burst must stay under 250 ms while a 600 ms
-        # blocking probe runs, and a 100-request burst under 350 ms. That is the
-        # actual contract (the route hands the blocking call to a thread), so the
-        # bounds cannot be relaxed without the test ceasing to test anything.
-        # A descheduled worker inflates them, so they run alone. Measured under
-        # 3x CPU oversubscription the margin is wide (8 ms against 250, 38 ms
-        # against 350), but a runner core is several times slower than the box
-        # that measured it, which puts the 350 ms one within reach.
+        # These drive a live uvicorn server and assert upper bounds on real elapsed
+        # time: 50 concurrent probes under 15s, a fast-shim probe under 2s, five
+        # sequential probes under 10s, and a not-loaded short circuit under 50 ms.
+        # A descheduled worker inflates them, so they run alone.
+        #
+        # The two tightest bounds this step used to carry, 250 ms for a /health burst
+        # and 350 ms for a 100-request burst, are gone. Both were proxies for one
+        # property, that the route hands its blocking call to a thread and leaves the
+        # event loop free, and both could be falsified by a descheduled thread with the
+        # code entirely correct. Those two tests now hold the blocking call open on an
+        # event and require /health to answer while it is held, which asserts the
+        # property itself and does not move with load.
         # 20s serially, against the ~10 minutes -n 4 saves on this job.
         run: python -m pytest tests/studio/load_freeze -q --tb=short
 
