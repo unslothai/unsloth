@@ -33,6 +33,7 @@ judged against this process's own pid and the test would say nothing about two r
 from __future__ import annotations
 
 import multiprocessing as mp
+import subprocess
 import sys
 from pathlib import Path
 
@@ -194,3 +195,104 @@ def test_a_crashed_run_does_not_lock_the_directory_forever(tmp_path):
 
     rec = Recorder(out / "payload.jsonl", new_session_id())
     rec.close()
+
+
+# ── a retained record is not a holder ────────────────────────────────
+#
+# The marker is deliberately never unlinked, so on a directory that has been used before it already
+# contains the PREVIOUS run's `pid session` line. These two are deterministic on purpose: they stand
+# in the window rather than racing for it, so they say the same thing on a loaded runner as on an
+# idle one.
+
+
+def _stalled_holder(marker: Path, write_after_s: float, session: str = "realsession"):
+    """A holder that takes the lock and only then publishes itself, which is the required order:
+    the write is what makes the marker say anything, and writing before the lock would let a LOSER
+    publish itself as the holder."""
+    code = (
+        "import os,fcntl,time,sys\n"
+        "fd=os.open(sys.argv[1],os.O_CREAT|os.O_RDWR,0o644)\n"
+        "fcntl.flock(fd,fcntl.LOCK_EX)\n"
+        "print('locked',flush=True)\n"
+        "time.sleep(float(sys.argv[2]))\n"
+        "os.ftruncate(fd,0); os.lseek(fd,0,0)\n"
+        "os.write(fd,('%d %s\\n'%(os.getpid(),sys.argv[3])).encode()); os.fsync(fd)\n"
+        "time.sleep(30)\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", code, str(marker), str(write_after_s), session],
+        stdout = subprocess.PIPE, text = True,
+    )
+    assert proc.stdout is not None
+    proc.stdout.readline()
+    return proc
+
+
+def _refusal(out: Path) -> str:
+    sys.path.insert(0, str(REPO_ROOT))
+    from tests.studio.studiobench.runtime.types import Recorder, new_session_id
+
+    with pytest.raises(SystemExit) as excinfo:
+        Recorder(out / "payload.jsonl", new_session_id())
+    return str(excinfo.value)
+
+
+def test_a_clean_close_leaves_no_identity_behind(tmp_path):
+    """`close()` blanks the marker while it still holds the lock.
+
+    The file stays, because unlinking it reintroduces the reclaim race in reverse. Its CONTENT does
+    not, because a retained `pid session` line outlives the run that wrote it.
+    """
+    sys.path.insert(0, str(REPO_ROOT))
+    from tests.studio.studiobench.runtime.types import Recorder
+
+    out = tmp_path / "out0"
+    out.mkdir()
+    rec = Recorder(out / "payload.jsonl", "sessionAAAA")
+    marker = out / ".running.lock"
+    assert "sessionAAAA" in marker.read_text()
+    rec.close()
+    assert marker.exists(), "the marker must not be unlinked"
+    assert marker.read_text() == "", marker.read_text()
+
+
+def test_a_retained_record_is_not_named_as_the_current_holder(tmp_path):
+    """THE MISATTRIBUTION. A refusal that names the wrong run is worse than one that names none.
+
+    Seeded as an UNCLEAN exit leaves it -- a killed run never reaches the blanking above -- so the
+    stale line survives. A new holder then takes the lock and has not rewritten yet, and a reader
+    that stops at the first non-empty record is handed the dead run and prints it as the holder.
+    """
+    out = tmp_path / "out0"
+    out.mkdir()
+    marker = out / ".running.lock"
+    # A pid that is definitely not running: spawn and reap.
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    marker.write_text(f"{dead.pid} sessionGONE\n")
+
+    holder = _stalled_holder(marker, write_after_s = 0.35)
+    try:
+        message = _refusal(out)
+    finally:
+        holder.kill()
+    assert "sessionGONE" not in message, message
+    assert str(holder.pid) in message, message
+    assert "realsession is still running" in message, message
+
+
+def test_the_refusal_stays_generic_when_no_live_holder_can_be_named(tmp_path):
+    """The bound is not load-bearing: when it expires the wording gets less specific, never wrong.
+
+    A holder that never publishes itself is the shape a run killed between the lock and the write
+    leaves behind, and there is nothing truthful to say about who holds the directory.
+    """
+    out = tmp_path / "out0"
+    out.mkdir()
+    marker = out / ".running.lock"
+    holder = _stalled_holder(marker, write_after_s = 60.0)
+    try:
+        message = _refusal(out)
+    finally:
+        holder.kill()
+    assert "another run is still holding it" in message, message

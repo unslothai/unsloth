@@ -510,8 +510,25 @@ class Recorder:
         deadline = time.monotonic() + budget_s
         while True:
             got = cls._read_marker(path)
-            if got is not None or time.monotonic() >= deadline:
+            # A RETAINED RECORD IS NOT A HOLDER. The marker is deliberately never unlinked, so on
+            # any directory that has been used before it already contains the PREVIOUS run's
+            # `pid session` line. That record is non-empty, so a bare "did it read" test stops on
+            # it and the refusal names a run that finished hours ago as the current holder --
+            # worse than saying nothing, because it sends the reader after a specific dead pid.
+            # Measured: a clean `close()` leaves `2235618 sessionAAAA`, and a contender that meets
+            # a NEW holder inside this window was told `session sessionAAAA is still running as
+            # pid 2235618` while the actual holder was pid 2235621.
+            #
+            # Liveness is what separates them. The holder is by definition a running process, and
+            # the run that wrote a retained record has exited. `close()` also blanks the marker
+            # while it still holds the lock, so a clean exit leaves nothing to mistake; this covers
+            # the unclean ones. What is left is a retained record whose pid has been RECYCLED onto
+            # a live process, which needs an unclean exit and a wrapped pid space in the same
+            # directory.
+            if got is not None and cls._alive(got[1]):
                 return got
+            if time.monotonic() >= deadline:
+                return None
             time.sleep(0.01)
 
     @staticmethod
@@ -617,6 +634,16 @@ class Recorder:
         # reclaim race in reverse. The file left behind carries no authority.
         fd = getattr(self, "_lock_fd", None)
         if fd is not None:
+            # BLANKED BEFORE IT IS RELEASED, and only while this process still holds the lock, so
+            # nothing can be reading it as authoritative. The file stays (see below); what goes is
+            # its CONTENT, because a retained `pid session` line outlives the run that wrote it and
+            # the next contender to lose a race would otherwise be handed it as the holder. Not a
+            # substitute for the liveness test in `_read_marker_once_written`: a killed run never
+            # reaches this line.
+            try:
+                os.ftruncate(fd, 0)
+            except OSError:
+                pass
             self._unlock_fd(fd)
             try:
                 os.close(fd)
