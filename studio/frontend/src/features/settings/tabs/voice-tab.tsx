@@ -574,12 +574,15 @@ export function VoiceTab() {
           if (download.model && !isTrackingSttDownload(download.model)) {
             trackSttDownload(download.model);
           }
-          watchedDownloadRef.current = download.model;
           const bytes = download.bytes_done ?? 0;
+          // Compare before adopting the model: assigning first made this test
+          // itself, so switching straight from one download to another priced
+          // the new run over the old one's samples.
           if (download.model !== watchedDownloadRef.current) {
             // A different model's counter is a different run.
             downloadSamplesRef.current.length = 0;
           }
+          watchedDownloadRef.current = download.model;
           appendSample(downloadSamplesRef.current, Date.now() / 1000, bytes);
           const stats = computeTransferStats(
             downloadSamplesRef.current,
