@@ -56,6 +56,26 @@ def test_the_guard_sits_before_any_install_runs():
     )
 
 
+def test_the_guard_sits_before_the_payload_is_archived():
+    """A refusal that starts nothing must cost the previous run nothing.
+
+    `prepare_payload` archives an existing `payload.jsonl` for a fresh run, so a guard placed
+    after it answers `--ab X --home H --out DIR` by moving DIR's payload off the standard path and
+    THEN exiting 2 having run no benchmark: the next `--resume` finds nothing to continue and
+    silently re-runs the whole ladder, and `--report` and `--assert-liveness` open the standard
+    name and find no rows. `rollback_session_rows` states the rule this keeps -- a refusal has to
+    leave the payload it refused exactly as it found it."""
+
+    source = _source()
+    run_body = source[source.index("def run(args, ab_ref = None) -> int:") :]
+    for guard in (
+        "if not args.attach and args.home:",
+        "if args.attach and not args.attach_b:",
+        "injection_problem = stream_cost_injection_problem(",
+    ):
+        assert run_body.index(guard) < run_body.index("    prepare_payload("), guard
+
+
 def test_a_single_arm_run_still_accepts_home():
     """`--home` is legitimate on its own: there is only one build to install, so there is no
     collision. The guard is on the COMBINATION, and narrowing it wrongly would break the

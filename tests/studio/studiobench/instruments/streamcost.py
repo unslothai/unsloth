@@ -134,16 +134,31 @@ class StreamCostInstrument(_PageInstrument):
         # already refused by `residual`; this refuses its partner, and the two together are what
         # make `reply_chars_delta` mean "characters delivered IN this window" rather than
         # "characters counted in this window".
+        #
+        # AND IT IS THE FLUSH, NOT THE BUFFER, THAT MAKES THE DELTA WRONG. `open()` samples the
+        # integrity before the action has created the response it is about to measure, so the
+        # buffer it sees can belong to a response that is already over: `stop_generation` exists to
+        # cut a socket mid-frame and `send_turn` follows it in every shipped schedule. That half
+        # frame is never completed and never counted anywhere, so it takes nothing out of this
+        # window's delta -- refusing on its presence alone threw away the one stream-cost reading
+        # the send_turn window has. `carried_flushes` counts the completions of frames that were
+        # already buffered when the decode began, so the pair "a buffer was pending at the open"
+        # and "a carried frame was counted inside the window" is what the refusal now needs.
         pending_at_open = self._integrity_open.get("pending_chars") or 0
+        carried = (integrity.get("carried_flushes") or 0) - (
+            self._integrity_open.get("carried_flushes") or 0
+        )
         out["wire_parse_failures_in_window"] = failures
         out["wire_pending_chars_at_close"] = residual
         out["wire_pending_chars_at_open"] = pending_at_open
-        if failures > 0 or residual > 0 or pending_at_open > 0:
+        out["wire_carried_frames_counted_in_window"] = carried
+        if failures > 0 or residual > 0 or (pending_at_open > 0 and carried > 0):
             out["reply_chars_scoreable"] = False
             out["reply_chars_unscoreable_reason"] = (
                 f"{failures} SSE frame(s) failed to parse inside this window, "
                 f"{pending_at_open} character(s) of an unterminated frame were already buffered "
-                f"when it opened, and {residual} character(s) were still buffered at its close, "
+                f"when it opened and {carried} of those frames were completed and counted inside "
+                f"it, and {residual} character(s) were still buffered at its close, "
                 "so the wire character count over this window is short by an unknown amount at "
                 "one end or carries a frame that began before the other, and any cost-per-"
                 "character derived from it would be wrong"

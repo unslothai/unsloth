@@ -635,6 +635,49 @@ def run(args, ab_ref = None) -> int:
             )
             return 2
 
+    # EVERY A/B ARGUMENT CHECK, AHEAD OF `prepare_payload`, FOR THE REASON STATED DIRECTLY ABOVE.
+    # These three refuse the INVOCATION -- nothing they read comes from a Studio, a browser or a
+    # payload, only `args` and `specs`, both of which exist before this function starts anything.
+    # Left below the archive they cost the previous run its payload's standard path: a fresh
+    # `--ab X --home H --out DIR` over a finished DIR archived `payload.jsonl` and then exited 2
+    # having run no benchmark, so the next `--resume` found nothing to continue and silently
+    # re-ran the whole ladder, while `--report` and `--assert-liveness` opened the standard name
+    # and found no rows. `rollback_session_rows` states the rule: a refusal has to leave the
+    # payload it refused exactly as it found it.
+    if ab_ref:
+        if args.attach and not args.attach_b:
+            _log("  --ab with --attach needs --attach-b URL: the second build has to be somewhere.")
+            return 2
+        # Here rather than beside the init script it guards, because by then two Studios have been
+        # cloned, built and launched to run a validation that cannot say anything. See
+        # `stream_cost_injection_problem`.
+        injection_problem = stream_cost_injection_problem(
+            specs, getattr(args, "inject_stream_cost_ms", None)
+        )
+        if injection_problem:
+            _log(f"  {injection_problem}")
+            return 2
+        # ONE HOME CANNOT HOLD TWO BUILDS. `install_studio` checks the ref out into a repo
+        # directory derived from the home and installs from it, so two arms sharing a home share
+        # one checkout: the second install overwrites the first and BOTH arms then serve whichever
+        # build was installed last. The A/B compares a build against itself and reports a clean,
+        # confident "no difference" -- which is the same failure mode as a copy timing that is
+        # really a sleep, and just as invisible in the payload.
+        #
+        # Measured, before this refused: two runs of the same pair, one at 716 ms and 718 ms for
+        # base and treatment, the other at 2,583 ms and 2,614 ms. Nearly equal WITHIN each run and
+        # 3.6x apart BETWEEN them, because each run was internally uniform and the two runs were
+        # serving different builds. Read as a within-run comparison it says the change does
+        # nothing; the difference was sitting between the runs the whole time.
+        if not args.attach and args.home:
+            _log(
+                "  --home cannot be used with --ab: both arms would install into that one "
+                "directory, the second install would overwrite the first, and both arms would "
+                "then serve the same build. Drop --home and each arm gets its own "
+                "studio_home_<label> under --out."
+            )
+            return 2
+
     # BEFORE the first install, the first launch and the first recorded row. See `prepare_payload`:
     # a refusal that arrives after two clones and two builds has cost the caller an hour to say
     # something it could have said in a millisecond, and an archive that arrives after the Recorder
@@ -659,39 +702,7 @@ def run(args, ab_ref = None) -> int:
         _log,
     )
     if ab_ref:
-        if args.attach and not args.attach_b:
-            _log("  --ab with --attach needs --attach-b URL: the second build has to be somewhere.")
-            return 2
-        # Here rather than beside the init script it guards, because by then two Studios have been
-        # cloned, built and launched to run a validation that cannot say anything. See
-        # `stream_cost_injection_problem`.
-        injection_problem = stream_cost_injection_problem(
-            specs, getattr(args, "inject_stream_cost_ms", None)
-        )
-        if injection_problem:
-            _log(f"  {injection_problem}")
-            return 2
         _log(f"  A/B: base={args.branch} vs treatment={ab_ref}, interleaved in ONE session")
-        # ONE HOME CANNOT HOLD TWO BUILDS. `install_studio` checks the ref out into a repo
-        # directory derived from the home and installs from it, so two arms sharing a home share
-        # one checkout: the second install overwrites the first and BOTH arms then serve whichever
-        # build was installed last. The A/B compares a build against itself and reports a clean,
-        # confident "no difference" -- which is the same failure mode as a copy timing that is
-        # really a sleep, and just as invisible in the payload.
-        #
-        # Measured, before this refused: two runs of the same pair, one at 716 ms and 718 ms for
-        # base and treatment, the other at 2,583 ms and 2,614 ms. Nearly equal WITHIN each run and
-        # 3.6x apart BETWEEN them, because each run was internally uniform and the two runs were
-        # serving different builds. Read as a within-run comparison it says the change does
-        # nothing; the difference was sitting between the runs the whole time.
-        if not args.attach and args.home:
-            _log(
-                "  --home cannot be used with --ab: both arms would install into that one "
-                "directory, the second install would overwrite the first, and both arms would "
-                "then serve the same build. Drop --home and each arm gets its own "
-                "studio_home_<label> under --out."
-            )
-            return 2
 
     installs = []
     sides = []
@@ -1528,8 +1539,8 @@ def _render_ab(
     if missing:
         result.void = True
         result.void_reason = (
-            f"{len(missing)} of {len(planned)} planned cells did not complete, so what remains is "
-            "a selection rather than the plan: " + ", ".join(missing)
+            f"{len(missing)} of {len(planned)} planned cells left no usable reading, so what "
+            "remains is a selection rather than the plan: " + ", ".join(missing)
         )
 
     text = render_ab_table(result)

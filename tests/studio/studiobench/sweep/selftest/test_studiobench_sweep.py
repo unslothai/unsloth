@@ -1547,3 +1547,100 @@ def test_the_null_repetition_that_kept_its_reading_voids_the_same_result(tmp_pat
     assert "30.1  VOID (under floor)" in table
     assert "0 metric(s) cleared all three gates." in table
     assert cli_main(["--assert-liveness", str(null)]) == 0
+
+
+# ── the attempt a gate is read through, and the cells a floor is derived from ──
+
+
+def test_a_gate_from_an_attempt_that_never_closed_still_refuses_its_cell(tmp_path):
+    """The winning attempt is named by any attempt-stamped row, not by the terminal `cell` row.
+
+    `CellRunner.run` writes that row from a `finally`, which a SIGKILL or an OOM kill never
+    reaches, while the recorder has already flushed the action and gate rows before it. So a
+    resume hard-killed inside a cell leaves the OLDER completed session as the only one holding a
+    `cell` row. Named from terminal rows alone the winner was that dead-and-buried attempt, and
+    the LIVE attempt's own failed gate was discarded as belonging to a superseded session --
+    while `latest_attempt_rows` kept that same attempt's action rows, so `collect` scored a cell
+    whose self-check had recorded conversation loss with no `_incomplete` stamp on it.
+    """
+    cid = "r100K.treatment.rep0"
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "session_id": "s1"}]
+    # The first attempt completed cleanly and closed itself.
+    rows.append(in_session(parity_action(cid, "settings", "STABLE"), "s1"))
+    rows.append(parity_cell(cid, "treatment", "s1", "rep0", True))
+    # The resume re-ran the same cell, lost messages, and was killed before its `cell` row.
+    rows.append({"row_type": "run_meta", "tier": "standard", "session_id": "s2"})
+    rows.append(in_session(parity_action(cid, "settings", "LOST"), "s2"))
+    rows.append(
+        {
+            "row_type": "gate",
+            "name": U.COMPLETENESS_GATE,
+            "passed": False,
+            "cell_id": cid,
+            "session_id": "s2",
+            "detail": {"reason": "the thread lost 3 messages"},
+        }
+    )
+    path = write(tmp_path, "killed_retry", rows)
+
+    refused = U.incomplete_cells([path])
+    assert cid in refused, refused
+    assert "lost 3 messages" in refused[cid]
+
+
+def test_the_visible_floor_is_derived_from_finished_cells_only(tmp_path):
+    """An unfinished null-control cell is not an observation of stability.
+
+    Action rows are written as the film runs and the `cell` row when it ends, so a null cell that
+    died mid-film leaves a complete-looking set of captures that nothing owns. One DIFFERING
+    unfinished observation plus one MATCHING finished one is exactly `min_observations`, which
+    marked the action unstable and let `visible_report` file a real difference at the same key
+    under "differ against an identical build". `unstable_set` already admits only finished cells
+    on the structural side; the visible floor now reads through the same rule.
+    """
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "session_id": "s1"}]
+    for rep, (digest, completed) in enumerate((("X", False), ("same", True))):
+        for arm in ("base", "treatment"):
+            cid = f"r100K.{arm}.rep{rep}"
+            rows.append(
+                in_session(
+                    {
+                        "row_type": "action",
+                        "cell_id": cid,
+                        "action": "settings",
+                        "ran": True,
+                        "parity": _capture_for_visible(),
+                        "visible": _visible_capture(
+                            "X" if (digest == "X" and arm == "treatment") else "same"
+                        ),
+                    },
+                    "s1",
+                )
+            )
+            rows.append(parity_cell(cid, arm, "s1", f"rep{rep}", completed))
+    null = write(tmp_path, "null_unfinished", rows)
+
+    assert U.visible_unstable_set([null]) == frozenset()
+
+
+def _capture_for_visible() -> dict:
+    return {
+        "parity_attempted": True,
+        "root_kind": "thread",
+        "chars": 10,
+        "digest": "same",
+        "messages": [{"i": 0, "role": "assistant", "chars": 10, "digest": "same"}],
+        "overlays": [],
+        "style": {"style_attempted": True, "capped": False, "nodes": []},
+    }
+
+
+def _visible_capture(digest: str) -> dict:
+    return {
+        "visible_attempted": True,
+        "ever_visible": [1],
+        "ever_visible_count": 1,
+        "mounted_ever_visible": 1,
+        "unmounted_at_capture": 0,
+        "messages": {"1": {"role": "assistant", "digest": digest, "chars": 10}},
+    }

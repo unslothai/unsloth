@@ -58,7 +58,10 @@ if __package__ in (None, ""):  # pragma: no cover
 from tests.studio.studiobench.analysis import behaviour as B  # noqa: E402
 from tests.studio.studiobench.analysis import parity as P  # noqa: E402
 from tests.studio.studiobench.runtime.ab import gate_detail_is_unmeasured  # noqa: E402
-from tests.studio.studiobench.scoring.from_payload import latest_attempt_rows  # noqa: E402
+from tests.studio.studiobench.scoring.from_payload import (  # noqa: E402
+    ATTEMPT_ROW_TYPES,
+    latest_attempt_rows,
+)
 
 # The DECLARED unstable set, each entry carrying its mechanism. It lives in the studiobench
 # package rather than here so that a test can require a mechanism for every entry, and so that
@@ -179,17 +182,24 @@ def incomplete_cells(paths: list[Path]) -> dict[str, str]:
     `{cell, action, window}` and a gate is none of those, so scanning raw rows here kept the dead
     attempt's failure forever: `collect` then stamped `_incomplete` on the RETRY's action rows and
     `_refused` withheld a verdict from a cell that had been successfully re-measured. An attempt is
-    `(cell_id, session_id)` and the last `cell` row for an id names the one that won, which is the
-    same rule `latest_attempt_rows` uses. A gate with no session id is still honoured, for the same
-    reason that function keeps unstamped rows: a payload written before the recorder stamped them
-    cannot be split into attempts, and ignoring it would lose a real refusal.
+    `(cell_id, session_id)`, and the winner is named FROM THE SAME ATTEMPT-KEYED ROW TYPES
+    `latest_attempt_rows` reads rather than from the terminal `cell` row alone. That row is written
+    in `CellRunner.run`'s `finally`, which a SIGKILL or an OOM kill never reaches, while the
+    Recorder has already fsynced every gate and action row before it. So a resume hard-killed
+    inside a cell left the OLDER, completed session named as the winner: the new attempt's own
+    failed gate was discarded here while `latest_attempt_rows` kept that same attempt's action
+    rows, and `collect` scored a cell whose own self-check had recorded conversation loss with no
+    `_incomplete` stamp on it -- a visible and behavioural pass, and exit 0, over exactly the
+    payload this function exists to refuse. A gate with no session id is still honoured, for the
+    same reason that function keeps unstamped rows: a payload written before the recorder stamped
+    them cannot be split into attempts, and ignoring it would lose a real refusal.
     """
     out: dict[str, str] = {}
     for path in paths:
         payload = rows(path)
         winner: dict[str, Any] = {}
         for r in payload:
-            if r.get("row_type") == "cell" and r.get("cell_id") is not None:
+            if r.get("row_type") in ATTEMPT_ROW_TYPES and r.get("cell_id") is not None:
                 winner[str(r.get("cell_id"))] = r.get("session_id")
         for r in payload:
             if r.get("row_type") != "gate" or r.get("passed") is not False:
@@ -709,7 +719,18 @@ def visible_unstable_set(null_paths: list[Path] | None) -> frozenset[tuple[str, 
     """
     if not null_paths:
         return frozenset()
-    results, _got = compare_all_with(null_paths, P.compare_visible, "visible")
+    # AND ONLY FROM CELLS THAT FINISHED, which is the same admission rule `unstable_set` applies
+    # to the structural floor and `audit_null` to the audit. `collect` states the asymmetry: action
+    # rows are written as the film runs and the `cell` row when it ends, so a null-control cell
+    # that died mid-film leaves a complete-looking set of captures that nothing owns, and they pair
+    # and compare like real ones. Read raw here, one DIFFERING unfinished observation plus one
+    # matching completed one is exactly `min_observations`, `derive_unstable` calls that (rung,
+    # action) unstable, and `visible_report` then files a real visible difference at the same key
+    # under "differ against an identical build" and exits 0. The floor is the one place an
+    # under-observed action must read as undetermined rather than as an excuse.
+    results, _got = compare_all_with(
+        null_paths, P.compare_visible, "visible", require_complete = True
+    )
     by_rung: dict[str, list[tuple[str, dict]]] = collections.defaultdict(list)
     for action, _shard, cell, r in results:
         # A pair whose action never ran on both arms is not an observation of anything, in either
@@ -868,9 +889,14 @@ def compare_all_with(
     compare,
     key: str,
     select: Optional[set] = None,
+    require_complete: bool = False,
 ) -> tuple[list[tuple], dict]:
-    """[(action, shard, cell, result)] using `compare` over payload sub-object `key`."""
-    got = collect(paths, select)
+    """[(action, shard, cell, result)] using `compare` over payload sub-object `key`.
+
+    `require_complete` drops the action rows of a cell that never wrote its terminal `cell` row;
+    see `collect`, which states why that is right on a null control and wrong on a result.
+    """
+    got = collect(paths, select, require_complete = require_complete)
     results = []
     for (shard, rung, rep, sid, action), sides in sorted(got["pairs"].items()):
         cell = f"{rung} {rep}"
