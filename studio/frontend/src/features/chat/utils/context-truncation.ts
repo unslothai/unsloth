@@ -16,15 +16,32 @@ function spreadSum(
   return { [key]: (a ?? 0) + (b ?? 0) };
 }
 
+/**
+ * Whether the fit removed turns from the prompt that was actually sent.
+ *
+ * Not `fits`: a fit under the physical window that misses the reply reserve still sends
+ * the shortened prompt with `fits: false`, and those turns are just as gone. Every path
+ * that returned the ORIGINAL messages reports `dropped_messages` as zero.
+ */
+export function promptWasShortened(
+  truncation: ContextTruncation | undefined,
+): truncation is ContextTruncation {
+  return (truncation?.dropped_messages ?? 0) > 0;
+}
+
 export function compactionBoundary(
   truncation: ContextTruncation | undefined,
 ): number {
-  if (!truncation?.fits) return 0;
-  // boundary_messages is where the boundary sits in the saved transcript.
-  // dropped_messages accumulates what each fit removed, so a tool-heavy turn reports far
-  // more than the boundary moved and a later real advance looks like none. Fallback only,
-  // for turns saved before the boundary was recorded.
-  return truncation.boundary_messages ?? truncation.dropped_messages ?? 0;
+  if (!promptWasShortened(truncation)) return 0;
+  // boundary_messages is where the boundary sits in the saved transcript, and every fit
+  // that evicts records one, rescues included. So the fallback is only for turns saved
+  // before it existed, hence gated on `fits`, the one shape those turns have: elsewhere
+  // dropped_messages is a per-refit total, not a position, and reading it as one sets a
+  // high-water mark `showsNotice` never sees exceeded again.
+  return (
+    truncation.boundary_messages ??
+    (truncation.fits ? (truncation.dropped_messages ?? 0) : 0)
+  );
 }
 
 export function mergeContextTruncation(

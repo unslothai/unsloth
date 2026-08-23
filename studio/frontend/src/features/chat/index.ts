@@ -64,7 +64,6 @@ export {
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
 export {
   preferFullToolOutput,
-
   preferSanitizedFullToolOutput,
   toolOutputKey,
   toolThreadScope,
@@ -172,6 +171,17 @@ export {
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+export {
+  type AttachmentText,
+  assertDocumentAttachmentSize,
+  attachmentAudioSrc,
+  attachmentTextLanguage,
+  countAttachmentTextLines,
+  isAudioAttachment,
+  parseAttachmentText,
+  readAttachmentText,
+  truncateAttachmentPreviewText,
+} from "./attachment-content";
 export { ApiProviderLogo } from "./api-provider-logo";
 export { useExternalProvidersStore } from "./stores/external-providers-store";
 export { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
@@ -183,6 +193,12 @@ export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export { extractYoutubeVideoId } from "./utils/youtube-url";
+export {
+  isSearchImagesToolResult,
+  searchImagePath,
+  stripSearchImageTokens,
+  type SearchImageEntry,
+} from "./search-images/search-images";
 export { YoutubeTranscriptPrompt } from "./components/youtube-transcript-prompt";
 export {
   formatMcpToolName,
