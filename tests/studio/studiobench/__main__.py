@@ -1042,6 +1042,11 @@ IDENTITY_AXES = (
 #: `identity_problems`: an A/B judged against a run that is not one may not differ on them.
 TREATMENT_AXES = ("treatment_ref", "treatment_url")
 
+#: The arm a run without `--ab` records every cell under. `Cell.arm` in `runtime.types`; an A/B
+#: overwrites it with the target's label, `base` or `treatment`. Named here because it is what
+#: tells `recorded_identities` which of the two a session already in the payload was.
+SINGLE_ARM = "A0"
+
 #: THE BUILD, as opposed to the name it was asked for by. A ref is a POINTER: `main`, a topic
 #: branch and a movable tag all resolve afresh on every install, and `checkout_ref` is the only
 #: thing that ever knows which commit one named. So these are not in `IDENTITY_AXES` and are not
@@ -1080,9 +1085,13 @@ def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
 def recorded_identities(payload_path) -> list:
     """One identity per session already in the payload, from the rows those sessions wrote.
 
-    Read out of `run_meta` and `ab_plan` rather than out of a new field, so a payload written
-    before this check existed is judged on exactly the axes it DID record: an axis a row never
-    declared cannot be a difference, and an older output therefore still resumes.
+    Read out of `run_meta`, `ab_plan` and the cells rather than out of a new field, so a payload
+    written before this check existed is judged on exactly the axes it DID record: an axis a row
+    never declared cannot be a difference, and an older output therefore still resumes.
+
+    `mode` is the one entry here that is not an axis of any single row. It is what the session's
+    cells were recorded under, which is the thing `identity_problems` has to compare and the only
+    thing the payload states about it. See `SINGLE_ARM`.
     """
     by_session: dict = {}
     order: list = []
@@ -1096,12 +1105,22 @@ def recorded_identities(payload_path) -> list:
             except ValueError:
                 continue
             row_type = row.get("row_type")
-            if row_type not in ("run_meta", "ab_plan"):
+            if row_type not in ("run_meta", "ab_plan", "cell"):
                 continue
             session = str(row.get("session_id"))
             if session not in by_session:
                 by_session[session] = {}
                 order.append(session)
+            if row_type == "cell":
+                # THE MODE A SESSION MEASURED IN, declared by the cells it actually wrote rather
+                # than by a header it wrote before it measured anything. A run that died between
+                # `run_meta` and `ab_plan` recorded no cells and so declares no mode, and resuming
+                # it is not a transition; a session holding cells declares the mode those cells
+                # were recorded under, whichever row types the version that wrote them emitted.
+                arm = str((row.get("cell") or {}).get("arm") or row.get("arm") or "")
+                if arm:
+                    by_session[session].setdefault("mode", "single" if arm == SINGLE_ARM else "ab")
+                continue
             for axis in IDENTITY_AXES + COMMIT_AXES:
                 if axis in row:
                     by_session[session][axis] = row[axis]
@@ -1114,11 +1133,29 @@ def recorded_identities(payload_path) -> list:
 def identity_problems(recorded: dict, requested: dict) -> list:
     """Every axis on which a recorded session and this invocation disagree."""
     problems = []
-    # Is there a second side on BOTH sides of this comparison? One of the two not being an A/B at
-    # all is not a difference: the arm in the cell id ("A0" against "base"/"treatment") already
-    # keeps those cells apart without a refusal. Decided once, from the ref, so that an A/B whose
-    # treatment this run installed -- which records no treatment URL -- is still judged against an
-    # attached one on the axis where the two of them do differ.
+    # AN A/B AND A RUN THAT IS NOT ONE MAY NOT SHARE A PAYLOAD. The arm in the cell id ("A0"
+    # against "base"/"treatment") keeps the new cells from being SKIPPED, which is why this used
+    # to be waved through -- but it does not keep them out of each other's REPORT. `score_payload`
+    # hands every cell to `measures_from_records`, which keys by rung and keeps the first reading,
+    # and `_completion_by_rung` keeps a failure over a success at the same rung. So a single-build
+    # run that died at 10K, resumed as `--ab fix` and re-measured successfully on both arms, still
+    # printed `INCOMPLETE: the base died at 10K`, scored the rung 0 and reported ONSET RUNG: none,
+    # while the identical resume WITHOUT `--ab` -- same crash, same repair, same cell id, so the
+    # dead attempt is superseded -- scored it 82.2. The mode is part of what a payload measures,
+    # so a run that changes it resumes nothing: it starts a payload of its own.
+    requested_mode = "ab" if requested.get("treatment_ref") else "single"
+    recorded_mode = recorded.get("mode")
+    if recorded_mode is not None and recorded_mode != requested_mode:
+        names = {"ab": "an A/B (base against treatment)", "single": "one build on its own"}
+        problems.append(
+            f"mode: the payload was recorded by a run measuring {names[recorded_mode]}, "
+            f"this run measures {names[requested_mode]}"
+        )
+    # Is there a second side on BOTH sides of this comparison? When there is not, the treatment
+    # axes describe a side one of them does not have, and the mode difference above is the whole
+    # of what they disagree on. Decided from the ref, so that an A/B whose treatment this run
+    # installed -- which records no treatment URL -- is still judged against an attached one on
+    # the axis where the two of them do differ.
     both_ab = bool(requested.get("treatment_ref")) and bool(recorded.get("treatment_ref"))
     for axis in IDENTITY_AXES:
         if axis not in recorded:
@@ -1447,10 +1484,29 @@ def assert_liveness(args) -> int:
     # run exited 0 and `--report` scored the retry, while `--assert-liveness` on the same payload
     # failed permanently on a cell that had already been re-run. A gate that cannot be satisfied
     # by fixing the run is a gate people learn to pass with `--allow-not-run`.
-    from .scoring.from_payload import latest_attempt_rows
+    from .scoring.from_payload import ATTEMPT_ROW_TYPES, latest_attempt_rows
 
-    cells = 0
-    for row in latest_attempt_rows(rows):
+    # AN ATTEMPT THAT NEVER REACHED ITS CELL ROW IS A FAILURE, NOT AN ABSENCE. `latest_attempt_rows`
+    # names the latest attempt from ANY attempt-keyed row, because the Recorder flushes and fsyncs
+    # every action and window row while `CellRunner.run` writes the terminal `cell` row in a
+    # `finally` a SIGKILL, an OOM kill or a lost machine never reaches. So the killed attempt
+    # supersedes the completed one and then contributes no cell row of its own -- and this loop,
+    # reading cell rows only, dropped the cell out of the payload entirely. A resume killed inside a
+    # cell whose first attempt had already recorded `completed: false` with NOT RUN actions turned
+    # `1` into `0`: the gate stopped reporting a failure that is still written in the file.
+    attempted, recorded = set(), set()
+    kept = latest_attempt_rows(rows)
+    for row in kept:
+        if row.get("row_type") in ATTEMPT_ROW_TYPES and row.get("cell_id") is not None:
+            attempted.add(str(row.get("cell_id")))
+        if row.get("row_type") == "cell" and row.get("cell_id") is not None:
+            recorded.add(str(row.get("cell_id")))
+    truncated = sorted(attempted - recorded)
+    for where in truncated:
+        problems.append(f"{where}: an attempt wrote rows but never recorded a cell row")
+
+    cells = len(truncated)
+    for row in kept:
         if row.get("row_type") != "cell":
             continue
         cells += 1

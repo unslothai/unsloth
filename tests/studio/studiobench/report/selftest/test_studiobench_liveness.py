@@ -224,3 +224,64 @@ def test_a_different_cell_in_an_earlier_session_is_not_superseded(tmp_path):
         ],
     )
     assert main(["--assert-liveness", str(path)]) == 1
+
+
+def test_an_attempt_killed_before_its_cell_row_is_not_a_pass(tmp_path):
+    """A SIGKILL inside a cell must not delete that cell from the gate's answer.
+
+    `latest_attempt_rows` names the latest attempt from ANY attempt-keyed row, because the
+    Recorder flushes and fsyncs action and window rows while the terminal `cell` row is written in
+    a `finally` that a SIGKILL never reaches. The killed attempt therefore supersedes the recorded
+    one and contributes no cell row itself, so reading cell rows alone dropped the cell entirely:
+    a resume killed inside a cell whose first attempt had already recorded `completed: false` with
+    a NOT RUN action turned exit 1 into exit 0 while both facts were still in the file.
+    """
+
+    path = write_payload(
+        tmp_path,
+        [
+            attempt(
+                OLD,
+                [
+                    ran("keystroke"),
+                    {"action": "message_menu", "ran": False, "reason": "slot closed"},
+                ],
+                completed = False,
+                cell_id = "10K/rep0",
+            ),
+            attempt(OLD, [ran("keystroke")], completed = True, cell_id = "1K/rep0"),
+            # All the retry managed to flush before it was killed.
+            {
+                "row_type": "action",
+                "cell_id": "10K/rep0",
+                "session_id": NOW,
+                "action": "keystroke",
+                "ran": True,
+            },
+            {"row_type": "window", "cell_id": "10K/rep0", "session_id": NOW, "name": "stream"},
+        ],
+    )
+    assert main(["--assert-liveness", str(path)]) == 1
+
+
+def test_a_run_killed_during_a_later_cell_does_not_pass_on_its_earlier_ones(tmp_path):
+    """The same hole without a resume: the killed cell has no attempt behind it at all.
+
+    Earlier cells stay complete and live, so a gate that only reads cell rows reports them and
+    exits 0 over a run that stopped in the middle.
+    """
+
+    path = write_payload(
+        tmp_path,
+        [
+            attempt(NOW, [ran("keystroke")], completed = True, cell_id = "1K/rep0"),
+            {
+                "row_type": "action",
+                "cell_id": "10K/rep0",
+                "session_id": NOW,
+                "action": "keystroke",
+                "ran": True,
+            },
+        ],
+    )
+    assert main(["--assert-liveness", str(path)]) == 1
