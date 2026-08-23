@@ -26,19 +26,19 @@ export const MIN_SAMPLES = 3;
 export const MIN_WINDOW_SECONDS = 3;
 /** Span the rate is averaged over once progress is dense enough to fill it. */
 export const MAX_WINDOW_SECONDS = 15;
-/** Buffer depth, so sparse progress bursts still leave two points to measure. */
+/** Buffer depth by age; {@link MIN_RETAINED_INCREASES} overrides it when sparse. */
 export const MAX_RETAIN_SECONDS = 60;
 /** Increases kept regardless of age, so a slow cadence still leaves a span. */
 export const MIN_RETAINED_INCREASES = 3;
-/** No byte growth for this long clears the rate instead of carrying it. */
+/** Floor on the no-progress timeout, before any cadence has been observed. */
 export const STALL_WINDOW_SECONDS = 15;
 /** A silence this many times the observed increase cadence reads as a stall. */
 export const STALL_CADENCE_MULTIPLIER = 3;
 
 /**
- * Mutate ``samples`` in place: append the sample, drop any out of the rolling
- * window, and clear the buffer if the counter went backwards (cancel + restart).
- * Returns the same array for chaining.
+ * Mutate ``samples`` in place: append the sample, drop those out of the rolling
+ * window while {@link MIN_RETAINED_INCREASES} survive, and clear the buffer if
+ * the counter went backwards (cancel + restart). Returns it for chaining.
  */
 export function appendSample(
   samples: TransferSample[],
@@ -51,9 +51,8 @@ export function appendSample(
   }
   samples.push({ t, b });
   const cutoff = t - maxWindowSeconds;
-  // Age alone cannot decide this. On a slow link one blob can take minutes to
-  // finalize, so trimming purely by seconds throws away the older increase that
-  // {@link measurableSpan} needs and the UI goes blank between every jump.
+  // Age alone cannot decide this: on a slow link one blob takes minutes, so
+  // trimming by seconds drops the older increase measurableSpan needs.
   while (
     samples.length > 2 &&
     samples[0].t < cutoff &&
@@ -75,11 +74,9 @@ function countIncreases(samples: readonly TransferSample[], from: number): numbe
 
 /**
  * How long a silence runs before it is a stall rather than a gap between jumps.
- *
- * A fixed window is a floor, not an answer: a transfer whose blobs finalize
- * every 60s is healthy, but reads as stalled every single time against a 15s
- * one, which blanks the rate on 95% of ticks at 3 MB/s. Track the observed
- * cadence instead, uncapped, since it is measured from real intervals.
+ * A fixed 15s reads a transfer whose blobs finalize every 60s as stalled every
+ * time, blanking the rate on 95% of ticks at 3 MB/s, so track the observed
+ * cadence. Uncapped: any cap is a cliff for a repo slower than it.
  */
 function stallWindowSeconds(samples: readonly TransferSample[]): number {
   const gaps: number[] = [];
@@ -150,7 +147,7 @@ function measurableSpan(
  *   * Needs ≥ {@link MIN_SAMPLES} samples spanning ≥ {@link MIN_WINDOW_SECONDS}
  *     seconds before reporting ``stable: true``.
  *   * Prices bursty cumulative-byte observations increase-to-increase.
- *   * Reports unstable after {@link STALL_WINDOW_SECONDS} without byte growth.
+ *   * Reports unstable once a silence outruns the observed increase cadence.
  *   * ETA clamps to 0 when there's no progress, no total, or total is hit.
  */
 export function computeTransferStats(
