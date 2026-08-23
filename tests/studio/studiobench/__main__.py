@@ -369,6 +369,16 @@ def is_null_control(sides: list) -> bool:
     harness cannot see what is deployed at either URL, so those are only a null control when both
     sides are the same URL.
 
+    WHICH IS WHY THE URL IS ASKED FIRST. That rule was stated here and then not applied: the ref
+    comparison ran ahead of it, so `--attach U --attach-b U --branch main --ab fix` -- one server,
+    two labels the harness cannot check -- returned False on the unequal labels before the equal
+    URL was ever looked at. One Studio measured against itself was then rendered as an ordinary
+    A/B, free to publish temporal noise as an improvement, and `noise_floor_from_null_control` was
+    skipped so nothing downstream had a floor to refuse it with. Two sides on one URL are one
+    build whatever they were called. The owned case is untouched: `side_specs` gives the second
+    side `port + 1`, so two Studios this run launched never share a URL and still fall through to
+    the commit comparison below.
+
     AND A REF IS A POINTER, which is the rule `commit_problems` already states for `--resume` and
     this decision did not apply. The two owned sides are cloned into separate repos and fetched one
     after the other, with a whole clone, build and launch between them; `install_studio` alone
@@ -387,10 +397,10 @@ def is_null_control(sides: list) -> bool:
     if len(sides) < 2:
         return False
     base, treatment = sides[0], sides[1]
-    if base.get("ref") != treatment.get("ref"):
-        return False
     if base.get("base_url") == treatment.get("base_url"):
         return True
+    if base.get("ref") != treatment.get("ref"):
+        return False
     if not (base.get("owns") and treatment.get("owns")):
         return False
     base_commit = str(base.get("commit") or "")

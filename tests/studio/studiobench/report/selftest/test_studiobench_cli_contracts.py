@@ -91,6 +91,44 @@ def test_one_attached_studio_driven_twice_is_a_null_control():
     assert is_null_control(sides) is True
 
 
+def test_one_attached_studio_driven_twice_under_two_labels_is_still_a_null_control():
+    """`--attach U --attach-b U --branch main --ab fix`: one server, two names it cannot check.
+
+    The URL rule was stated and then not applied -- the ref comparison ran first, so the unequal
+    labels returned False before the equal URL was reached. One Studio measured against itself was
+    rendered as an ordinary A/B, free to publish temporal noise as an improvement, with
+    `noise_floor_from_null_control` skipped so nothing downstream had a floor to refuse it with.
+    With `--attach` the refs are free-form strings; only the URL names the deployed build.
+    """
+
+    sides = [
+        _side("base", "main", "http://127.0.0.1:5401", False),
+        _side("treatment", "fix", "http://127.0.0.1:5401", False),
+    ]
+    assert is_null_control(sides) is True
+
+
+def test_an_attached_treatment_pointed_at_the_installed_base_is_a_null_control():
+    """The mixed form of the same thing: `--attach-b` naming the Studio this run just launched."""
+
+    sides = [
+        _side("base", "main", "http://127.0.0.1:5399", True, commit = "a" * 40),
+        _side("treatment", "fix", "http://127.0.0.1:5399", False),
+    ]
+    assert is_null_control(sides) is True
+
+
+def test_two_owned_installs_of_different_refs_are_still_an_ordinary_ab():
+    """The control for the reorder: owned sides get `port` and `port + 1`, so they never collide
+    on a URL and the ref and commit comparisons below still decide them."""
+
+    sides = [
+        _side("base", "main", "http://127.0.0.1:5399", True, commit = "a" * 40),
+        _side("treatment", "fix", "http://127.0.0.1:5400", True, commit = "b" * 40),
+    ]
+    assert is_null_control(sides) is False
+
+
 def test_a_ref_that_moved_between_the_two_installs_is_not_a_null_control():
     """`--branch main --ab main` where `main` advanced during the base's install.
 
