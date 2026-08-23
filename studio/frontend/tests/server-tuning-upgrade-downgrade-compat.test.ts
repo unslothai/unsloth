@@ -153,7 +153,9 @@ test("a v4 record loads unchanged and is re-stamped v4, not silently upgraded", 
 // ---------------------------------------------------------------------------
 
 test("only a record that actually carries tuning is stamped v5", () => {
-  for (const [patch, expected] of [
+  // Annotated rather than `as const`: the latter makes llamaExtraArgs a readonly
+  // tuple, which Partial<PerModelConfig> will not take.
+  const cases: [Partial<PerModelConfig>, number][] = [
     [{ kvCacheDtype: "q8_0" }, 1],
     [{ nBatch: 4096 }, 2],
     [{ llamaExtraArgs: ["--numa", "distribute"] }, 3],
@@ -162,7 +164,8 @@ test("only a record that actually carries tuning is stamped v5", () => {
     [{ ctxCheckpoints: 0 }, 5],
     [{ cacheRam: -1 }, 5],
     [{ specDraftCacheDtype: "q8_0", speculativeType: "dspark" }, 5],
-  ] as const) {
+  ];
+  for (const [patch, expected] of cases) {
     store.clear();
     assert.ok(savePerModelConfig(MODEL, VARIANT, config(patch)));
     assert.equal(
@@ -285,7 +288,7 @@ test("the one-time backfill now uploads a tuning-only config", async () => {
   assert.ok(savePerModelConfig(MODEL, VARIANT, config({ cacheRam: -1 })));
 
   const puts: Record<string, unknown>[] = [];
-  setAuthFetchHandler((input, init) => {
+  setAuthFetchHandler((_input, init) => {
     if (init?.method === "PUT") {
       puts.push(JSON.parse(String(init.body)));
       return new Response(JSON.stringify({ overrides: {} }), { status: 200 });
