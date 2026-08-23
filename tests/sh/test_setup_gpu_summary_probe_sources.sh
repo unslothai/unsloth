@@ -20,6 +20,7 @@ SKIP=0
 {
     sed -n '/^_setup_run_smi()/,/^}/p'              "$SETUP_SH"
     sed -n '/^_setup_rocminfo_gpu_records()/,/^}/p' "$SETUP_SH"
+    sed -n '/^_setup_amd_smi_gpu_records()/,/^}/p'  "$SETUP_SH"
     echo '_setup_amd_detected=false'
     echo '_setup_nvidia_usable=false'
     echo '_setup_gfx_all=""; _setup_mkt=""; _setup_amd_records=""; _setup_gfx=""'
@@ -32,8 +33,8 @@ SKIP=0
 } > "$WORK/block.sh"
 grep -q '_setup_amd_record=' "$WORK/block.sh" || {
     echo "FATAL: AMD detection/selection block not found in $SETUP_SH" >&2; exit 1; }
-grep -q '_setup_amd_records=""' "$WORK/block.sh" || {
-    echo "FATAL: the amd-smi record-clearing arm is missing from the extracted block" >&2; exit 1; }
+grep -q '_setup_amd_smi_gpu_records' "$WORK/block.sh" || {
+    echo "FATAL: the amd-smi record parser is not wired into the block" >&2; exit 1; }
 bash -n "$WORK/block.sh" || { echo "FATAL: extracted block does not parse" >&2; exit 1; }
 
 # PATH from scratch: the host running this may itself have a real rocminfo/amd-smi.
@@ -180,6 +181,32 @@ GPU: 0
         MARKET_NAME: AMD Radeon RX 7900 XTX
         TARGET_GRAPHICS_VERSION: gfx1100
 EOF
+# Three adapters: the arch was indexed by the mask while the name was always the first
+# adapter's, so a later card was announced with another card's name.
+cat > "$WORK/smi_three" <<'EOF'
+GPU: 0
+    ASIC:
+        MARKET_NAME: AMD Instinct MI210
+        TARGET_GRAPHICS_VERSION: gfx90a
+GPU: 1
+    ASIC:
+        MARKET_NAME: AMD Radeon RX 7900 XTX
+        TARGET_GRAPHICS_VERSION: gfx1100
+GPU: 2
+    ASIC:
+        MARKET_NAME: AMD Radeon AI PRO R9700
+        TARGET_GRAPHICS_VERSION: gfx1201
+EOF
+# amd-smi 6.1.1 ships MARKET_NAME with no TARGET_GRAPHICS_VERSION, so the arch is
+# inferred from the name and $_setup_gfx -- hence --rocm-gfx -- follows the name.
+cat > "$WORK/smi_two_nogfx" <<'EOF'
+GPU: 0
+    ASIC:
+        MARKET_NAME: AMD Radeon RX 7900 XTX
+GPU: 1
+    ASIC:
+        MARKET_NAME: AMD Radeon AI PRO R9700
+EOF
 : > "$WORK/empty"
 
 echo "=== rocminfo enumerates the device ==="
@@ -212,17 +239,32 @@ echo "=== rocminfo names something but enumerates no device ==="
 # rather than win the selection and discard amd-smi's arch.
 assert_eq "amd-smi supplies both the arch and the name" \
     "gfx1100|AMD Radeon RX 7900 XTX" "$(summary "$WORK/roc_cpu_only" "$WORK/smi_fixture")"
-# `list` runs twice (once to detect the GPU, once to look for a gfx token it does not
-# carry), so `static --asic` is reached twice too: once for the arch, once for the
-# name. Pinned rather than tidied here: this file is a regression net, and the counts
-# are what would change if an arm were reordered.
+# `list` runs twice: once to detect the GPU, once to look for a gfx token it does not
+# carry. `static --asic` runs ONCE and yields both fields, because they now come from
+# one record parse instead of two independent greps. Pinned rather than tidied: this
+# file is a regression net, and the counts are what would change if an arm were
+# reordered or the parse were split again.
 assert_eq "list is asked first, and carries no gfx" 2 "$(probe_count 'amd-smi list')"
-assert_eq "so static --asic supplies both the arch and the name" \
-    2 "$(probe_count 'amd-smi static')"
+assert_eq "one static --asic parse supplies both the arch and the name" \
+    1 "$(probe_count 'amd-smi static')"
 
 echo "=== a device that reported no name of its own ==="
 assert_eq "keeps its arch and stays unnamed" \
     "gfx1030|" "$(summary "$WORK/roc_blank_name" "$WORK/smi_fixture")"
+
+echo "=== amd-smi owns the device list ==="
+assert_eq "each adapter is announced with its own name, device 0" \
+    "gfx90a|AMD Instinct MI210" "$(summary "$WORK/empty" "$WORK/smi_three" 0)"
+assert_eq "device 1" \
+    "gfx1100|AMD Radeon RX 7900 XTX" "$(summary "$WORK/empty" "$WORK/smi_three" 1)"
+assert_eq "device 2" \
+    "gfx1201|AMD Radeon AI PRO R9700" "$(summary "$WORK/empty" "$WORK/smi_three" 2)"
+assert_eq "an out-of-range mask falls back to adapter 0" \
+    "gfx90a|AMD Instinct MI210" "$(summary "$WORK/empty" "$WORK/smi_three" 9)"
+# No gfx token anywhere, so the name is what --rocm-gfx is inferred from: it has to be
+# the selected adapter's, not the first one's.
+assert_eq "a nameless-arch build still names the selected adapter" \
+    "|AMD Radeon AI PRO R9700" "$(summary "$WORK/empty" "$WORK/smi_two_nogfx" 1)"
 
 echo "=== neither tool reports a device ==="
 # The KFD sysfs arm below these two would also fire on a host that really has an AMD

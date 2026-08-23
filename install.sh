@@ -4766,6 +4766,38 @@ _rocminfo_gpu_records() {
     '
 }
 
+# Same record shape for amd-smi: one `gfx|marketing name` per adapter, in `GPU: N` order.
+# Without this the arch was indexed by the visible-device mask while the name was always
+# the first adapter's, so selecting a later card paired its arch with another card's name
+# -- and on amd-smi builds predating TARGET_GRAPHICS_VERSION (present in 6.1.1's docs
+# without it) the name is what the arch is inferred from, so the wrong arch reached
+# --rocm-gfx. Keep in sync with studio/setup.sh.
+_amd_smi_gpu_records() {
+    awk '
+        function value(line,   v) {
+            v = line
+            sub(/^[^:]*:[[:space:]]*/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            return v
+        }
+        function flush() {
+            if (started) print gfx "|" mkt
+            gfx = ""; mkt = ""
+        }
+        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys), so the real
+        # fields are MARKET_NAME and TARGET_GRAPHICS_VERSION; matched case-folded anyway.
+        /^[[:space:]]*GPU:[[:space:]]*[0-9]/ { flush(); started = 1; next }
+        !started { next }
+        tolower($0) ~ /market.?name/ { if (mkt == "") mkt = value($0); next }
+        tolower($0) ~ /target.?graphics.?version/ {
+            v = value($0)
+            if (gfx == "" && v ~ /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?$/) gfx = v
+            next
+        }
+        END { flush() }
+    '
+}
+
 # ── GPU detection summary (mirrors install.ps1 step "gpu" block) ──
 if _has_usable_nvidia_gpu; then
     step "gpu" "NVIDIA GPU detected"
@@ -4773,6 +4805,7 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
     # Probe gfx arch for the display label, honouring HIP_VISIBLE_DEVICES
     _ensure_rocm_probe_env
     _gpu_disp_gfx_all=""
+    _gpu_disp_gfx=""
     _gpu_disp_mkt=""
     _gpu_disp_records=""
     if command -v rocminfo >/dev/null 2>&1; then
@@ -4780,11 +4813,13 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
         _gpu_disp_gfx_all=$(printf '%s\n' "$_gpu_disp_records" | awk -F'|' '$1 != "" { print $1 }')
     fi
     if [ -z "$_gpu_disp_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
+        _gpu_disp_smi_records=$(amd-smi static --asic 2>/dev/null | _amd_smi_gpu_records || true)
         _gpu_disp_gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         [ -z "$_gpu_disp_gfx_all" ] && \
-            _gpu_disp_gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-        # Do not let a CPU-only rocminfo record replace the amd-smi GPU arch.
-        [ -n "$_gpu_disp_gfx_all" ] && _gpu_disp_records=""
+            _gpu_disp_gfx_all=$(printf '%s\n' "$_gpu_disp_smi_records" | awk -F'|' '$1 != "" { print $1 }')
+        # Only once amd-smi actually enumerated something does it own the device list;
+        # a silent amd-smi must leave rocminfo's APU fallback record alone.
+        [ -n "$_gpu_disp_smi_records" ] && _gpu_disp_records="$_gpu_disp_smi_records"
     fi
     _gpu_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
     _gpu_vis_idx=0
@@ -4798,25 +4833,12 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
             'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
         _gpu_disp_gfx=${_gpu_disp_record%%|*}
         _gpu_disp_mkt=${_gpu_disp_record#*|}
-    else
+    fi
+    # Only amd-smi builds old enough to predate TARGET_GRAPHICS_VERSION reach this: their
+    # records carry names but no arch, so the arch comes from the separate list probe.
+    if [ -z "$_gpu_disp_gfx" ]; then
         _gpu_disp_gfx=$(printf '%s\n' "$_gpu_disp_gfx_all" | awk -v idx="$_gpu_vis_idx" \
             'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
-    fi
-    # Use the unindexed amd-smi name only when no rocminfo records are in use.
-    # amd-smi upper-cases every key in its human-readable output (amdsmi_logger.py
-    # _capitalize_keys), so the field is MARKET_NAME, which /[Mm]arket.?[Nn]ame/ could
-    # never match: the fallback printed nothing on a real host. Matched case-folded, and
-    # read past the FIRST colon only, so "MARKET_NAME: AMD Instinct MI300X OAM: 750W SKU"
-    # survives -- the same truncation the rocminfo parser above already fixed.
-    # Keep in sync with studio/setup.sh.
-    if [ -z "$_gpu_disp_mkt" ] && [ -z "$_gpu_disp_records" ] && command -v amd-smi >/dev/null 2>&1; then
-        _gpu_disp_mkt=$(amd-smi static --asic 2>/dev/null | awk \
-            'tolower($0) ~ /market.?name/ {
-                 v = $0
-                 sub(/^[^:]*:[[:space:]]*/, "", v)
-                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
-                 if (v != "") { print v; exit }
-             }' || true)
     fi
     # UNSLOTH_ROCM_GFX_ARCH env override (mirrors install.ps1)
     if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then

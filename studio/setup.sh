@@ -2080,6 +2080,38 @@ _setup_rocminfo_gpu_records() {
     '
 }
 
+# Same record shape for amd-smi: one `gfx|marketing name` per adapter, in `GPU: N` order.
+# Without this the arch was indexed by the visible-device mask while the name was always
+# the first adapter's, so selecting a later card paired its arch with another card's name
+# -- and on amd-smi builds predating TARGET_GRAPHICS_VERSION (present in 6.1.1's docs
+# without it) the name is what the arch is inferred from, so the wrong arch reached
+# --rocm-gfx. Keep in sync with install.sh.
+_setup_amd_smi_gpu_records() {
+    awk '
+        function value(line,   v) {
+            v = line
+            sub(/^[^:]*:[[:space:]]*/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            return v
+        }
+        function flush() {
+            if (started) print gfx "|" mkt
+            gfx = ""; mkt = ""
+        }
+        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys), so the real
+        # fields are MARKET_NAME and TARGET_GRAPHICS_VERSION; matched case-folded anyway.
+        /^[[:space:]]*GPU:[[:space:]]*[0-9]/ { flush(); started = 1; next }
+        !started { next }
+        tolower($0) ~ /market.?name/ { if (mkt == "") mkt = value($0); next }
+        tolower($0) ~ /target.?graphics.?version/ {
+            v = value($0)
+            if (gfx == "" && v ~ /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?$/) gfx = v
+            next
+        }
+        END { flush() }
+    '
+}
+
 # Intel XPU. There is no vendor probe here like nvidia-smi / rocminfo -- Linux Intel support is
 # an explicit index pin, not autodetection -- so the installed runtime IS the signal. The local
 # label is read off disk first so a CPU-only host never pays for an `import torch`.
@@ -2155,24 +2187,12 @@ if [ "$_setup_nvidia_usable" != true ]; then
     elif command -v amd-smi >/dev/null 2>&1 && \
          _setup_run_smi amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
         _setup_amd_detected=true
-        # amd-smi now owns the device list, so discard rocminfo's fallback name.
-        _setup_amd_records=""
+        # amd-smi owns the device list from here, so rocminfo's fallback name is replaced
+        # by amd-smi's own indexed records rather than left to win the selection.
+        _setup_amd_records=$(_setup_run_smi amd-smi static --asic 2>/dev/null | _setup_amd_smi_gpu_records || true)
         _setup_gfx_all=$(_setup_run_smi amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         [ -z "$_setup_gfx_all" ] && \
-            _setup_gfx_all=$(_setup_run_smi amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-        # amd-smi upper-cases every key in its human-readable output (amdsmi_logger.py
-        # _capitalize_keys), so the field is MARKET_NAME, which /[Mm]arket.?[Nn]ame/ could
-        # never match: the fallback printed nothing on a real host. Matched case-folded, and
-        # read past the FIRST colon only, so "MARKET_NAME: AMD Instinct MI300X OAM: 750W SKU"
-        # survives -- the same truncation the rocminfo parser above already fixed.
-        # Keep in sync with install.sh.
-        _setup_mkt=$(_setup_run_smi amd-smi static --asic 2>/dev/null | awk \
-            'tolower($0) ~ /market.?name/ {
-                 v = $0
-                 sub(/^[^:]*:[[:space:]]*/, "", v)
-                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
-                 if (v != "") { print v; exit }
-             }' || true)
+            _setup_gfx_all=$(printf '%s\n' "$_setup_amd_records" | awk -F'|' '$1 != "" { print $1 }')
     elif [ -e /dev/kfd ] && \
          awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
              /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
@@ -2202,7 +2222,10 @@ elif [ "$_setup_amd_detected" = true ]; then
             'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
         _setup_gfx=${_setup_amd_record%%|*}
         _setup_mkt=${_setup_amd_record#*|}
-    else
+    fi
+    # Only amd-smi builds old enough to predate TARGET_GRAPHICS_VERSION reach this: their
+    # records carry names but no arch, so the arch comes from the separate list probe.
+    if [ -z "$_setup_gfx" ]; then
         _setup_gfx=$(printf '%s\n' "$_setup_gfx_all" | awk -v idx="$_setup_vis_idx" \
             'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
     fi

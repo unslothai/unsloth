@@ -13,6 +13,7 @@ FAIL=0
 
 {
     sed -n '/^_rocminfo_gpu_records()/,/^}/p' "$INSTALL_SH"
+    sed -n '/^_amd_smi_gpu_records()/,/^}/p' "$INSTALL_SH"
     echo ""
     # Extract the probe and selection block.
     awk '/^    _gpu_disp_gfx_all=""/ {on=1}
@@ -21,6 +22,8 @@ FAIL=0
 } > "$WORK/block.sh"
 grep -q '_gpu_disp_record=' "$WORK/block.sh" || {
     echo "FATAL: GPU summary probe block not found in $INSTALL_SH" >&2; exit 1; }
+grep -q '_amd_smi_gpu_records' "$WORK/block.sh" || {
+    echo "FATAL: the amd-smi record parser is not wired into the block" >&2; exit 1; }
 
 # Build PATH from scratch so host AMD tools cannot leak into the test.
 mkdir -p "$WORK/base" "$WORK/roc" "$WORK/smi"
@@ -147,6 +150,37 @@ GPU: 0
         MARKET_NAME: AMD Instinct MI300X OAM: 750W SKU
         TARGET_GRAPHICS_VERSION: gfx942
 EOF
+# Three adapters. The arch was indexed by the visible-device mask while the name was
+# always the first adapter's, so selecting a later card announced another card's name.
+cat > "$WORK/smi_three" <<'EOF'
+GPU: 0
+    ASIC:
+        MARKET_NAME: AMD Instinct MI210
+        VENDOR_ID: 0x1002
+        TARGET_GRAPHICS_VERSION: gfx90a
+GPU: 1
+    ASIC:
+        MARKET_NAME: AMD Radeon RX 7900 XTX
+        VENDOR_ID: 0x1002
+        TARGET_GRAPHICS_VERSION: gfx1100
+GPU: 2
+    ASIC:
+        MARKET_NAME: AMD Radeon AI PRO R9700
+        VENDOR_ID: 0x1002
+        TARGET_GRAPHICS_VERSION: gfx1201
+EOF
+# amd-smi 6.1.1 ships MARKET_NAME with no TARGET_GRAPHICS_VERSION, so the arch is
+# inferred from the name, which makes the name the thing that picks the wheel.
+cat > "$WORK/smi_two_nogfx" <<'EOF'
+GPU: 0
+    ASIC:
+        MARKET_NAME: AMD Radeon RX 7900 XTX
+        VENDOR_ID: 0x1002
+GPU: 1
+    ASIC:
+        MARKET_NAME: AMD Radeon AI PRO R9700
+        VENDOR_ID: 0x1002
+EOF
 # The #7307 reporter's shape: a Ryzen iGPU plus two IDENTICAL R9700s. The two dGPU
 # records are byte-identical, so a selector that folds duplicate lines away resolves
 # device 2 back to ordinal 0 -- the iGPU.
@@ -230,6 +264,17 @@ assert_eq "an older title-cased Market Name still works" \
     "gfx1100|AMD Radeon RX 7900 XTX" "$(summary "$WORK/empty" "$WORK/smi_titlecase")"
 assert_eq "an amd-smi name survives a colon in the middle" \
     "gfx942|AMD Instinct MI300X OAM: 750W SKU" "$(summary "$WORK/empty" "$WORK/smi_colon")"
+assert_eq "each adapter is announced with its own name, device 0" \
+    "gfx90a|AMD Instinct MI210" "$(summary "$WORK/empty" "$WORK/smi_three" 0)"
+assert_eq "device 1" \
+    "gfx1100|AMD Radeon RX 7900 XTX" "$(summary "$WORK/empty" "$WORK/smi_three" 1)"
+assert_eq "device 2" \
+    "gfx1201|AMD Radeon AI PRO R9700" "$(summary "$WORK/empty" "$WORK/smi_three" 2)"
+assert_eq "an out-of-range mask falls back to adapter 0" \
+    "gfx90a|AMD Instinct MI210" "$(summary "$WORK/empty" "$WORK/smi_three" 9)"
+# No gfx token anywhere: the name is all there is, so it must be the selected card's.
+assert_eq "a nameless-arch build still names the selected adapter" \
+    "|AMD Radeon AI PRO R9700" "$(summary "$WORK/empty" "$WORK/smi_two_nogfx" 1)"
 assert_eq "neither tool installed reports nothing" "|" "$(summary - -)"
 assert_eq "both installed but silent reports nothing" "|" "$(summary "$WORK/empty" "$WORK/empty")"
 

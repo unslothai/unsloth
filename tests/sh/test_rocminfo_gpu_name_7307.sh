@@ -52,6 +52,11 @@ assert_eq "install.sh and setup.sh parsers are identical" "$_body_install" "$_bo
 # record from it, or one names the card the other does not.
 assert_eq "install.sh and setup.sh record selectors are identical" \
     "$_PICK_PROG" "$_PICK_PROG_SETUP"
+# The amd-smi side emits the same record shape and must not drift either.
+_smi_install=$(sed -n '/^_amd_smi_gpu_records()/,/^}/p' "$INSTALL_SH" | tail -n +2)
+_smi_setup=$(sed -n '/^_setup_amd_smi_gpu_records()/,/^}/p' "$SETUP_SH" | tail -n +2)
+assert_eq "install.sh and setup.sh amd-smi parsers are identical" "$_smi_install" "$_smi_setup"
+[ -n "$_smi_install" ] || { echo "FATAL: no amd-smi record parser found" >&2; exit 1; }
 
 # Strix Halo lists the misleading CPU marketing name first.
 STRIX=$(cat <<'EOF'
