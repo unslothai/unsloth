@@ -590,7 +590,7 @@ class TestTheSpillStaysInsideTheSandbox:
         assert "truncated to" in out
         assert "saved to" not in out
 
-    def test_a_symlinked_spill_file_is_refused(self, tmp_path):
+    def test_a_symlinked_spill_file_is_replaced_not_followed(self, tmp_path):
         workdir = tmp_path / "sandbox"
         workdir.mkdir()
         victim = tmp_path / "victim.txt"
@@ -604,7 +604,11 @@ class TestTheSpillStaysInsideTheSandbox:
         out = tools._truncate(text, 200, workdir = str(workdir))
 
         assert victim.read_text() == "do not overwrite me"
-        assert "saved to" not in out
+        # Replaced rather than refused: os.replace swaps the directory entry, so the link
+        # is gone and the file it pointed at was never opened.
+        spill = workdir / _spill_path(out)
+        assert not spill.is_symlink()
+        assert spill.read_text().startswith("0\n1\n")
 
     def test_pruning_does_not_follow_symlinks_either(self, tmp_path):
         target = tmp_path / tools._SPILL_DIR
@@ -651,6 +655,23 @@ class TestSpillsAreBoundedInBytes:
         assert sum(p.stat().st_size for p in spills) <= 20_000
         assert spills, "the newest spill has to survive; it is the one just named"
 
+    def test_the_spill_just_named_is_never_pruned(self, tmp_path, monkeypatch):
+        """The notice returned with it names that path, so a budget that deletes it on the
+        way out leaves the model a hint pointing at nothing."""
+        monkeypatch.setattr(tools, "_SPILL_MAX_TOTAL_BYTES", 100)
+
+        out = tools._truncate(_dense(50_000), 200, workdir = str(tmp_path))
+
+        assert (tmp_path / _spill_path(out)).exists()
+
+    def test_a_result_served_whole_leaves_no_spill_behind(self, tmp_path):
+        """At zero room a short result is served as it is, so nothing was cut and there is
+        nothing to page through. Writing a file (and creating the directory) for it is a
+        side effect with nothing on the other side of it."""
+        assert tools._truncate("done", 0, workdir = str(tmp_path)) == "done"
+
+        assert not (tmp_path / tools._SPILL_DIR).exists()
+
 
 class TestTheHintCountsTheLinesItShowed:
     def test_a_head_ending_in_a_newline_does_not_claim_an_extra_line(self, tmp_path):
@@ -663,3 +684,83 @@ class TestTheHintCountsTheLinesItShowed:
 
         assert "showing lines 1-1 of" in out
         assert "sed -n '2," in out
+
+
+class TestTheSpillCannotBeAimedElsewhere:
+    def test_a_hard_link_at_the_spill_path_is_not_written_through(self, tmp_path):
+        """The name is a digest of content the model produced, so it can predict it and
+        pre-create it. A hard link reports islink() false and shares the inode of a file
+        outside the sandbox, so an O_TRUNC open writes through to it."""
+        workdir = tmp_path / "sandbox"
+        workdir.mkdir()
+        victim = tmp_path / "victim.txt"
+        victim.write_text("do not overwrite me")
+        text = "\n".join(str(i) for i in range(5_000))
+        target = workdir / tools._SPILL_DIR
+        target.mkdir()
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+        os.link(victim, target / f"{digest}.txt")
+
+        out = tools._truncate(text, 200, workdir = str(workdir))
+
+        assert victim.read_text() == "do not overwrite me"
+        # And the spill itself is still written, at a new inode.
+        assert (workdir / _spill_path(out)).read_text().startswith("0\n1\n")
+
+    def test_no_temporary_file_is_left_behind(self, tmp_path):
+        tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path))
+
+        names = os.listdir(tmp_path / tools._SPILL_DIR)
+        assert all(tools._SPILL_NAME_RE.fullmatch(n) for n in names), names
+
+
+class TestAZeroCapStaysZero:
+    def test_real_tokenizer_framing_does_not_buy_a_character(self, monkeypatch):
+        """A thread at its budget measures a room of zero, and a real tokenizer charges for
+        the framing around even an empty string. Handing back one character puts _truncate
+        past its stub path and onto the ordinary notice, which is the ~90 tokens the stub
+        exists not to spend when the measurement just said there are none."""
+        _window(monkeypatch, 4096)
+        # Nonzero for an empty probe, which is what a chat template does.
+        monkeypatch.setattr(
+            tools, "_loaded_token_counter", lambda ctx: (lambda chunk: 4 + len(chunk) // 3)
+        )
+        _room(0)
+        text = _dense(40_000)
+
+        assert tools._dense_char_limit(text, tools._MAX_OUTPUT_CHARS) == 0
+        out = tools._truncate(text, tools._tool_result_char_budget())
+        assert out.startswith("(output omitted:")
+        assert "truncated to" not in out
+
+
+class TestAnonymousCallsRetainNothing:
+    """`_get_workdir(None)` is the shared `_default` sandbox. A spill there outlives the
+    call under a path the next anonymous conversation can list and read, where before this
+    change the output existed only in that call's own response."""
+
+    @staticmethod
+    def _spilled_to(monkeypatch, tmp_path, session_id):
+        seen = {}
+        # A real directory: the command runs with it as cwd, and a path that is not there
+        # fails the call long before anything is truncated.
+        monkeypatch.setattr(tools, "_get_workdir", lambda _sid: str(tmp_path))
+        real = tools._truncate
+
+        def _recording(text, limit = None, workdir = None):
+            seen["workdir"] = workdir
+            return real(text, limit if limit is not None else 200, workdir = None)
+
+        monkeypatch.setattr(tools, "_truncate", _recording)
+        # Builtin printf over a brace expansion: no command substitution, because the
+        # sandbox caps processes and a fork fails the call before it ever truncates.
+        tools._bash_exec("printf 'x%.0s' {1..5000}", None, 30, session_id)
+        return seen
+
+    def test_a_call_without_a_session_does_not_spill(self, monkeypatch, tmp_path):
+        assert self._spilled_to(monkeypatch, tmp_path, None)["workdir"] is None
+
+    def test_a_call_with_a_session_still_does(self, monkeypatch, tmp_path):
+        """The control: the whole feature has to keep working where the sandbox is the
+        conversation's own."""
+        assert self._spilled_to(monkeypatch, tmp_path, "chat-1")["workdir"] == str(tmp_path)

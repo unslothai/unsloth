@@ -12242,7 +12242,13 @@ def _dense_char_limit(text: str, max_chars: int) -> int:
         # about a third more than the room holds. Bottomed at one character rather than
         # the legacy floor, since going below it is the point.
         room_chars = _dense_prefix_chars(text, float(room))
-        floor = min(floor, _exact_prefix_chars(text, room_chars, float(room), ctx, 1))
+        # Bottomed at ZERO, not at one character. A thread at its budget measures a room of
+        # zero, and a real tokenizer charges for the framing around even an empty string,
+        # so the exact fit lands on nothing fitting. One character here is not a rounding
+        # detail: it puts `_truncate` past its `limit <= 0` stub and back on the ordinary
+        # notice, which is the ~90 tokens the stub exists to avoid spending when the
+        # measurement just said there are none.
+        floor = min(floor, _exact_prefix_chars(text, room_chars, float(room), ctx, 0))
     fitted = _dense_prefix_chars(text, share)
     # And measured rather than estimated when the serving model can measure it: the rule
     # above is honest about non-ASCII and still optimistic about dense ASCII. The floor
@@ -13968,14 +13974,18 @@ def _truncate(
     # user saw the full output.
     if len(text) <= limit:
         return text
+    if limit <= 0 and len(_zero_room_stub(len(text), None, True)) >= len(text):
+        # Decided BEFORE the spill: a result this short is served whole below, and writing
+        # a file (and creating the spill directory) for output that is never cut is a side
+        # effect with nothing on the other side of it.
+        return text
     spill, complete = _spill_full_output(text, workdir)
     if limit <= 0:
         # No room for a body, so no room for the usual notice either: at this point the
         # notice IS the message, and the full one costs ~90 tokens of a budget that just
         # reported none. Kept to a line so the thread stays servable and the next fit can
         # evict older turns and recover, which is the whole reason a stub beats a refusal.
-        located = f", {_spill_phrase(spill, complete).lower()}" if spill else ""
-        stub = f"(output omitted: {len(text)} chars, no context room left{located})"
+        stub = _zero_room_stub(len(text), spill, complete)
         # A short result costs less than the notice explaining it is gone, and replacing
         # "done" with a longer sentence saves nothing and loses the answer.
         return stub if len(stub) < len(text) else text
@@ -14012,8 +14022,8 @@ def _truncate(
     # CODE wrote, not the spill, and it is the only thing telling the model those survive.
     common = (
         f"\n\n... (truncated to {limit} chars for the model; {where}, {len(text)} chars "
-        f"total. {_spill_phrase(spill, complete)}, and any files the code wrote persist "
-        "in the working directory"
+        f"total. {_capitalise(_spill_phrase(spill, complete))}, and any files the code "
+        "wrote persist in the working directory"
     )
     if not _posix_tools_available():
         # A cmd-only Windows host has none of sed, tail or head, so the command would fail
@@ -14130,10 +14140,25 @@ _SPILL_NAME_RE = re.compile(r"[0-9a-f]{12}\.txt")
 
 
 def _spill_phrase(spill: str, complete: bool) -> str:
-    """How the notice names the spill, which depends on whether all of it got there."""
+    """How the notice names the spill, which depends on whether all of it got there.
+
+    Lower case, and capitalised by the caller that needs it: the phrase ends in a path,
+    and case-folding a whole sentence to fit it into another would fold that too.
+    """
     if complete:
-        return f"Full output saved to {spill}"
-    return f"The first {_SPILL_MAX_BYTES} bytes are saved to {spill}"
+        return f"full output saved to {spill}"
+    return f"the first {_SPILL_MAX_BYTES} bytes of it are saved to {spill}"
+
+
+def _capitalise(phrase: str) -> str:
+    """First letter only. `str.capitalize` lower-cases the rest, including a path."""
+    return phrase[:1].upper() + phrase[1:]
+
+
+def _zero_room_stub(size: int, spill: "str | None", complete: bool) -> str:
+    """The whole message when there is no room for a body. See `_truncate`."""
+    located = f", {_spill_phrase(spill, complete)}" if spill else ""
+    return f"(output omitted: {size} chars, no context room left{located})"
 
 
 def _spill_full_output(text: str, workdir: str | None) -> "tuple[str | None, bool]":
@@ -14180,14 +14205,26 @@ def _spill_full_output(text: str, workdir: str | None) -> "tuple[str | None, boo
         # byte offset in the continuation hint is counted from the untranslated text --
         # so a mid-line resume would start one byte early for every preceding newline.
         path = os.path.join(target_dir, name)
-        # O_NOFOLLOW is the same refusal as the islink check above, applied to the final
-        # component: an existing symlink there raises rather than being written through.
-        # Windows has no such flag, so the explicit check stands in for it.
-        if os.path.islink(path):
-            return None, True
-        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-        with os.fdopen(os.open(path, flags, 0o600), "w", encoding = "utf-8", newline = "") as handle:
-            handle.write(body)
+        # Written to a fresh O_EXCL file and moved into place, never opened O_TRUNC over
+        # whatever is already at that path. The spill name is derived from content the
+        # model produced, so it can predict it and pre-create it: as a symlink (refused by
+        # O_NOFOLLOW and the check above) or as a HARD link, which reports islink() false
+        # and shares the inode of some file outside the sandbox. Truncating that writes
+        # through to it with the backend's privileges; replacing a directory entry does
+        # not touch the linked file at all.
+        tmp = None
+        try:
+            fd, tmp = tempfile.mkstemp(dir = target_dir, prefix = ".tmp-", suffix = ".txt")
+            with os.fdopen(fd, "w", encoding = "utf-8", newline = "") as handle:
+                handle.write(body)
+            os.replace(tmp, path)
+            tmp = None
+        finally:
+            if tmp is not None and os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
         _prune_spills(target_dir)
         # Relative, so the command works from the cwd the tools already run in, and so
         # the absolute sandbox path never reaches the model.
@@ -14223,7 +14260,10 @@ def _prune_spills(target_dir: str) -> None:
                 size = os.path.getsize(path)
             except OSError:
                 continue
-            if kept < _SPILL_KEEP and total + size <= _SPILL_MAX_TOTAL_BYTES:
+            # The newest is always kept, whatever the budgets say: it is the file the
+            # notice about to be returned names, and a hint pointing at a path that was
+            # deleted on the way out is worse than no hint at all.
+            if kept == 0 or (kept < _SPILL_KEEP and total + size <= _SPILL_MAX_TOTAL_BYTES):
                 kept, total = kept + 1, total + size
                 continue
             try:
@@ -14735,6 +14775,10 @@ def _python_exec(
     tmp_path = None
     _scratch_name = None
     workdir = _get_workdir(session_id)
+    # `_get_workdir(None)` is the shared `_default` sandbox. Spilling there would leave one
+    # anonymous conversation's output on disk under a path the next one can list and read,
+    # where before this change it existed only in that call's own response.
+    spill_dir = workdir if session_id else None
     call_token = _call_started(workdir)
     # Snapshot mtimes to detect new and overwritten files.
     _before = _snapshot_workdir_files(workdir)
@@ -14822,7 +14866,7 @@ def _python_exec(
         # paths are judged against the real workdir (project sessions live outside
         # the default sandbox root).
         hint = _missing_path_hint(result, workdir)
-        result = _truncate(result, workdir = workdir) if result.strip() else "(no output)"
+        result = _truncate(result, workdir = spill_dir) if result.strip() else "(no output)"
         result += hint
         # Before ours is appended, and whether or not one is: a program's own
         # marker line is not an envelope.
@@ -14888,9 +14932,13 @@ def _bash_exec(
         )
 
     workdir = None
+    spill_dir = None
     call_token = None
     try:
         workdir = _get_workdir(session_id)
+        # Same reason as _python_exec: the no-session workdir is shared, so nothing is
+        # retained there.
+        spill_dir = workdir if session_id else None
         call_token = _call_started(workdir)
         # Same pre-run snapshot as _python_exec. A command that writes a file used
         # to produce "(no output)" and no other trace anywhere in the product.
@@ -14952,7 +15000,7 @@ def _bash_exec(
             result = f"Exit code {proc.returncode}:\n{result}"
         # Same missing-path healing as _python_exec.
         hint = _missing_path_hint(result, workdir)
-        result = _truncate(result, workdir = workdir) if result.strip() else "(no output)"
+        result = _truncate(result, workdir = spill_dir) if result.strip() else "(no output)"
         result += hint
         result = _defuse_sentinels(result)  # see _python_exec
         # Only for a chat that has an id (see _python_exec).
