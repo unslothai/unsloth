@@ -829,7 +829,7 @@ def test_a_run_whose_every_moving_metric_is_unresolved_is_inconclusive_not_no_re
 
 
 def test_an_unresolved_mover_beside_a_flat_metric_is_not_no_difference():
-    """"No difference" asserts the change did nothing, which is stronger than this data supports.
+    """ "No difference" asserts the change did nothing, which is stronger than this data supports.
 
     Dropping an unresolved mover from the headline can leave only flat metrics behind, putting the
     aggregate back inside the noise floor. Reading that as NO DIFFERENCE would convert a refusal
