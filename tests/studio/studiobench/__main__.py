@@ -250,8 +250,38 @@ def side_specs(args, ab_ref) -> list:
 
 
 def planned_rungs(args) -> list:
-    """The ladder this run will actually walk: `--rungs` when given, else the tier's own."""
-    return args.rungs.split(",") if args.rungs else list(TIER_RUNGS[args.tier])
+    """The ladder this run will actually walk: `--rungs` when given, else the tier's own.
+
+    NORMALISED AND CHECKED HERE, because a rung label that `RUNGS` does not carry is not merely a
+    late crash. `--rungs "1K, 10K"` split to `[\"1K\", \" 10K\"]`, and the first thing `run` does
+    with that list is record it: `run_meta` carries the rungs the run PROMISED, `plan_rung` does
+    not reach `RUNGS[rung]` until `build_cells` a hundred lines later, and `recorded_ladder` folds
+    every `run_meta` in the file. So a resumed run mistyped this way appended a rung nothing can
+    ever satisfy to a payload that was complete, and `--report` scored it INCOMPLETE from then on
+    -- the same permanent damage the ladder-ratio refusal had to learn to roll back, arriving
+    through the argument parser. The install and the browser sit between the two points as well,
+    so the check is worth minutes even when the payload is fresh.
+
+    Whitespace around a comma and a lowercase suffix are the two ways to type this that read as
+    correct, so both are accepted rather than rejected; anything else is named against the ladder
+    it was measured against.
+    """
+    if not args.rungs:
+        return list(TIER_RUNGS[args.tier])
+    # Imported here, not at module scope, on the same rule the rest of this file follows: `--help`
+    # has to answer on a machine with nothing installed.
+    from .fixture.corpus import RUNGS
+
+    rungs = [label.strip().upper() for label in args.rungs.split(",")]
+    rungs = [label for label in rungs if label]
+    unknown = [label for label in rungs if label not in RUNGS]
+    if not rungs or unknown:
+        named = ", ".join(repr(label) for label in unknown) or "nothing"
+        raise SystemExit(
+            f"--rungs {args.rungs!r} names {named}, which is not a rung. "
+            f"The ladder is {', '.join(RUNGS)}, comma-separated."
+        )
+    return rungs
 
 
 #: What a cell costs BESIDES its film, measured from the steps `CellRunner._run_inner` runs around

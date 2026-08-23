@@ -24,6 +24,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from studiobench.__main__ import (  # noqa: E402
@@ -33,6 +35,7 @@ from studiobench.__main__ import (  # noqa: E402
     is_null_control,
     main,
     parse_args,
+    planned_rungs,
     recorded_ladder,
     side_home,
     side_specs,
@@ -391,6 +394,57 @@ def test_an_explicit_tier_still_wins(tmp_path):
     assert "100,000" not in summary and "100K" not in summary
 
 
+# ── --rungs is normalised and checked before anything is acquired ────────────────────────────
+
+
+def _rungs(value):
+    return planned_rungs(parse_args(["--tier", "standard", "--rungs", value]))
+
+
+def test_a_space_after_the_comma_is_the_same_ladder():
+    """`--rungs "1K, 10K"` used to split to `[\"1K\", \" 10K\"]`.
+
+    Not a late crash only: `run_meta` records the rungs the run PROMISED before `build_cells`
+    reaches `RUNGS[rung]`, and `recorded_ladder` folds every header, so a resume mistyped this way
+    left a rung nothing can satisfy in a payload that was complete.
+    """
+
+    assert _rungs("1K, 10K") == ["1K", "10K"]
+    assert _rungs(" 1K , 10K ") == ["1K", "10K"]
+
+
+def test_a_lowercase_suffix_is_the_same_ladder():
+    assert _rungs("1k,10k") == ["1K", "10K"]
+    assert _rungs("10k, 1m") == ["10K", "1M"]
+
+
+def test_an_empty_field_is_not_a_rung():
+    """A trailing or doubled comma is a typo, not a request for a nameless rung."""
+
+    assert _rungs("1K,,10K") == ["1K", "10K"]
+    assert _rungs("1K,10K,") == ["1K", "10K"]
+
+
+def test_a_label_that_is_not_a_rung_is_refused_by_name():
+    for value in ("1X", "2K", "1K,20K"):
+        with pytest.raises(SystemExit) as excinfo:
+            _rungs(value)
+        assert "is not a rung" in str(excinfo.value)
+
+
+def test_a_value_naming_no_rung_at_all_is_refused():
+    for value in (",", " "):
+        with pytest.raises(SystemExit) as excinfo:
+            _rungs(value)
+        assert "names nothing" in str(excinfo.value)
+
+
+def test_the_tier_still_supplies_the_ladder_when_rungs_is_not_given():
+    """The control: normalising the override may not disturb the default path."""
+
+    assert planned_rungs(parse_args(["--tier", "standard"])) == ["1K", "10K", "100K"]
+    assert planned_rungs(parse_args(["--tier", "fast"])) == ["100K"]
+
+
 if __name__ == "__main__":
-    import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))
