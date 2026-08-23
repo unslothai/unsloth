@@ -37,7 +37,7 @@ import contextvars
 import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import fields as dataclass_fields, replace
 
 
@@ -4965,6 +4965,69 @@ def _monitor_active_model() -> Optional[str]:
     if backend is None:
         return None
     return public_model_id(backend.active_model_name) or backend.active_model_name
+
+
+@asynccontextmanager
+async def _monitored_media_request(
+    request: Request, *, model: Optional[str], prompt: str, subject: Optional[str]
+):
+    """Give the image/audio routes the API monitor row the text routes already open."""
+    monitor_id = None
+    if not getattr(request.state, "skip_api_monitor", False):
+        monitor_id = api_monitor.start(
+            endpoint = request.url.path,
+            method = request.method,
+            via_api_key = _request_used_api_key(request),
+            model = model or "",
+            prompt = prompt,
+            subject = subject,
+        )
+    try:
+        yield monitor_id
+    except asyncio.CancelledError:
+        api_monitor.finish(monitor_id, "cancelled")
+        raise
+    except HTTPException as exc:
+        # Client aborts reach these routes as a 499 from the disconnect watchers, not as a
+        # CancelledError, so without this an ordinary stop would be a red error row.
+        if getattr(exc, "status_code", None) == 499:
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
+        # The route's own message ("No model loaded."), not the llama-server mapping.
+        detail = exc.detail
+        if isinstance(detail, dict):
+            # openai_error_body nests the message, but plenty of raisers pass a flat dict:
+            # .get("message") on a non-dict "error" used to raise out of this handler,
+            # skipping finish() and stranding the row at "running".
+            error = detail.get("error")
+            message = error.get("message") if isinstance(error, dict) else None
+            detail = message or str(detail)
+        api_monitor.fail(monitor_id, str(detail))
+        raise
+    except Exception as exc:
+        api_monitor.fail(monitor_id, _friendly_error(exc))
+        raise
+    except BaseException as exc:
+        # KeyboardInterrupt and SystemExit are not Exception, so without this arm the row
+        # never leaves "running". fail_open only touches a row a handler above left open.
+        api_monitor.fail_open(monitor_id, _friendly_error(exc))
+        raise
+    api_monitor.finish(monitor_id)
+
+
+def _external_transcript_preview(response: Response) -> str:
+    """The transcript out of a proxied STT response, for the monitor row's reply.
+
+    The provider echoes the requested response_format, so json carries the text under a
+    key and srt/vtt/text are already the text. A preview is never worth raising over.
+    """
+    try:
+        body = bytes(response.body or b"")
+        if "json" in (response.media_type or "").lower():
+            return str(json.loads(body.decode("utf-8", "replace")).get("text", ""))
+        return body.decode("utf-8", "replace")
+    except Exception:
+        return ""
 
 
 def _validate_native_gguf_companion(
@@ -12125,12 +12188,22 @@ async def openai_audio_speech(
         messages = [{"role": "user", "content": body.input}],
         max_tokens = AUDIO_GENERATION_MAX_TOKENS,
     )
-    wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
-        body.input, payload, request, current_subject
-    )
-    await asyncio.to_thread(
-        _persist_tts_clip, wav_bytes, sample_rate, body.input, model_name, audio_type
-    )
+    # model is informational and is echoed verbatim into the row, so a failure before the
+    # relabel below would strand the raw client string, possibly a host path, on a terminal
+    # row that goes out over the tunnel. Redact up front, not only on success.
+    async with _monitored_media_request(
+        request,
+        model = public_model_id(body.model) or body.model,
+        prompt = body.input,
+        subject = current_subject,
+    ) as monitor_id:
+        wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
+            body.input, payload, request, current_subject
+        )
+        api_monitor.relabel(monitor_id, model_name)
+        await asyncio.to_thread(
+            _persist_tts_clip, wav_bytes, sample_rate, body.input, model_name, audio_type
+        )
     return Response(content = wav_bytes, media_type = "audio/wav")
 
 
@@ -12145,6 +12218,7 @@ async def _external_stt_transcription(
     response_format: str,
     encrypted_api_key: Optional[str],
     request: Request,
+    timestamp_granularities: Optional[list[str]] = None,
 ) -> Response:
     provider_id = provider_id.strip()
     if not provider_id:
@@ -12206,6 +12280,7 @@ async def _external_stt_transcription(
             model = external_model,
             language = language,
             response_format = response_format,
+            timestamp_granularities = timestamp_granularities,
         )
     )
     disconnect_watcher = asyncio.create_task(
@@ -12246,47 +12321,118 @@ async def openai_audio_transcriptions(
     response_format: str = Form("json"),
     provider_id: Optional[str] = Form(None),
     encrypted_api_key: Optional[str] = Form(None),
+    timestamp_granularities: Optional[list[str]] = Form(None, alias = "timestamp_granularities[]"),
     current_subject: str = Depends(get_current_subject),
 ):
     """OpenAI-compatible speech-to-text (POST /v1/audio/transcriptions).
 
     With ``provider_id`` set, the request is proxied to that saved connection.
     Otherwise ``model`` maps to a sidecar model id, with ``whisper-1`` or nothing
-    selecting the default. ``response_format`` supports ``json`` and ``text``."""
+    selecting the default. ``response_format`` supports ``json``, ``text`` and
+    ``verbose_json``."""
     fmt = (response_format or "json").strip().lower()
-    if fmt not in ("json", "text"):
+    if fmt not in ("json", "text", "verbose_json"):
         raise HTTPException(
             status_code = 400,
-            detail = f"Unsupported response_format '{response_format}'. Use 'json' or 'text'.",
+            detail = (
+                f"Unsupported response_format '{response_format}'. "
+                "Use 'json', 'text' or 'verbose_json'."
+            ),
         )
     # UploadFile spools to disk, but an unbounded read materializes the whole upload in
     # memory before the shared size check. One byte past the limit is enough to reject it.
     raw = await file.read(_MAX_AUDIO_RAW_BYTES + 1)
     if isinstance(provider_id, str):
-        return await _external_stt_transcription(
-            provider_id = provider_id,
-            raw = raw,
-            filename = file.filename or "audio",
-            content_type = file.content_type or "application/octet-stream",
-            model = model,
-            language = language,
-            response_format = fmt,
-            encrypted_api_key = encrypted_api_key,
-            request = request,
+        # The proxied path is traffic through this server too, so it opens the same row;
+        # without this a saved STT connection is invisible. It never relabels, so the
+        # opening label is what the row keeps for life, hence the path-free treatment.
+        _requested = (model or "").strip()
+        async with _monitored_media_request(
+            request,
+            model = public_model_id(_requested) or _requested,
+            prompt = file.filename or "audio",
+            subject = current_subject,
+        ) as monitor_id:
+            response = await _external_stt_transcription(
+                provider_id = provider_id,
+                raw = raw,
+                filename = file.filename or "audio",
+                content_type = file.content_type or "application/octet-stream",
+                model = model,
+                language = language,
+                response_format = fmt,
+                timestamp_granularities = timestamp_granularities,
+                encrypted_api_key = encrypted_api_key,
+                request = request,
+            )
+            api_monitor.set_reply(monitor_id, _external_transcript_preview(response))
+        return response
+    # Refused before any work, like the response_format check above: the sidecar echoes the
+    # language it was given and detects none, so an auto-detect request has nothing truthful
+    # for verbose_json's required language field, and guessing would silently label a
+    # Japanese clip "en". isinstance because a direct call passes the raw Form default.
+    if fmt == "verbose_json" and not (isinstance(language, str) and language.strip()):
+        raise HTTPException(
+            status_code = 501,
+            detail = (
+                "verbose_json reports the language of the audio and the local STT engine "
+                "does not detect one. Send the 'language' parameter, or use response_format "
+                "'json' or 'text'."
+            ),
+        )
+    if isinstance(timestamp_granularities, list) and timestamp_granularities:
+        # Accepting the parameter and returning neither words nor segments would look like
+        # the audio simply had none. The sidecar reports no per-token timing today.
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "timestamp_granularities is not supported by the local STT engine. "
+                "Use a saved STT connection with provider_id for word or segment timings."
+            ),
         )
     # openai's whisper-1 placeholder means the default transcription model, not a sidecar id
     sidecar_model = None if model in (None, "", "whisper-1") else model
-    result = await _transcribe_audio_result(
-        raw,
-        sidecar_model,
-        language,
-        fast = False,
-        engine = _stt_engine_for_model(sidecar_model),
-        request = request,
-    )
+    # The relabel below only lands on success; a sidecar failure would otherwise strand the
+    # raw client string, which may be a host path, on the terminal row.
+    _opening_label = sidecar_model or "whisper-1"
+    async with _monitored_media_request(
+        request,
+        model = public_model_id(_opening_label) or _opening_label,
+        prompt = file.filename or "audio",
+        subject = current_subject,
+    ) as monitor_id:
+        result = await _transcribe_audio_result(
+            raw,
+            sidecar_model,
+            language,
+            fast = False,
+            engine = _stt_engine_for_model(sidecar_model),
+            request = request,
+        )
+        text = str(result.get("text", ""))
+        # Same path-free treatment the image route gives its label: sidecar ids are
+        # curated or owner/model today, but the row goes out over the tunnel.
+        _served_model = str(result.get("model") or "")
+        api_monitor.relabel(monitor_id, public_model_id(_served_model) or _served_model)
+        api_monitor.set_reply(monitor_id, text)
+
     if fmt == "text":
-        return PlainTextResponse(content = str(result.get("text", "")))
-    return JSONResponse(content = {"text": result.get("text", "")})
+        return PlainTextResponse(content = text)
+    if fmt == "verbose_json":
+        _duration = result.get("duration")
+        return JSONResponse(
+            content = {
+                "task": "transcribe",
+                # Both are required by OpenAI's schema, so a null fails validation inside
+                # the official clients. The request is refused above with no language.
+                "language": str(result.get("language") or language).strip(),
+                # Unlike the language, this is not a guess: duration is None only for a
+                # clip that decoded to no samples, and that clip really is zero seconds.
+                "duration": float(_duration) if isinstance(_duration, (int, float)) else 0.0,
+                "text": text,
+            }
+        )
+    return JSONResponse(content = {"text": text})
 
 
 # =====================================================================
@@ -26491,12 +26637,8 @@ async def openai_image_generations(
 
     With media auto-switch on, ``model`` names the image model to serve on and is loaded
     when it is not the resident one; with it off ``model`` stays informational."""
-    from core.inference import image_gallery
-    from core.inference.diffusion_engine_router import get_active_diffusion_engine
-    from core.inference.diffusion_families import default_generation_params
-    from core.inference.gpu_arbiter import DIFFUSION
-    from core.inference.media_auto_switch import maybe_auto_switch_media_model
-
+    # Refused before the row is opened, as on /audio/speech: a request rejected before any
+    # work is not traffic worth a red error row.
     if body.stream:
         raise HTTPException(
             status_code = 400,
@@ -26510,6 +26652,34 @@ async def openai_image_generations(
         raise HTTPException(
             status_code = 400, detail = openai_error_body(str(exc), status = 400, param = "size")
         )
+    # The relabel below only covers a successful generation, so a load or generation failure
+    # would strand the raw client string, possibly a host path, on a tunnelled row.
+    async with _monitored_media_request(
+        request,
+        model = public_model_id(body.model) or body.model,
+        prompt = body.prompt,
+        subject = current_subject,
+    ) as monitor_id:
+        return await _generate_openai_images(
+            body, request, current_subject, hf_token, monitor_id, width, height
+        )
+
+
+# Split out so the monitor row can wrap the whole handler without reindenting it.
+async def _generate_openai_images(
+    body: ImageGenerationRequest,
+    request: Request,
+    current_subject: str,
+    hf_token: Optional[str],
+    monitor_id: Optional[str],
+    width: int,
+    height: int,
+):
+    from core.inference import image_gallery
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+    from core.inference.diffusion_families import default_generation_params
+    from core.inference.gpu_arbiter import DIFFUSION
+    from core.inference.media_auto_switch import maybe_auto_switch_media_model
 
     # Before the loaded check: the requested model may be the one this brings up.
     await maybe_auto_switch_media_model(
@@ -26570,6 +26740,10 @@ async def openai_image_generations(
         logger.error("openai_images.generate_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Image generation failed.")
 
+    # A local-directory load puts the host path in repo_id and the monitor row goes out over
+    # the tunnel, so the label gets the same path-free treatment as active_model.
+    _served_repo = str(result.get("repo_id") or "")
+    api_monitor.relabel(monitor_id, public_model_id(_served_repo) or _served_repo)
     created = int(time.time())
     want_b64 = body.response_format == "b64_json"
     # Persist each image with its full recipe, like /images/generate, so url links resolve and images show in the gallery.
