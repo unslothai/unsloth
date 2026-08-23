@@ -656,9 +656,30 @@ def _active_cached_drafter_configs() -> Iterator[tuple[str, dict[str, Any], Path
     return iter(_cached_active_drafter_configs(str(root), epoch))
 
 
+def _mlx_memory_budget() -> Optional[int]:
+    """The ceiling the worker will enforce, or None when the device cannot report one."""
+    try:
+        import mlx.core as mx
+        if not mx.metal.is_available():
+            return None
+        recommended = mx.device_info().get("max_recommended_working_set_size") or 0
+    except Exception:
+        return None
+    # The same fraction of the recommended working set the worker applies before it loads.
+    return int(recommended * 0.85) if recommended > 0 else None
+
+
 def _mlx_speculative_memory_ready(estimated_bytes: int) -> bool:
+    """Whether a target and its drafter fit the budget the load will actually be held to.
+
+    Metal caps allocations below physical memory, so sizing against RAM offers a pair the cap
+    then refuses -- and an explicit method takes the resident model down with it.
+    """
     if estimated_bytes <= 0:
         return True
+    budget = _mlx_memory_budget()
+    if budget is not None:
+        return estimated_bytes <= budget
     try:
         import psutil
         return estimated_bytes <= int(psutil.virtual_memory().total * 0.85)

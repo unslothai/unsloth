@@ -13101,6 +13101,7 @@ def _non_gguf_runtime_settings_match(backend, request) -> bool:
 async def get_mlx_speculative_options(
     target_model: str = Query(..., min_length = 1),
     current_subject: str = Depends(get_current_subject),
+    hf_token: Optional[str] = Depends(get_hf_token),
 ):
     """Return the speculative drafters that can serve one MLX target."""
     del current_subject
@@ -13113,7 +13114,9 @@ async def get_mlx_speculative_options(
     # could never accept is not offered for the download that would precede it. Ahead of the
     # scan: this fetches the configuration a first-seen target has not cached yet, which the
     # scan would otherwise pair against and freeze an empty list.
-    target_is_vision = await asyncio.to_thread(is_vision_model, canonical_target)
+    # With the caller's token: a gated target the probe cannot read caches no configuration,
+    # and the scan then pairs against nothing and offers no drafter at all.
+    target_is_vision = await asyncio.to_thread(is_vision_model, canonical_target, hf_token = hf_token)
     target_is_adapter = await asyncio.to_thread(mlx_speculative_target_is_adapter, canonical_target)
     options = await asyncio.to_thread(mlx_speculative_options, target_model)
     ineligible = mlx_speculative_target_ineligible(

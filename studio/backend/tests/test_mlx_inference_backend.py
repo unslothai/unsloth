@@ -4945,6 +4945,19 @@ def test_an_accepted_drafter_name_is_pinned_to_the_one_the_loader_resolves(
     ).reason == "checkpoint_not_compatible"
 
 
+def test_a_drafter_is_sized_against_the_cap_the_load_is_held_to(monkeypatch):
+    # Metal caps allocations below physical memory. Sizing against RAM offers a pair the cap
+    # then refuses, and an explicit method takes the resident model down with it.
+    from core.inference import mlx_speculative as spec
+
+    monkeypatch.setattr(spec, "_mlx_memory_budget", lambda: 100 * 10**9)
+    assert spec._mlx_speculative_memory_ready(90 * 10**9) is True
+    assert spec._mlx_speculative_memory_ready(110 * 10**9) is False
+    # A device that reports no budget falls back rather than refusing everything.
+    monkeypatch.setattr(spec, "_mlx_memory_budget", lambda: None)
+    assert spec._mlx_speculative_memory_ready(1) is True
+
+
 def test_an_unfetched_target_defers_an_explicit_request_rather_than_refusing_it(monkeypatch):
     # The preflights run before the load fetches the configuration, and candidates are matched
     # against the target's identity, so an unfetched target offers none. Refusing there rejects
@@ -5125,6 +5138,14 @@ def test_the_options_endpoint_reports_the_drafters_the_sources_found(monkeypatch
     assert served.runtime_supported is True
     assert [(row.repo_id, row.loadable) for row in served.candidates] == [("org/Drafter", True)]
     assert (served.auto_method, served.auto_reason) == ("off", "target_too_small_to_draft")
+
+    # The caller's token travels with that probe: a gated target it cannot read caches no
+    # configuration, and the scan then pairs against nothing and offers no drafter at all.
+    tokens = []
+    monkeypatch.setattr(model_config_mod, "is_vision_model",
+                        lambda name, *a, **k: tokens.append(k.get("hf_token")) or True)
+    asyncio.run(inf_mod.get_mlx_speculative_options("target", "tester", "hf_gated"))
+    assert tokens == ["hf_gated"]
 
     # A target that can attach no drafter still lists its rows, with every flag the picker
     # reads turned off: it offers a download from this response, and no download would make
