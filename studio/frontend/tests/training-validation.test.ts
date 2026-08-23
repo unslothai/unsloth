@@ -9,9 +9,8 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { validateTrainingConfig } = await import(
-  "../src/features/training/lib/validation.ts"
-);
+const { hasIncompatibleTrainingModalities, validateTrainingConfig } =
+  await import("../src/features/training/lib/validation.ts");
 
 const validConfig = {
   selectedModel: "org/model",
@@ -260,6 +259,21 @@ test("training validation allows audio-capable vision models on MLX with image d
     ),
     { ok: true, errorKey: null },
   );
+});
+
+test("Gemma 4 audio capability response accepts an audio dataset", () => {
+  const response = JSON.parse(
+    '{"is_audio":true,"audio_type":"audio_vlm","has_audio_input":true,"model_type":"audio"}',
+  );
+  const config = {
+    ...validConfig,
+    modelType: response.model_type,
+    isAudioModel: !!response.is_audio,
+    isDatasetAudio: true,
+  } as TrainingConfigState;
+
+  assert.equal(config.isAudioModel, true);
+  assert.equal(hasIncompatibleTrainingModalities(config), false);
 });
 
 test("training validation rejects unsupported LoRA variants on MLX", () => {

@@ -1222,6 +1222,69 @@ _AUDIO_TOKENIZER_CONFIG_PATHS = (
     "LLM/tokenizer_config.json",
 )
 
+_AUDIO_CAPABILITY_METADATA_PATHS = (
+    "config.json",
+    "processor_config.json",
+    "preprocessor_config.json",
+)
+
+
+def _tokenizer_special_token_contents(config: dict) -> list[str]:
+    """Collect declared special-token strings, including token objects."""
+    contents: list[str] = []
+
+    def _collect(value) -> None:
+        if isinstance(value, str):
+            contents.append(value)
+        elif isinstance(value, dict):
+            if isinstance(value.get("content"), str):
+                contents.append(value["content"])
+            else:
+                for nested in value.values():
+                    _collect(nested)
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                _collect(nested)
+
+    _collect(config.get("added_tokens_decoder", {}))
+    for key, value in config.items():
+        if key == "added_tokens_decoder":
+            continue
+        if key == "special_tokens_map" or key.endswith("_token") or key.endswith("_tokens"):
+            _collect(value)
+    return contents
+
+
+def _gemma4_metadata_declares_audio(documents: list[dict]) -> bool:
+    """True only for Gemma 4 metadata with an explicit audio input component."""
+    is_gemma4 = any(
+        str(document.get("model_type", "")).lower().replace("_", "") == "gemma4"
+        for document in documents
+    )
+    if not is_gemma4:
+        return False
+
+    component_keys = {
+        "audio_config",
+        "audio_encoder",
+        "audio_processor",
+        "audio_tower",
+        "audio_feature_extractor",
+    }
+
+    def _declares(value) -> bool:
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                if key.lower() in component_keys and nested not in (None, False, "", {}, []):
+                    return True
+                if _declares(nested):
+                    return True
+        elif isinstance(value, list):
+            return any(_declares(nested) for nested in value)
+        return False
+
+    return any(_declares(document) for document in documents)
+
 
 def detect_audio_type(
     model_name: str,
@@ -1347,16 +1410,15 @@ def _detect_audio_from_tokenizer(
     """
 
     def _check_token_patterns(tok_config: dict) -> Optional[str]:
-        added = tok_config.get("added_tokens_decoder", {})
-        if not added:
-            return None
-        token_contents = [v.get("content", "") for v in added.values()]
+        token_contents = _tokenizer_special_token_contents(tok_config)
         for audio_type, check_fn in _AUDIO_TOKEN_PATTERNS.items():
             if check_fn(token_contents):
                 return audio_type
         return None
 
-    read_any = False  # parsed at least one tokenizer_config -> a None is definitive
+    read_any = False  # parsed at least one capability file -> a None may be definitive
+    metadata_documents: list[dict] = []
+    local_transient = False
 
     # 1) Selected local directory or local HF cache first (works for gated/offline models)
     try:
@@ -1386,6 +1448,7 @@ def _detect_audio_from_tokenizer(
                         roots.append(snapshot)
 
         for root in roots:
+            root_metadata_documents: list[dict] = []
             for tok_path in _AUDIO_TOKENIZER_CONFIG_PATHS:
                 tok_file = root / tok_path
                 try:
@@ -1400,6 +1463,8 @@ def _detect_audio_from_tokenizer(
                         # stays unknown, exactly as it did when json.loads raised on it.
                         if raw.rstrip().endswith("}"):
                             read_any = True
+                        else:
+                            local_transient = True
                         continue
                     tok_config = json.loads(raw)
                     read_any = True
@@ -1408,13 +1473,29 @@ def _detect_audio_from_tokenizer(
                         return result, True
                 except Exception as e:
                     logger.debug(f"Could not read {tok_file} for {model_name}: {e}")
+                    local_transient = True
+            for metadata_path in _AUDIO_CAPABILITY_METADATA_PATHS:
+                metadata_file = root / metadata_path
+                try:
+                    if not metadata_file.is_file():
+                        continue
+                    document = json.loads(metadata_file.read_text(encoding = "utf-8-sig"))
+                    if not isinstance(document, dict):
+                        raise ValueError("capability metadata must be a JSON object")
+                    root_metadata_documents.append(document)
+                    read_any = True
+                except Exception as e:
+                    logger.debug(f"Could not read {metadata_file} for {model_name}: {e}")
+                    local_transient = True
+            if _gemma4_metadata_declares_audio(root_metadata_documents):
+                return "audio_vlm", True
     except Exception as e:
         logger.debug(f"Could not check local cache for {model_name}: {e}")
 
     # 2) Fall back to the HuggingFace API. This raw requests.get ignores the HF offline
     #    flag, so gate it on local_files_only OR the env vars to skip the network offline.
     if local_files_only or _env_offline():
-        return None, read_any
+        return None, (read_any and not local_transient)
 
     # A filesystem path is not a repo id, so the URL below would be nonsense. The /loras scan
     # reaches here for every adapter directory without its own tokenizer, and since a transient
@@ -1432,7 +1513,7 @@ def _detect_audio_from_tokenizer(
     token = hf_token or os.environ.get("HF_TOKEN")
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 
-    transient = False  # a fetch failed for a non-404 reason (network/5xx)
+    transient = local_transient  # a read failed for a non-404 reason (network/5xx)
     from urllib.parse import quote
 
     revision_path = "main" if revision is None else quote(revision, safe = "")
@@ -1460,8 +1541,36 @@ def _detect_audio_from_tokenizer(
         if result:
             return result, True
 
-    # No audio tokens: definitive unless every attempt failed transiently.
-    return None, (read_any or not transient)
+    for metadata_path in _AUDIO_CAPABILITY_METADATA_PATHS:
+        url = f"https://huggingface.co/{model_name}/resolve/{revision_path}/{metadata_path}"
+        try:
+            resp = requests.get(url, headers = headers, timeout = 15)
+        except Exception as e:
+            logger.debug(f"Could not fetch {metadata_path} for {model_name}: {e}")
+            transient = True
+            continue
+        if resp.status_code == 404:
+            continue
+        if not resp.ok:
+            transient = True
+            continue
+        try:
+            document = resp.json()
+            if not isinstance(document, dict):
+                raise ValueError("capability metadata must be a JSON object")
+        except Exception as e:
+            logger.debug(f"Bad capability metadata for {model_name}/{metadata_path}: {e}")
+            transient = True
+            continue
+        metadata_documents.append(document)
+        read_any = True
+
+    if _gemma4_metadata_declares_audio(metadata_documents):
+        return "audio_vlm", True
+
+    # A negative is conclusive only after every present capability source was readable.
+    # Genuine 404s are conclusive absence; any transient/partial source keeps it unknown.
+    return None, not transient
 
 
 def is_audio_input_type(audio_type: Optional[str]) -> bool:

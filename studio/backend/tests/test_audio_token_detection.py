@@ -103,7 +103,11 @@ def _detect_checked(
 
     import requests
 
-    monkeypatch.setattr(requests, "get", lambda url, **kw: responses.pop(0))
+    monkeypatch.setattr(
+        requests,
+        "get",
+        lambda url, **kw: responses.pop(0) if responses else _Resp(404),
+    )
     return mc.detect_audio_type_checked(model)
 
 
@@ -129,6 +133,69 @@ def test_a_detected_codec_is_definitive(monkeypatch):
     audio_type, definitive = _detect_checked(monkeypatch, [_Resp(200, snac)])
     assert audio_type == "snac"
     assert definitive is True
+
+
+def test_gemma4_token_declared_outside_added_token_decoder(tmp_path):
+    from utils.models import model_config
+
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps({"audio_token": {"content": "<|audio|>", "special": True}}),
+        encoding = "utf-8",
+    )
+    assert model_config._detect_audio_from_tokenizer(
+        str(tmp_path), local_files_only = True
+    ) == ("audio_vlm", True)
+
+
+def test_gemma4_explicit_audio_metadata_local_snapshot(tmp_path):
+    from utils.models import model_config
+
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "gemma4"}))
+    (tmp_path / "processor_config.json").write_text(
+        json.dumps({"audio_processor": {"sampling_rate": 16000}})
+    )
+    assert model_config._detect_audio_from_tokenizer(
+        str(tmp_path), local_files_only = True
+    ) == ("audio_vlm", True)
+
+
+def test_gemma4_explicit_audio_metadata_from_hub(monkeypatch):
+    responses = [
+        _Resp(404),
+        _Resp(404),
+        _Resp(200, {"model_type": "gemma4"}),
+        _Resp(200, {"audio_tower": {"model_type": "gemma4_audio"}}),
+        _Resp(404),
+    ]
+    assert _detect_checked(monkeypatch, responses, "google/gemma-4-e2b") == (
+        "audio_vlm",
+        True,
+    )
+
+
+def test_gemma4_text_only_metadata_remains_non_audio(monkeypatch):
+    responses = [
+        _Resp(404),
+        _Resp(404),
+        _Resp(200, {"model_type": "gemma4", "text_config": {}}),
+        _Resp(200, {"processor_class": "Gemma4Processor"}),
+        _Resp(404),
+    ]
+    assert _detect_checked(monkeypatch, responses, "google/gemma-4-text") == (None, True)
+
+
+def test_unreadable_gemma4_auxiliary_metadata_is_unknown(monkeypatch):
+    responses = [
+        _Resp(404),
+        _Resp(404),
+        _Resp(200, {"model_type": "gemma4"}),
+        _Resp(503),
+        _Resp(404),
+    ]
+    assert _detect_checked(monkeypatch, responses, "google/gemma-4-stripped") == (
+        None,
+        False,
+    )
 
 
 def test_a_local_path_never_reaches_the_hub(monkeypatch, tmp_path):
