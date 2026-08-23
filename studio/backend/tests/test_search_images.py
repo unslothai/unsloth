@@ -1050,3 +1050,30 @@ def test_a_failing_image_only_lookup_still_returns_a_string(monkeypatch):
     monkeypatch.setattr(tools, "_image_search", boom)
     result = tools._web_search("", include_images = True, image_queries = ["Golden Retriever"])
     assert result == "No images found for: Golden Retriever"
+
+
+def test_an_unreadable_cache_dir_snapshots_as_clear_everything(monkeypatch, tmp_path):
+    """The OSError fallback has to be the full-clear sentinel, not an empty selection.
+
+    `registered_image_ids` bounds the reap that follows it. When it cannot enumerate
+    the cache its snapshot is incomplete, so the only safe answer is None -- which
+    `clear_cache` reads as "clear everything", the behaviour a clear had before the
+    snapshot existed. Returning `set()` instead reads as a selective reap of nothing:
+    "Clear all chats" would leave the registry populated and every thumbnail -- which
+    says what the user searched for -- still fetchable.
+    """
+
+    class _UnreadableDir(type(tmp_path)):
+        def glob(self, _pattern):
+            raise OSError("permission denied")
+
+    entries = search_images.register_images(RAW_IMAGES)
+    assert entries, "need a registered image for the reap to have something to miss"
+    monkeypatch.setattr(search_images, "_cache_dir", lambda: _UnreadableDir(tmp_path))
+
+    snapshot = search_images.registered_image_ids()
+    assert snapshot is None, "an incomplete snapshot must not bound the reap"
+
+    search_images.clear_cache(snapshot)
+    assert search_images._registry == {}, "a clear that could not snapshot must still clear"
+    assert search_images.lookup_image(entries[0]["id"]) is None

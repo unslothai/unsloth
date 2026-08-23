@@ -7,6 +7,7 @@ import os
 import re
 import sqlite3
 import sys
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -192,12 +193,12 @@ def test_clear_history_fences_pending_thread_ids(monkeypatch):
     def clear_with_ids(thread_ids = (), operation_id = None):
         captured.extend(thread_ids)
         captured_operation_ids.append(operation_id)
-        return list(thread_ids), []
+        return list(thread_ids), [], False
 
     async def remove_sandboxes(_thread_ids, _delete_files):
         return 0, []
 
-    monkeypatch.setattr(chat_history, "clear_chat_history", clear_with_ids)
+    monkeypatch.setattr(chat_history, "clear_chat_history_with_replay_status", clear_with_ids)
     monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
     monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
     monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
@@ -236,7 +237,9 @@ def test_clear_history_reaps_search_thumbnails_with_a_body(monkeypatch):
         return 0, []
 
     monkeypatch.setattr(
-        chat_history, "clear_chat_history", lambda thread_ids = (), operation_id = None: ([], [])
+        chat_history,
+        "clear_chat_history_with_replay_status",
+        lambda thread_ids = (), operation_id = None: ([], [], False),
     )
     monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
     monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
@@ -845,3 +848,93 @@ def test_replayed_clear_keeps_the_thumbnails_of_a_chat_it_did_not_delete(tmp_pat
     assert replay["deletedThreadIds"] == ["before-clear"]
     assert studio_db.get_chat_thread("after-clear") is not None
     assert reaped == ["reaped"], "the replay reaped a surviving chat's thumbnails"
+
+
+def test_the_replay_bit_comes_from_the_clear_transaction(monkeypatch, tmp_path):
+    """Two concurrent retries of one operationId: exactly one of them performed the clear.
+
+    Establishing `replayed` with a read taken before the transaction is a guess. Both
+    requests carrying the same operationId see the same unrecorded ledger, so both
+    conclude they cleared; BEGIN IMMEDIATE then serialises them and the loser silently
+    replays while still believing otherwise. It would go on to reap the thumbnail
+    registry -- which is global, and so is not covered by the ids the transaction
+    deliberately kept -- taking the images of chats created since the winner committed.
+    This is the retry the operationId exists to make safe: the frontend reissues the
+    same id after its 30s abort, and Starlette does not cancel the handler the client
+    hung up on, so both really do run at once.
+    """
+    from core.inference import search_images
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+
+    reaps: list[str] = []
+    reap_lock = threading.Lock()
+
+    def record_reap(only_ids = None):
+        with reap_lock:
+            reaps.append("reaped")
+
+    monkeypatch.setattr(search_images, "clear_cache", record_reap)
+
+    async def remove_sandboxes(_thread_ids, _delete_files):
+        return 0, []
+
+    monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
+    monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
+    monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
+    monkeypatch.setattr(
+        chat_history, "_remove_conversation_archives", lambda _ids, cutoff = None: None
+    )
+    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+
+    studio_db.upsert_chat_thread(_clear_thread_row("before-clear"))
+
+    # Released together, so both are past the point the old code decided `replayed` at
+    # before either transaction commits -- which is the whole race.
+    start = threading.Barrier(2)
+    failures: list[BaseException] = []
+
+    def clear():
+        try:
+            start.wait(timeout = 10)
+            asyncio.run(
+                chat_history.clear_history(
+                    request,
+                    chat_history.ChatClearRequest(
+                        ids = [], operationId = "clear-operation-concurrent"
+                    ),
+                    current_subject = "test-user",
+                )
+            )
+        except BaseException as exc:  # noqa: BLE001 -- re-raised on the main thread
+            failures.append(exc)
+
+    threads = [threading.Thread(target = clear) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout = 30)
+    if failures:
+        raise failures[0]
+
+    assert reaps == ["reaped"], (
+        "only the request that actually performed the clear may reap the global "
+        f"thumbnail registry; got {len(reaps)} reaps"
+    )
+
+
+def test_clear_history_does_not_read_the_replay_ledger_outside_the_transaction():
+    """The structural half of the race above, which no scheduling can hide.
+
+    `replayed` has to be whatever the transaction did, so it is returned by the call
+    that does the clear. A separate ledger read reintroduces the window even if the
+    threads in the test above happen to serialise.
+    """
+    source = inspect.getsource(chat_history.clear_history)
+    assert "clear_chat_history_with_replay_status" in source
+    assert "chat_clear_operation_is_recorded" not in source, (
+        "a pre-transaction ledger read cannot tell a replay from a concurrent clear"
+    )

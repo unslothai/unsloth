@@ -28,8 +28,8 @@ from storage.studio_db import (
     CorruptSettingsError,
     ProjectWorkspaceError,
     build_chat_history_export,
-    chat_clear_operation_is_recorded,
     clear_chat_history,
+    clear_chat_history_with_replay_status,
     count_chat_threads,
     count_forks_for_message,
     delete_chat_attachment,
@@ -1353,15 +1353,14 @@ async def clear_history(
         if payload is None:
             cleared, cleared_runs = clear_chat_history()
             return cleared, cleared_runs, False
-        # Asked BEFORE the transaction, which is the only moment the two answers can be
-        # told apart: afterwards the row is there either way. A recorded id means this
-        # request replays an earlier clear instead of performing one.
-        replayed = chat_clear_operation_is_recorded(payload.operationId)
-        cleared, cleared_runs = clear_chat_history(
+        # Answered by the transaction itself. Read separately beforehand it is a guess:
+        # a concurrent retry of the same operation id sees the same unrecorded ledger,
+        # and the one BEGIN IMMEDIATE puts second replays while still believing it
+        # cleared. `replayed` here is whichever the transaction actually did.
+        return clear_chat_history_with_replay_status(
             payload.ids,
             operation_id = payload.operationId,
         )
-        return cleared, cleared_runs, replayed
 
     # The clear reports what it deleted, which is what gets cleaned up: a thread
     # added between the listing above and the delete is gone too, and its

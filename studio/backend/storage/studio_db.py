@@ -2168,37 +2168,6 @@ def delete_chat_threads(ids: list[str]) -> list[str]:
     return delete_chat_threads_with_active_research_runs(ids)
 
 
-def chat_clear_operation_is_recorded(operation_id: Optional[str]) -> bool:
-    """True when this clear operation id already carries a recorded outcome.
-
-    A DELETE /chat under a recorded id REPLAYS that outcome: ``clear_chat_history``
-    returns the original thread ids and deliberately leaves anything created since
-    alone. The route's other cleanups are all keyed by the ids it was handed, so they
-    honour that on their own; the global caches are not, and have to ask.
-
-    Read outside the transaction on purpose, so no caller's return type changes. The
-    only way it can disagree with the transaction is a second request carrying the SAME
-    operation id concurrently, and that request is the original clear, which reaps the
-    same caches anyway. Fails open (False, so the caches are reaped) on any error: a
-    thumbnail left on disk after a clear is the worse of the two failures.
-    """
-    if operation_id is None:
-        return False
-    try:
-        conn = get_connection()
-        try:
-            return (
-                conn.execute(
-                    "SELECT 1 FROM chat_clear_operations WHERE id = ?", (operation_id,)
-                ).fetchone()
-                is not None
-            )
-        finally:
-            conn.close()
-    except Exception:  # noqa: BLE001 -- an unreadable ledger must not skip the reap
-        return False
-
-
 def clear_chat_history_with_active_research_runs(
     additional_thread_ids: Iterable[str] = (), operation_id: Optional[str] = None
 ) -> tuple[list[str], list[str]]:
@@ -2212,11 +2181,35 @@ def clear_chat_history_with_active_research_runs(
 def clear_chat_history(
     additional_thread_ids: Iterable[str] = (), operation_id: Optional[str] = None
 ) -> "tuple[list[str], list[str]]":
-    """Delete every chat thread. Returns (thread ids removed, research runs cascaded).
+    """Delete every chat thread. Returns (thread ids removed, research runs cascaded)."""
+    removed, active_runs, _replayed = clear_chat_history_with_replay_status(
+        additional_thread_ids,
+        operation_id = operation_id,
+    )
+    return removed, active_runs
 
-    Both taken inside the same transaction: another process can add a thread
-    between a listing and this call, its sandbox has to be cleaned up too, and
+
+def clear_chat_history_with_replay_status(
+    additional_thread_ids: Iterable[str] = (), operation_id: Optional[str] = None
+) -> "tuple[list[str], list[str], bool]":
+    """`clear_chat_history`, plus whether this call replayed a recorded outcome.
+
+    Returns (thread ids removed, research runs cascaded, replayed).
+
+    The first two are taken inside the same transaction: another process can add a
+    thread between a listing and this call, its sandbox has to be cleaned up too, and
     after the cascade nothing can tell the supervisor which runs to stop.
+
+    `replayed` comes from that same transaction because it cannot be established
+    outside one. Two requests carrying the same operation id can both read an
+    unrecorded ledger before either commits, so both would conclude they performed
+    the clear; BEGIN IMMEDIATE then serialises them and the loser silently replays.
+    A caller trusting the outside read would run the second request's cleanup of
+    global, non-id-keyed state -- the thumbnail cache -- against threads created
+    since the winner committed, which this call deliberately kept. That is exactly
+    the retry the operation id exists to make safe: the frontend reissues the same
+    id when its first attempt times out, and Starlette does not cancel the handler
+    the client hung up on, so both really are in flight at once.
     """
     conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
     try:
@@ -2233,7 +2226,7 @@ def clear_chat_history(
                 conn.commit()
                 # The original request already signalled its workers. Replaying that signal can
                 # leave a cancellation event behind after the worker has exited.
-                return list(json.loads(completed["deleted_thread_ids_json"])), []
+                return list(json.loads(completed["deleted_thread_ids_json"])), [], True
         _ensure_chat_attachment_inventory_current(conn)
         removed = sorted(str(row[0]) for row in conn.execute("SELECT id FROM chat_threads"))
         status_placeholders = ",".join("?" for _ in _ACTIVE_RESEARCH_RUN_STATUSES)
@@ -2265,7 +2258,7 @@ def clear_chat_history(
                 ),
             )
         conn.commit()
-        return removed, active_runs
+        return removed, active_runs, False
     except Exception:
         conn.rollback()
         raise

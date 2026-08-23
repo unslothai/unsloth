@@ -468,7 +468,7 @@ def thumbnail_bytes(image_id: str) -> bytes | None:
                 _inflight.pop(image_id, None)
 
 
-def registered_image_ids() -> set[str]:
+def registered_image_ids() -> set[str] | None:
     """Every id a clear starting now would be responsible for, in memory and on disk.
 
     Taken before the caller's slow work so the reap that follows can be limited to it.
@@ -482,8 +482,12 @@ def registered_image_ids() -> set[str]:
         try:
             ids.update(path.stem for path in _cache_dir().glob(pattern))
         except OSError:
-            # Unreadable dir: the reap falls back to clearing everything, as before.
-            return set()
+            # Unreadable dir, so the snapshot is incomplete and cannot bound a reap.
+            # None is the sentinel clear_cache reads as "clear everything", which is
+            # what a clear did before this snapshot existed. An empty set is NOT that
+            # sentinel: it is a selective reap of nothing, and would leave the
+            # registry populated and its images still fetchable after a clear.
+            return None
     return ids
 
 
