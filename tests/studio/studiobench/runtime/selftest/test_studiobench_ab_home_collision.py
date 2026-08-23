@@ -64,16 +64,25 @@ def test_the_guard_sits_before_the_payload_is_archived():
     THEN exiting 2 having run no benchmark: the next `--resume` finds nothing to continue and
     silently re-runs the whole ladder, and `--report` and `--assert-liveness` open the standard
     name and find no rows. `rollback_session_rows` states the rule this keeps -- a refusal has to
-    leave the payload it refused exactly as it found it."""
+    leave the payload it refused exactly as it found it.
+
+    `invalidate_stale_reports` is held to the same line and for the same reason: it REPLACES
+    `summary.md` and `ab.md`, so a refusal reaching it would take the previous run's reports down
+    along with its payload.
+
+    The archive is pinned as `archived = prepare_payload(`, which is the literal
+    `test_the_run_passes_the_archive_result_to_the_invalidation` pins for the wiring, so the two
+    move together instead of one going stale the next time that call is rewritten."""
 
     source = _source()
     run_body = source[source.index("def run(args, ab_ref = None) -> int:") :]
-    for guard in (
-        "if not args.attach and args.home:",
-        "if args.attach and not args.attach_b:",
-        "injection_problem = stream_cost_injection_problem(",
-    ):
-        assert run_body.index(guard) < run_body.index("    prepare_payload("), guard
+    for sink in ("archived = prepare_payload(", "invalidate_stale_reports(paths.out"):
+        for guard in (
+            "if not args.attach and args.home:",
+            "if args.attach and not args.attach_b:",
+            "injection_problem = stream_cost_injection_problem(",
+        ):
+            assert run_body.index(guard) < run_body.index(sink), f"{guard} vs {sink}"
 
 
 def test_a_single_arm_run_still_accepts_home():

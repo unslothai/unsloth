@@ -643,7 +643,9 @@ def run(args, ab_ref = None) -> int:
     # having run no benchmark, so the next `--resume` found nothing to continue and silently
     # re-ran the whole ladder, while `--report` and `--assert-liveness` opened the standard name
     # and found no rows. `rollback_session_rows` states the rule: a refusal has to leave the
-    # payload it refused exactly as it found it.
+    # payload it refused exactly as it found it. That rule covers `invalidate_stale_reports`
+    # below for the same reason it covers the archive: it REPLACES `summary.md` and `ab.md`, so
+    # a refusal reaching it would take the previous run's reports down with its payload.
     if ab_ref:
         if args.attach and not args.attach_b:
             _log("  --ab with --attach needs --attach-b URL: the second build has to be somewhere.")
@@ -682,14 +684,19 @@ def run(args, ab_ref = None) -> int:
     # a refusal that arrives after two clones and two builds has cost the caller an hour to say
     # something it could have said in a millisecond, and an archive that arrives after the Recorder
     # has opened the file has already appended this run's header to the payload it was moving.
-    prepare_payload(
+    archived = prepare_payload(
         paths, requested_identity(args, ab_ref, corpus.corpus_hash), resume = bool(args.resume)
     )
 
+    # AND THE REPORTS THE ARCHIVE LEFT BEHIND. See `invalidate_stale_reports`: this is the one
+    # point every reuse of an output directory passes through, whichever of the two ways it
+    # invalidates what is already sitting there.
+    invalidate_stale_reports(paths.out, archived = archived, extra_init = extra_init)
+
     # Armed AFTER the sides are known, because what it has to cover depends on them: see
     # `watchdog_deadline_s`. Nothing between the `side_specs` call above and here can hang --
-    # `_windowed_arms` compares two sets, `Corpus.load` reads a generated fixture and
-    # `prepare_payload` writes one file.
+    # `_windowed_arms` compares two sets, `Corpus.load` reads a generated fixture, and
+    # `prepare_payload` and `invalidate_stale_reports` each touch a handful of files in `--out`.
     watchdog = browser_mod.install_wall_clock_watchdog(
         watchdog_deadline_s(
             args.tier,
@@ -1478,20 +1485,6 @@ def _render_ab(
                 continue
 
     out = paths.out / "ab.md"
-    # A FULLY RESUMED A/B MEASURED NOTHING OF ITS OWN. `--resume` against a finished output skips
-    # every cell and is a success, but the ratio is scoped to THIS session, so re-rendering here
-    # replaced a real table with NO READING and exited 0 while doing it. The run that measured
-    # keeps its report; a run with no prior table still gets one, since there is nothing to lose.
-    if not any(r.get("row_type") == "cell" and r.get("session_id") == session_id for r in records):
-        if out.exists():
-            _log(f"\nno cell ran in this session; keeping the A/B table already at {out}")
-            return
-
-    # Detected, not declared. `--ab main` IS a null control whether or not the caller says so, and
-    # a null control that renders as an ordinary A/B invites somebody to quote "7.7% faster" from a
-    # build compared with itself. See `is_null_control`.
-    is_null = is_null_control(sides)
-    label = _ab_label(sides, is_null)
 
     # NO TABLE AT ALL for a probe run, rather than a table with a warning printed above it. The
     # warning scrolls off; `ab.md` sits in the output directory and gets pasted into a pull
@@ -1519,6 +1512,30 @@ def _render_ab(
             _log(f"  a previous {stale} was replaced by this refusal")
         _log("")
         return
+
+    # A FULLY RESUMED A/B MEASURED NOTHING OF ITS OWN. `--resume` against a finished output skips
+    # every cell and is a success, but the ratio is scoped to THIS session, so re-rendering here
+    # replaced a real table with NO READING and exited 0 while doing it. The run that measured
+    # keeps its report; a run with no prior table still gets one, since there is nothing to lose.
+    #
+    # AFTER THE PROBE REFUSAL, NOT BEFORE IT. The payload the resume keeps is the payload this
+    # check is deciding on behalf of, and a probed one is not scorable no matter which session
+    # recorded it. Run first, this returned early for the one sequence that needs the refusal
+    # most: a fresh PROBE run into a directory that already holds a clean `ab.md`, killed after
+    # its last cell was fsynced and before it rendered -- `archive_payload` moves `payload.jsonl`
+    # and nothing else, so the clean table stays at the standard artifact path -- and then
+    # resumed, which finds every cell complete, records none of its own and left that table
+    # standing over an unscorable probe payload.
+    if not any(r.get("row_type") == "cell" and r.get("session_id") == session_id for r in records):
+        if out.exists():
+            _log(f"\nno cell ran in this session; keeping the A/B table already at {out}")
+            return
+
+    # Detected, not declared. `--ab main` IS a null control whether or not the caller says so, and
+    # a null control that renders as an ordinary A/B invites somebody to quote "7.7% faster" from a
+    # build compared with itself. See `is_null_control`.
+    is_null = is_null_control(sides)
+    label = _ab_label(sides, is_null)
 
     try:
         result = compare_arms(
@@ -2015,6 +2032,80 @@ def rollback_session_rows(
     dropped = size - mark
     log(f"  rolled back {dropped} bytes this refused session had appended to {path.name}")
     return dropped
+
+
+def invalidate_stale_reports(
+    out,
+    *,
+    archived,
+    extra_init,
+    log = _log,
+) -> list:
+    """Replace `summary.md` and `ab.md` when the payload they describe is no longer the one there.
+
+    `archive_payload` moves `payload.jsonl` and nothing else, so a `summary.md` written by an
+    earlier `--report` of this directory -- step three of the README quickstart, into the same
+    `--out` -- stays at the standard artifact path while the payload underneath it is replaced.
+    Nothing later puts that right, because the report that would overwrite it is a command the
+    next run has no reason to issue: a plain run writes `summary.md` never (only `--report` does)
+    and `ab.md` only under `--ab`, so a single-arm run produces no report-shaped file at all and
+    both stale ones survive it.
+
+    TWO INDEPENDENT INVALIDATIONS, and each is sufficient on its own.
+
+    `archived` is the general case: the payload these reports described has been moved aside, so
+    they describe a file that is no longer at the path they name, whatever the incoming run is.
+    This is the half that was missing. Keying only on `extra_init` closed the clean-then-probed
+    direction and left probed-then-clean open, where a probe run's refusal text -- which says in
+    so many words that the payload beside it is not scorable -- survives into a directory whose
+    payload is now perfectly scorable. A refusal that outlives its reason is worse than no file,
+    because it is read as a finding about the run that is actually there.
+
+    `extra_init` is the narrower case and is NOT covered by `archived`: a `--resume` that
+    `prepare_payload` accepts archives nothing, so `archived` is `None` while the continued
+    payload is being extended by a probed run and becomes unscorable under the old summary.
+
+    OVERWRITTEN, not deleted, for the reason `_render_ab` gives: whoever opens the path gets the
+    reason rather than a missing file. HERE, not at the probe banner further down, for the reason
+    52fc3e848 moved the `ab.md` refusal above its early return: everything between this point and
+    the banner can `return`, raise or be killed by the wall-clock watchdog, and every one of those
+    paths has already archived the payload the summary belongs to. After `prepare_payload`,
+    though, because a `--resume` it refuses touched nothing.
+
+    BOTH ARTIFACTS, and `ab.md` is not already covered by the refusal inside `_render_ab`. That
+    function runs only under `if ab_ref`, so a fresh SINGLE-ARM run into a directory left by an
+    earlier `--ab` run never reaches it, and the old table survives beside the new payload for as
+    long as the directory lasts.
+
+    Returns the paths it rewrote, so a caller can assert on them.
+    """
+    if not archived and not extra_init:
+        return []
+    if extra_init:
+        why = (
+            f"this output directory was reused by a run carrying an external init script "
+            f"({extra_init}), so its timings measure the page and the instrument together. The "
+            f"payload beside it now is not scorable. Re-run with SBENCH_EXTRA_INIT_SCRIPT unset."
+        )
+    else:
+        why = (
+            f"this output directory was reused by a later run, which moved the payload this "
+            f"described to {Path(archived).name} and recorded a new one beside it. Re-report the "
+            f"payload that is there now, or read the archived one directly."
+        )
+
+    rewritten = []
+    for name, heading, what in (
+        ("summary.md", "# No summary", "summary"),
+        ("ab.md", "# No A/B table", "table"),
+    ):
+        stale = Path(out) / name
+        if not stale.exists():
+            continue
+        stale.write_text(f"{heading}\n\nNO {what.upper()}: {why}\n", encoding = "utf-8")
+        log(f"  a previous {stale} was replaced by this refusal")
+        rewritten.append(stale)
+    return rewritten
 
 
 def prepare_payload(
