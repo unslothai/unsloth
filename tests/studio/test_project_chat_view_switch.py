@@ -2618,3 +2618,45 @@ def test_a_remembered_thread_the_store_has_dropped_does_not_take_the_app_down():
         out["mainThreadId"] != "thread-a"
     ), "and it still has to leave the saved chat it came from"
     assert out["unhandled"] == 0
+
+
+def test_back_from_a_nonce_chats_own_row_keeps_that_chat():
+    """The reopen's claim is this view's OWN, and must not read as a stale arrival.
+
+    A materialized ?new= chat can be opened through its own sidebar row, and the ?new= URL
+    never changed, so Back returns to the nonce with that chat already current. The switch
+    effect still pushes a reopen claim for it, and ``switchToThread()`` early-returns when
+    its target is already the main thread, so the claim is still outstanding when the
+    correction effect runs in the same commit. Treating it as somebody else's late arrival
+    fell through to ``switchToNewThread()`` and replaced the conversation the user had just
+    come back to with a blank chat.
+    """
+    out = _run(
+        "renderSettled, world",
+        """
+        await renderSettled({ newThreadNonce: "n1" });
+        const started = world.mainThreadId;
+        world.remoteIds[started] = "remote-1";
+        await renderSettled({ newThreadNonce: "n1" });
+
+        // Opened through its own row, which is how a materialized new chat is reachable.
+        await renderSettled({ initialThreadId: started });
+
+        const mintedBefore = world.switchedToNewThread;
+        await renderSettled({ newThreadNonce: "n1" });
+
+        console.log(JSON.stringify({
+          started,
+          mainThreadId: world.mainThreadId,
+          mintedOnReturn: world.switchedToNewThread - mintedBefore,
+          unhandled: unhandled.length,
+        }));
+        """,
+    )
+    assert out["mainThreadId"] == out["started"], (
+        "Back must leave the user in the conversation they came back to, not a blank chat"
+    )
+    assert out["mintedOnReturn"] == 0, (
+        "the remembered chat was already current, so nothing needed opening at all"
+    )
+    assert out["unhandled"] == 0

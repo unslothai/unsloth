@@ -1987,6 +1987,21 @@ function ThreadNewChatSwitch({
     if (switchState.activeNonce !== nonce) {
       return;
     }
+    // Already on the thread this nonce owns, so there is nothing to correct -- and the
+    // claim sitting here is the sibling effect's OWN reopen, pushed moments ago for this
+    // very thread. switchToThread() early-returns when its target is already current
+    // (assistant-ui#2577), so the reopen resolves on a microtask and its claim is still
+    // outstanding when this effect runs in the same commit. Reading that as a stale
+    // arrival sent the user to switchToNewThread(), which replaced the conversation they
+    // had just come back to with a blank chat. Reached by opening a materialized ?new=
+    // chat through its own sidebar row and pressing Back.
+    if (
+      mainThreadId &&
+      switchState.nonceThread?.nonce === nonce &&
+      switchState.nonceThread.threadId === mainThreadId
+    ) {
+      return;
+    }
     const claimed = mainThreadId
       ? switchState.pendingSavedThreadIds.findIndex((claim) => claim.id === mainThreadId)
       : -1;
