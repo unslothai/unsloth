@@ -2168,6 +2168,37 @@ def delete_chat_threads(ids: list[str]) -> list[str]:
     return delete_chat_threads_with_active_research_runs(ids)
 
 
+def chat_clear_operation_is_recorded(operation_id: Optional[str]) -> bool:
+    """True when this clear operation id already carries a recorded outcome.
+
+    A DELETE /chat under a recorded id REPLAYS that outcome: ``clear_chat_history``
+    returns the original thread ids and deliberately leaves anything created since
+    alone. The route's other cleanups are all keyed by the ids it was handed, so they
+    honour that on their own; the global caches are not, and have to ask.
+
+    Read outside the transaction on purpose, so no caller's return type changes. The
+    only way it can disagree with the transaction is a second request carrying the SAME
+    operation id concurrently, and that request is the original clear, which reaps the
+    same caches anyway. Fails open (False, so the caches are reaped) on any error: a
+    thumbnail left on disk after a clear is the worse of the two failures.
+    """
+    if operation_id is None:
+        return False
+    try:
+        conn = get_connection()
+        try:
+            return (
+                conn.execute(
+                    "SELECT 1 FROM chat_clear_operations WHERE id = ?", (operation_id,)
+                ).fetchone()
+                is not None
+            )
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 -- an unreadable ledger must not skip the reap
+        return False
+
+
 def clear_chat_history_with_active_research_runs(
     additional_thread_ids: Iterable[str] = (), operation_id: Optional[str] = None
 ) -> tuple[list[str], list[str]]:

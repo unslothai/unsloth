@@ -28,6 +28,7 @@ from storage.studio_db import (
     CorruptSettingsError,
     ProjectWorkspaceError,
     build_chat_history_export,
+    chat_clear_operation_is_recorded,
     clear_chat_history,
     count_chat_threads,
     count_forks_for_message,
@@ -1348,20 +1349,24 @@ async def clear_history(
         else [thread["id"] for thread in await run_in_threadpool(list_chat_threads)]
     )
 
-    def _clear_rows() -> tuple[list[str], list[str]]:
+    def _clear_rows() -> tuple[list[str], list[str], bool]:
         if payload is None:
             cleared, cleared_runs = clear_chat_history()
-        else:
-            cleared, cleared_runs = clear_chat_history(
-                payload.ids,
-                operation_id = payload.operationId,
-            )
-        return cleared, cleared_runs
+            return cleared, cleared_runs, False
+        # Asked BEFORE the transaction, which is the only moment the two answers can be
+        # told apart: afterwards the row is there either way. A recorded id means this
+        # request replays an earlier clear instead of performing one.
+        replayed = chat_clear_operation_is_recorded(payload.operationId)
+        cleared, cleared_runs = clear_chat_history(
+            payload.ids,
+            operation_id = payload.operationId,
+        )
+        return cleared, cleared_runs, replayed
 
     # The clear reports what it deleted, which is what gets cleaned up: a thread
     # added between the listing above and the delete is gone too, and its
     # sandbox would otherwise be stranded.
-    cleared, cleared_runs = await run_in_threadpool(_clear_rows)
+    cleared, cleared_runs, replayed = await run_in_threadpool(_clear_rows)
     # A chat started between the listing and the transaction is in `cleared`
     # but was never cancelled, and a generation still running would dispatch a
     # tool and rebuild the sandbox this call is about to remove.
@@ -1383,13 +1388,21 @@ async def clear_history(
     # the user's, but a caller clearing everything can ask for them too.
     removed, kept = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)
     # Search thumbnails are keyed by id, not thread, so this is the one place they
-    # can be reaped; they reveal what was searched for. Unconditional because this
-    # route is clear-all either way -- both _clear_rows branches call
-    # clear_chat_history(), which drops every thread -- and the frontend always
-    # sends a body, so gating on `payload is None` never reaped anything.
-    from core.inference.search_images import clear_cache
+    # can be reaped; they reveal what was searched for. Runs for both _clear_rows
+    # branches -- each calls clear_chat_history(), which drops every thread -- so this
+    # is NOT gated on `payload is None`, which the frontend never sends and which
+    # therefore meant the reap never ran.
+    #
+    # A REPLAY is the one case that must not: the transaction above deliberately keeps
+    # chats created since the original clear, and this registry is global, so wiping it
+    # takes the images of a chat this call is not deleting and leaves its cards 404ing
+    # out of thumbnail_bytes. Nothing is missed by skipping it -- the request that
+    # recorded the operation reaps them, and Starlette does not cancel a handler when
+    # the client hangs up, so the attempt this retry replaces still runs to here.
+    if not replayed:
+        from core.inference.search_images import clear_cache
 
-    await run_in_threadpool(clear_cache)
+        await run_in_threadpool(clear_cache)
     return {
         "status": "deleted",
         "deletedThreadIds": cleared,

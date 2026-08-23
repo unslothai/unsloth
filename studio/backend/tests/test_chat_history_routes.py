@@ -698,3 +698,68 @@ def test_get_thread_fork_counts(monkeypatch):
         current_subject = "test-user",
     )
     assert response.counts == {"m1": 2, "m2": 1}
+
+
+def _clear_thread_row(thread_id: str) -> dict:
+    return {
+        "id": thread_id,
+        "title": "Test Chat",
+        "modelType": "base",
+        "modelId": "test-model",
+        "pairId": None,
+        "archived": False,
+        "createdAt": 1_700_000_000_000,
+    }
+
+
+def test_replayed_clear_keeps_the_thumbnails_of_a_chat_it_did_not_delete(tmp_path, monkeypatch):
+    """A retry under a recorded operationId replays, so it must not reap the global cache.
+
+    The frontend retries DELETE /chat once under the SAME operationId after its 30s
+    abort, and Starlette does not cancel the first handler when the client hangs up, so
+    the retry lands behind a transaction that already committed. That transaction
+    deliberately leaves chats created since alone -- but the thumbnail registry is
+    global, so reaping it again took the images of a chat this call is not deleting and
+    left its cards 404ing.
+    """
+    from core.inference import search_images
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+
+    reaped: list[str] = []
+    monkeypatch.setattr(search_images, "clear_cache", lambda: reaped.append("reaped"))
+
+    async def remove_sandboxes(_thread_ids, _delete_files):
+        return 0, []
+
+    monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
+    monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
+    monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
+    monkeypatch.setattr(
+        chat_history, "_remove_conversation_archives", lambda _ids, cutoff = None: None
+    )
+    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+
+    def clear():
+        return asyncio.run(
+            chat_history.clear_history(
+                request,
+                chat_history.ChatClearRequest(ids = [], operationId = "clear-operation-retry"),
+                current_subject = "test-user",
+            )
+        )
+
+    studio_db.upsert_chat_thread(_clear_thread_row("before-clear"))
+    assert clear()["deletedThreadIds"] == ["before-clear"]
+    assert reaped == ["reaped"], "the first clear has to reap: the thumbnails say what was searched"
+
+    # The image-bearing chat the delayed retry must not touch.
+    studio_db.upsert_chat_thread(_clear_thread_row("after-clear"))
+
+    replay = clear()
+    assert replay["deletedThreadIds"] == ["before-clear"]
+    assert studio_db.get_chat_thread("after-clear") is not None
+    assert reaped == ["reaped"], "the replay reaped a surviving chat's thumbnails"
