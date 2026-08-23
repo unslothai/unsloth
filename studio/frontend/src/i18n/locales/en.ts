@@ -1086,7 +1086,7 @@ export const en = {
         exportChat: "Export chat",
       },
       pastedTextThreshold: "Condense long pastes",
-      pastedTextThresholdDescription: "Pasted text longer than this becomes a .txt attachment instead of filling the message box.",
+      pastedTextThresholdDescription: "Pasted text longer than this becomes a .txt attachment instead of filling the message box. Press {shortcut} to paste into the message box anyway.",
       pastedTextThresholdOff: "Off",
       showResponseModel: "Show response model",
       showResponseModelDescription:

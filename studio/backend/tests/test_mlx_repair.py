@@ -47,9 +47,20 @@ def test_uv_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
     assert cmd is not None
     assert cmd[:5] == ["/usr/bin/uv", "pip", "install", "--python", sys.executable]
     assert set(mr.MLX_PACKAGES) <= set(cmd)
-    # Minimum versions are pinned so the resolver cannot backtrack to an old
-    # mlx-vlm that imports but breaks VLM Train/Export.
-    assert "mlx-vlm>=0.4.4" in cmd
+    # mlx-vlm keeps a floor so the resolver cannot backtrack to an old one that
+    # imports but breaks VLM Train/Export, and a ceiling so this unattended
+    # install cannot cross a major line on its own.
+    assert "mlx-vlm>=0.4.4,<0.7.0" in cmd
+    # Pinned, not floored: see _MLX_INSTALL_SPECS.
+    assert "mlx==0.32.1" in cmd
+    assert "mlx-lm==0.31.3" in cmd
+    # Look the requirement up by name rather than by prefix. Asserting on
+    # startswith("mlx==") could only ever be checked on a spec that already
+    # pins, so it passed vacuously the moment the pin was relaxed, which is the
+    # one case worth catching.
+    for name in ("mlx", "mlx-lm"):
+        spec = mr._MLX_INSTALL_SPECS[name]
+        assert spec.startswith("=="), f"{name} must be pinned, not floored: got {spec}"
 
 
 def test_uv_executable_finds_installer_location_when_path_is_minimal(monkeypatch, tmp_path):
@@ -206,6 +217,32 @@ def test_repair_rejects_inadequate_stack(monkeypatch):
     monkeypatch.setattr(mr.subprocess, "run", lambda *a, **k: _Result())
     monkeypatch.setattr(mr, "mlx_stack_available", lambda: False)
     assert mr.attempt_mlx_repair() is False
+
+
+def test_inadequate_stack_warning_names_the_floors_not_the_install_pins(monkeypatch):
+    # The gate this message reports on is mlx_stack_available(), which tests the
+    # floors. Quoting the install pins instead would tell an operator running a
+    # perfectly usable mlx 0.33 that they need exactly 0.32.1.
+    class _Result:
+        returncode = 0
+        stdout = ""
+
+    warnings = []
+    # Pin both, or this test measures the host. attempt_mlx_repair returns early
+    # when _uv_executable() finds nothing, long before the message under test, so
+    # on a machine without uv the warning list comes back empty and the unpack
+    # below fails rather than the assertion. That is what took CI red while this
+    # passed locally.
+    monkeypatch.setattr(mr, "_uv_executable", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(mr, "_transformers_constraint_args", lambda: ([], None))
+    monkeypatch.setattr(mr.subprocess, "run", lambda *a, **k: _Result())
+    monkeypatch.setattr(mr, "mlx_stack_available", lambda: False)
+    monkeypatch.setattr(mr.logger, "warning", lambda msg, *args, **kw: warnings.append(msg % args))
+    assert mr.attempt_mlx_repair() is False
+    (message,) = [w for w in warnings if "incomplete or too-old" in w]
+    for name, floor in mr._MLX_MIN_VERSIONS.items():
+        assert f"{name}>={floor}" in message
+    assert "==" not in message
 
 
 def test_repair_invalidates_import_caches_before_stack_check(monkeypatch):

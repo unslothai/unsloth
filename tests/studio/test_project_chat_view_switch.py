@@ -592,7 +592,7 @@ def _run(imports: str, body: str) -> dict:
         {textwrap.dedent(body)}
         """
     )
-    return run_harness(TEMP, _harness_source(), script)
+    return run_harness(TEMP, _harness_source(), script, sources = SOURCES)
 
 
 # A resident GGUF, so the second effect has something it could price. Only the tests about

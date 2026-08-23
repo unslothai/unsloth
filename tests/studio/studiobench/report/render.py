@@ -275,6 +275,22 @@ def render_ab_table(result: AbResult) -> str:
             f"({abs(1.0 - result.headline_ratio) * 100:.1f}% {direction}, weighted)"
         )
     lines.append(f"VERDICT: {result.verdict}")
+    unresolved = [m for m in result.metrics if m.withheld]
+    if unresolved:
+        lines.append("")
+        lines.append(
+            "These metrics cleared the noise floor without a 95% CI that clears 1.0, either "
+            "because the interval contains it or because there were too few pairs to compute "
+            "one, so no direction is claimed for them. They are excluded from the headline "
+            "ratio above, which would otherwise quote their size as a measured win:"
+        )
+        for metric in unresolved:
+            why = (
+                f"ci95 {metric.ci_low:.3f}-{metric.ci_high:.3f} contains 1.0"
+                if metric.ci_low is not None and metric.ci_high is not None
+                else f"no ci95 from {metric.n_pairs} usable pair(s)"
+            )
+            lines.append(f"  {metric.metric_key}: ratio {metric.ratio_geomean:.3f}, {why}")
     if result.regressions:
         lines.append("")
         lines.append(

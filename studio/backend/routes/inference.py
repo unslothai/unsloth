@@ -59,6 +59,7 @@ from core.inference.audio_errors import (
     AudioBackendUnsupportedError,
     AudioGenerationCancelledError,
 )
+from core.inference import context_refusal
 from core.inference.context_window import (
     estimate_message_tokens as _estimate_message_tokens,
     estimate_messages_tokens as _estimate_messages_tokens,
@@ -263,11 +264,9 @@ def _friendly_error(exc: Exception) -> str:
         msg,
     )
     if m:
-        return (
-            f"Message too long: {m.group(1)} tokens exceeds the {m.group(2)}-token "
-            f"context window. Try increasing the Context Length in Model settings, "
-            f"or shorten the conversation."
-        )
+        # llama-server knows only the prompt total, so its "shorten the conversation" is
+        # wrong for a single oversized turn: let the fit's diagnosis pick the wording.
+        return context_refusal.describe_oversize(int(m.group(1)), int(m.group(2)))
     if "Lost connection to llama-server" in msg:
         return _LOST_CONNECTION_MSG
     template_msg = _template_raise_message(msg, _loaded_chat_template())
@@ -686,6 +685,9 @@ def _overflow_truncation_requested(payload) -> bool:
 
 
 def _context_truncated_sse_chunk(completion_id: str, model_name: str, truncation: dict) -> str:
+    # Every streaming route passes through here, so record the refusal `_friendly_error`
+    # will read. See `context_refusal`.
+    context_refusal.record_fit(truncation)
     data = {
         "id": completion_id,
         "object": "chat.completion.chunk",
@@ -699,6 +701,9 @@ def _context_truncated_sse_chunk(completion_id: str, model_name: str, truncation
 
 def _accumulate_context_truncation(current: Optional[dict], event: dict) -> dict:
     incoming = {key: value for key, value in event.items() if key != "type"}
+    # The drains accumulate rather than forwarding each event, so record here. The per-fit
+    # event, not `combined`, which sums counters across a tool loop.
+    context_refusal.record_fit(incoming)
     if current is None:
         return incoming
     combined = {**current, **incoming}
@@ -15865,6 +15870,14 @@ async def openai_chat_completions(
                 try:
                     yield _chat_role_chunk(completion_id, created, model_name)
 
+                    # In this generator's own context, before the per-event task and
+                    # thread below each get a COPY of it. The forwarded events record
+                    # into the parent already, but only when there are any: a prompt
+                    # that fit leaves no slot, and then the respawn refit -- which runs
+                    # inside the worker, not out here -- records into a copy that dies
+                    # with it, so the except-clause below builds its message from
+                    # nothing. See `context_refusal`, and the two non-streaming drains.
+                    context_refusal.open_slot()
                     # Iterate the sync generator in a thread so the event loop
                     # stays free for disconnect detection.
                     gen = gguf_generate_with_tools()
@@ -16342,6 +16355,9 @@ async def openai_chat_completions(
                     request = request,
                     cancel_event = cancel_event,
                 )
+                # In the request's own context: the task and thread below each get a
+                # context COPY, so only a slot opened first reaches `_friendly_error`.
+                context_refusal.open_slot()
                 drain_task = asyncio.create_task(asyncio.to_thread(_drain_gguf_tool_loop))
                 (
                     full_text,
@@ -17041,6 +17057,8 @@ async def openai_chat_completions(
                         _context_truncation,
                     )
 
+                # See the tool-loop drain: the slot has to exist before the copies.
+                context_refusal.open_slot()
                 drain_task = asyncio.create_task(asyncio.to_thread(_drain_gguf_choices))
                 (
                     _n,
@@ -22453,6 +22471,10 @@ async def _anthropic_tool_stream(
             # stall window still gets one though its events are dropped.
             _last_drop_keepalive = time.monotonic()
 
+            # See the GGUF tool stream: this loop drives the same tool generator, and its
+            # respawn refit records the refusal from inside the worker thread, so the slot
+            # has to exist out here before the per-event copies are taken.
+            context_refusal.open_slot()
             gen = run_gen()
             _next_task = None
             # Watcher to cancel on disconnect: the in-loop poll fires only between events,
@@ -26773,53 +26795,74 @@ async def _generate_openai_images(
 
     # Use the active engine (diffusers OR native sd.cpp), the same accessor /images/generate uses.
     backend = get_active_diffusion_engine()
-    status = backend.status()
-    if not status.get("loaded"):
-        # Mirror /v1/completions and /v1/embeddings, which 503 when their backend is not loaded.
-        raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
+    from core.inference.diffusion_memory import ImageActivationShortfallError
+    from core.inference.diffusion_families import DiffusionModelReplacedError, load_identity
 
-    # An edit-only model needs an input image this API cannot supply; refuse with a 400 rather than a backend 500.
-    workflows = status.get("workflows") or []
-    if workflows and "txt2img" not in workflows:
-        raise HTTPException(
-            status_code = 400,
-            detail = openai_error_body(
-                "The loaded image model is edit-only (it requires an input image); "
-                "load a text-to-image model to use this endpoint.",
-                status = 400,
-                param = "model",
-            ),
-        )
-
-    # Fall back to the resolved base repo so a local-path load still gets the right per-model steps/guidance.
-    steps, guidance = default_generation_params(status.get("repo_id"), status.get("base_repo"))
-    try:
-        result = await asyncio.to_thread(
-            backend.generate,
-            prompt = body.prompt,
-            width = width,
-            height = height,
-            steps = steps,
-            guidance = guidance,
-            batch_size = body.n,
-        )
-    except Exception as exc:  # noqa: BLE001 (single boundary, sanitized envelope)
-        # A RuntimeError with the model now unloaded means it was evicted mid-call (a race): 503. Every other failure is a real 500 whose raw message must not reach the client.
-        if isinstance(exc, RuntimeError) and not backend.is_loaded:
+    # A replacement can commit between this status() read and generate() taking its lock, running the
+    # new model with the old one's steps/guidance and edit-only verdict (#9448). Pin the read to the
+    # generation, then re-decide from fresh state once.
+    result = None
+    for attempt in range(2):
+        status = backend.status()
+        if not status.get("loaded"):
+            # Mirror /v1/completions and /v1/embeddings, which 503 when their backend is not loaded.
             raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
-        # The activation refusal is the one message here written FOR the caller: it names the
-        # resolution, the budget and the remedies. Sanitising it into "Image generation failed."
-        # left an OpenAI client with a 500 for a request only they can fix, while the Studio
-        # route showed the reason. Typed, so no other ValueError's raw text escapes.
-        from core.inference.diffusion_memory import ImageActivationShortfallError
 
-        if isinstance(exc, ImageActivationShortfallError):
+        # An edit-only model needs an input image this API cannot supply; refuse with a 400 rather than a backend 500.
+        workflows = status.get("workflows") or []
+        if workflows and "txt2img" not in workflows:
             raise HTTPException(
                 status_code = 400,
-                detail = openai_error_body(str(exc), status = 400, param = "size"),
+                detail = openai_error_body(
+                    "The loaded image model is edit-only (it requires an input image); "
+                    "load a text-to-image model to use this endpoint.",
+                    status = 400,
+                    param = "model",
+                ),
             )
-        logger.error("openai_images.generate_failed: %s", exc)
-        raise HTTPException(status_code = 500, detail = "Image generation failed.")
+
+        # Fall back to the resolved base repo so a local-path load still gets the right per-model steps/guidance.
+        steps, guidance = default_generation_params(status.get("repo_id"), status.get("base_repo"))
+        try:
+            result = await asyncio.to_thread(
+                backend.generate,
+                prompt = body.prompt,
+                width = width,
+                height = height,
+                steps = steps,
+                guidance = guidance,
+                batch_size = body.n,
+                expected_load = load_identity(
+                    status.get("repo_id"), status.get("base_repo"), status.get("family")
+                ),
+            )
+            break
+        except DiffusionModelReplacedError:
+            if attempt > 0:
+                raise HTTPException(
+                    status_code = 503,
+                    detail = openai_error_body(
+                        "The image model was replaced while this request waited; retry with fresh parameters.",
+                        status = 503,
+                        param = "model",
+                    ),
+                )
+            continue
+        except Exception as exc:  # noqa: BLE001 (single boundary, sanitized envelope)
+            # A RuntimeError with the model now unloaded means it was evicted mid-call (a race): 503. Every other failure is a real 500 whose raw message must not reach the client.
+            if isinstance(exc, RuntimeError) and not backend.is_loaded:
+                raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
+            # The activation refusal is the one message here written FOR the caller: it names the
+            # resolution, the budget and the remedies. Sanitising it into "Image generation failed."
+            # left an OpenAI client with a 500 for a request only they can fix, while the Studio
+            # route showed the reason. Typed, so no other ValueError's raw text escapes.
+            if isinstance(exc, ImageActivationShortfallError):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(str(exc), status = 400, param = "size"),
+                )
+            logger.error("openai_images.generate_failed: %s", exc)
+            raise HTTPException(status_code = 500, detail = "Image generation failed.")
 
     # A local-directory load puts the host path in repo_id and the monitor row goes out over
     # the tunnel, so the label gets the same path-free treatment as active_model.
