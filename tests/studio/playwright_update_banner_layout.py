@@ -848,9 +848,7 @@ def main() -> int:
             )
             check(
                 f"{width}x{height}: the rail is still in its bottom-right corner",
-                seen is not None
-                and seen["fromBottom"] == 16
-                and seen["fromRight"] == 16,
+                seen is not None and seen["fromBottom"] == 16 and seen["fromRight"] == 16,
                 f"{seen}, so the rail has left the corner it is anchored to",
             )
             check(
