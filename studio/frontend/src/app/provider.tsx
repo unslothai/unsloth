@@ -25,7 +25,6 @@ import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain
 import {
   applyCustomizationToDocument,
   useAppearanceCustomStore,
-  useStackGeometry,
   useTheme,
 } from "@/features/settings";
 import { SttDownloadPrompt } from "@/features/settings/components/stt-download-prompt";
@@ -34,7 +33,6 @@ import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
 import { getToastOffsets } from "@/lib/toast-offset";
-import { cn } from "@/lib/utils";
 import { Z_LAYER } from "@/lib/z-layers";
 import { useRouterState } from "@tanstack/react-router";
 import { MotionConfig } from "motion/react";
@@ -381,7 +379,6 @@ function TauriUpdateLayer({
   appContent: ReactNode;
 }) {
   const update = useTauriUpdate(isExternalServer);
-  const stack = useStackGeometry();
   const isUpdating =
     update.status === "updating-backend" ||
     update.status === "downloading" ||
@@ -401,23 +398,8 @@ function TauriUpdateLayer({
   ) : (
     // Capped like the browser stack: the download panel shares it, so both must fit.
     <div
-      ref={stack.ref}
-      // Scrolls when the cap is smaller than the cards, rather than spilling
-      // them over the page. The gutter, cancelled by the margin, keeps the card
-      // shadows out of the clip; horizontal only, since useStackGeometry reads
-      // this node's scrollHeight and vertical padding would inflate it.
-      // Click-through until it actually scrolls: pointer-events-none also
-      // costs it its scrollbar, and only the cards opt back in, so nothing
-      // would drag the ones below the fold into view.
-      className={cn(
-        "fixed right-4 -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3",
-        stack.overflowing ? "pointer-events-auto" : "pointer-events-none",
-      )}
-      style={{
-        bottom: stack.bottom,
-        maxHeight: stack.maxHeight,
-        zIndex: Z_LAYER.OVERLAY_STACK,
-      }}
+      className="pointer-events-none fixed bottom-4 right-4 flex max-h-[calc(100dvh_-_2rem)] flex-col items-end gap-2"
+      style={{ zIndex: Z_LAYER.OVERLAY_STACK }}
     >
       <UpdateBanner
         status={update.status}
@@ -529,7 +511,6 @@ function DesktopChromeVarsEffect({
 
 function TauriWrapper({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const stack = useStackGeometry();
   const {
     status,
     logs,
@@ -697,24 +678,8 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         {/* Capped to the viewport, or a long download list plus expanded notes
             pushes the top of the stack off screen. */}
         <div
-          ref={stack.ref}
-          // Scrolls when the cap is smaller than the cards, rather than
-          // spilling them over the page. The gutter, cancelled by the margin,
-          // keeps the card shadows out of the clip; horizontal only, since
-          // useStackGeometry reads this node's scrollHeight and vertical
-          // padding would inflate it.
-          // Click-through until it actually scrolls: pointer-events-none also
-          // costs it its scrollbar, and only the cards opt back in, so nothing
-          // would drag the ones below the fold into view.
-          className={cn(
-            "fixed right-4 -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3",
-            stack.overflowing ? "pointer-events-auto" : "pointer-events-none",
-          )}
-          style={{
-            bottom: stack.bottom,
-            maxHeight: stack.maxHeight,
-            zIndex: Z_LAYER.OVERLAY_STACK,
-          }}
+          className="pointer-events-none fixed bottom-4 right-4 flex max-h-[calc(100dvh_-_2rem)] flex-col items-end gap-2"
+          style={{ zIndex: Z_LAYER.OVERLAY_STACK }}
         >
           <WebUpdateBanner
             positioned={false}

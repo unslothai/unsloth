@@ -3,15 +3,20 @@
 
 """The overlay rail's update banners must never print over each other.
 
-The reported failure: on New chat, in a window short enough that the composer
-crowds the rail, the app-update card's release notes were painted over its own
-row of buttons. Train and Model hub were fine, because only the chat routes
-publish a composer box into the frame store and only that box caps the rail.
+The reported failure: in a window short enough that the rail hits its cap, the
+app-update card's release notes were painted over its own row of buttons.
 
-The node suite cannot catch this: it is a flex shrink across a capped column, so
-it needs a real layout, a real ResizeObserver and the real route, and it shows
-only at some viewport heights. Rects are intersected with whatever clips them,
-so anything an overflow-hidden ancestor hides does not count as visible.
+The second thing checked here is where the rail is. It was placed from JS for a
+while, dodging the boxes the composer and the floating panels publish, and every
+input to that placement moved on its own, so the rail drifted out of its corner
+into the middle and the top of the window. It is anchored in CSS again, and the
+indicator pass at the end asserts it stays there while cards come and go.
+
+The node suite cannot catch either: one is a flex shrink across a capped column
+and the other is where a fixed box actually lands, so both need a real layout,
+a real ResizeObserver and the real route, and they show only at some viewport
+heights. Rects are intersected with whatever clips them, so anything an
+overflow-hidden ancestor hides does not count as visible.
 
 Both update endpoints are stubbed with page.route, so this runs on any host: no
 GPU, no pypi release, no llama.cpp build.
@@ -222,58 +227,43 @@ NOTHING_STT = {
     "gguf": {"loaded_model": None, "device": None},
 }
 
-# Where the stack is tight enough that it would cover the composer if it were
-# allowed to. Two is enough: the rule is per card, not per size.
+# Short windows on the chat route: the ones where the rail used to leave its
+# corner. Two is enough, since what is being checked does not vary with size.
 INDICATOR_VIEWPORTS = [(921, 534), (768, 500)]
 
-# Does anything in the rail overlap the composer? Read off the same page, since
-# the composer is not one of the boxes the cards know about.
-COMPOSER_CLEARANCE = """
+# Where the rail actually is, against the corner it is anchored to. It was
+# placed from JS for a while, lifting clear of the boxes in the frame store,
+# and drifted to the middle and the top of the window as those boxes and its
+# own cards changed. Nothing on the page may move it now.
+RAIL_CORNER = """
 () => {
   const card = document.querySelector('[data-testid="web-update-banner"]');
-  const composer = document.querySelector('form');
-  if (!card || !composer) return {composer: null, overlap: 0};
+  if (!card) return null;
   const rail = card.parentElement;
   const a = rail.getBoundingClientRect();
-  const b = composer.getBoundingClientRect();
-  const dy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
-  const dx = Math.min(a.right, b.right) - Math.max(a.left, b.left);
   return {
-    composer: {top: Math.round(b.top), bottom: Math.round(b.bottom)},
-    rail: {top: Math.round(a.top), bottom: Math.round(a.bottom)},
-    // In the RAIL, not merely on the page: the card is draggable, and one
-    // parked elsewhere would satisfy a page-wide search while telling us
-    // nothing about the stack whose placement is under test.
-    // The inline cap next to what the box actually computes: a rail whose
-    // measurement leaves a transition behind reports a healthy cap and lays
-    // its cards out below a zero-height box.
+    rail: {top: Math.round(a.top), bottom: Math.round(a.bottom),
+           right: Math.round(a.right)},
+    viewport: {width: window.innerWidth, height: window.innerHeight},
+    // Distance from the two edges it is pinned to. bottom-4/right-4 is 16px,
+    // and both must hold however many cards are in the rail.
+    fromBottom: Math.round(window.innerHeight - a.bottom),
+    fromRight: Math.round(window.innerWidth - a.right),
+    // Nothing inline may set either: an offset or a cap written by JS is the
+    // placement coming back, whatever value it happens to have landed on.
     railStyle: {bottom: rail.style.bottom, maxHeight: rail.style.maxHeight,
                 kids: rail.childElementCount,
                 height: getComputedStyle(rail).height,
                 cappedTo: getComputedStyle(rail).maxHeight},
+    // In the RAIL, not merely on the page: the card is draggable, and one
+    // parked elsewhere would satisfy a page-wide search while telling us
+    // nothing about the stack under test.
     indicator: (() => {
       const label = Array.from(document.querySelectorAll('*')).find(
         (el) => el.childElementCount === 0
           && el.textContent.trim() === 'Loaded models',
       );
       return Boolean(label && rail.contains(label));
-    })(),
-    overlap: (dy > 0.5 && dx > 0.5) ? Math.round(Math.min(dy, dx) * 10) / 10 : 0,
-    // The same question asked of the part of the stack the reader cannot get
-    // rid of. A dismissible card over Send is the trade the placement makes to
-    // show that card whole; the tail below it would be over Send for good.
-    tailOverlap: (() => {
-      let worst = 0;
-      for (let i = rail.children.length - 1; i >= 0; i -= 1) {
-        const kid = rail.children[i];
-        if (kid.hasAttribute('data-overlay-dismissible')) break;
-        const k = kid.getBoundingClientRect();
-        if (k.width < 1 || k.height < 1) continue;
-        const ky = Math.min(k.bottom, b.bottom) - Math.max(k.top, b.top);
-        const kx = Math.min(k.right, b.right) - Math.max(k.left, b.left);
-        if (ky > 0.5 && kx > 0.5) worst = Math.max(worst, Math.min(ky, kx));
-      }
-      return Math.round(worst * 10) / 10;
     })(),
   };
 }
@@ -818,10 +808,8 @@ def main() -> int:
             context.close()
 
         # The loaded models indicator, switched on. It is the last child of the
-        # rail, so it is the card that lands on the corner, and it is a
-        # persistent status card rather than a dismissible banner: over Send it
-        # is the bug the rail dodges the composer for in the first place. With
-        # it up the stack must go back to dodging, however tight the window.
+        # rail, so it lands on the corner, and its arrival used to re-measure
+        # the rail and move the whole stack. That is the case to check.
         # #8346 ships it off by default, so nothing above this point sees it.
         for width, height in INDICATOR_VIEWPORTS:
             context = browser.new_context(
@@ -848,27 +836,30 @@ def main() -> int:
             page = context.new_page()
             boot(page, "/")
             page.wait_for_selector("text=Loaded models", timeout = 30_000)
-            # A third card in the stack re-measures the placement, and the rail
-            # moves on the frame after that.
+            # A third card changes the rail's height, which is what used to
+            # move it; give the layout a frame to prove it does not.
             settle_stack(page)
             measure(page, f"{width}x{height} with the models indicator")
-            seen = page.evaluate(COMPOSER_CLEARANCE)
-            check(
-                f"{width}x{height}: the rail computes the cap it was given",
-                not seen["railStyle"]["maxHeight"]
-                or seen["railStyle"]["cappedTo"] == seen["railStyle"]["maxHeight"],
-                f"{seen['railStyle']}, so the cards are laid out below a box"
-                " that is not the size the placement asked for",
-            )
+            seen = page.evaluate(RAIL_CORNER)
             check(
                 f"{width}x{height}: the models indicator is actually up",
-                seen["indicator"],
-                f"{seen}, so the clearance check below proves nothing",
+                seen is not None and seen["indicator"],
+                f"{seen}, so the corner checks below prove nothing",
             )
             check(
-                f"{width}x{height}: a persistent card in the rail keeps off the composer",
-                seen["composer"] is None or seen["tailOverlap"] == 0,
-                f"{seen}, so the models indicator is sitting on Send",
+                f"{width}x{height}: the rail is still in its bottom-right corner",
+                seen is not None
+                and seen["fromBottom"] == 16
+                and seen["fromRight"] == 16,
+                f"{seen}, so the rail has left the corner it is anchored to",
+            )
+            check(
+                f"{width}x{height}: nothing places the rail from JS",
+                seen is not None
+                and not seen["railStyle"]["bottom"]
+                and not seen["railStyle"]["maxHeight"],
+                f"{seen['railStyle'] if seen else seen}, so an inline offset or"
+                " cap is back on the rail",
             )
             page.screenshot(path = str(ART / f"{width}x{height}-indicator.png"))
             context.close()

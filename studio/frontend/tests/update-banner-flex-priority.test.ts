@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The overlay rail is height-capped by stackGeometry, and on the chat routes
-// the composer publishes a box that makes the cap small. Nothing in the rail
-// was shrink-0, so the cap came out of the update card and its release notes
-// were painted over its own row of buttons.
+// The overlay rail is capped at the viewport, and a full download list plus an
+// update card is easily taller than a short window. Nothing in the rail was
+// shrink-0, so the cap came out of the update card and its release notes were
+// painted over its own row of buttons.
 //
 // The rule pinned here: the notes are the only part of a card allowed to give
-// up height, and they clip while doing it; the card floors at its buttons; the
-// rail scrolls if that still does not fit.
+// up height, and they clip while doing it; the card floors at its buttons.
 //
 // Read from the source: the node suite has no DOM to compute styles in.
 
@@ -144,61 +143,6 @@ test("the two update cards do not drift apart", () => {
   }
 });
 
-// Covering the composer is licensed per card, and the licence is carried on
-// the card rather than inferred in the store, so a new overlay added to the
-// rail is persistent until someone says otherwise. The loaded models indicator
-// and the download panel deliberately do not carry it: they are the last
-// children, so they are what would land on Send.
-test("only the dismissible cards licence covering the composer", () => {
-  for (const [name, source] of CARDS) {
-    assert.match(
-      source,
-      /data-overlay-dismissible="true"/,
-      `the ${name} card lost its dismissible marker, so the stack will never cover`,
-    );
-  }
-  // The llama.cpp card carries the licence CONDITIONALLY: its dismiss button
-  // goes away for the length of an update, and a card that cannot be got rid
-  // of must not be one the stack parks on Send.
-  assert.match(
-    LLAMA,
-    /data-overlay-dismissible=\{applying \? undefined : "true"\}/,
-    "the llama card licences covering the composer while it is mid-update",
-  );
-  assert.match(
-    LLAMA,
-    /\{applying \? null : \(\s*\n\s*<button/,
-    "the dismiss button is no longer the thing the licence is tied to",
-  );
-  const indicator = read("features/loaded-models/loaded-models-indicator.tsx");
-  const downloads = read(
-    "features/hub/download-manager/download-manager-panel.tsx",
-  );
-  for (const [name, source] of [
-    ["loaded models indicator", indicator],
-    ["download panel", downloads],
-  ] as const) {
-    assert.ok(
-      !/data-overlay-dismissible/.test(source),
-      `the ${name} is persistent and must not licence covering the composer`,
-    );
-  }
-  assert.match(
-    STORE,
-    /child\.hasAttribute\("data-overlay-dismissible"\)/,
-    "the store no longer asks the cards whether it may cover",
-  );
-  // Measured up from the corner, so the run that stops a cover is the one that
-  // would land on the composer, not any persistent card anywhere in the stack.
-  // Over `cards`, the rail's in-flow children: a dragged loaded models card is
-  // `position: fixed` somewhere else and lands on nothing.
-  assert.match(
-    STORE,
-    /for \(let i = cards\.length - 1; i >= 0; i -= 1\)/,
-    "the persistent run is no longer counted from the bottom of the stack",
-  );
-});
-
 test("the llama.cpp card keeps its full height in the rail", () => {
   // Nothing inside it can give up height, so squeezing it only mangles it.
   assert.match(
@@ -233,75 +177,41 @@ test("the collapsed notes summary scrolls, like the expanded notes", () => {
   assert.match(expanded, /\boverscroll-contain\b/);
 });
 
-test("the rail scrolls rather than spilling its cards", () => {
-  const rails = PROVIDER.split('"fixed right-4 ');
+// The rail was placed from JS for a while, lifting clear of the boxes the
+// composer and the floating panels publish. Every input to that placement
+// changes on its own, so the rail drifted to the middle and the top of the
+// window. Anchored in CSS again; the floors above absorb a short window.
+test("the rail is anchored to its corner, not placed from JS", () => {
+  const rails = PROVIDER.split('"pointer-events-none fixed bottom-4 right-4 ');
   // The desktop rail and the browser rail.
-  assert.equal(rails.length - 1, 2, "the rail count changed");
+  assert.equal(rails.length - 1, 2, "a rail left its bottom-right corner");
   for (const rail of rails.slice(1)) {
     const rules = rail.slice(0, rail.indexOf('"'));
-    assert.match(rules, /\boverflow-y-auto\b/, "a capped rail clips its cards");
-    // The scroller clips at the padding box, so without room reserved there the
-    // cards lose their shadows; the negative margin puts the rail back where it
-    // was.
-    assert.match(rules, /\bpx-3\b/);
-    assert.match(rules, /-mx-3/);
-    // Sideways only. This node is the one useStackGeometry measures, so
-    // vertical padding is counted into scrollHeight and the stack asks for room
-    // it does not occupy: a card that fits under the composer then measures as
-    // one that does not, and the rail lifts over it. The cap has to stay on
-    // this same node too, since measure() lifts it here to read the natural
-    // height; on a parent, the read would be the placement's own output.
-    assert.ok(
-      !/\bp-3\b/.test(rules) && !/\bpy-3\b/.test(rules),
-      "vertical padding on the measured node inflates the measured height",
-    );
-  }
-});
-
-// pointer-events-none takes the rail's scrollbar with it, and only the cards
-// opt back in, so a scrolling rail nobody can drag hides the cards under the
-// fold. It is click-through only while there is nothing to scroll to.
-test("a scrolling rail takes pointer input, a fitting one stays click-through", () => {
-  const rails = PROVIDER.split('"fixed right-4 ');
-  assert.equal(rails.length - 1, 2, "the rail count changed");
-  for (const rail of rails.slice(1)) {
-    const branch = rail.slice(0, rail.indexOf("style={{"));
     assert.match(
-      branch,
-      /stack\.overflowing\s*\?\s*"pointer-events-auto"\s*:\s*"pointer-events-none"/,
-      "the rail is click-through unconditionally",
+      rules,
+      /max-h-\[calc\(100dvh_-_2rem\)\]/,
+      "the rail no longer caps itself at the viewport",
     );
   }
-  // Derived from the placement, never read back off the node. A DOM reading
-  // latches: the stack scrolls for a frame, the placement then changes to one
-  // that fits, and nothing resizes afterwards to correct the flag, so a rail
-  // with nothing to scroll to keeps the pointer input it took. Compared
-  // against the height the cards collapse to, not their natural height nor the
-  // floor the placement asks for: a card clipped below its floor is not a fold
-  // to scroll to.
-  assert.match(
-    STORE,
-    /overflowing: collapsedRoom > geometry\.maxHeight/,
-    "the overflow flag is not derived from the placement",
-  );
-  assert.ok(!/setOverflowing/.test(STORE), "a latched DOM reading is back");
-  // The probe writes max-height twice and reads scrollHeight between the
-  // writes. transition-property: all reaches the rail, so unsuppressed each
-  // write starts a transition, and a transition computes its start value
-  // until the timeline advances: the box computes 0px while its inline style
-  // reads back as the cap, and three whole cards lay out below it.
-  const suppressed = STORE.indexOf('node.style.transition = "none"');
-  const probe = STORE.slice(
-    suppressed,
-    STORE.indexOf("setNeededRoom", suppressed),
-  );
-  assert.ok(
-    probe.length > 0 && /node\.style\.maxHeight = "none"/.test(probe),
-    "the height probe is not run with transitions suppressed",
-  );
-  assert.match(
-    STORE,
-    /void node\.scrollHeight;\s*\n\s*node\.style\.transition = eased;/,
-    "the restored cap is handed back to a transition",
-  );
+  // The offset and the cap are the two things the placement used to own, so
+  // they are the two that must stay out of the render.
+  for (const banned of [
+    "useStackGeometry",
+    "stackGeometry",
+    "stack.bottom",
+    "stack.maxHeight",
+  ]) {
+    assert.ok(
+      !PROVIDER.includes(banned),
+      `the rail is placed from JS again (${banned})`,
+    );
+  }
+  // And the arithmetic it was placed by does not come back to the store, which
+  // is now only a register of where the draggable panels are.
+  for (const banned of ["stackBottomInset", "stackMaxHeight", "dodgeInset"]) {
+    assert.ok(
+      !STORE.includes(banned),
+      `the dodge arithmetic is back in the frame store (${banned})`,
+    );
+  }
 });

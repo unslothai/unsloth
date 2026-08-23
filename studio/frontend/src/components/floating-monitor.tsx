@@ -479,13 +479,10 @@ function FloatingMonitorPanel({
   const hasGpu = (displayedGpu?.available ?? false) && devices.length > 0;
 
   // The container sits on the floating panel layer, above the bottom-right
-  // overlay stack. That stack normally dodges this monitor, but the dodge has a
-  // floor: drag the monitor to the corner and resize it to fill the viewport and
-  // there is nowhere left to dodge to, so stackBottomInset clamps at
-  // MIN_STACK_ROOM and parks the stack at the top of the screen, directly over
-  // this monitor's title bar and Close button. The stack is passive status; this
-  // is a window the user is dragging, resizing and closing, so it wins. Still
-  // below the startup screen and tooltips. See lib/z-layers.
+  // overlay stack. The stack is anchored to that same corner and does not move
+  // for this monitor, so the two can overlap. The stack is passive status; this
+  // is a window being dragged, resized and closed, so it wins. Still below the
+  // startup screen and tooltips. See lib/z-layers.
   //
   // The API monitor panel shares this layer rather than sitting under it, and
   // whichever of the two the user touched last is the one in front.
