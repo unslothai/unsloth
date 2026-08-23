@@ -141,6 +141,7 @@ import {
   shouldAutoContinueMessage,
 } from "@/features/chat/utils/continuation";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
+import { ChatSkillsDialog } from "@/features/chat/chat-skills-dialog";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-menu-item";
@@ -5645,6 +5646,7 @@ const ComposerToolsMenu: FC<{
 
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const aui = useAui();
   const composerCanAddAttachments = useAuiState(
@@ -5891,6 +5893,7 @@ const ComposerToolsMenu: FC<{
         }
       }}
     />
+    <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
     <DropdownMenu
       onOpenChange={(open) => {
         if (open) void refreshRecentPrompts();
@@ -6019,19 +6022,21 @@ const ComposerToolsMenu: FC<{
         {pinnedPlusItems.map((id) => (
           <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
         ))}
-        {overflowPlusItems.length > 0 ? (
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger>
-              <MoreHorizontalIcon className="size-4" />
-              More
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
-              {overflowPlusItems.map((id) => (
-                <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
-              ))}
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
-        ) : null}
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <MoreHorizontalIcon className="size-4" />
+            More
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
+            <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
+              <HugeiconsIcon icon={BookOpen01Icon} strokeWidth={2} />
+              Agent Skills
+            </DropdownMenuItem>
+            {overflowPlusItems.map((id) => (
+              <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+            ))}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
       </DropdownMenuContent>
     </DropdownMenu>
       <NewProjectDialog

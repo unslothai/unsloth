@@ -56,6 +56,7 @@ import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
+  BookOpenIcon,
   Columns2Icon,
   GlobeIcon,
   HeadphonesIcon,
@@ -88,6 +89,7 @@ import {
 } from "./prompt-storage/prompt-storage-dialog";
 import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
+import { ChatSkillsDialog } from "./chat-skills-dialog";
 import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
 import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
@@ -565,6 +567,7 @@ export function SharedComposer({
   const [isComposing, setIsComposing] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
   const refreshRecentPrompts = useCallback(async () => {
     try {
@@ -2104,6 +2107,7 @@ export function SharedComposer({
           setTimeout(() => { sendRef.current?.(); }, 100);
         }}
       />
+      <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
       {/* Gemini-style drop affordance, mirrored from the single composer. */}
       <div
         className={`pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[32px] bg-background/90 backdrop-blur-sm transition-opacity duration-150 dark:bg-card/90 ${dragging ? "opacity-100" : "opacity-0"}`}
@@ -2325,19 +2329,21 @@ export function SharedComposer({
               {pinnedPlusItems.map((id) => (
                 <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
               ))}
-              {overflowPlusItems.length > 0 ? (
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <MoreHorizontalIcon className="size-4" />
-                    More
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
-                    {overflowPlusItems.map((id) => (
-                      <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
-                    ))}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-              ) : null}
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <MoreHorizontalIcon className="size-4" />
+                  More
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
+                  <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
+                    <BookOpenIcon />
+                    Agent Skills
+                  </DropdownMenuItem>
+                  {overflowPlusItems.map((id) => (
+                    <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+                  ))}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
           {/* Active in compare mode; sits first. Click to exit back to single chat. */}

@@ -180,6 +180,8 @@ type RefreshOptions =
       threadId?: string;
       /** When true, skip the modelLoading guard (post-load recount). */
       afterModelLoad?: boolean;
+      /** invalidate an in-flight count whose prompt inputs just changed. */
+      supersedeInFlight?: boolean;
     }
   | undefined;
 
@@ -223,6 +225,7 @@ export async function refreshContextUsage(
 
   if (countsInFlight.has(capturedThreadId)) {
     retryAfterInFlight.set(capturedThreadId, options);
+    if (options?.supersedeInFlight) nextGeneration(capturedThreadId);
     return;
   }
 

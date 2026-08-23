@@ -4546,7 +4546,9 @@ def _render_html_reaches_network(arguments: dict) -> bool:
 # separately above because a networked canvas does need approval.
 # search_conversation only reads this chat's own past turns, so auto mode would otherwise
 # prompt for approval on every call.
-_ALWAYS_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base", "search_conversation"})
+_ALWAYS_SAFE_TOOLS = frozenset(
+    {"web_search", "search_knowledge_base", "search_conversation", "read_skill"}
+)
 
 
 def is_always_safe_tool(name: str) -> bool:
@@ -9815,6 +9817,89 @@ SEARCH_CONVERSATION_TOOL = {
     },
 }
 
+READ_SKILL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_skill",
+        "description": (
+            "Load an enabled Agent Skill progressively. Read SKILL.md first when a listed "
+            "skill matches the user's task, then read only the relative text resources its "
+            "instructions require."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Exact skill name from the available skills catalog.",
+                },
+                "resource": {
+                    "type": "string",
+                    "description": (
+                        "Relative path inside the skill bundle. Omit to read SKILL.md."
+                    ),
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Character offset returned by a previous partial read.",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+}
+
+CREATE_SKILL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "create_skill",
+        "description": (
+            "Create and install a portable Agent Skill inside Studio's skills directory. "
+            "Provide the complete SKILL.md and any supporting UTF-8 text files. Set replace "
+            "only when the user explicitly asked to replace the installed skill."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Lowercase hyphenated name matching SKILL.md frontmatter.",
+                },
+                "skill_markdown": {
+                    "type": "string",
+                    "description": "Complete UTF-8 contents of SKILL.md.",
+                },
+                "files": {
+                    "type": "array",
+                    "description": (
+                        "Optional UTF-8 references, scripts, or text assets in the skill bundle."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Relative path inside the skill bundle.",
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "Complete UTF-8 file contents.",
+                            },
+                        },
+                        "required": ["path", "content"],
+                    },
+                },
+                "replace": {
+                    "type": "boolean",
+                    "description": "Replace an installed skill with the same name.",
+                },
+            },
+            "required": ["name", "skill_markdown"],
+        },
+    },
+}
+
 ALL_TOOLS = [
     WEB_SEARCH_TOOL,
     PYTHON_TOOL,
@@ -9823,6 +9908,8 @@ ALL_TOOLS = [
     RENDER_HTML_TOOL,
     SEARCH_KNOWLEDGE_BASE_TOOL,
     SEARCH_CONVERSATION_TOOL,
+    CREATE_SKILL_TOOL,
+    READ_SKILL_TOOL,
 ]
 
 
@@ -10007,6 +10094,21 @@ def _render_html_result(arguments: dict) -> str:
     )
 
 
+_SKILL_FALLBACK_RESULT_TOKENS = 1_536
+_SKILL_RESULT_FRAMING_TOKENS = 8
+
+
+def _skill_result_cost(text: str, token_counter = None) -> int:
+    if token_counter is not None:
+        try:
+            counted = int(token_counter(text))
+            if counted > 0:
+                return counted + _SKILL_RESULT_FRAMING_TOKENS
+        except Exception:
+            logger.debug("read_skill: exact result count failed", exc_info = True)
+    return len(text.encode("utf-8")) + _SKILL_RESULT_FRAMING_TOKENS
+
+
 def execute_tool(
     name: str,
     arguments: dict,
@@ -10067,6 +10169,65 @@ def execute_tool(
             cancel_event,
             search_fn = _search_conversation,
         )
+    if name == "create_skill":
+        from core.inference.skills import SkillError, create_skill
+
+        try:
+            skill = create_skill(
+                arguments.get("name"),
+                arguments.get("skill_markdown"),
+                arguments.get("files"),
+                replace = arguments.get("replace", False),
+            )
+        except SkillError as exc:
+            return f"Error: {exc}"
+        if skill["enabled"]:
+            return f"Installed skill '{skill['name']}'. It will be available on the next turn."
+        return f"Installed skill '{skill['name']}'. It remains disabled."
+    if name == "read_skill":
+        from core.inference.skills import (
+            MAX_SKILL_PAGE_CHARS,
+            SkillError,
+            read_skill_resource,
+        )
+
+        skill_name = arguments.get("name")
+        resource = arguments.get("resource", "SKILL.md")
+        offset = arguments.get("offset", 0)
+        if not isinstance(skill_name, str) or not skill_name:
+            return "Error: read_skill requires a skill name."
+        if not isinstance(resource, str):
+            return "Error: read_skill resource must be a relative path."
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            return "Error: read_skill offset must be a non-negative integer."
+        try:
+            try:
+                budget = (
+                    _SKILL_FALLBACK_RESULT_TOKENS
+                    if conversation_budget_tokens is None
+                    else max(0, int(conversation_budget_tokens))
+                )
+            except (TypeError, ValueError):
+                budget = _SKILL_FALLBACK_RESULT_TOKENS
+            if conversation_token_counter is None:
+                budget = min(budget, _SKILL_FALLBACK_RESULT_TOKENS)
+            if budget <= 0:
+                return "There is no room left in this context to read a skill resource."
+            page_chars = MAX_SKILL_PAGE_CHARS
+            while True:
+                result = read_skill_resource(
+                    skill_name,
+                    resource,
+                    offset,
+                    page_chars = page_chars,
+                )
+                if _skill_result_cost(result, conversation_token_counter) <= budget:
+                    return result
+                if page_chars <= 1:
+                    return "There is no room left in this context to read a skill resource."
+                page_chars = max(1, page_chars // 2)
+        except SkillError as exc:
+            return f"Error: {exc}"
     if name == "render_html":
         return _render_html_result(arguments)
     if name.startswith(MCP_TOOL_PREFIX):

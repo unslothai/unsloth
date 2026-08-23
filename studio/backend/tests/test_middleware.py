@@ -244,6 +244,20 @@ class TestMaxBodyMiddleware:
         assert cap == upload_request_limit_bytes()  # DB-aware cap + multipart overhead
         assert cap > default_request_body_limit_bytes()  # not the plain default body cap
 
+    def test_skill_bundle_import_streams_with_its_archive_cap(self, main_module):
+        from core.inference.skills import MAX_ARCHIVE_BYTES
+        from utils.upload_limits import upload_request_limit_bytes
+
+        path = "/api/skills/import"
+        assert any(path.startswith(prefix) for prefix in main_module._BODY_PROTECTED_PREFIXES)
+        assert path in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
+        assert main_module._get_upload_passthrough_request_max_bytes(path) == (
+            upload_request_limit_bytes(MAX_ARCHIVE_BYTES)
+        )
+        assert main_module._get_upload_passthrough_request_max_bytes(path + "/") == (
+            upload_request_limit_bytes(MAX_ARCHIVE_BYTES)
+        )
+
     def test_diffusion_dataset_json_subroutes_keep_default_cap(self, main_module):
         # The exact-path passthrough must NOT sweep in the JSON sub-routes under the same prefix: a prefix match would let a large
         # caption/import body bypass the default JSON cap and be buffered up to the far larger upload limit.
