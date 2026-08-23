@@ -73,8 +73,19 @@ test("bursty byte observations report the underlying transfer rate", () => {
 
 // Two jumps are the minimum that carries timing; below that the honest answer is
 // no rate, not a number set by where the window happened to cut.
-test("bursts too far apart to measure publish no rate at all", () => {
-  assert.equal(burstyRates(90, 100 * MB, 600).length, 0);
+test("bursts far apart still report their rate once the cadence is known", () => {
+  // Silence used to be the answer here, because a fixed stall window shorter
+  // than the burst period reads every healthy gap as a stall. The rate is
+  // exactly recoverable though: increase-to-increase over a 90s cadence is
+  // 100 MB/s on the nose, and showing it beats blanking the bar for minutes.
+  const rates = burstyRates(90, 100 * MB, 600);
+  assert.ok(rates.length > 0, "a 90s cadence should still publish");
+  for (const rate of rates) {
+    assert.ok(
+      Math.abs(rate - 100 * MB) < 1 * MB,
+      `published ${(rate / 1e6).toFixed(1)} MB/s, want 100`,
+    );
+  }
 });
 
 // External job callbacks can fire back to back, so the first two increases may be
