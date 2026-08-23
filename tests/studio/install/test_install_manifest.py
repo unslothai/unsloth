@@ -458,6 +458,32 @@ def test_scan_paths_keeps_genuinely_separate_roots(tmp_path, monkeypatch):
     assert im._metadata_scan_paths() == [str(pure), str(plat)]
 
 
+def test_a_record_outside_this_interpreters_scheme_is_not_installed(tmp_path, monkeypatch):
+    """The scan is purelib/platlib only, so a user site or an inherited
+    PYTHONPATH entry is invisible. _installed_version used to answer from all of
+    sys.path, so this narrows it deliberately: every caller runs against the
+    managed venv, where those trees are either disabled or someone else's. A
+    duplicate the venv does not own must not make the venv look damaged.
+    """
+    scheme = tmp_path / "site-packages"
+    scheme.mkdir()
+    elsewhere = tmp_path / "user-site"
+    elsewhere.mkdir()
+    record = elsewhere / "demo-1.0.dist-info"
+    record.mkdir()
+    (record / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: demo\nVersion: 1.0\n", encoding = "utf-8"
+    )
+
+    monkeypatch.setattr(
+        sysconfig, "get_paths", lambda *a, **k: {"purelib": str(scheme), "platlib": str(scheme)}
+    )
+    monkeypatch.syspath_prepend(str(elsewhere))
+
+    assert im.installed_versions("demo") == []
+    assert im.installed_version_probe("demo") == ("", False)
+
+
 def _fake_venv(root, files):
     """A venv-shaped tree whose installed package ships its own requirements."""
     site = root / "lib" / "python3.12" / "site-packages"
