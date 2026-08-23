@@ -2460,6 +2460,39 @@ class TestGgufVisionToolRouting:
         [entry] = result.monitor.snapshot()
         assert entry["reply"] == "visible"
 
+    def test_standard_gguf_stream_forwards_requested_prompt_progress(self, monkeypatch):
+        captured = {}
+
+        def _generate(**kwargs):
+            captured.update(kwargs)
+            yield {
+                "type": "prompt_progress",
+                "prompt_progress": {
+                    "total": 1024,
+                    "processed": 512,
+                    "cache": 128,
+                    "time_ms": 64,
+                },
+            }
+            yield "visible"
+            yield {"type": "metadata", "usage": {}, "finish_reason": "stop"}
+
+        result = self._run_gguf_case(
+            monkeypatch,
+            generate = _generate,
+            payload_kwargs = {"stream": True, "return_progress": True},
+        )
+
+        assert captured["return_progress"] is True
+        [progress] = [item for item in result.payloads if item.get("prompt_progress")]
+        assert progress["choices"] == []
+        assert progress["prompt_progress"] == {
+            "total": 1024,
+            "processed": 512,
+            "cache": 128,
+            "time_ms": 64,
+        }
+
     def test_standard_gguf_stream_queued_request_sends_keepalive_before_generation(
         self, monkeypatch
     ):
@@ -3267,6 +3300,38 @@ class TestGgufVisionToolRouting:
         assert "<|tool_call>" not in combined_content
         [entry] = result.monitor.snapshot()
         assert entry["reply"] == "visible "
+
+    def test_gguf_tool_stream_forwards_requested_prompt_progress(self, monkeypatch):
+        captured = {}
+
+        def _tools(**kwargs):
+            captured.update(kwargs)
+            yield {
+                "type": "prompt_progress",
+                "prompt_progress": {
+                    "total": 2048,
+                    "processed": 1024,
+                    "cache": 512,
+                    "time_ms": 80,
+                },
+            }
+            yield {"type": "content", "text": "visible"}
+            yield {"type": "metadata", "usage": {}, "finish_reason": "stop"}
+
+        result = self._run_gguf_case(
+            monkeypatch,
+            tool_generate = _tools,
+            payload_kwargs = {
+                "stream": True,
+                "return_progress": True,
+                "enable_tools": True,
+                "enabled_tools": ["terminal"],
+            },
+        )
+
+        assert captured["return_progress"] is True
+        [progress] = [item for item in result.payloads if item.get("prompt_progress")]
+        assert progress["prompt_progress"]["processed"] == 1024
 
     def test_gguf_tool_stream_flushes_held_text_before_status_reset(self, monkeypatch):
         def _tools(**_kwargs):

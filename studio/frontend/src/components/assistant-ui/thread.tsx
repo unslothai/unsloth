@@ -63,6 +63,7 @@ import {
   pasteLongTextAsFile,
   isPlainPasteChord,
   plainPasteStillCounts,
+  promptProgressMetrics,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
   YoutubeTranscriptPrompt,
@@ -76,6 +77,7 @@ import {
   useScrollThreadToBottom,
 } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import { MascotImg } from "@/components/mascot-img";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -6586,10 +6588,99 @@ const GeneratingIndicator: FC = () => {
     ({ message }) =>
       message.content.length === 0 && message.status?.type === "running",
   );
+  const messageId = useAuiState(({ message }) => message.id);
+  const progress = useChatRuntimeStore(
+    (state) => state.generatingStatusByMessageId[messageId],
+  );
+  const [now, setNow] = useState(Date.now);
+
+  useEffect(() => {
+    if (!show || !progress) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 100);
+    return () => window.clearInterval(timer);
+  }, [show, progress]);
+
   if (!show) {
     return null;
   }
-  return <span className="text-sm text-muted-foreground">Generating...</span>;
+
+  if (!progress) {
+    return (
+      <span
+        role="status"
+        className="inline-flex items-center gap-2 text-sm text-muted-foreground"
+      >
+        <Loader2Icon className="size-3.5 animate-spin" />
+        Generating...
+      </span>
+    );
+  }
+
+  const exactProgress = progress.promptProgress;
+  const exactMetrics = exactProgress
+    ? promptProgressMetrics(exactProgress)
+    : null;
+  const basePhaseLabel = {
+    preparing: "Preparing request",
+    prefill: "Processing prompt",
+    waiting: "Waiting for first token",
+    reconnecting: "Reconnecting to generation",
+  }[progress.phase];
+  const phaseLabel = exactMetrics
+    ? `${basePhaseLabel} · ${Math.round(exactMetrics.percentage)}%`
+    : basePhaseLabel;
+  const elapsedSeconds = Math.max(0, now - progress.startedAt) / 1000;
+  const tokenLabel = exactProgress
+    ? `${Math.round(exactProgress.processed).toLocaleString()} / ${Math.round(exactProgress.total).toLocaleString()} tokens`
+    : progress.estimatedPromptTokens
+      ? `~${progress.estimatedPromptTokens.toLocaleString()} input tokens`
+      : null;
+  const previousRate = progress.previousPromptTokensPerSecond;
+
+  return (
+    <div
+      className="aui-generating-indicator my-1 w-full max-w-sm rounded-xl border border-border/60 bg-muted/25 px-3 py-2.5 text-muted-foreground"
+    >
+      <div
+        role="status"
+        aria-live="polite"
+        className="flex items-center gap-2 text-sm font-medium text-foreground/80"
+      >
+        <Loader2Icon className="size-3.5 shrink-0 animate-spin text-primary" />
+        <span>{phaseLabel}</span>
+      </div>
+      <Progress
+        indeterminate={!exactMetrics}
+        value={exactMetrics?.percentage}
+        aria-label={
+          exactMetrics
+            ? phaseLabel
+            : `${phaseLabel}, progress unavailable until prompt processing starts`
+        }
+        className="mt-2 h-1"
+        indicatorClassName="bg-primary/70"
+      />
+      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[11px] leading-4 tabular-nums">
+        {tokenLabel && <span>{tokenLabel}</span>}
+        <span>{elapsedSeconds.toFixed(1)}s elapsed</span>
+        {exactMetrics?.tokensPerSecond !== undefined && (
+          <span>
+            {Math.round(exactMetrics.tokensPerSecond).toLocaleString()} tok/s
+          </span>
+        )}
+        {exactMetrics?.etaMs !== undefined && (
+          <span>~{Math.max(1, Math.ceil(exactMetrics.etaMs / 1000))}s left</span>
+        )}
+        {!exactMetrics && previousRate !== undefined && (
+          <span
+            title="Last completed prompt rate; live prefill throughput is available only after this prompt finishes"
+          >
+            previous: {Math.round(previousRate).toLocaleString()} tok/s
+          </span>
+        )}
+      </div>
+    </div>
+  );
 };
 
 // Placeholder when stop fires before any visible content (e.g. mid-think).

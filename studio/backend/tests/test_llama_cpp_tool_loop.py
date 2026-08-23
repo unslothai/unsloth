@@ -26,6 +26,7 @@ from core.inference.llama_cpp import (
     _PROVISIONAL_ARGS_MIN_CHARS,
     GgufLoadIntent,
     LlamaCppBackend,
+    _prompt_progress_event,
 )
 from core.inference.tool_call_parser import NUDGE_TOOL_CALLS_STATUS
 from state import tool_approvals
@@ -173,6 +174,61 @@ def test_plain_stream_reports_request_scoped_live_prompt_and_generation_timings(
     assert samples[0]["prompt_per_second"] == 9000
     assert all("prompt_ms" not in sample for sample in samples)
     assert samples[-1]["predicted_per_second"] == 200
+
+
+def test_prompt_progress_event_normalizes_llama_server_sample():
+    event = _prompt_progress_event(
+        {
+            "prompt_progress": {
+                "total": 1024,
+                "processed": 512,
+                "cache": 128,
+                "time_ms": 64,
+            }
+        }
+    )
+
+    assert event == {
+        "type": "prompt_progress",
+        "prompt_progress": {
+            "total": 1024.0,
+            "processed": 512.0,
+            "cache": 128.0,
+            "time_ms": 64.0,
+        },
+    }
+
+
+def test_plain_stream_requests_and_yields_prompt_progress(monkeypatch):
+    stream = [
+        _progress(processed = 512, cached = 128, time_ms = 64),
+        _sse({"content": "OK"}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [], payloads)
+
+    @contextlib.contextmanager
+    def fake_open_stream(_url, payload, _cancel_event):
+        payloads.append(copy.deepcopy(payload))
+        yield type("FakeResponse", (), {"chunks": stream})(), None
+
+    monkeypatch.setattr(backend, "_open_stream", fake_open_stream)
+    monkeypatch.setattr(backend, "_claim_thread_slot", lambda _thread_id: None)
+    monkeypatch.setattr(backend, "_release_thread_slot", lambda _slot: None)
+
+    events = list(
+        backend.generate_chat_completion(
+            messages = [{"role": "user", "content": "benchmark"}],
+            return_progress = True,
+        )
+    )
+
+    assert payloads[0]["return_progress"] is True
+    assert payloads[0]["timings_per_token"] is True
+    assert events[0]["type"] == "prompt_progress"
+    assert events[0]["prompt_progress"]["processed"] == 512
+    assert events[1] == "OK"
 
 
 def test_tool_stream_reports_progress_without_leaking_a_content_event(monkeypatch):

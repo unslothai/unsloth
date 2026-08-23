@@ -250,6 +250,11 @@ import {
   useResearchRunStore,
   watchResearchRun,
 } from "../stores/research-run-store";
+import {
+  estimatePromptTokens,
+  lastMeasuredPromptRate,
+  type ChatGenerationProgress,
+} from "../utils/generation-progress";
 import { cancelResearchRun, createResearchRun } from "./research-api";
 
 // Small models (<=9B) answer from memory instead of calling search, so "auto"
@@ -4933,6 +4938,29 @@ export function createOpenAIStreamAdapter(
       let waitingFirstChunk = true;
       let firstTokenSettled = false;
       const streamStartTime = Date.now();
+      const generationProgressRunId = crypto.randomUUID();
+      const generationProgressMessageId = unstable_assistantMessageId;
+      let generationProgress: ChatGenerationProgress = {
+        runId: generationProgressRunId,
+        phase: "preparing",
+        runStartedAt: streamStartTime,
+        startedAt: streamStartTime,
+        previousPromptTokensPerSecond: lastMeasuredPromptRate(messages),
+      };
+      let generationProgressVisible = false;
+      const publishGenerationProgress = () => {
+        if (
+          generationProgressMessageId &&
+          generationProgressVisible &&
+          waitingFirstChunk &&
+          !runSignal.aborted
+        ) {
+          runtime.setGeneratingStatus(
+            generationProgressMessageId,
+            generationProgress,
+          );
+        }
+      };
       let responseModelId = externalSelection?.modelId ?? params.checkpoint;
       let firstTokenTime: number | undefined;
       let totalChunks = 0;
@@ -4961,7 +4989,8 @@ export function createOpenAIStreamAdapter(
       const warmupTimer = setTimeout(() => {
         if (!waitingFirstChunk) return;
         if (runSignal.aborted) return;
-        runtime.setGeneratingStatus("waiting");
+        generationProgressVisible = true;
+        publishGenerationProgress();
       }, warmupDelayMs);
       // Flagged local/external so the model-swap gate only counts the chats a reload ends; the
       // backend leaves external-provider runs out of active_generations for the same reason.
@@ -5716,6 +5745,8 @@ export function createOpenAIStreamAdapter(
             // Opt into the trailing usage chunk so the context-usage bar
             // and tok/s readout populate (backend gates it on include_usage).
             stream_options: { include_usage: true },
+            // llama.cpp emits one exact prompt-progress sample per processed batch.
+            ...(activeModel?.isGguf === true ? { return_progress: true } : {}),
             ...(activeModel?.isGguf === true
               ? { context_overflow: "truncate_oldest" as const }
               : {}),
@@ -5854,7 +5885,21 @@ export function createOpenAIStreamAdapter(
             }
             clearSelectedImageEditReference();
             requestedMaxTokens = requestPayload.max_tokens;
+            generationProgress = {
+              ...generationProgress,
+              estimatedPromptTokens: estimatePromptTokens({
+                messages: requestPayload.messages,
+                tools: (requestPayload as unknown as { tools?: unknown }).tools,
+              }),
+            };
+            publishGenerationProgress();
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
+            generationProgress = {
+              ...generationProgress,
+              phase: isExternalRequest ? "waiting" : "prefill",
+              startedAt: Date.now(),
+            };
+            publishGenerationProgress();
             const stream = streamChatCompletions(requestPayload, runSignal);
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
@@ -5863,6 +5908,30 @@ export function createOpenAIStreamAdapter(
               const chunkModel = (chunk as { model?: unknown }).model;
               if (typeof chunkModel === "string" && chunkModel.length > 0) {
                 responseModelId = chunkModel;
+              }
+
+              const promptProgress = chunk.prompt_progress;
+              if (
+                promptProgress &&
+                Number.isFinite(promptProgress.total) &&
+                promptProgress.total > 0 &&
+                Number.isFinite(promptProgress.processed) &&
+                Number.isFinite(promptProgress.cache) &&
+                Number.isFinite(promptProgress.time_ms)
+              ) {
+                generationProgress = {
+                  ...generationProgress,
+                  phase: "prefill",
+                  estimatedPromptTokens: promptProgress.total,
+                  promptProgress: {
+                    total: promptProgress.total,
+                    processed: promptProgress.processed,
+                    cache: promptProgress.cache,
+                    timeMs: promptProgress.time_ms,
+                  },
+                };
+                publishGenerationProgress();
+                continue;
               }
 
               // Handle tool status events
@@ -6706,7 +6775,13 @@ export function createOpenAIStreamAdapter(
                 waitingFirstChunk = false;
                 firstTokenTime = Date.now() - streamStartTime;
                 settleFirstTokenOk();
-                runtime.setGeneratingStatus(null);
+                if (generationProgressMessageId) {
+                  runtime.setGeneratingStatus(
+                    generationProgressMessageId,
+                    null,
+                    generationProgressRunId,
+                  );
+                }
               }
 
               if (reasoning) {
@@ -7211,7 +7286,13 @@ export function createOpenAIStreamAdapter(
         for (const part of toolCallParts) {
           confirmStore.clearToolConfirmation(part.toolCallId);
         }
-        runtime.setGeneratingStatus(null);
+        if (generationProgressMessageId) {
+          runtime.setGeneratingStatus(
+            generationProgressMessageId,
+            null,
+            generationProgressRunId,
+          );
+        }
         // Scoped by thread AND by run: a global clear wiped every other running chat's badge,
         // and an unowned one wiped a concurrent run's badge behind the same key.
         runtime.setToolStatus(cleanupKey, null, serverCancel);

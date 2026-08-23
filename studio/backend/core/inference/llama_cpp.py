@@ -4390,6 +4390,25 @@ def _report_live_llama_timings(callback, chunk) -> None:
         logger.debug("Ignoring API monitor throughput callback failure", exc_info = True)
 
 
+def _prompt_progress_event(chunk) -> Optional[dict]:
+    """Normalize llama-server's per-batch prompt progress for stream consumers."""
+    if not isinstance(chunk, dict) or not isinstance(chunk.get("prompt_progress"), dict):
+        return None
+    progress = chunk["prompt_progress"]
+    try:
+        values = {
+            "total": max(0.0, float(progress.get("total", 0))),
+            "processed": max(0.0, float(progress.get("processed", 0))),
+            "cache": max(0.0, float(progress.get("cache", 0))),
+            "time_ms": max(0.0, float(progress.get("time_ms", 0))),
+        }
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not all(math.isfinite(value) for value in values.values()) or values["total"] <= 0:
+        return None
+    return {"type": "prompt_progress", "prompt_progress": values}
+
+
 # Host RAM to leave free on an integrated GPU, matching llama.cpp's own --fit
 # margin (default 1024 MiB per device). ggml reports an iGPU's "VRAM" as shared
 # system RAM, so hold back the same margin rather than inventing a larger one.
@@ -23380,6 +23399,7 @@ class LlamaCppBackend:
         seed: Optional[int] = None,
         promote_reasoning_only: bool = True,
         perf_callback: Optional[Callable[[dict], None]] = None,
+        return_progress: bool = False,
         reasoning_provenance: Optional[dict] = None,
         context_overflow: Optional[str] = None,
         thread_id: Optional[str] = None,
@@ -23425,7 +23445,7 @@ class LlamaCppBackend:
         retry_max_tokens = max_tokens
         retry_context_overflow = context_overflow
         retry_preflight_context_length = None
-        if perf_callback is not None:
+        if perf_callback is not None or return_progress:
             payload["return_progress"] = True
             payload["timings_per_token"] = True
         # Per-request enable_thinking / reasoning_effort / preserve_thinking
@@ -23593,6 +23613,10 @@ class LlamaCppBackend:
                         try:
                             data = json.loads(line[6:])
                             _report_live_llama_timings(perf_callback, data)
+                            if return_progress:
+                                _progress_event = _prompt_progress_event(data)
+                                if _progress_event is not None:
+                                    yield _progress_event
                             # Diffusion frame (per-step canvas) from the shim: forward untouched so
                             # the frontend renders it in place. No assistant text, so it never enters
                             # the cumulative content.
@@ -23714,6 +23738,7 @@ class LlamaCppBackend:
                     seed = seed,
                     promote_reasoning_only = promote_reasoning_only,
                     perf_callback = perf_callback,
+                    return_progress = return_progress,
                     reasoning_provenance = reasoning_provenance,
                     context_overflow = retry_context_overflow,
                     # The retry refits for the replacement window and can evict more than
@@ -23768,6 +23793,7 @@ class LlamaCppBackend:
         permission_mode: Optional[str] = None,
         promote_reasoning_only: bool = True,
         perf_callback: Optional[Callable[[dict], None]] = None,
+        return_progress: bool = False,
         reasoning_provenance: Optional[dict] = None,
         context_overflow: Optional[str] = None,
     ) -> Generator[dict, None, None]:
@@ -24236,7 +24262,7 @@ class LlamaCppBackend:
                 "presence_penalty": presence_penalty,
             }
 
-            if perf_callback is not None:
+            if perf_callback is not None or return_progress:
                 payload["return_progress"] = True
                 payload["timings_per_token"] = True
             # As in the passthrough builder: if every name carried markup the catalog is
@@ -24451,6 +24477,10 @@ class LlamaCppBackend:
                                 chunk_data = json.loads(line[6:])
 
                                 _report_live_llama_timings(perf_callback, chunk_data)
+                                if return_progress:
+                                    _progress_event = _prompt_progress_event(chunk_data)
+                                    if _progress_event is not None:
+                                        yield _progress_event
                                 _ct = chunk_data.get("timings")
                                 if _ct:
                                     _iter_timings = _ct
@@ -25789,7 +25819,7 @@ class LlamaCppBackend:
             stream_payload["seed"] = seed
         stream_payload["stream_options"] = {"include_usage": True}
 
-        if perf_callback is not None:
+        if perf_callback is not None or return_progress:
             stream_payload["return_progress"] = True
             stream_payload["timings_per_token"] = True
 
@@ -25934,6 +25964,10 @@ class LlamaCppBackend:
                             chunk_data = json.loads(line[6:])
 
                             _report_live_llama_timings(perf_callback, chunk_data)
+                            if return_progress:
+                                _progress_event = _prompt_progress_event(chunk_data)
+                                if _progress_event is not None:
+                                    yield _progress_event
                             # Capture server timings/usage from final chunks.
                             _chunk_timings = chunk_data.get("timings")
                             if _chunk_timings:

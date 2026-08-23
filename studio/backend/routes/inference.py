@@ -1132,6 +1132,19 @@ def _chat_role_chunk(completion_id, created, model_name) -> str:
     )
 
 
+def _chat_prompt_progress_chunk(completion_id, created, model_name, progress) -> str:
+    """Studio extension carrying llama.cpp's real per-batch prefill progress."""
+    chunk = {
+        "id": completion_id,
+        "created": created,
+        "model": model_name,
+        "object": "chat.completion.chunk",
+        "choices": [],
+        "prompt_progress": progress,
+    }
+    return f"data: {json.dumps(chunk, separators = (',', ':'))}\n\n"
+
+
 def _chat_content_chunk(completion_id, created, model_name, text) -> str:
     """A content-delta chunk carrying ``text``."""
     return _chat_chunk_sse(
@@ -15798,6 +15811,7 @@ async def openai_chat_completions(
                     bypass_permissions = bool(payload.bypass_permissions),
                     permission_mode = payload.permission_mode,
                     perf_callback = _gguf_perf_callback,
+                    return_progress = bool(payload.return_progress and payload.stream),
                     context_overflow = _rolling_context_policy(payload),
                 )
 
@@ -15952,6 +15966,15 @@ async def openai_chat_completions(
                         if event["type"] == "heartbeat":
                             # Tool-wrapper heartbeat while a server-side tool blocks; keeps SSE alive.
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            continue
+
+                        if event["type"] == "prompt_progress":
+                            yield _chat_prompt_progress_chunk(
+                                completion_id,
+                                created,
+                                model_name,
+                                event["prompt_progress"],
+                            )
                             continue
 
                         if event["type"] in ("tool_output", "tool_args"):
@@ -16505,6 +16528,7 @@ async def openai_chat_completions(
                 continue_final_message = _continue_final_message(payload),
                 seed = _seed,
                 perf_callback = _gguf_perf_callback,
+                return_progress = bool(payload.return_progress and payload.stream),
                 context_overflow = _rolling_context_policy(payload),
                 thread_id = payload.thread_id,
                 # These requests suppress the tool loop AND are excluded from the checkpoint
@@ -16611,6 +16635,13 @@ async def openai_chat_completions(
                                         for key, value in cumulative.items()
                                         if key != "type"
                                     },
+                                )
+                            elif cumulative.get("type") == "prompt_progress":
+                                yield _chat_prompt_progress_chunk(
+                                    completion_id,
+                                    created,
+                                    model_name,
+                                    cumulative["prompt_progress"],
                                 )
                             else:
                                 logger.warning(

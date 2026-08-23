@@ -705,6 +705,8 @@ export interface OpenAIChatCompletionsRequest {
    * sends it so the context-usage bar and tok/s readout populate.
    */
   stream_options?: { include_usage?: boolean } | null;
+  /** Local GGUF only: emit llama.cpp's per-batch prompt processing progress. */
+  return_progress?: boolean;
 }
 
 export interface OpenAIChatDelta {
@@ -737,6 +739,12 @@ export interface OpenAIChatChunk {
     total_tokens: number;
   };
   timings?: Record<string, number>;
+  prompt_progress?: {
+    total: number;
+    processed: number;
+    cache: number;
+    time_ms: number;
+  };
   context_truncated?: {
     dropped_messages: number;
     prompt_tokens_before?: number;

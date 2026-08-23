@@ -1633,6 +1633,13 @@ class ChatCompletionRequest(BaseModel):
     )
 
     # ── Unsloth extensions (ignored by standard OpenAI clients) ──
+    return_progress: bool = Field(
+        False,
+        description = (
+            "[x-unsloth] Emit llama.cpp prompt_progress chunks while a streamed GGUF "
+            "request processes its prompt."
+        ),
+    )
     top_k: int = Field(20, ge = -1, le = 100, description = "[x-unsloth] Top-k sampling")
     min_p: float = Field(0.01, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold")
     repetition_penalty: float = Field(
