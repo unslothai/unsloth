@@ -50,7 +50,7 @@ def _prune_helpers() -> str:
     """isAbandonedAssistantTurn + pruneOutboundHistory, which the outbound builder calls."""
     return slice_between(
         read(ADAPTER),
-        "/** A Stop that landed before the turn produced anything",
+        "/** Payload the turn carries in its own parts",
         "function extractImageBase64(",
     )
 
@@ -121,6 +121,18 @@ export function seed(patch: any): void {
 
 function isAnthropicRefusalMessage(_message: any): boolean {
   return false;
+}
+
+function sanitizeAssistantReplayText(text: string): string {
+  return text;
+}
+
+function readIncompleteInfo(_metadata: any): any {
+  return null;
+}
+
+function collectImageParts(_message: any): any[] {
+  return [];
 }
 
 function toOpenAIMessages(message: any): any[] {

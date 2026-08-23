@@ -1388,6 +1388,32 @@ function toOpenAIMessages(
   ];
 }
 
+/** Payload the turn carries in its own parts, before the replay serialiser decides how much
+ * of it fits back on the wire. A turn holding any of this is real history even when the
+ * serialiser emits nothing for it, so pruning it would delete a user prompt that was answered. */
+function assistantTurnCarriesPayload(message: RunMessage): boolean {
+  if (collectImageParts(message).length > 0) return true;
+  for (const part of message.content ?? []) {
+    if (part.type === "tool-call") return true;
+    if (
+      part.type === "text" &&
+      sanitizeAssistantReplayText(part.text).length > 0
+    ) {
+      return true;
+    }
+  }
+  return "attachments" in message && (message.attachments?.length ?? 0) > 0;
+}
+
+/** A turn that stopped before it was done. `status` is session state only (a reloaded thread
+ * comes back stamped complete), so the persisted marker is read alongside it. */
+function assistantTurnEndedEarly(message: RunMessage): boolean {
+  return (
+    message.status?.type === "incomplete" ||
+    readIncompleteInfo((message as { metadata?: unknown }).metadata) !== null
+  );
+}
+
 /** A Stop that landed before the turn produced anything: it serialises to a lone empty
  * assistant message, which every backend drops, stranding two user turns in a row. */
 function isAbandonedAssistantTurn(
@@ -1395,6 +1421,16 @@ function isAbandonedAssistantTurn(
   includeReasoningContent: boolean,
 ): boolean {
   if (message.role !== "assistant") return false;
+  if (assistantTurnCarriesPayload(message)) return false;
+  // Reasoning goes unreplayed only when the turn was cut short. A turn that finished on
+  // reasoning alone is a reply, and on an external request it serialises empty purely
+  // because reasoning is stripped there, which must not read as abandoned.
+  if (
+    !assistantTurnEndedEarly(message) &&
+    (message.content ?? []).some((part) => part.type === "reasoning")
+  ) {
+    return false;
+  }
   const [only, ...rest] = toOpenAIMessages(message, includeReasoningContent);
   return (
     rest.length === 0 &&
@@ -1411,14 +1447,30 @@ function pruneOutboundHistory(
   messages: RunMessages,
   includeReasoningContent: boolean,
 ): RunMessage[] {
+  const history = [...messages];
+  const abandoned = history.map((message) =>
+    isAbandonedAssistantTurn(message, includeReasoningContent),
+  );
+  // A prompt is only stranded next to another user turn when something survives after it.
+  // A thread whose last turn was abandoned still ends on its own prompt, which is exactly
+  // the history the next send needs, so that prompt stays.
+  let lastSurviving = -1;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    if (!abandoned[index] && !isAnthropicRefusalMessage(history[index])) {
+      lastSurviving = index;
+      break;
+    }
+  }
+
   const surviving: RunMessage[] = [];
-  for (const message of messages) {
-    if (
-      isAnthropicRefusalMessage(message) ||
-      isAbandonedAssistantTurn(message, includeReasoningContent)
-    ) {
-      const last = surviving.at(-1);
-      if (last && last.role === "user") surviving.pop();
+  for (let index = 0; index < history.length; index += 1) {
+    const message = history[index];
+    const refused = isAnthropicRefusalMessage(message);
+    if (refused || abandoned[index]) {
+      if (refused || index < lastSurviving) {
+        const last = surviving.at(-1);
+        if (last && last.role === "user") surviving.pop();
+      }
       continue;
     }
     surviving.push(message);

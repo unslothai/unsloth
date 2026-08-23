@@ -38,7 +38,9 @@ SOURCES = (ADAPTER, CODEX, CONTINUATION)
 
 # Fixtures the sliced code reads through. Only the tool-call helpers are stand-ins: the turns
 # that decide this behaviour carry text, reasoning or nothing at all, and a tool call has to be
-# real enough to prove a turn carrying one is NOT abandoned.
+# real enough to prove a turn carrying one is NOT abandoned. ``canReplayToolCallWithoutRoleTool``
+# is driven off the fixture rather than pinned, so the resultless call the replay has to drop is
+# reachable here instead of being stubbed out of existence.
 HARNESS = """
 // @ts-nocheck
 function readCodexReasoning(_metadata: any): any {
@@ -57,8 +59,8 @@ function shouldFlushCompletedLocalToolPair(_part: any): boolean {
   return false;
 }
 
-function canReplayToolCallWithoutRoleTool(_part: any): boolean {
-  return false;
+function canReplayToolCallWithoutRoleTool(part: any): boolean {
+  return part?.canReplay === true;
 }
 
 function serializeAssistantToolCallPart(part: any): any {
@@ -247,3 +249,90 @@ def test_back_to_back_stops_collapse_to_the_live_prompt():
     assert out["kept"] == ["user"]
     assert out["keptText"] == ["third"]
     assert out["wireBefore"] == ["user", "user", "user"]
+
+
+def test_a_reply_that_finished_on_reasoning_alone_keeps_its_prompt():
+    """A complete reasoning-only turn is a reply, not a Stop.
+
+    External requests serialise with ``includeReasoningContent = false``, which strips the
+    reasoning and leaves an empty assistant message. Reading only the wire shape called that
+    abandoned and deleted the prompt that produced it, so the question the user actually asked
+    left the context on hosted providers but survived on local ones.
+    """
+    answered = '{ role: "assistant", content: [{ type: "reasoning", text: "thought" }] }'
+    for include_reasoning in ("true", "false"):
+        out = _run(_script(f"[{_user('first')}, {answered}, {_user('second')}]", include_reasoning))
+        assert out["kept"] == ["user", "assistant", "user"], (
+            f"includeReasoningContent={include_reasoning}"
+        )
+        assert out["keptText"] == ["first", "second"]
+
+
+def test_a_reply_that_finished_with_no_text_at_all_is_still_abandoned():
+    """The turn holds nothing either serialisation could carry, so it prunes like a Stop."""
+    silent = '{ role: "assistant", content: [{ type: "text", text: "" }] }'
+    out = _run(_script(f"[{_user('first')}, {silent}, {_user('second')}]"))
+    assert out["kept"] == ["user"]
+
+
+def test_a_tool_call_the_replay_cannot_carry_keeps_its_prompt():
+    """A resultless call that cannot replay without role=tool is dropped by the serialiser.
+
+    The turn then serialises empty, but the model did call the tool, so the prompt that asked
+    for it is history and must not be deleted along with it.
+    """
+    unreplayable = (
+        '{ role: "assistant", content: [{ type: "tool-call", toolCallId: "call_1",'
+        ' toolName: "web_search", args: "{}" }] }'
+    )
+    out = _run(_script(f"[{_user('first')}, {unreplayable}, {_user('second')}]"))
+    assert out["kept"] == ["user", "assistant", "user"]
+    assert out["keptText"] == ["first", "second"]
+
+
+def test_a_trailing_abandoned_turn_keeps_the_prompt_it_followed():
+    """Nothing follows it, so there is no stranded pair to repair and nothing to drop.
+
+    The token-count path rebuilds outbound history for the live thread, which after a Stop
+    ends on the abandoned turn. Popping there emptied the whole history and priced the thread
+    at zero.
+    """
+    for include_reasoning in ("true", "false"):
+        out = _run(_script(f"[{_user('first')}, {CANCELLED}]", include_reasoning))
+        assert out["kept"] == ["user"], f"includeReasoningContent={include_reasoning}"
+        assert out["keptText"] == ["first"]
+
+
+def test_a_thread_that_is_only_a_stop_keeps_its_system_prompt_and_prompt():
+    history = (
+        '[{ role: "system", content: [{ type: "text", text: "sys" }] }, '
+        f"{_user('first')}, {CANCELLED}]"
+    )
+    out = _run(_script(history))
+    assert out["kept"] == ["system", "user"]
+    assert out["keptText"] == ["sys", "first"]
+
+
+def test_the_count_and_send_paths_prune_the_same_history():
+    """The recount always passes true and the request passes ``!isExternalRequest``.
+
+    Any shape whose verdict depends on that flag prices one history and sends another, so the
+    context bar and the payload disagree.
+    """
+    shapes = {
+        "cancelled": CANCELLED,
+        "text": '{ role: "assistant", content: [{ type: "text", text: "an answer" }] }',
+        "reasoning_complete": '{ role: "assistant", content: [{ type: "reasoning",'
+        ' text: "thought" }] }',
+        "reasoning_incomplete": '{ role: "assistant", content: [{ type: "reasoning",'
+        ' text: "thought" }], status: { type: "incomplete" } }',
+        "tool_unreplayable": '{ role: "assistant", content: [{ type: "tool-call",'
+        ' toolCallId: "call_1", toolName: "web_search", args: "{}" }] }',
+        "image": '{ role: "assistant", content: [{ type: "image", image: "QUJD" }] }',
+    }
+    for name, shape in shapes.items():
+        history = f"[{_user('first')}, {shape}, {_user('second')}]"
+        counted = _run(_script(history, "true"))
+        sent = _run(_script(history, "false"))
+        assert counted["kept"] == sent["kept"], name
+        assert counted["keptText"] == sent["keptText"], name

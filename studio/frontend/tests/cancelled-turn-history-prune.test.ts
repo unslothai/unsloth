@@ -18,15 +18,31 @@ test("a Stop with no output is recognised by what it puts on the wire", () => {
   );
 });
 
+test("a turn that carries payload of its own is never abandoned", () => {
+  assert.match(adapter, /function assistantTurnCarriesPayload\(/);
+  assert.match(adapter, /if \(assistantTurnCarriesPayload\(message\)\) return false;/);
+});
+
+test("a turn that finished on reasoning alone keeps its prompt", () => {
+  assert.match(adapter, /function assistantTurnEndedEarly\(/);
+  assert.match(adapter, /!assistantTurnEndedEarly\(message\) &&/);
+});
+
 test("an abandoned turn is pruned with the user prompt that triggered it", () => {
-  assert.match(
-    adapter,
-    /isAnthropicRefusalMessage\(message\) \|\|\s*isAbandonedAssistantTurn\(message, includeReasoningContent\)/,
-  );
   assert.match(adapter, /if \(last && last\.role === "user"\) surviving\.pop\(\)/);
 });
 
+test("a trailing abandoned turn keeps the prompt it followed", () => {
+  assert.match(adapter, /if \(refused \|\| index < lastSurviving\) \{/);
+});
+
 test("the send and token-count paths prune through the same helper", () => {
-  assert.equal(adapter.match(/pruneOutboundHistory\(/g)?.length, 3);
-  assert.doesNotMatch(adapter, /survivingMessages\.push\(message\)/);
+  assert.match(
+    adapter,
+    /const outboundMessages = pruneOutboundHistory\(messages, true\)/,
+  );
+  assert.match(
+    adapter,
+    /const survivingMessages = pruneOutboundHistory\(\s*messages,\s*!isExternalRequest,\s*\);/,
+  );
 });
