@@ -269,8 +269,7 @@ def session_clocks(records: list[dict]) -> dict[str, tuple[float, float]]:
 
 
 def concurrent_sessions(
-    records: list[dict],
-    only: set[str] | None = None,
+    records: list[dict], only: set[str] | None = None
 ) -> tuple[str, tuple[str, str] | None]:
     """Were these sessions running at once? `("sequential"|"overlap"|"interleaved"|"unknown", pair)`.
 

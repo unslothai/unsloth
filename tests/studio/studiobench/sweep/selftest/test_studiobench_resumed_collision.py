@@ -90,7 +90,12 @@ def _cell(cid: str, sid: str, completed: bool) -> dict:
     }
 
 
-def _action(cid: str, sid: str, ms: float, ok: bool = True) -> dict:
+def _action(
+    cid: str,
+    sid: str,
+    ms: float,
+    ok: bool = True,
+) -> dict:
     return {
         "row_type": "action",
         "cell_id": cid,
@@ -105,7 +110,13 @@ def _action(cid: str, sid: str, ms: float, ok: bool = True) -> dict:
     }
 
 
-def _arm(cid: str, sid: str, ms: float, completed: bool = True, ok: bool = True) -> list[dict]:
+def _arm(
+    cid: str,
+    sid: str,
+    ms: float,
+    completed: bool = True,
+    ok: bool = True,
+) -> list[dict]:
     """One attempt at one arm: its action row, then the cell row that closes it.
 
     `CellRunner.run` writes the cell row from a `finally`, so it lands after the action rows and
@@ -162,9 +173,9 @@ def test_a_resumed_ab_is_scored_rather_than_refused(tmp_path):
         "unfinished comparison in one new session, so this is the ordinary shape of a resume, "
         "not a corner case"
     )
-    assert pooled[METRIC] == [(1010.0, 505.0)], (
-        "the pair came from the superseded attempt rather than the one the resume just wrote"
-    )
+    assert pooled[METRIC] == [
+        (1010.0, 505.0)
+    ], "the pair came from the superseded attempt rather than the one the resume just wrote"
 
 
 def test_the_superseded_attempt_is_not_a_second_repetition(tmp_path):
@@ -173,9 +184,9 @@ def test_the_superseded_attempt_is_not_a_second_repetition(tmp_path):
     rows = [_meta("s1")] + _arm(BASE, "s1", 1000.0) + _arm(TREAT, "s1", 500.0)
     rows += [_meta("s2")] + _arm(BASE, "s2", 1000.0) + _arm(TREAT, "s2", 900.0)
     pooled = floor_table.paired(floor_table.read_rows(_write(tmp_path, "rerun", rows)))
-    assert pooled[METRIC] == [(1000.0, 900.0)], (
-        "one repetition was pooled twice, so n counts the resume as an independent measurement"
-    )
+    assert pooled[METRIC] == [
+        (1000.0, 900.0)
+    ], "one repetition was pooled twice, so n counts the resume as an independent measurement"
 
 
 def test_a_resume_that_was_itself_hard_killed_resurrects_nothing(tmp_path):
@@ -272,9 +283,9 @@ def test_a_superseded_dead_attempt_does_not_mark_a_metric_censored(tmp_path):
     rows += _arm(TREAT, "s1", 900.0, completed = False, ok = False)
     rows += [_meta("s2")] + _arm(BASE, "s2", 1010.0) + _arm(TREAT, "s2", 505.0)
     path = _write(tmp_path, "censor", rows)
-    assert floor_table.partial_censoring([path]) == {}, (
-        "the superseded attempt's failed assertion was counted against the resume that replaced it"
-    )
+    assert (
+        floor_table.partial_censoring([path]) == {}
+    ), "the superseded attempt's failed assertion was counted against the resume that replaced it"
     stats = floor_table.summarise([path])
     assert stats[METRIC].get("poolable") is not False
 
