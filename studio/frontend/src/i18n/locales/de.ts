@@ -1145,6 +1145,12 @@ export const de = {
         collapseByDefaultDescription:
           "Das Denken bleibt eingeklappt, während das Modell denkt, statt automatisch aufzuklappen. Zum Lesen einen Block ausklappen.",
       },
+      webSearch: {
+        title: "Websuche",
+        images: "Bilder aus der Websuche anzeigen",
+        imagesDescription:
+          "Lässt die Websuche Bilder liefern und holt eines für jeden Punkt, den eine Antwort auflistet. Vorschaubilder lädt und verkleinert Studio, der Browser kontaktiert keine Bildhosts.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "HTML-Blöcke einklappen",

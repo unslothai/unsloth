@@ -1124,6 +1124,12 @@ export const ptBR = {
         collapseByDefaultDescription:
           "Mantém o raciocínio recolhido enquanto o modelo pensa, em vez de abri-lo automaticamente. Expanda um bloco para lê-lo.",
       },
+      webSearch: {
+        title: "Busca na web",
+        images: "Mostrar imagens da busca na web",
+        imagesDescription:
+          "Permite que a busca na web retorne imagens e busca uma para cada item que uma resposta lista. As miniaturas são baixadas e redimensionadas pelo Studio, então o navegador nunca acessa os servidores de imagens.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Recolher blocos HTML",
