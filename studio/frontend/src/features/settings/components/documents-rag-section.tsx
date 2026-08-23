@@ -26,8 +26,7 @@ export function DocumentsRagSection(): ReactElement {
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const embeddingModel = useEmbeddingModelStore((s) => s.settings);
   const loadError = useEmbeddingModelStore((s) => s.loadError);
-  const applySettings = useEmbeddingModelStore((s) => s.applySettings);
-  const beginSave = useEmbeddingModelStore((s) => s.beginSave);
+  const save = useEmbeddingModelStore((s) => s.save);
   // Null until the user edits, so the field follows a save made on the other
   // surface instead of pinning whatever this mount first read.
   const [draftOverride, setDraftOverride] = useState<string | null>(null);
@@ -57,14 +56,15 @@ export function DocumentsRagSection(): ReactElement {
     }
     setIsSavingEmbeddingModel(true);
     setSaveError(null);
-    const save = beginSave();
     try {
-      const settings = await updateEmbeddingModelSettings(trimmed, {
-        hfToken: hfToken || undefined,
-        force,
-      });
+      const stood = await save(() =>
+        updateEmbeddingModelSettings(trimmed, {
+          hfToken: hfToken || undefined,
+          force,
+        }),
+      );
       // A later save owns the field now, so this answer says nothing current.
-      if (!applySettings(settings, save)) return;
+      if (!stood) return;
       setDraftOverride(null);
       setEmbeddingModelNeedsForce(false);
       toast.success(t("settings.general.rag.saved"), {
@@ -91,9 +91,8 @@ export function DocumentsRagSection(): ReactElement {
     setIsSavingEmbeddingModel(true);
     setSaveError(null);
     setEmbeddingModelNeedsForce(false);
-    const save = beginSave();
     try {
-      if (!applySettings(await resetEmbeddingModelSettings(), save)) return;
+      if (!(await save(resetEmbeddingModelSettings))) return;
       setDraftOverride(null);
     } catch (error) {
       setSaveError(

@@ -18,10 +18,12 @@ interface EmbeddingModelState {
   loadError: string | null;
   /** Bumped by every committed mutation, so a slower read cannot undo it. */
   revision: number;
-  /** Claim the next save. Its answer commits only while it is the latest. */
-  beginSave: () => number;
-  /** Commits unless a later save was claimed first. True when it stood. */
-  applySettings: (settings: EmbeddingModelSettings, save?: number) => boolean;
+  applySettings: (settings: EmbeddingModelSettings) => void;
+  /**
+   * Run a write and commit its answer. Returns false when a later write
+   * started first, so the caller leaves the field to that one.
+   */
+  save: (request: () => Promise<EmbeddingModelSettings>) => Promise<boolean>;
   load: () => Promise<void>;
 }
 
@@ -30,25 +32,50 @@ interface EmbeddingModelState {
 // and shows an error, or an older model, over what the newer one just read.
 let latestLoad = 0;
 
-// Saves need the same ordering, for the same reason: each surface keeps its own
-// pending flag, so the one the user switched to can start a second save while
-// the first is still out, and responses need not come back in request order.
+// Each surface keeps its own pending flag, so the one the user switches to can
+// write while the first write is still out. Request order is the best guess at
+// which one the user meant, but not proof of what the backend ended on: the
+// later one can fail verification, or persist first. So the newest answer wins
+// the moment it lands, and once every overlapping write has settled the store
+// re-reads instead of trusting the guess.
 let latestSave = 0;
+let savesInFlight = 0;
+let saveWasSuperseded = false;
 
 export const useEmbeddingModelStore = create<EmbeddingModelState>(
   (set, get) => ({
     settings: null,
     loadError: null,
     revision: 0,
-    beginSave: () => ++latestSave,
-    applySettings: (settings, save) => {
-      if (save !== undefined && save !== latestSave) return false;
+    applySettings: (settings) =>
       set((state) => ({
         settings,
         loadError: null,
         revision: state.revision + 1,
-      }));
-      return true;
+      })),
+    save: async (request) => {
+      const save = ++latestSave;
+      savesInFlight += 1;
+      try {
+        const settings = await request();
+        if (save !== latestSave) {
+          saveWasSuperseded = true;
+          return false;
+        }
+        get().applySettings(settings);
+        return true;
+      } catch (error) {
+        // A failed write leaves the backend on whatever the others wrote, so
+        // an overlap has to be settled by a read, not by request order.
+        if (save !== latestSave || savesInFlight > 1) saveWasSuperseded = true;
+        throw error;
+      } finally {
+        savesInFlight -= 1;
+        if (savesInFlight === 0 && saveWasSuperseded) {
+          saveWasSuperseded = false;
+          void get().load();
+        }
+      }
     },
     load: async () => {
       const revision = get().revision;

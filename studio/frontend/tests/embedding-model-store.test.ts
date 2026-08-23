@@ -156,14 +156,23 @@ test("an older save cannot land on top of a newer one", async () => {
   const store = useEmbeddingModelStore.getState();
   // General submits, the user switches to Data, and Data submits its own: the
   // second mount carries its own pending flag, so nothing stopped it.
-  const first = store.beginSave();
-  const second = store.beginSave();
+  let releaseFirst = (): void => undefined;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = () => resolve();
+  });
+  const first = store.save(async () => {
+    await firstGate;
+    return settings("unsloth/bge-small-en-v1.5");
+  });
+  const second = await store.save(async () => settings("unsloth/bge-m3"));
+  respondWith("unsloth/bge-m3");
+  releaseFirst();
 
-  assert.ok(store.applySettings(settings("unsloth/bge-m3"), second));
+  assert.ok(second);
   assert.equal(
-    store.applySettings(settings("unsloth/bge-small-en-v1.5"), first),
+    await first,
     false,
-    "the superseded save reports that it did not stand",
+    "the superseded save reports it did not stand",
   );
   assert.equal(
     useEmbeddingModelStore.getState().settings?.embeddingModel,
@@ -171,14 +180,58 @@ test("an older save cannot land on top of a newer one", async () => {
   );
 });
 
+test("a superseded save is reconciled against the backend", async () => {
+  reset();
+  const store = useEmbeddingModelStore.getState();
+  // The later save fails verification, so the earlier one is the only write
+  // the backend took. Request order said otherwise, so the store re-reads.
+  respondWith("unsloth/bge-m3");
+  let releaseFirst = (): void => undefined;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = () => resolve();
+  });
+  const first = store.save(async () => {
+    await firstGate;
+    return settings("unsloth/bge-m3");
+  });
+  const second = store
+    .save(async () => {
+      throw new Error("could not verify that model");
+    })
+    .catch(() => false);
+  assert.equal(await second, false);
+  releaseFirst();
+  await first;
+  // The reconciling read is started from the last save to settle.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(
+    useEmbeddingModelStore.getState().settings?.embeddingModel,
+    "unsloth/bge-m3",
+    "the store ends on what the backend actually holds",
+  );
+});
+
+test("a lone save that fails does not trigger a re-read", async () => {
+  reset();
+  const store = useEmbeddingModelStore.getState();
+  let reads = 0;
+  globalThis.fetch = (async () => {
+    reads += 1;
+    throw new Error("should not be read");
+  }) as typeof fetch;
+  await store
+    .save(async () => {
+      throw new Error("could not verify that model");
+    })
+    .catch(() => undefined);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(reads, 0, "nothing overlapped it, so nothing needs settling");
+});
+
 test("a save still bumps the revision the reads check", async () => {
   reset();
   const store = useEmbeddingModelStore.getState();
-  store.applySettings(settings("unsloth/bge-m3"), store.beginSave());
-  assert.equal(useEmbeddingModelStore.getState().revision, 1);
-  // A superseded save is not a mutation, so it must not move the revision.
-  const stale = store.beginSave();
-  store.beginSave();
-  store.applySettings(settings("unsloth/bge-small-en-v1.5"), stale);
+  store.applySettings(settings("unsloth/bge-m3"));
   assert.equal(useEmbeddingModelStore.getState().revision, 1);
 });
