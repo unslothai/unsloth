@@ -522,7 +522,9 @@ def _is_symlink_member(member: zipfile.ZipInfo) -> bool:
     return member.create_system == 3 and stat.S_ISLNK(member.external_attr >> 16)
 
 
-def _checked_link_target(zf: zipfile.ZipFile, member: zipfile.ZipInfo, dest: Path, base: Path) -> str:
+def _checked_link_target(
+    zf: zipfile.ZipFile, member: zipfile.ZipInfo, dest: Path, base: Path
+) -> str:
     """A symlink member's payload, refused unless it is a relative path staying inside ``base``.
 
     Same rules as ``prebuilt_core.safe_link_target``: absolute (including Windows

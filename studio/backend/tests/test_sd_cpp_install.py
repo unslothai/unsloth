@@ -417,7 +417,12 @@ def _can_create_symlinks(tmp_path) -> bool:
     return True
 
 
-def _link_member(zf, name: str, link_target: str, create_system: int = 3) -> None:
+def _link_member(
+    zf,
+    name: str,
+    link_target: str,
+    create_system: int = 3,
+) -> None:
     """Write ``name`` as the symlink member CPython's zipfile produces: the Unix symlink
     mode in external_attr, the link target as the data."""
     info = zipfile.ZipInfo(name)
@@ -448,11 +453,11 @@ def test_safe_extractall_rejects_escaping_symlink(tmp_path):
 @pytest.mark.parametrize(
     "link_target",
     [
-        "/etc/passwd",          # absolute, outside
-        "C:outside.dll",        # Windows drive-relative: Win32 resolves it off that drive's cwd
-        "",                     # empty
-        "real\x00.so",          # NUL
-        "libself.so",           # self-referential, the shape the old resolve() bug produced
+        "/etc/passwd",  # absolute, outside
+        "C:outside.dll",  # Windows drive-relative: Win32 resolves it off that drive's cwd
+        "",  # empty
+        "real\x00.so",  # NUL
+        "libself.so",  # self-referential, the shape the old resolve() bug produced
     ],
 )
 def test_safe_extractall_rejects_malformed_symlink_targets(tmp_path, link_target):
