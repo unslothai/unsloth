@@ -191,6 +191,7 @@ export const zhCN = {
       chat: "聊天",
       connections: "连接",
       apiKeys: "API",
+      remoteLan: "远程与局域网",
       about: "关于",
       voice: "语音",
       data: "数据",
@@ -277,6 +278,17 @@ export const zhCN = {
         engineModel: "本地转写",
         engineModelDescription:
           "在本地运行语音转文字（STT）模型，可离线使用。下载并加载后，闲置一段时间会自动卸载。",
+        engineCustom: "自定义端点",
+        engineCustomDescription:
+          "将录制的音频发送到“连接”中的 OpenAI 兼容 STT 服务器。",
+        connectionLabel: "连接",
+        connectionDescription:
+          "在“连接”中添加 OpenAI 兼容服务器和可选的 API 密钥。",
+        connectionPlaceholder: "选择连接",
+        connectionEmpty: "没有可用的连接",
+        customModelLabel: "模型",
+        customModelDescription:
+          "发送到 /v1/audio/transcriptions 的模型名称。",
         sttModelLabel: "语音识别模型",
         sttModelDescription: "选择或搜索要在本地运行的 STT 模型。",
         sttModelSearchPlaceholder: "搜索模型",
@@ -333,6 +345,7 @@ export const zhCN = {
         languageLabel: "语音输入语言",
         languageDescription: "要识别的语言",
         languageAuto: "自动（浏览器语言）",
+        languageAutoDetect: "自动（检测语言）",
       },
       dictionary: {
         sectionTitle: "语音输入词典",
@@ -545,6 +558,7 @@ export const zhCN = {
         embeddingModel: "Embedding 模型",
         embeddingModelDescription:
           "用于为文档建立索引和搜索的 Hugging Face 模型或本地路径。默认值为 {defaultModel}。",
+        searchPlaceholder: "搜索嵌入模型",
         reindexWarning:
           "仅影响新建立索引的文档。更改模型后请重新上传已有文档。",
         emptyError: "请输入 Hugging Face 模型 ID 或本地路径。",
@@ -1005,6 +1019,10 @@ export const zhCN = {
         asSubagent:
           "让父智能体保持当前模型，并将 Unsloth 注册为本地子智能体（Claude Code、Codex 和 OpenCode）。",
         apiKey: "提供你的 Unsloth API 密钥（或设置 UNSLOTH_API_KEY）。",
+        reasoning:
+          "是否在对话中使用推理：on、off 或 auto。auto 会遵循模型的对话模板，通常为开启。",
+        reasoningEffort:
+          "传给模型对话模板的推理强度，例如 medium。可用的级别因模型而异，请使用该模型接受的级别。不设置时沿用模板自身的值。",
         yolo: "跳过确认提示。请仅在可信环境中使用。",
       },
       remote: {
@@ -1193,6 +1211,11 @@ export const zhCN = {
     connections: {
       title: "连接",
       description: "管理提供方和外部服务的连接。",
+    },
+    remoteLan: {
+      title: "远程与局域网",
+      description:
+        "通过局域网或临时公开 URL，从其他设备访问此 Unsloth。",
     },
     apiKeys: {
       title: "API",

@@ -163,6 +163,7 @@ export const it = {
       connections: "Connessioni",
       data: "Dati",
       apiKeys: "API",
+      remoteLan: "Remoto e LAN",
       agents: "Agenti",
       debugging: "Log",
       about: "Informazioni",
@@ -248,6 +249,17 @@ export const it = {
         engineModel: "Trascrizione locale",
         engineModelDescription:
           "Esegue un modello speech-to-text (STT) in locale e funziona offline. Puoi scaricare e caricare il modello, che verrà poi rimosso dalla memoria dopo un periodo di inattività.",
+        engineCustom: "Endpoint personalizzato",
+        engineCustomDescription:
+          "Invia l'audio registrato a un server STT compatibile con OpenAI dalle tue connessioni.",
+        connectionLabel: "Connessione",
+        connectionDescription:
+          "Aggiungi un server compatibile con OpenAI e una chiave API facoltativa in Connessioni.",
+        connectionPlaceholder: "Seleziona una connessione",
+        connectionEmpty: "Nessuna connessione disponibile",
+        customModelLabel: "Modello",
+        customModelDescription:
+          "Nome del modello inviato a /v1/audio/transcriptions.",
         sttModelLabel: "Modello di riconoscimento vocale",
         sttModelDescription:
           "Scegli o cerca un modello STT da eseguire in locale.",
@@ -310,6 +322,7 @@ export const it = {
         languageLabel: "Lingua di dettatura",
         languageDescription: "Lingua da riconoscere",
         languageAuto: "Automatica (lingua del browser)",
+        languageAutoDetect: "Automatica (rileva lingua)",
       },
       dictionary: {
         sectionTitle: "Dizionario di dettatura",
@@ -552,6 +565,7 @@ export const it = {
         embeddingModel: "Modello di embedding",
         embeddingModelDescription:
           "Modello Hugging Face o percorso locale usato per indicizzare e cercare nei tuoi documenti. Il valore predefinito è {defaultModel}.",
+        searchPlaceholder: "Cerca modelli di embedding",
         reindexWarning:
           "Vale solo per i documenti indicizzati da ora in poi. Ricarica quelli esistenti dopo aver cambiato modello.",
         emptyError:
@@ -1028,6 +1042,10 @@ export const it = {
           "Mantieni l'agente principale sul suo modello attuale e registra Unsloth come subagente locale (Claude Code, Codex e OpenCode).",
         apiKey:
           "Fornisci la tua chiave API Unsloth (oppure imposta UNSLOTH_API_KEY).",
+        reasoning:
+          "Usare il ragionamento nella chat: on, off o auto. Auto segue il chat template del modello, che di solito significa on.",
+        reasoningEffort:
+          "Impegno di ragionamento passato al chat template del modello, ad esempio medium. I livelli dipendono dal modello, quindi usane uno che accetta. Se non impostato resta quello del template.",
         yolo: "Salta le richieste di approvazione. Usa solo in ambienti fidati.",
       },
       remote: {
@@ -1230,6 +1248,11 @@ export const it = {
     connections: {
       title: "Connessioni",
       description: "Gestisci provider e connessioni esterne.",
+    },
+    remoteLan: {
+      title: "Remoto e LAN",
+      description:
+        "Raggiungi questo Unsloth dagli altri tuoi dispositivi, tramite la rete locale o un URL pubblico temporaneo.",
     },
     apiKeys: {
       title: "API",

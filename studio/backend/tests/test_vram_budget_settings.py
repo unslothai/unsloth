@@ -465,9 +465,10 @@ class TestPendingOwnership:
 
         import core.inference.llama_cpp as lc
 
-        # Read the finalizer as a scope, not as text after "finally": a substring
-        # match also accepts a clear moved below the suite, which an exception
-        # through the yield skips, leaking the pending value.
+        # Read the finalizer as a scope, not as text after "finally:": a substring match
+        # also passes on a clear moved below the `with`, which an exception through the
+        # yield skips, leaking the value. Any position in the finalbody is fine, and so
+        # are sibling clears -- #9292 added _binary_revision_pending.
         scope = ast.parse(
             textwrap.dedent(inspect.getsource(lc.LlamaCppBackend._serial_load_scope))
         ).body[0]

@@ -336,12 +336,38 @@ function Install-UnslothStudio {
     # variables at a directory we own: every child process and every
     # [System.IO.Path]::GetTempPath() call reads the process environment block.
     function Test-StudioDirectoryUsable {
-        param([string]$Path)
+        param(
+            [string]$Path,
+            # Only for a directory this installer OWNS. Probing the host's own
+            # inherited TMP/TEMP must not bring it into existence: -Force creates
+            # the whole parent chain, so a stale or mistyped TMP would have the
+            # installer silently materialize a tree at a path nobody chose, and
+            # then trust it. Absent means unusable, which is what the private
+            # fallback is for.
+            [switch]$CreateIfMissing
+        )
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
         try {
             if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+                if (-not $CreateIfMissing) { return $false }
                 New-Item -ItemType Directory -Path $Path -Force -ErrorAction Stop | Out-Null
             }
+            # Anything an earlier run could not delete. Bounded self-healing: the
+            # probe below cannot clean up after itself when deletion is what
+            # failed, so each such run used to leave one more file behind forever.
+            try {
+                $cutoff = (Get-Date).AddDays(-1)
+                foreach ($old in @(Get-ChildItem -LiteralPath $Path -File -Filter "unsloth-probe-*.tmp" -ErrorAction Stop)) {
+                    # Shape, not prefix. This runs in the HOST's temp directory,
+                    # where a name that merely starts the same way belongs to
+                    # somebody else; the probe below only ever writes eight hex
+                    # characters, so anything else is not ours to delete.
+                    if ($old.Name -notmatch '^unsloth-probe-[0-9a-f]{8}\.tmp$') { continue }
+                    if ($old.LastWriteTime -lt $cutoff) {
+                        Remove-Item -LiteralPath $old.FullName -Force -ErrorAction SilentlyContinue
+                    }
+                }
+            } catch {}
             # Write, read back, delete -- not Test-Path: the failures that matter
             # (write without read, a scanner deleting the file) pass an existence check.
             $probe = Join-Path $Path ("unsloth-probe-" + [guid]::NewGuid().ToString('N').Substring(0, 8) + ".tmp")
@@ -374,7 +400,27 @@ function Install-UnslothStudio {
         try {
             $cutoff = (Get-Date).AddDays(-1)
             foreach ($stale in @(Get-ChildItem -LiteralPath $Root -Directory -Filter "ust-*" -ErrorAction Stop)) {
+                # SHAPE, not prefix. The delete below is recursive and this is the
+                # only ownership test there is, so it has to name a directory the
+                # allocator could actually have made: "ust-" + $PID + "-" + 8 hex.
+                # A prefix match takes "ust-legacy" or "ust-user-cache" too, and
+                # since neither has a parseable PID the liveness check is skipped
+                # for exactly the names least likely to be ours. scripts/uninstall.ps1
+                # already requires this shape; the two had drifted apart.
+                if ($stale.Name -notmatch '^ust-[0-9]+-[0-9a-f]{8}$') { continue }
                 if ($stale.LastWriteTime -ge $cutoff) { continue }
+                # Before any owner logic, because the allocator never makes a link:
+                # anything here that IS one is not ours, reading owner.pid out of it
+                # would read through it, and unlinking is safe whatever owns the
+                # target. Not Remove-Item: on 5.1 without -Recurse it throws a
+                # NullReferenceException on a junction that -ErrorAction
+                # SilentlyContinue does not suppress (measured on windows-latest), and
+                # -Recurse has walked THROUGH the link on some 5.1 builds.
+                # Directory.Delete with recursive:$false cannot follow it.
+                if ($stale.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+                    try { [System.IO.Directory]::Delete($stale.FullName, $false) } catch {}
+                    continue
+                }
                 # Age alone is not proof it is unused, and this sweep runs before the
                 # runtime mutex, so it could delete a live process's %TEMP%. owner.pid
                 # names the process that INHERITED this directory (the autostarted
@@ -392,8 +438,22 @@ function Install-UnslothStudio {
                 if (-not [string]::IsNullOrWhiteSpace($recorded)) {
                     $null = [int]::TryParse($recorded, [ref]$ownerPid)
                 }
+                # Whether the owner was RECORDED, or only guessed from the name.
+                # The name carries the installer's PID, and an installer that was
+                # killed between Start-Process and the owner.pid write leaves a dead
+                # PID in the name while the Studio it started is very much alive on
+                # that directory as its own %TEMP%. Guessing therefore proves much
+                # less than reading, and the two are not treated alike below.
+                $ownerRecorded = ($ownerPid -gt 0)
                 if ($ownerPid -le 0) {
                     $null = [int]::TryParse(($stale.Name -split '-')[1], [ref]$ownerPid)
+                }
+                # No recorded owner: unknown, not abandoned. Still collected, so the
+                # pile stays bounded, but only once it has gone a whole week without
+                # a single entry being created in it, which a Studio actually using
+                # it as %TEMP% would not manage.
+                if (-not $ownerRecorded -and $stale.LastWriteTime -ge (Get-Date).AddDays(-7)) {
+                    continue
                 }
                 if ($ownerPid -gt 0) {
                     $ownerLives = $true
@@ -407,17 +467,6 @@ function Install-UnslothStudio {
                         $ownerLives = $true
                     }
                     if ($ownerLives) { continue }
-                }
-                # Nothing here should be a reparse point, so remove the link and leave
-                # its target. Not Remove-Item: on 5.1 without -Recurse it throws a
-                # NullReferenceException on a junction that -ErrorAction
-                # SilentlyContinue does not suppress (measured on windows-latest), and
-                # -Recurse has walked THROUGH the link on some 5.1 builds. Directory
-                # .Delete with recursive:$false removes the reparse point and cannot
-                # follow it.
-                if ($stale.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
-                    try { [System.IO.Directory]::Delete($stale.FullName, $false) } catch {}
-                    continue
                 }
                 Remove-Item -LiteralPath $stale.FullName -Recurse -Force -ErrorAction SilentlyContinue
             }
@@ -466,9 +515,46 @@ function Install-UnslothStudio {
             # bound by the legacy path limit.
             $leaf = "ust-" + $PID + "-" + [guid]::NewGuid().ToString('N').Substring(0, 8)
             $candidate = Join-Path $root $leaf
-            if (Test-StudioDirectoryUsable -Path $candidate) {
+            # Which of these did not exist BEFORE the probe touched anything. Only
+            # those may be unwound below: a pre-provisioned "Unsloth Studio\temp"
+            # with custom ACLs, or an empty junction pointing somewhere else, is
+            # configuration this installer did not create and must not remove
+            # merely for being empty and correctly named.
+            $preAbsent = @{}
+            $walk = $candidate
+            for ($seen = 0; $seen -lt 4; $seen++) {
+                if ([string]::IsNullOrEmpty($walk)) { break }
+                $preAbsent[$walk] = (-not (Test-Path -LiteralPath $walk))
+                $walk = [System.IO.Path]::GetDirectoryName($walk)
+            }
+            if (Test-StudioDirectoryUsable -Path $candidate -CreateIfMissing) {
                 Remove-StudioStalePrivateTempDirectories -Root $root
                 return $candidate
+            }
+            # The probe creates the candidate before it tests it, and -Force builds
+            # the whole chain, so a root that fails leaves "Unsloth Studio\temp\ust-x"
+            # behind; on a host where every root fails that is a data directory tree
+            # conjured by an install that then gave up. Walk back up, but only through
+            # the directories this path is made of and only while each one is EMPTY,
+            # so a tree that already held something is never touched and neither is
+            # ~\.unsloth itself, which is shared and is not ours to remove.
+            $ours = @("temp", "Unsloth Studio", ".cache")
+            $unwind = $candidate
+            for ($depth = 0; $depth -lt 4; $depth++) {
+                try {
+                    if (-not $preAbsent[$unwind]) { break }
+                    if (-not (Test-Path -LiteralPath $unwind -PathType Container)) { break }
+                    $item = Get-Item -LiteralPath $unwind -Force -ErrorAction Stop
+                    # A relocation junction is somebody's configuration even when the
+                    # probe created it, and unlinking it is not "taking back what we
+                    # made". Leave it and stop.
+                    if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { break }
+                    if (@(Get-ChildItem -LiteralPath $unwind -Force -ErrorAction Stop).Count -gt 0) { break }
+                    [System.IO.Directory]::Delete($unwind, $false)
+                } catch { break }
+                $unwind = [System.IO.Path]::GetDirectoryName($unwind)
+                if ([string]::IsNullOrEmpty($unwind)) { break }
+                if ($ours -notcontains [System.IO.Path]::GetFileName($unwind)) { break }
             }
         }
         return $null
@@ -661,6 +747,8 @@ function Install-UnslothStudio {
     # %TEMP% we own, cache the answer (callers resolve dozens of paths), then let
     # Get-StudioLexicalPath carry the run.
     $script:StudioFinalPathNativeState = $null
+    # Reset with the rest: under `irm | iex` these are the caller's own.
+    $script:StudioNativeResolveWarned = $false
     $script:StudioFinalPathWarned = $false
     function Write-StudioFinalPathDegraded {
         param([string]$Reason)
@@ -1011,7 +1099,18 @@ public static class UnslothStudioFinalPathV2
                 $resolved = [UnslothStudioFinalPathV2]::Resolve($existingPath)
                 $exact = $true
             } catch {
+                # The helper COMPILED and still could not answer: a path renamed
+                # between the Test-Path walk and CreateFileW, an access denial on a
+                # component, a volume with no drive letter. Falling back keeps the
+                # install alive, and Exact = $false already makes the runtime lock
+                # fail closed, but nothing said so out loud: the degraded warning
+                # below only fires when the compile itself failed. An operator was
+                # left with a silently inexact identity on a host that looks fine.
                 $resolved = $null
+                if (-not $script:StudioNativeResolveWarned) {
+                    $script:StudioNativeResolveWarned = $true
+                    Write-StudioLine "[WARN] Could not resolve a path with the native helper; continuing with the PowerShell resolver." -ForegroundColor Yellow
+                }
             }
         }
         if ([string]::IsNullOrEmpty($resolved)) {
@@ -1020,15 +1119,15 @@ public static class UnslothStudioFinalPathV2
         }
         if ($resolved.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
             $resolved = '\\' + $resolved.Substring(8)
-        } elseif ($resolved.StartsWith('\\?\Volume{', [System.StringComparison]::OrdinalIgnoreCase)) {
-            # Kept, unlike an ordinary extended DOS path: \\?\C:\x still names a drive
-            # once the prefix comes off, but \\?\Volume{GUID}\x becomes the relative
-            # "Volume{GUID}\x", which the link resolver combines with the link's own
-            # parent, inventing a directory. Measured on 5.1: GetPathRoot returns empty
-            # for BOTH spellings on .NET Framework, so keeping the prefix does not make
-            # the volume matchable against a drive-letter spelling of itself; all it
-            # buys is not inventing a false path.
         } elseif ($resolved.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            # Every extended spelling, INCLUDING \\?\Volume{GUID}\, because this string
+            # is hashed into the runtime mutex name and unsloth_cli/_studio_runtime_gate.py
+            # strips \\?\ unconditionally (_resolved_windows_path). Keeping the prefix
+            # here made the installer and a running Studio compute different names for
+            # one directory, so neither would exclude the other. Rootedness does matter
+            # while a link target is being anchored, and Resolve-StudioLinkTarget keeps
+            # the extended form for exactly that; nothing after this point anchors
+            # anything, and Combine only drops its left side for a ROOTED right side.
             $resolved = $resolved.Substring(4)
         }
         foreach ($segment in $missingSegments) {
@@ -5475,7 +5574,7 @@ exit 0
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.8.18" }
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.8.19" }
 
     if ($_Migrated) {
         # Migrated env: force-reinstall unsloth+unsloth-zoo for a clean state, preserving
@@ -5485,7 +5584,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.12" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.13" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -5499,7 +5598,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.12" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.13" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -5626,7 +5725,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.12" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.13" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
@@ -5638,7 +5737,7 @@ exit 0
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.12" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.13" }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth -- "$_unslothPkg" }
@@ -5667,7 +5766,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.8.12" "$_unslothReleaseInstallSpec" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.8.13" "$_unslothReleaseInstallSpec" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
