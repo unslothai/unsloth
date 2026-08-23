@@ -1061,8 +1061,7 @@ class TestTheSafetensorsLoopPricesItToo:
         from core.inference.context_window import _RESULT_NOTICE_RESERVE
 
         assert (
-            tool_result_budget(4096, 512, 500)
-            - tool_result_budget(4096, 512, 500, results = 3)
+            tool_result_budget(4096, 512, 500) - tool_result_budget(4096, 512, 500, results = 3)
             == 2 * _RESULT_NOTICE_RESERVE
         )
         # And the loop asks for one per call rather than one per turn. Measured against
