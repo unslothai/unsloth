@@ -112,7 +112,12 @@ def _toggle(cid: str, close_ms: float, censored: bool) -> dict:
     }
 
 
-def _write(tmp_path, name: str, rows: list[dict], meta: dict | None = None):
+def _write(
+    tmp_path,
+    name: str,
+    rows: list[dict],
+    meta: dict | None = None,
+):
     """Through the REAL Recorder, so the schema and required keys are the producer's."""
     out = tmp_path / name
     out.mkdir(parents = True, exist_ok = True)
@@ -149,8 +154,11 @@ def _ladder(pairs_100k, pairs_500k, censor_500k: bool) -> list[dict]:
 
 
 def _null(tmp_path, censored: bool):
-    return _write(tmp_path, "null" + ("_censored" if censored else "_whole"),
-                  _ladder(NULL_100K, NULL_500K, censored))
+    return _write(
+        tmp_path,
+        "null" + ("_censored" if censored else "_whole"),
+        _ladder(NULL_100K, NULL_500K, censored),
+    )
 
 
 def _result(tmp_path):
@@ -199,9 +207,9 @@ def test_a_censored_floor_cannot_certify_a_measured_result(tmp_path, capsys):
     survivors = floor_table.render([_result(tmp_path)], "t", floors = floors)
     printed = capsys.readouterr().out
     row = next(line for line in printed.splitlines() if line.strip().startswith(METRIC))
-    assert "faster" not in row and "SLOWER" not in row, (
-        f"a result was certified against a floor the tool itself marks unpoolable: {row.strip()}"
-    )
+    assert (
+        "faster" not in row and "SLOWER" not in row
+    ), f"a result was certified against a floor the tool itself marks unpoolable: {row.strip()}"
     assert "no poolable floor" in row
     assert survivors == 0, "the row was counted as a metric that cleared all three gates"
     assert "the null control's own" in printed, (
@@ -219,9 +227,7 @@ def test_the_result_is_not_labelled_as_the_censored_one(tmp_path, capsys):
     floors = floor_table.summarise([_null(tmp_path, censored = True)])
     floor_table.render([_result(tmp_path)], "t", floors = floors)
     row = next(
-        line
-        for line in capsys.readouterr().out.splitlines()
-        if line.strip().startswith(METRIC)
+        line for line in capsys.readouterr().out.splitlines() if line.strip().startswith(METRIC)
     )
     assert "[f]" in row and "[*]" not in row
 
@@ -233,9 +239,7 @@ def test_the_same_result_scores_normally_against_a_whole_floor(tmp_path, capsys)
     # under it is VOID -- itself the point: the censored floor turned a VOID into a `faster`.
     floor_table.render([_result(tmp_path)], "t", floors = floors)
     row = next(
-        line
-        for line in capsys.readouterr().out.splitlines()
-        if line.strip().startswith(METRIC)
+        line for line in capsys.readouterr().out.splitlines() if line.strip().startswith(METRIC)
     )
     assert "no poolable floor" not in row and "[f]" not in row
     assert "VOID" in row
@@ -254,7 +258,12 @@ def test_a_whole_floor_still_certifies_a_real_effect(tmp_path, capsys):
 # ── the rest of the comparability identity ───────────────────────────
 
 
-def _floor_and_result(tmp_path, floor_meta: dict, result_meta: dict, tag: str = ""):
+def _floor_and_result(
+    tmp_path,
+    floor_meta: dict,
+    result_meta: dict,
+    tag: str = "",
+):
     """A null control and a result differing only in their run metadata.
 
     `tag` keeps each call in its own directory. The Recorder APPENDS, which is correct for shards
@@ -335,9 +344,7 @@ def test_an_identically_configured_run_still_scores(tmp_path, capsys):
     floors, floor_meta, result = _floor_and_result(tmp_path, _meta(), _meta())
     floor_table.render([result], "t", floors = floors, floor_meta = floor_meta)
     row = next(
-        line
-        for line in capsys.readouterr().out.splitlines()
-        if line.strip().startswith(METRIC)
+        line for line in capsys.readouterr().out.splitlines() if line.strip().startswith(METRIC)
     )
     assert "faster" in row or "VOID" in row or "SLOWER" in row
 
@@ -384,19 +391,22 @@ def test_the_cli_applies_both_guards(tmp_path, capsys):
     """
     _null(tmp_path, censored = True)
     _result(tmp_path)
-    rc = floor_table.main(
-        [str(tmp_path / "result"), "--floor", str(tmp_path / "null_censored")]
-    )
+    rc = floor_table.main([str(tmp_path / "result"), "--floor", str(tmp_path / "null_censored")])
     printed = capsys.readouterr().out
     assert rc == 0
     row = next(line for line in printed.splitlines() if line.strip().startswith(METRIC))
     assert "no poolable floor" in row, "the CLI scored against the censored floor"
     assert "0 metric(s) cleared all three gates." in printed
 
-    older = _write(tmp_path, "older_null", _ladder(NULL_100K, NULL_100K, False),
-                   _meta(tool_version = "0.1.0"))
-    newer = _write(tmp_path, "newer_result", _ladder(RESULT_100K, RESULT_100K, False),
-                   _meta(tool_version = "0.2.0"))
+    older = _write(
+        tmp_path, "older_null", _ladder(NULL_100K, NULL_100K, False), _meta(tool_version = "0.1.0")
+    )
+    newer = _write(
+        tmp_path,
+        "newer_result",
+        _ladder(RESULT_100K, RESULT_100K, False),
+        _meta(tool_version = "0.2.0"),
+    )
     with pytest.raises(SystemExit) as exc:
         floor_table.main([str(newer.parent), "--floor", str(older.parent)])
     assert "tool_version" in str(exc.value)
