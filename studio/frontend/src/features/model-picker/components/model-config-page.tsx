@@ -44,6 +44,7 @@ import {
   useGpuDevices,
   useInferenceGpuInfo,
 } from "@/hooks/use-gpu-info";
+import { resolveMemoryCapacityGb } from "@/hooks/gpu-vram";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
@@ -2646,23 +2647,20 @@ export function ModelConfigPage({
   // those. Judging a one-card pin against a two-card total called an 8 GB load a fit
   // on 16 GB of VRAM it could not reach.
   const pinnedGpuIds = runtimeConfig.selectedGpuIds;
-  const pinnedCapacityGb =
-    pinnedGpuIds && pinnedGpuIds.length > 0
-      ? gpuDevices
-          .filter((device) => pinnedGpuIds.includes(device.index))
-          .reduce((sum, device) => sum + device.memoryTotalGb, 0)
-      : 0;
-  // The pool a layer split spreads over, and the ceiling once layers spill to host
-  // RAM. Both 0 when the probe found nothing, which reads as "no verdict".
-  const memoryGpuCapacityGb =
-    pinnedCapacityGb > 0 ? pinnedCapacityGb : inferenceGpu.memoryTotalGb;
-  // Apple Silicon shares one pool, and so does a Vulkan iGPU whose reported budget
-  // is already a capped view of system RAM. Adding that RAM again would count the
-  // same bytes twice and call an oversized load a fit.
-  const singleMemoryPool = isUnifiedMemory || inferenceGpu.sharedMemory;
-  const memoryTotalCapacityGb = singleMemoryPool
-    ? memoryGpuCapacityGb
-    : memoryGpuCapacityGb + inferenceGpu.systemRamTotalGb;
+  const {
+    gpuCapacityGb: memoryGpuCapacityGb,
+    totalCapacityGb: memoryTotalCapacityGb,
+    singleMemoryPool,
+  } = resolveMemoryCapacityGb({
+      pinnedDevices:
+        pinnedGpuIds && pinnedGpuIds.length > 0
+          ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index))
+          : [],
+      hostGpuTotalGb: inferenceGpu.memoryTotalGb,
+      hostSharesSystemRam: inferenceGpu.sharedMemory,
+      systemRamTotalGb: inferenceGpu.systemRamTotalGb,
+      unifiedMemory: isUnifiedMemory,
+    });
 
   const rememberChanged = remember !== savedRemember;
   const persistenceOnly = isActiveModel && atBaseline && rememberChanged;

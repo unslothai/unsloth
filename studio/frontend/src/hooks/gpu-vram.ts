@@ -42,6 +42,59 @@ export function aggregateGpuMemoryTotalGb(
   return Math.round((dedicated + shared) * 100) / 100;
 }
 
+export interface MemoryCapacityInput {
+  /** The devices a pin names, or empty when the load may use the whole host. */
+  pinnedDevices: { memoryTotalGb: number; sharedMemory: boolean }[];
+  /** Aggregate GPU budget of the whole inventory, for the unpinned case. */
+  hostGpuTotalGb: number;
+  /** Whether ANY device on the host reports a shared pool. Only consulted when
+   *  nothing is pinned; a pin answers for itself. */
+  hostSharesSystemRam: boolean;
+  systemRamTotalGb: number;
+  /** Apple Silicon: one pool for everything, whatever the devices say. */
+  unifiedMemory: boolean;
+}
+
+/** What a prospective load may draw on: the GPU pool, and the ceiling once layers
+ *  spill to host RAM.
+ *
+ *  System RAM is added only where it is a pool BESIDE the GPU budget. A Vulkan
+ *  iGPU's reported budget is already a capped view of that same RAM, so adding it
+ *  would count the bytes twice. That question is per device, not per host: a mixed
+ *  inventory pairs a discrete card with an iGPU, and a pin naming only the discrete
+ *  card can still spill into RAM the iGPU would have been sharing.
+ *
+ *  Both figures are 0 when nothing was probed, which callers read as "no verdict"
+ *  rather than as a fit. */
+export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
+  gpuCapacityGb: number;
+  totalCapacityGb: number;
+  /** One pool for both figures, so a caller shows one number rather than two. */
+  singleMemoryPool: boolean;
+} {
+  const pinnedGpuCapacityGb = aggregateGpuMemoryTotalGb(
+    input.pinnedDevices.map((device) => ({
+      memory_total_gb: device.memoryTotalGb,
+      shared_memory: device.sharedMemory,
+    })),
+  );
+  // One flag for both answers, so the capacity and the pool question cannot
+  // disagree about which devices they are describing.
+  const pinGoverns = pinnedGpuCapacityGb > 0;
+  const gpuCapacityGb = pinGoverns ? pinnedGpuCapacityGb : input.hostGpuTotalGb;
+  const sharesSystemRam = pinGoverns
+    ? input.pinnedDevices.some((device) => device.sharedMemory)
+    : input.hostSharesSystemRam;
+  const singleMemoryPool = input.unifiedMemory || sharesSystemRam;
+  return {
+    gpuCapacityGb,
+    totalCapacityGb: singleMemoryPool
+      ? gpuCapacityGb
+      : gpuCapacityGb + input.systemRamTotalGb,
+    singleMemoryPool,
+  };
+}
+
 /** Whether every device reports its own usage, so each row and their sum are real. */
 export function gpuVramUsedIsPerDevice(
   devices: VramReportingDevice[],

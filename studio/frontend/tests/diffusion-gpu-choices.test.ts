@@ -24,6 +24,7 @@ function device(
     name: `GPU ${index}`,
     memoryTotalGb: 24,
     memoryFreeGb: 20,
+    sharedMemory: false,
     pinnable: true,
     diffusionPinnable: true,
     ...overrides,
