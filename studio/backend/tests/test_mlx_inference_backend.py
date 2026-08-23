@@ -2929,13 +2929,16 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
     assert backend._processor.chat_template == "{{ native }}"
 
 
-@pytest.mark.parametrize("words,expected", [
-    ((-1, -2), (0xFFFFFFFF, 0xFFFFFFFE)),
-    ((-2147483648, 5), (0x80000000, 5)),
-    ((0, -1), (0, 0xFFFFFFFF)),
-    ((2 ** 32, 0), (0, 0)),
-    ((0, 2 ** 32), (0, 0)),
-])
+@pytest.mark.parametrize(
+    "words,expected",
+    [
+        ((-1, -2), (0xFFFFFFFF, 0xFFFFFFFE)),
+        ((-2147483648, 5), (0x80000000, 5)),
+        ((0, -1), (0, 0xFFFFFFFF)),
+        ((2**32, 0), (0, 0)),
+        ((0, 2**32), (0, 0)),
+    ],
+)
 def test_rng_capture_masks_words_that_would_make_seed_raise(monkeypatch, words, expected):
     """mx.random.seed takes a uint64 and raises outside [0, 2**64).
 
@@ -2961,7 +2964,7 @@ def test_rng_capture_masks_words_that_would_make_seed_raise(monkeypatch, words, 
 
     mlx_inference._restore_mlx_rng_key(captured)
     assert seeded == [(expected[0] << 32) | expected[1]]
-    assert 0 <= seeded[0] < 2 ** 64
+    assert 0 <= seeded[0] < 2**64
 
 
 def _capture_rng_warnings(monkeypatch, mlx_inference):
