@@ -192,6 +192,18 @@ test("the rail is anchored to its corner, not placed from JS", () => {
       /max-h-\[calc\(100dvh_-_2rem\)\]/,
       "the rail no longer caps itself at the viewport",
     );
+    // A cap without a scroller drops the overflow off the bottom of the screen:
+    // at a large type size the two banner floors exceed the cap on their own,
+    // and the cards under it cannot be reached.
+    assert.match(rules, /\boverflow-y-auto\b/, "a capped rail spills its cards");
+    // The scroller clips at the padding box, so the gutter keeps the shadows.
+    // Horizontal only: vertical padding lifts the bottom card off the corner.
+    assert.match(rules, /\bpx-3\b/);
+    assert.match(rules, /-mx-3/);
+    assert.ok(
+      !/\bp-3\b/.test(rules) && !/\bpy-3\b/.test(rules),
+      "vertical padding moves the bottom card off bottom-4",
+    );
   }
   // The offset and the cap are the two things the placement used to own, so
   // they are the two that must stay out of the render.

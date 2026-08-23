@@ -1312,6 +1312,10 @@ def test_the_overlay_stack_fits_the_viewport():
     web = WEB_BANNER.read_text(encoding = "utf-8")
     assert _SCALED_FLOOR_WEB in web, "the floor is fixed, so it is wrong at other type sizes"
     assert _NARROW_FLOOR_WEB in web, "the floor misses the narrow card's extra button row"
+    # Those floors can add up to more than the cap at a large type size, so the
+    # rail scrolls. Without this the overflow lands below the bottom of the
+    # screen with no way to reach it.
+    assert provider.count("overflow-y-auto") >= stacks, "a capped stack spills its cards"
 
 
 def test_the_desktop_stack_is_capped_like_the_browser_one():
