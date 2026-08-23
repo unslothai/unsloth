@@ -43,11 +43,17 @@ type ClipboardTextPasteEvent = {
 type PlainPasteKeyEvent = {
   readonly code?: string;
   readonly key?: string;
+  /** Deprecated, but layout-independent, and every engine still sets it. */
+  readonly keyCode?: number;
   readonly metaKey: boolean;
   readonly ctrlKey: boolean;
   readonly shiftKey: boolean;
   readonly altKey: boolean;
 };
+
+/** `KeyboardEvent.keyCode` for V, which follows the physical key, not the
+ *  character the layout and Option produce. */
+const V_KEY_CODE = 86;
 
 // Resolved once: the chord below is read on every keydown in the composer, and
 // the platform cannot change under a live document.
@@ -81,8 +87,11 @@ export function isPlainPasteChord(
   // on macOS too: web apps bind it, so a host that maps it should reach the
   // field rather than the attachment path.
   if (event.altKey && !mac) return false;
-  // `code` before `key`: Option rewrites `key` on macOS, ⌥V being "√".
+  // `code` first, then `keyCode`, and `key` only last: Option rewrites `key`
+  // on macOS, ⌥V being "√" and ⌥⇧V "◊", so reading it would miss the very
+  // chord this platform pastes with. Both of the others carry the physical key.
   if (event.code) return event.code === "KeyV";
+  if (event.keyCode) return event.keyCode === V_KEY_CODE;
   return (event.key ?? "").toLowerCase() === "v";
 }
 
