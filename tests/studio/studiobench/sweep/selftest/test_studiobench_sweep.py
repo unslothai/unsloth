@@ -578,6 +578,51 @@ def test_a_clean_zero_base_arm_still_pairs_so_a_jank_regression_is_not_lost(tmp_
     assert v == "SLOWER"
 
 
+def test_an_unchanged_repetition_does_not_read_as_a_pair_disagreeing_on_sign(tmp_path):
+    """REGRESSION. A difference of exactly 0.0 is a TIE, and ties are the modal reading here.
+
+    `all(d > 0) or all(d < 0)` is the right question for ratios, where an exact 1.0 essentially
+    never occurs. On differences of a metric whose clean value IS 0.0 it voided a group the moment
+    any repetition was unchanged: `[0.0, 12.0]` failed both halves and printed
+    VOID (pairs disagree on sign) although nothing moved the other way. Measured over the recorded
+    payloads that hit 34 of 250 pooled groups, and all 34 were ties rather than disagreements.
+
+    WHAT THIS DOES AND DOES NOT BUY, measured rather than assumed. Of the 34 groups, ZERO change
+    their verdict: a tie drags the spread above the mean, so GATE 3 voids every one of them for
+    scatter instead. That is the correct gate doing its job, and it is why this fixes the REASON
+    a comparison was refused rather than surfacing a regression. A tool whose refusal states
+    something that did not happen is reporting a wrong answer in the right vocabulary, which is
+    worth three lines on its own; it is not worth relaxing gate 3 to chase.
+    """
+    # Two repetitions clean on both arms, two that regress. Nothing regresses the other way.
+    result = stream_payload(tmp_path, "result", [(SMOOTH, SMOOTH), (SMOOTH, JANKY)] * 2)
+    null = stream_payload(tmp_path, "null", [(SMOOTH, SMOOTH)] * 4)
+
+    s = F.summarise([result])["stream_time_in_jank_pct"]
+    assert sorted(t - b for b, t in F.paired(F.read_rows(result))["stream_time_in_jank_pct"]) == [
+        0.0,
+        0.0,
+        12.0,
+        12.0,
+    ]
+    assert s["consistent"] is True, "an unchanged repetition is a tie, not a disagreement"
+    _f, v = F.verdict_for(s, F.summarise([null])["stream_time_in_jank_pct"])
+    # Still refused, and that is right, but no longer refused for a reason that did not occur.
+    assert v == "VOID (effect under its own scatter)"
+    assert v != "VOID (pairs disagree on sign)"
+
+
+def test_a_group_that_did_not_move_at_all_is_still_not_a_finding(tmp_path):
+    """The other side of the tie rule: all-zero differences must not become 'consistent'.
+
+    Relaxing to `>=` alone would score a metric that never moved as a directional result.
+    """
+    result = stream_payload(tmp_path, "result", [(SMOOTH, SMOOTH)] * 4)
+    s = F.summarise([result])["stream_time_in_jank_pct"]
+    assert [t - b for b, t in F.paired(F.read_rows(result))["stream_time_in_jank_pct"]] == [0.0] * 4
+    assert s["consistent"] is False
+
+
 def test_a_ratio_metric_still_drops_a_zero_base_rather_than_dividing_by_it(tmp_path):
     """The control: only the metrics whose zero is a clean reading changed."""
     result = stream_payload(tmp_path, "result", [(SMOOTH, JANKY)] * 4)
