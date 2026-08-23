@@ -273,7 +273,19 @@ def _run_cli(
     env = None,
     safe_path = False,
 ):
-    child = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", **(env or {})}
+    # UNSLOTH_NO_TORCH is stated rather than left ambient. Unset, the CLI resolves
+    # NO_TORCH at import from install_manifest.recorded_no_torch(), which reads the
+    # manifest and the .unsloth-no-torch marker in Path(sys.prefix) -- a directory this
+    # test neither writes nor owns, shared with every other xdist worker in the run. A
+    # leaked no-torch marker makes _amd_torch_needs_dependency_pass() return False at
+    # its first line, so the CLI exits 1 with both streams empty and nothing says why.
+    # Callers that are testing the no-torch gate itself override this.
+    child = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": "/nonexistent",
+        "UNSLOTH_NO_TORCH": "false",
+        **(env or {}),
+    }
     if safe_path:
         child["PYTHONSAFEPATH"] = "1"
     return subprocess.run(
@@ -283,6 +295,26 @@ def _run_cli(
         stderr = subprocess.PIPE,
         timeout = 180,
     )
+
+
+def _decision(result):
+    """The CLI's own account of which input produced its exit code.
+
+    Exit 1 alone is five states (no-torch venv, resolved backend, non-ROCm pin, absent
+    or masked AMD host, unreadable torch), so an assertion on the code alone cannot say
+    which one it saw. Asserting the line back against the code also stops the diagnostic
+    drifting away from the decision it claims to describe.
+    """
+    stdout = result.stdout.decode(errors = "replace")
+    marked = [
+        line.strip() for line in stdout.splitlines()
+        if line.strip().startswith(stack._AMD_FASTPATH_DECISION_MARKER)
+    ]
+    assert len(marked) == 1, f"expected one decision line, got {marked!r} in {stdout!r}"
+    line = marked[0]
+    expected = "needs_pass=True" if result.returncode == 0 else "needs_pass=False"
+    assert expected in line, f"decision line disagrees with exit {result.returncode}: {line}"
+    return line
 
 
 @pytest.mark.parametrize("env_name", ["UNSLOTH_NO_TORCH", "UNSLOTH_TORCH_BACKEND"])
@@ -297,7 +329,15 @@ def test_the_cli_reports_keep_the_fast_path_as_a_non_zero_exit(env_name, safe_pa
     stderr = result.stderr.decode(errors = "replace")
     # An import failure also exits 1, so exit 1 alone does not prove the gate ran.
     assert not stderr, stderr
-    assert result.returncode == 1, stderr
+    assert result.returncode == 1, _decision(result)
+    # ...and the gate that answered has to be the one this case names, not whichever
+    # other exit-1 state the environment happened to be in. Without this the case passes
+    # on any host that keeps the fast path for an unrelated reason.
+    expected_field = {
+        "UNSLOTH_NO_TORCH": "no_torch=True",
+        "UNSLOTH_TORCH_BACKEND": "backend='cpu'",
+    }[env_name]
+    assert expected_field in _decision(result)
 
 
 @pytest.mark.parametrize(
@@ -323,7 +363,12 @@ def test_the_cli_answers_end_to_end_over_a_stub_torch(tmp_path, version, hip, ex
     )
     stderr = result.stderr.decode(errors = "replace")
     assert not stderr, stderr
-    assert result.returncode == expected, stderr
+    # The decision line, not the bare code: exit 1 is five different states here, and a
+    # `assert 1 == 0` with both streams empty is what this case used to report.
+    assert result.returncode == expected, f"{_decision(result)}\n{stderr}"
+    # The wheel family must be the input that decided it, so the case cannot pass on a
+    # host that answered before the probe was reached.
+    assert f"'{version}'" in _decision(result), _decision(result)
 
 
 @pytest.mark.parametrize(

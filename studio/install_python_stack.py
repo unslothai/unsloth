@@ -335,6 +335,11 @@ _TORCH_RUNTIME_PROBE: "tuple[bool, bool, str | None, str, str] | None" = None
 # line" is not reliably ours; "the last line starting with this" is.
 _TORCH_PROBE_MARKER = "UNSLOTH_TORCH_PROBE|"
 
+# Prefix on the --amd-torch-needs-dependency-pass decision line. setup.sh discards the
+# stream; this exists so a caller (CI above all) can read which input produced the exit
+# code instead of inferring it from the code alone, which five different states share.
+_AMD_FASTPATH_DECISION_MARKER = "UNSLOTH_AMD_FASTPATH|"
+
 
 def _invalidate_torch_runtime_probe() -> None:
     """Forget the memoized torch classification after a pip operation."""
@@ -5688,7 +5693,20 @@ def install_python_stack() -> int:
 if __name__ == "__main__":
     if sys.argv[1:] == ["--amd-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
-        sys.exit(0 if _amd_torch_needs_dependency_pass() else 1)
+        _needs_pass = _amd_torch_needs_dependency_pass()
+        # setup.sh sends both streams to /dev/null and reads only the exit code, so this
+        # line costs the installer nothing and is the only record of WHICH input decided.
+        # Exit 1 covers a no-torch venv, a resolved non-ROCm backend, a non-ROCm pin, an
+        # absent or masked AMD host and a torch that could not be read, and a CI failure
+        # here reports a bare `assert 1 == 0` with both streams empty. Reading the
+        # memoized probe rather than calling it keeps this free and adds no subprocess:
+        # None means the gates above answered before the probe was ever needed.
+        _safe_print(
+            f"{_AMD_FASTPATH_DECISION_MARKER}needs_pass={_needs_pass} no_torch={NO_TORCH} "
+            f"is_linux={IS_LINUX} machine={platform.machine()!r} backend={_TORCH_BACKEND!r} "
+            f"probe={_TORCH_RUNTIME_PROBE!r}"
+        )
+        sys.exit(0 if _needs_pass else 1)
     if any(_arg.startswith("-") for _arg in sys.argv[1:]):
         # Never let a malformed probe call fall through into a multi-gigabyte install.
         _safe_print(f"Unknown argument: {' '.join(sys.argv[1:])}")
