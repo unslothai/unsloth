@@ -375,6 +375,41 @@ def test_a_window_that_opens_on_an_empty_buffer_is_still_scoreable(page):
     assert out["reply_chars_delta"] == len("during"), out
 
 
+def test_a_marker_fragment_held_at_the_open_does_not_cost_the_window_its_reading(page):
+    """THE BOUNDARY OF THE REFUSAL, and it is a boundary rather than a hole.
+
+    A decoder whose first chunk is "dat" is holding a marker fragment, so `wireIntegrity` reports
+    it as buffered -- deliberately, and the reason is above `markerHold`. But that decoder is NOT
+    `active` yet, so `decoder_id` names whoever was, and when the fragment's frame completes
+    inside the window the carried flush lands on the new decoder and the delta stays zero. The
+    window is scoreable.
+
+    That is correct, and the quantity is why. `markerTail` is at most four characters of the
+    literal `data:` and is only ever set while `pending` is empty, so a held fragment carries
+    ZERO denominator characters: every character `reply_chars_delta` counts here was delivered
+    inside the window. The refusal exists for a buffer whose characters were delivered before the
+    window and counted inside it, which is the half-frame case above, and that one still names
+    the decoder holding it and still fires.
+    """
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    _feed(page, _frame("earlier"))
+    _end_response(page)
+    # The next response begins with a chunk that is only part of the marker.
+    _feed(page, "dat")
+    inst = _instrument(page)
+    inst.open(_Window())
+    assert inst._integrity_open["pending_chars"] == 3, inst._integrity_open
+
+    _feed(page, 'a: {"choices":[{"delta":{"content":"hello"}}]}\n\n')
+    out = inst.close(_Window())
+    assert out["wire_pending_chars_at_open"] == 3, out
+    assert out["wire_pending_chars_at_close"] == 0, out
+    assert out["wire_parse_failures_in_window"] == 0, out
+    # Every counted character arrived inside the window: the fragment held none of them.
+    assert out["reply_chars_delta"] == len("hello"), out
+    assert out["reply_chars_scoreable"] is True, out
+
+
 # ── an aborted response must not poison the next one ──────────────────────────
 
 
