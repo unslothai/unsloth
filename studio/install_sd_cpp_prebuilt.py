@@ -537,9 +537,16 @@ _MAX_LINK_TARGET_BYTES = 4096
 _MAX_LINK_DEPTH = 40
 
 
+# Creator bytes whose ``external_attr`` high bits are a Unix ``st_mode``. 3 is Unix, which
+# Info-ZIP and CPython's own zipfile write; 19 is OS X, which Apple's ditto and Archive Utility
+# stamp with the same layout. A FAT or NTFS entry keeps DOS attribute flags there instead, so
+# reading a mode out of one would invent symlinks that the archive never described.
+_UNIX_CREATORS = (3, 19)
+
+
 def _is_symlink_member(member: zipfile.ZipInfo) -> bool:
     """``external_attr``'s high bits are a Unix mode only when a Unix host wrote the entry."""
-    return member.create_system == 3 and stat.S_ISLNK(member.external_attr >> 16)
+    return member.create_system in _UNIX_CREATORS and stat.S_ISLNK(member.external_attr >> 16)
 
 
 def _checked_link_target(
@@ -702,6 +709,10 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     # (exFAT, SMB without unix extensions) refuse, and learning that at creation time means
     # extractall has already put the new binary over the working one.
     if links:
+        # extractall creates the tree itself, so the probe must not be the one thing that needs
+        # it to exist already: a first install into a fresh root would fail as "cannot store
+        # symlinks" when the real answer is that nothing had been created yet.
+        base.mkdir(parents = True, exist_ok = True)
         probe = base / f".unsloth-symlink-probe-{os.getpid()}"
         try:
             probe.symlink_to(".")

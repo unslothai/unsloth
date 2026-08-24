@@ -793,6 +793,40 @@ def test_safe_extractall_ignores_symlink_mode_from_non_unix_hosts(tmp_path):
     assert extracted.read_bytes() == b"not a link"
 
 
+def test_safe_extractall_restores_links_from_a_macos_creator(tmp_path):
+    # Apple's ditto and Archive Utility stamp creator 19 (OS X) and lay external_attr out
+    # exactly as a Unix host does. Gating on 3 alone silently flattens such an archive.
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "ditto.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("libwebp.so.7.2.0", b"ELFpayload")
+        _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0", create_system = 19)
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+    link = target / "libwebp.so.7"
+    assert link.is_symlink()
+    assert link.read_bytes() == b"ELFpayload"
+
+
+def test_safe_extractall_creates_the_install_root_before_probing_for_symlinks(tmp_path):
+    # extractall makes the tree itself, so a first install into a root that does not exist yet
+    # must not fail the symlink probe and report the filesystem as unable to store links.
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = tmp_path / "not-created-yet"
+    archive = tmp_path / "fresh.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("libwebp.so.7.2.0", b"ELFpayload")
+        _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0")
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+    assert (target / "libwebp.so.7").is_symlink()
+    assert (target / "libwebp.so.7").read_bytes() == b"ELFpayload"
+
+
 def test_safe_extractall_is_idempotent_across_reinstalls(tmp_path):
     if not _can_create_symlinks(tmp_path):
         pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
