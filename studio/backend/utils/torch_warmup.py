@@ -61,6 +61,37 @@ def _is_extension_module(name: str) -> bool:
     return origin.endswith(tuple(importlib.machinery.EXTENSION_SUFFIXES))
 
 
+_DATASETS_ARROW_EXTENSION_TYPES = tuple(
+    f"datasets.features.features.Array{dimensions}DExtensionType"
+    for dimensions in range(2, 6)
+)
+
+
+def _clear_external_import_state(package: str) -> list[str]:
+    """Undo native registrations made by a pure-Python module before it failed."""
+    if package != "datasets":
+        return []
+    pyarrow = sys.modules.get("pyarrow")
+    unregister = getattr(pyarrow, "unregister_extension_type", None)
+    if unregister is None:
+        return []
+    cleared: list[str] = []
+    for type_name in _DATASETS_ARROW_EXTENSION_TYPES:
+        try:
+            unregister(type_name)
+        except KeyError:
+            continue
+        cleared.append(type_name)
+    if cleared:
+        logger.warning(
+            "unregistered %d PyArrow extension type(s) left by the failed %s "
+            "import so its modules can be executed again",
+            len(cleared),
+            package,
+        )
+    return cleared
+
+
 def purge_partial_import(package: str) -> list:
     """Drop the submodules a failed package import left behind in sys.modules.
 
@@ -77,6 +108,8 @@ def purge_partial_import(package: str) -> list:
     Declines when any submodule is a loaded C extension: evicting one re-runs its
     module init, and pybind11 answers a duplicate type registration with
     std::terminate. A torch missing attributes is bad; SIGABRT mid-serve is worse.
+    Known native registries populated by pure-Python modules are reset only after
+    every stale module has been removed and no importer has republished the parent.
     """
     if package in sys.modules:
         return []
@@ -116,6 +149,11 @@ def purge_partial_import(package: str) -> list:
             break
         if sys.modules.pop(name, None) is not None:
             removed.append(name)
+    fully_purged = package not in sys.modules and not any(
+        name in sys.modules for name in stale
+    )
+    if fully_purged:
+        _clear_external_import_state(package)
     if removed:
         logger.warning(
             "purged %d half-imported %s submodule(s) so the next import re-runs clean: %s",
