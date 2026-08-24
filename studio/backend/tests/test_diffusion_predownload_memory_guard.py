@@ -313,7 +313,13 @@ def _stub_estimate(monkeypatch, files):
     monkeypatch.setattr(DiffusionBackend, "_estimate_download_bytes", staticmethod(_estimate))
 
 
-def _stub_pick(monkeypatch, files, *, family = None, te_prequant = None):
+def _stub_pick(
+    monkeypatch,
+    files,
+    *,
+    family = None,
+    te_prequant = None,
+):
     fam = family if family is not None else _real_family()
     monkeypatch.setattr(diffusion_mod, "detect_family_for_pick", lambda *_a, **_k: fam)
     monkeypatch.setattr(
@@ -363,9 +369,7 @@ def test_run_load_applies_the_guard_before_prefetch(
     monkeypatch, total_mib, expected_calls, rejected
 ):
     calls: list = []
-    backend = _staged_backend(
-        monkeypatch, files = FLUX2_DEV, calls = calls, total_mib = total_mib
-    )
+    backend = _staged_backend(monkeypatch, files = FLUX2_DEV, calls = calls, total_mib = total_mib)
 
     backend._run_load(repo_id = "unsloth/FLUX.2-dev", model_kind = "pipeline", _load_token = 1)
 
