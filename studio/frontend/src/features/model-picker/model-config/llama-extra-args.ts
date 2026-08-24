@@ -624,9 +624,20 @@ export type ExtraArgsDiagnostic = {
 };
 
 /**
- * Controls in this panel that own the same llama-server setting. For pass-through
- * flags, the mapping explains which value wins. For managed flags such as parallel
- * slots, it points the refusal at the supported control instead of leaving a dead end.
+ * Managed flags whose supported replacement is a control in this panel. This stays
+ * available while the async flag catalogue is loading or unavailable: the backend
+ * denies these unconditionally, so they must never fall through to the "wins" note.
+ */
+const MANAGED_CONTROL_FLAGS: Record<string, string> = {
+  "--parallel": "Parallel Slots",
+  "--n-parallel": "Parallel Slots",
+  "-np": "Parallel Slots",
+};
+
+/**
+ * Pass-through flags that a control in this panel also emits. The backend appends
+ * these last and reconciles the ones that affect its sizing, so the mapping explains
+ * which value wins.
  */
 const CONTROL_OWNED_FLAGS: Record<string, string> = {
   "--ctx-size": "Context Length",
@@ -635,9 +646,6 @@ const CONTROL_OWNED_FLAGS: Record<string, string> = {
   "-b": "Batch Size",
   "--ubatch-size": "Micro-batch Size",
   "-ub": "Micro-batch Size",
-  "--parallel": "Parallel Slots",
-  "--n-parallel": "Parallel Slots",
-  "-np": "Parallel Slots",
   "--cache-type-k": "KV Cache Dtype",
   "-ctk": "KV Cache Dtype",
   "--cache-type-v": "KV Cache Dtype",
@@ -1046,6 +1054,9 @@ export function diagnoseExtraArgs(
       continue;
     }
     seen.add(flag);
+    const managedControl = MANAGED_CONTROL_FLAGS[flag];
+    const isManaged =
+      managedControl !== undefined || Boolean(catalog?.managed.has(flag));
 
     if (token !== token.trim()) {
       // The padding is part of the token llama.cpp looks up, so a quoted "--top-k "
@@ -1056,7 +1067,7 @@ export function diagnoseExtraArgs(
         level: "error",
         message: `Remove the spaces around "${token}". llama-server reads them as part of the flag.`,
       });
-    } else if (token.includes("=") && !catalog?.managed.has(flag)) {
+    } else if (token.includes("=") && !isManaged) {
       // Measured on b10342 and b10360: "--top-k=20", "--ctx-size=4096" and
       // "--flash-attn=on" each exit with "error: invalid argument". A managed flag
       // is left to the message below, which names the control that owns it.
@@ -1066,8 +1077,8 @@ export function diagnoseExtraArgs(
       });
     }
 
-    if (catalog?.managed.has(flag)) {
-      const control = CONTROL_OWNED_FLAGS[flag];
+    if (isManaged) {
+      const control = managedControl ?? CONTROL_OWNED_FLAGS[flag];
       out.push({
         level: "error",
         message: control
