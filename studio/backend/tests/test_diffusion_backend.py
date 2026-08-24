@@ -10303,7 +10303,6 @@ def test_the_prequant_fit_check_prices_a_pre_cast_text_encoder(fake_runtime, mon
     already applies te_prequant_budget_scale; this is the same scale on the same estimate."""
     from core.inference.diffusion import DiffusionBackend
     from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_te_prequant import TE_PREQUANT_BUDGET_SCALE
 
     fam = detect_family("black-forest-labs/FLUX.2-dev")
     assert fam is not None and fam.te_prequant_repos, "the fixture family lost its pre-cast repo"
@@ -10312,16 +10311,17 @@ def test_the_prequant_fit_check_prices_a_pre_cast_text_encoder(fake_runtime, mon
     candidate = types.SimpleNamespace(companions_mib = encoders + 400, text_encoders_mib = encoders)
 
     base = "black-forest-labs/FLUX.2-dev"
-    scaled = DiffusionBackend._precast_scaled_companions_mib(candidate, fam, base, object(), "fp8")
-    # No pre-cast encoder resolves in this environment unless te_prequant_sources says so, so pin
-    # the two outcomes on the resolver rather than assuming one.
-    from core.inference.diffusion_te_prequant import te_prequant_sources
+    seen: dict = {}
 
-    if te_prequant_sources(fam, te_quant_mode = "fp8", target = object()):
-        assert scaled == 400 + int(encoders * TE_PREQUANT_BUDGET_SCALE)
-        assert scaled < candidate.companions_mib
-    else:
-        assert scaled == candidate.companions_mib
+    def _scale(_fam, *, te_quant_mode, target, base):
+        seen.update(mode = te_quant_mode, target = target, base = base)
+        return 0.5 if te_quant_mode == "fp8" else 1.0
+
+    monkeypatch.setattr("core.inference.diffusion_te_prequant.te_prequant_budget_scale", _scale)
+    scaled = DiffusionBackend._precast_scaled_companions_mib(candidate, fam, base, object(), "fp8")
+    assert scaled == 24_400
+    assert seen["mode"] == "fp8"
+    assert seen["base"] == base
 
     # No encoder quant requested: the estimate is passed through untouched, byte for byte.
     assert (
@@ -10338,26 +10338,6 @@ def test_the_prequant_fit_check_prices_a_pre_cast_text_encoder(fake_runtime, mon
     empty = types.SimpleNamespace(companions_mib = None)
     assert (
         DiffusionBackend._precast_scaled_companions_mib(empty, fam, base, object(), "fp8") is None
-    )
-
-
-def test_the_pre_cast_companion_scale_matches_the_load_level_plan(fake_runtime, monkeypatch):
-    """Both sides must read the same scale from the same resolver, or the fit check and the plan
-    it gates disagree about what the load builds."""
-    from core.inference.diffusion import DiffusionBackend
-    from core.inference.diffusion_families import detect_family
-
-    fam = detect_family("black-forest-labs/FLUX.2-dev")
-    monkeypatch.setattr(
-        "core.inference.diffusion_te_prequant.te_prequant_budget_scale",
-        lambda fam, *, te_quant_mode, target, base: 0.5 if te_quant_mode == "fp8" else 1.0,
-    )
-    candidate = types.SimpleNamespace(companions_mib = 10_400, text_encoders_mib = 10_000)
-    assert (
-        DiffusionBackend._precast_scaled_companions_mib(
-            candidate, fam, "black-forest-labs/FLUX.2-dev", object(), "fp8"
-        )
-        == 5_400
     )
 
 

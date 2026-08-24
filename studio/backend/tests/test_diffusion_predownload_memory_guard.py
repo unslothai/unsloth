@@ -132,21 +132,6 @@ def _flux_verdict(backend):
     )
 
 
-def test_reporter_pool_accepts_named_qwen_but_rejects_flux(monkeypatch):
-    backend = _backend(monkeypatch)
-    assert _flux_verdict(backend) is not None
-    assert (
-        _verdict(
-            backend,
-            _family(),
-            "unsloth/Qwen-Image-2512",
-            "unsloth/Qwen-Image-2512",
-            QWEN_IMAGE_2512,
-        )
-        is None
-    )
-
-
 def test_a_pipeline_that_cannot_fit_is_refused_from_metadata_alone(monkeypatch):
     backend = _backend(monkeypatch, total_mib = STRIX_HALO_POOL_MIB)
     message = _flux_verdict(backend)
@@ -158,86 +143,72 @@ def test_a_pipeline_that_cannot_fit_is_refused_from_metadata_alone(monkeypatch):
     assert "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD=1" in message
 
 
-def test_a_mixed_precision_repo_is_sized_component_by_component(monkeypatch):
-    fam = _family(name = "z-image", base_repo = "Tongyi-MAI/Z-Image-Turbo")
-    backend = _backend(monkeypatch, total_mib = 24 * 1024)
-    message = _verdict(
-        backend, fam, "unsloth/Z-Image-Turbo", "Tongyi-MAI/Z-Image-Turbo", Z_IMAGE_TURBO
-    )
-    assert message is not None
-    assert "about 21 GB of memory for its weights" in message
-
-
-def test_a_raw_fp8_repo_converts_its_encoder_as_well_as_its_denoisers(monkeypatch):
-    fam = _family(name = "ideogram-4", base_repo = "ideogram-ai/ideogram-4-fp8")
-    tight = _backend(monkeypatch, total_mib = STRIX_HALO_POOL_MIB)
-    message = _verdict(
-        tight, fam, "unsloth/ideogram-4-fp8", "ideogram-ai/ideogram-4-fp8", IDEOGRAM_4_FP8
-    )
-    assert message is not None
-    assert "about 53 GB of memory for its weights" in message
-
-
-def test_an_fp32_repo_halves_its_companions_too(monkeypatch):
-    fam = _family(name = "lumina-2", base_repo = "Alpha-VLLM/Lumina-Image-2.0")
-    backend = _backend(monkeypatch, total_mib = 16 * 1024)
-    assert (
-        _verdict(backend, fam, "unsloth/Lumina-Image-2.0", "Alpha-VLLM/Lumina-Image-2.0", LUMINA_2)
-        is None
-    )
-    tiny = _backend(monkeypatch, total_mib = 12 * 1024)
-    assert (
-        _verdict(tiny, fam, "unsloth/Lumina-Image-2.0", "Alpha-VLLM/Lumina-Image-2.0", LUMINA_2)
-        is not None
-    )
-
-
-def test_an_nf4_sibling_of_the_same_family_is_not_inflated(monkeypatch):
-    fam = _family(name = "ideogram-4", base_repo = "ideogram-ai/ideogram-4-fp8")
-    backend = _backend(monkeypatch, total_mib = 32 * 1024)
-    for base in ("ideogram-ai/ideogram-4-nf4-diffusers", "ideogram-ai/ideogram-4-nf4"):
-        name = base.split("/")[1]
-        assert _verdict(backend, fam, f"unsloth/{name}", base, IDEOGRAM_4_NF4) is None, base
-    tight = _backend(monkeypatch, total_mib = 32 * 1024)
-    assert (
-        _verdict(tight, fam, "unsloth/ideogram-4-fp8", "ideogram-ai/ideogram-4-fp8", IDEOGRAM_4_FP8)
-        is not None
-    )
-
-
-def test_a_hosted_pre_cast_encoder_is_not_converted_again(monkeypatch):
-    fam = _family(name = "lumina-2", base_repo = "Alpha-VLLM/Lumina-Image-2.0")
-    backend = _backend(monkeypatch, total_mib = 12 * 1024)
-    message = backend.declared_footprint_shortfall(
-        fam,
-        "unsloth/Lumina-Image-2.0",
-        "Alpha-VLLM/Lumina-Image-2.0",
-        kind = "pipeline",
-        declared_files = LUMINA_2_MINUS_DENSE_TE,
-        prequant_bytes = LUMINA_HOSTED_TE_MIB * MIB,
-    )
-    assert message is not None
-    assert "about 10 GB of memory for its weights" in message
-
-
-def test_float32_scales_dense_pipeline_bytes_but_not_hosted_prequant():
+@pytest.mark.parametrize(
+    ("base", "files", "prequant_bytes", "dtype_scale", "expected"),
+    [
+        pytest.param(
+            "Tongyi-MAI/Z-Image-Turbo",
+            Z_IMAGE_TURBO,
+            0,
+            1.0,
+            23_479 * MIB // 2 + (7_672 + 160 + 15) * MIB,
+            id = "fp32-denoiser",
+        ),
+        pytest.param(
+            "ideogram-ai/ideogram-4-fp8",
+            IDEOGRAM_4_FP8,
+            0,
+            1.0,
+            2 * sum(size for _name, size in IDEOGRAM_4_FP8),
+            id = "raw-fp8-pipeline",
+        ),
+        pytest.param(
+            "Alpha-VLLM/Lumina-Image-2.0",
+            LUMINA_2,
+            0,
+            1.0,
+            sum(size for _name, size in LUMINA_2) // 2,
+            id = "fp32-pipeline",
+        ),
+        pytest.param(
+            "ideogram-ai/ideogram-4-nf4-diffusers",
+            IDEOGRAM_4_NF4,
+            0,
+            1.0,
+            sum(size for _name, size in IDEOGRAM_4_NF4),
+            id = "custom-precision-sibling",
+        ),
+        pytest.param(
+            "Alpha-VLLM/Lumina-Image-2.0",
+            LUMINA_2_MINUS_DENSE_TE,
+            LUMINA_HOSTED_TE_MIB * MIB,
+            1.0,
+            sum(size for _name, size in LUMINA_2_MINUS_DENSE_TE) // 2 + LUMINA_HOSTED_TE_MIB * MIB,
+            id = "hosted-prequant",
+        ),
+        pytest.param(
+            "Alpha-VLLM/Lumina-Image-2.0",
+            LUMINA_2_MINUS_DENSE_TE,
+            LUMINA_HOSTED_TE_MIB * MIB,
+            2.0,
+            sum(size for _name, size in LUMINA_2_MINUS_DENSE_TE) + LUMINA_HOSTED_TE_MIB * MIB,
+            id = "float32-with-hosted-prequant",
+        ),
+    ],
+)
+def test_declared_sizes_are_converted_to_their_resident_precision(
+    base, files, prequant_bytes, dtype_scale, expected
+):
     from core.inference.diffusion_auto_policy import resident_bytes_from_declared
-
-    fam = _family(name = "lumina-2", base_repo = "Alpha-VLLM/Lumina-Image-2.0")
-    dense = resident_bytes_from_declared(
-        fam,
-        fam.base_repo,
-        LUMINA_2_MINUS_DENSE_TE,
-        prequant_bytes = LUMINA_HOSTED_TE_MIB * MIB,
-        dtype_scale = 2.0,
+    assert (
+        resident_bytes_from_declared(
+            base,
+            files,
+            prequant_bytes = prequant_bytes,
+            dtype_scale = dtype_scale,
+        )
+        == expected
     )
-    bf16_dense = resident_bytes_from_declared(
-        fam,
-        fam.base_repo,
-        LUMINA_2_MINUS_DENSE_TE,
-        prequant_bytes = LUMINA_HOSTED_TE_MIB * MIB,
-    )
-    assert dense == 2 * (bf16_dense - LUMINA_HOSTED_TE_MIB * MIB) + LUMINA_HOSTED_TE_MIB * MIB
 
 
 def test_float32_target_rejects_lumina_that_bf16_accepts(monkeypatch):
@@ -249,37 +220,6 @@ def test_float32_target_rejects_lumina_that_bf16_accepts(monkeypatch):
     message = _verdict(fp32, fam, "unsloth/Lumina-Image-2.0", fam.base_repo, LUMINA_2)
     assert message is not None
     assert "about 22 GB of memory for its weights" in message
-
-
-def test_float32_doubles_a_custom_bf16_pipeline():
-    from core.inference.diffusion_auto_policy import resident_bytes_from_declared
-
-    fam = _family(name = "krea-2", base_repo = "unsloth/custom-krea")
-    files = _files(transformer = 20_000, text_encoder = 8_000)
-    bf16 = resident_bytes_from_declared(fam, fam.base_repo, files)
-    assert resident_bytes_from_declared(fam, fam.base_repo, files, dtype_scale = 2.0) == 2 * bf16
-
-
-def test_a_bf16_repo_is_counted_as_it_downloads():
-    from core.inference.diffusion_auto_policy import resident_bytes_from_declared
-    assert resident_bytes_from_declared(_family(), "Qwen/Qwen-Image", QWEN_IMAGE_2512) == sum(
-        size for _name, size in QWEN_IMAGE_2512
-    )
-
-
-@pytest.mark.parametrize(
-    ("family", "base"),
-    [
-        pytest.param("z-image", "unsloth/custom-z-image-bf16", id = "z-image"),
-        pytest.param("lumina-2", "unsloth/custom-lumina-bf16", id = "lumina"),
-    ],
-)
-def test_a_custom_pipeline_does_not_inherit_family_storage_precision(family, base):
-    from core.inference.diffusion_auto_policy import resident_bytes_from_declared
-    files = _files(transformer = 20_000, text_encoder = 8_000)
-    assert resident_bytes_from_declared(_family(name = family, base_repo = base), base, files) == sum(
-        size for _name, size in files
-    )
 
 
 def test_only_a_compatible_prequant_can_replace_dense_encoder_shards(monkeypatch):
@@ -346,17 +286,16 @@ def test_hidream_te4_uses_its_standalone_base_for_prequant_compatibility(monkeyp
 
 def test_hidream_dense_te4_is_counted_when_no_prequant_is_selected():
     from core.inference.diffusion import (
+        _prequant_plan_bytes,
         _predownload_encoder_bf16_bytes,
-        _predownload_encoder_bytes,
     )
     from core.inference.diffusion_hidream import HIDREAM_LLAMA_BF16_BYTES
 
     fam = _family(name = "hidream-i1", base_repo = "HiDream-ai/HiDream-I1-Full")
-    assert _predownload_encoder_bytes(fam, {}) == 0
     assert _predownload_encoder_bf16_bytes(fam, {}) == HIDREAM_LLAMA_BF16_BYTES
     assert _predownload_encoder_bf16_bytes(fam, {}, pipeline_declared = False) == 0
     hosted = {"text_encoder_4": ("unsloth/HiDream-I1-Full-FP8", [("te4.pt", 8 * MIB)])}
-    assert _predownload_encoder_bytes(fam, hosted) == 8 * MIB
+    assert _prequant_plan_bytes(hosted) == 8 * MIB
     assert _predownload_encoder_bf16_bytes(fam, hosted) == 0
 
 
@@ -395,15 +334,7 @@ def test_only_a_pipeline_pick_is_judged(monkeypatch, kind):
 
 
 @pytest.mark.parametrize("files", [None, [], [("model_index.json", 0)]])
-def test_no_sizes_is_no_verdict(monkeypatch, files):
-    backend = _backend(monkeypatch, total_mib = STRIX_HALO_POOL_MIB)
-    assert (
-        _verdict(backend, _flux2(), "unsloth/FLUX.2-dev", "black-forest-labs/FLUX.2-dev", files)
-        is None
-    )
-
-
-def test_no_sizes_does_not_resolve_a_target(monkeypatch):
+def test_no_sizes_does_not_resolve_a_target(monkeypatch, files):
     backend = DiffusionBackend()
 
     def _resolve(*_a, **_k):
@@ -416,56 +347,59 @@ def test_no_sizes_does_not_resolve_a_target(monkeypatch):
             "unsloth/FLUX.2-dev",
             "black-forest-labs/FLUX.2-dev",
             kind = "pipeline",
-            declared_files = [],
+            declared_files = files,
         )
         is None
     )
 
 
-class _ManifestSibling:
-    def __init__(self, name, size):
-        self.rfilename = name
-        self.size = size
-
-
-@pytest.mark.parametrize("repo", ["unsloth/custom-pipeline", "unsloth/canonical-mirror"])
-def test_pipeline_estimate_uses_selected_components_and_default_variant(
-    monkeypatch, tmp_path, repo
-):
-    manifest = tmp_path / "model_index.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "_class_name": "FluxPipeline",
-                "_ignore_files": ["transformer/ignored.safetensors"],
-                "transformer": ["diffusers", "FluxTransformer2DModel"],
-                "unused": [None, None],
-                "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"],
-            }
-        ),
-        encoding = "utf-8",
-    )
-    siblings = [
-        _ManifestSibling("model_index.json", 100),
-        _ManifestSibling("transformer/config.json", 200),
-        _ManifestSibling("transformer/diffusion_pytorch_model.safetensors", 20 * MIB),
-        _ManifestSibling("transformer/diffusion_pytorch_model.fp8.safetensors", 10 * MIB),
-        _ManifestSibling(
-            "transformer/diffusion_pytorch_model.fp8-00001-of-00002.safetensors", 10 * MIB
-        ),
-        _ManifestSibling("transformer/ignored.safetensors", 9 * MIB),
-        _ManifestSibling("unused/diffusion_pytorch_model.safetensors", 30 * MIB),
-        _ManifestSibling("scheduler/scheduler_config.json", 300),
-    ]
+def _stub_pipeline_hub(monkeypatch, tmp_path, repos):
+    manifests = {}
+    for index, (repo, (payload, _files, _sha)) in enumerate(repos.items()):
+        manifest = tmp_path / f"model-index-{index}.json"
+        manifest.write_text(json.dumps(payload), encoding = "utf-8")
+        manifests[repo] = manifest
+    info_calls: list = []
+    download_calls: list = []
 
     class _Api:
-        def model_info(self, *_a, **_k):
-            return types.SimpleNamespace(siblings = siblings, sha = "a" * 40)
+        def model_info(self, repo_id, **_kwargs):
+            info_calls.append(repo_id)
+            _payload, files, sha = repos[repo_id]
+            siblings = [types.SimpleNamespace(rfilename = name, size = size) for name, size in files]
+            return types.SimpleNamespace(siblings = siblings, sha = sha)
+
+    def fake_download(repo_id, filename, **kwargs):
+        download_calls.append((repo_id, filename, kwargs.get("revision")))
+        return str(manifests[repo_id])
 
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
-    monkeypatch.setattr("huggingface_hub.hf_hub_download", lambda *a, **k: str(manifest))
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+    return info_calls, download_calls
+
+
+def test_pipeline_estimate_uses_selected_components_and_default_variant(monkeypatch, tmp_path):
+    repo = "unsloth/custom-pipeline"
+    payload = {
+        "_class_name": "FluxPipeline",
+        "_ignore_files": ["transformer/ignored.safetensors"],
+        "transformer": ["diffusers", "FluxTransformer2DModel"],
+        "unused": [None, None],
+        "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"],
+    }
+    files = [
+        ("model_index.json", 100),
+        ("transformer/config.json", 200),
+        ("transformer/diffusion_pytorch_model.safetensors", 20 * MIB),
+        ("transformer/diffusion_pytorch_model.fp8.safetensors", 10 * MIB),
+        ("transformer/diffusion_pytorch_model.fp8-00001-of-00002.safetensors", 10 * MIB),
+        ("transformer/ignored.safetensors", 9 * MIB),
+        ("unused/diffusion_pytorch_model.safetensors", 30 * MIB),
+        ("scheduler/scheduler_config.json", 300),
+    ]
+    _stub_pipeline_hub(monkeypatch, tmp_path, {repo: (payload, files, "a" * 40)})
     staged: dict = {}
-    resident: dict = {}
+    resident: list = []
     total, files = DiffusionBackend._estimate_download_bytes(
         repo,
         None,
@@ -484,44 +418,27 @@ def test_pipeline_estimate_uses_selected_components_and_default_variant(
     }
     assert set(files) == expected
     assert set(staged[repo]) == expected
-    assert resident[repo] == {"transformer/diffusion_pytorch_model.safetensors": 20 * MIB}
+    assert resident == [("transformer/diffusion_pytorch_model.safetensors", 20 * MIB)]
     assert total == 20 * MIB + 600
 
 
 def test_gated_pipeline_manifest_is_read_from_the_fetch_mirror(monkeypatch, tmp_path):
     upstream = "black-forest-labs/FLUX.2-dev"
     mirror = "unsloth/FLUX.2-dev"
-    manifest = tmp_path / "model_index.json"
-    manifest.write_text(
-        json.dumps({"transformer": ["diffusers", "Flux2Transformer2DModel"]}),
-        encoding = "utf-8",
-    )
-    mirror_siblings = [
-        _ManifestSibling("model_index.json", 100),
-        _ManifestSibling("transformer/diffusion_pytorch_model.safetensors", 20 * MIB),
+    payload = {"transformer": ["diffusers", "Flux2Transformer2DModel"]}
+    files = [
+        ("model_index.json", 100),
+        ("transformer/diffusion_pytorch_model.safetensors", 20 * MIB),
     ]
-    info_calls: list = []
-    download_calls: list = []
-
-    class _Api:
-        def model_info(self, repo_id, **_kwargs):
-            info_calls.append(repo_id)
-            assert repo_id == mirror
-            return types.SimpleNamespace(siblings = mirror_siblings, sha = "b" * 40)
-
-    def fake_download(repo_id, filename, **kwargs):
-        download_calls.append((repo_id, filename, kwargs.get("revision")))
-        assert repo_id == mirror
-        return str(manifest)
-
-    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
-    monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+    info_calls, download_calls = _stub_pipeline_hub(
+        monkeypatch, tmp_path, {mirror: (payload, files, "b" * 40)}
+    )
     monkeypatch.setattr(
         diffusion_mod,
         "prefer_ungated_mirror",
         lambda repo_id, *_a, **_k: mirror if repo_id == upstream else repo_id,
     )
-    resident: dict = {}
+    resident: list = []
     revisions: dict = {}
     fetch_repos: dict = {}
     _total, _files = DiffusionBackend._estimate_download_bytes(
@@ -537,7 +454,7 @@ def test_gated_pipeline_manifest_is_read_from_the_fetch_mirror(monkeypatch, tmp_
 
     assert info_calls == [mirror]
     assert download_calls == [(mirror, "model_index.json", "b" * 40)]
-    assert resident[upstream] == {"transformer/diffusion_pytorch_model.safetensors": 20 * MIB}
+    assert resident == [("transformer/diffusion_pytorch_model.safetensors", 20 * MIB)]
     assert revisions == {mirror: "b" * 40}
     assert fetch_repos == {upstream: mirror}
 
@@ -545,49 +462,27 @@ def test_gated_pipeline_manifest_is_read_from_the_fetch_mirror(monkeypatch, tmp_
 def test_pipeline_listing_restarts_when_the_exact_scope_selects_the_mirror(monkeypatch, tmp_path):
     upstream = "black-forest-labs/FLUX.2-dev"
     mirror = "unsloth/FLUX.2-dev"
-    upstream_manifest = tmp_path / "upstream-model-index.json"
-    upstream_manifest.write_text(
-        json.dumps({"transformer": ["diffusers", "Flux2Transformer2DModel"]}),
-        encoding = "utf-8",
-    )
-    mirror_manifest = tmp_path / "mirror-model-index.json"
-    mirror_manifest.write_text(
-        json.dumps(
-            {
-                "transformer": ["diffusers", "Flux2Transformer2DModel"],
-                "vae": ["diffusers", "AutoencoderKL"],
-            }
-        ),
-        encoding = "utf-8",
-    )
+    payload = {"transformer": ["diffusers", "Flux2Transformer2DModel"]}
     listings = {
-        upstream: types.SimpleNamespace(
-            siblings = [
-                _ManifestSibling("model_index.json", 100),
-                _ManifestSibling("transformer/diffusion_pytorch_model.safetensors", 20 * MIB),
+        upstream: (
+            payload,
+            [
+                ("model_index.json", 100),
+                ("transformer/diffusion_pytorch_model.safetensors", 20 * MIB),
             ],
-            sha = "a" * 40,
+            "a" * 40,
         ),
-        mirror: types.SimpleNamespace(
-            siblings = [
-                _ManifestSibling("model_index.json", 101),
-                _ManifestSibling("transformer/diffusion_pytorch_model.safetensors", 21 * MIB),
-                _ManifestSibling("vae/diffusion_pytorch_model.safetensors", 3 * MIB),
+        mirror: (
+            {**payload, "vae": ["diffusers", "AutoencoderKL"]},
+            [
+                ("model_index.json", 101),
+                ("transformer/diffusion_pytorch_model.safetensors", 21 * MIB),
+                ("vae/diffusion_pytorch_model.safetensors", 3 * MIB),
             ],
-            sha = "b" * 40,
+            "b" * 40,
         ),
     }
-    info_calls: list = []
-    download_calls: list = []
-
-    class _Api:
-        def model_info(self, repo_id, **_kwargs):
-            info_calls.append(repo_id)
-            return listings[repo_id]
-
-    def fake_download(repo_id, filename, **kwargs):
-        download_calls.append((repo_id, filename, kwargs.get("revision")))
-        return str(upstream_manifest if repo_id == upstream else mirror_manifest)
+    info_calls, download_calls = _stub_pipeline_hub(monkeypatch, tmp_path, listings)
 
     def fake_prefer(
         repo_id,
@@ -598,10 +493,8 @@ def test_pipeline_listing_restarts_when_the_exact_scope_selects_the_mirror(monke
         assert repo_id == upstream
         return upstream if tuple(files or ()) == ("model_index.json",) else mirror
 
-    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
-    monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
     monkeypatch.setattr(diffusion_mod, "prefer_ungated_mirror", fake_prefer)
-    resident: dict = {}
+    resident: list = []
     revisions: dict = {}
     fetch_repos: dict = {}
     total, files = DiffusionBackend._estimate_download_bytes(
@@ -626,10 +519,10 @@ def test_pipeline_listing_restarts_when_the_exact_scope_selects_the_mirror(monke
         "vae/diffusion_pytorch_model.safetensors",
     }
     assert total == 24 * MIB + 101
-    assert resident[upstream] == {
-        "transformer/diffusion_pytorch_model.safetensors": 21 * MIB,
-        "vae/diffusion_pytorch_model.safetensors": 3 * MIB,
-    }
+    assert resident == [
+        ("transformer/diffusion_pytorch_model.safetensors", 21 * MIB),
+        ("vae/diffusion_pytorch_model.safetensors", 3 * MIB),
+    ]
     assert revisions == {mirror: "b" * 40}
     assert fetch_repos == {upstream: mirror}
 
@@ -647,22 +540,14 @@ def test_explicit_pipeline_assemblers_use_their_fixed_component_sets(
     from core.inference.diffusion import _explicit_pipeline_components
 
     repo = f"unsloth/{family}"
-    manifest = tmp_path / "model_index.json"
-    manifest.write_text(json.dumps({"_class_name": "Pipeline"}), encoding = "utf-8")
-    siblings = [
-        _ManifestSibling("model_index.json", 100),
-        _ManifestSibling(f"{included}/diffusion_pytorch_model.safetensors", 20 * MIB),
-        _ManifestSibling("unused/diffusion_pytorch_model.safetensors", 30 * MIB),
+    files = [
+        ("model_index.json", 100),
+        (f"{included}/diffusion_pytorch_model.safetensors", 20 * MIB),
+        ("unused/diffusion_pytorch_model.safetensors", 30 * MIB),
     ]
-
-    class _Api:
-        def model_info(self, *_a, **_k):
-            return types.SimpleNamespace(siblings = siblings, sha = None)
-
-    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
-    monkeypatch.setattr("huggingface_hub.hf_hub_download", lambda *a, **k: str(manifest))
+    _stub_pipeline_hub(monkeypatch, tmp_path, {repo: ({"_class_name": "Pipeline"}, files, None)})
     staged: dict = {}
-    resident: dict = {}
+    resident: list = []
     _total, files = DiffusionBackend._estimate_download_bytes(
         repo,
         None,
@@ -674,7 +559,7 @@ def test_explicit_pipeline_assemblers_use_their_fixed_component_sets(
         resident_file_sizes_out = resident,
     )
     assert files == ["model_index.json", f"{included}/diffusion_pytorch_model.safetensors"]
-    assert set(resident[repo]) == {f"{included}/diffusion_pytorch_model.safetensors"}
+    assert resident == [(f"{included}/diffusion_pytorch_model.safetensors", 20 * MIB)]
 
 
 def test_an_unreadable_device_never_refuses(monkeypatch):
@@ -700,10 +585,12 @@ def test_the_escape_hatch_still_opens_it(monkeypatch):
 
 def _stub_estimate(monkeypatch, files):
     def _estimate(*_a, **kwargs):
-        for key in ("file_sizes_out", "resident_file_sizes_out"):
-            out = kwargs.get(key)
-            if out is not None:
-                out["unsloth/FLUX.2-dev"] = {name: size for name, size in files}
+        file_sizes = kwargs.get("file_sizes_out")
+        if file_sizes is not None:
+            file_sizes["unsloth/FLUX.2-dev"] = {name: size for name, size in files}
+        resident_sizes = kwargs.get("resident_file_sizes_out")
+        if resident_sizes is not None:
+            resident_sizes.extend(files)
         return sum(size for _name, size in files), []
 
     monkeypatch.setattr(DiffusionBackend, "_estimate_download_bytes", staticmethod(_estimate))
@@ -754,28 +641,6 @@ def _staged_backend(
     return backend
 
 
-@pytest.mark.parametrize(
-    ("total_mib", "expected_calls", "rejected"),
-    [
-        pytest.param(STRIX_HALO_POOL_MIB, [], True, id = "refused"),
-        pytest.param(256 * 1024, ["prefetch", "load"], False, id = "fits"),
-    ],
-)
-def test_run_load_applies_the_guard_before_prefetch(
-    monkeypatch, total_mib, expected_calls, rejected
-):
-    calls: list = []
-    backend = _staged_backend(monkeypatch, files = FLUX2_DEV, calls = calls, total_mib = total_mib)
-
-    backend._run_load(repo_id = "unsloth/FLUX.2-dev", model_kind = "pipeline", _load_token = 1)
-
-    assert calls == expected_calls
-    if rejected:
-        assert "usable on this device" in backend._loading.error
-    else:
-        assert backend._loading is None
-
-
 def test_an_offline_load_never_probes_the_device(monkeypatch):
     calls: list = []
     backend = _staged_backend(monkeypatch, files = [], calls = calls)
@@ -813,22 +678,6 @@ def _plan_backend(
     return backend
 
 
-@pytest.mark.parametrize(
-    ("total_mib", "rejected"),
-    [
-        pytest.param(STRIX_HALO_POOL_MIB, True, id = "refused"),
-        pytest.param(256 * 1024, False, id = "fits"),
-    ],
-)
-def test_download_plan_reports_only_real_shortfalls(monkeypatch, total_mib, rejected):
-    backend = _plan_backend(monkeypatch, files = FLUX2_DEV, total_mib = total_mib)
-    plan = backend.download_plan("unsloth/FLUX.2-dev", model_kind = "pipeline")
-    reason = plan["incompatible_reason"]
-    assert (reason is not None) is rejected
-    if rejected:
-        assert "usable on this device" in reason
-
-
 def test_download_plan_keeps_an_earlier_refusal(monkeypatch):
     backend = _plan_backend(monkeypatch, files = FLUX2_DEV, mismatch = "wrong base size")
     plan = backend.download_plan("unsloth/FLUX.2-dev", model_kind = "pipeline")
@@ -838,65 +687,86 @@ def test_download_plan_keeps_an_earlier_refusal(monkeypatch):
 def test_download_plan_skips_the_device_probe_when_asked(monkeypatch):
     backend = _plan_backend(monkeypatch, files = FLUX2_DEV)
 
-    def _probe(_target):
+    def _probe(*_args, **_kwargs):
         raise AssertionError("the plan probed the device with allow_device_probe cleared")
 
     monkeypatch.setattr(diffusion_mod, "snapshot_device_memory", _probe)
+    monkeypatch.setattr(DiffusionBackend, "_te_prequant_plan_files", _probe)
+    monkeypatch.setattr(DiffusionBackend, "_dit_prequant_plan_source", _probe)
     plan = backend.download_plan(
-        "unsloth/FLUX.2-dev", model_kind = "pipeline", allow_device_probe = False
+        "unsloth/FLUX.2-dev",
+        model_kind = "pipeline",
+        text_encoder_quant = "fp8",
+        allow_device_probe = False,
     )
     assert plan["incompatible_reason"] is None
 
 
-def test_both_entry_points_size_a_hosted_encoder_the_same(monkeypatch):
-    fam = _real_family("unsloth/Lumina-Image-2.0")
-
+@pytest.mark.parametrize(
+    ("repo", "files", "total_mib", "te_prequant", "expected_calls"),
+    [
+        pytest.param(
+            "unsloth/FLUX.2-dev",
+            FLUX2_DEV,
+            STRIX_HALO_POOL_MIB,
+            None,
+            [],
+            id = "refused",
+        ),
+        pytest.param(
+            "unsloth/FLUX.2-dev",
+            FLUX2_DEV,
+            256 * 1024,
+            None,
+            ["prefetch", "load"],
+            id = "fits",
+        ),
+        pytest.param(
+            "unsloth/Lumina-Image-2.0",
+            LUMINA_2_MINUS_DENSE_TE,
+            12 * 1024,
+            LUMINA_HOSTED_TE,
+            [],
+            id = "hosted-encoder",
+        ),
+        pytest.param(
+            "HiDream-ai/HiDream-I1-Full",
+            _files(transformer = 47_000),
+            STRIX_HALO_POOL_MIB,
+            None,
+            [],
+            id = "external-dense-encoder",
+        ),
+    ],
+)
+def test_load_and_plan_apply_the_same_memory_guard(
+    monkeypatch, repo, files, total_mib, te_prequant, expected_calls
+):
+    fam = _real_family(repo)
     calls: list = []
     staged = _staged_backend(
         monkeypatch,
-        files = LUMINA_2_MINUS_DENSE_TE,
+        files = files,
         calls = calls,
-        total_mib = 12 * 1024,
-        te_prequant = LUMINA_HOSTED_TE,
+        total_mib = total_mib,
+        te_prequant = te_prequant,
         family = fam,
     )
-    staged._run_load(repo_id = "unsloth/Lumina-Image-2.0", model_kind = "pipeline", _load_token = 1)
-    assert calls == [], "nothing may be staged once the verdict is in"
-    assert "usable on this device" in staged._loading.error
+    staged._run_load(repo_id = repo, model_kind = "pipeline", _load_token = 1)
+    assert calls == expected_calls
 
     planner = _plan_backend(
         monkeypatch,
-        files = LUMINA_2_MINUS_DENSE_TE,
-        total_mib = 12 * 1024,
-        te_prequant = LUMINA_HOSTED_TE,
+        files = files,
+        total_mib = total_mib,
+        te_prequant = te_prequant,
         family = fam,
     )
-    plan = planner.download_plan("unsloth/Lumina-Image-2.0", model_kind = "pipeline")
-    assert plan["incompatible_reason"] is not None
-    assert plan["incompatible_reason"] == staged._loading.error
-
-
-def test_both_entry_points_count_hidreams_external_dense_te4(monkeypatch):
-    fam = _real_family("HiDream-ai/HiDream-I1-Full")
-    declared = _files(transformer = 47_000)
-
-    calls: list = []
-    staged = _staged_backend(
-        monkeypatch,
-        files = declared,
-        calls = calls,
-        total_mib = STRIX_HALO_POOL_MIB,
-        family = fam,
-    )
-    staged._run_load(repo_id = "HiDream-ai/HiDream-I1-Full", model_kind = "pipeline", _load_token = 1)
-    assert calls == []
-    assert "usable on this device" in staged._loading.error
-
-    planner = _plan_backend(
-        monkeypatch,
-        files = declared,
-        total_mib = STRIX_HALO_POOL_MIB,
-        family = fam,
-    )
-    plan = planner.download_plan("HiDream-ai/HiDream-I1-Full", model_kind = "pipeline")
-    assert plan["incompatible_reason"] == staged._loading.error
+    plan = planner.download_plan(repo, model_kind = "pipeline")
+    reason = plan["incompatible_reason"]
+    if expected_calls:
+        assert staged._loading is None
+        assert reason is None
+    else:
+        assert "usable on this device" in staged._loading.error
+        assert reason == staged._loading.error

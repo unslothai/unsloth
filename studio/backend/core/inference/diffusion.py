@@ -144,6 +144,7 @@ from .diffusion_cache import (
     normalize_transformer_cache,
 )
 from .diffusion_precision import (
+    TE_QUANT_FP8,
     effective_te_quant,
     normalize_te_quant,
     quantize_text_encoders,
@@ -470,29 +471,11 @@ def _fit_within(img: Any, max_w: int, max_h: int) -> Any:
     return img.resize((nw, nh), Image.LANCZOS)
 
 
-def _flatten_declared_sizes(per_repo: Any) -> list:
-    """Flatten per-repo file sizes without collapsing duplicate paths."""
-    flat: list = []
-    for files in (per_repo or {}).values():
-        flat.extend((name, size) for name, size in (files or {}).items())
-    return flat
-
-
 def _prequant_plan_bytes(te_files: Any) -> int:
     """Return the hosted pre-cast encoder bytes in a download plan."""
     return sum(
         int(size or 0) for entry in (te_files or {}).values() for _name, size in (entry[1] or ())
     )
-
-
-def _predownload_encoder_bytes(
-    fam: Any,
-    te_files: Any,
-    *,
-    pipeline_declared: bool = True,
-) -> int:
-    """Return encoder bytes that are absent from the selected pipeline declaration."""
-    return _prequant_plan_bytes(te_files)
 
 
 def _predownload_encoder_bf16_bytes(
@@ -2144,8 +2127,7 @@ class DiffusionBackend:
                 local_files_only = local_files_only,
                 base_repo = base,
             )
-            declared_sizes: dict[str, dict[str, int]] = {}
-            resident_sizes: dict[str, dict[str, int]] = {}
+            resident_sizes: list[tuple[str, int]] = []
             fetch_repos: dict[str, str] = {}
             expected, base_files = self._estimate_download_bytes(
                 kwargs["repo_id"],
@@ -2173,7 +2155,6 @@ class DiffusionBackend:
                 ),
                 skip_te_components = tuple(te_prequant_files),
                 local_files_only = local_files_only,
-                file_sizes_out = declared_sizes,
                 resident_file_sizes_out = resident_sizes,
                 fetch_repos_out = fetch_repos,
             )
@@ -2217,10 +2198,8 @@ class DiffusionBackend:
                 kwargs["repo_id"],
                 base,
                 kind = kind,
-                declared_files = _flatten_declared_sizes(resident_sizes),
-                prequant_bytes = _predownload_encoder_bytes(
-                    fam, te_prequant_files, pipeline_declared = bool(resident_sizes)
-                ),
+                declared_files = resident_sizes,
+                prequant_bytes = _prequant_plan_bytes(te_prequant_files),
                 extra_bf16_bytes = _predownload_encoder_bf16_bytes(
                     fam, te_prequant_files, pipeline_declared = bool(resident_sizes)
                 ),
@@ -2354,6 +2333,8 @@ class DiffusionBackend:
         if local_files_only:
             return {}
         try:
+            if normalize_te_quant(text_encoder_quant) != TE_QUANT_FP8:
+                return {}
             from huggingface_hub import HfApi
 
             from .diffusion_te_prequant import (
@@ -2508,7 +2489,7 @@ class DiffusionBackend:
         include_transformer: "bool | Callable[[Sequence[str], Sequence[str]], bool]" = False,
         sizes_out: Optional[dict[str, int]] = None,
         file_sizes_out: Optional[dict[str, dict[str, int]]] = None,
-        resident_file_sizes_out: Optional[dict[str, dict[str, int]]] = None,
+        resident_file_sizes_out: Optional[list[tuple[str, int]]] = None,
         revisions_out: Optional[dict[str, str]] = None,
         fetch_repos_out: Optional[dict[str, str]] = None,
         skip_te_components: tuple[str, ...] = (),
@@ -2622,11 +2603,11 @@ class DiffusionBackend:
                 if file_sizes_out is not None:
                     file_sizes_out[repo_id] = {s.rfilename: int(s.size or 0) for s in picked}
                 if resident_file_sizes_out is not None and components is not None:
-                    resident_file_sizes_out[repo_id] = {
-                        s.rfilename: int(s.size or 0)
+                    resident_file_sizes_out.extend(
+                        (s.rfilename, int(s.size or 0))
                         for s in picked
-                        if _pipeline_resident_weight(s.rfilename, components)
-                    }
+                        if _pipeline_resident_weight(s.rfilename)
+                    )
                 _record_revision(revisions_out, metadata_repo, info)
                 return total, base_files
             # Skip the Hub size lookup for a LOCAL gguf path: model_info raises on a filesystem path.
@@ -2722,7 +2703,8 @@ class DiffusionBackend:
         encoder (tens of GB the load never opens) and the load then pulls the pre-cast file
         inline, outside the manager's progress and disk preflight.
 
-        ``allow_device_probe=False`` skips the memory verdict while training owns the GPU."""
+        ``allow_device_probe=False`` skips device-dependent precision planning and the memory
+        verdict while training owns the GPU."""
         fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
         kind = resolve_model_kind(gguf_filename, model_kind)
         if kind == "pipeline":
@@ -2745,16 +2727,20 @@ class DiffusionBackend:
             fam, repo_id, gguf_filename, base, hf_token
         ) or speech_pick_refusal(repo_id, gguf_filename, hf_token)
         # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards.
-        te_files = self._te_prequant_plan_files(
-            fam,
-            text_encoder_quant,
-            hf_token,
-            load_kwargs.get("gpu_ordinal"),
-            base_repo = base,
+        te_files = (
+            self._te_prequant_plan_files(
+                fam,
+                text_encoder_quant,
+                hf_token,
+                load_kwargs.get("gpu_ordinal"),
+                base_repo = base,
+            )
+            if allow_device_probe
+            else {}
         )
         sizes: dict[str, int] = {}
         file_sizes: dict[str, dict[str, int]] = {}
-        resident_file_sizes: dict[str, dict[str, int]] = {}
+        resident_file_sizes: list[tuple[str, int]] = []
         revisions: dict[str, str] = {}
         fetch_repos: dict[str, str] = {}
         plan_failures: list = []
@@ -2780,7 +2766,7 @@ class DiffusionBackend:
                         transformer_files = transformer_files,
                     )
                 )
-                if kind == "gguf"
+                if kind == "gguf" and allow_device_probe
                 else False
             ),
             sizes_out = sizes,
@@ -2805,12 +2791,15 @@ class DiffusionBackend:
             checkpoint_bytes = int(
                 file_sizes.get(repo_id, {}).get(gguf_filename, sizes.get(repo_id, 0))
             )
-        required_total += sum(int(size) for files in te_files.values() for _name, size in files[1])
+        te_prequant_bytes = _prequant_plan_bytes(te_files)
+        required_total += te_prequant_bytes
         # The dense transformer/ shards are excluded for a GGUF pick, so a hosted prequant that
         # replaces them is real footprint the plan would otherwise never report. Sized against the
         # RESOLVED base, as the load passes it: a variant base picks its own prequant repo.
-        dit_prequant = self._dit_prequant_plan_source(
-            fam, kind, hf_token, {**load_kwargs, "base_repo": base}
+        dit_prequant = (
+            self._dit_prequant_plan_source(fam, kind, hf_token, {**load_kwargs, "base_repo": base})
+            if allow_device_probe
+            else None
         )
         if dit_prequant is not None:
             required_total += dit_prequant[2]
@@ -2962,10 +2951,8 @@ class DiffusionBackend:
                 repo_id,
                 base,
                 kind = kind,
-                declared_files = _flatten_declared_sizes(resident_file_sizes),
-                prequant_bytes = _predownload_encoder_bytes(
-                    fam, te_files, pipeline_declared = bool(resident_file_sizes)
-                ),
+                declared_files = resident_file_sizes,
+                prequant_bytes = te_prequant_bytes,
                 extra_bf16_bytes = _predownload_encoder_bf16_bytes(
                     fam, te_files, pipeline_declared = bool(resident_file_sizes)
                 ),
@@ -5159,9 +5146,12 @@ class DiffusionBackend:
             return None
         try:
             target = self._target_for_ordinal(fam, gpu_ordinal)
+            with diffusion_device_scope(target.ordinal if target.is_cuda_torch_device else None):
+                device_memory = snapshot_device_memory(target)
+            if device_memory.memory_kind != "unified_memory" or device_memory.total_mib is None:
+                return None
             dtype_scale = 2.0 if "float32" in str(getattr(target, "dtype", "")).lower() else 1.0
             resident_bytes = resident_bytes_from_declared(
-                fam,
                 base,
                 declared_files,
                 prequant_bytes = prequant_bytes,
@@ -5169,10 +5159,6 @@ class DiffusionBackend:
                 dtype_scale = dtype_scale,
             )
             if not resident_bytes:
-                return None
-            with diffusion_device_scope(target.ordinal if target.is_cuda_torch_device else None):
-                device_memory = snapshot_device_memory(target)
-            if device_memory.total_mib is None:
                 return None
             capacity = replace(device_memory, free_mib = device_memory.total_mib)
             resident_mib = int(resident_bytes) // (1024 * 1024)
@@ -6798,12 +6784,8 @@ def _pipeline_selected_file(
     return _pipeline_default_variant_file(rfilename)
 
 
-def _pipeline_resident_weight(
-    rfilename: str, selection: tuple[frozenset[str], frozenset[str]]
-) -> bool:
+def _pipeline_resident_weight(rfilename: str) -> bool:
     """Whether a selected file becomes tensor storage in the loaded pipeline."""
-    if not _pipeline_selected_file(rfilename, selection):
-        return False
     name = rfilename.rsplit("/", 1)[-1].lower()
     return bool(_DEFAULT_PIPELINE_WEIGHT_RE.match(name))
 

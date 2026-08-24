@@ -89,14 +89,7 @@ _BASE_RESIDENT_FACTORS: dict = {
 }
 
 
-def resident_factors(fam: Any, base_repo: Optional[str] = None) -> tuple:
-    """Return ``(denoiser, companions)`` download-per-resident factors."""
-    key = _base_key(base_repo) if base_repo else ""
-    return _BASE_RESIDENT_FACTORS.get(key, (1.0, 1.0))
-
-
 def resident_bytes_from_declared(
-    fam: Any,
     base_repo: Optional[str],
     declared_files: Any,
     *,
@@ -111,7 +104,9 @@ def resident_bytes_from_declared(
     widened with the pipeline when the resolved target is float32. Unknown families are treated
     as 1:1 with their download size.
     """
-    denoiser_factor, companion_factor = resident_factors(fam, base_repo)
+    denoiser_factor, companion_factor = _BASE_RESIDENT_FACTORS.get(
+        _base_key(base_repo) if base_repo else "", (1.0, 1.0)
+    )
     denoiser = 0
     companions = 0
     for path, size in declared_files or ():

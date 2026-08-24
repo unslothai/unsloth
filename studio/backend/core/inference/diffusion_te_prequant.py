@@ -70,11 +70,7 @@ TE_PREQUANT_BUDGET_SCALE = 0.65
 
 
 def te_prequant_budget_scale(
-    fam: Any,
-    *,
-    te_quant_mode: Optional[str],
-    target: Any,
-    base: Optional[str] = None,
+    fam: Any, *, te_quant_mode: Optional[str], target: Any, base: str
 ) -> float:
     """Scale to apply to a family's bf16 text-encoder size when budgeting memory for this pick:
     ``TE_PREQUANT_BUDGET_SCALE`` when the load takes its encoder PRE-CAST from a hosted fp8
@@ -90,15 +86,11 @@ def te_prequant_budget_scale(
     Best-effort like the rest of this module: anything unresolvable returns 1.0, i.e. today's
     bf16 budget."""
     try:
-        sources = (
-            te_prequant_sources_for_base(
-                fam,
-                base,
-                te_quant_mode = te_quant_mode,
-                target = target,
-            )
-            if base
-            else te_prequant_sources(fam, te_quant_mode = te_quant_mode, target = target)
+        sources = te_prequant_sources_for_base(
+            fam,
+            base,
+            te_quant_mode = te_quant_mode,
+            target = target,
         )
     except Exception:  # noqa: BLE001 -- an unresolvable pre-cast just means the dense encoder
         return 1.0
@@ -342,9 +334,13 @@ def load_prequant_text_encoder(
             )
             return None
 
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        cache_dir = active_hf_hub_cache()
         path = _resolve_checkpoint_path(
             source,
             hf_token,
+            cache_dir = cache_dir,
             local_files_only = local_files_only,
         )
         if path is None:
@@ -370,11 +366,9 @@ def load_prequant_text_encoder(
             )
             return None
         subfolder = component if config_subfolder is None else config_subfolder
-        from utils.hf_cache_settings import active_hf_hub_cache
-
         config_kwargs: dict[str, Any] = {
             "token": hf_token,
-            "cache_dir": active_hf_hub_cache(),
+            "cache_dir": cache_dir,
             "local_files_only": local_files_only,
         }
         if subfolder:
@@ -479,6 +473,7 @@ def _resolve_checkpoint_path(
     source: TePrequantSource,
     hf_token: Optional[str],
     *,
+    cache_dir: str,
     local_files_only: bool = False,
 ) -> Optional[str]:
     """The local file path for ``source``, downloading from the Hub if needed; None if absent."""
@@ -488,12 +483,11 @@ def _resolve_checkpoint_path(
         return expanded if os.path.isfile(expanded) else None
     if source.kind == "repo":
         from huggingface_hub import hf_hub_download
-        from utils.hf_cache_settings import active_hf_hub_cache
         return hf_hub_download(
             repo_id = source.location,
             filename = source.filename,
             token = hf_token,
-            cache_dir = active_hf_hub_cache(),
+            cache_dir = cache_dir,
             local_files_only = local_files_only,
         )
     return None
