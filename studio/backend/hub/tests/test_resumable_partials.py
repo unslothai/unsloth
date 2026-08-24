@@ -602,6 +602,69 @@ def test_windows_keeps_the_stock_writer(monkeypatch, tmp_path):
     assert rp._exclusion_is_provable() is False
 
 
+def test_an_oversized_partial_is_restarted_rather_than_resumed(monkeypatch, tmp_path):
+    """A partial longer than the file cannot be resumed from.
+
+    A Range starting past the end answers 416, and it would answer 416 on every later attempt too,
+    so the download would be wedged where the stock writer's fresh name recovers.
+    """
+    module, calls = _fake_file_download(monkeypatch)
+    assert rp.restore_resumable_partials() is True
+
+    partial = tmp_path / "abc.incomplete"
+    partial.write_bytes(b"z" * 80)
+
+    _patched_writer(module)(
+        incomplete_path = partial,
+        destination_path = tmp_path / "abc",
+        url_to_download = "https://example/f",
+        headers = {},
+        expected_size = 50,
+        filename = "f",
+    )
+
+    assert calls["http_get"] == [{"resume_size": 0, "mode": "ab"}]
+    assert partial.read_bytes() == b"x" * 10, "the oversized bytes were kept"
+
+
+def test_a_complete_partial_is_left_for_upstream_to_finish(monkeypatch, tmp_path):
+    """Exactly the declared size is not the wedged case: http_get returns early and it publishes.
+
+    Restarting here would refetch the whole file for nothing, so the boundary is strictly greater.
+    """
+    module, calls = _fake_file_download(monkeypatch)
+    assert rp.restore_resumable_partials() is True
+
+    partial = tmp_path / "abc.incomplete"
+    partial.write_bytes(b"z" * 50)
+
+    _patched_writer(module)(
+        incomplete_path = partial,
+        destination_path = tmp_path / "abc",
+        url_to_download = "https://example/f",
+        headers = {},
+        expected_size = 50,
+        filename = "f",
+    )
+
+    assert calls["http_get"] == [{"resume_size": 50, "mode": "ab"}], "it restarted a finished file"
+
+
+def test_an_unavailable_probe_does_not_take_the_worker_down(monkeypatch):
+    """The worker patches at import, so this must never raise out of here.
+
+    _ProbeUnavailable is what a transient mount-table or write-probe failure raises; escaping it
+    would kill the download process instead of leaving it with the stock writer.
+    """
+    _fake_file_download(monkeypatch)
+
+    def unavailable(_c = None):
+        raise rp._ProbeUnavailable("mount table briefly unreadable")
+
+    monkeypatch.setattr(rp, "can_restore_partials", unavailable)
+    assert rp.restore_resumable_partials() is False
+
+
 def test_a_planted_hard_link_is_not_appended_to(monkeypatch, tmp_path):
     """O_NOFOLLOW cannot see a hard link, so the size check is what catches this one."""
     module, calls = _fake_file_download(monkeypatch)

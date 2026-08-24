@@ -448,7 +448,14 @@ def _open_stable_partial(path: Path) -> Optional[Any]:
 
 def restore_resumable_partials() -> bool:
     """Patch huggingface_hub in THIS process. Idempotent, and a no-op where it is unsafe."""
-    if not can_restore_partials():
+    try:
+        permitted = can_restore_partials()
+    except _ProbeUnavailable as exc:
+        # The worker calls this at import, so an escaping exception would take the whole download
+        # process down instead of leaving it with the stock writer it can always fall back on.
+        logger.debug("resumable partials: %s", exc)
+        return False
+    if not permitted:
         return False
 
     from huggingface_hub import file_download
@@ -504,6 +511,20 @@ def restore_resumable_partials() -> bool:
         written = os.fstat(opened.fileno())
         with opened as handle:
             resume_size = handle.tell()
+            if expected_size is not None and resume_size > expected_size:
+                # Longer than the file is supposed to be, so there is nothing to resume from: a
+                # Range starting past the end answers 416 and would do so on every retry, where
+                # the stock writer's fresh name recovers. Truncating through the handle we already
+                # validated, rather than unlinking, keeps the name from being swapped underneath.
+                logger.warning(
+                    "Restarting '%s': the partial holds %s bytes but the file is %s.",
+                    filename,
+                    resume_size,
+                    expected_size,
+                )
+                handle.seek(0)
+                handle.truncate()
+                resume_size = 0
             if expected_size is not None:
                 file_download._check_disk_space(expected_size, incomplete_path.parent)
                 file_download._check_disk_space(expected_size, destination_path.parent)
