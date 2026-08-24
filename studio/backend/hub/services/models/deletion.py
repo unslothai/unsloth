@@ -691,6 +691,15 @@ def _delete_gguf_variant_from_repos(
             removed_snapshots += removed
             deleted_bytes += freed
             failures.extend(unlink_failures)
+            # Same barrier as the main phase above. A companion set is deleted together or not
+            # at all: one refused entry means something still has it open, and committing the
+            # rest would unlink the mmproj or drafter the surviving companions are read with.
+            if unlink_failures:
+                for links in companion_links.values():
+                    restored, restore_failures = _restore_snapshot_links(links)
+                    removed_snapshots -= restored
+                    failures.extend(restore_failures)
+                continue
             for _snap, blob, _name in companion_matches:
                 if blob is None:
                     continue

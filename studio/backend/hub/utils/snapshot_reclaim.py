@@ -453,16 +453,21 @@ def _is_os_metadata_dropping(path: Path) -> bool:
 
     Finder writes ``.DS_Store`` into every directory a user opens -- a real one
     is kilobytes long, so it trips the ref size guard and fails the whole scan --
-    Explorer writes ``Thumbs.db`` and ``desktop.ini``, and iCloud replaces an
-    evicted file with a ``.icloud`` placeholder. None of them is a ref, so both
-    counting one as a revision and refusing to reclaim over one are wrong.
+    and Explorer writes ``Thumbs.db`` and ``desktop.ini``. None of them is a ref,
+    so both counting one as a revision and refusing to reclaim over one are wrong.
 
     ``._`` companions are settled by their magic bytes, never by the prefix
     alone, because a ref could legitimately be named that way on a volume where
     macOS has never written a companion.
+
+    A ``.icloud`` placeholder is deliberately NOT listed. It is what remains when
+    iCloud evicts a file, so ``refs/.main.icloud`` still stands for a live ref
+    whose bytes are merely offline. Skipping it would drop the revision it pins
+    out of the referenced set and let reclamation delete a snapshot that is in
+    use; left unskipped it fails the commit-shape check and blocks the reclaim,
+    which is the safe direction for a placeholder we cannot read.
     """
-    lowered = path.name.casefold()
-    if lowered in _OS_METADATA_REF_NAMES or lowered.endswith(".icloud"):
+    if path.name.casefold() in _OS_METADATA_REF_NAMES:
         return True
     return is_appledouble_metadata(path)
 
