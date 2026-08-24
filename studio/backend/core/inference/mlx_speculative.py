@@ -326,8 +326,19 @@ def mlx_speculative_request_identity(
     return normalized, named or None, block_size
 
 
-@lru_cache(maxsize = 1)
+_RUNTIME_CAPABILITIES: Optional[dict[str, Any]] = None
+
+
 def mlx_speculative_runtime_capabilities() -> dict[str, Any]:
+    """What the installed MLX stack can draft with.
+
+    A stack that would not import is not remembered: MLX self-heal installs one into this
+    process's environment, and a probe cached from before it ran would leave every mode
+    disabled until Studio restarts.
+    """
+    global _RUNTIME_CAPABILITIES
+    if _RUNTIME_CAPABILITIES is not None:
+        return _RUNTIME_CAPABILITIES
     result: dict[str, Any] = {
         "common": False,
         "methods": {method: False for method in sorted(MLX_SPECULATIVE_METHODS)},
@@ -335,14 +346,16 @@ def mlx_speculative_runtime_capabilities() -> dict[str, Any]:
     }
     if sys.platform != "darwin":
         result["reason"] = "mlx_requires_apple_silicon"
+        _RUNTIME_CAPABILITIES = result
         return result
     try:
         drafters = importlib.import_module("mlx_vlm.speculative.drafters")
         ar = importlib.import_module("mlx_vlm.generate.ar")
         utils = importlib.import_module("mlx_vlm.speculative.utils")
-        return _runtime_capabilities_from_modules(drafters, ar, utils)
     except Exception:
         return result
+    _RUNTIME_CAPABILITIES = _runtime_capabilities_from_modules(drafters, ar, utils)
+    return _RUNTIME_CAPABILITIES
 
 
 def _runtime_capabilities_from_modules(drafters: Any, ar: Any, utils: Any) -> dict[str, Any]:

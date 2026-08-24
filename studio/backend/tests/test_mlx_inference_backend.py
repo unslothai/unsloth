@@ -5663,6 +5663,37 @@ def test_a_target_whose_weights_are_not_here_defers_the_memory_verdict(monkeypat
     assert [row.reason for row in measured] == [None]
 
 
+def test_a_runtime_that_is_not_installed_yet_is_probed_again(monkeypatch):
+    """MLX self-heal installs the stack into this running process, so a probe taken before it
+    finished must not be what every later request answers from."""
+    from core.inference import mlx_speculative as spec
+
+    monkeypatch.setattr(spec, "_RUNTIME_CAPABILITIES", None)
+    monkeypatch.setattr(spec.sys, "platform", "darwin")
+    calls = []
+
+    def _import(name):
+        calls.append(name)
+        raise ImportError(name)
+
+    monkeypatch.setattr(spec.importlib, "import_module", _import)
+    assert spec.mlx_speculative_runtime_capabilities()["reason"] == "runtime_unavailable"
+    assert spec.mlx_speculative_runtime_capabilities()["reason"] == "runtime_unavailable"
+    assert len(calls) == 2
+
+    monkeypatch.setattr(
+        spec,
+        "_runtime_capabilities_from_modules",
+        lambda *_m: {"common": True, "methods": {"mtp": True}, "reason": None},
+    )
+    monkeypatch.setattr(spec.importlib, "import_module", lambda name: calls.append(name))
+    assert spec.mlx_speculative_runtime_capabilities()["reason"] is None
+    # Settled now, so the imports are not walked again.
+    before = len(calls)
+    assert spec.mlx_speculative_runtime_capabilities()["reason"] is None
+    assert len(calls) == before
+
+
 def _drafter_snapshot(tmp_path, name, config):
     snapshot = tmp_path / name / "snapshots" / "abc"
     snapshot.mkdir(parents = True)
