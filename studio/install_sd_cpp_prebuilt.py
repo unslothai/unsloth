@@ -709,10 +709,9 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
         # extractall would create the tree itself, so the probe must not be what needs it first.
         base.mkdir(parents = True, exist_ok = True)
         # A probe a killed install left behind must not answer for this one: symlink_to raises
-        # EEXIST on an existing path, which reads below as "no symlink support". The directory
-        # outlives the process and a restarted container restarts its pid namespace, so the same
-        # pid returns and every retry stays blocked. Sweep stragglers, and take a unique name so
-        # a concurrent install cannot collide either.
+        # EEXIST on an existing path, which reads below as "no symlink support", and a restarted
+        # container reuses the pid while the directory persists. Sweep stragglers, and take a
+        # unique name so a concurrent install cannot collide either.
         for stale in base.glob(".unsloth-symlink-probe-*"):
             try:
                 stale.unlink()
