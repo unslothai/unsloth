@@ -855,6 +855,8 @@ export const ru = {
         title: "Устройства GPU",
         ggufInference: "Инференс GGUF",
         unavailable: "недоступно",
+        detecting: "Поиск GPU...",
+        unreadable: "Не удалось прочитать оборудование этого сервера.",
         noGpu:
           "Доступные GPU не обнаружены. Выше показаны ресурсы только для CPU.",
         unknownDevice: "Неизвестный GPU",
@@ -1102,7 +1104,7 @@ export const ru = {
         exportChat: "Экспортировать чат",
       },
       pastedTextThreshold: "Сворачивать длинные вставки",
-      pastedTextThresholdDescription: "Вставленный текст длиннее этого значения станет вложением .txt вместо заполнения поля сообщения.",
+      pastedTextThresholdDescription: "Вставленный текст длиннее этого значения станет вложением .txt вместо заполнения поля сообщения. Нажмите {shortcut}, чтобы всё равно вставить в поле сообщения.",
       pastedTextThresholdOff: "Выкл.",
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:

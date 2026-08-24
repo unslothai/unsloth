@@ -67,8 +67,8 @@ accumulate. Windows do not nest and do not overlap; opening one while another is
 ```python
 @dataclass
 class Window:
-    name: str               # "action:scroll_after", "stream:seg3", "idle:calibrate"
-    kind: str               # "action" | "stream" | "idle" | "settle" | "teardown"
+    name: str               # "action:scroll_after", "stream:gap3", "idle:calibrate"
+    kind: str               # "action" | "stream" | "gap" | "idle" | "setup" | "settle" | "teardown"
     cell: Cell
     t_open_ms: float        # driver monotonic ms since session t0
     t_close_ms: float | None
@@ -76,6 +76,26 @@ class Window:
     instruments: dict       # {instrument_name: dict}, filled on close
 ```
 
+**`gap` is not `stream`, and the difference has already misled this project.** The scheduler opens
+a `gap` window before every slot, to keep frame coverage continuous between actions. On the
+standard film that is eighteen of them, and only the first four contain any streaming: the rest are
+the quiet stretches between post-generation actions. Measured on a 100K cell, `stream:gap12` ran
+32.9 s at 1.6% busy with the reply thirty seconds finished, while `stream:drain` -- the one window
+that is genuinely about the stream -- was 7 ms long. These windows carried `kind = "stream"` until
+that was corrected, and anyone who filtered on it to find the streaming phase selected mostly
+post-stream idle.
+
+The NAMES still read `stream:gapN`, because they are the join key in every payload already written.
+Trust the `kind`, not the name, and to find the streaming phase itself detect it from the SSE
+traffic rather than from either.
+
+**`setup` is not `action`, for the same class of reason.** The only `setup` window is
+`setup:composer_click`, the click that starts the film. Most of what it costs is Playwright's own
+injected actionability script -- selector resolution, visibility, stability and the
+`elementsFromPoint` hit test -- and that script runs on the PAGE'S main thread, so it blocks frames
+indistinguishably from app work. At 500K the window is around 11 s against a `max_frame_ms` anchor
+whose worst case is 2,000 ms. It is instrumented and reported, and `scoring/from_payload.py` keeps
+it out of the frame pool via `UNSCORED_WINDOW_KINDS`.
 Opened as a context manager on the session:
 
 ```python
@@ -289,7 +309,295 @@ An instrument that caches `page` must re-read it in `start_cell`, not in `attach
 
 ---
 
-## 8. Stability
+## 8. The readiness gate, and what a WINDOWED arm must publish
+
+Before any window opens, the session layer waits for the thread to be ready. Until now that meant
+"every seeded message is mounted", which an arm that virtualises the message list can never
+satisfy: it mounts a window by design, so the count never arrives and the cell dies before the
+film starts. The gate is now four conditions rather than one count, and it runs in one of two
+modes. See `runtime/readiness.py` for the full argument.
+
+`full` is the default and is what every normal arm runs. It is STRICTLY STRONGER than what shipped:
+every seeded message mounted, PLUS the thread settled (two samples 600 ms apart agreeing on the
+mounted count, the element count and the viewport's scrollHeight) and the end of the thread present
+(the marker `runtime/seeder.turn_marker` wrote into the last user turn is in the mounted set, at
+its end).
+
+`windowed` is requested per arm with `--windowed-arm treatment`. It drops the mounted-count
+condition and adds four:
+
+| condition | what it requires |
+| --- | --- |
+| `total_declared` / `total_matches_seeded` | every mounted `[data-role]` carries `aria-setsize`, all agreeing, equal to the number of messages the seeder wrote. Waived only when the whole thread is mounted anyway, which is the full-mount condition itself |
+| `posinset_on_every_row` | every mounted message carries `aria-posinset` |
+| `anchored_at_end` | the app reports itself at the bottom (`.aui-thread-scroll-to-bottom` carrying `invisible`), falling back to the scrollTop arithmetic only when it does not |
+| `pin_settled` | `--aui-scroll-stabilizer` is off the viewport, i.e. the autoscroll has finished pinning |
+
+**This is a contract the arm must meet, not a signal that exists today.** Studio ships no
+virtualization and no ordinal attributes anywhere in the chat thread. WAI-ARIA already requires a
+list whose items are not all in the DOM to publish `aria-setsize` and `aria-posinset`, so an arm
+that omits them is unusable with a screen reader whatever it does to the frame rate, and refusing
+to score it is the correct answer rather than an inconvenience.
+
+Once per cell, before the idle window, a `windowed` arm additionally runs
+`probe_thread_completeness`: it scrolls to the top of the thread and requires the FIRST message to
+mount. Standing at the bottom, a correct virtualizer and a thread that has lost its history look
+identical, and this is the only reading that separates them. It is reported as a `thread_complete`
+gate row, not raised.
+
+The head marker is not the whole verdict. A store that kept the first page and the last one and
+lost everything between them mounts the head on demand, so the traversal also records the
+`aria-posinset` of every row it passes and `ordinal_coverage` reports what that covers.
+`ordinal_coverage_complete` stays three-valued, and `ordinal_coverage_state` says which kind of
+`None` a `None` is:
+
+| state | verdict | scored? |
+| --- | --- | --- |
+| `complete` | every seeded ordinal was mounted somewhere on the way up | yes |
+| `incomplete` | an ordinal is missing that the sweep was in a position to see, so the arm has lost it | no, and the cell is excluded |
+| `not_applicable` | no row published an `aria-posinset` at all. A fully mounted thread publishes none anywhere, so the question does not arise | yes |
+| `unmeasured` | the question arises and the sweep could not answer it: the gesture stopped short of the top, or consecutive stops did not overlap so the middle was never in view | **no** |
+
+`unmeasured` used to pass, which let the first-page-and-last-page store back in through the unknown
+state: the marker arrives, the sweep never looks, the cell stays scoreable. It does not any more,
+and the remedy for a coarse sweep is a smaller `step_px`, not a softer gate. The distinction is the
+reason a blanket "None fails" would be wrong -- it would fail the shipped build, which publishes no
+ordinals, on every cell it is pointed at.
+
+New payload keys, all additive: `readiness` and `completeness` on the cell row,
+`ordinal_coverage_state` on that `completeness` and on the `thread_complete` gate's detail,
+`unplaced_rows` on every visible-region capture, `mounted_messages`
+and `thread_total` on every parity capture, `mounted_before` / `mounted_after` on `send_turn`,
+`delete_message` and `thread_reopen`, `left_via` / `reopened_via` / `reopen_ready_mode` /
+`reopen_readiness` on `thread_reopen`, `visible` on every action row, `observation_ms` on every
+action row, `stream_samples` / `attached_fraction_of_stream` / `reattachments` on the cell's
+`follow`, `reply_chars_scoreable` / `wire_parse_failures_in_window` /
+`wire_pending_chars_at_close` on every `stream_cost` window, and the gate rows
+`thread_ready:{mode}`, `thread_complete`, `follows_the_stream` and `windowed_readiness:{arm}`.
+
+**What `thread_reopen` measures.** `reopen_ms` runs from the click on the thread's sidebar row
+until the reopened thread satisfies the SAME readiness gate the cell opened with -- composer
+present, end present, and settled across two samples -- in whichever mode that arm's own mount is
+in. It deliberately does not treat the thread's declared total as completion: on a windowed arm
+`threadTotal()` returns `aria-setsize`, which is the store's claim about how long the conversation
+is and not evidence that anything has been rebuilt, so the old condition could be satisfied by the
+first reopened row and the action timed a half-built DOM while still passing its own assertion.
+Reusing the gate rather than writing a second definition of "ready" is deliberate: two disagreeing
+definitions in one harness would be a defect of its own. The cost is a floor of one
+`STABLE_GAP_MS`, paid equally by both arms.
+
+**A rebuild that never finished is not a passed invariant.** When the gate times out, the row keeps
+`ran = True` with `expect_ok = False`, a null `reopen_ms` and the outstanding conditions under
+`expect.reopen_readiness` -- and `messages_before` and `messages_after` UNCHANGED, because both are
+`threadTotal()`, the total the store declared. `analysis/behaviour.py` therefore requires evidence
+that the rebuild completed (`reopen_readiness.ready`, or `expect_ok` on a payload that predates it)
+before it counts equal counts as the invariant holding; without it the pair is NOT COMPARABLE, not
+a match. Counts that DISAGREE stay BROKEN whatever the gate said, because a thread that came back
+shorter than it left is the data loss this invariant exists for.
+
+**When the New chat control cannot be clicked**, `thread_reopen` declines the substitute rather
+than detecting it afterwards. `_click_or_navigate` takes `allow_navigate` (default True, so every
+other caller is unchanged) and the LEAVE call passes False: nothing is clicked, nothing is
+navigated, and the thread stays mounted for the slots that follow. Refusing to score a measurement
+must not cost the actions after it -- the earlier version navigated first and then refused, leaving
+the scene on an empty thread and taking `delete_message` down with it. The RETURN leg keeps its
+navigation, because from an empty new-chat page that is what puts the thread back; it is still
+reported NOT RUN with no timing.
+
+`window.__sb.dom.threadTotal()` is the thread's LENGTH as opposed to how much of it is mounted:
+`aria-setsize` when published, `messageCount()` otherwise. On the shipped build the two are the
+same number. Every before/after assertion in `scene/actions.py` now asks `threadTotal()`, because
+"the thread grew" and "the message was deleted" are statements about the conversation and a
+windowed mount answers them about the viewport.
+
+**Structural UI parity is NOT APPLICABLE to a windowed arm.** `analysis/parity.py` returns the
+verdict `not_applicable` for such a pair rather than reporting a difference on every action, and
+`sweep/ui_parity.py` detects it from the payload and switches to `analysis/behaviour.py`: the
+scroll extent, plus the invariants on `select_all_copy`, `select_text`, `copy_markdown`,
+`thread_reopen` and `scroll_after`. What is no longer being asked is whether the mounted messages
+render identically.
+
+**What a PARITY OK verdict actually claims.** It claims that NO THREAD-STRUCTURE CHANGE WAS
+DETECTED. It does not claim the UI is unchanged, and the gap between those two readings is wide
+enough that the second must never be written down on the strength of the first.
+
+`scene/parity.js` digests the thread root and the overlay selectors. It is sidebar-blind and
+layout-blind by construction, and it never reads geometry or CSS custom properties. This has been
+measured, not merely assumed: run against a real, visible sidebar-drag change, the shipped thread
+digest returned 0 of 34 differing pairs -- and the concurrent null control also returned 0 of 34,
+so the instrument was not discriminating in either direction. Three purpose-built captures
+(sidebar-inclusive structure, sidebar inline style, custom-property reach) each found the same
+change 34 of 34 with the null at zero.
+
+Not covered, and not detectable by this digest at all:
+
+| surface | why |
+| --- | --- |
+| the sidebar, header, toasts | outside the digest root |
+| computed layout and geometry | positions, sizes and overflow are never read |
+| CSS custom properties | never read |
+| stylesheet changes | only via the bounded style probe: three properties (`display`, `visibility`, `pointer-events`) on at most 64 elements, reported separately and as an advisory |
+| raster content, colour, typography, animation | not in the DOM |
+
+A change confined to any of those needs its own capture. `sweep/ui_parity.py` prints this
+limitation next to the passing verdict rather than leaving it in a source comment.
+
+### The policy, and the three claims
+
+All changes must preserve UI and UX idempotency, with two exemptions:
+
+1. a UI difference may be accepted DELIBERATELY when performance improves dramatically;
+2. a difference that exists only OFF SCREEN is fine by definition, because rendering only what is
+   visible is an accepted technique rather than a parity violation.
+
+The whole-document digest cannot express exemption 2. It compares everything in the DOM, so every
+deferred-off-screen technique fails it by construction: virtualization, deferred fence
+highlighting, `content-visibility`, lazy images. Answering NOT_APPLICABLE withholds a verdict
+rather than giving one, so there is now a mode that gives one.
+
+`sweep/ui_parity.py --mode auto|digest|visible|behaviour`. Every report prints the CLAIM it is
+making AND the POLICY it is being judged against, because "PARITY OK" has meant three different
+things in this file's history and none of them is "the UI is unchanged". The claim says what was
+compared; the policy says what a pass is worth, and the two exemptions are what decide that. Only
+the `visible` mode can GRANT the off-screen exemption, and its policy line says so, together with
+the reminder that the exemption does not remove the floor. `analysis/parity.py` holds both as
+`POLICY` and `POLICY_BY_MODE`, and a test fails if any mode prints a claim without a policy beside
+it -- a constant nothing prints is a constant nobody reads.
+
+| mode | claim | fails on |
+| --- | --- | --- |
+| `digest` | thread-structure parity: the thread root and the declared overlay selectors are identical, on screen and off. NOT the sidebar, NOT computed layout or geometry, NOT CSS custom properties | any DOM difference it can see, on screen or off |
+| `visible` | every message the viewport showed during the action is present on both arms and identical; every difference lies off screen | a difference the user could see |
+| `behaviour` | the scroll extent matches and the invariants a windowed mount breaks first still hold. Says NOTHING about how anything looks | a broken invariant, e.g. a truncated clipboard |
+
+`auto` decides PER ACTION PAIR, not per payload and not per invocation: one payload can hold fully
+mounted small rungs and windowed large rungs, and a single windowed large-rung capture must not
+suppress the structural digest for every fully mounted pair beside it. A fully mounted pair is
+scored structurally; a windowed pair is scored on BOTH the visible region and the behavioural
+invariants, because neither subsumes the other. The report names which pairs went which way and the
+exit status combines every mode that ran.
+
+Whether a pair is windowed is MEASURED from its parity capture where one exists, and falls back to
+the run's own DECLARATION -- the `windowed_readiness:{arm}` gate rows and the per-cell `readiness`
+metadata -- where it does not. Without the fallback a declared windowed run whose captures all
+failed looks unwindowed, gets scored structurally, and exits 0 having compared nothing. The
+declaration is consulted for BOTH expected arms by name, including an arm that emitted no action
+row at all: an arm that died before the film leaves the pair one-sided, and reading the declaration
+off the rows that are present asks the surviving arm whether the missing one was windowed.
+
+Pairs are keyed by rung as well as by rep. They were keyed on the last dotted segment of the cell
+id, so `r1K.base.rep0` and `r100K.base.rep0` collided: a payload carrying more than one rung
+silently overwrote one rung's rows with the other's and could pair a 1K base against a 100K
+treatment.
+
+### The two boundary decisions in visible-region parity
+
+Written down because this is where a visible-region check goes wrong quietly.
+
+**Partial intersection counts as visible, and the element is digested IN FULL.** A message one
+pixel into the viewport is visible. Digesting only the part inside the viewport is not definable on
+a DOM subtree without reading geometry per node, and reading geometry is the one thing this must
+not do. The error this admits is a FALSE ALARM: a difference in the off-screen tail of a partly
+visible message is reported as visible. The error it refuses to admit is a false pass.
+
+**Anything visible at ANY point during the action is compared, not just at the end.** The observer
+is installed before the window opens and the compared set is the UNION of everything that ever
+intersected. A single sample at the close would compare wherever a scroll happened to stop and
+ignore everything the user saw on the way. The per-message digest is still the one taken at the
+close, which is a real limitation: a message visible mid-action and since unmounted appears in
+`ever_visible` but not in `messages`, and is reported as `unmounted_at_capture` rather than counted
+as agreement.
+
+**`aria-posinset` and `aria-setsize` are normalised out of the VISIBLE digest, and only that one.**
+The readiness gate accepts those attributes on the `[data-role]` message or on an ancestor row
+wrapper, so an arm may legitimately carry them on the message -- where the fully mounted arm
+carries neither, and every message then differs on bookkeeping while the rendered content is
+identical. The exclusion is passed in by the visible-region caller; the shared `signature` used by
+the thread digest, the per-message rows and the overlays keeps them, because those pairs are only
+ever scored when neither arm is windowing and an ordinal appearing there is a real change. What it
+gives up: a wrong ordinal on a windowed arm is no longer visible in this digest, and is instead the
+readiness gate's `posinset_ordinals_valid` / `posinset_reaches_end` and the completeness probe's
+coverage, which are the checks that can say what a right ordinal would be.
+
+**A message is keyed by its position in the THREAD, and the fallback is its position in the DOM.**
+A windowed arm publishes `aria-posinset` and that is used. An arm that publishes none is fully
+mounted, so the row's position among the thread's messages at the moment it is observed IS its
+thread position. It is resolved then rather than at delivery time, because by delivery the row may
+have been unmounted and `closest()` would answer nothing. It is NOT a lifetime count of observed
+nodes: `thread_reopen` makes a fully mounted arm recreate all N rows in one document, and a counter
+already standing at N stamped them N+1..2N, so the pair reported "the two arms put DIFFERENT
+MESSAGES on screen" for a rebuild that was identical. The lookup is kept off the per-mutation path
+-- a published ordinal short-circuits it, and the index is built at most once per mutation batch and
+only by a batch that mounted a message element, so a stream (text churn inside mounted rows) builds
+none. A row that can be placed by neither route is stamped with no ordinal and counted in
+`unplaced_rows` rather than given a guess.
+
+**The visible-region noise floor is keyed by (rung, action), and needs more than one observation.**
+`visible_unstable_set` derives it from a base-vs-base null control. It returned ACTION NAMES, so a
+single differing null pair silenced that action for every rep and every rung -- and a payload
+legitimately holds several rungs, so noise on the null's 100K `model_change` suppressed a
+reproducible visible regression on the target's 1K `model_change` and the command exited 0. The
+rung is where the instability lives (the same argument `tier_of` makes about the film's spacing),
+the shard cannot be part of the key because the null control is its own directory, and the reps at
+one rung are the repeated observations `P.derive_unstable` requires before it will call anything
+unstable. The structural floor keys on the action alone because it is unioned with a declared set
+whose every entry carries a written mechanism; the visible floor has no such backing, so it is
+earned at the scope it silences. SEVERE verdicts -- an arm whose viewport ended empty -- are never
+routed into the floor whatever it is keyed by.
+
+**Visibility is read with `IntersectionObserver` and never with geometry.**
+`getBoundingClientRect()` / `getClientRects()` on content inside a `content-visibility` locked
+subtree makes Chromium render that subtree to answer, so a geometry-based probe unlocks exactly
+what it came to observe: one session reported 0 off-screen unrendered roots while the event counter
+recorded 22 in the skipped state. IntersectionObserver is the same mechanism Blink's own relevance
+machinery uses, so it neither forces rendering nor perturbs the decision. A live test installs a
+counting trap on both geometry methods and fails if the capture touches either.
+
+**What the exemption does NOT cover.** A clipboard that carries different content, and native
+find-in-page. Both are questions about the whole conversation rather than about the viewport, so
+they are scored behaviourally and an off-screen rendering difference is no defence.
+
+### Three corrections to the record
+
+**The `thread_reopen` control was never covered. It was never HOVERED.** Both the earlier
+"the sticky group label overlaps it" explanation and its successor were wrong. `.sidebar-header-action`
+ships `opacity: 0; pointer-events: none` and is revealed by `.group\/sidebar-header:hover`. The
+button is laid out, passes every actionability check Playwright makes, and is transparent to every
+hit test, so `click()` times out and a hit-test spread finds no reachable point -- both accurate,
+both pointing the wrong way. `_click_or_navigate` now hovers the control's own centre before giving
+up, which is what a user does; the pointer falls through to the group underneath and the button
+becomes solid under a mouse already on it.
+
+**A window that opens on an action reporting `ran: false` still records frames, and an idle window
+sits near the compositor ceiling.** So an action that ran on one arm and not the other compares a
+busy window against an empty one and reports a large improvement. In the 100K virtualization run
+this produced `delete_message` +167.3% and `thread_reopen` +88.8%, two of the three largest wins on
+the page, both fabricated: the actions ran 4x on the base arm and 0x on the treatment. Any
+per-window comparison must drop windows whose action did not run on BOTH arms, and say which it
+dropped. This is general and is not specific to virtualization.
+
+**`reasoning_toggle` runs at 2.2 fps on BOTH arms at the 100K rung**, with a p95 frame of 2,084 ms.
+It is the worst number the harness produces and it is not a virtualization finding.
+
+**It is a STRESS reading, not a USER-JOURNEY reading, and it has been quoted as the latter.** The
+action opens EVERY reasoning pane in the thread in one gesture: 10 panes, materialising 74,917
+highlight spans, 2,143 ms to open and 805 ms to close. No user does that; a user expands one pane.
+So 2.2 fps is a legitimate measurement of a deliberate worst case and must not be described as what
+a user feels when they open a reasoning pane. We do not currently have that second number.
+
+**Any scan that can return zero carries a positive control.** The style probe walks a hand-written
+selector list; a class rename empties it, and two empty scans have equal element counts and equal
+digests (both the hash of an empty string), so a probe that observed nothing used to report MATCH.
+`compare_styles` now refuses a zero-element probe instead. The general form of this is worth
+knowing: a CSSOM scan elsewhere in the campaign returned a clean zero because CSS nesting gives
+every `CSSStyleRule` a truthy but empty `cssRules`, so code that recurses on a truthy `cssRules`
+silently skips every declaration in the document. Nothing here walks the CSSOM today; anything
+added later that can legitimately return zero needs a positive control, and a zero without one
+should not be believed.
+
+---
+
+## 9. Stability
 
 This file is the contract. Layer 1 will not change any name above without editing this file in the
 same commit and saying so at the top. Additive changes (new optional key, new row type, new

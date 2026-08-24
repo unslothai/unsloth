@@ -13,6 +13,7 @@ backend pytest checks (which prove the backend logic).
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -81,6 +82,101 @@ def _read_backend(rel: str) -> str:
     path = WORKDIR / "studio" / "backend" / rel
     assert path.exists(), f"missing backend source file: {path}"
     return path.read_text(encoding = "utf-8")
+
+
+# The frontend greps below have no parser to hand. The backend does, and a rule read out
+# of the parse tree survives the edits that are not about it: a formatter that splits a
+# set literal one name per line, a reordering, a renamed neighbour. Each helper raises
+# rather than returning empty when it cannot find what it was pointed at, so a rule that
+# moves reddens here instead of passing vacuously.
+def _backend_function(rel: str, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
+    """The definition of ``name`` in backend file ``rel``."""
+    tree = ast.parse(_read_backend(rel), filename = rel)
+    found = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
+    ]
+    assert len(found) == 1, f"{rel} defines {len(found)} functions named {name}, want 1"
+    return found[0]
+
+
+def _backend_class(rel: str, name: str) -> ast.ClassDef:
+    """The definition of class ``name`` in backend file ``rel``."""
+    tree = ast.parse(_read_backend(rel), filename = rel)
+    found = [
+        node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == name
+    ]
+    assert len(found) == 1, f"{rel} defines {len(found)} classes named {name}, want 1"
+    return found[0]
+
+
+def _model_dump_exclusions(rel: str, function: str) -> set[str]:
+    """The names the one ``model_dump(exclude = {...})`` inside ``function`` leaves out.
+
+    Exactly one such call, or the answer would be a union across calls and dropping a
+    name from the one that matters could hide behind another.
+    """
+    excluded: list[set[str]] = []
+    for node in ast.walk(_backend_function(rel, function)):
+        if not isinstance(node, ast.Call):
+            continue
+        if not (isinstance(node.func, ast.Attribute) and node.func.attr == "model_dump"):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "exclude":
+                continue
+            assert isinstance(keyword.value, ast.Set), f"{function}: exclude is not a set literal"
+            names = {
+                element.value
+                for element in keyword.value.elts
+                if isinstance(element, ast.Constant) and isinstance(element.value, str)
+            }
+            assert len(names) == len(
+                keyword.value.elts
+            ), f"{function}: exclude holds a name this check cannot read statically"
+            excluded.append(names)
+    assert (
+        len(excluded) == 1
+    ), f"{rel}:{function} has {len(excluded)} model_dump(exclude = ...) calls, want 1"
+    return excluded[0]
+
+
+def _annotated_field(rel: str, class_name: str, field: str) -> tuple[str, object]:
+    """``(annotation, default)`` for ``field: <annotation> = <default>`` on ``class_name``."""
+    for statement in _backend_class(rel, class_name).body:
+        if not isinstance(statement, ast.AnnAssign):
+            continue
+        if not (isinstance(statement.target, ast.Name) and statement.target.id == field):
+            continue
+        assert isinstance(
+            statement.value, ast.Constant
+        ), f"{class_name}.{field} no longer defaults to a literal"
+        return ast.unparse(statement.annotation), statement.value.value
+    raise AssertionError(f"{rel}:{class_name} declares no field named {field}")
+
+
+def _forwarded_keywords(rel: str, function: str, obj: str) -> set[str]:
+    """Keyword arguments passed as ``name = <obj>.name`` anywhere inside ``function``.
+
+    Same name on both sides, so this says the value reached the callee unmodified and
+    under its own name, which is the part a caller downstream depends on.
+    """
+    forwarded = set()
+    for node in ast.walk(_backend_function(rel, function)):
+        if not isinstance(node, ast.Call):
+            continue
+        for keyword in node.keywords:
+            value = keyword.value
+            if (
+                keyword.arg
+                and isinstance(value, ast.Attribute)
+                and isinstance(value.value, ast.Name)
+                and value.value.id == obj
+                and value.attr == keyword.arg
+            ):
+                forwarded.add(keyword.arg)
+    return forwarded
 
 
 def _brace_matched_body(text: str, declaration: str) -> str:
@@ -2741,11 +2837,18 @@ def test_the_backfill_fills_in_fields_rather_than_skipping_known_keys():
     # Ordinary saves must stay unconditional, or a settings edit would never land.
     assert "syncModelOverride" in api and "fill_absent_fields: true" in api
 
-    route = _read_backend("routes/settings.py")
-    assert "fill_absent_fields: bool = False" in route, "the rule this mirrors"
-    assert "fill_absent_fields = payload.fill_absent_fields," in route
+    # Read out of the route's parse tree, not its text. The rule is which names the route
+    # declares, forwards and excludes; a set literal reflowed one name per line by the
+    # formatter, or a name added beside them, is not a change to it.
+    route = "routes/settings.py"
+    handler = "update_openai_auto_switch_override"
+    assert _annotated_field(route, "ModelOverridePayload", "fill_absent_fields") == (
+        "bool",
+        False,
+    ), "the rule this mirrors"
+    assert "fill_absent_fields" in _forwarded_keywords(route, handler, "payload")
     # A write mode must not leak into saved fields, or model_id-only removal stops working.
-    assert '"remove", "fill_absent_fields"' in route
+    assert {"remove", "fill_absent_fields"} <= _model_dump_exclusions(route, handler)
 
     # The merge is the server's, in the write's transaction: a client-side one reopens the race.
     db = _read_backend("storage/studio_db.py")
