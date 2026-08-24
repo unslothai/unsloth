@@ -34,7 +34,8 @@ import sys
 import threading
 import time
 from contextlib import contextmanager
-from functools import partial
+from functools import partial, wraps
+from importlib._bootstrap import _ModuleLockManager
 from typing import Optional
 
 from loggers import get_logger
@@ -91,6 +92,18 @@ def _clear_external_import_state(package: str) -> list[str]:
     return cleared
 
 
+def _synchronize_with_imports(fn):
+    """Run cleanup under the same per-module lock used by CPython imports."""
+
+    @wraps(fn)
+    def synchronized(package: str):
+        with _ModuleLockManager(package):
+            return fn(package)
+
+    return synchronized
+
+
+@_synchronize_with_imports
 def purge_partial_import(package: str) -> list:
     """Drop the submodules a failed package import left behind in sys.modules.
 
