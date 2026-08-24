@@ -370,6 +370,15 @@ class UnloadRequest(BaseModel):
     )
 
 
+class SearchImagesLookupRequest(BaseModel):
+    subjects: list[str] = Field(
+        ...,
+        min_length = 1,
+        max_length = 5,
+        description = "Specific things to fetch one picture each for.",
+    )
+
+
 class TranscribeRequest(BaseModel):
     """Speech-to-text request for the dictation STT sidecar."""
 
@@ -1574,10 +1583,49 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: Optional[int] = Field(
         None, ge = 1, description = "Maximum tokens to generate (None = until EOS)"
     )
-    presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
+    # OpenAI's documented range is [-2, 2] on both penalties. Widening only
+    # admits requests that used to be rejected, so nothing that works today
+    # changes. A negative value boosts repetition wherever the backend applies
+    # the penalty at all.
+    presence_penalty: float = Field(
+        0.0,
+        ge = -2.0,
+        le = 2.0,
+        description = (
+            "Presence penalty: charges a token once if it appears. MLX scores the completion"
+            " only; llama-server also counts the prompt, within its own window."
+        ),
+    )
+    frequency_penalty: float = Field(
+        0.0,
+        ge = -2.0,
+        le = 2.0,
+        description = (
+            "Frequency penalty: charges a token per occurrence. MLX scores the completion"
+            " only; llama-server also counts the prompt, within its own window."
+        ),
+    )
+    # Ids are not range-checked here: MLX bounds-checks nothing either, so a
+    # stray is dropped at the processors rather than failing the request.
+    logit_bias: Optional[Dict[int, Annotated[float, Field(ge = -100.0, le = 100.0)]]] = Field(
+        None,
+        description = "Additive per-token logit bias keyed by token id, each in [-100, 100]. Ids past the model's logit width are ignored.",
+    )
     stop: Optional[Union[str, list[str]]] = Field(
         None,
         description = "OpenAI stop sequences: a single string or list of strings at which generation halts.",
+    )
+    # Declared rather than left to model_extra so the schema documents it and a
+    # backend that cannot constrain decoding can refuse it by name.
+    response_format: Optional[Dict[str, Any]] = Field(
+        None,
+        description = (
+            'Guided decoding contract, typically `{"type": "json_object"}` or'
+            ' a `json_schema`. `{"type": "text"}` names the default and'
+            " constrains nothing. Anything else needs a grammar engine, and a"
+            " backend without one rejects the request rather than answering text"
+            " that ignores the contract."
+        ),
     )
     tools: Optional[list[dict]] = Field(
         None,
@@ -1729,11 +1777,10 @@ class ChatCompletionRequest(BaseModel):
     nudge_tool_calls: Optional[bool] = Field(
         None,
         description = (
-            "[x-unsloth] Opt-in, non-streaming client-tool passthrough only: when the "
-            "model emitted a tool signal that healing could not repair, retry ONCE with "
-            "a short nudge appended (the retry shares the full prompt prefix, so the "
-            "server's KV cache is reused). Default off; UNSLOTH_TOOL_CALL_NUDGE=1 flips "
-            "the process default."
+            "[x-unsloth] Opt-in tool-call recovery: when a model stalls with a short "
+            "plan instead of calling an available tool, or passthrough healing cannot "
+            "repair a malformed call, retry with a short nudge. Default off; "
+            "UNSLOTH_TOOL_CALL_NUDGE=1 flips the process default."
         ),
     )
     context_overflow: Optional[Literal["error", "truncate_middle", "truncate_oldest"]] = Field(
@@ -2897,7 +2944,7 @@ class AnthropicMessagesRequest(BaseModel):
     )
     nudge_tool_calls: Optional[bool] = Field(
         None,
-        description = "[x-unsloth] Opt-in, non-streaming only: retry once with a nudge when the model emitted a tool signal healing could not repair (mirrors the Chat Completions field).",
+        description = "[x-unsloth] Opt-in tool-call recovery; mirrors the Chat Completions nudge_tool_calls field and defaults off.",
     )
     model_config = {"extra": "allow"}
 

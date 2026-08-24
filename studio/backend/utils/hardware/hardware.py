@@ -876,6 +876,222 @@ def _clear_mps_cache() -> None:
         logger.debug("Failed to clear MPS cache: %s", e)
 
 
+def _rocm_visibility_masks_are_stacked() -> bool:
+    """Whether a ROCr mask is composed with a higher HIP-layer mask."""
+    if sys.platform == "win32" or os.environ.get("ROCR_VISIBLE_DEVICES") is None:
+        return False
+    return (
+        os.environ.get("HIP_VISIBLE_DEVICES") is not None
+        or os.environ.get("CUDA_VISIBLE_DEVICES") is not None
+    )
+
+
+def _rocm_device_ordinal_active() -> bool:
+    """Whether GPU_DEVICE_ORDINAL renumbers HIP devices.
+
+    ROCclr-layer, so it applies on Windows too, and no visibility spec here reads
+    it: a torch ordinal cannot be paired with a physical id while it is set.
+    """
+    return bool(os.environ.get("GPU_DEVICE_ORDINAL", "").strip())
+
+
+def _cuda_order_matches_smi() -> bool:
+    """Whether torch ordinals and nvidia-smi rows share one index space.
+
+    CUDA enumerates FASTEST_FIRST by default and nvidia-smi reports PCI order;
+    PCI_BUS_ID is only a setdefault here, so an explicit override survives and
+    the two disagree. Equal-sized cards defeat the total-scope check, so nothing
+    else catches it. Same gate the llama.cpp SM probe applies. One GPU is exempt:
+    every ordering is the identity there.
+    """
+    if IS_ROCM or os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID":
+        return True
+    # The count must be the SMI's. The torch fallback counts VISIBLE devices, so
+    # a mask of one on a multi-GPU host reads as single-GPU and would grant the
+    # exemption the mask is exactly the reason to withhold. It is cached, so one
+    # transient `nvidia-smi -L` timeout would otherwise disable this for the
+    # life of the process.
+    count = get_physical_gpu_count()
+    if _physical_gpu_count_from_smi and count <= 1:
+        return True
+    if not _physical_gpu_count_from_smi:
+        logger.debug("Skipping SMI VRAM query: physical GPU count is not SMI-confirmed")
+        return False
+    logger.debug("Skipping SMI VRAM query: CUDA_DEVICE_ORDER is not PCI_BUS_ID")
+    return False
+
+
+def _amd_smi_ids_for_hip_ids(hip_ids: Optional[list[int]]) -> Optional[list[int]]:
+    """Translate visible HIP ordinals to amd-smi physical GPU IDs."""
+    if hip_ids is None or not hip_ids:
+        return hip_ids
+    if _rocm_device_ordinal_active():
+        logger.debug("Skipping amd-smi VRAM query: GPU_DEVICE_ORDINAL filters HIP devices")
+        return None
+    if _rocm_visibility_masks_are_stacked():
+        logger.debug("Skipping amd-smi VRAM query: ROCr and HIP visibility masks are stacked")
+        return None
+
+    from . import amd
+
+    smi_to_hip = amd.get_hip_id_by_gpu_index()
+    if smi_to_hip is None:
+        # Identity is still provable on a host with exactly one physical GPU.
+        if hip_ids == [0] and amd.get_physical_gpu_count() == 1:
+            return [0]
+        logger.debug("Skipping amd-smi VRAM query: HIP GPU mapping is unavailable")
+        return None
+
+    torch_visible_count = _torch_get_physical_gpu_count()
+    if torch_visible_count is None or torch_visible_count != len(hip_ids):
+        logger.debug("Skipping amd-smi VRAM query: amd-smi and HIP visible counts differ")
+        return None
+    has_standard_mask = any(
+        os.environ.get(name) is not None
+        for name in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+    )
+    if not has_standard_mask and len(smi_to_hip) != torch_visible_count:
+        logger.debug("Skipping amd-smi VRAM query: amd-smi and HIP inventories differ")
+        return None
+
+    hip_to_smi = {hip_id: smi_id for smi_id, hip_id in smi_to_hip.items()}
+    if any(hip_id not in hip_to_smi for hip_id in hip_ids):
+        logger.debug("Skipping amd-smi VRAM query: HIP GPU mapping is incomplete")
+        return None
+    return [hip_to_smi[hip_id] for hip_id in hip_ids]
+
+
+def _free_in_torch_scope(total_bytes: int, used_gb: float) -> int:
+    """Driver used-memory turned into free bytes, in torch's allocatable scope.
+
+    Subtract from torch's total, never the driver's: NVIDIA's total also spans a
+    reserved framebuffer that ``used`` excludes and torch can never hand out
+    (726 MiB on a B200), so ``driver_total - used`` reports a full card as free.
+
+    Clamped both ends: the parsers accept signed values, and a negative used
+    would otherwise advertise more free than the card has, which utilization_pct
+    and the training-method policy both read.
+    """
+    return min(total_bytes, max(0, total_bytes - round(used_gb * (1024**3))))
+
+
+def _context_free_cuda_memory_info(
+    idx: int,
+    total_bytes: int,
+    unified: bool = False,
+) -> Optional[int]:
+    """System-wide free bytes without attaching a CUDA/HIP primary context.
+
+    ``unified`` marks a ROCm APU, whose *total* must still come from HIP but whose
+    *used* is available here; see ``_rocm_windows_unified_used_bytes``.
+    """
+    parent_visible_spec = _get_parent_visible_gpu_spec()
+
+    # A unified part goes straight to the WDDM counters. The vendor CLI and DRM
+    # sysfs both report the dedicated carve-out for it, which the total-tolerance
+    # check below would reject anyway, and Linux hipMemGetInfo is already
+    # system-wide there -- so this exists for Windows, where it is not.
+    if unified:
+        if platform.system() != "Windows" or _rocm_device_ordinal_active():
+            return None
+        used_bytes = _rocm_windows_unified_used_bytes()
+        if used_bytes is None:
+            return None
+        return _free_in_torch_scope(total_bytes, used_bytes / (1024**3))
+
+    # Prefer the vendor CLI. Both nvidia-smi and amd-smi run out of process, so
+    # querying an idle backend does not leave a context resident in this process.
+    visible_ids = parent_visible_spec["numeric_ids"]
+    if IS_ROCM:
+        visible_ids = _amd_smi_ids_for_hip_ids(visible_ids)
+    # Without numeric ids ROCm cannot map at all, while an NVIDIA UUID mask names
+    # its devices absolutely: CUDA enumerates them in the order listed, so there
+    # is no ordinal space to share and the order gate does not apply.
+    may_query = not IS_ROCM if visible_ids is None else _cuda_order_matches_smi()
+    result = None
+    if may_query:
+        result = _smi_query(
+            "get_visible_gpu_utilization",
+            visible_ids,
+            parent_cuda_visible_devices = parent_visible_spec["raw"],
+        )
+    if result is not None:
+        for device in result.get("devices", []):
+            if device.get("visible_ordinal") != idx:
+                continue
+            used_gb = device.get("vram_used_gb")
+            driver_total_gb = device.get("vram_total_gb")
+            if used_gb is None or driver_total_gb is None:
+                break
+            driver_total_bytes = round(driver_total_gb * (1024**3))
+            total_tolerance = max(total_bytes // 100, 16 * 1024**2)
+            if abs(driver_total_bytes - total_bytes) > total_tolerance:
+                logger.debug("Skipping whole-GPU VRAM telemetry for a partitioned GPU device")
+                break
+            return _free_in_torch_scope(total_bytes, used_gb)
+
+    if not IS_ROCM:
+        return None
+
+    # Linux DRM sysfs is system-wide and context-free. Build the complete
+    # physical inventory because the resolver intentionally rejects partial or
+    # visibility-masked sets whose ordinals cannot be matched safely.
+    if platform.system() == "Linux":
+        numeric_ids = parent_visible_spec.get("numeric_ids")
+        if numeric_ids is not None and 0 <= idx < len(numeric_ids):
+            mod, _ = _torch_get_device_module()
+            probe = []
+            if mod is not None:
+                try:
+                    for ordinal, physical_idx in enumerate(numeric_ids):
+                        props = mod.get_device_properties(ordinal)
+                        probe.append(
+                            {
+                                "index": physical_idx,
+                                "vram_total_gb": props.total_memory / (1024**3),
+                            }
+                        )
+                except Exception as e:
+                    logger.debug("ROCm context-free inventory failed: %s", e)
+                    probe = []
+            resolved = _rocm_system_wide_vram_by_index(probe)
+            entry = resolved.get(numeric_ids[idx])
+            if entry is not None:
+                used_gb, _sysfs_total_gb = entry
+                return _free_in_torch_scope(total_bytes, used_gb)
+
+    # Native Windows ROCm exposes per-adapter dedicated usage without entering
+    # HIP. Reuse the same conservative mapping as the System telemetry route.
+    # GPU_DEVICE_ORDINAL renumbers torch ordinals but not the visible spec, so
+    # device_ids[idx] would be a different card; the Linux path declines already.
+    if platform.system() == "Windows" and not _rocm_device_ordinal_active():
+        numeric_ids = parent_visible_spec.get("numeric_ids")
+        device_ids = (
+            numeric_ids if numeric_ids else list(range(_torch_get_physical_gpu_count() or 0))
+        )
+        # Only when the counter instances ARE the visible set. With extras present
+        # the capacity ranking may hand a hidden adapter's smaller reading to a
+        # busier visible card: simulated over 89/89/8 GiB, a card really holding
+        # 86 GiB reports 10, overstating free by 76 GiB. The System tab can carry
+        # that best-effort mapping, but free_gb feeds training-method selection,
+        # where overstating free is what OOMs. Same cardinality assumption
+        # _rocm_windows_aggregate_used_bytes already rests on.
+        adapters = _rocm_windows_perf_counter_vram_by_adapter()
+        if adapters is None or len(adapters) != len(device_ids):
+            return None
+        devices, _aggregate = _rocm_windows_per_device_vram(device_ids, adapters)
+        for device in devices:
+            if device.get("visible_ordinal") != idx:
+                continue
+            used_gb = device.get("used_gb")
+            driver_total_gb = device.get("total_gb")
+            if used_gb is None or driver_total_gb is None:
+                break
+            return _free_in_torch_scope(total_bytes, used_gb)
+
+    return None
+
+
 def get_gpu_memory_info() -> Dict[str, Any]:
     """
     Get GPU memory info.
@@ -895,6 +1111,55 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             allocated = torch.cuda.memory_allocated(idx)
             reserved = torch.cuda.memory_reserved(idx)
 
+            # Driver-level free includes torch's cache and other processes. Try
+            # context-free telemetry first: mem_get_info pins a primary context
+            # for the life of this backend.
+            #
+            # A ROCm APU needs its GTT *total* from HIP, which the context-free
+            # probes cannot supply, so it pays for the context regardless. That is
+            # a reason to take the total from HIP, not a reason to take the free
+            # figure from it too: hipMemGetInfo is process-local on Windows WDDM
+            # and blind to other processes there. So resolve the total first, then
+            # still prefer telemetry for used.
+            driver_total_needed = _rocm_props_total_is_carve_out(props)
+            free = None
+            if driver_total_needed:
+                try:
+                    free, driver_total = trusted_mem_get_info(idx)
+                    # Only adopt a driver total that is usable: utilization_pct
+                    # divides by it, so a zero would lose the whole report.
+                    if driver_total:
+                        total = driver_total
+                except Exception as e:
+                    logger.debug("mem_get_info probe failed; free VRAM from reserved: %s", e)
+                    free = max(0, total - reserved)
+                # The counters only apply where UMA is POSITIVELY identified.
+                # _rocm_props_total_is_carve_out also answers True for an
+                # uncertain device (old HIP, unreadable flag), on the principle
+                # that a too-small total hides models. That justifies the driver
+                # total, not summing Shared Usage: shared system memory is not
+                # part of a discrete card's props.total_memory, so on a discrete
+                # GPU misread as uncertain it would understate free.
+                telemetry_free = None
+                if _rocm_props_are_positively_unified(props):
+                    try:
+                        telemetry_free = _context_free_cuda_memory_info(idx, total, unified = True)
+                    except Exception as e:
+                        logger.debug("context-free free-VRAM probe failed: %s", e)
+                if telemetry_free is not None:
+                    free = telemetry_free
+            else:
+                try:
+                    free = _context_free_cuda_memory_info(idx, total)
+                except Exception as e:
+                    logger.debug("context-free free-VRAM probe failed: %s", e)
+                try:
+                    if free is None:
+                        free, _driver_total = trusted_mem_get_info(idx)
+                except Exception as e:
+                    logger.debug("mem_get_info probe failed; free VRAM from reserved: %s", e)
+                    free = max(0, total - reserved)
+
             return {
                 "available": True,
                 "backend": _backend_label(device),
@@ -903,7 +1168,7 @@ def get_gpu_memory_info() -> Dict[str, Any]:
                 "total_gb": total / (1024**3),
                 "allocated_gb": allocated / (1024**3),
                 "reserved_gb": reserved / (1024**3),
-                "free_gb": (total - allocated) / (1024**3),
+                "free_gb": free / (1024**3),
                 "utilization_pct": (allocated / total) * 100,
             }
         except Exception as e:
@@ -926,6 +1191,14 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             allocated = torch.xpu.memory_allocated(idx)
             reserved = torch.xpu.memory_reserved(idx)
 
+            # Same rationale as the CUDA path: driver free, reserved as the
+            # fallback bound (see above).
+            try:
+                free, _driver_total = trusted_mem_get_info(idx, module = torch.xpu)
+            except Exception as e:
+                logger.debug("xpu mem_get_info probe failed; free VRAM from reserved: %s", e)
+                free = max(0, total - reserved)
+
             return {
                 "available": True,
                 "backend": _backend_label(device),
@@ -934,7 +1207,7 @@ def get_gpu_memory_info() -> Dict[str, Any]:
                 "total_gb": total / (1024**3),
                 "allocated_gb": allocated / (1024**3),
                 "reserved_gb": reserved / (1024**3),
-                "free_gb": (total - allocated) / (1024**3),
+                "free_gb": free / (1024**3),
                 "utilization_pct": (allocated / total) * 100,
             }
         except Exception as e:
@@ -1172,6 +1445,24 @@ def _hip_runtime_version() -> Optional[tuple[int, int]]:
     except Exception as e:
         logger.debug("HIP runtime version probe failed: %s", e)
         return None
+
+
+def _rocm_props_are_positively_unified(props: Any) -> bool:
+    """Whether this part is KNOWN to be unified memory, not merely unclassified.
+
+    ``_rocm_props_total_is_carve_out`` folds "uncertain" in with "unified" on
+    purpose, because a total that is too small hides models. Anything that adds
+    host-shared memory to a used figure needs the stricter question: on a
+    discrete card, shared bytes are not part of ``props.total_memory``.
+    """
+    if not IS_ROCM:
+        return False
+    try:
+        from core.training.worker import _rocm_classify_unified_memory
+        return bool(_rocm_classify_unified_memory(props)[1])
+    except Exception as e:
+        logger.debug("ROCm unified-memory classification failed: %s", e)
+        return False
 
 
 def _rocm_props_total_is_carve_out(props: Any) -> bool:
@@ -1790,8 +2081,15 @@ def _rocm_linux_sysfs_vram_by_pci_gb() -> dict[str, tuple[float, float]]:
 _ROCM_WIN_ADAPTER_MIN_BYTES = 64 * 1024 * 1024  # 64 MiB
 
 
-def _rocm_windows_perf_counter_vram_by_adapter() -> Optional[list[tuple[str, float]]]:
-    """Per-adapter dedicated VRAM usage on Windows via Performance Counters.
+def _rocm_windows_perf_counter_vram_by_adapter(
+    counter: str = "Dedicated Usage",
+) -> Optional[list[tuple[str, float]]]:
+    """Per-adapter VRAM usage on Windows via Performance Counters.
+
+    ``counter`` selects the ``GPU Adapter Memory`` field. Dedicated Usage is the
+    default and the only one safe to select adapters on; see
+    ``_rocm_windows_unified_used_bytes`` for why Shared Usage is read separately
+    rather than folded in here.
 
     Returns ``[(instance_name, used_bytes)]`` (one per LUID-named adapter), or
     ``None`` when the counter is unavailable/localized/empty so callers fall back.
@@ -1801,7 +2099,7 @@ def _rocm_windows_perf_counter_vram_by_adapter() -> Optional[list[tuple[str, flo
     try:
         # Emit "<InstanceName>|<CookedValue>" per sample, or a __NONE__ sentinel.
         ps = (
-            "$s=(Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Usage'"
+            f"$s=(Get-Counter '\\GPU Adapter Memory(*)\\{counter}'"
             " -ErrorAction SilentlyContinue).CounterSamples;"
             "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,[int64]$_.CookedValue}}"
             "else{'__NONE__'}"
@@ -1866,6 +2164,7 @@ def _match_adapter_used_to_devices(
             return [None] * n
         # Exactly n supra-threshold counters: extras were placeholders, so a
         # capacity-ranked bijection is plausible.
+        dropped = [u for u in useds if u < _ROCM_WIN_ADAPTER_MIN_BYTES]
         useds = non_trivial
         ranked_useds = [useds[rank] for rank in range(n)]
         # A usage above its ranked capacity is a hidden larger GPU; clamping onto the
@@ -1873,6 +2172,25 @@ def _match_adapter_used_to_devices(
         for rank in range(n):
             if ranked_useds[rank] > ranked_totals[rank]:
                 return [None] * n
+        # One visible device, one supra-threshold counter, and every other counter
+        # at EXACTLY zero: attribute it. A Strix Halo host emits three instances,
+        # two of them at 0 dedicated, and the capacity test below cannot decide
+        # this shape because it needs a next-smaller device to compare against.
+        #
+        # Zero is the load-bearing part, not the cardinality. A merely sub-floor
+        # counter (10 MiB) can be the visible card sitting idle, which would make
+        # the survivor a hidden GPU's -- see the [6 GiB, 10 MiB] / [8 GiB] case,
+        # which must stay unknown. An adapter at exactly zero has nothing
+        # committed and cannot be the holder of the survivor's bytes.
+        #
+        # Residual risk, stated rather than hidden: the visible card could itself
+        # be the zero while a hidden adapter holds the survivor, and then this
+        # over-reports used. That errs toward understating free, which is the safe
+        # direction here -- the consumer is training-method selection, where an
+        # overstated free picks a method that OOMs. Clamped like every other
+        # branch, so a hidden larger adapter cannot report a fully-used card.
+        if n == 1 and all(u == 0 for u in dropped):
+            return [min(ranked_useds[0], device_totals[0])]
         # Capacity forces the mapping only when the usage exceeds the next-smaller
         # capacity; the smallest card and merely-fitting usages stay unknown.
         # Keeps 40 GiB over 48/8 GiB -> [40, None].
@@ -1947,8 +2265,58 @@ def _rocm_windows_aggregate_used_bytes(
     return float(sum(useds))
 
 
+def _rocm_windows_unified_used_bytes() -> Optional[float]:
+    """Used VRAM for a unified-memory ROCm APU on Windows, from the WDDM counters.
+
+    Dedicated Usage alone saturates at the carve-out on an APU and is wrong past
+    it. Measured on a gfx1151 Strix Halo host (89.47 GiB torch total), holding N
+    GiB in another process, deltas over baseline:
+
+        held    dedicated    shared      sum
+         4       + 4.14      + 0.04    + 4.18
+        16       +16.60      + 0.08    +16.68
+        24       +24.58      + 0.04    +24.62
+        40       +29.07      +11.29    +40.36
+        48       +29.19      +19.02    +48.21
+
+    Dedicated plateaus around 30.5 GiB and the overflow lands in Shared, so only
+    the sum tracks the allocation. Discrete cards are unaffected: this is reached
+    only when ``_rocm_props_total_is_carve_out`` says the part is unified.
+
+    Adapter SELECTION still keys off Dedicated Usage alone, deliberately. Display
+    and placeholder adapters report 0 dedicated while carrying gigabytes of shared
+    (a Basic Render Driver instance on the same host holds 1.30 GiB shared), so
+    filtering on the sum would stop telling them apart from the compute device and
+    would silently add a foreign adapter's bytes. Returns ``None`` unless exactly
+    one adapter clears the noise floor, matching the caution in
+    ``_rocm_windows_aggregate_used_bytes``.
+    """
+    dedicated = _rocm_windows_perf_counter_vram_by_adapter()
+    if not dedicated:
+        return None
+    candidates = [
+        (instance, used) for instance, used in dedicated if used >= _ROCM_WIN_ADAPTER_MIN_BYTES
+    ]
+    # Two compute adapters means no key says which is the visible one, and zero
+    # means the card is idle below the floor: neither is a figure we can stand on.
+    if len(candidates) != 1:
+        return None
+    instance, dedicated_used = candidates[0]
+    shared = _rocm_windows_perf_counter_vram_by_adapter("Shared Usage")
+    # A failed Shared query is not zero shared usage. Past the carve-out the
+    # overflow lives entirely in Shared, so defaulting to zero there reports the
+    # measured 48 GiB case as 30.5 and overstates free by 19 GiB, which is the
+    # direction that OOMs. Nothing here knows where the carve-out sits, so decline
+    # rather than guess whether this reading was saturated. A query that SUCCEEDS
+    # but omits the LUID is a real zero, and is kept.
+    if shared is None:
+        return None
+    shared_used = next((used for name, used in shared if name == instance), 0.0)
+    return dedicated_used + shared_used
+
+
 def _rocm_windows_per_device_vram(
-    device_indices: list[int],
+    device_indices: list[int], adapters: Optional[list[tuple[str, float]]] = None
 ) -> tuple[list[Dict[str, Any]], Optional[float]]:
     """Per-GPU VRAM on Windows AMD/ROCm: total from torch properties (reliable),
     used from the per-adapter Dedicated Usage counter.
@@ -1983,7 +2351,11 @@ def _rocm_windows_per_device_vram(
     if not dev_meta:
         return [], None
 
-    adapters = _rocm_windows_perf_counter_vram_by_adapter()
+    # Re-sampling here would leave a caller's cardinality check applied to a
+    # DIFFERENT sample than the one attribution runs on, and costs a second
+    # ~1.3 s PowerShell call. A validated snapshot is passed in instead.
+    if adapters is None:
+        adapters = _rocm_windows_perf_counter_vram_by_adapter()
     aggregate_gb: Optional[float] = None
     if adapters:
         adapter_useds = [used for _, used in adapters]
@@ -2626,6 +2998,9 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
 # ========== Multi-GPU Detection & Safe num_proc ==========
 
 _physical_gpu_count: Optional[int] = None
+# Whether the cached count came from the SMI (physical) or the torch fallback
+# (visibility-filtered). Only the former can answer "is this host single-GPU".
+_physical_gpu_count_from_smi: bool = False
 _visible_gpu_count: Optional[int] = None
 
 
@@ -2717,7 +3092,10 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
     )
     if _is_rocm_spec:
         hip_vis = os.environ.get("HIP_VISIBLE_DEVICES")
-        rocr_vis = os.environ.get("ROCR_VISIBLE_DEVICES")
+        # ROCR_VISIBLE_DEVICES is Linux-only: Windows HIP has no ROCr layer, so a
+        # stray ROCR var there masks nothing and must not be read as the
+        # ordinal->physical mapping (mirrors the llama.cpp backend).
+        rocr_vis = None if sys.platform == "win32" else os.environ.get("ROCR_VISIBLE_DEVICES")
         if hip_vis is not None:
             cuda_visible = hip_vis
         elif rocr_vis is not None:
@@ -3442,7 +3820,7 @@ def get_physical_gpu_count() -> int:
     Uses ``nvidia-smi -L`` on NVIDIA (unaffected by CUDA_VISIBLE_DEVICES),
     with a torch fallback for AMD ROCm and Intel XPU. Cached after first call.
     """
-    global _physical_gpu_count
+    global _physical_gpu_count, _physical_gpu_count_from_smi
     if _physical_gpu_count is not None:
         return _physical_gpu_count
 
@@ -3457,6 +3835,7 @@ def get_physical_gpu_count() -> int:
             count = _smi_mod.get_physical_gpu_count()
             if count is not None:
                 _physical_gpu_count = count
+                _physical_gpu_count_from_smi = True
                 return _physical_gpu_count
         except Exception:
             pass

@@ -994,6 +994,15 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.nParallel == null &&
     config.nBatch == null &&
     config.nUbatch == null &&
+    // The llama-server tuning group, for the same reason as the arguments below:
+    // savePerModelConfig deletes an entry it judges default, so a config whose only
+    // change was one of these was dropped on the way to storage while the settings
+    // page reported that defaults were kept. Compared against null, not truth: 0
+    // checkpoints and a 0 or -1 cache are values, not blanks.
+    (config.specDraftCacheDtype ?? null) === null &&
+    (config.loadMode ?? null) === null &&
+    config.ctxCheckpoints == null &&
+    config.cacheRam == null &&
     Boolean(config.tensorParallel) ===
       Boolean(DEFAULT_PER_MODEL_CONFIG.tensorParallel) &&
     Boolean(config.disableVision) ===

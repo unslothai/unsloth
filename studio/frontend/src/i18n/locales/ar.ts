@@ -521,7 +521,7 @@ export const ar = {
           "يحفظ ذاكرة KV المؤقتة قبل التفريغ التلقائي عند الخمول، حتى لا تعيد المحادثات المستأنفة قراءة السجل. بحد أقصى 10 جيجابايت على القرص.",
         apiOnly: "تفريغ النماذج التي حمّلتها واجهة API فقط",
         apiOnlyDescription:
-          "يُبقي التفريغ التلقائي عند الخمول النموذج الذي حمّلته من Studio في الذاكرة، ولا يفرّغ سوى النماذج التي حمّلها طلب عبر واجهة API.",
+          "يُبقي التفريغ التلقائي عند الخمول النموذج الذي حمّلته من Unsloth في الذاكرة، ولا يفرّغ سوى النماذج التي حمّلها طلب عبر واجهة API.",
       },
       previewSharing: {
         sectionTitle: "مشاركة المعاينة",
@@ -574,6 +574,7 @@ export const ar = {
         embeddingModel: "نموذج التضمين (Embedding)",
         embeddingModelDescription:
           "نموذج Hugging Face أو مسار محلي يُستخدم لفهرسة مستنداتك والبحث فيها. القيمة الافتراضية هي {defaultModel}.",
+        searchPlaceholder: "ابحث عن نماذج التضمين",
         reindexWarning:
           "يؤثر فقط في المستندات التي تُفهرس حديثًا. أعِد رفع المستندات الحالية بعد تغيير النموذج.",
         emptyError: "أدخل معرّف نموذج Hugging Face أو مسارًا محليًا.",
@@ -850,6 +851,8 @@ export const ar = {
         title: "أجهزة GPU",
         ggufInference: "استدلال GGUF",
         unavailable: "غير متاح",
+        detecting: "جارٍ البحث عن وحدات GPU...",
+        unreadable: "تعذّرت قراءة عتاد هذا الخادم.",
         noGpu: "لم يُكتشف أي GPU مرئي. تُعرض موارد CPU فقط أعلاه.",
         unknownDevice: "GPU غير معروف",
         deviceWithIndex: "GPU {index}",
@@ -1008,7 +1011,7 @@ export const ar = {
       quickstart: {
         title: "بناء أمر",
         description:
-          "شغّل وكيلًا على النموذج المُحمَّل حاليًا في Studio. حمّل نموذجًا أولًا، ثم استبدل claude بأي وكيل مدعوم أدناه.",
+          "شغّل وكيلًا على النموذج المُحمَّل حاليًا في Unsloth. حمّل نموذجًا أولًا، ثم استبدل claude بأي وكيل مدعوم أدناه.",
         noneDetected: "لم يُعثر في متغيّر PATH لديك على أي واجهة أوامر لوكيل مدعوم.",
         installed: "مثبّت",
       },
@@ -1029,7 +1032,7 @@ export const ar = {
         description:
           "تُحلَّل رايات Unsloth أولًا؛ وأي شيء لا يتعرّف عليه يُمرَّر كما هو إلى الوكيل.",
         model:
-          "يختار نموذجًا. بدون ‎--model يستخدم unsloth start النموذج المُحمَّل حاليًا في Studio، ويُظهر خطأ إن لم يكن هناك أي نموذج محمَّل.",
+          "يختار نموذجًا. بدون ‎--model يستخدم unsloth start النموذج المُحمَّل حاليًا في Unsloth، ويُظهر خطأ إن لم يكن هناك أي نموذج محمَّل.",
         contextLength:
           "يحدد طول السياق المطلوب (اسم بديل: ‎--max-seq-length).",
         ggufVariant: "يختار نسخة تكميم GGUF.",
@@ -1042,12 +1045,16 @@ export const ar = {
         asSubagent:
           "يبقي الوكيل الأصلي على نموذجه الحالي ويسجّل Unsloth كوكيل فرعي محلي (Claude Code وCodex وOpenCode).",
         apiKey: "يمرّر مفتاح API الخاص بـ Unsloth (أو اضبط UNSLOTH_API_KEY).",
+        reasoning:
+          "استخدام الاستدلال في المحادثة: on أو off أو auto. ويتبع auto قالب المحادثة الخاص بالنموذج، وهو غالبًا on.",
+        reasoningEffort:
+          "جهد الاستدلال المُمرَّر إلى قالب المحادثة الخاص بالنموذج، مثل medium. وتختلف المستويات بحسب النموذج، فاستخدم مستوى يقبله. وبدون قيمة يبقى مستوى القالب.",
         yolo: "يتخطى طلبات الموافقة. استخدمه في البيئات الموثوقة فقط.",
       },
       remote: {
-        title: "الاتصال بنسخة بعيدة من Studio",
+        title: "الاتصال بنسخة بعيدة من Unsloth Studio",
         description:
-          "وجّه unsloth start إلى نسخة من Studio تعمل في مكان آخر بضبط ما يلي قبل التشغيل (أو مرّر ‎--api-key مباشرة):",
+          "وجّه unsloth start إلى نسخة من Unsloth Studio تعمل في مكان آخر بضبط ما يلي قبل التشغيل (أو مرّر ‎--api-key مباشرة):",
       },
       passthrough: {
         title: "تمرير وسائط إلى الوكيل",
@@ -1086,7 +1093,7 @@ export const ar = {
         exportChat: "تصدير المحادثة",
       },
       pastedTextThreshold: "ضغط النصوص الملصقة الطويلة",
-      pastedTextThresholdDescription: "النص الملصق الأطول من هذا الحد يصبح مرفق \u200e.txt بدلاً من ملء مربع الرسالة.",
+      pastedTextThresholdDescription: "النص الملصق الأطول من هذا الحد يصبح مرفق \u200e.txt بدلاً من ملء مربع الرسالة. اضغط {shortcut} للصق في مربع الرسالة على أي حال.",
       pastedTextThresholdOff: "إيقاف",
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
@@ -1104,6 +1111,12 @@ export const ar = {
         collapseByDefault: "طيّ التفكير افتراضيًا",
         collapseByDefaultDescription:
           "إبقاء التفكير مطويًا أثناء تفكير النموذج بدلًا من فتحه تلقائيًا. وسّع أي كتلة لقراءتها.",
+      },
+      webSearch: {
+        title: "البحث على الويب",
+        images: "عرض الصور من البحث على الويب",
+        imagesDescription:
+          "يتيح للبحث على الويب إرجاع صور، ويجلب صورة لكل عنصر تعدّده الإجابة. يجلب Studio الصور المصغّرة ويغيّر حجمها، لذا لا يتصل المتصفح بمضيفي الصور أبدًا.",
       },
       artifacts: {
         title: "Canvas",

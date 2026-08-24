@@ -1795,16 +1795,28 @@ fi
 _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
 if [ "$_SKIP_VERSION_CHECK" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
     # Only check when NOT called from install.sh (which just installed the package)
-    INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
-import sys; from importlib.metadata import version
-print(version(sys.argv[1]))
-" "$_PKG_NAME" 2>/dev/null || echo "")
+    _INSTALLED_VERSION_PROBE_EXIT=0
+    if INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
+import sys
+sys.path.insert(0, sys.argv[2])
+import install_manifest
+version, conflict = install_manifest.installed_version_probe(sys.argv[1], ('unsloth-zoo',))
+print(version)
+sys.exit(2 if conflict else (0 if version else 1))
+" "$_PKG_NAME" "$SCRIPT_DIR" 2>/dev/null); then
+        :
+    else
+        _INSTALLED_VERSION_PROBE_EXIT=$?
+        INSTALLED_VER=""
+    fi
 
     LATEST_VER=$(_setup_http_get_timed "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
         | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
         || echo "")
 
-    if [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
+    if [ "$_INSTALLED_VERSION_PROBE_EXIT" -eq 2 ]; then
+        substep "duplicate metadata found for a core package -- forcing package repair..."
+    elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
         step "python" "$_PKG_NAME $INSTALLED_VER is up to date"
         _SKIP_PYTHON_DEPS=true
         # A pre-#6483-fix install can be stuck on anyio>=4.14 even though
@@ -1952,6 +1964,25 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
     fi
 fi
 
+# A current package can still have CPU/CUDA torch because the fast path skips ROCm repair.
+# Exit 0 forces the dependency pass; failures and timeouts keep the fast path.
+if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -x "$VENV_DIR/bin/python" ]; then
+    _setup_amd_torch_stale=false
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 180 "$VENV_DIR/bin/python" \
+            "$SCRIPT_DIR/install_python_stack.py" --amd-torch-needs-dependency-pass \
+            >/dev/null 2>&1 && _setup_amd_torch_stale=true
+    elif "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
+            --amd-torch-needs-dependency-pass >/dev/null 2>&1; then
+        _setup_amd_torch_stale=true
+    fi
+    if [ "$_setup_amd_torch_stale" = true ]; then
+        substep "installed PyTorch is not a ROCm build on this AMD host -- forcing dependency pass to repair..."
+        substep "   (set UNSLOTH_TORCH_BACKEND=cpu to keep a deliberate CPU install)"
+        _SKIP_PYTHON_DEPS=false
+    fi
+fi
+
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
 else
@@ -2040,7 +2071,121 @@ fi
 _setup_amd_detected=false
 _setup_nvidia_usable=false
 _setup_gfx_all=""
+_setup_gfx=""
+_setup_hip_map_missing=0
 _setup_mkt=""
+_setup_amd_records=""
+
+# Pair each rocminfo GPU gfx id with its marketing name instead of using the CPU-first
+# global name (#7307). Blank names keep device ordinals; no GPU keeps the old fallback.
+# Keep in sync with install.sh.
+_setup_rocminfo_gpu_records() {
+    awk '
+        # Split at the first colon so embedded colons survive.
+        function value(line,   v) {
+            v = line
+            sub(/^[^:]*:[[:space:]]*/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            return v
+        }
+        /^[[:space:]]*Name:/ {
+            # Keep a slot for a nameless GPU.
+            if (gfx != "" && !named) { print gfx "|"; gpus++ }
+            gfx = ""; named = 0
+            name = value($0)
+            # Accept target suffixes such as gfx90a:sramecc+, but reject ISA names.
+            if (match(name, /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) {
+                rest = substr(name, RLENGTH + 1)
+                if (rest == "" || rest ~ /^[^0-9a-z]/) gfx = substr(name, 1, RLENGTH)
+            }
+            next
+        }
+        /^[[:space:]]*Marketing Name:/ {
+            mkt = value($0)
+            if (gfx != "" && !named) { print gfx "|" mkt; gpus++; named = 1 }
+            else if (first == "") first = mkt
+            next
+        }
+        END {
+            if (gfx != "" && !named) { print gfx "|"; gpus++ }
+            if (gpus == 0 && first != "") print "|" first
+        }
+    '
+}
+
+# amd-smi enumerates in discovery order over its KFD view; HIP_VISIBLE_DEVICES and
+# ROCR_VISIBLE_DEVICES index HIP/ROCr order, which the library derives from the KFD node
+# id instead. The two disagree on real hardware (MI350X SPX/NPS1), and _gfx here becomes
+# --rocm-gfx, so an untranslated ordinal can fetch a prebuilt for another card's arch.
+# `amd-smi list -e` is the map AMD publishes for this (HIP_ID, ROCm 6.4.0+); the Python
+# side reads the same field in utils/hardware/amd.py get_hip_id_by_gpu_index.
+# Keep in sync with install.sh.
+_setup_amd_smi_hip_order() {
+    # POSIX awk forbids a physical newline in a -v value (gawk --posix makes it fatal),
+    # so the records arrive on stdin ahead of the map, separated by a sentinel. The first
+    # output line reports which index space the records came back in; the caller needs to
+    # know, because a mask cannot be applied to an untranslated list of unlike adapters.
+    { printf '%s\n' "$1"; echo "@@hip-map@@"; cat; } | awk '
+        function value(line,   v) {
+            v = line
+            sub(/^[^:]*:[[:space:]]*/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            return v
+        }
+        function keep(   i) { print "discovery"; for (i = 1; i <= r; i++) print rec[i] }
+        !split_seen && $0 == "@@hip-map@@" { split_seen = 1; next }
+        !split_seen { if ($0 != "") rec[++r] = $0; next }
+        /^[[:space:]]*GPU:[[:space:]]*[0-9]/ { n++; hip[n] = -1; next }
+        n && tolower($0) ~ /hip.?id/ {
+            if (hip[n] < 0) { v = value($0); if (v ~ /^[0-9]+$/) hip[n] = v + 0 }
+            next
+        }
+        END {
+            # All or nothing, like get_hip_id_by_gpu_index: an older CLI rejects -e, and
+            # hip_id reads N/A when the library cannot reach a KFD node. A partial or
+            # colliding map is not a 1:1 device mapping, so keep discovery order.
+            if (r == 0 || n != r) { keep(); exit }
+            for (i = 1; i <= n; i++) {
+                if (hip[i] < 0 || hip[i] >= r || (hip[i] in used)) { keep(); exit }
+                used[hip[i]] = 1
+                out[hip[i]] = rec[i]
+            }
+            print "hip"
+            for (i = 0; i < r; i++) print out[i]
+        }
+    '
+}
+
+# One `gfx|marketing name` per adapter, in `GPU: N` order, so the mask picks both halves
+# of one device. Was: arch indexed, name always adapter 0's -- and on amd-smi 6.1.1, which
+# has no TARGET_GRAPHICS_VERSION, that name is what --rocm-gfx is inferred from.
+# Keep in sync with install.sh.
+_setup_amd_smi_gpu_records() {
+    awk '
+        function value(line,   v) {
+            v = line
+            sub(/^[^:]*:[[:space:]]*/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            return v
+        }
+        function flush() {
+            if (started) print gfx "|" mkt
+            gfx = ""; mkt = ""
+        }
+        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys): MARKET_NAME,
+        # TARGET_GRAPHICS_VERSION. Matched case-folded so older spellings work too.
+        /^[[:space:]]*GPU:[[:space:]]*[0-9]/ { flush(); started = 1; next }
+        !started { next }
+        tolower($0) ~ /market.?name/ { if (mkt == "") mkt = value($0); next }
+        tolower($0) ~ /target.?graphics.?version/ {
+            v = value($0)
+            if (gfx == "" && v ~ /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?$/) gfx = v
+            next
+        }
+        END { flush() }
+    '
+}
+
 # Intel XPU. There is no vendor probe here like nvidia-smi / rocminfo -- Linux Intel support is
 # an explicit index pin, not autodetection -- so the installed runtime IS the signal. The local
 # label is read off disk first so a CPU-only host never pays for an `import torch`.
@@ -2107,20 +2252,41 @@ if _setup_has_usable_nvidia_gpu; then
     _setup_nvidia_usable=true
 fi
 if [ "$_setup_nvidia_usable" != true ]; then
-    if command -v rocminfo >/dev/null 2>&1 && \
-       _setup_run_smi rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
+    if command -v rocminfo >/dev/null 2>&1; then
+        _setup_amd_records=$(_setup_run_smi rocminfo 2>/dev/null | _setup_rocminfo_gpu_records || true)
+        _setup_gfx_all=$(printf '%s\n' "$_setup_amd_records" | awk -F'|' '$1 != "" { print $1 }')
+    fi
+    if [ -n "$_setup_gfx_all" ]; then
         _setup_amd_detected=true
-        _setup_gfx_all=$(_setup_run_smi rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-        _setup_mkt=$(_setup_run_smi rocminfo 2>/dev/null | awk -F': ' \
-            '/Marketing Name:/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
     elif command -v amd-smi >/dev/null 2>&1 && \
          _setup_run_smi amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
         _setup_amd_detected=true
+        # amd-smi owns the device list here, so its indexed records replace rocminfo's.
+        _setup_amd_records=$(_setup_run_smi amd-smi static --asic 2>/dev/null | _setup_amd_smi_gpu_records || true)
+        if [ -n "$_setup_amd_records" ]; then
+            _setup_amd_smi_out=$(_setup_run_smi amd-smi list -e 2>/dev/null \
+                | _setup_amd_smi_hip_order "$_setup_amd_records" || true)
+            _setup_amd_space=$(printf '%s\n' "$_setup_amd_smi_out" | head -n 1)
+            _setup_amd_records=$(printf '%s\n' "$_setup_amd_smi_out" | tail -n +2)
+            # No map, and the adapters are not interchangeable: the mask indexes HIP order
+            # while these records are in discovery order, so any ordinal is a guess. Decline
+            # rather than forward a guessed --rocm-gfx to the llama.cpp and whisper
+            # prebuilts. amd-smi 6.1.1 reports no TARGET_GRAPHICS_VERSION at all and the
+            # arch is then inferred from the name, so an archless record is compared on its
+            # name instead. Interchangeable adapters are unaffected: every ordinal gives the
+            # same answer, and UNSLOTH_ROCM_GFX_ARCH still overrides below.
+            if [ "$_setup_amd_space" != hip ] && \
+               [ "$(printf '%s\n' "$_setup_amd_records" | awk -F'|' \
+                    'NF { k = ($1 != "" ? $1 : "name:" $2); if (!(k in seen)) { seen[k]; n++ } }
+                     END { print n + 0 }')" -gt 1 ]; then
+                _setup_amd_records=""
+                _setup_gfx_all=""
+                _setup_hip_map_missing=1
+            fi
+        fi
         _setup_gfx_all=$(_setup_run_smi amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         [ -z "$_setup_gfx_all" ] && \
-            _setup_gfx_all=$(_setup_run_smi amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-        _setup_mkt=$(_setup_run_smi amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
-            '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+            _setup_gfx_all=$(printf '%s\n' "$_setup_amd_records" | awk -F'|' '$1 != "" { print $1 }')
     elif [ -e /dev/kfd ] && \
          awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
              /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
@@ -2131,6 +2297,7 @@ if [ "$_setup_nvidia_usable" != true ]; then
         # nor a marketing name is available from this path, so the report below
         # reads lspci rather than _setup_mkt when it needs to name the card.
         _setup_amd_detected=true
+        _setup_amd_records=""
     fi
 fi
 
@@ -2143,8 +2310,18 @@ elif [ "$_setup_amd_detected" = true ]; then
         _setup_first="${_setup_vis%%,*}"
         case "$_setup_first" in ''|*[!0-9]*) ;; *) _setup_vis_idx=$_setup_first ;; esac
     fi
-    _setup_gfx=$(printf '%s\n' "$_setup_gfx_all" | awk -v idx="$_setup_vis_idx" \
-        'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+    if [ -n "$_setup_amd_records" ]; then
+        # Records already preserve device ordinals, including duplicate arches.
+        _setup_amd_record=$(printf '%s\n' "$_setup_amd_records" | awk -v idx="$_setup_vis_idx" \
+            'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+        _setup_gfx=${_setup_amd_record%%|*}
+        _setup_mkt=${_setup_amd_record#*|}
+    fi
+    # Only pre-TARGET_GRAPHICS_VERSION amd-smi lands here: names but no arch in the record.
+    if [ -z "$_setup_gfx" ]; then
+        _setup_gfx=$(printf '%s\n' "$_setup_gfx_all" | awk -v idx="$_setup_vis_idx" \
+            'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+    fi
     # UNSLOTH_ROCM_GFX_ARCH env override (mirrors setup.ps1)
     if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
         _setup_gfx="${UNSLOTH_ROCM_GFX_ARCH}"
@@ -2156,6 +2333,11 @@ elif [ "$_setup_amd_detected" = true ]; then
             substep "gfx arch inferred from GPU name: $_setup_gfx"
             substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$_setup_gfx to skip inference next time"
         fi
+    fi
+    # Say why the arch is missing, since the user can supply it and amd-smi cannot.
+    if [ -z "$_setup_gfx" ] && [ "$_setup_hip_map_missing" = 1 ]; then
+        substep "Unlike AMD adapters and no HIP id map (amd-smi list -e needs ROCm 6.4+):"
+        substep "cannot tell which one this session selects. Set UNSLOTH_ROCM_GFX_ARCH to pick."
     fi
     # ROCm version via hipconfig, then amd-smi
     _setup_rocm_ver=""

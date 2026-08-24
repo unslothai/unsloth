@@ -25,6 +25,7 @@ import pytest
 from core.inference.llama_cpp import (
     GgufLoadIntent,
     LlamaCppBackend,
+    _AUTO_OFFLOAD_CTX,
     _resolved_mmproj_offload,
 )
 from models.inference import InferenceStatusResponse, LoadResponse
@@ -670,7 +671,11 @@ def test_a_user_demanding_gpu_offload_still_pays_for_it(tmp_path):
 
     cmd = _launch(backend, gguf, extra_args = ["--mmproj-offload"])["cmd"]
 
-    assert cmd[cmd.index("-c") + 1] == "4096"
+    # Charging the projector leaves nothing that fits, so this lands on the Auto
+    # offload fallback. The value is that constant, not a literal: the point of the
+    # assertion is that the context shrank to pay for the projector, and pinning the
+    # number here only records which release the test was written in.
+    assert cmd[cmd.index("-c") + 1] == str(_AUTO_OFFLOAD_CTX)
 
 
 def test_the_last_placement_spelling_is_what_gets_budgeted(tmp_path):

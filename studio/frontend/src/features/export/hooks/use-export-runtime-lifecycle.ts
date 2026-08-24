@@ -12,10 +12,7 @@ import { useExportRuntimeStore } from "../stores/export-runtime-store";
 
 const STATUS_POLL_INTERVAL_MS = 5000;
 const STREAM_RECONNECT_DELAY_MS = 600;
-// JSON log poll cadence. The SSE stream is the low-latency path on localhost,
-// but Cloudflare quick tunnels (`--secure`) buffer `text/event-stream`, so this
-// poll is the transport that actually delivers logs over the tunnel. Short
-// JSON responses are never buffered, so this works through any proxy.
+// Short-response fallback cadence, for a proxy that drops or stalls the log stream.
 const LOG_POLL_INTERVAL_MS = 750;
 
 /**

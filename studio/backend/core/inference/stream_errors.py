@@ -45,11 +45,18 @@ _OVERSIZE_MARKERS = (
     "exceeds the context size",
 )
 
+# Worded around the chat client's own substring test. `chat-adapter.ts::isContextLimitError`
+# matches "context window" (among others) and shows "Context limit reached: the conversation
+# has filled the model's context window ... or start a new chat" -- the advice this message
+# exists to deny, since nothing about the conversation was too long and a new chat fails
+# identically while the other generation is still running. The backend `code` cannot rescue
+# it: `chat-api.ts` rethrows an in-band error chunk as `new Error(message)` and the text is
+# all the client has. "Context Length" names the setting and is not one of its markers.
 KV_STARVATION_MESSAGE = (
     "The model ran out of context space while generating. This happens when several "
-    "chats or research runs generate at the same time, because they share one context "
-    "window. Try again with fewer running at once, or raise the Context Length in Model "
-    "settings."
+    "chats or research runs generate at the same time, because they all draw on one "
+    "shared pool of context. Try again with fewer running at once, or raise the "
+    "Context Length in Model settings."
 )
 
 _OVERSIZE_HINT = "Raise the Context Length in Model settings, or shorten the request."
@@ -68,10 +75,11 @@ class LlamaStreamError(RuntimeError):
       swapped out on the chat path, so the cause would still never reach the user
       even though it now survives the stream loop.
     - ``_classify_llama_generation_error`` flags an overflow by substring, matching
-      "context" beside "window". The starvation text below says "context window"
-      while explaining that the window is shared, so it would be classified as
-      ``context_length_exceeded`` and set the client compacting a conversation that
-      was never too long. ``kv_starvation`` lets that path opt out explicitly.
+      "context" beside "length"/"window". The starvation text above says "context"
+      while explaining that the context is shared, and names the Context Length
+      setting as the remedy, so it would be classified as ``context_length_exceeded``
+      and set the client compacting a conversation that was never too long.
+      ``kv_starvation`` lets that path opt out explicitly.
     """
 
     def __init__(
