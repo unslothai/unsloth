@@ -860,6 +860,37 @@ def _action(
     return row
 
 
+def test_a_style_regression_survives_a_structural_refusal(tmp_path, capsys):
+    """THE ONLY THING HERE THAT SEES `display`, `visibility` OR `pointer-events`, dropped.
+
+    The style probe is an INDEPENDENT reading: it is computed styles, not the DOM digest, so a pair
+    refused for landing at two points in one live reply can still carry a real CSS regression on a
+    settled surface. The refusal bucket sat above it and `continue`d, so that verdict was computed,
+    attached to the row and then thrown away -- for exactly the pairs a streamed-parity refusal
+    creates most of.
+
+    The refusal itself is right and stays. What must not happen is losing the other reading with it.
+    """
+    from studiobench.sweep import ui_parity as U
+
+    base = _capture(mounted = 4, total = 4)
+    treat = _capture(mounted = 4, total = 4)
+    # Structurally unreadable: the stream could not be placed on one arm.
+    treat["in_flight_unplaced"] = True
+    treat["in_flight"] = []
+    base["streaming"] = treat["streaming"] = True
+    # ...while the style probe read both arms cleanly and they disagree.
+    treat["styles"] = {"elements": 4, "digest": "RESTYLED", "capped": False}
+
+    rows = [_row("select_text", base), _row("select_text", treat)]
+    rows[0]["cell_id"], rows[1]["cell_id"] = "r100K.base.rep0", "r100K.treatment.rep0"
+    _write(tmp_path, "stylerefuse", rows)
+
+    U.main([str(tmp_path / "stylerefuse"), "--mode", "structural", "--min-compared", "0"])
+    out = capsys.readouterr().out
+    assert "style probe differing:      1" in out, out
+
+
 def test_a_visible_message_that_could_not_be_digested_is_printed_and_not_counted(tmp_path, capsys):
     """THE FALSE GREEN. `windowed` put ordinals 1 and 2 on screen during the action and had
     unmounted 2 again by the time the capture ran, so only ordinal 1 was ever compared. That pair
