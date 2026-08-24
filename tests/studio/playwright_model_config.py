@@ -1053,10 +1053,7 @@ with sync_playwright() as p:
             body = resp.get("body")
             if not isinstance(body, dict) or not isinstance(body.get("overrides"), dict):
                 return []
-            return [
-                k for k in body["overrides"]
-                if _normalize_model_identity(str(k)) in want
-            ]
+            return [k for k in body["overrides"] if _normalize_model_identity(str(k)) in want]
 
         stale = rows_for_model()
         for key in stale:
@@ -1130,9 +1127,7 @@ with sync_playwright() as p:
         flag_first = wait_for_migration_settled()
         cfg_first = read_configs()
         model_entries = entries_for_model(cfg_first)
-        migrated_ctx = any(
-            e.get("customContextLength") == DISTINCT_CTX for e in model_entries
-        )
+        migrated_ctx = any(e.get("customContextLength") == DISTINCT_CTX for e in model_entries)
         # Did the import run at all? Two very different failures were being reported as
         # one. "It ran and lost the context" is a bug in the migration; "nothing from
         # this seed is here" means the key was written by something else and the import
