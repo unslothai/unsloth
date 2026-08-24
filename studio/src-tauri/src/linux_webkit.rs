@@ -10,6 +10,7 @@ const GLES_V2: &[u8] = b"libGLESv2.so.2\0";
 const WAYLAND_DISPLAY: &str = "WAYLAND_DISPLAY";
 const X11_DISPLAY: &str = "DISPLAY";
 const WAYLAND_SOCKET: &str = "WAYLAND_SOCKET";
+const X11_SOCKET_DIR: &str = "/tmp/.X11-unix";
 const DEFAULT_WAYLAND_SOCKET: &str = "wayland-0";
 const GDK_BACKEND: &str = "GDK_BACKEND";
 const FORCE_SHARED_MEMORY: &str = "WEBKIT_DMABUF_RENDERER_FORCE_SHM";
@@ -103,6 +104,7 @@ fn rendering_plan(
     gles_usable: bool,
     nvidia_driver_loaded: bool,
     wayland_socket: bool,
+    x11_open: bool,
 ) -> RenderingPlan {
     // Either renderer variable is an operator override when present, `=0` and an empty
     // value included, unless the marker says we wrote it. Without that test a launch
@@ -135,14 +137,14 @@ fn rendering_plan(
             .is_some_and(force_dmabuf_requested);
 
     let is_appimage = env(APPIMAGE).is_some();
-    // What matters is which backend opens, not WAYLAND_DISPLAY, which XWayland clients
-    // inherit and a dead compositor leaves behind. `wayland_socket` is the answer from the
-    // socket wl_display_connect would actually use. An unset GDK_BACKEND is GDK's own "*",
-    // which tries wayland before x11 (gdk_backends[]).
+    // What matters is which backend opens, not what WAYLAND_DISPLAY and DISPLAY say: both
+    // are inherited by clients of the other server and both outlive the thing they name.
+    // Each flag is the answer from a probe of the socket that opener would use. An unset
+    // GDK_BACKEND is GDK's own "*", which tries wayland before x11 (gdk_backends[]).
     let wayland_session = selected_backend_is_wayland(
         env(GDK_BACKEND).as_deref().unwrap_or(OsStr::new("*")),
         wayland_socket,
-        env(X11_DISPLAY).is_some_and(|display| !display.is_empty()),
+        x11_open,
     );
 
     // The DMA-BUF transport breaks on the proprietary driver on either display server, so
@@ -223,7 +225,9 @@ fn rendering_plan(
 ///
 /// Same resolution as libwayland: WAYLAND_SOCKET is an inherited fd and settles it on its
 /// own, an absolute WAYLAND_DISPLAY is the path (1.15+), otherwise it is a name under
-/// XDG_RUNTIME_DIR, defaulting to wayland-0.
+/// XDG_RUNTIME_DIR, defaulting to wayland-0. The fallback is on unset, not on empty, so
+/// `WAYLAND_DISPLAY=` resolves to the runtime directory itself and cannot connect. That is
+/// how a session forces itself through XWayland, and it must not read as Wayland.
 fn wayland_socket_connectable(
     runtime_dir: Option<OsString>,
     display: Option<OsString>,
@@ -232,14 +236,14 @@ fn wayland_socket_connectable(
     if inherited_fd {
         return true;
     }
-    let name = display.filter(|display| !display.is_empty());
-    let path = match name {
-        Some(name) if std::path::Path::new(&name).is_absolute() => std::path::PathBuf::from(name),
-        name => match runtime_dir {
-            Some(dir) => std::path::Path::new(&dir)
-                .join(name.unwrap_or_else(|| DEFAULT_WAYLAND_SOCKET.into())),
+    let name = display.unwrap_or_else(|| DEFAULT_WAYLAND_SOCKET.into());
+    let path = if std::path::Path::new(&name).is_absolute() {
+        std::path::PathBuf::from(name)
+    } else {
+        match runtime_dir {
+            Some(dir) => std::path::Path::new(&dir).join(name),
             None => return false,
-        },
+        }
     };
     UnixStream::connect(path).is_ok()
 }
@@ -248,8 +252,40 @@ fn wayland_socket_present() -> bool {
     wayland_socket_connectable(
         std::env::var_os("XDG_RUNTIME_DIR"),
         std::env::var_os(WAYLAND_DISPLAY),
-        std::env::var_os(WAYLAND_SOCKET).is_some(),
+        // An empty value is not an fd; libwayland fails the parse rather than falling back.
+        std::env::var_os(WAYLAND_SOCKET).is_some_and(|fd| !fd.is_empty()),
     )
+}
+
+/// Whether the X display DISPLAY names accepts connections, so the x11 arm is decided the
+/// same way as the wayland one rather than on the variable alone. Deliberately fail-safe:
+/// only a local `:N` display is probed, and only both of Xorg's listeners refusing counts
+/// as closed. Guessing "closed" for a live server would put DISABLE_DMABUF on an X11
+/// webview, which is the empty transport set, so anything unrecognized stays trusted.
+fn x11_display_open(display: Option<OsString>, socket_dir: &str) -> bool {
+    let Some(display) = display.filter(|display| !display.is_empty()) else {
+        return false;
+    };
+    let text = display.to_string_lossy().into_owned();
+    let Some((host, number)) = text.rsplit_once(':') else {
+        return true;
+    };
+    let number = number.split('.').next().unwrap_or_default();
+    if !matches!(host, "" | "unix")
+        || number.is_empty()
+        || !number.bytes().all(|b| b.is_ascii_digit())
+    {
+        return true; // a TCP or otherwise unusual display; not ours to judge
+    }
+    let path = format!("{socket_dir}/X{number}");
+    if UnixStream::connect(&path).is_ok() {
+        return true;
+    }
+    // Xorg binds the abstract name too, and on some hosts only that one is reachable.
+    use std::os::linux::net::SocketAddrExt;
+    std::os::unix::net::SocketAddr::from_abstract_name(path.as_bytes())
+        .and_then(|address| UnixStream::connect_addr(&address))
+        .is_ok()
 }
 
 fn nvidia_driver_loaded() -> bool {
@@ -304,6 +340,7 @@ pub fn configure_renderer() -> Option<(&'static [&'static str], &'static str)> {
         gles_usable,
         nvidia_driver_loaded(),
         wayland_socket_present(),
+        x11_display_open(std::env::var_os(X11_DISPLAY), X11_SOCKET_DIR),
     ) {
         RenderingPlan::Apply(workaround, reason) => {
             let variables = workaround.variables();
@@ -338,9 +375,7 @@ mod tests {
         nvidia_driver_loaded: bool,
     ) -> RenderingPlan {
         // A fixture that names a display means a live one, which is what the probe answers.
-        let live = vars
-            .iter()
-            .any(|(key, value)| *key == WAYLAND_DISPLAY && !value.is_empty());
+        let live = named(vars, WAYLAND_DISPLAY);
         plan_on_host_with_socket(
             vars,
             webkit_version,
@@ -357,6 +392,26 @@ mod tests {
         nvidia_driver_loaded: bool,
         wayland_socket: bool,
     ) -> RenderingPlan {
+        // As above for DISPLAY: a fixture that names one models a server that answers.
+        let x11_open = named(vars, X11_DISPLAY);
+        plan_on_displays(
+            vars,
+            webkit_version,
+            gles_usable,
+            nvidia_driver_loaded,
+            wayland_socket,
+            x11_open,
+        )
+    }
+
+    fn plan_on_displays(
+        vars: &[(&str, &str)],
+        webkit_version: (u32, u32, u32),
+        gles_usable: bool,
+        nvidia_driver_loaded: bool,
+        wayland_socket: bool,
+        x11_open: bool,
+    ) -> RenderingPlan {
         rendering_plan(
             |name| {
                 vars.iter()
@@ -367,7 +422,13 @@ mod tests {
             gles_usable,
             nvidia_driver_loaded,
             wayland_socket,
+            x11_open,
         )
+    }
+
+    fn named(vars: &[(&str, &str)], variable: &str) -> bool {
+        vars.iter()
+            .any(|(key, value)| *key == variable && !value.is_empty())
     }
 
     fn plan_with_version_and_gles(
@@ -923,6 +984,81 @@ mod tests {
         // WAYLAND_SOCKET is an inherited fd: the connection is already made.
         assert!(wayland_socket_connectable(None, None, true));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // WAYLAND_DISPLAY= is how a session forces itself through XWayland. libwayland falls
+    // back to wayland-0 on unset, not on empty, so the empty value must not reach the
+    // still-live default socket and read as Wayland.
+    #[test]
+    fn an_explicitly_empty_wayland_display_is_not_the_default_socket() {
+        let dir = socket_dir("empty-display");
+        let _listener =
+            std::os::unix::net::UnixListener::bind(dir.join(DEFAULT_WAYLAND_SOCKET)).unwrap();
+        assert!(wayland_socket_connectable(
+            Some(dir.clone().into()),
+            None,
+            false
+        ));
+        assert!(!wayland_socket_connectable(
+            Some(dir.clone().into()),
+            Some(OsString::new()),
+            false
+        ));
+        // Nor is an empty WAYLAND_SOCKET an inherited fd.
+        assert!(!wayland_socket_connectable(
+            None,
+            Some(OsString::new()),
+            false
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // DISPLAY names a server that may be gone; only a local display is judged, and only
+    // when both of Xorg's listeners refuse, since guessing closed for a live server would
+    // put DISABLE_DMABUF on an X11 webview.
+    #[test]
+    fn only_a_local_x_display_that_answers_nothing_reads_as_closed() {
+        let dir = socket_dir("x11");
+        let sockets = dir.to_string_lossy().into_owned();
+        let probe = |display: &str| x11_display_open(Some(display.into()), &sockets);
+
+        assert!(!x11_display_open(None, &sockets));
+        assert!(!x11_display_open(Some(OsString::new()), &sockets));
+        // Nothing has bound :0 in this directory yet.
+        assert!(!probe(":0"));
+        let _listener = std::os::unix::net::UnixListener::bind(dir.join("X0")).unwrap();
+        assert!(probe(":0"));
+        assert!(probe(":0.1"), "the screen suffix is not part of the socket");
+        // Abstract only, which is all some hosts publish.
+        use std::os::linux::net::SocketAddrExt;
+        let abstract_name =
+            std::os::unix::net::SocketAddr::from_abstract_name(format!("{sockets}/X1")).unwrap();
+        let _abstract = std::os::unix::net::UnixListener::bind_addr(&abstract_name).unwrap();
+        assert!(probe(":1"));
+        assert!(!probe(":2"));
+        // Not ours to judge: a remote display, a screen number that is not one, a path.
+        assert!(probe("somehost:2"));
+        assert!(probe(":abc"));
+        assert!(probe("/tmp/.X11-unix/X2"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A dead X server with an explicit x11-first order: GDK skips the opener that fails and
+    // lands on wayland, so the plan has to land there too.
+    #[test]
+    fn a_dead_x_server_lets_an_x11_first_order_fall_through_to_wayland() {
+        let session = &[(GDK_BACKEND, "x11,wayland"), (X11_DISPLAY, ":0")];
+        assert_eq!(
+            plan_on_displays(session, MODERN_WEBKIT, true, true, true, false),
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
+        );
+        assert_eq!(
+            plan_on_displays(session, MODERN_WEBKIT, true, true, true, true),
+            RenderingPlan::Apply(
+                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                NVIDIA_REASON
+            )
+        );
     }
 
     // The X11 arm of the same failure: WAYLAND_DISPLAY outlives its compositor, DISPLAY
