@@ -1858,6 +1858,51 @@ class TestOpenAICompatibilityHelpers:
         assert chat_messages == [{"role": "user", "content": "hi"}]
         assert image_b64 is None
 
+    def test_latest_image_wins_over_earlier_turns(self):
+        def turn(letter):
+            return {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"what is {letter}?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{letter}"},
+                    },
+                ],
+            }
+
+        payload = ChatCompletionRequest(
+            messages = [
+                turn("AAAA"),
+                {"role": "assistant", "content": "the first one"},
+                turn("BBBB"),
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "BBBB"
+
+    def test_single_image_still_returned(self):
+        payload = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this?"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,AAAA"},
+                        },
+                    ],
+                }
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "AAAA"
+
 
 # =====================================================================
 # _friendly_error — httpx transport failures
