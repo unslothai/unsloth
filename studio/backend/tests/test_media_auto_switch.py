@@ -751,7 +751,6 @@ def test_a_replacement_load_is_not_reported_as_the_requested_model(
 
 
 def test_the_download_plan_asks_the_engine_that_will_load_the_pick(cached_gguf, monkeypatch):
-    # The target may use a different engine than the resident model.
     pick = mas.resolve_local_media_model("city96/FLUX.1-dev-gguf", task = mas.IMAGE_TASK)
     asked: list = []
 

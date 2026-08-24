@@ -80,7 +80,7 @@ _BASE_REPO_HUB_DOWNLOAD_FACTOR: dict[str, float] = {
 
 DENOISER_SUBFOLDERS = ("transformer/", "unconditional_transformer/")
 
-# Download bytes per resident byte for verified bases. Unknown bases stay 1:1.
+# Download bytes per resident byte; unknown bases stay 1:1.
 _BASE_RESIDENT_FACTORS: dict = {
     "tongyi-mai/z-image-turbo": (2.0, 1.0),
     "tongyi-mai/z-image": (1.0, 1.0),

@@ -25,7 +25,6 @@ HIDREAM_FAMILY_NAME = "hidream-i1"
 
 # Open mirror of the gated meta-llama/Meta-Llama-3.1-8B-Instruct the pipeline expects.
 HIDREAM_LLAMA_REPO = "unsloth/Meta-Llama-3.1-8B-Instruct"
-# Dense bf16 TE4 bytes absent from HiDream pipeline declarations.
 HIDREAM_LLAMA_BF16_BYTES = 16_060_556_376
 
 
