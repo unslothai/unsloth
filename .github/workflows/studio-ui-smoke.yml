@@ -601,6 +601,32 @@ jobs:
               python tests/studio/playwright_update_banner_layout.py
           done
 
+      # The overlay rail harness below serves its own vite, and this job has no
+      # node_modules to serve it with. Installing Studio is not enough: setup.sh installs
+      # the frontend dev dependencies only when it has to build the frontend, and the
+      # frontend-dist cache above exists precisely to stop that build (the restore action
+      # asserts the installer reported the frontend up to date). So on a cache hit there is
+      # no vite and `npm run dev` exits 127, while a cache miss builds and passes, which is
+      # why this step looked green when it landed and red on every run since.
+      #
+      # Conditional on the binary rather than unconditional: on the cold-cache path
+      # setup.sh has already installed these, and `npm ci` would delete and refetch them.
+      - name: Frontend dev dependencies for the overlay rail harness
+        if: matrix.shard == 'banner'
+        working-directory: studio/frontend
+        run: |
+          if [ -x node_modules/.bin/vite ]; then
+            echo "vite already present from the frontend build; not reinstalling"
+          else
+            npm ci --no-fund --no-audit
+          fi
+          # A silent install is worse than a loud one: without this the next step fails as
+          # a Playwright timeout rather than as a missing toolchain.
+          if [ ! -x node_modules/.bin/vite ]; then
+            echo "::error::npm ci finished but studio/frontend/node_modules/.bin/vite is still missing"
+            exit 1
+          fi
+
       # The rail's block gutter, in the two engines this runner has that the frontend CI
       # does not. Serves its own vite rather than the Studio above it, so it needs no
       # BASE_URL and does not care what state that Studio is in; it is here only because
