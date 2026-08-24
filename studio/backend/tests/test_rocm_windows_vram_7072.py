@@ -887,6 +887,39 @@ def test_the_dedicated_snapshot_is_not_sampled_twice(win_rocm, monkeypatch):
     assert seen and seen[0], "the caller's snapshot was not handed over"
 
 
+def test_an_unavailable_dedicated_snapshot_is_not_requeried(win_rocm, monkeypatch):
+    """When the caller's own Dedicated query came back unavailable, handing None
+    to the helper reads as "not supplied" and runs the query a second time, on the
+    polled telemetry path, to arrive at the same None."""
+    _apu_host(monkeypatch)
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", lambda *a, **k: None)
+    seen = []
+    monkeypatch.setattr(
+        hw,
+        "_rocm_windows_unified_used_bytes",
+        lambda dedicated = None: (seen.append(dedicated), None)[1],
+    )
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0])
+    assert seen == [], "an unavailable snapshot was handed over and re-queried"
+    assert devices[0]["used_gb"] is None
+    assert aggregate is None
+
+
+def test_a_negative_counter_reading_is_declined(win_rocm, monkeypatch):
+    """A negative cooked counter is a broken reading, not low usage. The caller
+    clamps the upper bound only and the payload derives free as total minus used,
+    so a negative sum would publish a negative used and a free above the total."""
+
+    def counters(counter = "Dedicated Usage"):
+        if counter == "Dedicated Usage":
+            return [("luid_0x00000000_0x0000abcd_phys_0", 2.0 * GB)]
+        return [("luid_0x00000000_0x0000abcd_phys_0", -1.0 * GB)]
+
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", counters)
+    assert hw._rocm_windows_unified_used_bytes() is None
+
+
 @pytest.mark.parametrize("system", ["Linux", "Darwin"])
 def test_the_windows_path_is_inert_off_windows(win_rocm, monkeypatch, system):
     """Linux, macOS and WSL (which reports Linux) never reach this path, so no

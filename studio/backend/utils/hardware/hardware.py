@@ -2342,6 +2342,13 @@ def _rocm_windows_unified_used_bytes(
     if shared is None:
         return None
     shared_used = next((used for name, used in shared if name == instance), 0.0)
+    # A negative cooked counter is a broken reading, not low usage. The caller
+    # clamps the upper bound only, and the payload derives free as total minus
+    # used, so a negative sum publishes negative used and a free above total.
+    # Decline for the same reason a failed Shared query declines: nothing here
+    # can tell how much of the reading is wrong.
+    if dedicated_used < 0.0 or shared_used < 0.0:
+        return None
     return dedicated_used + shared_used
 
 
@@ -2498,8 +2505,15 @@ def _rocm_windows_per_device_vram(
     if any(pool_scoped):
         only = dev_meta[0] if len(dev_meta) == 1 else None
         unified_used = (
+            # `adapters` is None when the caller's own query came back unavailable.
+            # The helper reads None as "not supplied" and re-runs it, which is a
+            # second ~1.3 s PowerShell call on the polled telemetry path to reach
+            # the same None.
             _rocm_windows_unified_used_bytes(adapters)
-            if only is not None and pool_scoped[0] and only["positively_unified"]
+            if adapters is not None
+            and only is not None
+            and pool_scoped[0]
+            and only["positively_unified"]
             else None
         )
         if unified_used is not None:
