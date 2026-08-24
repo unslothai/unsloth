@@ -335,7 +335,8 @@ def test_qualified_embedding_names_are_redirected_too():
 
     # A qualified pair is still recognised as a tied pair.
     assert _resolve_ensure_weight_tying(_Model(tie = True), saved, None) is True
-    assert _drop_tied_output_module(_Model(tie = True), saved, True) == ["model.embed_tokens"]
+    # Normalized to the bare name so peft 0.18 recognises it as the embedding to retie.
+    assert _drop_tied_output_module(_Model(tie = True), saved, True) == ["embed_tokens"]
 
 
 def test_only_embedding_names_are_matched_by_leaf():
@@ -350,3 +351,22 @@ def test_only_embedding_names_are_matched_by_leaf():
 
     targets, saved, moved = _redirect_embedding_targets(["layers.0.q_proj"], None)
     assert targets == ["layers.0.q_proj"] and saved is None and moved == ()
+
+
+def test_tying_normalizes_the_saved_embedding_to_its_bare_name():
+    """peft 0.18 ties `tied_weight_keys` minus whole modules_to_save entries, so a
+    qualified model.embed_tokens matches nothing and no output module is rebuilt."""
+    from unsloth.models._utils import _drop_tied_output_module
+
+    tied = _Model(tie = True)
+    assert _drop_tied_output_module(
+        tied, ["model.embed_tokens", "language_model.lm_head"], True,
+    ) == ["embed_tokens"]
+    assert _drop_tied_output_module(tied, ["embed_tokens", "lm_head"], True) == ["embed_tokens"]
+    # Untouched when tying does not apply, and non-embedding names keep their full path.
+    assert _drop_tied_output_module(
+        tied, ["model.embed_tokens", "lm_head"], False,
+    ) == ["model.embed_tokens", "lm_head"]
+    assert _drop_tied_output_module(
+        tied, ["model.embed_tokens", "lm_head", "custom.score"], True,
+    ) == ["embed_tokens", "custom.score"]

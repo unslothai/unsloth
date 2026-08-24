@@ -95,6 +95,8 @@ __all__ = [
     "_select_moe_detection_targets",
     "EMBEDDING_MODULES",
     "_embedding_leaf",
+    "_embedding_leaves",
+    "_model_ties_embeddings",
     "_redirect_embedding_targets",
     "_raise_if_no_lora_targets_left",
     "_resolve_ensure_weight_tying",
@@ -4604,7 +4606,15 @@ def _drop_tied_output_module(model, modules_to_save, ensure_weight_tying):
         or not EMBEDDING_MODULES <= _embedding_leaves(modules_to_save)
     ):
         return modules_to_save
-    return [x for x in modules_to_save if _embedding_leaf(x) != "lm_head"]
+    # Bare leaf, not the caller's spelling: peft 0.18 ties `tied_weight_keys` minus whole
+    # `modules_to_save` entries, so a qualified `model.embed_tokens` matches nothing there
+    # and it reconstructs no output module, leaving the head frozen. PEFT resolves the
+    # bare name by suffix on every version, so normalizing is safe.
+    return [
+        _embedding_leaf(x) or x
+        for x in modules_to_save
+        if _embedding_leaf(x) != "lm_head"
+    ]
 
 
 def _raise_if_fast_inference_modules_to_save(model, modules_to_save):

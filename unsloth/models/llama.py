@@ -3203,13 +3203,19 @@ class FastLlamaModel:
                 requested_saved,
                 ensure_weight_tying,
             )
-            _requested_ties = requested_saved != _drop_tied_output_module(
-                model,
-                requested_saved,
-                _requested_tie,
+            # PEFT ties whenever the flag is on and a tied member is saved, even if only
+            # one side was named, so ask that rather than whether lm_head was removed.
+            _requested_ties = bool(
+                _requested_tie
+                and _model_ties_embeddings(model)
+                and _embedding_leaves(requested_saved)
             )
             _stored_ties = bool(getattr(model.peft_config["default"], "modules_to_tie", None))
             check_all = check_all and (_requested_ties == _stored_ties)
+            if _requested_ties:
+                # PEFT files the counterpart under modules_to_tie, which the old side
+                # counts, so name it here even when the caller listed only one side.
+                new_target_modules += list(EMBEDDING_MODULES)
             # Per-expert Linear MoE experts (e.g. gpt-oss bnb-4bit) were auto-added to the
             # saved target_modules when the adapter was first created. Recompute them so a
             # repeat get_peft_model call with the same args stays idempotent instead of
