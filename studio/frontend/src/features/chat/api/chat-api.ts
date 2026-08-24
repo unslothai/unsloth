@@ -382,6 +382,11 @@ export async function validateModel(
       // omitting the mode makes this preflight disagree with /load in both directions.
       speculative_type: payload.speculative_type ?? null,
       spec_draft_n_max: payload.spec_draft_n_max ?? null,
+      // The MLX tuple decides the same preflight: without it validate approves Off while
+      // /load judges the drafter, and the refusal lands after the switch has been committed to.
+      mlx_speculative_mode: payload.mlx_speculative_mode ?? "off",
+      mlx_draft_model: payload.mlx_draft_model ?? null,
+      mlx_draft_block_size: payload.mlx_draft_block_size ?? null,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);

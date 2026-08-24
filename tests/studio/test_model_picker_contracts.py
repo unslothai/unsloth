@@ -435,6 +435,17 @@ def test_default_caches_keyed_on_inventory_version():
     assert src.count("${inventoryVersion}") >= 2
 
 
+def test_validate_sends_the_mlx_speculative_tuple_it_will_load_with():
+    """``validateModel`` builds an allowlisted body, so a field added to the caller's payload
+    object does not reach the wire on its own. Without these three the preflight judges Off
+    while /load judges the drafter, and the refusal lands after the switch is committed to."""
+    body = _code_only(_read("features/chat/api/chat-api.ts"))
+    start = body.index("/api/inference/validate")
+    end = body.index("mlx_draft_block_size", start)
+    for field in ("mlx_speculative_mode:", "mlx_draft_model:", "mlx_draft_block_size:"):
+        assert field in body[start : end + 40], field
+
+
 def test_hidden_infra_model_needles_present():
     """The frontend static needle list must keep hiding the RAG embedder and the
     llama.cpp validation probe."""
