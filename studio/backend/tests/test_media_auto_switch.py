@@ -36,39 +36,30 @@ from utils.api_errors import install_api_error_handlers
 
 
 def _a_real_video_family(name = "wan2.2-ti2v-5b"):
-    """A genuine ``VideoFamily`` off the registry, for tests that only need the load route to
-    have something family-shaped to carry.
+    """A real ``VideoFamily``, for tests that just need the route to carry one.
 
-    A bare ``object()`` or a two-field SimpleNamespace stands in for a frozen dataclass with
-    forty fields, so the first route step to read a field nobody hand-copied fails on an
-    AttributeError that says nothing about what the test was checking. The registry entry
-    always has every field the route can ask for, because it is the thing the route gets.
+    A bare ``object()`` stands in for a forty-field frozen dataclass, so the first field
+    nobody hand-copied fails the test on an AttributeError about nothing it asserts.
     """
     from core.inference.video_families import detect_video_family
 
-    # Resolved by NAME rather than by repo id: which tokens a repo id matches is its own rule,
-    # tested elsewhere, and not something these tests should be able to break.
+    # By name, not repo id: which tokens a repo id matches is its own rule, tested elsewhere.
     fam = detect_video_family("", override = name)
     assert fam is not None, f"the video family registry no longer has {name!r}"
     return fam
 
 
 def _video_load_backend(**overrides):
-    """A video backend double for the LOAD route, built from the real class.
+    """A real ``VideoBackend`` with only the asserted methods replaced.
 
-    A real ``VideoBackend`` with the one or two methods each caller's assertion is about
-    replaced, rather than a class re-declaring that surface by hand: every OTHER call the
-    route makes then runs the real implementation, which for the load route's preflight and
-    reservation helpers is pure resolution over the family registry -- no hub, no GPU, no
-    weights. ``__init__`` allocates locks and empty state and touches nothing else.
+    Every other call the route makes runs the real implementation, which for the load
+    route's preflight and reservation helpers is pure registry resolution: no hub, no GPU,
+    no weights, and ``__init__`` only allocates locks. A hand-rolled stub instead needs
+    extending every time the route grows a call, and until it is, unrelated tests fail on a
+    missing attribute rather than on what they assert.
 
-    A hand-rolled stub has to be extended by hand every time the route grows a call, and
-    until someone does, unrelated tests fail on a missing attribute rather than on what they
-    assert. That is exactly how PR #9599's reservation preflight turned these two red.
-
-    ``overrides`` are checked against the real class, so a stub for a method that does not
-    exist (a typo, or one that has since been renamed) fails loudly here instead of quietly
-    never being called.
+    ``overrides`` are checked against the class, so a stub for a method that does not exist
+    fails loudly instead of quietly never being called.
     """
     from core.inference.video import VideoBackend
 
@@ -1183,14 +1174,10 @@ def test_a_local_video_pipeline_is_still_planned(h3_modular, enabled, backend, l
 def test_every_backend_call_the_video_route_makes_exists_on_the_backend():
     """``backend.<name>`` in routes/video.py must name something ``VideoBackend`` has.
 
-    The route reaches the backend through ``get_video_backend()``, which is untyped at the
-    call site, so a method renamed on the class or misspelled in the route is not a syntax
-    error, not a lint finding, and not visible to any test whose double happens to stub the
-    old name. It is an AttributeError on a real load, and the route's own tests mock the
-    backend out, so nothing here would have caught it.
-
-    Read out of the parse tree rather than the text: the rule is which names the route asks
-    the backend for, not how they are spelled across lines.
+    ``get_video_backend()`` is untyped at the call site, so a method renamed on the class or
+    misspelled in the route is no syntax error, no lint finding, and invisible to any double
+    stubbing the old name. It is an AttributeError on a real load, and the route's own tests
+    mock the backend out. Read off the parse tree, not the text.
     """
     import ast
     import inspect

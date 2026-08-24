@@ -134,9 +134,7 @@ class _Builder(ast.NodeVisitor):
         # annotations: count as "used" but never as "unresolved" (forward refs)
         self.soft_uses: list[tuple[Scope, str, int]] = []
 
-    # How many nested quoted annotations to unwrap: `Optional["Dict[str, 'T']"]` is two, and
-    # nothing real goes deeper. A bound rather than a guess, so a pathological string cannot
-    # recurse without end.
+    # `Optional["Dict[str, 'T']"]` is two deep; nothing real goes further.
     _FORWARD_REF_DEPTH = 3
 
     def _visit_annotation(
@@ -149,17 +147,14 @@ class _Builder(ast.NodeVisitor):
         """Record annotation names as SOFT uses: an import used only in an annotation
         counts as used, but a forward-ref name is never 'unresolved'.
 
-        A QUOTED annotation is an annotation too. `Optional["TePrequantSource"]` keeps the
-        name inside an `ast.Constant`, where a plain Name walk cannot see it, so a
-        `TYPE_CHECKING` import reached only through a forward reference read as unused and
-        was reported as a BLOCKER against correct code (observed on PR #9599's
-        diffusion_hidream.py). The string is parsed and walked as the type it denotes.
+        A QUOTED annotation is one too: `Optional["T"]` keeps the name in an ast.Constant,
+        invisible to a Name walk, so a TYPE_CHECKING import reached only that way read as
+        unused and blocked correct code. Parse the string and walk what it denotes.
         """
         if node is None:
             return
-        # `Literal["gguf"]` holds VALUES, not type names. Its arguments are skipped so a
-        # literal that happens to spell a valid identifier cannot mark an unrelated import
-        # used -- the one direction where crediting a soft use loses a real finding.
+        # Literal[...] holds values, not type names. Skipping its args is what keeps this
+        # from crediting an unrelated import, the one direction that loses a real finding.
         if isinstance(node, ast.Subscript) and _is_literal_ref(node.value):
             self._visit_annotation(node.value, scope, _depth, _lineno)
             return
@@ -169,11 +164,8 @@ class _Builder(ast.NodeVisitor):
             try:
                 inner = ast.parse(node.value.strip(), mode = "eval").body
             except (SyntaxError, ValueError):
-                # Not every string in an annotation is a type: `Annotated[int, "docs"]` and
-                # friends carry prose. Nothing to credit, and nothing to complain about.
-                return
-            # The parsed tree numbers its lines from 1 inside the string, so findings would
-            # point at the wrong place; report against the line the string itself is on.
+                return  # Prose, as in Annotated[int, "docs"]. Nothing to credit.
+            # Report against the string's own line; the parsed tree numbers from 1.
             self._visit_annotation(inner, scope, _depth + 1, _lineno or node.lineno)
             return
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
@@ -779,9 +771,7 @@ _SELF_TESTS = {
         "pkg/__init__.py",
     ),
     # --- quoted annotations are annotations ---
-    # A TYPE_CHECKING import reached only through a forward reference IS used. Reading the
-    # name out of the ast.Constant is the whole point: without it this reported a BLOCKER
-    # against correct code, which is what fired on PR #9599's diffusion_hidream.py.
+    # A TYPE_CHECKING import reached only through a forward reference IS used.
     "forward_ref_string_annotation_counts_as_a_use": (
         "from typing import TYPE_CHECKING, Optional\ndef f(x) -> Optional[int]:\n    return x\n",
         "from typing import TYPE_CHECKING, Optional\n"
@@ -791,7 +781,7 @@ _SELF_TESTS = {
         "    return x\n",
         None,
     ),
-    # `Optional["Dict[str, 'T']"]`: the name is two strings deep, and each layer is parsed.
+    # Two strings deep; each layer is parsed.
     "nested_forward_ref_counts_as_a_use": (
         "from typing import TYPE_CHECKING, Optional\ndef f(x) -> Optional[int]:\n    return x\n",
         "from typing import TYPE_CHECKING, Optional\n"
@@ -801,8 +791,7 @@ _SELF_TESTS = {
         "    return x\n",
         None,
     ),
-    # The other direction, which is what keeps the fix from being a blanket amnesty:
-    # `Literal["T"]` spells a VALUE, so it must NOT credit an import named T.
+    # The other direction: Literal['T'] is a VALUE, so it must NOT credit an import T.
     "a_literal_value_is_not_a_use_of_that_name": (
         "from typing import TYPE_CHECKING, Literal\ndef f(x) -> Literal['a']:\n    return x\n",
         "from typing import TYPE_CHECKING, Literal\n"
@@ -812,7 +801,7 @@ _SELF_TESTS = {
         "    return x\n",
         "BLOCKER",
     ),
-    # Prose in an annotation is not a type and must not raise a parse error into a finding.
+    # Prose is not a type, and a parse error there is not a finding.
     "unparseable_annotation_string_is_ignored": (
         "from typing import Annotated\ndef f(x: Annotated[int, 'ok']) -> int:\n    return x\n",
         "from typing import Annotated\n"
