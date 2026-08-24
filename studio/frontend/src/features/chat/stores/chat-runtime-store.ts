@@ -3750,6 +3750,7 @@ function qwenMigrationRemembersPerModel(
 
 function applyLegacyQwenDefaultsAfterPresetChange(
   includeOwnedGlobal: boolean,
+  migrateOwnedGlobalAlongsideModelMemory: boolean,
 ): void {
   useChatRuntimeStore.setState((state) => {
     if (
@@ -3765,7 +3766,7 @@ function applyLegacyQwenDefaultsAfterPresetChange(
       checkpoint,
       qwenMigrationThinkingOn(localSettings, state),
       includeOwnedGlobal,
-      includeOwnedGlobal,
+      migrateOwnedGlobalAlongsideModelMemory,
     );
     if (!migration.patch) return state;
 
@@ -3796,8 +3797,12 @@ function applyLegacyQwenDefaultsAfterPresetChange(
 
 async function retryLegacyQwenDefaultsAfterPresetChange(
   includeOwnedGlobal: boolean,
+  migrateOwnedGlobalAlongsideModelMemory: boolean,
 ): Promise<void> {
-  applyLegacyQwenDefaultsAfterPresetChange(includeOwnedGlobal);
+  applyLegacyQwenDefaultsAfterPresetChange(
+    includeOwnedGlobal,
+    migrateOwnedGlobalAlongsideModelMemory,
+  );
   try {
     // First land the preset selection and its generic Default values. The
     // confirming GET can then recognize that exact legacy snapshot, while a
@@ -3816,7 +3821,7 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
       state.params.checkpoint,
       qwenMigrationThinkingOn(confirmed, state),
       includeOwnedGlobal,
-      includeOwnedGlobal,
+      migrateOwnedGlobalAlongsideModelMemory,
     );
     if (migration.patch) {
       await savePersistedChatSettingsPatchIfCurrent(
@@ -3831,19 +3836,29 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
 
 let qwenDefaultsRetryScheduled = false;
 let qwenDefaultsRetryIncludesOwnedGlobal = false;
+let qwenDefaultsRetryMigratesOwnedGlobalAlongsideModelMemory = false;
 
-function scheduleLegacyQwenDefaultsRetry(includeOwnedGlobal: boolean): void {
+function scheduleLegacyQwenDefaultsRetry(
+  includeOwnedGlobal: boolean,
+  migrateOwnedGlobalAlongsideModelMemory = includeOwnedGlobal,
+): void {
   qwenDefaultsRetryIncludesOwnedGlobal ||= includeOwnedGlobal;
+  qwenDefaultsRetryMigratesOwnedGlobalAlongsideModelMemory ||=
+    migrateOwnedGlobalAlongsideModelMemory;
   if (qwenDefaultsRetryScheduled) {
     return;
   }
   qwenDefaultsRetryScheduled = true;
   queueMicrotask(() => {
     const includeScheduledOwnedGlobal = qwenDefaultsRetryIncludesOwnedGlobal;
+    const migrateScheduledOwnedGlobalAlongsideModelMemory =
+      qwenDefaultsRetryMigratesOwnedGlobalAlongsideModelMemory;
     qwenDefaultsRetryScheduled = false;
     qwenDefaultsRetryIncludesOwnedGlobal = false;
+    qwenDefaultsRetryMigratesOwnedGlobalAlongsideModelMemory = false;
     void retryLegacyQwenDefaultsAfterPresetChange(
       includeScheduledOwnedGlobal,
+      migrateScheduledOwnedGlobalAlongsideModelMemory,
     );
   });
 }
@@ -4303,6 +4318,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     if (options?.fromModelDefaults === true) {
       scheduleLegacyQwenDefaultsRetry(
         options.migrateOwnedGlobalQwenDefaults === true,
+        false,
       );
     }
   },

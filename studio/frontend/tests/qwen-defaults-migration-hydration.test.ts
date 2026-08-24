@@ -516,6 +516,57 @@ test("resident-model adoption migrates a deferred global-only snapshot", async (
   });
 });
 
+test("resident-model adoption does not claim a global beside model memory", async () => {
+  settingsHttp.getResponses.length = 0;
+  settingsHttp.settings = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParams: {
+      temperature: 0.6,
+      topP: 0.95,
+      minP: 0.01,
+      presencePenalty: 0,
+      maxTokens: 8192,
+    },
+    inferenceParamsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+  };
+  settingsHttp.puts.length = 0;
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
+    paramsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    settingsHydrated: true,
+  }));
+
+  const state = useChatRuntimeStore.getState();
+  state.setParams(
+    { ...state.params, minP: 0, presencePenalty: 1.5 },
+    {
+      fromModelDefaults: true,
+      migrateOwnedGlobalQwenDefaults: true,
+    },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const persisted = settingsHttp.settings as {
+    inferenceParams?: { minP?: number; presencePenalty?: number };
+    inferenceParamsByModel?: Record<
+      string,
+      { presencePenalty?: number }
+    >;
+  };
+  assert.equal(persisted.inferenceParams?.minP, 0.01);
+  assert.equal(persisted.inferenceParams?.presencePenalty, 0);
+  assert.equal(
+    persisted.inferenceParamsByModel?.[QWEN38]?.presencePenalty,
+    1.5,
+  );
+});
+
 test("a retry cannot overwrite an edit made after its confirming read", async () => {
   const legacySettings = {
     activePreset: "Default",
