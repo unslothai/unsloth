@@ -2817,6 +2817,9 @@ type ChatRuntimeStore = {
       fromModelDefaults?: boolean;
       /** The context the model just loaded with. */
       maxTokensCap?: number;
+      /** The defaults came from the model already resident on the server at
+       * startup, so a legacy global snapshot can be attributed to it. */
+      migrateOwnedGlobalQwenDefaults?: boolean;
     },
   ) => void;
   setCustomPresets: (presets: Preset[]) => void;
@@ -3713,6 +3716,19 @@ function qwenMigrationThinkingOn(
     : state.reasoningEnabled;
 }
 
+function qwenMigrationRemembersPerModel(
+  settings: PersistedChatSettings,
+  state: ChatRuntimeStore,
+  rememberParamsPerModelMutationVersion =
+    scalarSettingMutationVersions.rememberParamsPerModel,
+): boolean {
+  return settings.rememberParamsPerModel !== undefined &&
+    scalarSettingMutationVersions.rememberParamsPerModel ===
+      rememberParamsPerModelMutationVersion
+    ? settings.rememberParamsPerModel
+    : state.rememberParamsPerModel;
+}
+
 function applyLegacyQwenDefaultsAfterPresetChange(
   includeOwnedGlobal: boolean,
 ): void {
@@ -3744,7 +3760,12 @@ function applyLegacyQwenDefaultsAfterPresetChange(
         ? { paramsByModel: migration.settings.inferenceParamsByModel }
         : {}),
       ...(activePatch
-        ? { params: { ...state.params, ...activePatch } }
+        ? {
+            params: restoreThreadScopedParams({
+              ...state.params,
+              ...activePatch,
+            }),
+          }
         : {}),
     };
   });
@@ -4004,11 +4025,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         const globalBelongsToActiveCheckpoint =
           modelLoadedBeforeHydration !== checkpoint &&
           modelLeftBeforeHydration === null;
+        const remembersPerModel = qwenMigrationRemembersPerModel(
+          settings,
+          get(),
+          hydrationVersions.scalarSettings.rememberParamsPerModel,
+        );
         let migration = migrateLegacyQwenDefaults(
           settings,
           checkpoint,
           thinkingOn,
           globalBelongsToActiveCheckpoint,
+          globalBelongsToActiveCheckpoint && !remembersPerModel,
         );
         if (fromServer && migration.patch) {
           try {
@@ -4016,16 +4043,34 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             // derived from this confirmation, not from the earlier hydration
             // response, so a newer edit from another tab is left untouched.
             const confirmed = await getChatSettings();
-            migration = migrateLegacyQwenDefaults(
-              confirmed,
-              checkpoint,
-              qwenMigrationThinkingOn(
-                confirmed,
-                get(),
-                hydrationVersions.scalarSettings.reasoningEnabled,
-              ),
-              globalBelongsToActiveCheckpoint,
-            );
+            const confirmedState = get();
+            // A model switch while the confirming GET was in flight invalidates
+            // the checkpoint and mode this migration was about to persist. The
+            // active model's defaults update will schedule its own retry.
+            migration =
+              confirmedState.params.checkpoint === checkpoint
+                ? migrateLegacyQwenDefaults(
+                    confirmed,
+                    checkpoint,
+                    qwenMigrationThinkingOn(
+                      confirmed,
+                      confirmedState,
+                      hydrationVersions.scalarSettings.reasoningEnabled,
+                    ),
+                    globalBelongsToActiveCheckpoint,
+                    globalBelongsToActiveCheckpoint &&
+                      !qwenMigrationRemembersPerModel(
+                        confirmed,
+                        confirmedState,
+                        hydrationVersions.scalarSettings
+                          .rememberParamsPerModel,
+                      ),
+                  )
+                : {
+                    settings: confirmed,
+                    patch: null,
+                    migratedModelIds: [],
+                  };
             if (migration.patch) {
               await savePersistedChatSettingsPatch(migration.patch);
             }
@@ -4218,7 +4263,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     // Once status applies that model's defaults, its checkpoint and reasoning
     // mode are known and the deferred active-row migration can run safely.
     if (options?.fromModelDefaults === true) {
-      scheduleLegacyQwenDefaultsRetry(false);
+      scheduleLegacyQwenDefaultsRetry(
+        options.migrateOwnedGlobalQwenDefaults === true,
+      );
     }
   },
   setCustomPresets: (customPresets) =>

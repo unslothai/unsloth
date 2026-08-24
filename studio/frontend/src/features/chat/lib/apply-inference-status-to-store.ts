@@ -134,6 +134,9 @@ export type ApplyInferenceStatusOptions = {
    * status -- without it a variant-only switch underneath the tab reads as
    * steady state and the hydration reseed keeps the old quant's baselines. */
   previousGgufVariant?: string | null;
+  /** This status belongs to the model already resident when Studio started,
+   * so the persisted global sampling snapshot belongs to this checkpoint. */
+  adoptingExistingServerModel?: boolean;
 };
 
 /** Mirror refresh() hydration so adopted CLI models get reasoning/tools flags. */
@@ -168,6 +171,8 @@ export function applyActiveModelStatusToStore(
       {
         fromModelDefaults: true,
         maxTokensCap: status.context_length ?? undefined,
+        migrateOwnedGlobalQwenDefaults:
+          options.adoptingExistingServerModel === true,
       },
     );
   }
@@ -679,6 +684,8 @@ export function applyActiveModelStatusToStore(
         {
           fromModelDefaults: true,
           maxTokensCap: status.context_length ?? undefined,
+          migrateOwnedGlobalQwenDefaults:
+            options.adoptingExistingServerModel === true,
         },
       );
     }
@@ -722,6 +729,7 @@ export async function tryAdoptServerActiveModel(): Promise<boolean> {
   applyActiveModelStatusToStore(status, {
     previousCheckpoint,
     previousGgufVariant,
+    adoptingExistingServerModel: true,
   });
   return true;
 }
