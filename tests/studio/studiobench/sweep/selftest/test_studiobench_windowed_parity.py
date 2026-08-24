@@ -1901,6 +1901,40 @@ def test_the_coverage_floor_sums_the_windowed_and_structural_halves(tmp_path, ca
     assert code == 3, out
 
 
+def test_the_coverage_floor_is_checked_per_payload_pattern(tmp_path, capsys):
+    """PER FILM, not per invocation. The three modes are one film's coverage split three ways, so
+    they are unioned; two positional payloads are two films, and pooling those lets each satisfy
+    the other's floor. `ui_parity normal_run windowed_run` is a supported invocation -- the mode
+    decision above already says why per-invocation was too coarse for it -- so a nearly empty or
+    failed film could be carried over the floor by an unrelated one on the same command line.
+
+    Two films of 2 pairs each against a floor of 4: pooled they clear it, and neither one did."""
+    from studiobench.sweep import ui_parity as U
+
+    _windowed_only_shard(tmp_path, "filmA", pairs = 2)
+    _windowed_only_shard(tmp_path, "filmB", pairs = 2)
+    code = U.main([str(tmp_path / "filmA"), str(tmp_path / "filmB"), "--min-compared", "4"])
+    out = capsys.readouterr().out
+    assert "TOO LITTLE COMPARED" in out, out
+    assert out.count("TOO LITTLE COMPARED") == 2, out
+    assert "filmA" in out and "filmB" in out, out
+    assert code == 3, out
+
+
+def test_a_floor_each_film_clears_on_its_own_still_passes(tmp_path, capsys):
+    """THE POSITIVE CONTROL for the one above: per-pattern must not mean every multi-payload run
+    fails. Two films of 2 pairs each against a floor of 2 is 0, or the test above would pass
+    against an unconditional `return 3`."""
+    from studiobench.sweep import ui_parity as U
+
+    _windowed_only_shard(tmp_path, "filmA", pairs = 2)
+    _windowed_only_shard(tmp_path, "filmB", pairs = 2)
+    code = U.main([str(tmp_path / "filmA"), str(tmp_path / "filmB"), "--min-compared", "2"])
+    out = capsys.readouterr().out
+    assert "TOO LITTLE COMPARED" not in out, out
+    assert code == 0, out
+
+
 # ── a build difference the capture comparison cannot see ─────
 
 

@@ -182,21 +182,37 @@ class Outcome(int):
         return len(self.seen)
 
 
-def _floored(worst: int, compared: set[tuple], seen: set[tuple], min_compared: int) -> int:
-    """`main`'s single application of the coverage floor, over every mode it ran.
+def _floored(
+    worst: int,
+    compared: dict[str, set[tuple]],
+    seen: dict[str, set[tuple]],
+    min_compared: int,
+) -> int:
+    """`main`'s application of the coverage floor, once per payload pattern it scored.
 
     UNIONED ACROSS MODES, not checked per mode. One film's coverage is split three ways -- visible
     region, invariants, structural digest -- and a floor applied inside each report separately fails
     a run that compared plenty. `Outcome` says why the pairs are unioned rather than added.
 
+    PER PATTERN, not per invocation, and that is the other half of the same rule. The three modes
+    are one film seen three ways; two positional payloads are two films. Pooling those lets each
+    satisfy the other's floor, so two payloads comparing 8 pairs apiece cleared `--min-compared 16`
+    and a nearly empty film was hidden by coverage from an unrelated one on the same command line.
+    `ui_parity normal_run windowed_run` is a supported invocation -- see the mode decision, which
+    already rejected per-invocation as too coarse for exactly this shape.
+
     RAISED, NEVER LOWERED. A shortfall can only make the verdict worse: a run that already found a
     difference keeps that finding and gains the reason its coverage is too thin to trust either way.
     """
-    shortfall = coverage_shortfall(len(compared), len(seen), min_compared)
-    if not shortfall:
-        return worst
-    print(f"\n  {shortfall}")
-    return max(worst, 3)
+    for pattern in sorted(compared):
+        shortfall = coverage_shortfall(
+            len(compared[pattern]), len(seen.get(pattern) or ()), min_compared
+        )
+        if not shortfall:
+            continue
+        print(f"\n  {pattern}: {shortfall}")
+        worst = max(worst, 3)
+    return worst
 
 
 def _keys(results: list[tuple]) -> frozenset[tuple[str, str, str]]:
@@ -2233,12 +2249,16 @@ def main(argv: list[str] | None = None) -> int:
 
     worst = 0
     scored_windowed = 0
-    # THE COVERAGE FLOOR'S OWN BOOKKEEPING, kept across every mode this invocation runs. Namespaced
-    # by pattern so two payloads cannot merge a pair key, and a SET rather than a running total
-    # because `--mode auto` scores each windowed pair twice, once on the visible region and once on
-    # the invariants; see `Outcome`.
-    compared_pairs: set[tuple] = set()
-    seen_pairs: set[tuple] = set()
+    # THE COVERAGE FLOOR'S OWN BOOKKEEPING, kept per payload pattern and across every mode that
+    # pattern was scored in. A SET rather than a running total because `--mode auto` scores each
+    # windowed pair twice, once on the visible region and once on the invariants; see `Outcome`.
+    # Keyed by pattern because the floor is a question about one film; see `_floored`.
+    compared_pairs: dict[str, set[tuple]] = {}
+    seen_pairs: dict[str, set[tuple]] = {}
+
+    def note(pattern: str, out: "Outcome") -> None:
+        compared_pairs.setdefault(pattern, set()).update(out.compared)
+        seen_pairs.setdefault(pattern, set()).update(out.seen)
     vis_unstable: Optional[frozenset[tuple[str, str]]] = None
     vis_null_tiers: set[str] = set()
     vis_null_corpora: set[str] = set()
@@ -2316,8 +2336,7 @@ def main(argv: list[str] | None = None) -> int:
                 paths, f"UI PARITY: {pattern}", floor, select = win, min_reps = args.min_reps
             )
             worst = max(worst, int(vis))
-            compared_pairs |= {(pattern, *k) for k in vis.compared}
-            seen_pairs |= {(pattern, *k) for k in vis.seen}
+            note(pattern, vis)
         if args.mode in ("auto", "behaviour"):
             beh = behaviour_report(
                 paths,
@@ -2327,8 +2346,7 @@ def main(argv: list[str] | None = None) -> int:
                 min_reps = args.min_reps,
             )
             worst = max(worst, int(beh))
-            compared_pairs |= {(pattern, *k) for k in beh.compared}
-            seen_pairs |= {(pattern, *k) for k in beh.seen}
+            note(pattern, beh)
 
     # AHEAD OF THE STRUCTURAL EARLY RETURN, because this mode does not read the plan at all.
     #
@@ -2478,8 +2496,7 @@ def main(argv: list[str] | None = None) -> int:
         # a complete report on its own); `main` collects the pairs and applies the floor below.
         struct = report(paths, label, effective, select, args.min_reps)
         worst = max(worst, int(struct))
-        compared_pairs |= {(pattern, *k) for k in struct.compared}
-        seen_pairs |= {(pattern, *k) for k in struct.seen}
+        note(pattern, struct)
     # COMBINED, and the worst outcome wins. A behavioural failure on one payload is not cancelled
     # by a structural pass on another, and a structural failure at the fully mounted rungs is not
     # cancelled by the windowed rungs passing their own two modes.
