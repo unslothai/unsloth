@@ -237,7 +237,11 @@ def test_local_child_is_spawned_through_the_shim_resolver(monkeypatch, tmp_path)
     monkeypatch.setattr(bridge.shutil, "which", lambda _: r"C:\\nodejs\\codex.cmd")
     captured = {}
 
-    def resolver(executable, arguments, environment = None):
+    def resolver(
+        executable,
+        arguments,
+        environment = None,
+    ):
         captured["resolver"] = (executable, arguments, environment)
         return ["C:\\nodejs\\node.exe", "index.js", *arguments]
 
