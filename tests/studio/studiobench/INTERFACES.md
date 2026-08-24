@@ -619,7 +619,6 @@ while rendering two different subtrees.
 null is one build against itself at six points in ONE stream, so both arms are generating and both
 render Stop. The bias is symmetric within the control and cancels exactly. A flat null proves
 repeatability, never comparability.
-
 ### The two boundary decisions in visible-region parity
 
 Written down because this is where a visible-region check goes wrong quietly.
@@ -679,7 +678,6 @@ GLOBALLY -- a reply streaming below the fold is an ordinary state and must refus
 different-messages-on-screen and viewport-ended-empty findings and before the digest comparison, the
 same ordering `compare` uses around `mount_count_mismatch`: losing the thread stays a finding
 whether or not the stream could be placed.
-
 **The visible-region noise floor is keyed by (rung, action), and needs more than one observation.**
 `visible_unstable_set` derives it from a base-vs-base null control. It returned ACTION NAMES, so a
 single differing null pair silenced that action for every rep and every rung -- and a payload

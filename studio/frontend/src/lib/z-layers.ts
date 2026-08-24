@@ -16,6 +16,7 @@
  *   FLOATING_PANEL_TOP   the one of those the user touched last
  *   STARTUP_SCREEN       blocks the app while the backend comes up or quits
  *   TOOLTIP              transient, must be readable above whatever spawned it
+ *   DRAG_CURSOR_OVERLAY  owns the cursor and the hit test during a panel drag
  *
  * In-page surfaces -- dropdowns, popovers, dialogs, sheets, the sidebar, the
  * Tauri titlebar -- all sit in the 1..120 band on Tailwind's own `z-*` scale
@@ -49,6 +50,17 @@ export const Z_LAYER = {
   STARTUP_SCREEN: 9999,
   /** Tooltips, which have to be legible above whatever spawned them. */
   TOOLTIP: 999999,
+  /**
+   * The transparent sheet PanelResizeHandle mounts for the life of a panel
+   * drag. Top of the scale because it owns two things for the whole viewport
+   * while it exists: the resize cursor, and the hit test. It replaces
+   * `html[data-panel-resizing] *`, which was `!important` and so beat every
+   * surface here, and the `pointer-events: none` rule that used to blank the
+   * sidebar and the main content; being above them is what makes it their
+   * equal rather than a partial stand-in. Transparent, and it exists only
+   * between pointerdown and pointerup, so nothing it covers is hidden.
+   */
+  DRAG_CURSOR_OVERLAY: 1000000,
 } as const;
 
 export type ZLayer = (typeof Z_LAYER)[keyof typeof Z_LAYER];

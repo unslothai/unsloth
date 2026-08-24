@@ -710,10 +710,19 @@ def reasoning_toggle_one(ctx: ActionContext) -> ActionResult:
         ran = True,
         expect_ok = ok,
         expect = {
-            # `panes` is context, not an assertion: this action opens one of them whatever the
-            # thread holds, which is the whole point of it existing beside `reasoning_toggle`.
+            # SCOPED TO WHAT IS MOUNTED, and always was. `reasoningTriggers()` is a
+            # querySelectorAll, so on the shipped build it finds every pane in the thread and on a
+            # windowed mount it finds the panes in the window. The assertion below stays
+            # self-consistent either way (it opens N and expects N open), so the action still
+            # passes -- but its COST silently stops being a function of thread length and becomes
+            # a function of window size. That is the arm's point, and it is also the reason this
+            # timing is not comparable between a windowed arm and a full one without the pane
+            # count beside it.
             "panes": raw["panes"],
             "panes_scope": "mounted",
+            # `panes_opened` is the assertion the two above are context for: this action opens
+            # exactly one pane whatever the thread holds, which is the whole point of it existing
+            # beside `reasoning_toggle`. Asserted by test_studiobench_reasoning_one_live.
             "panes_opened": 1,
             "open_after_expand": raw["openCount"],
             "open_after_collapse": raw["afterClose"],

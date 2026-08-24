@@ -345,7 +345,6 @@ def cell_metrics(records: list[dict], session: str | None = None) -> dict[str, d
         # would empty the older of two concurrent sessions and take the hatch away. A caller who
         # names a session is asking for that session, not for the payload's latest view of it.
         records = list(latest_attempt_rows(records))
-
     # A CELL THAT FAILED AN INVALIDATING GATE IS NOT A READING, HERE EITHER. Both gates are
     # advisory where they are emitted, so such a cell arrives `completed=True` with a full set of
     # timings that are CHEAPER than a correct cell's, and this table is where a floor is built and
