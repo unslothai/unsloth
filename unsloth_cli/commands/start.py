@@ -3206,11 +3206,12 @@ def _prefer_windows_cmd_sibling(executable: Optional[str]) -> Optional[str]:
     """Prefer the sibling .cmd when Windows resolved an extensionless npm/pnpm shim.
 
     cmd-shim writes ``to``, ``to.cmd`` and ``to.ps1``, and shutil.which can return
-    the extensionless POSIX shim, which CreateProcess rejects with WinError 193:
-    CPython 3.12.0 to 3.12.9 probe the bare name before PATHEXT (gh-127001), and a
-    PATHEXT containing "." does so on any version. Substituted only when the file
-    opens with a shebang, so a real PE keeps priority over a stale wrapper beside
-    it; matched on not-a-Windows-suffix so a dotted bin name is caught too.
+    the extensionless POSIX shim, which CreateProcess rejects with WinError 193.
+    Measured on windows-latest: 3.12.0 probes the bare name before PATHEXT
+    (gh-109590), and 3.12.1 onwards do not. A PATHEXT holding "." reaches the same
+    place on any version. Substituted only when the file opens with a shebang, so a
+    real PE keeps priority over a stale wrapper beside it; matched on
+    not-a-Windows-suffix so a dotted bin name is caught too.
     """
     if executable is None or os.name != "nt":
         return executable
