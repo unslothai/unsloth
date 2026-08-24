@@ -357,12 +357,12 @@ class KeylessToolPolicyMiddleware:
             return
         from starlette.concurrency import run_in_threadpool
 
-        if await run_in_threadpool(get_keyless_api_tools_enabled):
-            await self.app(asgi_scope, receive, send)
-            return
         admitted = await run_in_threadpool(asgi_request_is_keyless, asgi_scope)
         asgi_scope.setdefault("state", {})[KEYLESS_ADMISSION_STATE_KEY] = admitted
         if not admitted:
+            await self.app(asgi_scope, receive, send)
+            return
+        if await run_in_threadpool(get_keyless_api_tools_enabled):
             await self.app(asgi_scope, receive, send)
             return
         from state.tool_policy import tools_force_disabled
