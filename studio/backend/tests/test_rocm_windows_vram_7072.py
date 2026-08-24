@@ -808,11 +808,18 @@ def test_a_nonzero_sub_threshold_row_declines_the_unified_sum(win_rocm, monkeypa
     the small row, so its usage would be published as the APU's. The matcher
     declines this shape by requiring every dropped counter to be an exact zero."""
     _apu_host(monkeypatch, unified_used = 30.0 * GB)
-    monkeypatch.setattr(hw.subprocess, "run", _subprocess_run(
-        adapter_output = _adapter_output([
-            ("luid_0x00000000_0x0000c001_phys_0", 10 * MiB),  # the visible APU, idle
-            ("luid_0x00000000_0x0000d1e2_phys_0", 30.0 * GB),  # a hidden GPU, loaded
-        ])))
+    monkeypatch.setattr(
+        hw.subprocess,
+        "run",
+        _subprocess_run(
+            adapter_output = _adapter_output(
+                [
+                    ("luid_0x00000000_0x0000c001_phys_0", 10 * MiB),  # the visible APU, idle
+                    ("luid_0x00000000_0x0000d1e2_phys_0", 30.0 * GB),  # a hidden GPU, loaded
+                ]
+            )
+        ),
+    )
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0])
     assert devices[0]["used_gb"] is None

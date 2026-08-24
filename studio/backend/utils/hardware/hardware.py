@@ -2525,9 +2525,7 @@ def _rocm_windows_per_device_vram(
             used == 0 for _, used in adapters if used < _ROCM_WIN_ADAPTER_MIN_BYTES
         )
         unified_used = (
-            _rocm_windows_unified_used_bytes(adapters)
-            if wants_sum and placeholders_only
-            else None
+            _rocm_windows_unified_used_bytes(adapters) if wants_sum and placeholders_only else None
         )
         if unified_used is not None:
             # Every other reading is clamped on its way through the matcher.
