@@ -418,11 +418,14 @@ function RootLayout() {
   }) => {
     clearNewChatDraft(); // fresh chat starts empty, no bleed from the last one
     const chatRuntime = useChatRuntimeStore.getState();
-    // The project on screen, read off the route as the sidebar's New chat
-    // button reads it. The runtime keeps its project while a hidden chat is
-    // still generating, so on another workspace it would name a project the
-    // user cannot see.
-    const openProjectId = isChatRoute ? (rawProject ?? null) : null;
+    // The project on screen, which on Chat is the runtime's. The page keeps
+    // that in step with the route, the inferred ones included: a thread or a
+    // compare pair opened without ?project= still belongs to its project, and
+    // the page's own New chat button starts the next chat there. Reading the
+    // search param instead would leave that project without being asked to.
+    // Off Chat the page is hidden rather than unmounted, so its project is one
+    // the user cannot see and a new chat belongs to none.
+    const openProjectId = isChatRoute ? chatRuntime.activeProjectId : null;
     const projectId = options?.standalone ? null : openProjectId;
     chatRuntime.setActiveThreadId(null);
     chatRuntime.setActiveProjectId(projectId);

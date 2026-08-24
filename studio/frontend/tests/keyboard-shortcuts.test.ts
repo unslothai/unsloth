@@ -1143,20 +1143,34 @@ test("effort chords only run for a model whose effort is read", async () => {
   assert.match(body, /!state\.supportsReasoning \|\| !isEffort/);
 });
 
-test("New chat inherits the project on screen, not the one still running", async () => {
+test("New chat inherits the project on screen, inferred or not", async () => {
   const root = await readFile(
     new URL("../src/app/routes/__root.tsx", import.meta.url),
     "utf8",
   );
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+  const page = await readFile(
+    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
     "utf8",
   );
-  // The runtime holds its project off-route while a chat is still generating,
-  // so reading it there would open a project the user is not looking at. The
-  // sidebar's button reads the route; the chord has to agree with it.
-  assert.match(root, /isChatRoute \? \(rawProject \?\? null\) : null/);
-  assert.match(sidebar, /isChatRoute\n\s*\? \(\(search\.project as string \| undefined\) \?\? null\)\n\s*: null/);
+  // On Chat the runtime's project is the visible one, inferred ones included:
+  // the page resolves it from the thread or the compare pair when the URL
+  // carries no ?project=, so a chat in a project stays in it.
+  assert.match(root, /isChatRoute \? chatRuntime\.activeProjectId : null/);
+  assert.match(page, /const projectId = thread\?\.projectId \?\? null;/);
+  assert.match(page, /const projectId = threads\[0\]\?\.projectId \?\? null;/);
+  assert.match(page, /setCurrentProjectId\(projectId\);\n\s*useChatRuntimeStore\.getState\(\)\.setActiveProjectId\(projectId\);/);
+  // The page's own New chat button starts from the same value, so the chord
+  // and the button cannot disagree about which project a new chat is in.
+  assert.match(page, /runtime\.setActiveProjectId\(currentProjectId\);/);
+  // Off Chat the page is hidden rather than unmounted, so the runtime still
+  // names a project the user is not looking at. That one stays excluded.
+  assert.match(root, /isChatRoute \? chatRuntime\.activeProjectId : null/);
+  // Leaving the project is its own action, so this one must not also do it.
+  assert.match(
+    root,
+    /useShortcut\("newStandaloneChat", \(\) => startNewChat\(\{ standalone: true \}\)/,
+  );
+  assert.match(root, /const projectId = options\?\.standalone \? null : openProjectId;/);
 });
 
 test("every settings tab survives a reload", () => {
