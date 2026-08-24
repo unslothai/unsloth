@@ -817,11 +817,10 @@ function createStudioDbAdapter(
       // assistant-ui withholds the first message until this resolves, so the row write is tracked, not awaited.
       // Captured here, not inside the creator: a retry belongs to the send that initialized it,
       // not to a later incognito or checkpoint selection.
-      // What the SEND was made under, not what is on screen now. Materialization is no
-      // longer the same tick as the send (send() awaits document extraction, and the
-      // provider survives the view switch), and every one of these moves in between: the
-      // adapter is rebuilt with the new project, and ChatPage's view effect clears
-      // `incognito`. A claim of null/false wins over the store for the same reason.
+      // What the SEND was made under, not what is on screen now. Materialization is no longer
+      // the same tick as the send, and all four move in between: the adapter is rebuilt with
+      // the new project, and ChatPage's view effect clears `incognito`. A claim of null/false
+      // wins over the store for the same reason.
       const claim = readThreadCreationClaim(threadId);
       const runtimeStateAtInit = useChatRuntimeStore.getState();
       const incognitoAtInit = claim ? claim.incognito : runtimeStateAtInit.incognito;

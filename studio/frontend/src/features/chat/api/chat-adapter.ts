@@ -3881,13 +3881,11 @@ export function createOpenAIStreamAdapter(
       // first resolveProjectId, and a send survives navigation. Only consulted
       // while the thread's own row is still missing.
       //
-      // ...which, for a fresh send, is exactly the window this has to be right in, and the
-      // store is no longer a safe reading of it. send() awaits document extraction before
-      // the run starts, and initialize() returns without awaiting its row write, so by the
-      // time this runs the user may be in another project and `activeProjectId` names that
-      // one. The run would then take its instructions, RAG sources and sandbox from a
-      // project the message was never sent to. Prefer what the send itself was stamped
-      // with; a stamp OF null is a send from outside any project and still wins.
+      // ...which for a fresh send is exactly the window this has to be right in, and the store
+      // is no longer a safe reading of it: send() awaits document extraction, and initialize()
+      // does not await its row write, so the user may be in another project by now and the run
+      // would take its instructions, RAG sources and sandbox from one the message was never
+      // sent to. A stamp OF null still wins -- a send from outside any project.
       const creationClaim = unstable_threadId
         ? readThreadCreationClaim(unstable_threadId)
         : undefined;

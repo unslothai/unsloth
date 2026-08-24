@@ -3539,11 +3539,9 @@ const Composer: FC<{
           }
           shouldCorrectPersistedModel ??= !state.remoteId;
           const initializingFreshThread = !state.remoteId;
-          // Stamp the fresh thread with what the queue was STARTED under, the same way the
-          // composer stamps a direct send. This path initializes without going through the
-          // composer, and by dispatch time the shared provider's adapter may be showing a
-          // different project, so without this the chat is filed wherever the user is now
-          // and the run picks up that project's instructions and sources.
+          // Stamp it with what the queue was STARTED under. This path initializes without
+          // going through the composer, and by dispatch time the adapter may be showing a
+          // different project, so the chat was filed wherever the user is now.
           if (initializingFreshThread) {
             claimThreadCreation([state.id, state.remoteId], {
               projectId: projectIdAtQueueStart,
@@ -4072,10 +4070,9 @@ const Composer: FC<{
     preStreamRunReservationRef.current = reservationToken;
     try {
       const sentText = aui.composer().getState().text;
-      // Stamp the send BEFORE send() starts awaiting: it awaits every incomplete attachment
-      // through the adapter, so a document send reaches initialize() seconds later, by which
-      // time navigation may have moved the project and cleared the temporary flag.
-      // See utils/chat-thread-creation-claim.ts.
+      // Stamp the send BEFORE send() starts awaiting every incomplete attachment: a document
+      // send reaches initialize() seconds later, by which time navigation may have moved the
+      // project and cleared the temporary flag. See utils/chat-thread-creation-claim.ts.
       const chatStateAtSend = useChatRuntimeStore.getState();
       claimThreadCreation(preStreamThreadIds, {
         projectId: projectScope,
