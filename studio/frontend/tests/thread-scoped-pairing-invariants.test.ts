@@ -462,17 +462,28 @@ test("a fork stops when the chat's settings could not be saved", () => {
 });
 
 test("an unsaved chat's edit reaches the installation defaults without a round trip", () => {
-  // assistant-ui gives an unsaved thread a `__LOCALID_` id (RemoteThreadListThreadList
-  // RuntimeCore), which no row can exist for, so its read can only 404. Holding edits
-  // behind that certain-to-fail read is what stopped a pill clicked on a fresh /chat
-  // from reaching localStorage straight away, which playwright_chat_ui asserts.
+  // Holding edits behind a read that is certain to 404 is what stopped a pill clicked on
+  // a fresh /chat from reaching localStorage straight away, which playwright_chat_ui
+  // asserts. The chat is unsaved only until its first send, so the test is the runtime's
+  // pending-new-thread id, not the `__LOCALID_` prefix: that prefix stays on the id for
+  // good and gated every app-created chat out of its own settings (#8686).
   const effect = slice(
     provider,
     "const { applyThreadScopedSettings } = useChatRuntimeStore.getState();",
     "if (!enabled) {",
   );
-  assert.match(effect, /isAssistantLocalThreadId\(activeThreadId\)/);
+  assert.match(effect, /activeThreadId === pendingNewThreadId/);
+  assert.doesNotMatch(effect, /isAssistantLocalThreadId/);
   assert.match(effect, /applyThreadScopedSettings\(null, null\)/);
+});
+
+test("the pairing effect tracks the runtime's pending new thread", () => {
+  assert.match(
+    provider,
+    /const pendingNewThreadId = useAuiState\(\(\{ threads \}\) => threads\.newThreadId\)/,
+  );
+  const deps = slice(provider, "}, [activeThreadId, enabled,", ");");
+  assert.match(deps, /pendingNewThreadId/);
 });
 
 test("a run whose pairing never settled is refused, not run on another chat's settings", () => {
