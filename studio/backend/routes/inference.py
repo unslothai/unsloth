@@ -29,6 +29,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse, Response
 from starlette.requests import ClientDisconnect
 from typing import Any, Callable, Collection, List, NamedTuple, Optional, TYPE_CHECKING, Union
+import functools
 import json
 import httpx
 from loggers import get_logger
@@ -2897,21 +2898,21 @@ def _detect_safetensors_features(
     return flags
 
 
-def _generation_prompt_opens_think(template: Optional[str]) -> bool:
-    """True when rendering the template's generation prompt ends INSIDE an unclosed ``<think>``.
+_PROBE_MESSAGES = ({"role": "user", "content": "hi"},)
 
-    Distinguishes templates that PREFILL an open ``<think>`` in the assistant generation
-    prompt (DeepSeek-R1, QwQ, Qwen3-Thinking) -- where the model emits only the closing
-    ``</think>`` and the extractor must start in reasoning mode -- from templates that merely
-    render PAST assistant ``<think>...</think>`` history while leaving the generation prompt
-    open with no ``<think>`` (e.g. Kimi-K2-Thinking), where the model self-emits its own block
-    and the extractor must start in normal mode. Renders a single-user-message probe with the
-    same sandbox transformers uses; on any failure returns True, preserving the historical
-    always-on prefill for templates that cannot be rendered here.
+
+@functools.lru_cache(maxsize = 64)
+def _compile_generation_prompt_probe(template: str):
+    """Compile the probe template, or None when it cannot be compiled.
+
+    Compilation is the expensive half (~60ms on a production-sized template) and rendering is
+    not (~0.1ms). Memoising this half rather than the rendered string keeps that saving while
+    letting the messages vary per request, which a template that decides its ``<think>`` shape
+    from the conversation requires.
     """
-    if not template:
-        return False
     try:
+        from datetime import datetime
+
         from jinja2.sandbox import ImmutableSandboxedEnvironment
 
         def _raise_exception(message: str):
@@ -2924,17 +2925,85 @@ def _generation_prompt_opens_think(template: Optional[str]) -> bool:
         )
         env.filters["tojson"] = lambda value, **kwargs: json.dumps(value, ensure_ascii = False)
         env.globals["raise_exception"] = _raise_exception
-        rendered = env.from_string(template).render(
-            messages = [{"role": "user", "content": "hi"}],
-            add_generation_prompt = True,
+        # transformers exposes this to every template; without it a date-stamping one raises
+        # here and the failure reads as a prefill.
+        env.globals["strftime_now"] = lambda fmt: datetime.now().strftime(fmt)
+        return env.from_string(template)
+    except Exception:
+        return None
+
+
+def _render_generation_prompt_probe(
+    template: str,
+    enable_thinking: Optional[bool],
+    reasoning_effort: Optional[str],
+    messages: Optional[Collection] = None,
+    generation_prompt: bool = True,
+) -> Optional[str]:
+    """Render the probe generation prompt, or None when it cannot be rendered."""
+    reasoning_kwargs: dict = {}
+    if enable_thinking is not None:
+        reasoning_kwargs["enable_thinking"] = enable_thinking
+    if reasoning_effort is not None:
+        reasoning_kwargs["reasoning_effort"] = reasoning_effort
+    try:
+        # Inside the guard: an unhashable template would raise out of the memo key otherwise.
+        compiled = _compile_generation_prompt_probe(template)
+        if compiled is None:
+            return None
+        return compiled.render(
+            messages = list(messages if messages is not None else _PROBE_MESSAGES),
+            add_generation_prompt = generation_prompt,
             bos_token = "",
             eos_token = "",
+            **reasoning_kwargs,
         )
     except Exception:
+        return None
+
+
+def _generation_prompt_opens_think(
+    template: Optional[str],
+    enable_thinking: Optional[bool] = None,
+    reasoning_effort: Optional[str] = None,
+    messages: Optional[Collection] = None,
+) -> bool:
+    """True when rendering the template's generation prompt ends INSIDE an unclosed ``<think>``.
+
+    Separates templates that prefill an open ``<think>``, where the model emits only the closing
+    tag, from those that leave the prompt open and let the model emit its own block.
+
+    Three things keep this reading what generation reads. A ``None`` kwarg is omitted exactly as
+    ``apply_chat_template_for_generation`` omits it, so a template states its own default. The
+    request's messages are rendered when given, since a template may take the shape from them
+    (Nemotron opens the block only once a message says ``/think``). And only the assistant
+    prefix is weighed, diffed against the render without a generation prompt, so a user who
+    merely types ``<think>`` cannot become the last opener.
+
+    Both fallbacks stay conservative: a history the template refuses drops back to the
+    single-user probe rather than to True, and a template the sandbox cannot render at all
+    (``{% generation %}`` is not in its extension set) returns True, the historical always-on
+    prefill.
+    """
+    if not template:
+        return False
+    if not isinstance(template, str):
         return True
-    # ``<think>`` is not a substring of ``</think>`` (the ``/`` breaks it), so the last open
-    # tag sitting after the last close tag means the prompt ends inside an open block.
-    return rendered.rfind("<think>") > rendered.rfind("</think>")
+    args = (template, enable_thinking, reasoning_effort)
+    rendered = _render_generation_prompt_probe(*args, messages)
+    if rendered is None and messages is not None:
+        messages = None
+        rendered = _render_generation_prompt_probe(*args)
+    if rendered is None:
+        return True
+    # Everything the two renders share is history. A template that ignores the flag yields an
+    # empty prefix and prefills nothing, right for one that opens no block.
+    body = _render_generation_prompt_probe(*args, messages, generation_prompt = False)
+    prefix = (
+        rendered[len(os.path.commonprefix((rendered, body))) :] if body is not None else rendered
+    )
+    # ``<think>`` is not a substring of ``</think>``, so a later open tag means it stays open.
+    return prefix.rfind("<think>") > prefix.rfind("</think>")
 
 
 def _sf_reasoning_prefill_mode(
@@ -2942,15 +3011,16 @@ def _sf_reasoning_prefill_mode(
     enable_thinking: Optional[bool],
     template: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
+    messages: Optional[Collection] = None,
 ) -> bool:
     """Whether a safetensors/MLX generation begins INSIDE an unclosed ``<think>``.
 
-    ``enable_thinking`` templates (Qwen3/GLM) prefill an open ``<think>`` so the model
-    emits only the closing ``</think>``, and the extractor must start in reasoning mode.
     Gated on the STANDARD ``<think>``/``</think>`` markers: bespoke channels (gemma's
-    ``<|think|>``) never emit ``</think>`` and would swallow the answer, so they and
-    gpt-oss and thinking-disabled requests return False. ``enable_thinking`` None
-    defaults thinking ON, so a plain request still prefills.
+    ``<|think|>``) never emit ``</think>`` and would swallow the answer, so they, gpt-oss and
+    thinking-disabled requests return False. Past the gates the generation prompt's shape
+    decides rather than the capability flags, since a template free to state its own default
+    states it, and ``messages`` is rendered with it because a template may read the shape
+    off them.
     """
     if features.get("reasoning_style") not in ("enable_thinking", "enable_thinking_effort"):
         return False
@@ -2966,7 +3036,7 @@ def _sf_reasoning_prefill_mode(
         # template, including markup that only renders PAST assistant history (Kimi-K2-Thinking)
         # while the generation prompt opens none. Prefill only when the generation prompt opens
         # one, else the extractor captures a normal answer as reasoning_content and returns blank.
-        return _generation_prompt_opens_think(tpl)
+        return _generation_prompt_opens_think(tpl, messages = messages)
     if not features.get("supports_reasoning"):
         return False
     if enable_thinking is False:
@@ -2975,7 +3045,7 @@ def _sf_reasoning_prefill_mode(
     # so we don't prefill and capture the answer. Plain enable_thinking models ignore effort.
     if features.get("reasoning_style") == "enable_thinking_effort" and reasoning_effort == "none":
         return False
-    return True
+    return _generation_prompt_opens_think(tpl, enable_thinking, reasoning_effort, messages)
 
 
 def _effective_enable_tools(payload) -> Optional[bool]:
@@ -17206,6 +17276,29 @@ async def openai_chat_completions(
     if not _sf_template_tools and _sf_server_tool_intent:
         _sf_template_tools = ({},)
 
+    # What the prefill probe renders, built to match what generation renders: a template may
+    # read the ``<think>`` shape off the conversation (Nemotron opens it only once a message
+    # says ``/think``), so any difference here is a wrong verdict. Hence the normalized
+    # messages rather than the payload (content parts flattened, system lifted, as
+    # mlx_inference sees them) and the same sweep the renderer applies, which turns a user's
+    # ``<think>`` into ``< think>``. Markup profile is not in scope, so this takes the
+    # renderer's own default rewrite.
+    try:
+        from core.inference.chat_template_helpers import (
+            neutralize_control_markup_in_messages as _sf_sweep,
+        )
+        _sf_probe_messages = (
+            jsonable_encoder(
+                _sf_sweep(
+                    ([{"role": "system", "content": system_prompt}] if system_prompt else [])
+                    + chat_messages
+                )
+            )
+            or None
+        )
+    except Exception:
+        _sf_probe_messages = None
+
     def _sf_response_protocol(tools = None):
         features = _detect_safetensors_features(backend, _sf_tpl, tools = tools)
         parse_think = bool(
@@ -17216,6 +17309,7 @@ async def openai_chat_completions(
             payload.enable_thinking,
             _sf_tpl,
             reasoning_effort = payload.reasoning_effort,
+            messages = _sf_probe_messages,
         )
         return features, parse_think, reasoning_prefilled
 
