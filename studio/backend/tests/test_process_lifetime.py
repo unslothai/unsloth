@@ -427,7 +427,7 @@ def test_windows_job_install_degrades_on_assign_failure(monkeypatch):
 # Daemonic workers spawning children (#9094)
 
 
-_NESTED_CHILD_SCRIPT = '''
+_NESTED_CHILD_SCRIPT = """
 import multiprocessing as mp
 import sys
 
@@ -466,7 +466,7 @@ if __name__ == "__main__":
     print("parent-sees-daemon", worker.daemon, flush = True)
     print("worker", queue.get(timeout = 60), flush = True)
     worker.join(30)
-'''
+"""
 
 
 def _run_nested_child_arm(tmp_path, arm: str) -> tuple[str, bool]:
@@ -508,7 +508,5 @@ def test_allow_child_processes_clears_only_the_daemon_bit(monkeypatch):
 
 
 def test_allow_child_processes_survives_a_missing_config(monkeypatch):
-    monkeypatch.setattr(
-        multiprocessing.process, "current_process", lambda: type("P", (), {})()
-    )
+    monkeypatch.setattr(multiprocessing.process, "current_process", lambda: type("P", (), {})())
     pl.allow_child_processes()
