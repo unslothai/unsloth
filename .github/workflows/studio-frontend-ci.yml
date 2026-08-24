@@ -413,9 +413,12 @@ jobs:
         working-directory: ${{ github.workspace }}
         env:
           SMOKE_PORT: '5197'
-          PW_ART_DIR: logs/playwright_overlay_rail
+          # playwright-<name>, with the hyphen: the artifact step below uploads
+          # logs/playwright-* and an underscore would leave this gate's screenshot and
+          # failure report on the runner, which is the run where they are the whole point.
+          PW_ART_DIR: logs/playwright-overlay-rail
         run: |
-          mkdir -p logs/playwright_overlay_rail
+          mkdir -p logs/playwright-overlay-rail
           python3 tests/studio/playwright_overlay_rail.py
 
       # A panel that cannot be fetched is new with lazy loading, and nothing above the

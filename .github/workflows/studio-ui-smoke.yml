@@ -604,9 +604,9 @@ jobs:
         if: matrix.shard == 'banner'
         env:
           SMOKE_PORT: '5197'
-          PW_ART_DIR: logs/playwright_overlay_rail
+          PW_ART_DIR: logs/playwright-overlay-rail
         run: |
-          mkdir -p logs/playwright_overlay_rail
+          mkdir -p logs/playwright-overlay-rail
           for engine in firefox webkit; do
             STUDIO_PLAYWRIGHT_BROWSER="$engine" \
               python tests/studio/playwright_overlay_rail.py
@@ -773,6 +773,7 @@ jobs:
             logs/playwright_thread_settings
             logs/playwright_fontscale
             logs/playwright_update_banner
+            logs/playwright-overlay-rail
             logs/playwright_image_footprint
             logs/playwright_image_cancel_retry
             logs/playwright_image_cancel_retry_cold
