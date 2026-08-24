@@ -118,6 +118,14 @@ def _import_target(node: ast.AST, alias: ast.alias) -> tuple[str, str]:
     return bound, f"from:{mod}:{alias.name}"
 
 
+def _is_literal_subscript(node: ast.Subscript) -> bool:
+    """True for ``Literal[...]`` / ``typing.Literal[...]``, whose string members are values."""
+    base = node.value
+    if isinstance(base, ast.Attribute):
+        return base.attr == "Literal"
+    return isinstance(base, ast.Name) and base.id == "Literal"
+
+
 class _Builder(ast.NodeVisitor):
     """Builds the scope tree + bindings, and records every (scope, Name-load)."""
 
@@ -135,6 +143,35 @@ class _Builder(ast.NodeVisitor):
         for n in ast.walk(node):
             if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load):
                 self.soft_uses.append((scope, n.id, n.lineno))
+        self._visit_forward_refs(node, scope)
+
+    def _visit_forward_refs(self, node, scope: Scope) -> None:
+        """Record names inside PEP 484 string annotations, e.g. ``Optional["Foo"]``.
+
+        Without this a `TYPE_CHECKING` import referenced only through a quoted annotation
+        parses as an `ast.Constant`, not an `ast.Name`, and reads as 'added but unused'.
+        Quoted forward refs are the prevailing style in this tree (a module without
+        `from __future__ import annotations` has no other option for a TYPE_CHECKING name),
+        so treating them as unused is a false BLOCKER on every new one.
+
+        `Literal[...]` members are skipped: those strings are values, not type names, and
+        counting them would silently excuse a genuinely unused import of the same name.
+        """
+        if node is None:
+            return
+        if isinstance(node, ast.Subscript) and _is_literal_subscript(node):
+            return
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            try:
+                parsed = ast.parse(node.value.strip(), mode = "eval")
+            except (SyntaxError, ValueError):
+                return  # not a type expression; nothing to credit
+            for n in ast.walk(parsed):
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load):
+                    self.soft_uses.append((scope, n.id, node.lineno))
+            return
+        for child in ast.iter_child_nodes(node):
+            self._visit_forward_refs(child, scope)
 
     # -- binding helpers --
     def _bind_targets(self, scope: Scope, target: ast.AST) -> None:

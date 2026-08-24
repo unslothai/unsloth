@@ -413,17 +413,27 @@ def _hidream_transformers_stub(monkeypatch, recorder):
 
 
 def test_hidream_te4_stays_dense_without_fp8(monkeypatch):
+    import core.inference.diffusion_precision as precision
     from core.inference.diffusion_hidream import hidream_te4_kwargs
 
     recorder: list = []
     _hidream_transformers_stub(monkeypatch, recorder)
+    cast: list = []
+    monkeypatch.setattr(precision, "_cast_fp8", lambda enc, tgt: cast.append(enc))
     out = hidream_te4_kwargs(
         None, None, fam = _fam(name = "hidream-i1"), te_quant_mode = None, target = _target()
     )
     assert out["tokenizer_4"] == "tok4"
     assert getattr(out["text_encoder_4"], "tag", "").startswith("dense")
-    # No cast attempted: mode None normalises to no TE quant.
+    # No cast attempted: mode None normalises to no TE quant. Asserted on the cast itself, not
+    # just on the dense load: the dense load happens on the fp8 path too (it is the fallback),
+    # so only an empty cast list distinguishes "gate off" from "gate ignored".
+    assert cast == []
     assert ("llama_from_pretrained", "unsloth/Meta-Llama-3.1-8B-Instruct") in recorder
+    # Exactly one load: a spurious cast attempt would trigger the fail-safe dense reload.
+    assert [r for r in recorder if r[0] == "llama_from_pretrained"] == [
+        ("llama_from_pretrained", "unsloth/Meta-Llama-3.1-8B-Instruct")
+    ]
 
 
 def test_hidream_te4_prefers_precast_checkpoint(monkeypatch):

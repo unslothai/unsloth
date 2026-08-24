@@ -35,6 +35,58 @@ from core.inference.openai_auto_download import preferred_quant
 from utils.api_errors import install_api_error_handlers
 
 
+def _video_family_stub(**overrides):
+    """A ``validate_load_request`` result shaped like the real ``VideoFamily``.
+
+    The load route reads family attributes directly -- ``base_repo`` through
+    ``resolve_video_base_repo``, ``modular_workflow`` on the H3 branch -- so a bare
+    ``object()`` here fails the route instead of the code under test.
+    """
+    fields = {"name": "z-image", "base_repo": None, "modular_workflow": None}
+    fields.update(overrides)
+    return types.SimpleNamespace(**fields)
+
+
+class _FakeVideoBackend:
+    """Stand-in for ``VideoBackend`` covering the surface ``routes.video`` calls unguarded.
+
+    The route reaches these by plain attribute access with no ``getattr`` fallback, and
+    deliberately so: a load that skipped ``preflight_load_repositories`` would reach the GPU
+    without reserving its companion repositories against a concurrent delete. That makes an
+    incomplete fake surface as an ``AttributeError`` (a 500) inside an unrelated assertion,
+    so every name below is checked against the real class at construction instead.
+    """
+
+    _ROUTE_SURFACE = (
+        "validate_load_request",
+        "begin_load",
+        "preflight_load_repositories",
+    )
+
+    def __init__(self, *, family = None, on_begin_load = None, begin_load_result = None):
+        from core.inference.video import VideoBackend
+
+        missing = [n for n in self._ROUTE_SURFACE if not callable(getattr(VideoBackend, n, None))]
+        assert not missing, (
+            f"VideoBackend no longer defines {missing}. routes.video calls that surface "
+            "unguarded, so fix the route or rename here -- do not just drop the name."
+        )
+        self._family = _video_family_stub() if family is None else family
+        self._on_begin_load = on_begin_load
+        self._begin_load_result = begin_load_result or {"loaded": False, "repo_id": None}
+
+    def validate_load_request(self, *a, **k):
+        return self._family
+
+    def preflight_load_repositories(self, *a, **k):
+        return ()
+
+    def begin_load(self, *a, **k):
+        if self._on_begin_load is not None:
+            self._on_begin_load(*a, **k)
+        return self._begin_load_result
+
+
 def _info(
     model_id,
     path,
@@ -1140,14 +1192,8 @@ def test_the_video_load_route_records_provenance_without_raising(monkeypatch):
     import core.inference.video as video_module
     from routes.video import router as video_router
 
-    class _Backend:
-        def validate_load_request(self, *a, **k):
-            return object()
-
-        def begin_load(self, *a, **k):
-            return {"loaded": False, "repo_id": None}
-
-    monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
+    backend = _FakeVideoBackend()
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: backend)
     monkeypatch.setattr(video_module, "resolve_video_model_kind", lambda *a, **k: "gguf")
     monkeypatch.setattr(video_module, "assert_video_precision_available", lambda *a, **k: None)
     monkeypatch.setattr("routes.video._guard_video_load_against_training", lambda: None)
@@ -2451,7 +2497,11 @@ def _capture_begin_load(monkeypatch, route):
     else:
         import core.inference.video as video_module
 
-        monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
+        video_backend = _FakeVideoBackend(
+            family = _video_family_stub(),
+            on_begin_load = lambda *a, **k: seen.append(k.get("local_files_only")),
+        )
+        monkeypatch.setattr(video_module, "get_video_backend", lambda: video_backend)
         monkeypatch.setattr(video_module, "resolve_video_model_kind", lambda *a, **k: "gguf")
         monkeypatch.setattr(video_module, "assert_video_precision_available", lambda *a, **k: None)
         monkeypatch.setattr("routes.video._guard_video_load_against_training", lambda: None)
