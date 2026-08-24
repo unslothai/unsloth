@@ -2368,3 +2368,20 @@ def test_an_embedding_only_request_still_counts_the_default_projections():
     # "all-linear" expands in the trainer too, but matches no counter here unnormalized.
     for targets in (["all-linear", "lm_head"], ["all-linear", "embed_tokens"]):
         assert compute_lora_params(tied, 128, targets) == projections + one_matrix, targets
+
+
+def test_qualified_embedding_names_are_counted_too():
+    """PEFT matches on the module suffix, so model.embed_tokens is the same matrix and
+    must not be estimated as if no embedding were trained."""
+    tied = replace(LLAMA_8B, tie_word_embeddings = True)
+    projections = compute_lora_params(tied, 128, list(DEFAULT_TARGET_MODULES))
+    one_matrix = tied.vocab_size * tied.hidden_size
+    for targets in (
+        ["model.embed_tokens"],
+        list(DEFAULT_TARGET_MODULES) + ["model.embed_tokens"],
+        list(DEFAULT_TARGET_MODULES) + ["language_model.lm_head"],
+        ["all-linear", "model.embed_tokens"],
+    ):
+        assert compute_lora_params(tied, 128, targets) == projections + one_matrix, targets
+    # A qualified projection is NOT an embedding and keeps its low-rank cost.
+    assert compute_lora_params(tied, 128, ["layers.0.q_proj"]) < one_matrix

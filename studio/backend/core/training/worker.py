@@ -4639,12 +4639,14 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             _send_status(event_queue, "Configuring LoRA for continued pretraining...")
             # Both go to modules_to_save: trained full-precision at
             # embedding_learning_rate, since LoRA on either never trains.
+            # By leaf: PEFT resolves model.embed_tokens to the same module.
             _embedding_modules = ("embed_tokens", "lm_head")
             _user_modules = config.get("target_modules") or []
-            _wants = [m for m in _embedding_modules if m in _user_modules]
+            _leaf = lambda m: str(m).rsplit(".", 1)[-1]  # noqa: E731
+            _wants = [m for m in _user_modules if _leaf(m) in _embedding_modules]
             # Either module in modules_to_save fills the embedding_learning_rate group.
             cpt_trains_embeddings = bool(_wants)
-            cpt_target_modules = [m for m in _user_modules if m not in _embedding_modules]
+            cpt_target_modules = [m for m in _user_modules if _leaf(m) not in _embedding_modules]
             if not cpt_target_modules:
                 cpt_target_modules = [
                     "q_proj",
