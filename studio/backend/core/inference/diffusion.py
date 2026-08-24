@@ -5747,6 +5747,7 @@ class DiffusionBackend:
                         and now - gen.preview_at >= diffusion_preview.MIN_INTERVAL_S
                     ):
                         gen.preview_at = now
+                        started = time.monotonic()
                         rendered = diffusion_preview.render(
                             callback_kwargs.get("latents"),
                             preview_vae,
@@ -5757,6 +5758,11 @@ class DiffusionBackend:
                         )
                         if rendered is not None:
                             gen.preview = rendered
+                        # A preview is overhead, not denoising, so its cost is pushed out of
+                        # the window the ETA averages over. Without this the one-off
+                        # projection fit on the first frame lands inside the sample and the
+                        # next callback reads it as a step, inflating the estimate.
+                        gen.first_step_at += time.monotonic() - started
                     return callback_kwargs
 
                 try:

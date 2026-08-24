@@ -430,3 +430,23 @@ test("the page tracks whether the run produced a record, and mid-run browsing", 
     "a run that ends owning nothing must adopt its first selection, not release on it",
   );
 });
+
+test("a generation whose POST response was lost still gets its handoff", () => {
+  // The secure-mode tunnel caps the response near 100s, so a long run can succeed with its
+  // POST lost. settleLostGeneration then proves the record exists off the gallery. That path
+  // has an image coming just like a normal success, so it must mark the run as produced --
+  // otherwise the release rule treats it as cancelled and drops the frame mid-handoff.
+  const page = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/images/images-page.tsx", import.meta.url),
+    ),
+    "utf8",
+  );
+  const recovery = page.indexOf("await settleLostGeneration(");
+  assert.ok(recovery > 0, "the lost-response recovery branch moved");
+  assert.match(
+    page.slice(recovery, recovery + 900),
+    /setRunProducedImage\(true\)/,
+    "a recovered generation must count as having produced its image",
+  );
+});

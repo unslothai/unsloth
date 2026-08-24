@@ -175,7 +175,9 @@ def test_the_projection_solve_survives_a_backend_without_lstsq():
     NotImplementedError, and None is cached -- so every Mac generation silently got no
     preview after paying for the decode. Solving on CPU is what makes this pass."""
     if not torch.backends.mps.is_available():
-        pytest.skip("no MPS backend on this host")
+        # Hides no changed-path failure: the bug IS a missing MPS kernel, so only a host
+        # with MPS reproduces it, and every other test here covers the same solve on CPU.
+        pytest.skip(reason = "no MPS backend on this host, which is what this test needs")
     vae = _LinearVae().to("mps")
     fitted = preview.projection(vae, torch)
     assert fitted is not None, "the projection was not fitted on an MPS VAE"
@@ -212,3 +214,57 @@ def test_a_batchnorm_normalized_vae_renders_nothing():
     # FLUX.2's statistics are over patchified latents, whose channel count no longer
     # matches the config: no preview beats a miscoloured one.
     assert preview.render(torch.randn(1, 4, 16, 16), _BatchNormVae(), 512, 512, torch) is None
+
+
+class _QwenShapedVae(_LinearVae):
+    """Qwen-Image / Krea-2 shape: channels named z_dim, and a 5-D [B,C,T,H,W] decoder."""
+
+    def __init__(self, channels = 4):
+        super().__init__(channels = channels)
+        del self.config.latent_channels
+        del self.config.scaling_factor
+        del self.config.shift_factor
+        self.config.z_dim = channels
+        self.config.latents_mean = [0.10, -0.20, 0.30, -0.40][:channels]
+        self.config.latents_std = [2.0, 0.5, 1.5, 0.8][:channels]
+
+    def decode(self, latents):
+        if latents.ndim != 5:
+            raise ValueError("this decoder takes [B, C, T, H, W]")
+        out = super().decode(latents[:, :, 0])
+        return type("DecoderOutput", (), {"sample": out.sample.unsqueeze(2)})()
+
+
+class _UpcastVae(_LinearVae):
+    """An SDXL-shaped VAE: loaded in float16, but decoded in float32 by the pipeline."""
+
+    def __init__(self):
+        super().__init__()
+        self.config.force_upcast = True
+        self.half()
+
+    def decode(self, latents):
+        if latents.dtype == torch.float16:
+            raise RuntimeError("decoding this VAE in float16 overflows")
+        return super().decode(latents)
+
+
+def test_a_vae_that_names_its_channels_z_dim_still_previews():
+    # latent_channels is absent on these configs, so reading only that name left channels at
+    # 0 and projection() cached None -- Qwen-Image and Krea-2 never previewed at all.
+    vae = _QwenShapedVae()
+    assert preview._latent_channels(vae) == 4
+    assert preview.projection(vae, torch) is not None
+
+
+def test_a_five_dimensional_decoder_renders_a_jpeg():
+    vae = _QwenShapedVae()
+    url = preview.render(torch.randn(1, 4, 32, 32), vae, 512, 512, torch)
+    assert url is not None and _decode_data_url(url).startswith(b"\xff\xd8")
+
+
+def test_a_force_upcast_vae_is_fitted_in_float32_and_left_as_it_was():
+    vae = _UpcastVae()
+    assert preview.projection(vae, torch) is not None
+    # The fit must not leave the VAE upcast behind it.
+    assert next(vae.parameters()).dtype == torch.float16

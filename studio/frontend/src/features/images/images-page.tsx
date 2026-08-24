@@ -3422,6 +3422,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           await loadGallery();
           // loadGallery refreshes the module cache synchronously, so this run's records are folded in before the next run.
           galleryCache.images.forEach((image) => knownIds.add(image.id));
+          // settleLostGeneration proved this run's record exists, so it has a handoff
+          // coming just like a normal success: the held frame must survive to meet it.
+          setRunProducedImage(true);
           setGenDone(i + 1);
           continue;
         }

@@ -46,11 +46,16 @@ def _decoded(vae: Any, latents: Any) -> Any:
 
 
 def _latent_channels(vae: Any) -> int:
-    value = getattr(getattr(vae, "config", None), "latent_channels", None)
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
+    config = getattr(vae, "config", None)
+    # Qwen-Image and Krea-2 carry no latent_channels at all; theirs is z_dim. Reading only
+    # the first name left channels at 0, so projection() cached None and those families
+    # never previewed -- the per-channel denormalization below was never even reached.
+    for name in ("latent_channels", "z_dim"):
+        try:
+            return int(getattr(config, name, None))
+        except (TypeError, ValueError):
+            continue
+    return 0
 
 
 def _channel_stats(vae: Any, channels: int, torch: Any) -> Optional[tuple[Any, Any]]:
@@ -89,7 +94,12 @@ def _to_vae_space(grid: Any, vae: Any, channels: int, torch: Any) -> Optional[An
 def _fit(vae: Any, channels: int, device: Any, dtype: Any, torch: Any) -> Optional[Any]:
     noise = torch.randn(_FIT_SAMPLES, channels, _FIT_GRID, _FIT_GRID, device = device, dtype = dtype)
     with torch.no_grad():
-        decoded = _decoded(vae, noise)
+        try:
+            decoded = _decoded(vae, noise)
+        except Exception:  # noqa: BLE001 -- 5-D decoders want an explicit frame axis
+            decoded = _decoded(vae, noise.unsqueeze(2))
+    if decoded.ndim == 5:
+        decoded = decoded[:, :, 0]
     if decoded.ndim != 4 or decoded.shape[1] != 3:
         return None
     target = torch.nn.functional.adaptive_avg_pool2d(decoded.float(), _FIT_GRID)
@@ -118,7 +128,26 @@ def projection(
         channels = _latent_channels(vae)
         if channels:
             parameter = next(vae.parameters())
-            fitted = _fit(vae, channels, parameter.device, parameter.dtype, torch)
+            # A force_upcast VAE is one the pipeline itself decodes in float32; fitting it at
+            # the loaded float16 overflows on some cards, and the cached None then disabled
+            # previews for the whole load even though the final decode would have worked.
+            # Read as a value, not through the Parameter: vae.to() mutates it in place, so
+            # restoring from parameter.dtype afterwards would restore float32 onto float32.
+            original_dtype = parameter.dtype
+            device = parameter.device
+            upcast = (
+                bool(getattr(getattr(vae, "config", None), "force_upcast", False))
+                and original_dtype != torch.float32
+            )
+            if upcast:
+                vae.to(dtype = torch.float32)
+            try:
+                fitted = _fit(
+                    vae, channels, device, torch.float32 if upcast else original_dtype, torch
+                )
+            finally:
+                if upcast:
+                    vae.to(dtype = original_dtype)
     except Exception as exc:  # noqa: BLE001 -- a preview must never break a generation
         if logger is not None:
             logger.info("diffusion.preview: projection unavailable (%s)", exc)
