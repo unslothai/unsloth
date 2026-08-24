@@ -13,10 +13,17 @@ Only the caller went. ``http_get`` still takes ``resume_size``, still sends the 
 still does ``seek(0)`` + ``truncate()`` when a server answers 200 to a Range request, the case that
 would otherwise duplicate bytes. This restores the 1.17 caller and nothing else.
 
-Upstream removed it because the shared name corrupts the cache where ``flock(2)`` silently succeeds
-for every caller (Lustre, GPFS, some NFS): two processes append to one file. That is measured, not
-assumed -- :func:`can_restore_partials` takes the lock twice and needs the second refused. Where it
-cannot be shown, the stock writer stays and partials keep reporting as unresumable.
+Upstream removed it because the shared name corrupts the cache where ``flock(2)`` does not exclude
+every caller (Lustre, GPFS, some NFS): two processes append to one file. So exclusion has to be
+shown, and where it cannot be, the stock writer stays and partials keep reporting as unresumable.
+
+Two things have to hold, because a probe run here can only speak for this host. The cache must be
+on a local filesystem: NFS mounted ``-o local_lock=flock`` keeps flock locks client-local, so two
+hosts each take "the" lock and neither sees ``EWOULDBLOCK``, and no test on one of them can notice.
+And ``flock`` must actually exclude a second holder here, which :func:`_lock_is_honoured_at`
+measures by taking the lock twice. Only ``EWOULDBLOCK``/``EAGAIN`` counts as exclusion: a
+filesystem with no locking answers ``ENOLCK`` or ``EOPNOTSUPP``, and reading that as "refused"
+would enable the shared writer on precisely the mounts that cannot support it.
 
 The other corruption route, appending to a sparse XET or parallel-Range partial, belongs to the
 transport markers in :mod:`hub.utils.download_registry`. They are bypassed on >= 1.18 only because
@@ -25,7 +32,9 @@ no resumer exists, so restoring one brings them back into force.
 
 from __future__ import annotations
 
+import errno
 import os
+import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
@@ -39,10 +48,17 @@ LAST_STOCK_RESUMABLE_VERSION = (1, 17)
 # The newest major whose internals this has been read against. A 2.x is not assumed to look alike.
 MAX_SUPPORTED_MAJOR = 1
 
-# Per-process: two Studios probing at once must not take each other's lock and read a working
-# filesystem as broken. Both opens below are ours, and flock still refuses the second because
-# separate open() calls make separate open file descriptions.
-_PROBE_NAME = f".unsloth-flock-probe.{os.getpid()}"
+# What flock reports when another holder has the lock, and nothing else. EACCES belongs to fcntl,
+# not flock; ENOLCK and EOPNOTSUPP mean this filesystem cannot lock at all.
+_CONTENDED = frozenset({errno.EWOULDBLOCK, errno.EAGAIN})
+
+# Mounts whose locking, if any, is a matter between clients rather than something a probe on one
+# host can settle. Anything not listed is judged local.
+_NETWORK_FSTYPES = frozenset({
+    "9p", "afpfs", "afs", "beegfs", "ceph", "cifs", "coda", "davfs", "davfs2", "fuse.cephfs",
+    "fuse.glusterfs", "fuse.sshfs", "gfs2", "glusterfs", "gpfs", "lustre", "ncpfs", "nfs", "nfs3",
+    "nfs4", "panfs", "smb", "smb2", "smb3", "smbfs", "webdav",
+})
 
 
 def _hub_version() -> tuple[int, ...]:
@@ -94,52 +110,113 @@ def _probe_dir() -> Optional[Path]:
         return None
 
 
+def _mounts() -> list[tuple[str, str]]:
+    """``(mountpoint, fstype)`` for every mount, via psutil so macOS and Windows answer too."""
+    import psutil
+
+    return [(part.mountpoint, part.fstype or "") for part in psutil.disk_partitions(all = True)]
+
+
+@lru_cache(maxsize = 8)
+def _filesystem_is_local(directory: str) -> bool:
+    """Whether *directory* sits on a filesystem whose locking this host can speak for.
+
+    A probe here cannot see another client, and NFS mounted ``-o local_lock=flock`` keeps flock
+    locks client-local, so two hosts would each take the lock and neither would be refused. A mount
+    we cannot identify counts as not local: this decides whether to re-enable a shared writer.
+    """
+    path = Path(directory).resolve()
+    if str(path).startswith("\\\\") or str(path).startswith("//"):
+        return False  # UNC share
+    try:
+        table = _mounts()
+    except Exception as exc:  # noqa: BLE001 - an unidentifiable mount is not a local one
+        logger.debug("resumable partials: could not read the mount table (%s)", exc)
+        return False
+    best, fstype = "", None
+    for mount, kind in table:
+        if str(path) == mount or str(path).startswith(mount.rstrip(os.sep) + os.sep):
+            if len(mount) >= len(best):
+                best, fstype = mount, kind.lower()
+    if fstype is None:
+        logger.debug("resumable partials: no mount found for %s", path)
+        return False
+    if fstype in _NETWORK_FSTYPES:
+        logger.info(
+            "Download partials stay unresumable: %s is on %s, where locking is between clients "
+            "and cannot be established from this host.", path, fstype,
+        )
+        return False
+    return True
+
+
 # Keyed on the directory, so moving the cache re-probes instead of reusing the old verdict.
 @lru_cache(maxsize = 8)
 def _lock_is_honoured_at(directory: str) -> bool:
     """Whether ``flock`` under *directory* actually excludes a second holder.
 
-    The hazard 1.18 removed the shared partial for, so it is tested rather than assumed. Anything
-    but a refused second lock, a failed probe included, leaves the stock writer in place.
+    Take the lock twice and require the second to be refused, since separate ``open()`` calls make
+    separate open file descriptions and flock judges them independently. Only contention counts as
+    a refusal; anything else, a failed probe included, leaves the stock writer in place.
     """
     import fcntl
 
-    probe = Path(directory) / _PROBE_NAME
+    # A random, exclusively created file: the cache can be shared, and a predictable name there
+    # lets another user pre-place a symlink that an unguarded open would follow and truncate.
     try:
-        # Binary: this file is a lock, never text, so it has no encoding to get wrong.
-        with open(probe, "wb") as first:
-            fcntl.flock(first, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            with open(probe, "wb") as second:
-                try:
-                    fcntl.flock(second, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except OSError:
-                    return True
-                logger.info(
-                    "Download partials stay unresumable: %s grants the same lock twice, so a "
-                    "shared partial could be written by two processes at once.",
-                    directory,
-                )
-                return False
+        handle, name = tempfile.mkstemp(dir = directory, prefix = ".unsloth-flock-probe.")
+    except Exception as exc:  # noqa: BLE001 - nowhere to probe is not a working lock
+        logger.debug("resumable partials: could not create the probe (%s)", exc)
+        return False
+    second = None
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        second = os.open(name, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            fcntl.flock(second, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in _CONTENDED:
+                return True
+            # ENOLCK / EOPNOTSUPP / EINTR: not a refusal, so nothing has been shown.
+            logger.info(
+                "Download partials stay unresumable: locking %s answered %s rather than "
+                "contention.", directory, errno.errorcode.get(exc.errno, exc.errno),
+            )
+            return False
+        logger.info(
+            "Download partials stay unresumable: %s grants the same lock twice, so a shared "
+            "partial could be written by two processes at once.", directory,
+        )
+        return False
     except Exception as exc:  # noqa: BLE001 - same, an unprovable lock is not a working one
         logger.debug("resumable partials: lock probe failed (%s)", exc)
         return False
     finally:
+        for fd in (second, handle):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
         try:
-            probe.unlink(missing_ok = True)
+            os.unlink(name)
         except OSError:
             pass
 
 
-def _lock_is_honoured() -> bool:
-    """The probe for the cache in force right now."""
+def _exclusion_is_provable() -> bool:
+    """Whether a shared partial under the cache in force can only have one writer."""
     try:
         import fcntl  # noqa: F401
     except ImportError:
         # No fcntl on Windows, where huggingface_hub locks via msvcrt: mandatory rather than
-        # advisory, so the silent sharing this probe looks for cannot happen.
-        return os.name == "nt"
+        # advisory. A network share still cannot be spoken for, which the locality check catches.
+        directory = _probe_dir()
+        return os.name == "nt" and directory is not None and _filesystem_is_local(str(directory))
     directory = _probe_dir()
-    return False if directory is None else _lock_is_honoured_at(str(directory))
+    if directory is None:
+        return False
+    return _filesystem_is_local(str(directory)) and _lock_is_honoured_at(str(directory))
 
 
 def _hub_is_patchable() -> bool:
@@ -161,7 +238,7 @@ def can_restore_partials() -> bool:
     version = _hub_version()
     if not version or version <= LAST_STOCK_RESUMABLE_VERSION or version[0] > MAX_SUPPORTED_MAJOR:
         return False
-    return _hub_is_patchable() and _lock_is_honoured()
+    return _hub_is_patchable() and _exclusion_is_provable()
 
 
 def restore_resumable_partials() -> bool:
@@ -238,10 +315,11 @@ def restore_resumable_partials() -> bool:
 
 def invalidate_probe_cache() -> None:
     """Forget every probed filesystem. Called when the cache location changes."""
-    # getattr: a test that replaced the probe outright has no cache to clear.
-    clear = getattr(_lock_is_honoured_at, "cache_clear", None)
-    if clear is not None:
-        clear()
+    # getattr: a test that replaced either probe outright has no cache to clear.
+    for probe in (_lock_is_honoured_at, _filesystem_is_local):
+        clear = getattr(probe, "cache_clear", None)
+        if clear is not None:
+            clear()
 
 
 def reset_probe_cache_for_tests() -> None:

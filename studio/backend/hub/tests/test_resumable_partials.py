@@ -59,7 +59,7 @@ def _fake_file_download(monkeypatch, *, xet_available = False):
 
     monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
     monkeypatch.setitem(sys.modules, "huggingface_hub.file_download", module)
-    monkeypatch.setattr(rp, "_lock_is_honoured", lambda: True)
+    monkeypatch.setattr(rp, "_exclusion_is_provable", lambda: True)
     return module, calls
 
 
@@ -86,7 +86,7 @@ def test_only_the_versions_that_need_it_and_that_it_has_been_read_against(
 
 def test_a_filesystem_that_grants_the_lock_twice_keeps_the_stock_writer(monkeypatch):
     _fake_file_download(monkeypatch)
-    monkeypatch.setattr(rp, "_lock_is_honoured", lambda: False)
+    monkeypatch.setattr(rp, "_exclusion_is_provable", lambda: False)
     assert rp.can_restore_partials() is False
     assert rp.restore_resumable_partials() is False
 
@@ -100,7 +100,8 @@ def test_a_hub_missing_the_pieces_is_left_alone(monkeypatch):
 def test_the_lock_probe_reports_a_working_lock(tmp_path, monkeypatch):
     """The real probe, on the real filesystem the tests run on."""
     monkeypatch.setattr(rp, "_probe_dir", lambda: tmp_path)
-    assert rp._lock_is_honoured() is True
+    monkeypatch.setattr(rp, "_filesystem_is_local", lambda _d: True)
+    assert rp._exclusion_is_provable() is True
     assert not list(tmp_path.iterdir()), "the probe left its file behind"
 
 
@@ -123,17 +124,113 @@ def test_the_probe_follows_the_cache_studio_is_using_now(tmp_path, monkeypatch):
 def test_moving_the_cache_re_probes_rather_than_reusing_the_old_verdict(tmp_path, monkeypatch):
     """Two roots can sit on filesystems that disagree about flock, so the verdict is per root."""
     probed: list[str] = []
+    monkeypatch.setattr(rp, "_filesystem_is_local", lambda _d: True)
     monkeypatch.setattr(
         rp, "_lock_is_honoured_at", lambda directory: probed.append(directory) or True
     )
 
     first, second = tmp_path / "one", tmp_path / "two"
     monkeypatch.setattr(rp, "_probe_dir", lambda: first)
-    rp._lock_is_honoured()
+    rp._exclusion_is_provable()
     monkeypatch.setattr(rp, "_probe_dir", lambda: second)
-    rp._lock_is_honoured()
+    rp._exclusion_is_provable()
 
     assert probed == [str(first), str(second)]
+
+
+def test_a_network_cache_keeps_the_stock_writer(tmp_path, monkeypatch):
+    """A probe on this host cannot speak for another client.
+
+    NFS mounted -o local_lock=flock keeps flock locks client-local, so two hosts each take the
+    lock and neither is refused. Nothing measurable here would notice, so the mount type decides.
+    """
+    for fstype in ("nfs4", "lustre", "gpfs", "cifs"):
+        rp.invalidate_probe_cache()
+        monkeypatch.setattr(
+            rp, "_mounts", lambda: [(str(tmp_path), fstype)], raising = False
+        )
+        assert rp._filesystem_is_local(str(tmp_path)) is False, fstype
+
+
+def test_a_network_cache_stands_down_even_where_the_lock_probe_would_pass(tmp_path, monkeypatch):
+    """Locality gates the probe, not the other way round: on NFS the probe passes and lies."""
+    monkeypatch.setattr(rp, "_probe_dir", lambda: tmp_path)
+    monkeypatch.setattr(rp, "_lock_is_honoured_at", lambda _d: True)
+    monkeypatch.setattr(rp, "_filesystem_is_local", lambda _d: False)
+    assert rp._exclusion_is_provable() is False
+
+
+def test_an_unidentifiable_mount_is_not_treated_as_local(tmp_path, monkeypatch):
+    """Failing closed: this decides whether to re-enable a shared writer."""
+    rp.invalidate_probe_cache()
+    monkeypatch.setattr(rp, "_mounts", lambda: [], raising = False)
+    assert rp._filesystem_is_local(str(tmp_path)) is False
+
+
+def test_a_local_disk_is_local(tmp_path):
+    """The filesystem the tests actually run on."""
+    rp.invalidate_probe_cache()
+    assert rp._filesystem_is_local(str(tmp_path)) is True
+
+
+def test_only_contention_counts_as_a_working_lock(tmp_path, monkeypatch):
+    """A filesystem with no locking answers ENOLCK or EOPNOTSUPP.
+
+    Reading either as "refused" would enable the shared writer on exactly the mounts that cannot
+    support it, which is the opposite of what the probe is for. flock never answers EACCES; that
+    is fcntl's.
+    """
+    import errno as errno_mod
+
+    calls = {"n": 0}
+
+    def flock(fd, op):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None
+        raise OSError(flock.errno_value, "nope")
+
+    fake = types.ModuleType("fcntl")
+    fake.flock = flock
+    fake.LOCK_EX, fake.LOCK_NB = 2, 4
+    monkeypatch.setitem(sys.modules, "fcntl", fake)
+
+    for value, expected in (
+        (errno_mod.EWOULDBLOCK, True),
+        (errno_mod.EAGAIN, True),
+        (errno_mod.ENOLCK, False),
+        (errno_mod.EOPNOTSUPP, False),
+        (errno_mod.EINTR, False),
+        (errno_mod.EACCES, False),
+    ):
+        rp.invalidate_probe_cache()
+        calls["n"] = 0
+        flock.errno_value = value
+        assert rp._lock_is_honoured_at(str(tmp_path)) is expected, errno_mod.errorcode[value]
+
+
+def test_the_probe_does_not_follow_a_planted_symlink(tmp_path):
+    """A shared cache is writable by others, and a predictable probe name is a truncation gadget.
+
+    Plants a symlink at the name a pid-based scheme would pick, pointing at a file the Studio
+    account owns. Opening that path "wb" follows the link and empties the target, so the probe has
+    to use a name nobody can guess and create it exclusively.
+    """
+    import os as os_mod
+
+    rp.invalidate_probe_cache()
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"important")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    planted = cache / (".unsloth-flock-probe.%d" % os_mod.getpid())
+    planted.symlink_to(victim)
+
+    assert rp._lock_is_honoured_at(str(cache)) is True
+    assert victim.read_bytes() == b"important", "the probe followed the symlink and truncated it"
+    assert planted.is_symlink(), "the probe wrote through the planted name"
+    planted.unlink()
+    assert not list(cache.iterdir()), "the probe left its own file behind"
 
 
 def test_the_verdict_is_cached_per_directory(tmp_path):
