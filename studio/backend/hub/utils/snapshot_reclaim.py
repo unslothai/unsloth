@@ -21,6 +21,7 @@ from filelock import FileLock
 from hub.utils.paths import is_redirect_stat
 from utils.hf_cache_settings import get_hf_cache_paths
 from utils.hf_repo_ids import is_valid_repo_id
+from utils.paths.path_utils import is_appledouble_metadata
 
 
 @dataclass(frozen = True)
@@ -57,6 +58,9 @@ _MAIN_REF_LOCK_TIMEOUT_SECONDS = 60
 _MAIN_REF_CHANGE_RETRY_DELAYS_SECONDS = (0.05, 0.1)
 _REFS_STAGING_DIRECTORY_NAME = ".unsloth-refs-tmp"
 _REFS_STAGING_RETRY_DELAYS_SECONDS = (0.01, 0.05, 0.1)
+_OS_METADATA_REF_NAMES = frozenset({".ds_store", "thumbs.db", "desktop.ini"})
+_COMMIT_REVISION_LENGTH = 40
+_COMMIT_REVISION_CHARACTERS = frozenset("0123456789abcdefABCDEF")
 _IS_WINDOWS = os.name == "nt"
 _IS_LINUX = sys.platform.startswith("linux")
 _IS_DARWIN = sys.platform == "darwin"
@@ -444,6 +448,38 @@ def _read_stable_ref_bytes(
     return payload
 
 
+def _is_os_metadata_dropping(path: Path) -> bool:
+    """True for a file an OS file browser dropped into ``refs``, which is not a ref.
+
+    Finder writes ``.DS_Store`` into every directory a user opens -- a real one
+    is kilobytes long, so it trips the ref size guard and fails the whole scan --
+    Explorer writes ``Thumbs.db`` and ``desktop.ini``, and iCloud replaces an
+    evicted file with a ``.icloud`` placeholder. None of them is a ref, so both
+    counting one as a revision and refusing to reclaim over one are wrong.
+
+    ``._`` companions are settled by their magic bytes, never by the prefix
+    alone, because a ref could legitimately be named that way on a volume where
+    macOS has never written a companion.
+    """
+    lowered = path.name.casefold()
+    if lowered in _OS_METADATA_REF_NAMES or lowered.endswith(".icloud"):
+        return True
+    return is_appledouble_metadata(path)
+
+
+def _commit_shaped_revision(revision: Optional[str]) -> Optional[str]:
+    """*revision* if it has the shape of a Hub commit hash; ``None`` otherwise.
+
+    A ref file holds the 40-character hex commit that names a snapshot
+    directory. Requiring that shape stops a short binary dropping -- NUL bytes
+    included -- from being counted as a live revision by the mere fact that it
+    survived the path checks.
+    """
+    if revision is None or len(revision) != _COMMIT_REVISION_LENGTH:
+        return None
+    return revision if set(revision) <= _COMMIT_REVISION_CHARACTERS else None
+
+
 def referenced_snapshot_revisions(repo_dir: str | Path) -> frozenset[str]:
     revisions: set[str] = set()
     try:
@@ -481,6 +517,8 @@ def referenced_snapshot_revisions(repo_dir: str | Path) -> frozenset[str]:
                     )
             for name in files:
                 ref = current_path / name
+                if _is_os_metadata_dropping(ref):
+                    continue
                 try:
                     before = ref.lstat()
                 except FileNotFoundError as exc:
@@ -502,9 +540,10 @@ def referenced_snapshot_revisions(repo_dir: str | Path) -> frozenset[str]:
                     revision = _parse_main_ref(payload.decode("utf-8"))
                 except UnicodeError as exc:
                     raise SnapshotRefsUnverifiable(f"ref is not valid UTF-8: {name}") from exc
-                if revision is None:
+                commit = _commit_shaped_revision(revision)
+                if commit is None:
                     raise SnapshotRefsUnverifiable(f"ref is invalid: {name}")
-                revisions.add(revision)
+                revisions.add(commit)
     except SnapshotRefsUnverifiable:
         raise
     except (OSError, RuntimeError, ValueError) as exc:
@@ -666,52 +705,87 @@ def _assert_created_ref(path: Path, created_stat: os.stat_result) -> None:
         raise ConcurrentMainRefError("refs/main changed during promotion")
 
 
-def _copy_main_ref_exclusively(refs: Path, payload: bytes, mode: int) -> None:
-    main = refs / "main"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-    for attempt in range(len(_MAIN_REF_CHANGE_RETRY_DELAYS_SECONDS) + 1):
-        try:
-            fd = os.open(main, flags, mode)
-            break
-        except PermissionError:
-            if not _IS_WINDOWS or attempt == len(_MAIN_REF_CHANGE_RETRY_DELAYS_SECONDS):
-                raise
-            time.sleep(_MAIN_REF_CHANGE_RETRY_DELAYS_SECONDS[attempt])
-            _assert_main_unchanged(refs, None)
+def _write_staged_ref_copy(repo_dir: Path, payload: bytes, mode: int) -> tuple[Path, os.stat_result]:
+    """Build a complete, durable copy of *payload* in the staging directory.
 
-    created_stat = os.fstat(fd)
+    The copy carries the source ref's permission bits and is fsynced before it
+    is returned, so the caller only ever moves a finished value into ``refs``.
+    """
+    _staging, scratch, fd = _open_staged_temporary(repo_dir)
     try:
-        _assert_created_ref(main, created_stat)
         written = os.write(fd, payload)
         if written != len(payload):
             raise OSError(errno.EIO, "Could not write the complete refs/main value")
         fchmod = getattr(os, "fchmod", None)
         if fchmod is not None:
             fchmod(fd, mode)
+        else:
+            os.chmod(scratch, mode)
         os.fsync(fd)
-        _assert_created_ref(main, created_stat)
-    except BaseException as operation_error:
-        close_error = None
+        staged_stat = os.fstat(fd)
+        os.close(fd)
+    except BaseException:
         try:
             os.close(fd)
-        except OSError as exc:
-            close_error = exc
+        except OSError:
+            pass
         try:
-            _unlink_created_ref(main, created_stat)
-        except _MainRefCleanupError as cleanup_error:
-            raise cleanup_error from operation_error
-        if close_error is not None:
-            raise close_error from operation_error
+            scratch.unlink()
+        except OSError:
+            pass
         raise
-    else:
-        try:
-            os.close(fd)
-        except OSError as close_error:
+    return scratch, staged_stat
+
+
+def _copy_main_ref_exclusively(refs: Path, payload: bytes, mode: int) -> None:
+    """Publish *payload* at ``refs/main`` without ever creating the ref incrementally.
+
+    This is the last-resort path, taken only when the cache sits on a filesystem
+    with neither usable hard links nor a no-replace rename (FAT/exFAT, SMB, some
+    FUSE mounts used as ``HF_HOME``). Creating ``refs/main`` here with
+    ``O_CREAT | O_EXCL`` and writing into it afterwards publishes a zero-length
+    ref for the length of the write, and a crash inside that window leaves an
+    empty ``refs/main`` behind: it never parses again, so the ref cannot be
+    captured, and the next download of that repo silently runs unpinned -- the
+    one guarantee this module exists to provide. Assemble the value in the
+    staging directory and move it in instead, so ``refs/main`` is only ever
+    observable as absent, the previous value, or the complete new one.
+
+    ``os.replace`` is not exclusive the way the exclusive create was, so the
+    absence of ``refs/main`` is checked immediately before the move and reported
+    as ``FileExistsError`` exactly as before. Our own promotions are serialised
+    by the main-ref lock; what remains is a foreign writer creating ``refs/main``
+    inside the microseconds before the move, which then loses to this verified
+    value -- a complete ref for a snapshot that was just verified on disk, and a
+    far smaller hazard than a crash-truncated one.
+    """
+    main = refs / "main"
+    scratch, staged_stat = _write_staged_ref_copy(refs.parent, payload, mode)
+    published = False
+    try:
+        if _lstat_or_none(main) is not None:
+            raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(main))
+
+        def publish() -> None:
+            nonlocal published
+            os.replace(scratch, main)
+            published = True
+
+        _retry_main_ref_change(publish, refs, None)
+        _assert_created_ref(main, staged_stat)
+    except BaseException as operation_error:
+        if published:
             try:
-                _unlink_created_ref(main, created_stat)
+                _unlink_created_ref(main, staged_stat)
             except _MainRefCleanupError as cleanup_error:
-                raise cleanup_error from close_error
-            raise
+                raise cleanup_error from operation_error
+        raise
+    finally:
+        if not published:
+            try:
+                scratch.unlink()
+            except OSError:
+                pass
 
 
 def _create_main_ref(refs: Path, source: Path, *, try_hardlink: bool) -> None:

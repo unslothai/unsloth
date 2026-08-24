@@ -1042,28 +1042,31 @@ def test_hardlink_winerror_classification_does_not_trust_lossy_errno():
 
 
 @pytest.mark.parametrize("previous_revision", [None, OLD])
-def test_hardlink_fallback_exclusive_create_does_not_overwrite_an_external_advance(
+def test_hardlink_fallback_publish_does_not_overwrite_an_external_advance(
     previous_revision, tmp_path, monkeypatch
 ):
     repo, previous = _promotion_cache(tmp_path, monkeypatch, previous_revision)
     main = repo / "refs" / "main"
     new_file = _snapshot_file(repo, NEW, "model.safetensors", b"new")
-    real_open = os.open
+    real_stage = snapshot_reclaim._write_staged_ref_copy
     advanced = False
 
     def unsupported_link(*_args, **_kwargs):
         link_errno = getattr(errno, "EOPNOTSUPP", errno.EPERM)
         raise OSError(link_errno, "hard links are unavailable")
 
-    def advance_before_exclusive_create(path, flags, *args, **kwargs):
+    def advance_after_staging(*args, **kwargs):
+        # The copy fallback stages the whole value first, so an external writer
+        # that wins the ref between staging and publishing must lose the move.
         nonlocal advanced
-        if Path(path) == main and flags & os.O_EXCL and not advanced:
+        staged = real_stage(*args, **kwargs)
+        if not advanced:
             advanced = True
             main.write_text(DETACHED, encoding = "utf-8")
-        return real_open(path, flags, *args, **kwargs)
+        return staged
 
     monkeypatch.setattr(snapshot_reclaim.os, "link", unsupported_link)
-    monkeypatch.setattr(snapshot_reclaim.os, "open", advance_before_exclusive_create)
+    monkeypatch.setattr(snapshot_reclaim, "_write_staged_ref_copy", advance_after_staging)
     monkeypatch.setattr(snapshot_reclaim, "_rename_noreplace", lambda *_args: False)
 
     with pytest.raises(snapshot_reclaim.ConcurrentMainRefError):
@@ -1080,36 +1083,30 @@ def test_hardlink_fallback_exclusive_create_does_not_overwrite_an_external_advan
 
 
 @pytest.mark.parametrize("previous_revision", [None, OLD])
-def test_hardlink_fallback_detects_a_path_replacement_after_exclusive_create(
+def test_hardlink_fallback_detects_a_path_replacement_after_publishing(
     previous_revision, tmp_path, monkeypatch
 ):
     repo, previous = _promotion_cache(tmp_path, monkeypatch, previous_revision)
     main = repo / "refs" / "main"
     new_file = _snapshot_file(repo, NEW, "model.safetensors", b"new")
-    real_open = os.open
-    real_write = os.write
-    main_fd = None
+    real_replace = os.replace
+    replaced = False
 
     def unsupported_link(*_args, **_kwargs):
         link_errno = getattr(errno, "EOPNOTSUPP", errno.EPERM)
         raise OSError(link_errno, "hard links are unavailable")
 
-    def remember_exclusive_main(path, flags, *args, **kwargs):
-        nonlocal main_fd
-        fd = real_open(path, flags, *args, **kwargs)
-        if Path(path) == main and flags & os.O_EXCL:
-            main_fd = fd
-        return fd
-
-    def replace_before_write(fd, payload):
-        if fd == main_fd:
+    def swap_after_publish(source, destination, **kwargs):
+        nonlocal replaced
+        result = real_replace(source, destination, **kwargs)
+        if Path(destination) == main and not replaced:
+            replaced = True
             main.unlink()
             main.write_text(DETACHED, encoding = "utf-8")
-        return real_write(fd, payload)
+        return result
 
     monkeypatch.setattr(snapshot_reclaim.os, "link", unsupported_link)
-    monkeypatch.setattr(snapshot_reclaim.os, "open", remember_exclusive_main)
-    monkeypatch.setattr(snapshot_reclaim.os, "write", replace_before_write)
+    monkeypatch.setattr(snapshot_reclaim.os, "replace", swap_after_publish)
     monkeypatch.setattr(snapshot_reclaim, "_rename_noreplace", lambda *_args: False)
 
     with pytest.raises(snapshot_reclaim.ConcurrentMainRefError, match = "during promotion"):
@@ -1122,6 +1119,74 @@ def test_hardlink_fallback_detects_a_path_replacement_after_exclusive_create(
         )
 
     assert main.read_text(encoding = "utf-8") == DETACHED
+
+
+@pytest.mark.parametrize("previous_revision", [None, OLD])
+def test_hardlink_fallback_never_publishes_an_incomplete_main_ref(
+    previous_revision, tmp_path, monkeypatch
+):
+    """The value that lands on ``refs/main`` is complete before it is ever visible.
+
+    Creating the ref first and writing into it afterwards left a zero-length
+    ``refs/main`` for the length of the write, and a crash there is
+    unrecoverable: the ref no longer parses, so the next download runs unpinned.
+    """
+    repo, previous = _promotion_cache(tmp_path, monkeypatch, previous_revision)
+    main = repo / "refs" / "main"
+    new_file = _snapshot_file(repo, NEW, "model.safetensors", b"new")
+    real_replace = os.replace
+    observed: list[bytes] = []
+
+    def unsupported_link(*_args, **_kwargs):
+        link_errno = getattr(errno, "EOPNOTSUPP", errno.EPERM)
+        raise OSError(link_errno, "hard links are unavailable")
+
+    def record_published_payload(source, destination, **kwargs):
+        if Path(destination) == main:
+            observed.append(Path(source).read_bytes())
+        return real_replace(source, destination, **kwargs)
+
+    monkeypatch.setattr(snapshot_reclaim.os, "link", unsupported_link)
+    monkeypatch.setattr(snapshot_reclaim.os, "replace", record_published_payload)
+    monkeypatch.setattr(snapshot_reclaim, "_rename_noreplace", lambda *_args: False)
+
+    snapshot_reclaim.promote_verified_snapshot(
+        "model",
+        REPO_ID,
+        NEW,
+        new_file.parent,
+        previous,
+    )
+
+    assert observed == [NEW.encode("utf-8")]
+    assert main.read_text(encoding = "utf-8") == NEW
+    assert not sorted((repo / "refs").glob(".unsloth-main-*"))
+
+
+def test_hardlink_fallback_keeps_the_previous_ref_permission_mode(tmp_path, monkeypatch):
+    root, repo = _cache_repo(tmp_path)
+    main = repo / "refs" / "main"
+    main.chmod(0o640)
+    previous = _capture(monkeypatch, root)
+    new_file = _snapshot_file(repo, NEW, "model.safetensors", b"new")
+
+    def unsupported_link(*_args, **_kwargs):
+        link_errno = getattr(errno, "EOPNOTSUPP", errno.EPERM)
+        raise OSError(link_errno, "hard links are unavailable")
+
+    monkeypatch.setattr(snapshot_reclaim.os, "link", unsupported_link)
+    monkeypatch.setattr(snapshot_reclaim, "_rename_noreplace", lambda *_args: False)
+
+    snapshot_reclaim.promote_verified_snapshot(
+        "model",
+        REPO_ID,
+        NEW,
+        new_file.parent,
+        previous,
+    )
+
+    assert main.read_text(encoding = "utf-8") == NEW
+    assert stat.S_IMODE(main.lstat().st_mode) == 0o640
 
 
 @pytest.mark.parametrize("previous_revision", [None, OLD])
@@ -1169,33 +1234,25 @@ def test_exclusive_copy_close_failure_restores_the_previous_ref(tmp_path, monkey
     main = repo / "refs" / "main"
     previous = _capture(monkeypatch, root)
     new_file = _snapshot_file(repo, NEW, "model.safetensors", b"new")
-    real_open = os.open
     real_close = os.close
-    main_fd = None
     close_failed = False
 
     def unsupported_link(*_args, **_kwargs):
         link_errno = getattr(errno, "EOPNOTSUPP", errno.EPERM)
         raise OSError(link_errno, "hard links are unavailable")
 
-    def remember_exclusive_main(path, flags, *args, **kwargs):
-        nonlocal main_fd
-        fd = real_open(path, flags, *args, **kwargs)
-        if Path(path) == main and flags & os.O_EXCL:
-            main_fd = fd
-        return fd
-
-    def fail_first_main_close(fd):
+    def fail_first_staged_close(fd):
+        # Only the staged copy of the ref is closed through ``os.close``; the
+        # promotion's own scratch ref is closed by its file object.
         nonlocal close_failed
-        if fd == main_fd and not close_failed:
+        if not close_failed:
             close_failed = True
             real_close(fd)
             raise OSError(errno.EIO, "delayed ref close failure")
         return real_close(fd)
 
     monkeypatch.setattr(snapshot_reclaim.os, "link", unsupported_link)
-    monkeypatch.setattr(snapshot_reclaim.os, "open", remember_exclusive_main)
-    monkeypatch.setattr(snapshot_reclaim.os, "close", fail_first_main_close)
+    monkeypatch.setattr(snapshot_reclaim.os, "close", fail_first_staged_close)
     monkeypatch.setattr(snapshot_reclaim, "_rename_noreplace", lambda *_args: False)
 
     with pytest.raises(OSError, match = "delayed ref close failure"):
@@ -1211,13 +1268,17 @@ def test_exclusive_copy_close_failure_restores_the_previous_ref(tmp_path, monkey
     assert main.read_text(encoding = "utf-8") == OLD
 
 
-def test_failed_partial_ref_cleanup_preserves_the_displaced_previous_ref(tmp_path, monkeypatch):
+def test_failed_ref_write_preserves_the_displaced_previous_ref(tmp_path, monkeypatch):
+    """A ref write that fails throughout leaves the previous value recoverable.
+
+    The staged copy fails, so does the restore that would put the previous ref
+    back, and the promotion says where the previous ref is. What it must never
+    leave behind is a truncated ``refs/main``: the ref is simply absent here.
+    """
     root, repo = _cache_repo(tmp_path)
-    refs = repo / "refs"
-    main = refs / "main"
+    main = repo / "refs" / "main"
     previous = _capture(monkeypatch, root)
     new_file = _snapshot_file(repo, NEW, "model.safetensors", b"new")
-    real_unlink = Path.unlink
 
     def unsupported_link(*_args, **_kwargs):
         link_errno = getattr(errno, "EOPNOTSUPP", errno.EPERM)
@@ -1226,14 +1287,8 @@ def test_failed_partial_ref_cleanup_preserves_the_displaced_previous_ref(tmp_pat
     def failed_write(*_args, **_kwargs):
         raise OSError(errno.EIO, "interrupted ref write")
 
-    def fail_partial_main_unlink(path, *args, **kwargs):
-        if path == main:
-            raise PermissionError(errno.EACCES, "partial ref is locked")
-        return real_unlink(path, *args, **kwargs)
-
     monkeypatch.setattr(snapshot_reclaim.os, "link", unsupported_link)
     monkeypatch.setattr(snapshot_reclaim.os, "write", failed_write)
-    monkeypatch.setattr(Path, "unlink", fail_partial_main_unlink)
     monkeypatch.setattr(snapshot_reclaim, "_rename_noreplace", lambda *_args: False)
 
     with pytest.raises(RuntimeError, match = "previous ref remains at") as caught:
@@ -1245,19 +1300,17 @@ def test_failed_partial_ref_cleanup_preserves_the_displaced_previous_ref(tmp_pat
             previous,
         )
 
-    assert isinstance(caught.value.__cause__, snapshot_reclaim._MainRefCleanupError)
-    assert main.read_bytes() == b""
+    assert isinstance(caught.value.__cause__, OSError)
+    assert not main.exists()
     displaced = _displaced_refs(repo)
     assert len(displaced) == 1
     assert displaced[0].read_text(encoding = "utf-8") == OLD
 
 
-def test_failed_partial_ref_cleanup_is_reported_when_main_was_absent(tmp_path, monkeypatch):
+def test_failed_ref_write_leaves_no_ref_behind_when_main_was_absent(tmp_path, monkeypatch):
     repo, previous = _promotion_cache(tmp_path, monkeypatch, None)
-    refs = repo / "refs"
-    main = refs / "main"
+    main = repo / "refs" / "main"
     new_file = _snapshot_file(repo, NEW, "model.safetensors", b"new")
-    real_unlink = Path.unlink
 
     def unsupported_link(*_args, **_kwargs):
         link_errno = getattr(errno, "EOPNOTSUPP", errno.EPERM)
@@ -1266,17 +1319,11 @@ def test_failed_partial_ref_cleanup_is_reported_when_main_was_absent(tmp_path, m
     def failed_write(*_args, **_kwargs):
         raise OSError(errno.EIO, "interrupted ref write")
 
-    def fail_partial_main_unlink(path, *args, **kwargs):
-        if path == main:
-            raise PermissionError(errno.EACCES, "partial ref is locked")
-        return real_unlink(path, *args, **kwargs)
-
     monkeypatch.setattr(snapshot_reclaim.os, "link", unsupported_link)
     monkeypatch.setattr(snapshot_reclaim.os, "write", failed_write)
-    monkeypatch.setattr(Path, "unlink", fail_partial_main_unlink)
     monkeypatch.setattr(snapshot_reclaim, "_rename_noreplace", lambda *_args: False)
 
-    with pytest.raises(snapshot_reclaim._MainRefCleanupError, match = "could not be removed"):
+    with pytest.raises(OSError, match = "interrupted ref write"):
         snapshot_reclaim.promote_verified_snapshot(
             "model",
             REPO_ID,
@@ -1285,8 +1332,55 @@ def test_failed_partial_ref_cleanup_is_reported_when_main_was_absent(tmp_path, m
             previous,
         )
 
-    assert main.read_bytes() == b""
+    assert not main.exists()
     assert _displaced_refs(repo) == []
+
+
+def test_published_ref_that_cannot_be_inspected_is_reported_as_a_cleanup_failure(
+    tmp_path, monkeypatch
+):
+    """The published ref is only ever removed again when it is provably ours."""
+    root, repo = _cache_repo(tmp_path)
+    main = repo / "refs" / "main"
+    previous = _capture(monkeypatch, root)
+    new_file = _snapshot_file(repo, NEW, "model.safetensors", b"new")
+    real_lstat = Path.lstat
+    real_replace = os.replace
+    published = False
+
+    def unsupported_link(*_args, **_kwargs):
+        link_errno = getattr(errno, "EOPNOTSUPP", errno.EPERM)
+        raise OSError(link_errno, "hard links are unavailable")
+
+    def blind_the_ref_after_publishing(source, destination, **kwargs):
+        nonlocal published
+        result = real_replace(source, destination, **kwargs)
+        if Path(destination) == main:
+            published = True
+        return result
+
+    def fail_main_lstat_after_publish(path, *args, **kwargs):
+        if published and path == main:
+            raise PermissionError(errno.EACCES, "ref is locked")
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(snapshot_reclaim.os, "link", unsupported_link)
+    monkeypatch.setattr(snapshot_reclaim.os, "replace", blind_the_ref_after_publishing)
+    monkeypatch.setattr(Path, "lstat", fail_main_lstat_after_publish)
+    monkeypatch.setattr(snapshot_reclaim, "_rename_noreplace", lambda *_args: False)
+
+    with pytest.raises(RuntimeError, match = "could not be cleaned") as caught:
+        snapshot_reclaim.promote_verified_snapshot(
+            "model",
+            REPO_ID,
+            NEW,
+            new_file.parent,
+            previous,
+        )
+
+    assert isinstance(caught.value.__cause__, snapshot_reclaim._MainRefCleanupError)
+    monkeypatch.undo()
+    assert main.read_text(encoding = "utf-8") == NEW
 
 
 def test_hardlink_fallback_preserves_a_mode_changed_at_the_claim_boundary(tmp_path, monkeypatch):
