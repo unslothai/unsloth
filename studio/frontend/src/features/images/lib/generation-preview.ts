@@ -13,13 +13,18 @@ export function previewFrame(input: {
   generating: boolean;
   hasSelection: boolean;
   finishedLoaded: boolean;
+  browsing: boolean;
 }): string | null {
-  const { held, generating, hasSelection, finishedLoaded } = input;
+  const { held, generating, hasSelection, finishedLoaded, browsing } = input;
   if (held === null) {
     return null;
   }
   if (generating) {
-    return held;
+    // Browsing the gallery mid-run gives the viewer back to the picked image. Without
+    // this the preview owned the viewer for the whole denoise and clicking a thumbnail
+    // changed only the highlight, losing the ability to look at past images during a
+    // long run that the page had before previews existed.
+    return browsing ? null : held;
   }
   return hasSelection && !finishedLoaded ? held : null;
 }
@@ -45,10 +50,18 @@ export function releaseHeldPreview(input: {
   generating: boolean;
   finishedLoaded: boolean;
   selectionMatchesRun: boolean;
+  producedImage: boolean;
 }): boolean {
-  const { held, generating, finishedLoaded, selectionMatchesRun } = input;
+  const { held, generating, finishedLoaded, selectionMatchesRun, producedImage } = input;
   if (held === null || generating) {
     return false;
+  }
+  // A cancelled or failed run has no image coming, so neither release condition below can
+  // ever be met: the selection keeps matching the run and no blob ever loads. Left alone
+  // the last frame sits over an unrelated gallery image for as long as that blob is
+  // missing -- forever, if its fetch fails.
+  if (!producedImage) {
+    return true;
   }
   return finishedLoaded || !selectionMatchesRun;
 }

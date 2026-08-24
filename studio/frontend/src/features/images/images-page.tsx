@@ -1312,6 +1312,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // The image the held frame hands off to: tracked while the run owns the selection, so it
   // settles on the record the run produced and any later pick reads as a different image.
   const previewOwner = useRef<string | null>(null);
+  // Set when the user picks a gallery image mid-run, so the preview gives the viewer back.
+  const [browsingDuringRun, setBrowsingDuringRun] = useState(false);
+  // Whether the run has a record coming. False for a cancelled or failed run, which has no
+  // handoff to wait for, so its last frame must be dropped rather than held indefinitely.
+  const [runProducedImage, setRunProducedImage] = useState(true);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // visibilitychange handler active while a generation poll runs: background tabs clamp setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
@@ -1639,6 +1644,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     generating: busy === "generating",
     hasSelection: selected !== null,
     finishedLoaded: Boolean(selectedSrc),
+    browsing: browsingDuringRun,
   });
 
   // Drop the frame once its run has handed off, so a later cache miss cannot flash it back.
@@ -1648,16 +1654,24 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       previewOwner.current = selected?.id ?? null;
       return;
     }
+    // A run resumed against an empty gallery goes idle BEFORE loadGallery brings its record
+    // in, so it ends owning nothing. Adopt the first selection to appear instead of reading
+    // it as the user picking something else, which released the frame during the very
+    // handoff the hold exists for.
+    if (previewOwner.current === null && selected) {
+      previewOwner.current = selected.id;
+    }
     if (
       releaseHeldPreview({
         held: heldPreview,
         generating,
         finishedLoaded: Boolean(selectedSrc),
         selectionMatchesRun: (selected?.id ?? null) === previewOwner.current,
+        producedImage: runProducedImage,
       })
     )
       setHeldPreview(null);
-  }, [busy, heldPreview, selected, selectedSrc]);
+  }, [busy, heldPreview, selected, selectedSrc, runProducedImage]);
 
   // Fetch (once) the object URL for a record's PNG; cached across remounts.
   const ensureSrc = useCallback(async (image: GalleryImage) => {
@@ -3280,6 +3294,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     setGenDone(0);
     setGenStep(null);
     setHeldPreview(null);
+    setBrowsingDuringRun(false);
+    // Nothing produced yet. A run that ends without flipping this back -- cancelled, or
+    // failed -- has no handoff coming, so its last frame is released instead of held.
+    setRunProducedImage(false);
     // Fresh run: a Stop from the PREVIOUS run must not cancel this one.
     cancelRequested.current = false;
     cancelAcked.current = false;
@@ -3416,7 +3434,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // again duplicates a React key and inflates the next page's offset, skipping a record.
         setImages((prev) => mergeGenerated(prev, res.images));
         res.images.forEach((image) => knownIds.add(image.id));
-        if (res.images[0]) setSelectedId(res.images[0].id);
+        if (res.images[0]) {
+          setSelectedId(res.images[0].id);
+          setRunProducedImage(true);
+        }
         res.images.forEach((image) => void ensureSrc(image));
         setGenDone(i + 1);
       }
@@ -4482,7 +4503,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 >
                   <button
                     type="button"
-                    onClick={() => setSelectedId(image.id)}
+                    onClick={() => {
+                      setSelectedId(image.id);
+                      if (busy === "generating") setBrowsingDuringRun(true);
+                    }}
                     className="relative size-full overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     {srcById[image.id] ? (

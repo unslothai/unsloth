@@ -53,11 +53,37 @@ def _latent_channels(vae: Any) -> int:
         return 0
 
 
-def _scale_shift(vae: Any) -> tuple[float, float]:
+def _channel_stats(vae: Any, channels: int, torch: Any) -> Optional[tuple[Any, Any]]:
+    config = getattr(vae, "config", None)
+    mean = getattr(config, "latents_mean", None)
+    std = getattr(config, "latents_std", None)
+    if mean is None or std is None:
+        return None
+    mean_t = torch.tensor(mean, dtype = torch.float32).flatten()
+    std_t = torch.tensor(std, dtype = torch.float32).flatten()
+    if mean_t.numel() != channels or std_t.numel() != channels:
+        return None
+    return std_t, mean_t
+
+
+def _to_vae_space(grid: Any, vae: Any, channels: int, torch: Any) -> Optional[Any]:
+    """Undo the denoiser-side normalization, so `grid` is what the decoder was fitted on.
+
+    Three schemes ship in the families Studio loads. Most use the scalar pair; Qwen-Image
+    and Krea-2 normalize per channel and carry no scaling_factor at all, so reading only
+    the scalars left their latents untouched and their colours wrong. FLUX.2 normalizes
+    with its VAE's BatchNorm statistics over patchified latents, whose channel count no
+    longer matches the config, so it gets no preview rather than a miscoloured one."""
+    if getattr(vae, "bn", None) is not None:
+        return None
+    stats = _channel_stats(vae, channels, torch)
+    if stats is not None:
+        std, mean = stats
+        return grid * std + mean
     config = getattr(vae, "config", None)
     scaling = getattr(config, "scaling_factor", None) or 1.0
     shift = getattr(config, "shift_factor", None) or 0.0
-    return float(scaling), float(shift)
+    return grid / float(scaling) + float(shift)
 
 
 def _fit(vae: Any, channels: int, device: Any, dtype: Any, torch: Any) -> Optional[Any]:
@@ -70,7 +96,10 @@ def _fit(vae: Any, channels: int, device: Any, dtype: Any, torch: Any) -> Option
     lhs = noise.float().permute(0, 2, 3, 1).reshape(-1, channels)
     lhs = torch.cat([lhs, torch.ones_like(lhs[:, :1])], dim = 1)
     rhs = target.permute(0, 2, 3, 1).reshape(-1, 3)
-    solution = torch.linalg.lstsq(lhs, rhs).solution
+    # Solved on CPU: MPS ships no linalg_lstsq, and projection() swallows the
+    # NotImplementedError, so on a Mac this would cache "no previews" for the whole
+    # session after paying for the decode. Both matrices are tiny.
+    solution = torch.linalg.lstsq(lhs.cpu(), rhs.cpu()).solution
     if not bool(torch.isfinite(solution).all()):
         return None
     return solution.cpu()
@@ -157,8 +186,9 @@ def render(
         grid = _grid(latents.detach(), channels, width, height)
         if grid is None or int(grid.shape[-1]) != channels:
             return None
-        scaling, shift = _scale_shift(vae)
-        grid = grid.float().cpu() / scaling + shift
+        grid = _to_vae_space(grid.float().cpu(), vae, channels, torch)
+        if grid is None:
+            return None
         rgb = grid @ weights[:channels] + weights[channels]
         pixels = ((rgb + 1.0) * 127.5).clamp(0, 255).to(torch.uint8).numpy()
         return _encode(pixels, width, height)

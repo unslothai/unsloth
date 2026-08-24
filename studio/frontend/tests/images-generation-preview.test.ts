@@ -30,6 +30,7 @@ test("nothing shows before the first frame arrives", () => {
       generating: true,
       hasSelection: false,
       finishedLoaded: false,
+      browsing: false,
     }),
     null,
   );
@@ -42,6 +43,7 @@ test("the latest frame shows while denoising", () => {
       generating: true,
       hasSelection: false,
       finishedLoaded: false,
+      browsing: false,
     }),
     FRAME_B,
   );
@@ -54,6 +56,7 @@ test("the frame survives the persist window, where progress reports no preview",
       generating: true,
       hasSelection: true,
       finishedLoaded: false,
+      browsing: false,
     }),
     FRAME_B,
   );
@@ -66,6 +69,7 @@ test("the frame survives the blob load, after generating has already gone false"
       generating: false,
       hasSelection: true,
       finishedLoaded: false,
+      browsing: false,
     }),
     FRAME_B,
   );
@@ -78,6 +82,7 @@ test("the finished image takes over once its blob is ready", () => {
       generating: false,
       hasSelection: true,
       finishedLoaded: true,
+      browsing: false,
     }),
     null,
   );
@@ -90,6 +95,7 @@ test("a cancelled run with nothing selected does not strand its last frame", () 
       generating: false,
       hasSelection: false,
       finishedLoaded: false,
+      browsing: false,
     }),
     null,
   );
@@ -103,36 +109,42 @@ test("the viewer never blanks across a whole run", () => {
       generating: true,
       hasSelection: false,
       finishedLoaded: false,
+      browsing: false,
     },
     {
       held: FRAME_A,
       generating: true,
       hasSelection: false,
       finishedLoaded: false,
+      browsing: false,
     },
     {
       held: FRAME_B,
       generating: true,
       hasSelection: false,
       finishedLoaded: false,
+      browsing: false,
     },
     {
       held: FRAME_B,
       generating: true,
       hasSelection: true,
       finishedLoaded: false,
+      browsing: false,
     },
     {
       held: FRAME_B,
       generating: false,
       hasSelection: true,
       finishedLoaded: false,
+      browsing: false,
     },
     {
       held: FRAME_B,
       generating: false,
       hasSelection: true,
       finishedLoaded: true,
+      browsing: false,
     },
   ];
   const shown = run.map(previewFrame);
@@ -209,6 +221,7 @@ test("the frame is released once the run's own image is up", () => {
       generating: false,
       finishedLoaded: true,
       selectionMatchesRun: true,
+      producedImage: true,
     }),
     true,
   );
@@ -221,6 +234,7 @@ test("the frame is released when the user picks a different image", () => {
       generating: false,
       finishedLoaded: false,
       selectionMatchesRun: false,
+      producedImage: true,
     }),
     true,
   );
@@ -234,6 +248,7 @@ test("the handoff itself never releases the frame", () => {
       generating: false,
       finishedLoaded: false,
       selectionMatchesRun: true,
+      producedImage: true,
     }),
     false,
   );
@@ -244,6 +259,7 @@ test("the handoff itself never releases the frame", () => {
       generating: true,
       finishedLoaded: false,
       selectionMatchesRun: true,
+      producedImage: true,
     }),
     false,
   );
@@ -256,6 +272,7 @@ test("there is nothing to release when no frame is held", () => {
       generating: false,
       finishedLoaded: false,
       selectionMatchesRun: false,
+      producedImage: true,
     }),
     false,
   );
@@ -270,12 +287,13 @@ test("a released frame cannot cover an unrelated image", () => {
     finishedLoaded: boolean;
     selectionMatchesRun: boolean;
   }) => {
-    if (releaseHeldPreview({ held, ...state })) held = null;
+    if (releaseHeldPreview({ held, ...state, producedImage: true })) held = null;
     return previewFrame({
       held,
       generating: state.generating,
       hasSelection: true,
       finishedLoaded: state.finishedLoaded,
+      browsing: false,
     });
   };
   // The run's image lands and takes over.
@@ -307,5 +325,108 @@ test("the page releases the held frame rather than leaving it set", () => {
     page,
     /previewOwner\.current/,
     "the release needs the run's image to tell a later pick apart",
+  );
+});
+
+// --- browsing the gallery during a run -------------------------------------------------
+// Before previews, the viewer showed whatever thumbnail you clicked, including mid-run.
+// Returning the held frame unconditionally while generating took that away: the highlight
+// moved but the viewer kept showing the denoise.
+
+test("a mid-run gallery pick takes the viewer back from the preview", () => {
+  assert.equal(
+    previewFrame({
+      held: FRAME_B,
+      generating: true,
+      hasSelection: true,
+      finishedLoaded: true,
+      browsing: true,
+    }),
+    null,
+  );
+});
+
+test("the preview keeps the viewer while the run is not being browsed away from", () => {
+  assert.equal(
+    previewFrame({
+      held: FRAME_B,
+      generating: true,
+      hasSelection: true,
+      finishedLoaded: true,
+      browsing: false,
+    }),
+    FRAME_B,
+  );
+});
+
+// --- runs that never produce an image --------------------------------------------------
+// A cancelled or failed run satisfies neither release condition: the selection still
+// matches the run, and no blob of its own is ever coming.
+
+test("a cancelled run's frame is released rather than held forever", () => {
+  assert.equal(
+    releaseHeldPreview({
+      held: FRAME_B,
+      generating: false,
+      finishedLoaded: false,
+      selectionMatchesRun: true,
+      producedImage: false,
+    }),
+    true,
+  );
+});
+
+test("a run that did produce an image still gets its handoff", () => {
+  assert.equal(
+    releaseHeldPreview({
+      held: FRAME_B,
+      generating: false,
+      finishedLoaded: false,
+      selectionMatchesRun: true,
+      producedImage: true,
+    }),
+    false,
+  );
+});
+
+test("a cancelled run cannot leave its frame over a gallery image", () => {
+  let held: string | null = FRAME_B;
+  if (
+    releaseHeldPreview({
+      held,
+      generating: false,
+      finishedLoaded: false,
+      selectionMatchesRun: true,
+      producedImage: false,
+    })
+  )
+    held = null;
+  assert.equal(
+    previewFrame({
+      held,
+      generating: false,
+      hasSelection: true,
+      finishedLoaded: false,
+      browsing: false,
+    }),
+    null,
+    "the cancelled run's last frame must not stand in for the selected image",
+  );
+});
+
+test("the page tracks whether the run produced a record, and mid-run browsing", () => {
+  const page = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/images/images-page.tsx", import.meta.url),
+    ),
+    "utf8",
+  );
+  assert.match(page, /setRunProducedImage\(/, "no record tracking for the release rule");
+  assert.match(page, /setBrowsingDuringRun\(/, "no mid-run browsing signal");
+  // The owner is adopted late, for the resume path that goes idle before its record lands.
+  assert.match(
+    page,
+    /previewOwner\.current === null && selected/,
+    "a run that ends owning nothing must adopt its first selection, not release on it",
   );
 });

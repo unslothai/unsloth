@@ -5768,9 +5768,19 @@ class DiffusionBackend:
                         width or DEFAULT_IMAGE_WIDTH,
                         height or DEFAULT_IMAGE_HEIGHT,
                     )
+                # A preview costs one VAE decode on the first step to fit the projection.
+                # That is the wrong thing to spend on a CPU-only run, which is already slow
+                # and which previews are meant to sit out; and it is unsafe under any offload
+                # policy, where decoding the VAE mid-denoise pulls it onto the accelerator
+                # outside the sequence the memory plan laid out and can leave it resident
+                # while the next step reloads the transformer.
                 preview_vae = (
                     getattr(state.pipe, "vae", None)
-                    if diffusion_preview.previews_enabled()
+                    if (
+                        diffusion_preview.previews_enabled()
+                        and state.offload_policy == OFFLOAD_NONE
+                        and str(getattr(state, "device", "cpu")).split(":")[0] != "cpu"
+                    )
                     else None
                 )
                 if "callback_on_step_end" in call_params:

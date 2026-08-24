@@ -144,3 +144,71 @@ def test_previews_can_be_disabled_by_env(monkeypatch):
     assert preview.previews_enabled()
     monkeypatch.setenv(preview.PREVIEWS_ENV, "0")
     assert not preview.previews_enabled()
+
+
+class _PerChannelVae(_LinearVae):
+    """A VAE that normalizes each latent channel, as Qwen-Image and Krea-2 do.
+
+    Those configs carry no ``scaling_factor`` at all, so reading only the scalar pair left
+    their latents un-denormalized and their previews miscoloured."""
+
+    def __init__(self, channels = 4):
+        super().__init__(channels = channels)
+        del self.config.scaling_factor
+        del self.config.shift_factor
+        self.config.latents_mean = [0.10, -0.20, 0.30, -0.40][:channels]
+        self.config.latents_std = [2.0, 0.5, 1.5, 0.8][:channels]
+
+
+class _BatchNormVae(_LinearVae):
+    """FLUX.2 shape: normalization lives in the VAE's BatchNorm, over patchified latents."""
+
+    def __init__(self):
+        super().__init__()
+        self.bn = torch.nn.BatchNorm2d(4)
+
+
+def test_the_projection_solve_survives_a_backend_without_lstsq():
+    """The real reproduction: fit a VAE that lives on MPS.
+
+    ``torch.linalg.lstsq`` has no MPS kernel, ``projection()`` swallows the
+    NotImplementedError, and None is cached -- so every Mac generation silently got no
+    preview after paying for the decode. Solving on CPU is what makes this pass."""
+    if not torch.backends.mps.is_available():
+        pytest.skip("no MPS backend on this host")
+    vae = _LinearVae().to("mps")
+    fitted = preview.projection(vae, torch)
+    assert fitted is not None, "the projection was not fitted on an MPS VAE"
+    assert fitted.device.type == "cpu"
+    url = preview.render(torch.randn(1, 4, 32, 32, device = "mps"), vae, 512, 512, torch)
+    assert url is not None and _decode_data_url(url).startswith(b"\xff\xd8")
+
+
+def test_per_channel_statistics_are_undone_before_projecting():
+    vae = _PerChannelVae()
+    std = torch.tensor(vae.config.latents_std)
+    mean = torch.tensor(vae.config.latents_mean)
+    latents = torch.randn(1, 4, 16, 16)
+    # The denoiser-side value whose decoder-space counterpart is exactly `latents`.
+    normalized = (latents - mean.view(1, 4, 1, 1)) / std.view(1, 4, 1, 1)
+    plain = _LinearVae()
+    assert preview.render(normalized, vae, 512, 512, torch) == preview.render(
+        latents, plain, 512, 512, torch
+    )
+
+
+def test_ignoring_per_channel_statistics_would_change_the_preview():
+    # Guards the fix itself: if the scalar path were still taken for these VAEs the frame
+    # above would equal the un-denormalized one, and the assertion there could not fail.
+    vae = _PerChannelVae()
+    latents = torch.randn(1, 4, 16, 16)
+    plain = _LinearVae()
+    assert preview.render(latents, vae, 512, 512, torch) != preview.render(
+        latents, plain, 512, 512, torch
+    )
+
+
+def test_a_batchnorm_normalized_vae_renders_nothing():
+    # FLUX.2's statistics are over patchified latents, whose channel count no longer
+    # matches the config: no preview beats a miscoloured one.
+    assert preview.render(torch.randn(1, 4, 16, 16), _BatchNormVae(), 512, 512, torch) is None
