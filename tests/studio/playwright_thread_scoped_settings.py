@@ -119,9 +119,19 @@ def sign_in(page):
     return page.evaluate("() => localStorage.getItem('unsloth_auth_token')")
 
 
-def seed_thread(page, token, title):
+def app_created_thread_id():
+    """The id a chat started in the app really carries.
+
+    assistant-ui mints `__LOCALID_<id>` for a thread before its first send, the thread list
+    adapter hands that same string back as the remoteId, and the row keeps it as its primary
+    key. The prefix therefore says nothing about whether a row exists.
+    """
+    return f"__LOCALID_{uuid.uuid4().hex}"
+
+
+def seed_thread(page, token, title, thread_id = None):
     """Create a saved chat with one message, the state the sidebar and the loader expect."""
-    thread_id = str(uuid.uuid4())
+    thread_id = thread_id or str(uuid.uuid4())
     now = int(time.time() * 1000)
     api(
         page,
@@ -330,7 +340,12 @@ def main():
         )
 
         step("seed two saved chats")
-        thread_a = seed_thread(page, token, "Chat A")
+        # A carries an app-minted id and B a plain uuid, because both are real: chats started
+        # in the app keep their `__LOCALID_` id as the row's primary key, while imported and
+        # older rows do not. Seeding only uuids is what let a read of that prefix as "no row
+        # yet" -- which unpaired every app-created chat from its own settings and leaked its
+        # edits into the installation defaults -- pass this run unnoticed.
+        thread_a = seed_thread(page, token, "Chat A", app_created_thread_id())
         thread_b = seed_thread(page, token, "Chat B")
         print(f"[thread-settings]   A={thread_a} B={thread_b}", flush = True)
 

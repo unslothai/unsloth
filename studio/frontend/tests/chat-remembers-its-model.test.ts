@@ -273,13 +273,19 @@ test("a chat started as New Chat gets the notice once its row exists", () => {
   // the notice saw nothing until the chat was reopened. The store's id is only this
   // chat's after ThreadNewChatSwitch has blanked the previous one, hence the latch.
   const gate = slice(page, "const newChatBlankedRef", "const newChatThreadId =");
-  assert.match(gate, /activeThreadId === null \|\| isAssistantLocalThreadId\(activeThreadId\)/);
+  assert.match(gate, /search\.new && activeThreadId === null/);
   assert.match(gate, /newChatBlankedRef\.current = search\.new;/);
+  // Blanked means null. A `__LOCALID_` id is the id the first send persists, not a chat
+  // without a row, so accepting that prefix here latched on the OUTGOING chat -- and then
+  // handed over the null the same prefix test produced, so the notice this latch exists
+  // for never appeared in a chat started in the app at all.
+  assert.doesNotMatch(gate, /isAssistantLocalThreadId/);
 
   const derived = slice(page, "const newChatThreadId =", "\n  const");
   assert.match(derived, /newChatBlankedRef\.current === search\.new/);
-  // The latched id is only ever the persisted one, so an unsent chat still offers nothing.
-  assert.match(derived, /\? persistedActiveThreadId/);
+  // The store's own id: before the first send it is null, and after it is the row's.
+  assert.match(derived, /\? activeThreadId/);
+  assert.doesNotMatch(derived, /persistedActiveThreadId/);
   assert.match(derived, /: null/);
 
   const notice = slice(page, "<ChatModelNotice", "/>");

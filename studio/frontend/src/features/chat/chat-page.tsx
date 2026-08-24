@@ -2120,18 +2120,20 @@ export function ChatPage({
   // reopened it. The store does learn the id -- runtime-provider publishes it once the
   // visible thread is the one being persisted -- but it still holds the PREVIOUS chat's
   // id for the first render, until ThreadNewChatSwitch blanks it in an effect. Handing
-  // that over would put the previous chat's notice on this one. So latch on having seen
-  // it blanked for this nonce; before the first send there is nothing to offer anyway.
+  // that over would put the previous chat's notice on this one, so latch on having seen
+  // it blanked for this nonce.
+  //
+  // Blanked means null, and the id handed over is the store's own. The id the send
+  // persists keeps its `__LOCALID_` prefix for good, so reading that prefix as "not
+  // saved yet" latched on the previous chat and then handed over nothing: the notice
+  // this latch exists for never appeared in a chat started in the app at all.
   const newChatBlankedRef = useRef<string | null>(null);
-  if (
-    search.new &&
-    (activeThreadId === null || isAssistantLocalThreadId(activeThreadId))
-  ) {
+  if (search.new && activeThreadId === null) {
     newChatBlankedRef.current = search.new;
   }
   const newChatThreadId =
     search.new && newChatBlankedRef.current === search.new
-      ? persistedActiveThreadId
+      ? activeThreadId
       : null;
   const modelOperationInProgress = useChatRuntimeStore(
     (state) => state.modelLoading,
