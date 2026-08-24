@@ -25,6 +25,9 @@ on:
       - 'tests/studio/probe_dismiss_guard.py'
       - 'tests/studio/playwright_settings_tabs.py'
       - 'tests/studio/playwright_stream_pacing.py'
+      - 'tests/studio/playwright_code_block_flicker.py'
+      - 'tests/studio/_code_block_flicker_analysis.py'
+      - 'tests/studio/test_code_block_flicker_contract.py'
       # Shared lifecycle helpers, and the contract tests that keep verdicts from going unread.
       - 'tests/studio/_playwright_robust.py'
       - 'tests/studio/test_autoscroll_harness_contract.py'
@@ -367,7 +370,8 @@ jobs:
             tests/studio/test_autoscroll_harness_contract.py \
             tests/studio/test_heavy_thread_harness_contract.py \
             tests/studio/test_heavy_thread_measurement_integrity.py \
-            tests/studio/test_heavy_thread_gap_contract.py -q
+            tests/studio/test_heavy_thread_gap_contract.py \
+            tests/studio/test_code_block_flicker_contract.py -q
 
       - name: Browser smoke for ANSI tool output
         working-directory: ${{ github.workspace }}
@@ -384,6 +388,16 @@ jobs:
       - name: Browser smoke for research freeze
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_research_freeze.py
+
+      # A gate, not a measurement. The released and streamdown variants are positive controls
+      # that MUST flicker: a run where neither collapses means the detector stopped seeing, not
+      # that the flicker stopped. Chromium only on a PR, the engine whose content-visibility
+      # fallback the index.css override exists for.
+      - name: Browser smoke for code block flicker
+        working-directory: ${{ github.workspace }}
+        env:
+          SMOKE_FLICKER_ENGINES: chromium
+        run: python3 tests/studio/playwright_code_block_flicker.py
 
       # Two small sizes and one repetition on Chromium: enough to prove the fixture still
       # renders every kind of content it claims to and that the curve still rises, which is all

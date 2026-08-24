@@ -89,9 +89,9 @@ def test_auto_reports_http_when_hf_xet_is_missing(monkeypatch):
 def test_capabilities_carry_the_partial_resume_verdict(monkeypatch):
     """The card labels a partial from this. huggingface_hub >= 1.18 refetches an interrupted file
     from zero, so a byte-resume must not be offered there."""
-    monkeypatch.setattr(download_registry, "hf_partials_are_resumable", lambda: False)
+    monkeypatch.setattr(download_registry, "hf_partials_are_resumable", lambda _root = None: False)
     assert download_registry.get_download_transport_capabilities().partials_resumable is False
-    monkeypatch.setattr(download_registry, "hf_partials_are_resumable", lambda: True)
+    monkeypatch.setattr(download_registry, "hf_partials_are_resumable", lambda _root = None: True)
     assert download_registry.get_download_transport_capabilities().partials_resumable is True
 
 

@@ -11,6 +11,11 @@ import {
 import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
+import {
+  type TransferSample,
+  appendSample,
+  computeTransferStats,
+} from "@/lib/transfer-stats";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { defaultInferenceParams } from "../presets/preset-policy";
 import {
@@ -28,12 +33,6 @@ import { consumeNativePathToken } from "@/features/native-intents/api";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
-import {
-  notifyNative,
-  primeNativeNotificationPermission,
-  safeNotificationLabel,
-  sanitizeNotificationBody,
-} from "@/lib/native-notifications";
 import { ModelLoadDescription } from "../components/model-load-status";
 import {
   getDownloadProgress,
@@ -550,7 +549,6 @@ export function useChatModelRuntime() {
   const loadAbortRef = useRef<AbortController | null>(null);
   const loadingModelRef = useRef<typeof loadingModel>(null);
   const loadToastIdRef = useRef<string | number | null>(null);
-  const loadAttemptRef = useRef(0);
   const loadToastDismissedRef = useRef(false);
   const cancelUnloadPendingRef = useRef(false);
   const loadLifecycleLeaseRef = useRef<ModelLifecycleLease | null>(null);
@@ -1010,10 +1008,6 @@ export function useChatModelRuntime() {
         explicitIsLora ?? model?.isLora ?? loraIsAdapter ?? false;
       const displayName = model?.name || lora?.name || modelId;
       const toastDisplayName = shortModelLabel(displayName);
-      const loadAttemptId = ++loadAttemptRef.current;
-      primeNativeNotificationPermission().catch(() => undefined);
-      const notificationModelKey = `${modelId}:${ggufVariant ?? ""}:${loadAttemptId}`;
-      const safeModelName = safeNotificationLabel(toastDisplayName, "The model");
       const currentCheckpoint =
         useChatRuntimeStore.getState().params.checkpoint;
       const previousCheckpoint = currentCheckpoint;
@@ -2097,44 +2091,31 @@ export function useChatModelRuntime() {
         const expectedBytes =
           typeof selection !== "string" ? selection.expectedBytes ?? 0 : 0;
 
-        // Rolling window of byte samples for rate/ETA estimation, shared
-        // across download + mmap phases so it survives phase flips.
-        type Sample = { t: number; b: number };
-        const MIN_SAMPLES = 3;
-        const MIN_WINDOW = 3_000; // ms
-        const MAX_WINDOW = 15_000; // ms
-        const dlSamples: Sample[] = [];
-        const mmapSamples: Sample[] = [];
+        // One buffer per phase, so a flip cannot price the new phase against
+        // the old one's clock. Was a private copy of the shared estimator, so
+        // fixes never reached this toast. The helper takes SECONDS, not ms.
+        const dlSamples: TransferSample[] = [];
+        const mmapSamples: TransferSample[] = [];
 
         function estimate(
-          samples: Sample[],
+          samples: TransferSample[],
           bytes: number,
           total: number,
         ): { rate: number; eta: number; stable: boolean } {
-          const now = Date.now();
-          // Drop samples if the counter reset (e.g. phase flipped).
-          if (samples.length > 0 && bytes < samples[samples.length - 1].b) {
+          if (typeof document !== "undefined" && document.hidden) {
+            // This 2s interval is clamped to about once a minute while hidden,
+            // and the estimator reads gaps as the burst cadence. The hub poll
+            // loop and the voice poller drop them the same way.
             samples.length = 0;
-          }
-          samples.push({ t: now, b: bytes });
-          const cutoff = now - MAX_WINDOW;
-          while (samples.length > 2 && samples[0].t < cutoff) {
-            samples.shift();
-          }
-          if (samples.length < MIN_SAMPLES) {
             return { rate: 0, eta: 0, stable: false };
           }
-          const first = samples[0];
-          const last = samples[samples.length - 1];
-          const dt = (last.t - first.t) / 1000;
-          const db = last.b - first.b;
-          if (dt * 1000 < MIN_WINDOW || db <= 0) {
-            return { rate: 0, eta: 0, stable: false };
-          }
-          const rate = db / dt;
-          const eta =
-            total > 0 && bytes < total && rate > 0 ? (total - bytes) / rate : 0;
-          return { rate, eta, stable: true };
+          appendSample(samples, Date.now() / 1000, bytes);
+          const stats = computeTransferStats(samples, total);
+          return {
+            rate: stats.stable ? stats.rateBytesPerSecond : 0,
+            eta: stats.stable ? stats.etaSeconds : 0,
+            stable: stats.stable,
+          };
         }
 
         function composeProgressLabel(
@@ -2142,7 +2123,7 @@ export function useChatModelRuntime() {
           totalGb: number,
           bytes: number,
           total: number,
-          samples: Sample[],
+          samples: TransferSample[],
         ): string {
           const base =
             totalGb > 0
@@ -2246,12 +2227,6 @@ export function useChatModelRuntime() {
                   ),
                 });
               }
-              notifyNative({
-                key: `model-downloaded:${notificationModelKey}`,
-                title: "Model downloaded",
-                body: `${safeModelName} finished downloading and is loading into memory.`,
-                requestPermission: false,
-              }).catch(() => undefined);
               // Keep polling: the mmap branch below takes over from here.
             }
           } catch {
@@ -2356,12 +2331,6 @@ export function useChatModelRuntime() {
               onDismiss: undefined,
             });
           }
-          notifyNative({
-            key: `model-loaded:${notificationModelKey}`,
-            title: "Model ready",
-            body: `${safeModelName} is loaded and ready to chat.`,
-            requestPermission: false,
-          }).catch(() => undefined);
         } catch (err) {
           if (!abortCtrl.signal.aborted) {
             const message =
@@ -2379,12 +2348,6 @@ export function useChatModelRuntime() {
                 onDismiss: undefined,
               });
             }
-            notifyNative({
-              key: `model-load-failed:${notificationModelKey}`,
-              title: "Model failed to load",
-              body: sanitizeNotificationBody(message, "The model failed to load."),
-              requestPermission: false,
-            }).catch(() => undefined);
           }
           throw err;
         } finally {

@@ -34,6 +34,11 @@ import {
   validateSttModel,
 } from "@/features/chat";
 import {
+  type TransferSample,
+  appendSample,
+  computeTransferStats,
+} from "@/lib/transfer-stats";
+import {
   DownloadProgressBar,
   hfApiToken,
   useHfTokenStore,
@@ -496,10 +501,10 @@ export function VoiceTab() {
     null,
   );
   const [downloadBytesPerSec, setDownloadBytesPerSec] = useState(0);
-  // Last observed (bytes, time) so successive polls yield a transfer rate.
-  const downloadRateSampleRef = useRef<{ bytes: number; at: number } | null>(
-    null,
-  );
+  const [downloadEtaSeconds, setDownloadEtaSeconds] = useState(0);
+  // Was a bare two-sample delta over ~800ms with no window or stability gate,
+  // so one throttled timer or bursty poll set the displayed speed outright.
+  const downloadSamplesRef = useRef<TransferSample[]>([]);
   // Model whose download this tab watched; completion auto-loads it.
   const watchedDownloadRef = useRef<string | null>(null);
 
@@ -569,16 +574,30 @@ export function VoiceTab() {
           if (download.model && !isTrackingSttDownload(download.model)) {
             trackSttDownload(download.model);
           }
-          watchedDownloadRef.current = download.model;
           const bytes = download.bytes_done ?? 0;
-          const sample = downloadRateSampleRef.current;
-          const now = Date.now();
-          if (sample && bytes > sample.bytes && now > sample.at) {
-            setDownloadBytesPerSec(
-              ((bytes - sample.bytes) * 1000) / (now - sample.at),
-            );
+          // Compare before adopting: assigning first made this test itself, so
+          // a straight switch priced the new run over the old one's samples.
+          if (download.model !== watchedDownloadRef.current) {
+            // A different model's counter is a different run.
+            downloadSamplesRef.current.length = 0;
           }
-          downloadRateSampleRef.current = { bytes, at: now };
+          watchedDownloadRef.current = download.model;
+          if (typeof document !== "undefined" && document.hidden) {
+            // A hidden tab's timers are clamped to about once a minute, so
+            // these gaps time the poller and would read as the burst cadence.
+            // The hub poll loop drops them the same way.
+            downloadSamplesRef.current.length = 0;
+            setDownloadBytesPerSec(0);
+            setDownloadEtaSeconds(0);
+          } else {
+            appendSample(downloadSamplesRef.current, Date.now() / 1000, bytes);
+            const stats = computeTransferStats(
+              downloadSamplesRef.current,
+              download.bytes_total ?? 0,
+            );
+            setDownloadBytesPerSec(stats.stable ? stats.rateBytesPerSecond : 0);
+            setDownloadEtaSeconds(stats.stable ? stats.etaSeconds : 0);
+          }
           // Keep the download progress fresh.
           window.setTimeout(() => {
             if (!cancelled) setStatusNonce((n) => n + 1);
@@ -586,8 +605,9 @@ export function VoiceTab() {
         } else {
           const finished = watchedDownloadRef.current;
           watchedDownloadRef.current = null;
-          downloadRateSampleRef.current = null;
+          downloadSamplesRef.current.length = 0;
           setDownloadBytesPerSec(0);
+          setDownloadEtaSeconds(0);
           if (
             finished === sttModel &&
             engineStatus.downloaded_models.includes(sttModel) &&
@@ -1059,6 +1079,7 @@ export function VoiceTab() {
                             : 0,
                       }}
                       bytesPerSec={downloadBytesPerSec}
+                      etaSeconds={downloadEtaSeconds}
                     />
                   </div>
                 ) : (

@@ -2927,3 +2927,116 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
     assert backend._template_override["applied"] is None
     assert backend._template_override["reason"] == mlx_inference.MLX_TEMPLATE_DROPS_IMAGE
     assert backend._processor.chat_template == "{{ native }}"
+
+
+def _fake_rng_state(monkeypatch, words):
+    from core.inference import mlx_inference
+
+    _install_fake_mlx(monkeypatch)
+    mx = sys.modules["mlx.core"]
+    seeded = []
+    mx.random = SimpleNamespace(
+        state = _SentinelRandomState(words),
+        seed = lambda value: seeded.append(value),
+    )
+    return mlx_inference, seeded
+
+
+@pytest.mark.parametrize(
+    "words,expected",
+    [
+        ((-1, -2), (0xFFFFFFFF, 0xFFFFFFFE)),
+        ((-2147483648, 5), (0x80000000, 5)),
+        ((0, -1), (0, 0xFFFFFFFF)),
+        ((0, 0), (0, 0)),
+        ((0xFFFFFFFF, 0xFFFFFFFF), (0xFFFFFFFF, 0xFFFFFFFF)),
+    ],
+)
+def test_rng_capture_reinterprets_signed_words(monkeypatch, words, expected):
+    """A negative word is the two's complement of the uint32 mlx stores.
+
+    Reinterpreting it loses nothing, and it is what keeps the seed inside the
+    uint64 domain. The rewind is deliberately unguarded, which only holds if the
+    words cannot put it out of range; capture does not type-check the state, so
+    this conversion is what makes that true. A raise would land in the probe's
+    finally and replace the probe's own outcome, the failure shape #9478 set out
+    to remove.
+    """
+    mlx_inference, seeded = _fake_rng_state(monkeypatch, words)
+
+    captured = mlx_inference._mlx_rng_key_words()
+    assert captured == expected
+
+    mlx_inference._restore_mlx_rng_key(captured)
+    assert seeded == [(expected[0] << 32) | expected[1]]
+    assert 0 <= seeded[0] < 2**64
+
+
+@pytest.mark.parametrize(
+    "words", [(2**32, 0), (0, 2**32), (2**63, 1), (-(2**31) - 1, 0), (0, -(2**40))]
+)
+def test_rng_capture_declines_words_that_are_not_32_bit(monkeypatch, words):
+    """Masking these would be worse than declining them.
+
+    (2**32, 0) masks to (0, 0): a key we cannot represent becomes a plausible
+    wrong one, the probe reports success, and sampling silently diverges from an
+    unprobed run. Declining is the outcome the caller already handles, and it is
+    the only one that says so out loud.
+    """
+    mlx_inference, seeded = _fake_rng_state(monkeypatch, words)
+    warnings = _capture_rng_warnings(monkeypatch, mlx_inference)
+
+    assert mlx_inference._mlx_rng_key_words() is None
+    assert any("32-bit word" in w for w in warnings), warnings
+
+    # The rewind must stay a no-op on the value capture actually returns, and
+    # total besides: handed these words directly it declines rather than raising
+    # into the probe's finally, and never seeds a wrong key.
+    mlx_inference._restore_mlx_rng_key(None)
+    mlx_inference._restore_mlx_rng_key(words)
+    assert seeded == []
+
+
+def _capture_rng_warnings(monkeypatch, mlx_inference):
+    """Collect this module's warnings. It logs through structlog, which caplog
+    does not see."""
+    warnings = []
+    monkeypatch.setattr(
+        mlx_inference.logger,
+        "warning",
+        lambda msg, *args, **kwargs: warnings.append(msg % args if args else msg),
+    )
+    return warnings
+
+
+@pytest.mark.parametrize("n", [1, 3, 4])
+def test_rng_capture_reports_a_key_that_is_not_two_words(monkeypatch, n):
+    """Returning a bare None would leave the probe silently not restoring, which
+    is the same shape of silent divergence the item assignment used to cause,
+    just moved from the write to the read."""
+    from core.inference import mlx_inference
+
+    _install_fake_mlx(monkeypatch)
+    mx = sys.modules["mlx.core"]
+    mx.random = SimpleNamespace(
+        state = _SentinelRandomState(tuple(range(n))),
+        seed = lambda value: None,
+    )
+    warnings = _capture_rng_warnings(monkeypatch, mlx_inference)
+
+    assert mlx_inference._mlx_rng_key_words() is None
+    assert any("random key" in w for w in warnings), warnings
+
+
+def test_rng_capture_stays_quiet_when_the_state_cannot_be_read(monkeypatch):
+    """An unreadable state is an intentional no-op, not a surprise. Warning on it
+    every call would train operators to ignore the warning that matters."""
+    from core.inference import mlx_inference
+
+    _install_fake_mlx(monkeypatch)
+    mx = sys.modules["mlx.core"]
+    mx.random = SimpleNamespace(state = lambda: {"counter": 0}, seed = lambda value: None)
+    warnings = _capture_rng_warnings(monkeypatch, mlx_inference)
+
+    assert mlx_inference._mlx_rng_key_words() is None
+    assert warnings == []

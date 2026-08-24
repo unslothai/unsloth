@@ -254,6 +254,17 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
                     host = host[4:]
                 return f"Reading: {host}"
             return "Reading page..."
+        image_queries = arguments.get("image_queries")
+        images = (
+            ", ".join(str(q) for q in image_queries[:5])
+            if isinstance(image_queries, list) and image_queries
+            else ""
+        )
+        query = str(arguments.get("query") or "").strip()
+        if images and not query:
+            return f"Finding images: {images}"
+        if images:
+            return f"Searching: {query} (images: {images})"
         return f"Searching: {arguments.get('query', '')}"
     if tool_name == "python":
         preview = str(arguments.get("code") or "").strip().split("\n")[0][:60]
@@ -360,6 +371,9 @@ _SANDBOX_TOOLS = frozenset({"python", "terminal"})
 def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
     """Remove frontend-only sentinels (image paths, RAG source map) before
     feeding the result back to the model."""
+    if tool_name is None or tool_name == "web_search":
+        from .search_images import strip_images_suffix
+        result = strip_images_suffix(result)
     result = _strip_mcp_image_suffix(result)
     if tool_name is None or tool_name in _SANDBOX_TOOLS:
         result = _strip_files_sentinel(result)
