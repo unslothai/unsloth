@@ -710,16 +710,19 @@ def test_approved_dummy_bearers_are_accepted(token):
     assert subject_of(request) == storage.DEFAULT_ADMIN_USERNAME
 
 
-@pytest.mark.parametrize(
-    "stranger",
-    [
-        "arbitrary-client-token",
-        jwt.encode({"sub": "someone-else"}, secrets.token_urlsafe(64), algorithm = "HS256"),
-    ],
-)
-def test_an_arbitrary_bearer_is_rejected(stranger):
+@pytest.mark.parametrize("token_kind", ["plain", "jwt"])
+def test_an_arbitrary_bearer_is_rejected(token_kind):
     seed_user()
     set_keyless_api_access("full")
+    stranger = (
+        "arbitrary-client-token"
+        if token_kind == "plain"
+        else jwt.encode(
+            {"sub": "someone-else"},
+            secrets.token_urlsafe(64),
+            algorithm = "HS256",
+        )
+    )
     with pytest.raises(HTTPException) as excinfo:
         subject_of(request_for(headers = {"Authorization": f"Bearer {stranger}"}))
     assert excinfo.value.status_code == 401
