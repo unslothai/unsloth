@@ -668,9 +668,9 @@ class TestNoUnregisteredArchTable:
             "a table under a plain target/ directory was skipped; the guard would miss "
             f"a real copy there: {found}"
         )
-        assert "src-tauri/target/debug/install.sh" not in found, (
-            f"cargo build output is still scanned: {found}"
-        )
+        assert (
+            "src-tauri/target/debug/install.sh" not in found
+        ), f"cargo build output is still scanned: {found}"
 
 
 # ── Table 3: the torch>=2.11 pin allowlist ───────────────────────────────────

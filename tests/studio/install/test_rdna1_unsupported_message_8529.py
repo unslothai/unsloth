@@ -688,9 +688,7 @@ class TestAdviceIsNotEmittedForRdna1:
         )
         # The carve-out has to be true of the installer whatever the README says.
         assert "rocm6.3" in _normalised(_INSTALL_SH), "install.sh: no gfx906 ROCm index left"
-        describes_group = re.search(
-            r"no ROCm PyTorch wheels|Polaris|RDNA ?1", src, re.IGNORECASE
-        )
+        describes_group = re.search(r"no ROCm PyTorch wheels|Polaris|RDNA ?1", src, re.IGNORECASE)
         if not describes_group:
             return
         # It does describe the group, so it has to describe it completely: named by its
@@ -1361,7 +1359,9 @@ class TestVulkanAdvice:
             None,
         )
         assert routing, "_route_to_vulkan_prebuilt was renamed or moved"
-        branch = re.search(r"if host\.is_macos:\n(?P<body>(?:[ \t]+.*\n|\n)+?)[ \t]{8}return ", routing)
+        branch = re.search(
+            r"if host\.is_macos:\n(?P<body>(?:[ \t]+.*\n|\n)+?)[ \t]{8}return ", routing
+        )
         assert branch, "the macOS branch in _route_to_vulkan_prebuilt was restructured"
         body = branch.group("body")
         assert "ignored on macOS" in body and "Metal" in body, (
