@@ -3,6 +3,31 @@
 
 export type ConversationJsonlLayout = "training" | "messages";
 
+const OPENAI_MESSAGE_ROLES = new Set(["system", "user", "assistant", "tool"]);
+
+export function isOpenAIMessageRecord(
+  record: unknown,
+): record is Record<string, unknown> {
+  if (typeof record !== "object" || record === null || Array.isArray(record)) {
+    return false;
+  }
+  const message = record as Record<string, unknown>;
+  return (
+    typeof message.role === "string" &&
+    OPENAI_MESSAGE_ROLES.has(message.role) &&
+    ("content" in message || Array.isArray(message.tool_calls))
+  );
+}
+
+export function messageJsonlConversationRecord(
+  records: readonly unknown[],
+): { messages: Record<string, unknown>[] } | null {
+  if (records.length === 0 || !records.every(isOpenAIMessageRecord)) {
+    return null;
+  }
+  return { messages: [...records] };
+}
+
 export function conversationJsonlBody(
   messages: readonly unknown[],
   layout: ConversationJsonlLayout,

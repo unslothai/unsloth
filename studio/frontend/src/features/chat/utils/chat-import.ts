@@ -25,6 +25,10 @@ import {
   isOpenWebUIRecord,
   openWebUIRecordToConversation,
 } from "./openwebui-import";
+import {
+  isOpenAIMessageRecord,
+  messageJsonlConversationRecord,
+} from "./ndjson";
 
 /** CSV has no record framing to stream on, so it is still read whole. */
 const CSV_MAX_BYTES = 64 * 1024 * 1024;
@@ -298,6 +302,7 @@ export function parseImportText(
   }
 
   const results: ParsedConversation[] = [];
+  const messageRecords: Record<string, unknown>[] = [];
   let index = 0;
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -307,8 +312,17 @@ export function parseImportText(
     } catch {
       continue;
     }
-    const parsed = recordToConversation(record, `${basename} ${index + 1}`);
     index++;
+    if (isOpenAIMessageRecord(record)) {
+      messageRecords.push(record);
+      continue;
+    }
+    const parsed = recordToConversation(record, `${basename} ${index}`);
+    if (parsed) results.push(parsed);
+  }
+  const messageConversation = messageJsonlConversationRecord(messageRecords);
+  if (messageConversation) {
+    const parsed = recordToConversation(messageConversation, basename);
     if (parsed) results.push(parsed);
   }
   return results;
@@ -366,6 +380,7 @@ export async function importConversationsFromSource(
   }
 
   const inFlight = new Set<Promise<void>>();
+  const messageRecords: Record<string, unknown>[] = [];
   let index = 0;
   let failure: unknown;
   let reportedBytes = 0;
@@ -384,8 +399,12 @@ export async function importConversationsFromSource(
         progress.failed++;
       },
     })) {
-      const conversation = recordToConversation(record, `${basename} ${index + 1}`);
       index++;
+      if (isOpenAIMessageRecord(record)) {
+        messageRecords.push(record);
+        continue;
+      }
+      const conversation = recordToConversation(record, `${basename} ${index}`);
       if (!conversation) continue;
 
       const task = writeConversation(conversation, projectId)
@@ -406,6 +425,21 @@ export async function importConversationsFromSource(
   } catch (error) {
     // A read that dies partway still leaves earlier chats saved.
     failure = error;
+  }
+
+  if (failure === undefined) {
+    const messageConversation = messageJsonlConversationRecord(messageRecords);
+    const conversation = messageConversation
+      ? recordToConversation(messageConversation, basename)
+      : null;
+    if (conversation) {
+      try {
+        await writeConversation(conversation, projectId);
+        progress.imported++;
+      } catch {
+        progress.failed++;
+      }
+    }
   }
 
   await Promise.allSettled(inFlight);

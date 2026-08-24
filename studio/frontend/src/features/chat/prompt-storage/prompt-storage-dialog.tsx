@@ -65,6 +65,7 @@ import {
   conversationJsonlBody,
   type ConversationJsonlLayout,
 } from "../utils/ndjson";
+import { orderByParentChain } from "../utils/message-order";
 import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
 import {
   buildConversationMarkdown,
@@ -198,52 +199,17 @@ function contentBlocksToText(content: unknown): string {
     return parts.join("\n\n");
   }
 
-// Order via parentId chain: createdAt misorders turns (GPT response slots
-// predate the user's next message); the parent chain is timestamp-independent.
-type _Msg = { id: string; parentId?: string | null; createdAt?: number };
-
-function orderByParentChain<T extends _Msg>(
-  messages: T[],
-  options: {
-    /** Append messages off the selected chain (abandoned branches) at the
-     *  end. Full exports keep everything; fine-tune conversion must not,
-     *  since alternate replies would merge into one conversation. */
-    includeSiblings?: boolean;
-  } = {},
-): T[] {
-  const { includeSiblings = true } = options;
-  const byId = new Map<string, T>(messages.map((m) => [m.id, m]));
-  const childrenOf = new Map<string | null, T[]>();
-  for (const m of messages) {
-    const pid = m.parentId ?? null;
-    if (!childrenOf.has(pid)) childrenOf.set(pid, []);
-    childrenOf.get(pid)!.push(m);
-  }
-
-  const result: T[] = [];
-  let cur: string | null = null;
-  while (childrenOf.has(cur)) {
-    const children: T[] = childrenOf.get(cur)!;
-    const next: T = children.reduce((a: T, b: T) =>
-      (a.createdAt ?? 0) >= (b.createdAt ?? 0) ? a : b,
-    );
-    result.push(next);
-    cur = next.id;
-    byId.delete(next.id);
-  }
-
-  if (includeSiblings) {
-    for (const [, m] of byId) result.push(m);
-  }
-  return result;
-}
-
 async function loadConversationMessages(
   threadId: string,
-  // Every other caller here is an export; the project-sources save is not, and
-  // reporting an export to someone who never asked for one is confusing.
-  emptyMessage = "No messages in this conversation to export.",
+  options: {
+    emptyMessage?: string;
+    includeSiblings?: boolean;
+  } = {},
 ) {
+  const {
+    emptyMessage = "No messages in this conversation to export.",
+    includeSiblings = true,
+  } = options;
   const raw = await listStoredChatMessages(threadId);
   if (raw.length === 0) {
     toast.info(emptyMessage);
@@ -253,7 +219,7 @@ async function loadConversationMessages(
   // chain would invert order, so keep raw order.
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
   if (!hasParentIds) return raw;
-  return orderByParentChain(raw) as typeof raw;
+  return orderByParentChain(raw, { includeSiblings }) as typeof raw;
 }
 
 function exportTs(): string {
@@ -434,7 +400,9 @@ async function exportConversationJsonl(
   threadId: string,
   layout: ConversationJsonlLayout,
 ): Promise<void> {
-  const messages = await loadConversationMessages(threadId);
+  const messages = await loadConversationMessages(threadId, {
+    includeSiblings: layout !== "training",
+  });
   if (!messages) return;
 
   const oaiMsgs: OAIMessage[] = messages.flatMap((msg) => messageToOpenAI(msg));
@@ -483,10 +451,9 @@ async function saveConversationAsProjectSource(
   projectId: string,
   title: string,
 ): Promise<SaveSourceOutcome> {
-  const messages = await loadConversationMessages(
-    threadId,
-    "No messages in this conversation to save.",
-  );
+  const messages = await loadConversationMessages(threadId, {
+    emptyMessage: "No messages in this conversation to save.",
+  });
   if (!messages) return "skipped";
   const markdown = buildConversationMarkdown(
     messages.map((msg) => ({
@@ -548,7 +515,9 @@ async function buildThreadContent(
   threadId: string,
   format: ConvExportFormat,
 ): Promise<string | null> {
-  const messages = await loadConversationMessages(threadId);
+  const messages = await loadConversationMessages(threadId, {
+    includeSiblings: format !== "jsonl-raw",
+  });
   if (!messages) return null;
 
   if (format === "jsonl-raw" || format === "jsonl-messages") {

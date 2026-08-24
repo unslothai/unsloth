@@ -3,7 +3,12 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { conversationJsonlBody } from "../src/features/chat/utils/ndjson.ts";
+import { orderByParentChain } from "../src/features/chat/utils/message-order.ts";
+import {
+  conversationJsonlBody,
+  isOpenAIMessageRecord,
+  messageJsonlConversationRecord,
+} from "../src/features/chat/utils/ndjson.ts";
 
 const messages = [
   { role: "user", content: "Hello" },
@@ -32,4 +37,25 @@ test("message JSONL writes one message per record", () => {
 test("empty conversations produce an empty body", () => {
   assert.equal(conversationJsonlBody([], "training"), '{"messages":[]}');
   assert.equal(conversationJsonlBody([], "messages"), "");
+});
+
+test("message JSONL records form one importable conversation", () => {
+  assert.equal(isOpenAIMessageRecord(messages[0]), true);
+  assert.equal(isOpenAIMessageRecord({ messages }), false);
+  assert.deepEqual(messageJsonlConversationRecord(messages), { messages });
+});
+
+test("training order excludes abandoned response branches", () => {
+  const branched = [
+    { id: "user", parentId: null, createdAt: 1 },
+    { id: "old-reply", parentId: "user", createdAt: 2 },
+    { id: "new-reply", parentId: "user", createdAt: 3 },
+    { id: "follow-up", parentId: "new-reply", createdAt: 4 },
+  ];
+  assert.deepEqual(
+    orderByParentChain(branched, { includeSiblings: false }).map(
+      ({ id }) => id,
+    ),
+    ["user", "new-reply", "follow-up"],
+  );
 });
